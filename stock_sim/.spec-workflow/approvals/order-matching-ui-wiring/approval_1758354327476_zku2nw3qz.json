@@ -1,0 +1,12 @@
+{
+  "id": "approval_1758354327476_zku2nw3qz",
+  "title": "需求文档：将撮合/委托（Trade/OrderRejected/OrderCanceled）等事件接线到UI（Orders面板、Market联动、通知）",
+  "filePath": ".spec-workflow/specs/order-matching-ui-wiring/requirements.md",
+  "type": "document",
+  "status": "approved",
+  "createdAt": "2025-09-20T07:45:27.476Z",
+  "category": "spec",
+  "categoryName": "order-matching-ui-wiring",
+  "response": "通过仪表板批准",
+  "respondedAt": "2025-09-20T07:57:25.745Z"
+}

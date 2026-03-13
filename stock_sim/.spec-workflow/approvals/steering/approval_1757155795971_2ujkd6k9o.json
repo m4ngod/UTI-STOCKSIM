@@ -1,0 +1,12 @@
+{
+  "id": "approval_1757155795971_2ujkd6k9o",
+  "title": "审批 product.md 产品文档",
+  "filePath": ".spec-workflow/steering/product.md",
+  "type": "document",
+  "status": "rejected",
+  "createdAt": "2025-09-06T10:49:55.971Z",
+  "category": "steering",
+  "categoryName": "steering",
+  "response": "readme.md我未更新，更新后重新再生成product.md",
+  "respondedAt": "2025-09-06T12:32:48.553Z"
+}

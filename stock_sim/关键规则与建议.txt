@@ -1,0 +1,104 @@
+关键规则与建议
+
+使用模拟时钟，一个交易日有4小时的交易时间，不按实时时钟推进，压缩至数秒甚至毫秒级完成。
+
+事件触发判定
+
+基准价 p_base：上一个节点的成交价（或加权中间价）。每产生一个节点后重置 p_base。
+扫描粒度：使用你的“秒级”数据逐秒检查从上一个节点时刻到下一30秒边界之间的秒线。
+触发条件：abs(price_t / p_base - 1) ≥ 0.005，取最早满足条件的 t_event 建立事件节点。
+连续触发：触发后重置 p_base := price_t_event，继续在剩余秒内扫描（同一个30秒窗口内允许多个事件节点）。
+防抖与上限（强烈建议，避免高波动日爆炸增长）：
+min_event_spacing_seconds: 2（两次事件之间至少间隔2秒）
+max_events_per_30s: 3~5（每30秒最多插入N个事件节点）
+price_basis: last_trade（可选 mid/close）
+event_flag: 本步是否由事件触发（1/0），作为观测特征之一。
+
+多标的同步与步进
+
+全局步进时刻 T_global = sort(unique(30秒网格 ∪ 所有标的事件时刻))
+在 t ∈ T_global：
+对每个标的取该时刻的秒级价量（无则前向填充），计算特征与账户估值。
+允许在事件节点也执行策略动作（和30秒节点同等地位）。
+
+对观测向量的影响与两种实现选项
+Stable-Baselines3 的 LSTM 是跨“环境步”的记忆，不是对“当日全部节点序列”的时域卷积。因此“当日所有节点”的特征长度会随时间增长且不固定，这会和策略网络的固定输入维度冲突。推荐用固定长度滑窗来承载你想要的“更多节点”信息。
+
+选项A（推荐，稳定可训）
+“特征1：当日所有节点的价格信息”，可能存在W个节点，尝试不将W 固定，将所有节点都作为特征，包含事件节点在内。
+
+特征构造（每标的，每步）
+
+基础时间特征
+dt_seconds：与上一步的时间间隔（秒）
+event_flag：是否由事件触发（0/1）
+time_in_session：当日开盘以来累计秒（归一化到[0,1]）
+价量滑窗（长度 W）
+log_return 序列：ln(price_t / price_{t-1_node})
+volume z-score 序列（基于当日或近N日均值方差）
+可选：成交额、分位化的盘口/成交特征（若可得）
+截面静态/慢变量
+流通股数量（对数并z-score或分桶one-hot）
+换手率/振幅/涨速：建议以“自上节点到当前”的事件级口径重算，或当日累积指标的增量
+5日均线偏离：close_t / MA5_t - 1（MA5基于日线，开盘前计算）
+组合层（多标的）
+对每个标的独立构建上述特征，然后在观测中按固定顺序拼接（或做 top-K 选择/mask，后续可扩展）
+
+动作与执行
+
+动作空间：保持“目标持仓权重”连续空间不变（[-2.0, +1.5]），事件节点与30秒节点一样都会执行到目标仓位（考虑最小单位与滑点、费率）。
+可选节流：min_action_interval_seconds（如 10s），在两次动作之间强制冷却期，避免事件触发过密导致过度下单。
+成交价：使用该时刻的秒级成交价 ± 滑点（bps/tick），手续费与印花税遵循你的中国市场规则。
+
+奖励与不等间隔步长
+
+奖励仍为“净值变动-成本”。由于 dt 不等，建议：
+在观测中加入 dt_seconds 让策略感知时间间隔；
+折扣因子 gamma 暂保持常数（如 0.997），不做按 dt 调整（MVP更稳）；如后续需要，可做 gamma^(dt/30) 的自定义加权（需改 PPO 内部或做奖励整形）。
+可选：对奖励做时间归一，如 r’ = r * sqrt(30/dt)，默认关闭。
+
+回测一致性
+
+评估/回测时使用相同的事件生成规则与参数（event_threshold=0.005, min_event_spacing, max_events_per_30s），确保训练与评估一致。
+
+配置项新增（yaml）
+
+event_bars:
+enabled: true
+threshold: 0.005
+min_event_spacing_seconds: 2
+max_events_per_30s: 3
+price_basis: last_trade
+global_clock: union # 30s网格与所有标的事件时刻的并集
+observation:
+window_len: 512 # 若你选择选项A
+include_dt: true
+include_event_flag: true
+pad_value: 0.0
+features: [log_return, volume_z, turnover, amplitude, speed, ma5_deviation, float_shares]
+execution:
+min_action_interval_seconds: 10 # 可设为0表示不节流
+
+伪代码（核心逻辑）
+
+构造事件时钟
+对每个标的：
+t := day_open; p_base := price(t)
+while t < day_close:
+t_next30 := 下一个30秒边界
+在[t, t_next30)逐秒扫描，若 abs(price(s)/p_base - 1) ≥ 0.005 且 (s - last_event_time) ≥ min_spacing：
+emit event at s; p_base := price(s); last_event_time := s
+若达到 max_events_per_30s 则跳到 t := t_next30
+emit 30s 节点 at t_next30; p_base := price(t_next30); t := t_next30
+全局（模拟）时钟 = 所有标的节点时刻 ∪ 所有30秒时刻 的并集去重排序
+环境 step(t_k):
+聚合每标的在 t_k 的价量（无则前向填充）
+更新账户估值、计算成本、构造特征滑窗（W）、设置 dt_seconds、event_flag
+执行动作到目标仓位（若冷却期允许）
+计算奖励并返回 obs, reward, done, info
+
+对数据库与性能的提示
+
+预拉取当日所有标的的“秒级”数据到内存（按交易日/训练分片），在 Python 内快速扫描生成事件时刻；或在 SQL 中先筛选当日数据后在应用层做事件检测。
+多标的并集时钟可能很密：建议先对候选标的做 top-K 选股（如按流动性/波动性筛 K=20~50），避免事件数量爆炸。
+提供一个安全阈值：max_global_nodes_per_day（如 8,000），超过则降采样或提前结束该日 episode。

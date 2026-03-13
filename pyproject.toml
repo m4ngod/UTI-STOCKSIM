@@ -1,0 +1,5 @@
+[project]
+name = "stock-sim"
+version = "0.0.1"
+description = "A toy stock simulation framework"
+dependencies = []

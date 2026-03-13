@@ -1,0 +1,11 @@
+{
+  "language": "en_US",
+  "theme": "light",
+  "refresh_interval_ms": 150,
+  "playback_speed": 0.4,
+  "alert_thresholds": {
+    "drawdown_pct": 0.1,
+    "heartbeat_ms": 10000
+  },
+  "high_contrast": false
+}

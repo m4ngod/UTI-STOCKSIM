@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: stock-sim
+Version: 0.0.1
+Summary: A toy stock simulation framework
+Requires-Dist: PySide6>=6.6.0
+Requires-Dist: pyqtgraph>=0.13.3

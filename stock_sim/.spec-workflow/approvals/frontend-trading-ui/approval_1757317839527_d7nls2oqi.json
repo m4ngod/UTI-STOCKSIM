@@ -1,0 +1,21 @@
+{
+  "id": "approval_1757317839527_d7nls2oqi",
+  "title": "Frontend trading UI design approval",
+  "filePath": ".spec-workflow/specs/frontend-trading-ui/design.md",
+  "type": "document",
+  "status": "needs-revision",
+  "createdAt": "2025-09-08T07:50:39.527Z",
+  "category": "spec",
+  "categoryName": "frontend-trading-ui",
+  "response": "Feedback Summary (1 comments):\n\nGeneral Comments:\n1. 智能体散户才能批量创建，（模型）智能体，比如PPO或者Transformer模型无需批量功能\n\n",
+  "annotations": "{\n  \"decision\": \"needs-revision\",\n  \"comments\": [\n    {\n      \"type\": \"general\",\n      \"comment\": \"智能体散户才能批量创建，（模型）智能体，比如PPO或者Transformer模型无需批量功能\",\n      \"timestamp\": \"2025-09-08T07:55:07.750Z\",\n      \"id\": \"comment_1757318107750_khon9oma9\"\n    }\n  ],\n  \"summary\": \"Feedback Summary (1 comments):\\n\\nGeneral Comments:\\n1. 智能体散户才能批量创建，（模型）智能体，比如PPO或者Transformer模型无需批量功能\\n\\n\",\n  \"timestamp\": \"2025-09-08T07:55:15.630Z\"\n}",
+  "respondedAt": "2025-09-08T07:55:15.947Z",
+  "comments": [
+    {
+      "type": "general",
+      "comment": "智能体散户才能批量创建，（模型）智能体，比如PPO或者Transformer模型无需批量功能",
+      "timestamp": "2025-09-08T07:55:07.750Z",
+      "id": "comment_1757318107750_khon9oma9"
+    }
+  ]
+}

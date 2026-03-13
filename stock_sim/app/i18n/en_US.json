@@ -1,0 +1,19 @@
+{
+  "app.title": "Stock Simulation",
+  "menu.file": "File",
+  "menu.view": "View",
+  "greet": "Hello {name}",
+  "account.balance": "Balance",
+  "account.equity": "Equity",
+  "settings.language": "Language",
+  "settings.theme": "Theme",
+  "only.english": "Only English",
+  "panel.account": "Account",
+  "panel.market": "Market",
+  "panel.agents": "Agents",
+  "panel.leaderboard": "Leaderboard",
+  "panel.clock": "Clock",
+  "panel.settings": "Settings",
+  "panel.agent_config": "Agent Config",
+  "panel.agent_creation": "Agent Creation"
+}

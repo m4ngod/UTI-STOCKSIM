@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-sim"
+version = "0.0.1"
+description = "A stock simulation framework"
+dependencies = [
+    "PySide6>=6.6.0",
+    "pyqtgraph>=0.13.3",
+    "pytorch==2.8.0+cu129",
+    "redis>=5.0.0",
+    "SQLAlchemy>=1.4",
+    "pytest>=8.2",
+    "pytest-cov>=4.1",  # Task41 增量: 覆盖率
+    "numpy>=1.26",
+    "pydantic>=1.10.0,<2.0",  # 调整: 使用 v1 语法
+    "mypy>=1.10.0"
+]
+
+[project.scripts]
+frontend-trading-ui = "setup_frontend_entry:main"
+
+[tool.setuptools]
+# 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["stock_sim", "stock_sim.*", "FE", "FE.*", "app", "app.*"]
+exclude = [
+  "logs*",
+  "Quent*",
+  "react*",
+  "mountain*",
+  "tests*",
+  "dist*",
+  "build*",
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict = true
+show_error_codes = true
+pretty = true
+packages = ["app.core_dto"]

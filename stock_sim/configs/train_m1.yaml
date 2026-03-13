@@ -1,0 +1,30 @@
+# M1 训练配置
+ppo:
+  rollout_length: 1024        # 可根据显存/速度调整
+  minibatches: 8
+  epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  entropy_coef: 0.005
+  value_coef: 0.5
+  lr: 3.0e-4
+  grad_clip: 0.5
+  normalize_obs: true
+  normalize_reward: true
+  device: cpu
+
+train:
+  num_envs: 16
+  total_iterations: 2000      # 训练循环次数（每次一次rollout+更新）
+  eval_interval: 50           # 每多少次迭代执行一次评估
+  save_interval: 100
+  out_dir: models/m1
+  max_eval_steps: 2000        # 单次评估最大步数
+  eval_num_envs: 4
+
+# 评估指标配置
+metrics:
+  risk_free_rate: 0.02        # 年化无风险利率 (夏普计算)
+  trading_days_per_year: 252
+

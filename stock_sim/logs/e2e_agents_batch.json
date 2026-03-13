@@ -1,0 +1,116 @@
+{
+  "agents": {
+    "total": 10,
+    "items": [
+      {
+        "agent_id": "ret-e2e-1758205954866-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954872-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954877-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954883-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954888-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954893-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954899-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954904-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954909-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "ret-e2e-1758205954915-0",
+        "name": "e2e-0",
+        "type": "Retail",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      }
+    ]
+  },
+  "batch": {
+    "in_progress": false,
+    "requested": 10,
+    "created": 10,
+    "failed": 0,
+    "type": "Retail",
+    "error": null,
+    "strategies": null
+  }
+}

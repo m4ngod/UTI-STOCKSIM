@@ -1,0 +1,21 @@
+{
+  "id": "approval_1758652508579_uod0p8zdc",
+  "title": "Tasks: kline-sim-clock-and-multi-strategy-retail",
+  "filePath": ".spec-workflow/specs/kline-sim-clock-and-multi-strategy-retail/tasks.md",
+  "type": "document",
+  "status": "needs-revision",
+  "createdAt": "2025-09-23T18:35:08.579Z",
+  "category": "spec",
+  "categoryName": "kline-sim-clock-and-multi-strategy-retail",
+  "response": "Feedback Summary (1 comments):\n\nGeneral Comments:\n1. 为何无内容？\n\n",
+  "annotations": "{\n  \"decision\": \"needs-revision\",\n  \"comments\": [\n    {\n      \"type\": \"general\",\n      \"comment\": \"为何无内容？\",\n      \"timestamp\": \"2025-09-23T18:35:31.410Z\",\n      \"id\": \"comment_1758652531410_em0kseg1b\"\n    }\n  ],\n  \"summary\": \"Feedback Summary (1 comments):\\n\\nGeneral Comments:\\n1. 为何无内容？\\n\\n\",\n  \"timestamp\": \"2025-09-23T18:35:33.865Z\"\n}",
+  "respondedAt": "2025-09-23T18:35:33.867Z",
+  "comments": [
+    {
+      "type": "general",
+      "comment": "为何无内容？",
+      "timestamp": "2025-09-23T18:35:31.410Z",
+      "id": "comment_1758652531410_em0kseg1b"
+    }
+  ]
+}

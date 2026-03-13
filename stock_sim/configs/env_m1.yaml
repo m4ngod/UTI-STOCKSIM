@@ -1,0 +1,29 @@
+# M1 环境配置 (YAML)
+# 注: evaluate.py / daily_update.py 可加载本文件。
+# 真实部署时 symbols 可通过命令行覆盖。
+
+symbols: ["000001.SZ", "600000.SH"]
+lookback_days: 5
+
+# EnvConfig 参数
+env:
+  max_position_leverage: 3.0
+  weight_low: -2.0
+  weight_high: 1.5
+  lookback_nodes: 10
+  commission_rate: 0.0005
+  stamp_duty: 0.001   # 卖出单边
+  slippage: 0.0003
+  reward_cost_alpha: 1.0
+  leverage_penalty_beta: 0.0
+  leverage_target: 2.0
+  clip_reward: 0.05
+  seed: 42
+
+# 事件节点参数 (与 build_event_nodes.EventConfig 对应)
+event:
+  threshold: 0.005
+  max_events_per_30s: 5
+  min_event_spacing_seconds: 2
+  bar_seconds: 30
+

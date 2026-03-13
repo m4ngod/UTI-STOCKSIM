@@ -1,0 +1,172 @@
+一、总体里程碑（建议 2~3 周切片）
+周1：数据抽取与 30s 基础时间网格、事件节点生成模块、环境(State/Action/Reward)雏形、可单步运行
+周2：撮合与权重到成交执行层、账户多标估值与费用/税、PPO+LSTM 训练脚手架（单进程 + 向量 env）
+周3：多进程(或向量化)加速、日更流水线、指标与回测评估、滚动增量训练与持久化
+验收：num_envs=128 下 1 日样本 * N 回放能稳定训练并输出策略日志；事件节点数量受控；模型能学习持仓方向（不崩溃，不 NaN）
+二、数据与节点生成
+基础表
+bar_30s: ts(UTC), symbol, open, high, low, close, volume, amount, vwap(可选)
+daily: trade_date, symbol, open, high, low, close, volume, amount, adj_factor
+instrument: symbol, lot_size(股=100, 期货=合约乘数), tick_size, margin_rate_long, margin_rate_short, is_marginable_long, is_marginable_short, exchange, trading_calendar_id, contract_multiplier
+预处理加载
+每日训练前：拉取最近 K 天（含当日）30s bar + 日线 + 基础信息缓存到内存（或 Parquet）
+复权：股票 close_adj = close * cum_adj_factor(normalized to last=1)；特征用复权价；成交撮合价亦用复权价以保持一致（或记录一个 raw→adj 映射因子，撮合后再反算真实成交用于费用）
+全局时间轴构建
+对每个交易日：生成基础 30s 网格 G (开盘含第一根 30s 结束时刻；简化：8:30-9:00 模拟/9:30-15:00 真实按中国市场自定义)
+事件节点算法（参考你文件“关键规则与建议”统一）： 数据结构：维护 last_base_price[symbol]（每标的最近事件或网格节点成交/中间价），以及当前 30s 区间的 event_count[symbol] / total_event_count(全局或按标?) 扫描方式： For 每个 symbol 在当前 30s 区间的秒级序列（若只有 30s 聚合可跳过细粒度先行：可用线性插值或仅用 bar 高低快速判定：若 abs(high/p_base-1)≥0.005 或 abs(low/p_base-1)≥0.005 则标记潜在触发；M1 可先以 close 代替秒级） 找最早满足 abs(price_t / p_base - 1) ≥ 0.005 的 t_event 约束： - 至少间隔 min_event_spacing_seconds=2（记录 per symbol 上次事件时刻） - 每自然 30s 窗口 max_events_per_30s = M (建议 5 MVP，后放宽到 100 上限配置) 触发： 插入 t_event 到时间集合 p_base := price_t_event 若剩余秒仍满足可继续循环直到达上限
+最终 T_global = 有序合并(基础 30s 节点 ∪ 所有事件节点) 去重
+在环境 reset(day) 时一次性生成缓存（列表 + 索引映射），step 时用 pointer 前进
+三、Environment 设计 (rl/trading_env.py 方向)
+Action
+模型输出连续向量 w_target[symbol] ∈ [-2.0, +1.5]
+可在分布策略层做 tanh→scale
+目标权重到订单
+账户当前总资产 A (含现金 + 持仓市值 - 融资成本 + 占用保证金调整)
+目标头寸价值 V_i = clip(w_i, bounds)*A
+股票：股数 = round_down( V_i / price / lot_size ) * lot_size
+期货：手数 = round_nearest( V_i / (price * contract_multiplier) )
+生成差额订单 Δpos
+滑点：价格 = mid_price * (1 ± slippage_rate * sign(Δpos)) 或 基于订单簿（后续扩展）
+费用： 股票：comm_rate 双边，印花税(卖方单边 0.1%)，过户费(可后加) 期货：手续费按固定/比例模式；保证金冻结 = |pos| * price * contract_multiplier * margin_rate 融资融券：若做空标的需要 is_marginable_short; 融券费可按日化利率
+State 观测 (建议最小集合 + 可扩展)
+价量：最近 N (例如 10) 个节点的标准化特征（每标的）：
+return_1 = close_t / close_{t-1} -1
+rolling_vol (N内标准差)
+turnover_ratio (volume / float_shares) 可后加
+event_flag_t (0/1) 当前节点是否事件
+time_sin, time_cos (规范化日内进度)
+横截面派生：
+zscore(return_1) / cross-sectional rank
+账户：
+当前持仓权重 w_current
+可用现金率 cash / A
+杠杆倍数 gross_exposure / A
+保证金利用率 margin_used / margin_available
+技术指标 (可选迭代)：MA5/MA10 日级归一后的动量、ATR(期货)
+Mask：
+不可做空或不可融资的标的：在 action 前用 mask 强行 clip ≥0 或 0（策略好训练可用 Soft Mask -> tanh scale * allow_short_flag）
+Reward
+基础：日化 (ΔAccountValue / A_prev)
+转换：r_step = (A_t - A_{t-1}) / A_{t-1}
+惩罚项：
+交易成本 c_step
+杠杆惩罚 λ * max(0, gross_exposure/A - leverage_target)
+尾部风险 (可后续加) VaR 超限罚 => reward = r_step - α * c_step - β * leverage_penalty
+归一：可选对 r_step 做 clip(-0.05, 0.05)
+Info (返回给外部评估) 建议字段： { 'timestamp': ts, 'account_value': A_t, 'cash': cash, 'gross_exposure': gross, 'net_exposure': net, 'turnover': traded_value / A_{t-1}, 'cost': c_step, 'event_flag': event_flag, 'num_events_cum': events_cum_day, 'margin_util': margin_used / margin_available, 'drawdown': dd_t, 'pnl_step': A_t - A_{t-1}, 'reward_components': { 'raw': r_step, 'cost': c_step, 'leverage_pen': leverage_penalty } } 便于调试 & 监控；训练时可部分裁剪。
+Done 条件
+到达当日最后一个节点
+或 账户净值 < min_equity_ratio * initial_equity
+Seeding & 可复现
+master_seed 固定
+每 episode：rng_episode_seed = hash(master_seed, day_index, env_id)
+随机成分（滑点噪声、撮合延迟、数据扰动）用此子种子
+训练记录：保存 seeds, commit hash, config JSON
+四、PPO+LSTM 模型
+模型结构
+输入：按 (batch, time, features_per_symbol * num_symbols + account_features)
+先对每个 symbol 用共享 MLP/LayerNorm -> embedding
+聚合：concat 或 attention (M1 先 concat + Linear 降维)
+加账户向量 -> 全局特征 -> LSTM(K 层，hidden=H)
+Policy head：Linear(H -> num_symbols) -> tanh -> scale to [-2,1.5]
+Value head：Linear(H -> 1)
+库
+可用 stable-baselines3 但其 RecurrentPPO 支持形状需适配；或自写 PPO 循环
+优先自写简化版：GAE(λ) + Clip Loss
+超参起点
+rollout_length (节点步数) ≈ 2048
+batch_size 256
+minibatches 8
+lr 3e-4 (cosine decay)
+gamma 0.99
+gae_lambda 0.95
+clip_range 0.2
+entropy_coef 0.005
+value_coef 0.5
+grad_clip 0.5
+正则与稳定
+LayerNorm
+Reward 标准化（RunningMeanStd）
+Observation 标准化 (逐特征)
+五、执行层（权重→订单→撮合）
+下单模式：调仓时统一提交差额订单列表
+撮合：M1 直接按当前节点 close (或 mid) 成交；若需要滑点: exec_price = close * (1 + slip_rate * sign(size)) + noise
+成交结果更新：positions, cash, fees, margin
+多标同步：在每个全局节点统一执行 compute → action → apply
+六、账户与融资融券
+股票多头：现金减少 (price * qty + fee + stamp_duty_if_sell)
+做空：
+占用融券库存（M1 可忽略库存/仅允许 is_marginable_short）
+融券保证金：|position_value| * margin_rate_short
+融券费：日终计提 = position_value * short_fee_rate / 365
+期货：
+开仓冻结/释放保证金
+盯市盈亏：Δp * contract_multiplier * qty 直接入现金
+统一账户净值： equity = cash + Σ position_value_long + Σ position_value_short (绝对值处理后加回?) + futures_pnl_unrealized - financing_costs
+风险限制：
+max_gross_exposure = gross <= leverage_limit * equity
+下单前预检，超出则 scale 订单
+七、每日滚动训练流水线
+每日 17:00：
+抽取当天新增数据 + 日线更新
+生成事件节点集并缓存
+对最近 N 训练日做打包 (Replay Buffer 逻辑：按 episode 日分割)
+训练：
+载入最新 model_{D-1}.pt
+对当日数据 + 回放窗口（例如最近 30 交易日）混合采样进行若干 PPO 更新
+保存 model_D.pt, metrics.json
+评估：
+使用过去未训练的验证日集合 (rolling out-of-sample) 推理，无梯度
+计算指标：年化收益、波动、夏普、最大回撤、换手、胜率
+榜单：
+保留最近 K 天评估滑动窗口指标
+若新模型劣化 > 阈值，回退上一版本
+产物归档：
+/models/date/
+model.pt
+config.json
+metrics_eval.json
+seed_info.json
+/data/cache/ 复权与节点 parquet
+八、并行与性能
+向量环境：num_envs=128 (每 env = 不同历史起点或同日不同扰动种子)
+提前把所有 env 的节点序列与数组化特征放入 numpy / torch tensor，step 只索引
+避免 Python 循环热点：动作到订单映射向量化
+可在后期使用 torch.compile 或 JIT
+九、监控与可视化
+训练日志：每 N 更新记录
+mean_reward, value_loss, policy_loss, entropy, explained_variance
+Online 检查：事件节点分布（均值/最大/超限比）
+异常：NaN 检测（梯度、obs、reward）
+十、后续扩展挂钩点（现在先留接口）
+更精细撮合（order_book）
+增加多策略共享底座 (multi head)
+资金曲线风险控制 (dynamic leverage decay)
+自适应动作稀疏化 (L1 penalty on weight Δ)
+十一、目录与模块建议新增/调整
+data_pipeline/
+fetch_bars.py
+build_event_nodes.py
+rl/
+trading_env.py (改造加入事件节点 & 权重接口)
+ppo_agent.py
+models/lstm_ppo.py
+utils/normalizer.py
+scripts/
+daily_update.py (调度 1~5 步)
+evaluate.py
+configs/
+env_m1.yaml
+train_m1.yaml
+十二、关键实现点伪代码片段（核心逻辑提示）
+事件节点生成（简化伪码）： for each day, symbol: p_base = first_bar.close for each 30s_window: events = [] for each second s in window (M1 可用 close 早期近似一次判断): if abs(price_s / p_base - 1) >= 0.005 and (s - last_event_ts >= 2s) and len(events) < max_events_per_30s: events.append(s) p_base = price_s record window_end if not already included T_global = sort(unique(all window ends + events))
+权重映射： delta_value = (target_w - current_w) * account_equity qty = round_to_lot(delta_value / price / lot_size) exec_price = price * (1 + slip * sign(qty)) fee = abs(qty)exec_pricecommission_rate + stamp_if_sell
+reward： pnl = equity_t - equity_{t-1} reward = pnl / equity_{t-1} - αcost - βleverage_pen
+十三、验证清单 (go/no-go) [ ] 单日任意 symbol 事件节点数 未超过配置上限 [ ] 全局节点顺序严格递增 [ ] reward、equity 无 NaN / inf [ ] PPO 更新后 loss 不爆炸 (|value_loss|<5, policy_loss 合理) [ ] 训练 1~2 小时出现正向或可解释行为（降低成本/趋向趋势）
+十四、info 字段最终建议（回答你的“你帮我决定”） 核心训练期保留： timestamp, account_value, reward, cost, turnover, event_flag, gross_exposure, leverage, drawdown 调试模式扩展： positions(dict), target_weights(dict), exec_prices(dict), margin_util, reward_components 可设置 verbose_info=False 控制裁剪。
+十五、随机性与“确定性基础 + 受控噪声”
+基础确定：价格 & bars 固定
+受控噪声：
+滑点随机：slip_rate = base_slip*(1 + ε), ε ~ N(0, σ)
+行情扰动（可选第2阶段）：对返回特征加入微小高斯噪声不影响真实价格
+env_id 控制噪声种子使向量环境差异化

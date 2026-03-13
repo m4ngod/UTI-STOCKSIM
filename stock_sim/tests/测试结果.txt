@@ -1,0 +1,66 @@
+(.venv) PS F:\PythonProjects\stock_sim> pytest -k test_multi_symbol -q
+...FF                                                                                                                                                                                                                        [100%]
+============================================================================================================ FAILURES =============================================================================================================
+__________________________________________________________________________________________________ test_multi_symbol_separation ___________________________________________________________________________________________________
+
+    def test_multi_symbol_separation():
+        s = SessionLocal()
+        inst_srv = InstrumentService(s)
+        # 创建两个普通标的 & 一个 IPO 标的
+        inst_srv.create(symbol='AAA', name='AAA', tick_size=0.01, lot_size=100, min_qty=100, total_shares=1_000_000, free_float_shares=500_000, initial_price=10.0)
+        inst_srv.create(symbol='BBB', name='BBB', tick_size=0.01, lot_size=100, min_qty=100, total_shares=2_000_000, free_float_shares=1_000_000, initial_price=20.0)
+        inst_srv.create(symbol='IPOX', name='IPOX', tick_size=0.01, lot_size=100, min_qty=100, total_shares=1_000_000, free_float_shares=300_000, initial_price=15.0)
+        # 直接构造引擎(多标的) — 使用 AAA 对象
+        stock0 = create_instrument('AAA', tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0)
+        eng = MatchingEngine('AAA', stock0)
+        # OrderService 绑定多标的引擎
+        osrv = OrderService(s, eng, instrument_service=inst_srv)
+
+        # 下 AAA 簿双向订单触发成交
+        buy1 = Order(symbol='AAA', side=OrderSide.BUY, price=10.00, quantity=100, account_id='ACC1')
+        sell1 = Order(symbol='AAA', side=OrderSide.SELL, price=10.00, quantity=100, account_id='ACC2')
+        osrv.place_order(buy1)
+        osrv.place_order(sell1)
+>       assert buy1.filled == 100 and sell1.filled == 100
+E       AssertionError: assert (100 == 100 and 0 == 100)
+E        +  where 100 = Order(symbol='AAA', side=<OrderSide.BUY: 1>, price=10.0, quantity=100, account_id='ACC1', order_type=<OrderType.LIMIT:... filled=100, status=<OrderStatus.FILLED: 3>, canceled=False, _orig_price=10.0, _meta={'est_fee': 1.0}, cost_acc=1000.0).filled
+E        +  and   0 = Order(symbol='AAA', side=<OrderSide.SELL: 2>, price=10.0, quantity=100, account_id='ACC2', order_type=<OrderType.LIMIT... 57, 13, 663854), filled=0, status=<OrderStatus.REJECTED: 5>, canceled=False, _orig_price=10.0, _meta={}, cost_acc=0.0).filled
+
+tests\test_multi_symbol_match.py:53: AssertionError
+_____________________________________________________________________________________________________ test_snapshot_throttle ______________________________________________________________________________________________________
+
+    def test_snapshot_throttle():
+        s = SessionLocal()
+        inst_srv = InstrumentService(s)
+        sym = 'THRO'
+        inst_srv.create(symbol=sym, name=sym, tick_size=0.01, lot_size=10, min_qty=10,
+                        total_shares=100_000, free_float_shares=50_000, initial_price=8.0)
+        engine = MatchingEngine(sym, create_instrument(sym, tick_size=0.01, lot_size=10, min_qty=10, initial_price=8.0))
+        osrv = OrderService(s, engine, instrument_service=inst_srv)
+
+        snap_events: list = []
+        def on_snap(payload):
+            if payload.get('symbol') == sym:
+                snap_events.append(payload)
+        event_bus.subscribe(EventType.SNAPSHOT_UPDATED, on_snap, async_mode=False)
+
+        # 进入连续竞价
+        engine.run_call_auction_and_open(sym)
+
+        # 前4笔被动挂单(无成交) -> 0 次刷新
+        for i in range(4):
+            osrv.place_order(Order(symbol=sym, side=OrderSide.SELL, price=9.0 + i, quantity=10, account_id=f'TH_S{i}'))
+        assert len(snap_events) == 0, f"前4笔不应刷新 实际 {len(snap_events)}"
+
+        # 第5笔触发第一次节流刷新
+        osrv.place_order(Order(symbol=sym, side=OrderSide.SELL, price=9.4, quantity=10, account_id='TH_S4'))
+>       assert len(snap_events) == 1, f"第5笔应刷新1次 实际 {len(snap_events)}"
+E       AssertionError: 第5笔应刷新1次 实际 0
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests\test_multi_symbol_match.py:114: AssertionError
+===================================================================================================== short test summary info =====================================================================================================
+FAILED tests\test_multi_symbol_match.py::test_multi_symbol_separation - AssertionError: assert (100 == 100 and 0 == 100)
+FAILED tests\test_multi_symbol_match.py::test_snapshot_throttle - AssertionError: 第5笔应刷新1次 实际 0
+2 failed, 3 passed in 22.76s

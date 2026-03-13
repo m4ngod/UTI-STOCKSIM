@@ -1,0 +1,19 @@
+# 虚拟环境（必加，避免复制环境报错）
+venv/
+env/
+.venv/
+
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyCharm 配置（可选，不想同步 IDE 配置就加上）
+.idea/
+
+# 系统临时文件
+*.swp
+*.swo
+.DS_Store
+
+Quent.zip

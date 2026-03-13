@@ -1,0 +1,18 @@
+{
+  "app.title": "股票模拟",
+  "menu.file": "文件",
+  "menu.view": "视图",
+  "greet": "你好 {name}",
+  "account.balance": "余额",
+  "account.equity": "净值",
+  "settings.language": "语言",
+  "settings.theme": "主题",
+  "panel.account": "账户",
+  "panel.market": "行情",
+  "panel.agents": "智能体",
+  "panel.leaderboard": "排行",
+  "panel.clock": "时钟",
+  "panel.settings": "设置",
+  "panel.agent_config": "参数配置",
+  "panel.agent_creation": "批量创建"
+}

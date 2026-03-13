@@ -1,0 +1,19 @@
+{
+  "settings": {
+    "language": "en_US",
+    "theme": "light",
+    "refresh_interval_ms": 996,
+    "playback_speed": 1.0,
+    "alert_thresholds": {
+      "drawdown_pct": 0.1,
+      "heartbeat_ms": 10000
+    }
+  },
+  "layout": {
+    "panels": {}
+  },
+  "recent_changes": {
+    "language": "en_US"
+  },
+  "last_update_ms": 1758205954972
+}
