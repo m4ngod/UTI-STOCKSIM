@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from stock_sim.persistence.models_instrument import Instrument
 from stock_sim.core.instruments import create_instrument, Stock
 from stock_sim.core.matching_engine import MatchingEngine
-from stock_sim.FE.engine_registry import engine_registry
+from stock_sim.services.engine_registry import engine_registry
 from stock_sim.services.sim_clock import current_sim_day, virtual_datetime  # 新增: 模拟时钟
 from stock_sim.settings import settings  # 添加以获取 IPO_CALL_AUCTION_SECONDS
 import os  # 调试

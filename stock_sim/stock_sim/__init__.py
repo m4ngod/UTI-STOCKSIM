@@ -9,7 +9,7 @@ from pathlib import Path
 PKG = __name__  # 'stock_sim'
 _ROOT = Path(__file__).resolve().parent.parent
 _SUBPACKAGES = [
-    'core','infra','services','persistence','observability','rl','agents','settings','FE'
+    'core','infra','services','persistence','observability','rl','agents','settings'
 ]
 for name in _SUBPACKAGES:
     if f'{PKG}.{name}' in sys.modules:

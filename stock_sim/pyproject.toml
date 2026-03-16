@@ -26,8 +26,8 @@ frontend-trading-ui = "setup_frontend_entry:main"
 # 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["stock_sim", "stock_sim.*", "FE", "FE.*", "app", "app.*"]
+where = [""]
+include = ["stock_sim", "stock_sim.*", "app", "app.*"]
 exclude = [
   "logs*",
   "Quent*",

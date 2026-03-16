@@ -30,7 +30,7 @@ from stock_sim.persistence.models_position import Position
 from stock_sim.persistence.models_instrument import Instrument
 from stock_sim.persistence.models_order import OrderORM
 from stock_sim.persistence.models_trade import TradeORM
-from FE.engine_registry import engine_registry
+from stock_sim.services.engine_registry import engine_registry
 
 _SNAPSHOT_VERSION = 1
 _started = False
@@ -170,4 +170,3 @@ def ensure_snapshot_service_started():
     _started = True
     print(f"[SNAPSHOT] service_started interval={settings.SNAPSHOT_INTERVAL_DAYS} dir={settings.SNAPSHOT_DIR}")
     return True
-

@@ -16,7 +16,7 @@ from typing import Dict, List
 from dataclasses import dataclass
 from stock_sim.core.order import Order
 from stock_sim.core.const import OrderSide, OrderType, TimeInForce
-from FE.engine_registry import engine_registry
+from stock_sim.services.engine_registry import engine_registry
 import os
 TRACE_REBAL = os.environ.get('DEBUG_TRACE_REBAL') == '1'
 

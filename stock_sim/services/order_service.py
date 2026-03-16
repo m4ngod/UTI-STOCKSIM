@@ -70,7 +70,7 @@ from stock_sim.settings import settings
 import os  # 调试
 # 新增: trace 调试标记
 TRACE_ORDERS = os.environ.get('DEBUG_TRACE_ORDERS') == '1'
-from FE.engine_registry import engine_registry  # 新增: 全局引擎注册表
+from stock_sim.services.engine_registry import engine_registry  # 新增: 全局引擎注册表
 # 新增: 恢复服务导入
 try:
     from stock_sim.services.recovery_service import is_readonly as recovery_is_readonly, mark_resumed_if_needed  # type: ignore

@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 import os, threading, time
-from FE.engine_registry import engine_registry
+from stock_sim.services.engine_registry import engine_registry
 from stock_sim.core.const import Phase
 from stock_sim.services.ipo_service import maybe_auto_open_ipo, set_trace_ipo
 from stock_sim.core.const import OrderSide

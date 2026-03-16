@@ -132,7 +132,7 @@ class AccountAdapter:
         prices: Dict[str, float] = {}
         # 尝试从匹配引擎获取 snapshot
         try:
-            from FE.engine_registry import engine_registry  # type: ignore
+            from stock_sim.services.engine_registry import engine_registry  # type: ignore
             for s in symbols:
                 eng = engine_registry.get(s.upper())
                 if not eng:  # 尝试创建 (惰性)
@@ -166,4 +166,3 @@ class AccountAdapter:
         return True
 
 __all__ = ["AccountAdapter", "AccountState"]
-

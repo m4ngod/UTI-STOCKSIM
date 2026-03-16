@@ -63,7 +63,7 @@
 
 ```
 +--------------------------------------------------------------+
-|                         前端 / 可视化 (FE)                   |
+|                        前端 / 可视化 (app)                   |
 +---------------------+----------------------+-----------------+
 |   策略层 / RL (agents, rl) |  监控 & 指标 (observability)   |  Scripts  |
 +---------------------+----------------------+-----------------+
@@ -92,7 +92,7 @@ persistence/         SQLAlchemy ORM 模型定义 (accounts, positions, orders, t
 observability/       指标(metrics) + 结构化日志(struct_logger)
 rl/                  强化学习环境 (trading_env.py) 与 PPO 示例
 agents/              策略/代理封装 (多策略、零售/机构示例)
-FE/                  桌面端可视化(进行中)
+app/                 桌面端前端与可视化入口 (当前实现)
 configs/             配置样例 (env_m1.yaml 等)
 scripts/             运行/评估脚本
 settings.py          Pydantic BaseSettings 全局配置
@@ -219,7 +219,7 @@ README.md            本文档
 ---
 ## 15. 前端可视化 (PySide6 + pyqtgraph)
 - 目标：提供盘口/快照/深度图/K线/账户与策略状态面板。
-- FE/engine_registry.py：全局引擎注册与 UI 交互桥接。
+- services/engine_registry.py：全局撮合引擎注册表，供前端与服务层共享。
 - 后续将补充：
   - 图形化订单流展示
   - IPO 状态指示
@@ -704,5 +704,3 @@ for _ in range(100):
     actions = np.random.uniform(cfg.weight_low, cfg.weight_high, size=(len(envs), len(cfg.symbols)))
     obs, rew, done, info = vec.step(actions)
 ```
-
----

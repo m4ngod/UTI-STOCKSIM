@@ -4,7 +4,7 @@ from __future__ import annotations
 默认实现: 从 engine_registry 中列出全部已注册且交易中的标的；可传入过滤回调。
 """
 from typing import Callable, List
-from FE.engine_registry import engine_registry
+from stock_sim.services.engine_registry import engine_registry
 
 class UniverseProvider:
     def __init__(self,
@@ -19,4 +19,3 @@ class UniverseProvider:
         return syms[: ]
     def ensure_min(self) -> bool:
         return len(self.symbols()) >= self._min
-

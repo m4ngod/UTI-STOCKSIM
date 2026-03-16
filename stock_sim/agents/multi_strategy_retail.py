@@ -1,10 +1,9 @@
-# python
 """multi_strategy_retail.py
 多标的(only) 多策略 Agent 页面:
   支持策略: mean_revert / momentum_chase / breakout / scalping
   所有 Agent 必须绑定 >=1 个 symbol, 不再支持单标独立实现, 统一走多标调度/评分路径。
 使用示例:
-  from FE.pages.multi_strategy_page import MultiStrategyPage
+  from agents.multi_strategy_retail import MultiStrategyPage
   msp = MultiStrategyPage(main)
   agent = msp.add_pool_agent(["T1","T2"])  # 仅此接口
 """
@@ -183,7 +182,7 @@ class MultiStrategyAgent:
     # 新增: 播种所有 symbol snapshot 的初始价
     def _seed_all_initial_prices(self):
         try:
-            from FE.engine_registry import engine_registry as _er
+            from stock_sim.services.engine_registry import engine_registry as _er
             for sym in self.symbols:
                 try:
                     eng = _er.get(sym)
@@ -312,7 +311,7 @@ class MultiStrategyPage:
         def _snapshot_provider(sym: str):
             # 直接从 engine_registry 获取对应引擎 snapshot
             try:
-                from FE.engine_registry import engine_registry as _er
+                from stock_sim.services.engine_registry import engine_registry as _er
                 eng = _er.get(sym)
                 return getattr(eng, 'snapshot', None) if eng else None
             except Exception:
@@ -355,4 +354,3 @@ class MultiStrategyPage:
         while True:
             cand=f"MSP{i:03d}"; i+=1
             if cand not in exist: return cand
-

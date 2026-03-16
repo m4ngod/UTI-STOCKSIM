@@ -1,1 +1,2 @@
-FE
+app
+stock_sim
