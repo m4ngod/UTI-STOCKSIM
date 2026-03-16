@@ -101,48 +101,74 @@ class OrderService:
     def _get_engine(self, symbol: str) -> MatchingEngine:
         sym = symbol.upper()
         eng_reg = engine_registry.get(sym)
-        if self.engine:
-            if eng_reg and eng_reg is not self.engine:
-                try:
-                    books = getattr(self.engine, '_books', {})
-                    # 若 self.engine 尚无该簿则注册；否则仅同步 phase
-                    if sym not in books and hasattr(self.engine, 'register_symbol'):
-                        self.engine.register_symbol(sym, getattr(eng_reg, 'instrument', None))
-                    # 同步 phase (保持 IPO 已开盘连续状态)
+        # 显式注入的 engine 优先，避免被 registry 中的同 symbol 旧实例“偷换”
+        if self.engine and getattr(self.engine, 'symbol', '').upper() == sym:
+            try:
+                books = getattr(self.engine, '_books', {})
+                if sym not in books and hasattr(self.engine, 'register_symbol'):
+                    src_inst = getattr(eng_reg, 'instrument', None) if eng_reg else getattr(self.engine, 'instrument', None)
+                    self.engine.register_symbol(sym, src_inst)
+                if eng_reg and eng_reg is not self.engine:
                     try:
-                        src_book = eng_reg.get_book(sym)
+                        # 显式注入的 engine 视为当前权威实例，仅保留自身状态并覆盖 registry
                         dst_book = self.engine.get_book(sym)
-                        dst_book.phase = src_book.phase
-                        # 若已是连续阶段且尚未标记 has_continuous_started, 设 True
                         if getattr(dst_book, 'phase', None) and dst_book.phase.name == 'CONTINUOUS':
                             dst_book.has_continuous_started = True
                     except Exception:
                         pass
-                    engine_registry.register(sym, self.engine, overwrite=True)
-                except Exception:
-                    pass
-                return self.engine
-            if not eng_reg:
-                try:
-                    books = getattr(self.engine, '_books', {})
-                    if sym not in books and hasattr(self.engine, 'register_symbol'):
-                        self.engine.register_symbol(sym, getattr(self.engine, 'instrument', None))
-                        # 若 instrument 提示已开盘 (instrument.ipo_opened) 则设为连续
+                else:
+                    try:
+                        book = self.engine.get_book(sym)
+                        inst = getattr(self.engine, 'instrument', None)
+                        if inst and getattr(inst, 'ipo_opened', False):
+                            from stock_sim.core.const import Phase as _Phase  # type: ignore
+                            book.phase = _Phase.CONTINUOUS
+                            book.has_continuous_started = True
+                    except Exception:
+                        pass
+                engine_registry.register(sym, self.engine, overwrite=True)
+            except Exception:
+                pass
+            return self.engine
+        if self.engine:
+            try:
+                books = getattr(self.engine, '_books', {})
+                if sym not in books and hasattr(self.engine, 'register_symbol'):
+                    src_inst = getattr(eng_reg, 'instrument', None) if eng_reg else None
+                    if src_inst is None:
                         try:
-                            book = self.engine.get_book(sym)
-                            inst = getattr(self.engine, 'instrument', None)
-                            if inst and getattr(inst, 'ipo_opened', False):
-                                from stock_sim.core.const import Phase as _Phase  # type: ignore
-                                book.phase = _Phase.CONTINUOUS
-                                book.has_continuous_started = True
+                            dto = self.instrument_service.get(sym)
                         except Exception:
-                            pass
-                    engine_registry.register(sym, self.engine, overwrite=False)
-                    return self.engine
-                except Exception:
-                    pass
-            if eng_reg is self.engine or getattr(self.engine, 'symbol', '').upper() == sym:
+                            dto = None
+                        if dto is not None:
+                            class _Tmp: ...
+                            tmp = _Tmp()
+                            tmp.tick_size = dto.tick_size
+                            tmp.lot_size = dto.lot_size
+                            tmp.min_qty = dto.min_qty
+                            tmp.settlement_cycle = dto.settlement_cycle
+                            tmp.market_cap = dto.market_cap
+                            tmp.total_shares = dto.total_shares
+                            tmp.free_float_shares = dto.free_float_shares
+                            tmp.initial_price = dto.initial_price
+                            tmp.pe = None
+                            tmp.ipo_opened = dto.ipo_opened
+                            src_inst = tmp
+                    if src_inst is None:
+                        src_inst = getattr(self.engine, 'instrument', None)
+                    self.engine.register_symbol(sym, src_inst)
+                    try:
+                        book = self.engine.get_book(sym)
+                        if src_inst is not None and getattr(src_inst, 'ipo_opened', False):
+                            from stock_sim.core.const import Phase as _Phase  # type: ignore
+                            book.phase = _Phase.CONTINUOUS
+                            book.has_continuous_started = True
+                    except Exception:
+                        pass
+                engine_registry.register(sym, self.engine, overwrite=True)
                 return self.engine
+            except Exception:
+                pass
         if eng_reg:
             return eng_reg
         eng_new = engine_registry.get_or_create(sym)

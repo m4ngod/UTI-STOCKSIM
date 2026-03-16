@@ -22,8 +22,11 @@ class Settings:
     BORROW_RATE_DAILY: float = 0.0005  # 日费率 5bps
     BORROW_FEE_MIN_NOTIONAL: float = 0.0
 
-    # 费用 (占位，可扩展)
+    # 费用
     MAKER_FEE_BPS: float = 0.0
+    TAKER_FEE_BPS: float = 0.0
+    TRANSFER_FEE_BPS: float = 0.0
+    STAMP_DUTY_BPS: float = 0.0
 
     # 风控参数
     MAX_SINGLE_ORDER_NOTIONAL: float = 1_000_000_000.0
@@ -51,6 +54,7 @@ class Settings:
     # 回放 / 性能
     ORDER_RATE_WINDOW_SEC: int = 3
     ORDER_RATE_MAX: int = 50
+    REJECT_METRIC_PREFIX: str = "orders_rejected_"
 
     # 强平 (简化)
     LIQUIDATION_ENABLED: bool = True

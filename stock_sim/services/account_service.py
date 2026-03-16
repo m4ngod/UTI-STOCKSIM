@@ -73,6 +73,10 @@ class AccountService:
                    .first())
             if not pos:
                 raise
+        try:
+            self.s.expire(account, ['positions'])
+        except Exception:
+            pass
         metrics.inc('pos_create')
         return pos
 

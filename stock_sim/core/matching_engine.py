@@ -163,6 +163,8 @@ class MatchingEngine:
                 book.call_auction.add(order)
                 book.index[order.order_id] = order
                 event_bus.publish(EventType.ORDER_ACCEPTED, {"order": order.to_dict(), "phase": "CALL_AUCTION"})
+                # 被动挂单也应参与 snapshot 节流计数
+                self._conditional_refresh_snapshot(book, force=False)
                 # 外部 IPO 服务尝试自动开盘 (受设置开关控制)
                 if getattr(settings, 'IPO_INTERNAL_AUTO_OPEN_ENABLED', False):
                     try:
