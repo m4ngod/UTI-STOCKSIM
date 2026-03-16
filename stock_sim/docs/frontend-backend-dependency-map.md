@@ -457,6 +457,63 @@ But the Market-detail/K-line class of bugs will only be fully understood when ea
 
 ---
 
+## 9. Compatibility retirement roadmap
+
+The project goal is not to keep compatibility shims forever. Files like `app/main.py` should eventually be removable.
+
+### Phase 1: compatibility shell only
+
+Target:
+
+- `app/ui/main_window.py` owns all real window structure
+- `app/main.py` keeps only:
+  - `run_frontend()`
+  - `MainWindow` export alias or thin subclass
+  - minimal legacy helpers needed by still-unmigrated tests/entrypoints
+
+Rules:
+
+- no new real UI behavior should be added to `app/main.py`
+- no docking/menu/layout ownership should remain there
+- compatibility helpers must be clearly marked temporary
+
+### Phase 2: dependency migration
+
+Migrate all real callers away from old surfaces:
+
+- startup entry scripts
+- tests importing `app.main.MainWindow`
+- dynamic panel opening flows assuming old wrapper behavior
+- any adapter logic depending on compatibility-only attributes
+
+Success signal:
+
+- most frontend tests import/use `app.ui.main_window.MainWindow` directly
+- `run_frontend()` becomes a thin entry wrapper, not a structural module
+
+### Phase 3: deletion readiness review
+
+Before deleting `app/main.py`, confirm:
+
+- no runtime import path still requires it
+- no docs recommend it as the structural entrypoint
+- compatibility-only attributes are gone from tests
+- GUI startup still works through the real entry path
+
+### Phase 4: remove deprecated files
+
+When the above conditions hold:
+
+- delete `app/main.py`
+- delete any duplicate compatibility-only helpers that exist solely because of it
+- update docs/tests/entrypoints in the same change set
+
+Guiding principle:
+
+> Compatibility files are scaffolding, not architecture.
+
+---
+
 ## References
 
 Backend/runtime:
