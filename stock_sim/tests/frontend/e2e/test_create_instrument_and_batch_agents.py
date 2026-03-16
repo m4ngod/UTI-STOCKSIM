@@ -32,13 +32,11 @@ def test_core_user_journey_e2e():
     market = mw.open_panel("market")
     agents = mw.open_panel("agents")
     leaderboard = mw.open_panel("leaderboard")
-    settings = mw.open_panel("settings")
 
     # 访问逻辑对象（适配器._logic）
     m_logic = getattr(market, "_logic", market)
     a_logic = getattr(agents, "_logic", agents)
     lb_logic = getattr(leaderboard, "_logic", leaderboard)
-    s_logic = getattr(settings, "_logic", settings)
 
     # 1) 创建标的（通过 MarketController），并加入关注列表
     sym = "E2E001"
@@ -79,13 +77,7 @@ def test_core_user_journey_e2e():
     assert isinstance(rows, list) and len(rows) > 0
     _write_artifact("e2e_leaderboard.json", lb_view)
 
-    # 4) 切换语言并验证设置已更新
-    s_logic.set_language("en_US")
-    s_view = s_logic.get_view()
-    assert s_view.get("settings", {}).get("language") == "en_US"
-    _write_artifact("e2e_settings.json", s_view)
-
-    # 产出“截图”占位（文本化视图摘要）
-    screenshot_txt = f"market={dview.get('symbol')} agents_created={a_logic.get_view().get('batch',{}).get('created')} lb_rows={len(rows)} lang={s_view.get('settings',{}).get('language')}"
+    # 4) 产出“截图”占位（文本化视图摘要）
+    screenshot_txt = f"market={dview.get('symbol')} agents_created={a_logic.get_view().get('batch',{}).get('created')} lb_rows={len(rows)}"
     _write_artifact("e2e_core_screenshot.txt", screenshot_txt)
 

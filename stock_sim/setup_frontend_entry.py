@@ -45,7 +45,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     mw = run_frontend(headless=args.headless)
     # 打开默认几个常用面板 (若注册完成)
     try:
-        for name in ["account", "market", "agents", "settings"]:
+        for name in ["account", "market", "agents", "leaderboard", "clock", "orders"]:
             try:
                 mw.open_panel(name)
             except Exception:

@@ -11,7 +11,9 @@ from __future__ import annotations
 from typing import Any, Optional, List, Dict
 
 try:  # PySide6 可选
-    from PySide6.QtWidgets import QMainWindow, QWidget, QLabel, QMenuBar, QAction  # type: ignore
+    from PySide6.QtCore import Qt  # type: ignore
+    from PySide6.QtGui import QAction  # type: ignore
+    from PySide6.QtWidgets import QMainWindow, QWidget, QLabel, QMenuBar, QVBoxLayout  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
     QMainWindow = object  # type: ignore
     class QWidget:  # type: ignore
@@ -27,6 +29,17 @@ except Exception:  # pragma: no cover - headless fallback
     class QAction:  # type: ignore
         def __init__(self, *_, **__):
             pass
+    class QVBoxLayout:  # type: ignore
+        def __init__(self, *_, **__):
+            self._items = []
+        def addWidget(self, widget):
+            self._items.append(widget)
+        def count(self):
+            return len(self._items)
+        def setContentsMargins(self, *_, **__):
+            pass
+    class Qt:  # type: ignore
+        LeftDockWidgetArea = 0
 
 from app.panels import list_panels, get_panel  # 惰性加载
 from .docking import DockManager
@@ -44,6 +57,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         super().__init__()  # type: ignore
         self._dock = DockManager(self)
         self._layout_store = LayoutPersistence(path="layout_main.json")  # 持久化实例
+        self._legacy_central: Any = None
+        self._legacy_layout: Any = None
         # 简易标题
         if hasattr(self, 'setWindowTitle'):
             try:
@@ -58,6 +73,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 _register_mw(self)  # type: ignore
         except Exception:  # pragma: no cover
             pass
+
+    def ensure_legacy_central_layout(self):
+        if self._legacy_central is not None and self._legacy_layout is not None:
+            return self._legacy_layout
+        if not hasattr(self, 'setCentralWidget'):
+            return None
+        try:
+            central = QWidget(self)  # type: ignore
+            layout = QVBoxLayout(central)  # type: ignore
+            if hasattr(layout, 'setContentsMargins'):
+                layout.setContentsMargins(0, 0, 0, 0)
+            self.setCentralWidget(central)  # type: ignore[attr-defined]
+            self._legacy_central = central
+            self._legacy_layout = layout
+        except Exception:
+            self._legacy_central = None
+            self._legacy_layout = None
+        return self._legacy_layout
 
     # -------- Menu --------
     def _init_menu(self):  # 轻量 Panels 菜单
@@ -156,11 +189,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 widget = real_widget()
             except Exception:
                 # 回退：若失败则使用占位标签
-                widget = QLabel(f"Panel: {name}")  # type: ignore
+                widget = QLabel(f"Placeholder panel: {name}")  # type: ignore
         elif isinstance(obj, QWidget):  # type: ignore
             widget = obj
         else:
-            widget = QLabel(f"Panel: {name}")  # type: ignore
+            widget = QLabel(f"Placeholder panel: {name}")  # type: ignore
         self._dock.add_panel(name, widget)
         # 保存布局（立即，后续可加节流）
         self._save_layout()

@@ -24,8 +24,8 @@ def test_run_frontend_headless():
     reset_registry()
     mw = run_frontend(headless=True)
     avail = {p['name'] for p in mw.list_available()}
-    # 内置占位面板应全部注册
-    for name in {"account","market","agents","leaderboard","clock","settings"}:
+    # 内置面板应全部注册（settings 已移除）
+    for name in {"account","market","agents","leaderboard","clock","orders"}:
         assert name in avail
     # 打开一个面板应惰性实例化
     acc_panel = mw.open_panel('account')
