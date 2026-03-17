@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover
 @pytest.mark.skipif(not HAS_PYSIDE, reason="PySide6 不可用，跳过 GUI 相关测试")
 def test_widget_priority_and_placeholder_fallback():
     from app.panels import reset_registry, register_panel
-    from app.main import MainWindow
+    from app.ui.main_window import MainWindow
 
     # 确保有 QApplication 实例
     app = QApplication.instance() or QApplication([])
@@ -53,7 +53,7 @@ def test_widget_priority_and_placeholder_fallback():
 @pytest.mark.skipif(not HAS_PYSIDE, reason="PySide6 不可用，跳过 GUI 相关测试")
 def test_open_panel_idempotent_mount_no_duplicate_widgets():
     from app.panels import reset_registry, register_panel
-    from app.main import MainWindow
+    from app.ui.main_window import MainWindow
 
     # 确保有 QApplication 实例
     app = QApplication.instance() or QApplication([])
@@ -88,7 +88,8 @@ def test_open_panel_idempotent_mount_no_duplicate_widgets():
 @pytest.mark.skipif(not HAS_PYSIDE, reason="PySide6 不可用，跳过 GUI 相关测试")
 def test_widget_preload_panels_all_mounted_via_mainwindow():
     from app.panels import reset_registry, register_builtin_panels
-    from app.main import MainWindow, _DEFAULT_PRELOAD
+    from app.ui.main_window import MainWindow
+    from app.main import _DEFAULT_PRELOAD
 
     app = QApplication.instance() or QApplication([])
 

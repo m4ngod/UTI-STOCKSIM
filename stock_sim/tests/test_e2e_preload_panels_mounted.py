@@ -11,7 +11,8 @@ except Exception:  # pragma: no cover
 @pytest.mark.skipif(not HAS_QT, reason="无 Qt 环境，跳过")
 def test_e2e_preload_panels_all_mounted():
     from app.panels import reset_registry, register_builtin_panels
-    from app.main import MainWindow, _DEFAULT_PRELOAD
+    from app.ui.main_window import MainWindow
+    from app.main import _DEFAULT_PRELOAD
 
     # 确保 QApplication
     app = QApplication.instance() or QApplication([])
