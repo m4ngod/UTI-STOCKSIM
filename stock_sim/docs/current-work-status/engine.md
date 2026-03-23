@@ -335,6 +335,53 @@ Replace the old recovery stub with a minimal real recovery skeleton that can pro
 - Connect recovery report with replay verification results later.
 - Add checkpoint-based restore input once recovery markers are designed more concretely.
 
+## Replay dry-run note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Upgrade replay from a simple event dump reader into a run-scoped dry-run tool that can filter by simulation time and produce a replay summary for later recovery validation.
+
+### files involved
+- `services/replay_service.py`
+- `tests/test_replay_recovery_integration.py`
+- `docs/tasks/runtime/backend-phase-1-plan.md`
+
+### total changed lines
+- moderate focused change set
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `class ReplayService:`
+- **last line**: `return {`
+
+#### fragment 2
+- **first line**: `def test_replay_and_recovery_integration():`
+- **last line**: `assert collected == list(range(n))`
+
+### Change summary
+- Added replay filtering by `run_id`.
+- Added replay filtering by `sim_day` range.
+- Added `dry_run_summary()` with event counts, type counts, symbol set, and sim-day range.
+- Updated integration coverage so replay is validated against run-scoped persisted events before recovery is invoked.
+
+### Purpose
+- Make replay useful for the variable-speed simulation platform instead of only raw timestamp scans.
+- Prepare replay to become a recovery-verification input later.
+- Give backend tooling a concise dry-run report before full state reconstruction exists.
+
+### Impact / risk
+- Positive: replay can now operate on a single simulation run instead of the whole event table.
+- Positive: replay summary is a practical bridge between event persistence and future recovery checks.
+- Risk: current replay still replays payload events, not reconstructed runtime state.
+- Risk: sim-day filtering is useful but still coarser than full sim-dt replay windows.
+
+### Next actions
+- Add replay filtering by `sim_dt` when needed.
+- Later compare replay summary against recovery report and persisted fact tables.
+- Keep event payload normalization improving so replay contracts stay stable.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

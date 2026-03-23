@@ -321,10 +321,16 @@ Done in current step:
 - added readonly degrade path for simple trade/ledger mismatch detection
 - added recovery regression coverage for resumed/degraded behavior
 
+Done in current step:
+- upgraded replay service with `run_id` filtering
+- added replay filtering by `sim_day`
+- added `dry_run_summary()` for replay planning / validation
+- added replay + recovery integration coverage with run-scoped event loading
+
 Not done yet:
-- replay-by-run dry-run validation
 - snapshot trigger policy refinement
 - richer recovery source selection and checkpoint restore
+- replay validation against reconstructed persisted state
 
 ---
 

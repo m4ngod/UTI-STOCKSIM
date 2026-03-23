@@ -1,24 +1,27 @@
 from __future__ import annotations
-"""最小回放服务 (platform-hardening Task4/Task15 需求的简化版本)
 
-功能:
-- load_events(start_ts=None, end_ts=None, limit=None) -> list[dict]
-- replay(apply_fn, start_ts=None, end_ts=None, limit=None) -> int  (将事件 payload 传给回调)
-
-当前仅用于测试: 只读取 event_log 表, 不做幂等/排序修正以外的复杂逻辑。
-"""
 import json
-from typing import Callable, Iterable, List, Dict, Any, Optional
+from collections import Counter
+from typing import Callable, List, Dict, Any
 
-try:  # 优先包内导入
+try:
     from stock_sim.persistence.models_event_log import EventLog  # type: ignore
     from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
-except Exception:  # 源码根目录运行
+except Exception:  # noqa
     from persistence.models_event_log import EventLog  # type: ignore
     from persistence.models_imports import SessionLocal  # type: ignore
 
+
 class ReplayService:
-    def load_events(self, start_ts: int | None = None, end_ts: int | None = None, limit: int | None = None) -> List[Dict[str, Any]]:
+    def load_events(
+        self,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        limit: int | None = None,
+        run_id: str | None = None,
+        start_sim_day: int | None = None,
+        end_sim_day: int | None = None,
+    ) -> List[Dict[str, Any]]:
         s = SessionLocal()
         try:
             q = s.query(EventLog)
@@ -26,6 +29,12 @@ class ReplayService:
                 q = q.filter(EventLog.ts_ms >= start_ts)
             if end_ts is not None:
                 q = q.filter(EventLog.ts_ms <= end_ts)
+            if run_id is not None:
+                q = q.filter(EventLog.run_id == run_id)
+            if start_sim_day is not None:
+                q = q.filter(EventLog.sim_day >= start_sim_day)
+            if end_sim_day is not None:
+                q = q.filter(EventLog.sim_day <= end_sim_day)
             q = q.order_by(EventLog.ts_ms.asc(), EventLog.id.asc())
             if limit is not None:
                 q = q.limit(limit)
@@ -36,26 +45,76 @@ class ReplayService:
                     payload = json.loads(r.payload) if r.payload else {}
                 except Exception:
                     payload = {"_raw": r.payload}
-                out.append({
-                    'id': r.id,
-                    'ts_ms': r.ts_ms,
-                    'type': r.type,
-                    'symbol': r.symbol,
-                    'payload': payload
-                })
+                out.append(
+                    {
+                        "id": r.id,
+                        "ts_ms": r.ts_ms,
+                        "type": r.type,
+                        "symbol": r.symbol,
+                        "run_id": getattr(r, "run_id", None),
+                        "sim_day": getattr(r, "sim_day", None),
+                        "sim_dt": getattr(r, "sim_dt", None),
+                        "payload": payload,
+                    }
+                )
             return out
         finally:
             s.close()
 
-    def replay(self, apply_fn: Callable[[Dict[str, Any]], None], start_ts: int | None = None,
-               end_ts: int | None = None, limit: int | None = None) -> int:
-        events = self.load_events(start_ts=start_ts, end_ts=end_ts, limit=limit)
+    def replay(
+        self,
+        apply_fn: Callable[[Dict[str, Any]], None],
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        limit: int | None = None,
+        run_id: str | None = None,
+        start_sim_day: int | None = None,
+        end_sim_day: int | None = None,
+    ) -> int:
+        events = self.load_events(
+            start_ts=start_ts,
+            end_ts=end_ts,
+            limit=limit,
+            run_id=run_id,
+            start_sim_day=start_sim_day,
+            end_sim_day=end_sim_day,
+        )
         for ev in events:
             try:
                 apply_fn(ev)
-            except Exception:  # 测试环境忽略
+            except Exception:
                 pass
         return len(events)
+
+    def dry_run_summary(
+        self,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        limit: int | None = None,
+        run_id: str | None = None,
+        start_sim_day: int | None = None,
+        end_sim_day: int | None = None,
+    ) -> Dict[str, Any]:
+        events = self.load_events(
+            start_ts=start_ts,
+            end_ts=end_ts,
+            limit=limit,
+            run_id=run_id,
+            start_sim_day=start_sim_day,
+            end_sim_day=end_sim_day,
+        )
+        type_counts = Counter(ev["type"] for ev in events)
+        symbols = sorted({ev["symbol"] for ev in events if ev.get("symbol")})
+        sim_days = [ev["sim_day"] for ev in events if ev.get("sim_day") is not None]
+        return {
+            "mode": "dry-run",
+            "event_count": len(events),
+            "type_counts": dict(type_counts),
+            "symbols": symbols,
+            "run_id": run_id,
+            "sim_day_range": None if not sim_days else [min(sim_days), max(sim_days)],
+        }
+
 
 replay_service = ReplayService()
 
