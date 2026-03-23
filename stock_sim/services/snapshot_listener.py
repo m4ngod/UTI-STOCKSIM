@@ -85,6 +85,13 @@ class SnapshotPersistenceListener:
 
     # ---------------- Snapshot Event ----------------
     def _on_snapshot(self, topic: str, payload: dict):
+        if isinstance(payload, dict):
+            payload.setdefault("sim_day", current_sim_day())
+            try:
+                sd = payload.get("sim_day")
+                payload.setdefault("sim_dt", virtual_datetime(sd).isoformat() if sd else None)
+            except Exception:
+                pass
         snap = payload.get("snapshot") if isinstance(payload, dict) else None
         symbol = (payload.get("symbol") or (snap or {}).get("symbol")) if payload else None
         if not symbol:

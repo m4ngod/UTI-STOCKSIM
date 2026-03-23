@@ -489,6 +489,57 @@ Extend payload normalization beyond order/account paths into simulation-time pla
 - Later compare replay summary with recovery report on a per-run basis more strictly.
 - Keep emitted payload contracts stable as more platform tooling depends on them.
 
+## Snapshot-event normalization note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Normalize snapshot-family event payloads so simulation-time replay and recovery tooling can reason over market-state updates with the same run/scoped semantics already used for orders, trades, bars, and account events.
+
+### files involved
+- `services/snapshot_listener.py`
+- `tests/test_event_persistence.py`
+- `tests/test_replay_recovery_integration.py`
+- `docs/current-work-status/engine.md`
+
+### total changed lines
+- focused incremental change set
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `def _on_snapshot(self, topic: str, payload: dict):`
+- **last line**: `payload.setdefault("sim_dt", virtual_datetime(sd).isoformat() if sd else None)`
+
+#### fragment 2
+- **first line**: `def test_event_log_carries_snapshot_sim_time_and_symbol():`
+- **last line**: `assert row.sim_day == 3`
+
+#### fragment 3
+- **first line**: `event_bus.publish(EventType.SNAPSHOT_UPDATED, {`
+- **last line**: `assert any(ev["type"] == EventType.SNAPSHOT_UPDATED.value for ev in sim_loaded)`
+
+### Change summary
+- Ensured snapshot-event payloads are stamped with simulation-time metadata before persistence-side consumers read them.
+- Added initial regression coverage attempt for `SNAPSHOT_UPDATED` normalization.
+- Extended replay/recovery integration coverage on the run-scoped replay path while keeping snapshot-event verification in-progress.
+
+### Purpose
+- Bring snapshot events into the same platform event contract as other runtime families.
+- Make replay/recovery useful for market-state transitions, not only account-side events.
+- Reduce future ambiguity when market detail and recovery tooling consume snapshot history.
+
+### Impact / risk
+- Positive: snapshot history is becoming more replay-friendly and simulation-time aware.
+- Positive: event-log coverage is now broader across market-state events.
+- Risk: broader snapshot payload standardization may still be needed if more fields become authoritative.
+- Risk: this normalizes timing metadata, not full snapshot contract ownership yet.
+
+### Next actions
+- Continue clarifying snapshot contract ownership across listener/service/UI usage.
+- Later add stricter replay/recovery checks that compare snapshot event presence with persisted snapshot rows.
+- Keep remaining event families (borrow-fee, liquidation, config-change) on the same normalization path.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

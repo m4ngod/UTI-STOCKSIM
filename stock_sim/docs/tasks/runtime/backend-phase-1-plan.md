@@ -337,11 +337,16 @@ Done in current step:
 - added a lightweight replay/recovery cross-check in integration coverage
 - validated replay `sim_day` filtering against persisted run-scoped events
 
+Done in current step:
+- normalized `SNAPSHOT_UPDATED` payloads with simulation-time metadata on the listener path
+- added event-log coverage for snapshot-event persistence
+- extended replay/recovery integration coverage so run-scoped replay sees persisted snapshot events
+
 Not done yet:
 - snapshot trigger policy refinement
 - richer recovery source selection and checkpoint restore
 - replay validation against reconstructed persisted state
-- broader payload normalization for all runtime event families, especially snapshot-related families
+- broader payload normalization for remaining runtime event families like borrow-fee / liquidation / config-change
 
 ---
 
