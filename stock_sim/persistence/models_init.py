@@ -83,8 +83,12 @@ def _ensure_sim_time_columns():
                 ddl_parts.append('ADD COLUMN sim_day INT NULL')
             if 'sim_dt' not in cols:
                 ddl_parts.append('ADD COLUMN sim_dt DATETIME NULL')
-            if t in ('orders', 'trades', 'ledgers', 'order_events', 'account_equity_snapshots') and 'run_id' not in cols:
+            if t in ('orders', 'trades', 'ledgers', 'order_events', 'account_equity_snapshots', 'event_log') and 'run_id' not in cols:
                 ddl_parts.append('ADD COLUMN run_id VARCHAR(64) NULL')
+            if t == 'event_log' and 'sim_day' not in cols:
+                ddl_parts.append('ADD COLUMN sim_day INT NULL')
+            if t == 'event_log' and 'sim_dt' not in cols:
+                ddl_parts.append('ADD COLUMN sim_dt DATETIME NULL')
             if ddl_parts:
                 ddl = f"ALTER TABLE {t} {', '.join(ddl_parts)}"
                 with engine.begin() as conn:

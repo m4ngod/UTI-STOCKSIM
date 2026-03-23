@@ -5,7 +5,7 @@
 用于持久化核心事件，支持回放、审计与恢复。
 """
 from __future__ import annotations
-from sqlalchemy import Text, Index
+from sqlalchemy import Text, Index, DateTime
 from .models_imports import Base, Column, BigInteger, Integer, String
 
 class EventLog(Base):
@@ -15,6 +15,9 @@ class EventLog(Base):
     ts_ms = Column(BigInteger, index=True, nullable=False)
     type = Column(String(64), index=True, nullable=False)
     symbol = Column(String(32), index=True, nullable=True)
+    run_id = Column(String(64), index=True, nullable=True)
+    sim_day = Column(Integer, index=True, nullable=True)
+    sim_dt = Column(DateTime, index=True, nullable=True)
     payload = Column(Text, nullable=True)  # JSON 字符串 (压缩可在上层实现)
     shard = Column(Integer, default=0, nullable=False)
 

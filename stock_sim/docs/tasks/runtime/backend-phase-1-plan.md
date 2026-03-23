@@ -312,9 +312,11 @@ Done in current step:
 - wired `run_context` into `OrderService` and `AccountService`
 - added basic equity snapshot write path in `AccountService`
 - added `tests/test_run_context_wiring.py`
+- expanded `event_log` model with `run_id / sim_day / sim_dt`
+- changed event persistence to hook the event bus directly instead of one-topic subscription only
+- added event persistence regression coverage for trade-event run/scoped sim-time writes
 
 Not done yet:
-- full `event_log` expansion
 - real recovery flow
 - replay-by-run dry-run validation
 - snapshot trigger policy refinement

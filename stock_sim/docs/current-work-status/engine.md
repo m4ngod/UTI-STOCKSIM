@@ -235,6 +235,59 @@ Start Phase-1 backend platform work by carrying run identity through the order-s
 - Keep future engine-routing changes separate from run-context propagation work.
 - Re-check any legacy persistence branch that may still miss `run_id` in edge cases.
 
+## Event-log simulation-time alignment note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Expand event persistence so run-scoped order/trade activity is recorded with both simulation time and wall-clock write time, matching the variable-speed simulation platform direction.
+
+### files involved
+- `persistence/models_event_log.py`
+- `services/event_persistence_service.py`
+- `persistence/models_init.py`
+- `tests/test_event_persistence.py`
+- `docs/tasks/runtime/backend-phase-1-plan.md`
+
+### total changed lines
+- moderate focused change set
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `class EventLog(Base):`
+- **last line**: `Index("ix_event_log_symbol_ts", EventLog.symbol, EventLog.ts_ms)`
+
+#### fragment 2
+- **first line**: `def _sync_write(evt_type: Any, payload: dict[str, Any]):`
+- **last line**: `event_bus._persist_hook = _hook`
+
+#### fragment 3
+- **first line**: `def test_event_log_carries_run_id_sim_day_and_trade_symbol():`
+- **last line**: `assert row.sim_dt is not None`
+
+### Change summary
+- Expanded `event_log` schema with `run_id`, `sim_day`, and `sim_dt`.
+- Moved event persistence from one-topic subscription logic to a generic event-bus persistence hook.
+- Persisted wall-clock write time via `ts_ms` and simulation time via `sim_day / sim_dt` in the same event row.
+- Added regression coverage that checks trade-event persistence carries `run_id`, symbol, and simulation time.
+
+### Purpose
+- Align event persistence with the platform goal of variable-speed trading simulation.
+- Keep replay / recovery work grounded in simulation time instead of only wall-clock insertion order.
+- Avoid treating `sim_day` as a replacement for audit time while still making it first-class in persisted events.
+
+### Impact / risk
+- Positive: event history now better reflects both run identity and simulation-time progression.
+- Positive: later replay can filter by `run_id` and simulation time more naturally.
+- Risk: payload-level `run_id` extraction still depends on upstream payload shape in some paths.
+- Risk: generic event-bus persistence may increase write volume once more event types are active.
+
+### Next actions
+- Continue normalizing event payload shapes so `run_id` propagation is less heuristic.
+- Add replay queries that use `run_id + sim_day / sim_dt` directly.
+- Later consider buffered/batched event-log writes if persistence volume becomes heavy.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
