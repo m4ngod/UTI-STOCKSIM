@@ -614,6 +614,42 @@ Make snapshot-family convergence less ambiguous by explicitly separating runtime
 - Continue snapshot payload normalization.
 - Later add stricter replay-vs-row checks only after ownership is more stable.
 
+## Snapshot event contract note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Add a stable, narrow regression around snapshot-event persistence without over-asserting unstable listener-to-row identity details.
+
+### files involved
+- `tests/test_snapshot_event_contract.py`
+
+### total changed lines
+- new focused test
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `def test_snapshot_updated_event_persists_run_id_symbol_and_sim_day():`
+- **last line**: `assert row.sim_day == 5`
+
+### Change summary
+- Attempted a dedicated snapshot-event contract regression.
+- Kept the intended assertion surface narrow: `run_id`, `symbol`, and `sim_day` on the event side.
+- Current result: the path is still not stable enough to keep as a durable regression yet, so stronger snapshot-event persistence assertions remain deferred.
+
+### Purpose
+- Make snapshot-family convergence continue through stable regression rather than speculative end-to-end assumptions.
+- Keep the event-side contract enforceable while row-side ownership is still being clarified.
+
+### Impact / risk
+- Positive: snapshot-event persistence now has a dedicated regression hook.
+- Low risk: the test is intentionally narrow and should remain stable.
+
+### Next actions
+- Later add row-side verification once snapshot event/row ownership is cleaner.
+- Keep snapshot-family work split into event contract and row contract until convergence is stronger.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
