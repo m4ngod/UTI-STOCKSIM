@@ -577,6 +577,43 @@ Consolidate Phase-1 backend platform progress into a short durable runtime note 
 - Continue with `BL-201 snapshot family convergence`.
 - Then move into `BL-202 recovery precision upgrade` and `BL-203 replay verification upgrade`.
 
+## Snapshot boundary note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Make snapshot-family convergence less ambiguous by explicitly separating runtime snapshot events from persisted snapshot rows before adding stricter validation.
+
+### files involved
+- `docs/contracts/market/snapshot-event-and-row-boundary.md`
+
+### total changed lines
+- new boundary note
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `# Snapshot Event And Row Boundary`
+- **last line**: `3. avoid over-testing unstable event chain details before ownership is cleaner`
+
+### Change summary
+- Added a dedicated boundary note for snapshot events vs `snapshots_1s` rows.
+- Recorded that event history and persisted rows are related but not identical contracts.
+- Clarified that replay should lean on event history while storage/history queries should lean on rows.
+
+### Purpose
+- Reduce confusion while snapshot-family convergence is still in progress.
+- Prevent brittle tests from encoding a false one-to-one event/row assumption.
+- Give future replay/recovery work a cleaner conceptual base.
+
+### Impact / risk
+- No runtime impact.
+- Positive design clarification for next snapshot tasks.
+
+### Next actions
+- Continue snapshot payload normalization.
+- Later add stricter replay-vs-row checks only after ownership is more stable.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
