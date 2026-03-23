@@ -288,6 +288,53 @@ Expand event persistence so run-scoped order/trade activity is recorded with bot
 - Add replay queries that use `run_id + sim_day / sim_dt` directly.
 - Later consider buffered/batched event-log writes if persistence volume becomes heavy.
 
+## Recovery skeleton note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Replace the old recovery stub with a minimal real recovery skeleton that can produce a report, detect a simple persisted inconsistency, and switch runtime behavior to readonly on degraded recovery.
+
+### files involved
+- `services/recovery_service.py`
+- `tests/test_recovery.py`
+- `docs/tasks/runtime/backend-phase-1-plan.md`
+
+### total changed lines
+- small to moderate focused change set
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `class RecoveryService:`
+- **last line**: `return _LAST_REPORT`
+
+#### fragment 2
+- **first line**: `def test_recovery_service_switches_readonly_on_mismatch():`
+- **last line**: `assert is_readonly() is True`
+
+### Change summary
+- Replaced the old stub-like recovery path with a report-building recovery skeleton.
+- Added a minimal persisted consistency check based on trade/ledger count mismatch.
+- Added degraded recovery behavior that switches runtime into readonly mode.
+- Added regression coverage for resumed behavior, degraded behavior, and manual failure forcing.
+
+### Purpose
+- Give recovery real runtime meaning before replay work grows larger.
+- Make readonly mode represent an actual safety state instead of only a placeholder flag.
+- Create a stable recovery/report contract for later checkpoint and replay integration.
+
+### Impact / risk
+- Positive: recovery is no longer only an event-emitting stub.
+- Positive: order-path readonly protection now has a more defensible backend reason.
+- Risk: current consistency check is intentionally minimal and may later need more precise logic.
+- Risk: degraded recovery currently uses aggregate mismatch detection, not full reconstruction.
+
+### Next actions
+- Extend recovery checks from aggregate counts to run-scoped and event-scoped checks.
+- Connect recovery report with replay verification results later.
+- Add checkpoint-based restore input once recovery markers are designed more concretely.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

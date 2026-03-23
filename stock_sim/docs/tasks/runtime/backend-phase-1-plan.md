@@ -316,10 +316,15 @@ Done in current step:
 - changed event persistence to hook the event bus directly instead of one-topic subscription only
 - added event persistence regression coverage for trade-event run/scoped sim-time writes
 
+Done in current step:
+- added recovery report base with persisted-count checks
+- added readonly degrade path for simple trade/ledger mismatch detection
+- added recovery regression coverage for resumed/degraded behavior
+
 Not done yet:
-- real recovery flow
 - replay-by-run dry-run validation
 - snapshot trigger policy refinement
+- richer recovery source selection and checkpoint restore
 
 ---
 
