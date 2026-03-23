@@ -15,6 +15,7 @@ from stock_sim.infra.event_bus import event_bus
 from dataclasses import dataclass, field  # 新增
 from types import SimpleNamespace  # 新增
 from stock_sim.settings import settings  # 新增: 使用每标的节流阈值
+from stock_sim.services.sim_clock import current_sim_day, virtual_datetime
 # 自适应快照策略可选导入
 try:
     from stock_sim.services.adaptive_snapshot_service import AdaptiveSnapshotPolicyManager
@@ -384,9 +385,14 @@ class MatchingEngine:
         book.snapshot.update_book(bids, asks, levels)
         bid1_px, bid1_qty = (book.snapshot.best_bid_price, book.snapshot.best_bid_qty)
         ask1_px, ask1_qty = (book.snapshot.best_ask_price, book.snapshot.best_ask_qty)
+        sim_day = current_sim_day()
+        sim_dt = virtual_datetime(sim_day) if sim_day is not None else None
         event_bus.publish(EventType.SNAPSHOT_UPDATED, {
             'symbol': book.symbol,
+            'sim_day': sim_day,
+            'sim_dt': sim_dt.isoformat() if sim_dt else None,
             'snapshot': {
+                'symbol': book.symbol,
                 'bids': book.snapshot.bid_levels,
                 'asks': book.snapshot.ask_levels,
                 'last': book.snapshot.last_price,

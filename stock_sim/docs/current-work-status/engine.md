@@ -650,6 +650,49 @@ Add a stable, narrow regression around snapshot-event persistence without over-a
 - Later add row-side verification once snapshot event/row ownership is cleaner.
 - Keep snapshot-family work split into event contract and row contract until convergence is stronger.
 
+## Snapshot producer normalization note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Move snapshot-family normalization closer to the event producer so downstream listener and persistence code receives a more stable `SNAPSHOT_UPDATED` contract.
+
+### files involved
+- `core/matching_engine.py`
+- `tests/test_snapshot_event_payload.py`
+
+### total changed lines
+- focused producer-side change
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `sim_day = current_sim_day()`
+- **last line**: `'sim_dt': sim_dt.isoformat() if sim_dt else None,`
+
+#### fragment 2
+- **first line**: `def test_matching_engine_snapshot_event_contains_symbol_and_sim_time():`
+- **last line**: `assert 'sim_dt' in payload`
+
+### Change summary
+- Added simulation-time metadata to producer-side `SNAPSHOT_UPDATED` emission in `MatchingEngine`.
+- Added `snapshot.symbol` explicitly into the emitted snapshot payload.
+- Added a narrow unit-style regression to verify producer-side snapshot event shape.
+
+### Purpose
+- Reduce downstream normalization burden.
+- Make snapshot event contracts more stable before deeper replay/recovery checks.
+- Keep BL-201 moving through producer-first convergence rather than only listener-side patching.
+
+### Impact / risk
+- Positive: snapshot event shape is now more explicit at source.
+- Positive: downstream consumers have less reason to guess `symbol` and simulation time.
+- Low risk: this is additive payload normalization.
+
+### Next actions
+- Revisit event-log-side snapshot verification after producer-side shape settles.
+- Later align snapshot listener tests with this producer contract.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
