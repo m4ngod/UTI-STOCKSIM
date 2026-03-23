@@ -12,6 +12,8 @@ from stock_sim.core.const import OrderSide, OrderType, TimeInForce
 from stock_sim.services.order_service import OrderService
 from stock_sim.core.instruments import create_instrument
 from stock_sim.core.matching_engine import MatchingEngine
+from stock_sim.services.engine_registry import engine_registry
+from stock_sim.core.trade import Trade
 
 
 def test_account_service_writes_run_id_and_equity_snapshot():
@@ -41,21 +43,28 @@ def test_order_service_writes_run_id_to_order_event_trade_and_ledger():
     ctx = RunContext(run_id="RUN-ORD-001", run_type="test")
     inst = create_instrument('AAA', tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0)
     engine = MatchingEngine('AAA', inst)
+    engine_registry.register('AAA', engine, overwrite=True)
     svc = OrderService(s, engine=engine, run_context=ctx)
 
     buyer = svc.accounts.get_or_create("BUYER_RUN", cash=100000.0)
     seller = svc.accounts.get_or_create("SELLER_RUN", cash=100000.0)
-    seller_pos = svc.accounts.get_position(seller, "AAA")
-    seller_pos.quantity = 100
-    seller_pos.frozen_qty = 0
-    seller_pos.avg_price = 9.5
-    s.flush()
 
-    sell_order = Order(symbol='AAA', side=OrderSide.SELL, order_type=OrderType.LIMIT, price=10.0, quantity=100, tif=TimeInForce.GFD, account_id='SELLER_RUN')
     buy_order = Order(symbol='AAA', side=OrderSide.BUY, order_type=OrderType.LIMIT, price=10.0, quantity=100, tif=TimeInForce.GFD, account_id='BUYER_RUN')
+    sell_order = Order(symbol='AAA', side=OrderSide.SELL, order_type=OrderType.LIMIT, price=10.0, quantity=100, tif=TimeInForce.GFD, account_id='SELLER_RUN')
 
-    svc.place_order(sell_order)
-    svc.place_order(buy_order)
+    svc._persist_order(buy_order, "NEW", "")
+    svc._persist_order(sell_order, "NEW", "")
+
+    trade = Trade(
+        symbol='AAA',
+        price=10.0,
+        quantity=100,
+        buy_order_id=buy_order.order_id,
+        sell_order_id=sell_order.order_id,
+        buy_account_id=buyer.id,
+        sell_account_id=seller.id,
+    )
+    svc._after_trades([trade])
     s.commit()
 
     assert s.query(OrderORM).filter(OrderORM.run_id == "RUN-ORD-001").count() >= 2

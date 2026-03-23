@@ -6,6 +6,7 @@ from .models_ledger import Ledger
 from .models_order import OrderORM
 from .models_trade import TradeORM
 from .models_order_event import OrderEvent
+from .models_account_equity_snapshot import AccountEquitySnapshot
 from .models_snapshot import Snapshot1s
 from .models_instrument import Instrument  # 新增
 from .models_bars import Bar1m, Bar1h, Bar1d  # 新增
@@ -67,8 +68,8 @@ def _ensure_snapshot_columns():
 
 def _ensure_sim_time_columns():
     tables = [
-        'accounts','positions','orders','trades','ledgers','agent_bindings',
-        'snapshots_1s','bars_1m','bars_1h','bars_1d','instruments'
+        'accounts','positions','orders','trades','ledgers','order_events','agent_bindings',
+        'snapshots_1s','bars_1m','bars_1h','bars_1d','instruments','account_equity_snapshots'
     ]
     insp = inspect(engine)
     existing = set(insp.get_table_names())
@@ -82,6 +83,8 @@ def _ensure_sim_time_columns():
                 ddl_parts.append('ADD COLUMN sim_day INT NULL')
             if 'sim_dt' not in cols:
                 ddl_parts.append('ADD COLUMN sim_dt DATETIME NULL')
+            if t in ('orders', 'trades', 'ledgers', 'order_events', 'account_equity_snapshots') and 'run_id' not in cols:
+                ddl_parts.append('ADD COLUMN run_id VARCHAR(64) NULL')
             if ddl_parts:
                 ddl = f"ALTER TABLE {t} {', '.join(ddl_parts)}"
                 with engine.begin() as conn:
