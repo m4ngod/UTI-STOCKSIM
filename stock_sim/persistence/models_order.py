@@ -18,5 +18,6 @@ class OrderORM(Base, SimTimeMixin):
     status = Column(SAEnum(OrderStatus), default=OrderStatus.NEW)
     ts_created = Column(DateTime, default=datetime.utcnow, index=True)
     ts_last = Column(DateTime, default=datetime.utcnow, index=True)
+    run_id = Column(String(64), nullable=True, index=True)
 
 Index("idx_orders_symbol_status", OrderORM.symbol, OrderORM.status)

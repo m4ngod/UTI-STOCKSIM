@@ -17,5 +17,6 @@ class Ledger(Base, SimTimeMixin):
     pnl_real = Column(Float, default=0.0)
     order_id = Column(String(64), nullable=True, index=True)  # 关联订单，可为空
     extra_json = Column(String(1024), nullable=True)  # 附加信息 (借券费用明细等)
+    run_id = Column(String(64), nullable=True, index=True)
 
 __all__ = ["Ledger"]

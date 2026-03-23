@@ -5,6 +5,7 @@ from stock_sim.services.risk_engine import RiskEngine
 from stock_sim.services.fee_engine import FeeEngine
 from stock_sim.services.account_service import AccountService
 from stock_sim.services.instrument_service import InstrumentService, instrument_service_factory  # 新增
+from stock_sim.services.run_context import RunContext
 # 新增模拟时钟导入
 # ---- 兜底补丁: 若 AccountService 缺少新版方法则动态注入最小实现 ----
 try:
@@ -86,13 +87,14 @@ class OrderService:
     """
     订单生命周期 orchestrator
     """
-    def __init__(self, session: Session, engine: MatchingEngine | None = None, instrument_service: InstrumentService | None = None):
+    def __init__(self, session: Session, engine: MatchingEngine | None = None, instrument_service: InstrumentService | None = None, run_context: RunContext | None = None):
         # engine 现在可选: 仅作为向后兼容的默认引擎 (symbol 未注册时可用)
         self.s = session
         self.engine = engine  # deprecated: 动态路由后仅兜底
         self.risk = RiskEngine()
         self.fees = FeeEngine()
-        self.accounts = AccountService(session)
+        self.run_context = run_context
+        self.accounts = AccountService(session, run_context=run_context)
         self.instrument_service = instrument_service or instrument_service_factory()
         self._mem_orders: dict[str, Order] = {}
         self._batch_trades: list = []  # 批量模式缓冲
@@ -107,6 +109,25 @@ class OrderService:
                 books = getattr(self.engine, '_books', {})
                 if sym not in books and hasattr(self.engine, 'register_symbol'):
                     src_inst = getattr(eng_reg, 'instrument', None) if eng_reg else getattr(self.engine, 'instrument', None)
+                    if src_inst is None:
+                        try:
+                            dto = self.instrument_service.get(sym)
+                        except Exception:
+                            dto = None
+                        if dto is not None:
+                            class _Tmp: ...
+                            tmp = _Tmp()
+                            tmp.tick_size = dto.tick_size
+                            tmp.lot_size = dto.lot_size
+                            tmp.min_qty = dto.min_qty
+                            tmp.settlement_cycle = dto.settlement_cycle
+                            tmp.market_cap = dto.market_cap
+                            tmp.total_shares = dto.total_shares
+                            tmp.free_float_shares = dto.free_float_shares
+                            tmp.initial_price = dto.initial_price
+                            tmp.pe = None
+                            tmp.ipo_opened = dto.ipo_opened
+                            src_inst = tmp
                     self.engine.register_symbol(sym, src_inst)
                 if eng_reg and eng_reg is not self.engine:
                     try:
@@ -646,7 +667,8 @@ class OrderService:
                 quantity=tr.quantity, buy_order_id=tr.buy_order_id,
                 sell_order_id=tr.sell_order_id,
                 buy_account_id=tr.buy_account_id, sell_account_id=tr.sell_account_id,
-                sim_day=sim_day, sim_dt=sim_dt
+                sim_day=sim_day, sim_dt=sim_dt,
+                run_id=self._get_run_id(),
             ))
             buy_orm = self.s.get(OrderORM, tr.buy_order_id)
             if buy_orm:
@@ -757,7 +779,8 @@ class OrderService:
                 quantity=tr.quantity, buy_order_id=tr.buy_order_id,
                 sell_order_id=tr.sell_order_id,
                 buy_account_id=tr.buy_account_id, sell_account_id=tr.sell_account_id,
-                sim_day=sim_day, sim_dt=sim_dt
+                sim_day=sim_day, sim_dt=sim_dt,
+                run_id=self._get_run_id(),
             ))
             buy_orm = self.s.get(OrderORM, tr.buy_order_id)
             if buy_orm:
@@ -840,6 +863,9 @@ class OrderService:
                 req[o.account_id] = req.get(o.account_id, 0.0) + need
         return req
 
+    def _get_run_id(self) -> str | None:
+        return None if self.run_context is None else self.run_context.run_id
+
     def _persist_order(self, order: Order, event: str, detail: str):
         """初次持久化订单并写事件。"""
         sim_day = current_sim_day(); sim_dt = virtual_datetime(sim_day)
@@ -855,7 +881,8 @@ class OrderService:
             quantity=order.quantity,
             filled=order.filled,
             status=order.status,
-            sim_day=sim_day, sim_dt=sim_dt
+            sim_day=sim_day, sim_dt=sim_dt,
+            run_id=self._get_run_id(),
         )
         self.s.add(orm)
         self._persist_event(order.order_id, event, detail)
@@ -879,4 +906,4 @@ class OrderService:
                 sd = current_sim_day(); existing.sim_day = sd; existing.sim_dt = virtual_datetime(sd)
         except Exception:
             pass
-        self.s.add(OrderEvent(order_id=order_id, event=event, detail=detail))
+        self.s.add(OrderEvent(order_id=order_id, event=event, detail=detail, run_id=self._get_run_id()))

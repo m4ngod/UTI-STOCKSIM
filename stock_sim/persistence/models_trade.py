@@ -13,3 +13,4 @@ class TradeORM(Base, SimTimeMixin):
     buy_account_id = Column(String(64), index=True)
     sell_account_id = Column(String(64), index=True)
     ts = Column(DateTime, default=datetime.utcnow, index=True)
+    run_id = Column(String(64), nullable=True, index=True)
