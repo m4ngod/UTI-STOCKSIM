@@ -540,6 +540,43 @@ Normalize snapshot-family event payloads so simulation-time replay and recovery 
 - Later add stricter replay/recovery checks that compare snapshot event presence with persisted snapshot rows.
 - Keep remaining event families (borrow-fee, liquidation, config-change) on the same normalization path.
 
+## Phase-1 summary / next-backlog note (2026-03-24)
+
+### status
+done
+
+### goal
+Consolidate Phase-1 backend platform progress into a short durable runtime note before continuing more event-family and recovery/replay work.
+
+### files involved
+- `docs/tasks/runtime/backend-phase-1-progress-and-next-backlog.md`
+
+### total changed lines
+- new summary document
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `# Backend Phase-1 Progress And Next Backlog`
+- **last line**: `- pretending snapshot event chain is fully solved before tests are stable`
+
+### Change summary
+- Added a concise Phase-1 summary document.
+- Recorded what is done, what is partial, and what should come next.
+- Captured the recommended immediate next step: finish snapshot convergence, then tighten recovery/replay precision together.
+
+### Purpose
+- Prevent Phase-1 progress from becoming scattered across many small notes only.
+- Give future work a short backlog instead of re-deriving priorities from code state.
+- Make the backend platform line easier to continue after context switches.
+
+### Impact / risk
+- No runtime impact.
+- Positive planning effect for next backend tasks.
+
+### Next actions
+- Continue with `BL-201 snapshot family convergence`.
+- Then move into `BL-202 recovery precision upgrade` and `BL-203 replay verification upgrade`.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
