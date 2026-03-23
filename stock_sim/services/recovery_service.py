@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict
+from collections import defaultdict
 
 try:
     from stock_sim.infra.event_bus import event_bus  # type: ignore
@@ -29,12 +30,33 @@ class RecoveryService:
     def _build_report(self) -> Dict[str, Any]:
         s = SessionLocal()
         try:
-            orders = s.query(OrderORM).count()
-            open_orders = s.query(OrderORM).filter(OrderORM.status.in_(["NEW", "PARTIAL"])) .count()
-            filled_orders = s.query(OrderORM).filter(OrderORM.status == "FILLED").count()
-            trades = s.query(TradeORM).count()
-            ledgers = s.query(Ledger).count()
-            events = s.query(EventLog).count()
+            order_rows = s.query(OrderORM).all()
+            trade_rows = s.query(TradeORM).all()
+            ledger_rows = s.query(Ledger).all()
+            event_rows = s.query(EventLog).all()
+
+            orders = len(order_rows)
+            open_orders = sum(1 for r in order_rows if str(r.status).endswith("NEW") or str(r.status).endswith("PARTIAL"))
+            filled_orders = sum(1 for r in order_rows if str(r.status).endswith("FILLED"))
+            trades = len(trade_rows)
+            ledgers = len(ledger_rows)
+            events = len(event_rows)
+
+            per_run = defaultdict(lambda: {"filled_orders": 0, "trades": 0, "ledgers": 0})
+            for r in order_rows:
+                rid = getattr(r, "run_id", None)
+                if str(r.status).endswith("FILLED"):
+                    per_run[rid]["filled_orders"] += 1
+            for r in trade_rows:
+                per_run[getattr(r, "run_id", None)]["trades"] += 1
+            for r in ledger_rows:
+                per_run[getattr(r, "run_id", None)]["ledgers"] += 1
+
+            inconsistent_runs = []
+            for run_id, stats in per_run.items():
+                if (stats["trades"] > stats["ledgers"] and stats["trades"] > 0) or (stats["filled_orders"] > stats["trades"]):
+                    inconsistent_runs.append(run_id)
+
             return {
                 "status": "ok",
                 "readonly": False,
@@ -51,6 +73,7 @@ class RecoveryService:
                     "trade_without_ledger_possible": trades > ledgers and trades > 0,
                     "filled_order_without_trade_possible": filled_orders > trades,
                     "event_log_available": events > 0,
+                    "inconsistent_runs": inconsistent_runs,
                 },
             }
         finally:
@@ -59,10 +82,7 @@ class RecoveryService:
     def recover(self) -> Dict[str, Any]:
         global _READONLY, _SENT_RESUMED, _LAST_REPORT
         report = self._build_report()
-        inconsistent = bool(
-            report["checks"]["trade_without_ledger_possible"]
-            or report["checks"]["filled_order_without_trade_possible"]
-        )
+        inconsistent = bool(report["checks"].get("inconsistent_runs"))
         if inconsistent:
             _READONLY = True
             report["status"] = "degraded"

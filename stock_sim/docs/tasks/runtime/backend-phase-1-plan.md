@@ -327,10 +327,16 @@ Done in current step:
 - added `dry_run_summary()` for replay planning / validation
 - added replay + recovery integration coverage with run-scoped event loading
 
+Done in current step:
+- normalized key runtime event payloads to carry `run_id` / `symbol` more explicitly
+- tightened recovery from global mismatch checks toward run-scoped inconsistency reporting
+- added regression checks for event payload run-id persistence and run-scoped degraded recovery reporting
+
 Not done yet:
 - snapshot trigger policy refinement
 - richer recovery source selection and checkpoint restore
 - replay validation against reconstructed persisted state
+- broader payload normalization for all runtime event families
 
 ---
 

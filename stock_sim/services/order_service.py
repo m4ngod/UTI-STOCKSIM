@@ -262,7 +262,7 @@ class OrderService:
             metrics.inc("orders_rejected")
             metrics.inc(settings.REJECT_METRIC_PREFIX + reason.lower())
             try:
-                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason})
+                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason, "run_id": self._get_run_id(), "symbol": order.symbol})
             except Exception:
                 pass
             logger.log("order_reject", order_id=order.order_id, reason=reason)
@@ -300,7 +300,7 @@ class OrderService:
                         metrics.inc("orders_rejected")
                         metrics.inc(settings.REJECT_METRIC_PREFIX + "min_qty")
                         try:
-                            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "MIN_QTY"})
+                            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "MIN_QTY", "run_id": self._get_run_id(), "symbol": order.symbol})
                         except Exception:
                             pass
                         logger.log("order_reject", order_id=order.order_id, reason="MIN_QTY")
@@ -326,7 +326,7 @@ class OrderService:
             self._persist_order(order, "REJECT", reason)
             metrics.inc("orders_rejected")
             metrics.inc(settings.REJECT_METRIC_PREFIX + reason.lower())
-            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason})
+            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason, "run_id": self._get_run_id(), "symbol": order.symbol})
             logger.log("order_reject", order_id=order.order_id, reason=reason)
             if TRACE_ORDERS:
                 print(f"[TRACE OrderService.reject.basic] oid={order.order_id} sym={order.symbol} reason={reason} price={order.price} qty={order.quantity}")
@@ -366,7 +366,7 @@ class OrderService:
             self._persist_order(order, "REJECT", rr.reason)
             metrics.inc("orders_rejected")
             metrics.inc(settings.REJECT_METRIC_PREFIX + rr.code.lower())
-            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": rr.reason})
+            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": rr.reason, "run_id": self._get_run_id(), "symbol": order.symbol})
             logger.log("order_reject", order_id=order.order_id, reason=rr.reason)
             if TRACE_ORDERS:
                 print(f"[TRACE OrderService.reject.risk] oid={order.order_id} code={rr.code} reason={rr.reason}")
@@ -388,7 +388,7 @@ class OrderService:
                 self._persist_order(order, "REJECT", "FEE_FREEZE_FAIL")
                 metrics.inc("orders_rejected")
                 metrics.inc(settings.REJECT_METRIC_PREFIX + "fee_freeze_fail")
-                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FEE_FREEZE_FAIL"})
+                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FEE_FREEZE_FAIL", "run_id": self._get_run_id(), "symbol": order.symbol})
                 logger.log("order_reject", order_id=order.order_id, reason="FEE_FREEZE_FAIL")
                 if TRACE_ORDERS:
                     print(f"[TRACE OrderService.reject.fee_freeze_fail] oid={order.order_id} fee={fee_est.est_fee} cash={acc.cash}")
@@ -419,7 +419,7 @@ class OrderService:
                 self._persist_order(order, "REJECT", "FREEZE_FAIL")
                 metrics.inc("orders_rejected")
                 metrics.inc(settings.REJECT_METRIC_PREFIX + "freeze_fail")
-                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FREEZE_FAIL"})
+                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FREEZE_FAIL", "run_id": self._get_run_id(), "symbol": order.symbol})
                 logger.log("order_reject", order_id=order.order_id, reason="FREEZE_FAIL")
                 if TRACE_ORDERS:
                     print(f"[TRACE OrderService.reject.freeze_fail] oid={order.order_id} cash={acc.cash:.4f} frozen_cash={acc.frozen_cash:.4f}")
@@ -463,7 +463,7 @@ class OrderService:
             order.status = OrderStatus.CANCELED
             detail = "FOK_UNFILLABLE"
             self._persist_state(order, "CANCEL", detail)
-            event_bus.publish("OrderCanceled", {"order_id": order.order_id, "reason": detail})
+            event_bus.publish("OrderCanceled", {"order_id": order.order_id, "reason": detail, "run_id": self._get_run_id(), "symbol": order.symbol})
             logger.log("order_cancel", order_id=order.order_id, reason=detail)
             return trades
         elif order.tif is TimeInForce.IOC and order.remaining > 0:
@@ -480,7 +480,7 @@ class OrderService:
             order.status = OrderStatus.CANCELED
             detail = 'IOC_REMAIN_CANCEL' if order.filled > 0 else 'IOC_UNFILLABLE'
             self._persist_state(order, 'CANCEL', detail)
-            event_bus.publish('OrderCanceled', {'order_id': order.order_id, 'reason': detail})
+            event_bus.publish('OrderCanceled', {'order_id': order.order_id, 'reason': detail, 'run_id': self._get_run_id(), 'symbol': order.symbol})
             logger.log('order_cancel', order_id=order.order_id, reason=detail)
             return trades
 
@@ -515,7 +515,7 @@ class OrderService:
                 self.accounts.refund_fee(acc, refund_fee)
             orm.status = OrderStatus.CANCELED
             self._persist_event(order_id, "CANCEL", "USER")
-            event_bus.publish("OrderCanceled", {"order_id": order_id, "reason": "USER"})
+            event_bus.publish("OrderCanceled", {"order_id": order_id, "reason": "USER", "run_id": self._get_run_id(), "symbol": orm.symbol})
             logger.log("order_cancel", order_id=order_id, reason="USER")
             self._update_mem_order(order_id, orm, eng)
         return ok
@@ -582,7 +582,7 @@ class OrderService:
                             self.accounts.refund_fee(acc, refund_fee)
                     orm.status = OrderStatus.CANCELED
                     self._persist_event(oid, "CANCEL", "AUCTION_UNMATCHED")
-                    event_bus.publish("OrderCanceled", {"order_id": oid, "reason": "AUCTION_UNMATCHED"})
+                    event_bus.publish("OrderCanceled", {"order_id": oid, "reason": "AUCTION_UNMATCHED", "run_id": self._get_run_id(), "symbol": orm.symbol})
                     logger.log("order_cancel", order_id=oid, reason="AUCTION_UNMATCHED")
                 self._update_mem_order(oid, orm, eng)
             try:
@@ -716,7 +716,7 @@ class OrderService:
                     setattr(order_book, "_last_snapshot", prev)
                 except Exception:
                     pass
-            event_bus.publish("Trade", {"trade": tr.to_dict()})
+            event_bus.publish("Trade", {"trade": tr.to_dict(), "run_id": self._get_run_id(), "symbol": tr.symbol})
             logger.log("trade", **tr.to_dict())
             metrics.inc("trades_processed")
         # 批量结算

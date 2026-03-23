@@ -382,6 +382,60 @@ Upgrade replay from a simple event dump reader into a run-scoped dry-run tool th
 - Later compare replay summary against recovery report and persisted fact tables.
 - Keep event payload normalization improving so replay contracts stay stable.
 
+## Event payload normalization / run-scoped recovery note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Make event payloads more explicit about run identity and symbol ownership, and tighten recovery checks from global aggregate mismatch into run-scoped inconsistency detection.
+
+### files involved
+- `services/order_service.py`
+- `services/account_service.py`
+- `services/recovery_service.py`
+- `tests/test_event_persistence.py`
+- `tests/test_recovery.py`
+- `docs/current-work-status/engine.md`
+
+### total changed lines
+- moderate focused change set
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `event_bus.publish("Trade", {"trade": tr.to_dict(), "run_id": self._get_run_id(), "symbol": tr.symbol})`
+- **last line**: `event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason, "run_id": self._get_run_id(), "symbol": order.symbol})`
+
+#### fragment 2
+- **first line**: `def _account_payload(self, acc: Account) -> dict[str, Any]:`
+- **last line**: `"run_id": self._get_run_id(),`
+
+#### fragment 3
+- **first line**: `per_run = defaultdict(lambda: {"filled_orders": 0, "trades": 0, "ledgers": 0})`
+- **last line**: `"inconsistent_runs": inconsistent_runs,`
+
+### Change summary
+- Added `run_id` and `symbol` into order/trade cancel/reject event payloads on the runtime path.
+- Added `run_id` into account-updated payload generation.
+- Tightened recovery mismatch detection so degraded recovery is now keyed by inconsistent `run_id` groups instead of only whole-database aggregate mismatch.
+- Added regression checks that verify event-log payload persistence and recovery reporting now expose run-scoped inconsistency explicitly.
+
+### Purpose
+- Reduce heuristic extraction work inside event persistence.
+- Make replay / recovery reasoning more naturally aligned with per-run simulation execution.
+- Prevent one noisy run from conceptually contaminating recovery analysis for another run.
+
+### Impact / risk
+- Positive: event persistence now depends less on implicit nested payload conventions.
+- Positive: recovery reports are more actionable because they identify inconsistent runs.
+- Risk: some older event producers may still emit payloads without normalized fields until they are updated.
+- Risk: current run-scoped checks are still count-based rather than full event/fact reconstruction.
+
+### Next actions
+- Continue normalizing payloads for snapshot / IPO / SIM_DAY and other runtime events.
+- Later push recovery from run-scoped count checks toward run-scoped fact reconstruction.
+- Keep replay and recovery contracts aligned around `run_id + sim_time`.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

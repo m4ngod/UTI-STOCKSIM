@@ -42,6 +42,7 @@ def test_recovery_service_switches_readonly_on_mismatch():
     assert rep['status'] == 'degraded'
     assert rep['readonly'] is True
     assert is_readonly() is True
+    assert 'RUN-REC-001' in rep['checks']['inconsistent_runs']
 
 
 def test_mark_failed_sets_readonly():

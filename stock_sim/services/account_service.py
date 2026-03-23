@@ -401,6 +401,7 @@ class AccountService:
             "positions": positions,
             "sim_day": getattr(acc, "sim_day", None),
             "sim_dt": getattr(acc, "sim_dt", None),
+            "run_id": self._get_run_id(),
         }
 
     def _publish_account(self, acc: Account):
