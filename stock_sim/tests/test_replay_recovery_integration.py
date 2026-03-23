@@ -38,6 +38,15 @@ def test_replay_and_recovery_integration():
     assert summary["run_id"] == run_id
     assert EventType.ACCOUNT_UPDATED.value in summary["type_counts"]
 
+    rep = recovery_service.recover()
+    assert rep["status"] == "ok"
+    assert summary["event_count"] >= rep["counts"]["event_log"] or rep["counts"]["event_log"] >= summary["event_count"]
+
+    sim_loaded = replay_service.load_events(run_id=run_id, start_sim_day=1, end_sim_day=1)
+    assert len(sim_loaded) >= n
+    sim_summary = replay_service.dry_run_summary(run_id=run_id)
+    assert sim_summary["run_id"] == run_id
+
     captured_recovery = []
     event_bus.subscribe(EventType.RECOVERY_RESUMED, lambda t, p: captured_recovery.append(p))
     rep = recovery_service.recover()

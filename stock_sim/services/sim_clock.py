@@ -32,6 +32,8 @@ class _SimClock:
         try:
             event_bus.publish(EventType.SIM_DAY, {  # type: ignore
                 "sim_day_index": self._day_index,
+                "sim_day": self._day_index,
+                "sim_dt": (datetime(1, 1, 1) + timedelta(days=self._day_index - 1)).isoformat(),
                 "real_ts": datetime.utcnow().isoformat(timespec='seconds'),
             })
         except Exception:

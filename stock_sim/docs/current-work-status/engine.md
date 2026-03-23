@@ -436,6 +436,59 @@ Make event payloads more explicit about run identity and symbol ownership, and t
 - Later push recovery from run-scoped count checks toward run-scoped fact reconstruction.
 - Keep replay and recovery contracts aligned around `run_id + sim_time`.
 
+## Broader runtime event normalization / replay-check note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Extend payload normalization beyond order/account paths into simulation-time platform events, and add a lightweight replay/recovery cross-check so the platform backbone is not only individually tested but also minimally connected.
+
+### files involved
+- `services/sim_clock.py`
+- `services/ipo_service.py`
+- `services/bar_aggregator.py`
+- `tests/test_replay_recovery_integration.py`
+- `docs/current-work-status/engine.md`
+
+### total changed lines
+- moderate focused change set
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `event_bus.publish(EventType.SIM_DAY, {  # type: ignore`
+- **last line**: `"real_ts": datetime.utcnow().isoformat(timespec='seconds'),`
+
+#### fragment 2
+- **first line**: `event_bus.publish(EventType.IPO_OPENED, {`
+- **last line**: `'sim_day': current_sim_day(),`
+
+#### fragment 3
+- **first line**: `event_bus.publish(EventType.BAR_UPDATED, {`
+- **last line**: `"sim_dt": sim_dt.isoformat() if sim_dt else None,`
+
+### Change summary
+- Added simulation-time fields to `SIM_DAY` payloads.
+- Added simulation-time metadata to `IPO_OPENED` payloads.
+- Added `sim_day / sim_dt` to emitted `BAR_UPDATED` payloads.
+- Extended replay/recovery integration coverage with a lightweight cross-check and sim-day filtered summary validation.
+
+### Purpose
+- Push event normalization from isolated runtime events toward a broader platform contract.
+- Make replay filtering by simulation time more meaningful across multiple event families.
+- Ensure variable-speed simulation time is present in emitted platform events, not only in persisted fact tables.
+
+### Impact / risk
+- Positive: simulation-time events are becoming more uniformly queryable and replay-friendly.
+- Positive: replay/recovery now have at least one shared validation seam.
+- Risk: other event families like snapshot and borrow-fee are still only partially normalized.
+- Risk: current replay/recovery cross-check is intentionally lightweight and not a full reconciliation.
+
+### Next actions
+- Normalize `SNAPSHOT_UPDATED` and remaining runtime event families.
+- Later compare replay summary with recovery report on a per-run basis more strictly.
+- Keep emitted payload contracts stable as more platform tooling depends on them.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

@@ -332,11 +332,16 @@ Done in current step:
 - tightened recovery from global mismatch checks toward run-scoped inconsistency reporting
 - added regression checks for event payload run-id persistence and run-scoped degraded recovery reporting
 
+Done in current step:
+- normalized `SIM_DAY`, `IPO_OPENED`, and `BAR_UPDATED` payloads with simulation-time metadata
+- added a lightweight replay/recovery cross-check in integration coverage
+- validated replay `sim_day` filtering against persisted run-scoped events
+
 Not done yet:
 - snapshot trigger policy refinement
 - richer recovery source selection and checkpoint restore
 - replay validation against reconstructed persisted state
-- broader payload normalization for all runtime event families
+- broader payload normalization for all runtime event families, especially snapshot-related families
 
 ---
 

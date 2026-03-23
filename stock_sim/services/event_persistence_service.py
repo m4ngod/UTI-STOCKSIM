@@ -51,10 +51,28 @@ def _extract_run_id(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_sim_day(payload: dict[str, Any]) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    sim_day = payload.get("sim_day")
+    if sim_day is not None:
+        return sim_day
+    return current_sim_day()
+
+
+def _extract_sim_dt(payload: dict[str, Any], sim_day: int | None):
+    if not isinstance(payload, dict):
+        return virtual_datetime(sim_day) if sim_day is not None else None
+    sim_dt = payload.get("sim_dt")
+    if sim_dt is not None:
+        return sim_dt
+    return virtual_datetime(sim_day) if sim_day is not None else None
+
+
 def _sync_write(evt_type: Any, payload: dict[str, Any]):
     evt_name = evt_type.value if hasattr(evt_type, "value") else str(evt_type)
-    sim_day = current_sim_day()
-    sim_dt = virtual_datetime(sim_day) if sim_day is not None else None
+    sim_day = _extract_sim_day(payload)
+    sim_dt = _extract_sim_dt(payload, sim_day)
     session = SessionLocal()
     try:
         ev = EventLog(

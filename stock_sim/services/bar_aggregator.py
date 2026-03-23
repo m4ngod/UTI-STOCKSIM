@@ -109,6 +109,8 @@ class BarAggregator:
                 event_bus.publish(EventType.BAR_UPDATED, {
                     "symbol": symbol,
                     "timeframe": "1m",
+                    "sim_day": sim_day,
+                    "sim_dt": sim_dt.isoformat() if sim_dt else None,
                     "bar": {
                         "ts": minute_start.isoformat(),
                         "open": open_p,
@@ -157,6 +159,8 @@ class BarAggregator:
                 event_bus.publish(EventType.BAR_UPDATED, {
                     "symbol": symbol,
                     "timeframe": "1h",
+                    "sim_day": sim_day,
+                    "sim_dt": sim_dt.isoformat() if sim_dt else None,
                     "bar": {
                         "ts": hour_start.isoformat(),
                         "open": open_p,
@@ -205,6 +209,8 @@ class BarAggregator:
                 event_bus.publish(EventType.BAR_UPDATED, {
                     "symbol": symbol,
                     "timeframe": "1d",
+                    "sim_day": sim_day,
+                    "sim_dt": sim_dt.isoformat() if sim_dt else None,
                     "bar": {
                         "ts": day_start.isoformat(),
                         "open": open_p,

@@ -14,6 +14,7 @@ from stock_sim.core.const import Phase, OrderSide, EventType
 from stock_sim.core.trade import Trade
 from stock_sim.infra.event_bus import event_bus
 from stock_sim.settings import settings
+from stock_sim.services.sim_clock import current_sim_day
 
 # 价格选择: 最大撮合量 -> 最小不平衡 -> 距离 initial_price 最近 -> 价格本身序
 
@@ -106,7 +107,7 @@ def maybe_auto_open_ipo(engine, book) -> bool:
         auction_price = getattr(engine, '_ipo_auction_price', 0.0)
         trades = getattr(engine, '_ipo_trades_buffer', []) or []
         for tr in trades:
-            event_bus.publish(EventType.TRADE, {"trade": tr.to_dict(), "phase": "CALL_AUCTION"})
+            event_bus.publish(EventType.TRADE, {"trade": tr.to_dict(), "phase": "CALL_AUCTION", "symbol": tr.symbol})
         if trades:
             try: book.trades.extend(trades)
             except Exception: pass
@@ -115,7 +116,8 @@ def maybe_auto_open_ipo(engine, book) -> bool:
             'open_price': auction_price,
             'executed_volume': sum(t.quantity for t in trades),
             'total_orders': len(getattr(book.call_auction, '_orders', [])),
-            'cleared': True
+            'cleared': True,
+            'sim_day': current_sim_day(),
         })
         # 取消未成交卖单, 保留未成交买单进入簿
         orders_all = list(getattr(book.call_auction, '_orders', []))
