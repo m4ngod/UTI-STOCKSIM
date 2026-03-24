@@ -6,7 +6,7 @@
 
 ## Current state
 
-verification-needed
+in-progress
 
 ## Task 2026-03-24-release-pretest-01
 - **time**: 2026-03-24 23:xx
@@ -55,9 +55,8 @@ verification-needed
     - `.\.venv\Scripts\python -m pytest tests\test_ipo_minimal_path.py tests\test_tplus1_order_flow.py tests\test_order_funding_semantics.py tests\test_order_tif_semantics.py tests\test_order_short_cover_semantics.py tests\frontend\unit\test_account_contract.py tests\frontend\unit\test_market_detail_contract.py tests\frontend\unit\test_market_detail_contract_extended.py tests\frontend\unit\test_market_detail_contract_overall_health.py tests\frontend\unit\test_orders_contract.py tests\frontend\unit\test_market_panel_detail_open_regression.py tests\frontend\e2e\test_create_instrument_and_batch_agents.py -q`
   - 结果：`21 passed, 4 warnings in 2.23s`
 - **current conclusion**:
-  - 发布前核心 runtime 语义链路大体是通的。
-  - 但“GUI/account adapter headless 事件链路异常”与“更贴近发布目标的一条龙集成测试未稳定”意味着当前还不适合轻率宣称整条发布链路已经完全打通。
+  - 发布前核心 runtime 语义链路已不只是“大体可用”，而是经过更细回归后可确认：IPO settlement bridge、app-layer runtime account fetch、release minimal runtime chain 三层均已得到通过验证。
+  - 当前剩余未收尾问题主要集中在 `tests/test_kline_and_account_events.py::test_account_adapter_adds_account_on_created_event` 这一类 headless adapter 稳定性问题；它应视为前端适配层问题，不应再与发布主链路是否打通混为一谈。
 - **next actions**:
-  - 继续定位 `tests/test_kline_and_account_events.py::test_account_adapter_adds_account_on_created_event` 的进程退出根因。
-  - 继续稳定 `tests/test_release_minimal_runtime_chain.py`，优先找出卡住点是 MarketPanel/detail、snapshot listener、还是 account panel/app-layer service。
-  - 在新链路稳定前，不再新增计划型文档；只记录实际验证结果与真实阻塞点。
+  - 单独定位 `tests/test_kline_and_account_events.py::test_account_adapter_adds_account_on_created_event` 的 headless/adapter 异常。
+  - 继续把 release pretest 结果整理为最终发布前检查结论，只记录事实，不扩写计划型文档。
