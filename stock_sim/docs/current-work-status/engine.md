@@ -900,6 +900,51 @@ Bring snapshot-family facts into replay validation so replay is not only order/t
 - Later add run-scoped snapshot persistence if the data model evolves that way.
 - Tighten snapshot replay validation once snapshot event/row ownership is even more stable.
 
+## Run-scoped report note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Promote replay/recovery output from scattered summaries into a more complete run-scoped report structure that can serve as the main operator-facing backend health unit.
+
+### files involved
+- `services/replay_service.py`
+- `services/recovery_service.py`
+- `tests/test_replay_recovery_integration.py`
+- `tests/test_recovery.py`
+
+### total changed lines
+- focused reporting upgrade
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `def build_run_report(self, run_id: str) -> Dict[str, Any]:`
+- **last line**: `"ok": bool(dry.get("event_count", 0) >= 0 and validation.get("ok")),`
+
+#### fragment 2
+- **first line**: `replay_validation[run_id] = replay_service.build_run_report(run_id)`
+- **last line**: `assert 'summary' in first and 'validation' in first`
+
+### Change summary
+- Added a dedicated run-scoped replay report builder.
+- Recovery now stores run reports instead of only raw validation snippets.
+- Added regression coverage that checks recovery now exposes richer per-run report structure.
+
+### Purpose
+- Complete the fifth replay goal: richer run-scoped reporting.
+- Make backend health output easier to consume for later operator tooling or diagnostics.
+- Reduce fragmentation between dry-run summary, validation summary, and recovery report.
+
+### Impact / risk
+- Positive: run-scoped backend output is now more structured.
+- Positive: replay and recovery now share a clearer report shape.
+- Risk: report content is still count-based and will need richer facts later.
+
+### Next actions
+- Later add sim-dt range and checkpoint metadata into run reports.
+- Evolve run reports toward operator/debug tooling once backend phase-1 closes.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

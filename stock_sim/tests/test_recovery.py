@@ -25,6 +25,9 @@ def test_recovery_service_emits_resumed_event_and_report():
     if rep['status'] == 'ok':
         assert captured and captured[-1]['status'] == 'ok'
         assert 'replay_validation' in rep['checks']
+        if rep['checks']['replay_validation']:
+            first = next(iter(rep['checks']['replay_validation'].values()))
+            assert 'summary' in first and 'validation' in first
 
 
 def test_recovery_service_switches_readonly_on_mismatch():

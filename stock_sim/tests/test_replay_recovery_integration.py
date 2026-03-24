@@ -91,8 +91,9 @@ def test_replay_validate_against_persisted_facts_for_trade_run():
     event_bus.publish(EventType.SNAPSHOT_UPDATED, {'run_id': run_id, 'symbol': 'AAA', 'sim_day': 1, 'sim_dt': '0001-01-01T00:00:00', 'snapshot': {'symbol': 'AAA', 'last': 10.0, 'vol': 100, 'turnover': 1000.0}})
     time.sleep(0.05)
 
-    report = replay_service.validate_against_persisted_facts(run_id)
+    report = replay_service.build_run_report(run_id)
     assert report['run_id'] == run_id
-    assert report['event_side']['trades'] >= 1
-    assert 'trade_event_vs_trade_row_gap' in report['checks']
-    assert 'snapshot_event_vs_snapshot_row_gap' in report['checks']
+    assert report['summary']['run_id'] == run_id
+    assert report['validation']['event_side']['trades'] >= 1
+    assert 'trade_event_vs_trade_row_gap' in report['validation']['checks']
+    assert 'snapshot_event_vs_snapshot_row_gap' in report['validation']['checks']

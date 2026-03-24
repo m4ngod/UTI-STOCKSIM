@@ -64,7 +64,7 @@ class RecoveryService:
                     inconsistent_runs.append(run_id)
                 if run_id:
                     try:
-                        replay_validation[run_id] = replay_service.validate_against_persisted_facts(run_id)
+                        replay_validation[run_id] = replay_service.build_run_report(run_id)
                     except Exception:
                         replay_validation[run_id] = {"run_id": run_id, "ok": False, "error": "replay_validation_failed"}
 

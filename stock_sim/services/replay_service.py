@@ -169,6 +169,16 @@ class ReplayService:
         finally:
             s.close()
 
+    def build_run_report(self, run_id: str) -> Dict[str, Any]:
+        dry = self.dry_run_summary(run_id=run_id)
+        validation = self.validate_against_persisted_facts(run_id)
+        return {
+            "run_id": run_id,
+            "summary": dry,
+            "validation": validation,
+            "ok": bool(dry.get("event_count", 0) >= 0 and validation.get("ok")),
+        }
+
 
 replay_service = ReplayService()
 
