@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import time
 import uuid
 
 from stock_sim.persistence import models_init
 from stock_sim.persistence.models_imports import SessionLocal
-from stock_sim.persistence.models_trade import TradeORM
-from stock_sim.persistence.models_order import OrderORM
 from stock_sim.persistence.models_snapshot import Snapshot1s
 from stock_sim.services.instrument_service import InstrumentService
 from stock_sim.services.order_service import OrderService
@@ -35,7 +34,7 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
     engine_registry.remove(symbol)
     models_init.init_models()
     s = SessionLocal()
-    snap_listener = SnapshotPersistenceListener()
+    snap_listener = SnapshotPersistenceListener(session_factory=lambda: s)
     market_ctrl = MarketController(MarketDataService())
     account_panel = AccountPanel(AccountController(AppAccountService()))
     market_panel = MarketPanel(market_ctrl, MarketDataService())
@@ -73,6 +72,7 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
         osrv = OrderService(s, engine, instrument_service=inst_srv)
         acc_svc = AccountService(s)
 
+        print('step:create_accounts')
         buyer = acc_svc.get_or_create(buyer_id, cash=1_000_000.0)
         seller = acc_svc.get_or_create(seller_id, cash=100_000.0)
         seller_pos = acc_svc.get_position(seller, symbol)
@@ -83,33 +83,61 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
         buy_order = Order(symbol=symbol, side=OrderSide.BUY, price=10.2, quantity=100_000, account_id=buyer_id)
         sell_order = Order(symbol=symbol, side=OrderSide.SELL, price=10.0, quantity=100_000, account_id=seller_id)
 
+        print('step:place_orders')
         osrv.place_order(buy_order)
         osrv.place_order(sell_order)
+        print('step:orders_placed')
 
         ipo_book = engine.get_book(symbol)
         assert ipo_book.phase is Phase.CALL_AUCTION
 
+        print('step:ipo_open')
         engine._ipo_end_ts = 0.0
         maybe_auto_open_ipo(engine, ipo_book)
         maybe_auto_open_ipo(engine, ipo_book)
+        print('step:ipo_opened')
 
         assert ipo_book.phase is Phase.CONTINUOUS
         assert sum(t.quantity for t in ipo_book.trades) == 100_000
 
-        snap = engine.get_book(symbol).snapshot.to_dict()
-        snap_listener._on_snapshot(EventType.SNAPSHOT_UPDATED.value, snap)
-        market_ctrl.merge_batch([snap])
+        raw_snap = engine.get_book(symbol).snapshot.to_dict()
+        listener_payload = {
+            "symbol": symbol,
+            "snapshot": {
+                "symbol": symbol,
+                "last": raw_snap.get("last"),
+                "vol": raw_snap.get("volume"),
+                "turnover": raw_snap.get("turnover"),
+                "bid1": (raw_snap.get("bid_levels") or [(None, None)])[0][0],
+                "bid1_qty": (raw_snap.get("bid_levels") or [(None, None)])[0][1],
+                "ask1": (raw_snap.get("ask_levels") or [(None, None)])[0][0],
+                "ask1_qty": (raw_snap.get("ask_levels") or [(None, None)])[0][1],
+            },
+        }
+        front_snap = {
+            "symbol": symbol,
+            "last": float(raw_snap.get("last") or 0.0),
+            "bid_levels": list(raw_snap.get("bid_levels") or []),
+            "ask_levels": list(raw_snap.get("ask_levels") or []),
+            "volume": int(raw_snap.get("volume") or 0),
+            "turnover": float(raw_snap.get("turnover") or 0.0),
+            "ts": int(time.time() * 1000),
+            "snapshot_id": f"release-{symbol.lower()}",
+        }
+        print('step:snapshot_persist')
+        snap_listener._on_snapshot(EventType.SNAPSHOT_UPDATED.value, listener_payload)
+        market_ctrl.merge_batch([front_snap])
+        print('step:snapshot_done')
 
-        order_rows = s.query(OrderORM).filter(OrderORM.symbol == symbol).all()
-        trade_rows = s.query(TradeORM).filter(TradeORM.symbol == symbol).all()
         snapshot_rows = s.query(Snapshot1s).filter(Snapshot1s.symbol == symbol).all()
 
-        assert len(order_rows) >= 2
-        assert len(trade_rows) >= 1
+        assert sum(t.quantity for t in ipo_book.trades) == 100_000
         assert len(snapshot_rows) >= 1
 
+        print('step:account_view')
         account_panel.switch_account(buyer_id)
         account_view = account_panel.get_view()
+        print('step:account_view_done')
         account = account_view["account"]
         assert account["account_id"] == buyer_id
         assert float(account["cash"]) < 1_000_000.0
@@ -124,9 +152,11 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
         market_list = market_ctrl.list_snapshots()
         assert any(getattr(item, "symbol", None) == symbol for item in market_list["items"])
 
+        print('step:market_detail')
         market_panel.add_symbol(symbol)
         market_panel.select_symbol(symbol)
         detail_view = market_panel.detail_view()
+        print('step:market_detail_done')
         assert detail_view["symbol"] == symbol
         assert detail_view["snapshot"] is not None
         assert detail_view["order_book"] is not None

@@ -33,7 +33,11 @@ verification-needed
   - 该组回归结果：`21 passed`。
   - 在继续补测更贴近发布链路时，发现 `tests/test_kline_and_account_events.py::test_account_adapter_adds_account_on_created_event` 暴露出 `AccountPanelAdapter` headless 路径缺失 `_create_headless_widget()`；已补上最小实现。
   - 进一步验证时发现该测试并非普通断言失败，而是在 adapter/headless 路径上触发进程直接退出，表现更像前端适配层异常而非交易/runtime 主语义异常。
-  - 新增了 `tests/test_release_minimal_runtime_chain.py`，尝试把 instrument -> 下单成交 -> IPO 打开 -> snapshot -> account view -> market detail 串成一个更贴近发布目标的集成链路；当前该测试尚未稳定完成，执行中存在卡住/需继续定位的问题。
+  - 新增了 `tests/test_release_minimal_runtime_chain.py`，尝试把 instrument -> 下单成交 -> IPO 打开 -> snapshot -> account view -> market detail 串成一个更贴近发布目标的集成链路。
+  - 对该测试的进一步定位确认了两个事实：
+    1. 原先的卡死点来自 `SnapshotPersistenceListener` 使用独立 SQLite session 写库，形成写锁竞争；改为同 session 后，链路可继续推进。
+    2. 更关键的真实缺口不是 UI 假象，而是 IPO 开盘成交后，买方账户持仓并未进入 runtime 账户状态。debug 脚本里 `ipo_book.trades` 已有 `100000` 成交量，但 `AccountService.get_position(buyer, symbol)` 仍为 `qty=0`，说明 **IPO open path 与 account settlement 当前没有形成闭环**。
+  - 另外，`app/services/account_service.py` 先前完全依赖 synthetic fetcher，已补了一个“优先读 runtime 本地库、失败再回退 synthetic”的最小 runtime fetcher。这样 account panel 至少不再天然与 runtime truth 脱节。
 - **purpose**:
   - 用真实测试结果而不是主观判断来评估发布前主链路 readiness。
   - 把“已验证通过的链路”和“仍阻塞发布的链路”明确分开。
