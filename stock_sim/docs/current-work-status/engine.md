@@ -768,6 +768,51 @@ Add a minimal stable row-side assertion for snapshot-family work without forcing
 ### Next actions
 - Later bridge producer event + listener row + replay checks once the full chain is stable enough.
 
+## Replay persisted-facts validation note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Upgrade replay validation from pure event reading toward a first real comparison against persisted runtime facts for a run.
+
+### files involved
+- `services/replay_service.py`
+- `tests/test_replay_recovery_integration.py`
+
+### total changed lines
+- moderate focused validation upgrade
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `def validate_against_persisted_facts(self, run_id: str) -> Dict[str, Any]:`
+- **last line**: `"ok": checks["trade_event_vs_trade_row_gap"] == 0,`
+
+#### fragment 2
+- **first line**: `def test_replay_validate_against_persisted_facts_for_trade_run():`
+- **last line**: `assert report['checks']['trade_event_vs_trade_row_gap'] == 0`
+
+### Change summary
+- Added replay-side persisted-facts validation for a run.
+- Compared event-side trade/order counts against persisted order/trade/ledger rows.
+- Added integration coverage for a real trade-producing run with run-scoped validation output.
+
+### Purpose
+- Move replay from passive event reading toward active backend verification.
+- Create a first reusable validation seam between replay output and persisted runtime facts.
+- Advance the second replay goal: stricter replay validation.
+
+### Impact / risk
+- Positive: replay now has an explicit persisted-facts validation path.
+- Positive: this creates a concrete base for later stricter state reconciliation.
+- Risk: current order-side comparison is still coarse because event families are not yet fully normalized.
+- Risk: this is still count-based validation, not full reconstructed-state equivalence.
+
+### Next actions
+- Add `sim_dt` window validation and richer per-run checks.
+- Later compare replay validation with recovery report directly.
+- Expand from count checks toward fact-level reconciliation.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

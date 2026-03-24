@@ -60,3 +60,20 @@ def test_replay_and_recovery_integration():
         limit=n,
     )
     assert collected == list(range(n))
+
+
+def test_replay_validate_against_persisted_facts_for_trade_run():
+    models_init.init_models()
+    disable_event_persistence()
+    assert enable_event_persistence(force=True)
+
+    run_id = 'RUN-VERIFY-001'
+    for i in range(2):
+        event_bus.publish(EventType.ACCOUNT_UPDATED, {'i': i, 'run_id': run_id})
+    event_bus.publish(EventType.TRADE, {'run_id': run_id, 'symbol': 'AAA', 'trade': {'symbol': 'AAA', 'price': 10.0, 'quantity': 100}})
+    time.sleep(0.05)
+
+    report = replay_service.validate_against_persisted_facts(run_id)
+    assert report['run_id'] == run_id
+    assert report['event_side']['trades'] >= 1
+    assert 'trade_event_vs_trade_row_gap' in report['checks']
