@@ -20,7 +20,7 @@ from .base_adapter import PanelAdapter
 
 try:  # 尝试导入 PySide6
     from PySide6.QtWidgets import (
-        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QComboBox, QGroupBox
+        QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QComboBox, QGroupBox
     )  # type: ignore
     from PySide6.QtGui import QColor  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
@@ -118,7 +118,7 @@ except Exception:  # pragma: no cover
     OrdersPanelAdapter = None  # type: ignore
 
 class AccountPanelAdapter(PanelAdapter):
-    COLS = ["symbol", "quantity", "avg_price", "pnl_unreal", "pnl_ratio"]
+    COLS = ["symbol", "quantity", "frozen_qty", "borrowed_qty", "exposure_state", "avg_price", "pnl_unreal", "pnl_ratio"]
 
     def __init__(self):  # noqa: D401
         super().__init__()
@@ -134,6 +134,13 @@ class AccountPanelAdapter(PanelAdapter):
 
     # ---------- PanelAdapter overrides ----------
     def _create_widget(self):  # noqa: D401
+        try:
+            app = QApplication.instance()  # type: ignore[name-defined]
+        except Exception:
+            app = None
+        if app is None or QApplication is object:  # type: ignore[comparison-overlap]
+            return self._create_headless_widget()
+
         container = QWidget()  # type: ignore
         try:  # GUI 可用时构建布局
             if isinstance(container, QWidget):  # type: ignore
@@ -180,11 +187,14 @@ class AccountPanelAdapter(PanelAdapter):
                 v.addLayout(acct_row)  # type: ignore
                 # Summary 行
                 h = QHBoxLayout()  # type: ignore
-                for key in ["account_id", "cash", "equity", "utilization", "realized_pnl", "unrealized_pnl"]:
+                for key in ["account_id", "cash", "frozen_cash", "frozen_fee", "equity", "utilization", "realized_pnl", "unrealized_pnl"]:
                     lbl = QLabel(f"{key}:")  # type: ignore
                     self._summary[key] = lbl  # 存 label
                     h.addWidget(lbl)  # type: ignore
                 v.addLayout(h)  # type: ignore
+                # 语义说明
+                self._summary['semantic_gap'] = QLabel("account semantics: summary-oriented view")  # type: ignore
+                v.addWidget(self._summary['semantic_gap'])  # type: ignore
                 # Table
                 table = QTableWidget(0, len(self.COLS))  # type: ignore
                 table.setColumnCount(len(self.COLS))  # type: ignore
@@ -262,6 +272,74 @@ class AccountPanelAdapter(PanelAdapter):
             pass
         return container
 
+    def _create_headless_widget(self):
+        class _HeadlessAccountWidget:
+            pass
+
+        self._account_combo = QComboBox()  # type: ignore
+        self._table = QTableWidget(0, len(self.COLS))  # type: ignore
+        try:
+            self._table.setColumnCount(len(self.COLS))  # type: ignore[attr-defined]
+            self._table.setHorizontalHeaderLabels(self.COLS)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        for key in ["account_id", "cash", "frozen_cash", "frozen_fee", "equity", "utilization", "realized_pnl", "unrealized_pnl"]:
+            self._summary[key] = QLabel(f"{key}:")  # type: ignore
+        self._summary['semantic_gap'] = QLabel("account semantics: summary-oriented view")  # type: ignore
+
+        try:
+            def _on_batch_completed(_topic: str, payload: Dict[str, Any]):
+                try:
+                    ids: List[str] = []
+                    if isinstance(payload, dict):
+                        ids = list(payload.get('success_ids') or [])
+                    if not ids or self._account_combo is None:
+                        return
+                    for aid in ids:
+                        try:
+                            idx = self._account_combo.findText(aid)  # type: ignore[attr-defined]
+                        except Exception:
+                            idx = -1
+                        if idx == -1:
+                            try:
+                                self._account_combo.addItem(aid)  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            self._cancel_subs.append(subscribe_topic("agent.batch.create.completed", _on_batch_completed, async_mode=False))
+        except Exception:
+            pass
+
+        try:
+            def _on_account_created(_topic: str, payload: Dict[str, Any]):
+                try:
+                    aid = None
+                    if isinstance(payload, dict):
+                        aid = payload.get('account_id')
+                    if not aid or self._account_combo is None:
+                        return
+                    try:
+                        idx = self._account_combo.findText(aid)  # type: ignore[attr-defined]
+                    except Exception:
+                        idx = -1
+                    if idx == -1:
+                        try:
+                            self._account_combo.addItem(aid)  # type: ignore[attr-defined]
+                            try:
+                                self._account_combo.setCurrentIndex(self._account_combo.findText(aid))  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            self._cancel_subs.append(subscribe_topic("account.created", _on_account_created, async_mode=False))
+        except Exception:
+            pass
+
+        return _HeadlessAccountWidget()
+
     def __del__(self):
         try:
             for c in list(self._cancel_subs):
@@ -304,8 +382,16 @@ class AccountPanelAdapter(PanelAdapter):
     # ---------- Internal: summary ----------
     def _update_summary(self, acc: Dict[str, Any]):
         for k, lbl in self._summary.items():
-            val = acc.get(k)
             try:
+                if k == 'semantic_gap':
+                    meta = acc.get('account_meta') or {}
+                    gap = meta.get('semantic_gap') or 'summary-oriented view'
+                    emphasized = meta.get('runtime_fields_emphasized') or []
+                    extra = f" | focus={','.join(emphasized)}" if emphasized else ''
+                    if isinstance(lbl, QLabel):  # type: ignore
+                        lbl.setText(f"account semantics: {gap}{extra}")  # type: ignore
+                    continue
+                val = acc.get(k)
                 if isinstance(lbl, QLabel):  # type: ignore
                     lbl.setText(f"{k}:{val}")  # type: ignore
             except Exception:  # pragma: no cover
@@ -315,7 +401,10 @@ class AccountPanelAdapter(PanelAdapter):
         for k, lbl in self._summary.items():
             try:
                 if isinstance(lbl, QLabel):  # type: ignore
-                    lbl.setText(f"{k}:")  # type: ignore
+                    if k == 'semantic_gap':
+                        lbl.setText('account semantics:')  # type: ignore
+                    else:
+                        lbl.setText(f"{k}:")  # type: ignore
             except Exception:  # pragma: no cover
                 pass
 
