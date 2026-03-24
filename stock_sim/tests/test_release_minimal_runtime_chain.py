@@ -93,8 +93,8 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
 
         print('step:ipo_open')
         engine._ipo_end_ts = 0.0
-        maybe_auto_open_ipo(engine, ipo_book)
-        maybe_auto_open_ipo(engine, ipo_book)
+        maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
+        maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
         print('step:ipo_opened')
 
         assert ipo_book.phase is Phase.CONTINUOUS

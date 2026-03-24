@@ -98,10 +98,15 @@ try:
     print('phase_after_orders', ipo_book.phase, flush=True)
     engine._ipo_end_ts = 0.0
     print('maybe_auto_open_ipo_1', flush=True)
-    maybe_auto_open_ipo(engine, ipo_book)
+    maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
     print('maybe_auto_open_ipo_2', flush=True)
-    maybe_auto_open_ipo(engine, ipo_book)
+    maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
     print('phase_after_ipo', ipo_book.phase, 'trades', sum(t.quantity for t in ipo_book.trades), flush=True)
+    from stock_sim.persistence.models_order import OrderORM
+    buy_orm = s.get(OrderORM, buy_order.order_id)
+    sell_orm = s.get(OrderORM, sell_order.order_id)
+    print('buy_orm', {'id': getattr(buy_orm, 'id', None), 'filled': getattr(buy_orm, 'filled', None), 'status': getattr(getattr(buy_orm, 'status', None), 'name', getattr(buy_orm, 'status', None)), 'qty': getattr(buy_orm, 'quantity', None)}, flush=True)
+    print('sell_orm', {'id': getattr(sell_orm, 'id', None), 'filled': getattr(sell_orm, 'filled', None), 'status': getattr(getattr(sell_orm, 'status', None), 'name', getattr(sell_orm, 'status', None)), 'qty': getattr(sell_orm, 'quantity', None)}, flush=True)
 
     raw_snap = engine.get_book(symbol).snapshot.to_dict()
     listener_payload = {

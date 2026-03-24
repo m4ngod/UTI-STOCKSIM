@@ -41,7 +41,7 @@ def _compute_auction_price(buys: list, sells: list, initial_price: float | None)
     return best[3], best[0]
 
 
-def maybe_auto_open_ipo(engine, book) -> bool:
+def maybe_auto_open_ipo(engine, book, settle_trades_callback=None) -> bool:
     try:
         import time as _t
         if book.phase is not Phase.CALL_AUCTION:
@@ -106,8 +106,16 @@ def maybe_auto_open_ipo(engine, book) -> bool:
         # 切换
         auction_price = getattr(engine, '_ipo_auction_price', 0.0)
         trades = getattr(engine, '_ipo_trades_buffer', []) or []
-        for tr in trades:
-            event_bus.publish(EventType.TRADE, {"trade": tr.to_dict(), "phase": "CALL_AUCTION", "symbol": tr.symbol})
+        settled = False
+        if trades and callable(settle_trades_callback):
+            try:
+                settle_trades_callback(trades)
+                settled = True
+            except Exception:
+                settled = False
+        if not settled:
+            for tr in trades:
+                event_bus.publish(EventType.TRADE, {"trade": tr.to_dict(), "phase": "CALL_AUCTION", "symbol": tr.symbol})
         if trades:
             try: book.trades.extend(trades)
             except Exception: pass
