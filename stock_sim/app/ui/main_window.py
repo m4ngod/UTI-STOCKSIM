@@ -13,7 +13,10 @@ from typing import Any, Optional, List, Dict
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
     from PySide6.QtGui import QAction  # type: ignore
-    from PySide6.QtWidgets import QMainWindow, QWidget, QLabel, QMenuBar, QVBoxLayout  # type: ignore
+    from PySide6.QtWidgets import (
+        QMainWindow, QWidget, QLabel, QMenuBar, QVBoxLayout, QDockWidget,
+        QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QPushButton
+    )  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
     QMainWindow = object  # type: ignore
     class QWidget:  # type: ignore
@@ -44,13 +47,16 @@ except Exception:  # pragma: no cover - headless fallback
 from app.panels import list_panels, get_panel  # 惰性加载
 from .docking import DockManager
 from app.state.layout_persistence import LayoutPersistence  # 新增
+from observability.metrics import metrics
 # 新增：UI 桥
 try:
     from app.ui.ui_refresh import register_main_window as _register_mw  # type: ignore
 except Exception:  # pragma: no cover
     _register_mw = None  # type: ignore
 
-__all__ = ["MainWindow"]
+DEFAULT_PRELOAD_PANELS = ["account", "market", "agents", "leaderboard", "clock", "orders"]
+
+__all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS"]
 
 class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self):  # noqa: D401
@@ -59,6 +65,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._layout_store = LayoutPersistence(path="layout_main.json")  # 持久化实例
         self._legacy_central: Any = None
         self._legacy_layout: Any = None
+        # 现代主框架：左导航 + 中央主工作区；同时兼容旧测试接口
+        self._layout: Any = None
+        self._panel_widgets: Dict[str, Any] = {}
+        self._nav_list: Any = None
+        self._workspace_stack: Any = None
+        self._workspace_container: Any = None
+        self._workspace_pages: Dict[str, Any] = {}
+        self._workspace_index_to_name: Dict[int, str] = {}
+        self._page_history: List[str] = []
+        self._last_non_symbol_page: str = 'market'
         # 简易标题
         if hasattr(self, 'setWindowTitle'):
             try:
@@ -66,6 +82,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             except Exception:  # pragma: no cover
                 pass
         self._init_menu()
+        self._init_window_style()
         self._restore_layout_safe()  # 启动时恢复
         # 向 UI 桥注册自身，以允许外部打开动态面板
         try:
@@ -76,21 +93,183 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def ensure_legacy_central_layout(self):
         if self._legacy_central is not None and self._legacy_layout is not None:
+            self._layout = self._legacy_layout
             return self._legacy_layout
         if not hasattr(self, 'setCentralWidget'):
             return None
         try:
             central = QWidget(self)  # type: ignore
-            layout = QVBoxLayout(central)  # type: ignore
-            if hasattr(layout, 'setContentsMargins'):
-                layout.setContentsMargins(0, 0, 0, 0)
+            root = QHBoxLayout(central)  # type: ignore
+            if hasattr(root, 'setContentsMargins'):
+                root.setContentsMargins(0, 0, 0, 0)
+            if hasattr(root, 'setSpacing'):
+                root.setSpacing(0)
+
+            nav = QListWidget()  # type: ignore
+            if hasattr(nav, 'setObjectName'):
+                nav.setObjectName('mainNavList')  # type: ignore[attr-defined]
+            if hasattr(nav, 'setMinimumWidth'):
+                nav.setMinimumWidth(164)  # type: ignore[attr-defined]
+            if hasattr(nav, 'setMaximumWidth'):
+                nav.setMaximumWidth(220)  # type: ignore[attr-defined]
+            try:
+                if hasattr(nav, 'setSpacing'):
+                    nav.setSpacing(4)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+            workspace_wrap = QWidget()  # type: ignore
+            workspace_layout = QVBoxLayout(workspace_wrap)  # type: ignore
+            if hasattr(workspace_layout, 'setContentsMargins'):
+                workspace_layout.setContentsMargins(12, 12, 12, 12)
+            if hasattr(workspace_layout, 'setSpacing'):
+                workspace_layout.setSpacing(8)
+            stack = QStackedWidget()  # type: ignore
+            workspace_layout.addWidget(stack)  # type: ignore
+
+            root.addWidget(nav)  # type: ignore
+            root.addWidget(workspace_wrap, 1)  # type: ignore
             self.setCentralWidget(central)  # type: ignore[attr-defined]
+
             self._legacy_central = central
-            self._legacy_layout = layout
+            self._legacy_layout = workspace_layout
+            self._layout = workspace_layout
+            self._nav_list = nav
+            self._workspace_stack = stack
+            self._workspace_container = workspace_wrap
+
+            try:
+                if hasattr(nav, 'currentRowChanged'):
+                    def _switch_workspace(index):
+                        try:
+                            if self._workspace_stack is not None and hasattr(self._workspace_stack, 'setCurrentIndex'):
+                                if index >= 0:
+                                    self._workspace_stack.setCurrentIndex(index)  # type: ignore[attr-defined]
+                                    name = self._workspace_index_to_name.get(index)
+                                    if name and not str(name).startswith('symbol:'):
+                                        if not self._page_history or self._page_history[-1] != name:
+                                            self._page_history.append(name)
+                        except Exception:
+                            pass
+                    nav.currentRowChanged.connect(_switch_workspace)  # type: ignore[attr-defined]
+            except Exception:
+                pass
         except Exception:
             self._legacy_central = None
             self._legacy_layout = None
+            self._layout = None
+            self._nav_list = None
+            self._workspace_stack = None
+            self._workspace_container = None
         return self._legacy_layout
+
+    def _ensure_central_layout(self):
+        """Compatibility shim for older tests/helpers.
+
+        Real panel hosting is dock-based now, but a stable central layout object is
+        still exposed so historical tests can assert idempotence and inspect mount
+        bookkeeping without forcing a second structural implementation.
+        """
+        return self.ensure_legacy_central_layout()
+
+    def _make_workspace_page(self, name: str, widget: Any, title: str):
+        try:
+            page = QWidget()  # type: ignore
+            outer = QVBoxLayout(page)  # type: ignore
+            if hasattr(outer, 'setContentsMargins'):
+                outer.setContentsMargins(0, 0, 0, 0)
+            if hasattr(outer, 'setSpacing'):
+                outer.setSpacing(8)
+            if str(name).startswith('symbol:'):
+                header = QWidget()  # type: ignore
+                row = QHBoxLayout(header)  # type: ignore
+                if hasattr(row, 'setContentsMargins'):
+                    row.setContentsMargins(0, 0, 0, 0)
+                if hasattr(row, 'setSpacing'):
+                    row.setSpacing(8)
+                back = QPushButton('←')  # type: ignore
+                if hasattr(back, 'setFixedWidth'):
+                    back.setFixedWidth(40)  # type: ignore[attr-defined]
+                if hasattr(back, 'setToolTip'):
+                    back.setToolTip('Back')  # type: ignore[attr-defined]
+                def _go_back():
+                    try:
+                        target = getattr(self, '_last_non_symbol_page', 'market') or 'market'
+                        for candidate in reversed(self._page_history):
+                            if not str(candidate).startswith('symbol:'):
+                                target = candidate
+                                break
+                        self.show_workspace_page(target)
+                    except Exception:
+                        pass
+                if hasattr(back, 'clicked'):
+                    back.clicked.connect(_go_back)  # type: ignore[attr-defined]
+                label = QLabel(title)  # type: ignore
+                row.addWidget(back)  # type: ignore
+                row.addWidget(label, 1)  # type: ignore
+                outer.addWidget(header)  # type: ignore
+            outer.addWidget(widget, 1)  # type: ignore
+            return page
+        except Exception:
+            return widget
+
+    def show_workspace_page(self, name: str):
+        try:
+            if name not in self._workspace_pages:
+                return
+            page = self._workspace_pages[name]
+            if self._workspace_stack is not None and hasattr(self._workspace_stack, 'indexOf'):
+                idx = self._workspace_stack.indexOf(page)  # type: ignore[attr-defined]
+                if idx >= 0 and hasattr(self._workspace_stack, 'setCurrentIndex'):
+                    self._workspace_stack.setCurrentIndex(idx)  # type: ignore[attr-defined]
+                if self._nav_list is not None and hasattr(self._nav_list, 'setCurrentRow') and not str(name).startswith('symbol:'):
+                    self._nav_list.setCurrentRow(idx)  # type: ignore[attr-defined]
+            if not str(name).startswith('symbol:'):
+                self._last_non_symbol_page = name
+            if not self._page_history or self._page_history[-1] != name:
+                self._page_history.append(name)
+            try:
+                target = self._panel_widgets.get(name)
+                refresh = getattr(target, 'refresh', None)
+                if callable(refresh):
+                    refresh()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _init_window_style(self):
+        try:
+            if hasattr(self, 'setDockOptions'):
+                opts = 0
+                for name in ('AllowNestedDocks', 'AllowTabbedDocks', 'AnimatedDocks'):
+                    opt = getattr(QMainWindow, name, None)
+                    if opt is not None:
+                        opts = opts | opt
+                if opts:
+                    self.setDockOptions(opts)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'setStyleSheet'):
+                self.setStyleSheet(
+                    'QMainWindow { background: #1f2329; } '
+                    'QWidget { color: #e6edf3; font-size: 13px; background: #1f2329; } '
+                    'QDockWidget::title { background: #262c36; padding: 6px 10px; font-weight: 600; border: none; } '
+                    'QDockWidget { color: #dce4ec; border: 1px solid #2d333b; } '
+                    'QMenuBar { background: #1f2329; color: #c9d1d9; border-bottom: 1px solid #2d333b; } '
+                    'QMenuBar::item { padding: 6px 10px; border-radius: 6px; } '
+                    'QMenuBar::item:selected { background: #2d333b; } '
+                    'QListWidget#mainNavList { background: #161b22; border: none; padding: 14px 10px; outline: none; } '
+                    'QListWidget#mainNavList::item { padding: 12px 14px; margin: 3px 6px; border-radius: 12px; color: #c9d1d9; } '
+                    'QListWidget#mainNavList::item:selected { background: #2d333b; color: #ffffff; } '
+                    'QListWidget#mainNavList::item:hover { background: #21262d; } '
+                    'QPushButton { background: #262c36; border: 1px solid #30363d; padding: 6px 10px; border-radius: 10px; color: #e6edf3; } '
+                    'QPushButton:hover { background: #2d333b; } '
+                    'QLabel { background: transparent; } '
+                )  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     # -------- Menu --------
     def _init_menu(self):  # 轻量 Panels 菜单
@@ -135,26 +314,64 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Layout Persistence --------
     def serialize_layout(self) -> Dict[str, Any]:
-        """序列化当前打开面板列表 (简化：仅存 open=True 顺序)."""
-        panels_open = self.list_open()
+        """Serialize the current workspace-oriented app state.
+
+        Current policy:
+        - persist only primary workspace pages
+        - do not persist dynamic symbol detail pages yet
+        - remember the currently active non-symbol page
+        """
+        workspace_names = [
+            name for name in self._workspace_pages.keys()
+            if not str(name).startswith('symbol:')
+        ]
+        ordered_names = [
+            name for name in self._workspace_index_to_name.values()
+            if name in workspace_names
+        ]
+        if not ordered_names:
+            ordered_names = [
+                name for name in ['market', 'account', 'agents', 'leaderboard', 'clock', 'orders']
+                if name in self._workspace_pages
+            ]
+        active_page = getattr(self, '_last_non_symbol_page', 'market') or 'market'
+        if active_page not in ordered_names and ordered_names:
+            active_page = ordered_names[0]
         return {
-            "panels": {name: {"open": True, "order": idx} for idx, name in enumerate(panels_open)}
+            "panels": {name: {"open": True, "order": idx} for idx, name in enumerate(ordered_names)},
+            "workspace": {
+                "active_page": active_page,
+            },
         }
 
     def restore_layout(self, layout: Dict[str, Any]):  # 外部可调用
         try:
             panels_def = layout.get("panels", {}) if isinstance(layout, dict) else {}
+            workspace_def = layout.get("workspace", {}) if isinstance(layout, dict) else {}
         except Exception:
             panels_def = {}
-        # 按 order 排序打开
+            workspace_def = {}
+        # 按 order 排序打开；当前阶段仅恢复主 workspace pages，不自动恢复 symbol:* detail pages
         ordered = sorted(
-            [(name, cfg) for name, cfg in panels_def.items() if isinstance(cfg, dict) and cfg.get("open")],
+            [
+                (name, cfg) for name, cfg in panels_def.items()
+                if isinstance(cfg, dict) and cfg.get("open") and not str(name).startswith('symbol:')
+            ],
             key=lambda x: x[1].get("order", 0)
         )
+        restored_names: List[str] = []
         for name, _ in ordered:
             try:
-                self.open_panel(name)
+                opened = self.open_panel(name)
+                if opened is not None:
+                    restored_names.append(name)
             except Exception:  # pragma: no cover
+                pass
+        active_page = workspace_def.get('active_page') if isinstance(workspace_def, dict) else None
+        if active_page in restored_names:
+            try:
+                self.show_workspace_page(active_page)
+            except Exception:
                 pass
 
     def _restore_layout_safe(self):
@@ -177,6 +394,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def open_panel(self, name: str) -> Optional[Any]:
         existing = self._dock.get_panel(name)
         if existing is not None:
+            if name in self._workspace_pages:
+                try:
+                    self.show_workspace_page(name)
+                except Exception:
+                    pass
             return existing
         if not any(p["name"] == name for p in list_panels()):
             return None
@@ -194,14 +416,54 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             widget = obj
         else:
             widget = QLabel(f"Placeholder panel: {name}")  # type: ignore
-        self._dock.add_panel(name, widget)
-        # 保存布局（立即，后续可加节流）
-        self._save_layout()
-        return widget
+
+        self._ensure_central_layout()
+        try:
+            self._panel_widgets[name] = widget
+            primary_panels = {'market', 'account', 'agents', 'clock', 'leaderboard', 'orders'} | {n for n in self.list_open() if str(n).startswith('symbol:')}
+            if name in primary_panels or str(name).startswith('symbol:'):
+                try:
+                    if self._workspace_stack is not None and hasattr(self._workspace_stack, 'addWidget'):
+                        title = next((p.get('title') for p in list_panels() if p.get('name') == name), None) or name
+                        page = self._make_workspace_page(name, widget, title)
+                        self._workspace_stack.addWidget(page)  # type: ignore[attr-defined]
+                        idx = self._workspace_stack.count() - 1 if hasattr(self._workspace_stack, 'count') else 0
+                        self._workspace_pages[name] = page
+                        self._workspace_index_to_name[idx] = name
+                        if self._nav_list is not None and hasattr(self._nav_list, 'addItem') and not str(name).startswith('symbol:'):
+                            nav_titles = {
+                                'market': 'Market',
+                                'account': 'Account',
+                                'agents': 'Agents',
+                                'clock': 'Clock',
+                                'leaderboard': 'Leaderboard',
+                                'orders': 'Orders',
+                            }
+                            self._nav_list.addItem(nav_titles.get(name, title))  # type: ignore[attr-defined]
+                        self.show_workspace_page(name)
+                        try:
+                            if hasattr(page, 'update'):
+                                page.update()  # type: ignore[attr-defined]
+                            if hasattr(page, 'repaint'):
+                                page.repaint()  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                except Exception:
+                    if self._layout is not None and hasattr(self._layout, 'addWidget'):
+                        self._layout.addWidget(widget)
+            else:
+                self._dock.add_panel(name, widget)
+            metrics.inc("panel_mount_success")
+            self._save_layout()
+            return widget
+        except Exception:
+            metrics.inc("panel_mount_failure")
+            raise
 
     def close_panel(self, name: str) -> bool:
         ok = self._dock.remove_panel(name)
         if ok:
+            self._panel_widgets.pop(name, None)
             self._save_layout()
         return ok
 
@@ -209,7 +471,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         return [p["name"] for p in list_panels()]
 
     def list_open(self) -> List[str]:
-        return self._dock.list_open()
+        """Return the current app-open state with workspace-first semantics.
+
+        Current policy:
+        - primary workspace pages come first in workspace order
+        - dynamic symbol workspace pages come next in workspace order
+        - supporting dock-only panels are appended afterward
+        """
+        workspace_names = [name for name in self._workspace_index_to_name.values() if name in self._workspace_pages]
+        dock_names = [name for name in self._dock.list_open() if name not in workspace_names]
+        return workspace_names + dock_names
 
     # 预留: 更复杂的 Qt saveState/saveGeometry 保存 (后续扩展)
 

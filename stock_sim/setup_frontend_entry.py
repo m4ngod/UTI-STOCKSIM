@@ -14,8 +14,14 @@ import argparse
 from typing import Optional
 
 try:
-    from app.main import run_frontend
+    from app.headless import run_headless_frontend
     from app.state.settings_store import SettingsStore
+    from app.panels import register_builtin_panels, register_ui_adapters
+    from app.ui.main_window import DEFAULT_PRELOAD_PANELS, MainWindow
+    try:
+        from PySide6.QtWidgets import QApplication  # type: ignore
+    except Exception:  # pragma: no cover
+        QApplication = None  # type: ignore
 except Exception as e:  # pragma: no cover
     print("Failed to import frontend modules:", e, file=sys.stderr)
     sys.exit(2)
@@ -38,23 +44,63 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument("--theme", default="light", help="initial theme")
     return p.parse_args(argv)
 
+def _start_frontend(*, headless: bool):
+    """Entry-local startup wrapper.
+
+    Product-entry rule:
+    - headless uses the dedicated `app.headless` surface
+    - GUI startup is owned locally here using the real `MainWindow`
+    - the console entry should not depend on `app.main` as a GUI fallback
+    """
+    if headless:
+        return run_headless_frontend()
+
+    if QApplication is None:
+        raise RuntimeError("GUI runtime unavailable: PySide6/QApplication is not available")
+
+    register_builtin_panels()
+    try:
+        register_ui_adapters()
+    except Exception:
+        pass
+    app = QApplication.instance() or QApplication([])
+    mw = MainWindow()
+    try:
+        from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore
+        _ui_register_main_window(mw)
+    except Exception:
+        pass
+    for name in DEFAULT_PRELOAD_PANELS:
+        try:
+            mw.open_panel(name)
+        except Exception:
+            pass
+    try:
+        mw.show()
+        app.exec()
+    except Exception:
+        pass
+    return mw
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     store, changes = _init_settings(args.lang, args.theme)
-    # 仅在传入 --headless 时 headless=True, 不再强制
-    mw = run_frontend(headless=args.headless)
-    # 打开默认几个常用面板 (若注册完成)
+    mw = _start_frontend(headless=args.headless)
+    # 注意：GUI 路径已在 _start_frontend() 内完成默认预加载。
+    # 这里不再重复 open_panel()，避免同一面板被 workspace/dock 双重挂载，
+    # 生成一组有内容、一组空白的重复工作区项。
+    opened = []
     try:
-        for name in ["account", "market", "agents", "leaderboard", "clock", "orders"]:
-            try:
-                mw.open_panel(name)
-            except Exception:
-                pass
+        if hasattr(mw, 'opened_panels') and isinstance(getattr(mw, 'opened_panels', None), dict):
+            opened = list(mw.opened_panels.keys())
+        elif hasattr(mw, 'list_open') and callable(getattr(mw, 'list_open', None)):
+            opened = list(mw.list_open())
     except Exception:
-        pass
+        opened = []
     print(
         f"frontend started headless={args.headless} lang={store.get_state().language} "
-        f"theme={store.get_state().theme} opened={list(mw.opened_panels.keys())} changes={list(changes.keys())}"  # noqa: E501
+        f"theme={store.get_state().theme} opened={opened} changes={list(changes.keys())}"  # noqa: E501
     )
     return 0
 
