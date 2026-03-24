@@ -47,16 +47,19 @@ in-progress
   - 用真实测试结果而不是主观判断来评估发布前主链路 readiness。
   - 把“已验证通过的链路”和“仍阻塞发布的链路”明确分开。
 - **impact / risk**:
-  - 正向：runtime 关键业务语义、Market detail 合同、Account/Orders 合同、headless 创建 instrument + 批量 retail 这几块已有较扎实回归护栏。
-  - 风险：`AccountPanelAdapter` 的 headless/account-created 事件路径仍有异常，说明 GUI/account 适配层在发布前还不能视作完全稳定。
-  - 风险：更贴近你要求的“一条龙最小发布链路”新集成测试还未跑稳，不能宣称已完整打通 GUI 账户资金变动 + Market K 线绘制的真实发布链路。
+  - 正向：runtime 关键业务语义、Market detail 合同、Account/Orders 合同、headless 创建 instrument + 批量 retail、IPO settlement bridge、app-layer runtime account fetch、release minimal runtime chain 这几块现在都有可复验护栏。
+  - 当前主要剩余问题已从主链路 blocker 降为发布前质量收尾项：Pydantic v2 弃用 warning（`@validator` / `.dict()`）。
 - **verified facts**:
   - 已通过测试集命令：
     - `.\.venv\Scripts\python -m pytest tests\test_ipo_minimal_path.py tests\test_tplus1_order_flow.py tests\test_order_funding_semantics.py tests\test_order_tif_semantics.py tests\test_order_short_cover_semantics.py tests\frontend\unit\test_account_contract.py tests\frontend\unit\test_market_detail_contract.py tests\frontend\unit\test_market_detail_contract_extended.py tests\frontend\unit\test_market_detail_contract_overall_health.py tests\frontend\unit\test_orders_contract.py tests\frontend\unit\test_market_panel_detail_open_regression.py tests\frontend\e2e\test_create_instrument_and_batch_agents.py -q`
   - 结果：`21 passed, 4 warnings in 2.23s`
+  - 已通过补强发布前关键测试集：
+    - `.\.venv\Scripts\python -m pytest tests\test_ipo_settlement_bridge.py tests\test_app_account_runtime_fetcher.py tests\test_release_minimal_runtime_chain.py tests\test_kline_and_account_events.py -q`
+  - 结果：`6 passed, 5 warnings in 0.92s`
 - **current conclusion**:
-  - 发布前核心 runtime 语义链路已不只是“大体可用”，而是经过更细回归后可确认：IPO settlement bridge、app-layer runtime account fetch、release minimal runtime chain 三层均已得到通过验证。
-  - 当前剩余未收尾问题主要集中在 `tests/test_kline_and_account_events.py::test_account_adapter_adds_account_on_created_event` 这一类 headless adapter 稳定性问题；它应视为前端适配层问题，不应再与发布主链路是否打通混为一谈。
+  - 发布前核心 runtime / account / market 最小主链路现已通过验证。
+  - `AccountPanelAdapter` 的 headless/account-created 异常已被纯 headless-safe 实现修复，不再是当前发布阻塞项。
+  - 当前更适合被视为“发布前未收尾项”的，是 Pydantic v2 弃用 warning 清理，而不是主链路打通问题。
 - **next actions**:
-  - 单独定位 `tests/test_kline_and_account_events.py::test_account_adapter_adds_account_on_created_event` 的 headless/adapter 异常。
-  - 继续把 release pretest 结果整理为最终发布前检查结论，只记录事实，不扩写计划型文档。
+  - 视发布要求决定是否继续清理 Pydantic v2 warning（`@validator` -> `@field_validator`，`.dict()` -> `model_dump()`）。
+  - 如需最终发布报告，可基于现有通过测试集整理为简洁结论，不再新增计划型文档。
