@@ -28,6 +28,7 @@ from app.ui.adapters.orders_adapter import OrdersPanelAdapter
 
 
 def test_frontend_trading_closed_loop_market_order_account_orders():
+    print('closed-loop:enter', flush=True)
     symbol = f"CL{uuid.uuid4().hex[:6].upper()}"
     buyer_id = f"ACC_BUY_{uuid.uuid4().hex[:6].upper()}"
     seller_id = f"ACC_SELL_{uuid.uuid4().hex[:6].upper()}"
@@ -36,6 +37,7 @@ def test_frontend_trading_closed_loop_market_order_account_orders():
     models_init.init_models()
     s = SessionLocal()
     try:
+        print('closed-loop:session-ready', flush=True)
         inst_srv = InstrumentService(s)
         dto = inst_srv.create(
             symbol=symbol,
@@ -50,13 +52,16 @@ def test_frontend_trading_closed_loop_market_order_account_orders():
             ipo_opened=True,
         )
         assert getattr(dto, "symbol", None) == symbol
+        s.commit()
 
+        print('closed-loop:instrument-created', flush=True)
         engine = MatchingEngine(
             symbol,
             create_instrument(symbol, tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0),
         )
         engine_registry.register(symbol, engine, overwrite=True)
 
+        print('closed-loop:engine-ready', flush=True)
         runtime_acc = RuntimeAccountService(s)
         buyer = runtime_acc.get_or_create(buyer_id, cash=1_000_000.0)
         seller = runtime_acc.get_or_create(seller_id, cash=100_000.0)
@@ -66,28 +71,54 @@ def test_frontend_trading_closed_loop_market_order_account_orders():
         s.flush()
 
         # 先挂一个卖单，等前端 buy 去吃它
+        print('closed-loop:accounts-ready', flush=True)
         runtime_order = OrderService(s, engine=engine, instrument_service=inst_srv)
         resting_sell = Order(symbol=symbol, side=OrderSide.SELL, price=10.0, quantity=1000, account_id=seller_id)
         runtime_order.place_order(resting_sell)
         s.commit()
 
+        print('closed-loop:resting-sell-ready', flush=True)
         market_svc = MarketDataService()
         market_ctl = MarketController(market_svc)
+        print('closed-loop:market-service-ready', flush=True)
         market_panel = MarketPanel(market_ctl, market_svc)
+        print('closed-loop:market-panel-ready', flush=True)
         market_panel.add_symbol(symbol)
+        print('closed-loop:market-add-symbol-done', flush=True)
         market_panel.select_symbol(symbol)
-        orders_logic = OrdersPanel(capacity=20)
-        orders_adapter = OrdersPanelAdapter().bind(orders_logic)
-        _ = orders_adapter.widget()
+        print('closed-loop:market-select-symbol-done', flush=True)
+        from infra.event_bus import event_bus as app_event_bus
+        try:
+            from stock_sim.infra.event_bus import event_bus as runtime_event_bus
+        except Exception:
+            runtime_event_bus = app_event_bus
+        seen_topics = []
+        def _rec(topic, payload):
+            seen_topics.append((topic, payload))
+            print('closed-loop:event', topic, type(payload).__name__, flush=True)
+        app_event_bus.subscribe('Trade', _rec, async_mode=False)
+        runtime_event_bus.subscribe('Trade', _rec, async_mode=False)
+        app_event_bus.subscribe('TradeEvent', _rec, async_mode=False)
+        runtime_event_bus.subscribe('TradeEvent', _rec, async_mode=False)
 
+        orders_logic = OrdersPanel(capacity=20)
+        print('closed-loop:orders-logic-ready', flush=True)
+        orders_adapter = OrdersPanelAdapter().bind(orders_logic)
+        print('closed-loop:orders-adapter-bound', flush=True)
+        _ = orders_adapter.widget()
+        print('closed-loop:orders-widget-ready', flush=True)
+
+        print('closed-loop:panels-ready', flush=True)
         trading_ctl = TradingController(TradingService())
         submit = trading_ctl.submit_order(symbol=symbol, side="buy", price=10.0, qty=1000, account_id=buyer_id)
+        print('closed-loop:submit-done', submit, flush=True)
 
         assert submit["ok"] is True
         assert submit["status"] in {"PARTIAL", "FILLED", "NEW"}
         assert submit["trade_count"] >= 1
 
         # Account 面板刷新后应能看到持仓
+        print('closed-loop:before-account-view', flush=True)
         account_panel = AccountPanel(AccountController(AppAccountService()))
         account_panel.switch_account(buyer_id)
         account_view = account_panel.get_view()
@@ -99,6 +130,7 @@ def test_frontend_trading_closed_loop_market_order_account_orders():
         seen_trade = False
         while time.perf_counter() < deadline:
             items = orders_adapter.get_items()
+            print('closed-loop:orders-items', items, flush=True)
             if any((it.get("type") == "Trade" and it.get("symbol") == symbol) for it in items):
                 seen_trade = True
                 break

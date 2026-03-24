@@ -70,7 +70,18 @@ class TradingService:
             inst_srv = InstrumentService(session)
             dto = inst_srv.get(symbol)
             if dto is None:
-                raise ValueError(f"instrument 不存在: {symbol}")
+                reg = engine_registry.get(symbol)
+                reg_inst = getattr(reg, 'instrument', None) if reg is not None else None
+                if reg_inst is not None:
+                    class _Dto:
+                        pass
+                    dto = _Dto()
+                    dto.tick_size = float(getattr(reg_inst, 'tick_size', 0.01) or 0.01)
+                    dto.lot_size = int(getattr(reg_inst, 'lot_size', 100) or 100)
+                    dto.min_qty = int(getattr(reg_inst, 'min_qty', dto.lot_size) or dto.lot_size)
+                    dto.initial_price = float(getattr(reg_inst, 'initial_price', req.price) or req.price)
+                else:
+                    raise ValueError(f"instrument not found: {symbol}")
 
             engine = engine_registry.get(symbol)
             if engine is None:
