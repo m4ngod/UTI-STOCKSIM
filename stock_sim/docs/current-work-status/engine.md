@@ -945,6 +945,40 @@ Promote replay/recovery output from scattered summaries into a more complete run
 - Later add sim-dt range and checkpoint metadata into run reports.
 - Evolve run reports toward operator/debug tooling once backend phase-1 closes.
 
+## Run-report contract note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Lock the new run-scoped report shape with a focused contract test so later replay/recovery work can build on a stable report interface.
+
+### files involved
+- `tests/test_run_report_contract.py`
+
+### total changed lines
+- new focused test
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `def test_run_report_contains_summary_validation_and_ok():`
+- **last line**: `assert report['summary']['run_id'] == run_id`
+
+### Change summary
+- Added a dedicated run-report contract regression.
+- Verified that run reports expose `summary`, `validation`, and `ok` in a stable shape.
+
+### Purpose
+- Make the richer run-scoped report explicit and test-protected.
+- Reduce risk of future replay/recovery changes silently breaking report consumers.
+
+### Impact / risk
+- Positive: report structure is now more durable.
+- Low risk: focused contract assertion only.
+
+### Next actions
+- Later extend run reports with checkpoint / sim-dt window / operator metadata when needed.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
