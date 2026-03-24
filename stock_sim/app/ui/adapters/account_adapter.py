@@ -107,6 +107,8 @@ class AccountPanelAdapter(PanelAdapter):
         self._orders_box: Optional[Any] = None
         self._orders_adapter: Optional[Any] = None
         self._cancel_subs: List[Any] = []
+        self._items: List[Dict[str, Any]] = []
+        self._last_view: Dict[str, Any] = {}
 
     def _create_widget(self):
         self._account_combo = QComboBox()
@@ -160,6 +162,7 @@ class AccountPanelAdapter(PanelAdapter):
             pass
 
     def _apply_view(self, view: Dict[str, Any]):
+        self._last_view = dict(view) if isinstance(view, dict) else {}
         acc = view.get("account") if isinstance(view, dict) else None
         if acc:
             self._update_summary(acc)
@@ -168,9 +171,10 @@ class AccountPanelAdapter(PanelAdapter):
             self._clear_summary()
         positions = view.get("positions", {}) if isinstance(view, dict) else {}
         items = positions.get("items", []) if isinstance(positions, dict) else []
+        self._items = list(items) if isinstance(items, list) else []
         if self._table is None:
             return
-        self._diff_update_rows(items)
+        self._diff_update_rows(self._items)
 
     def _update_summary(self, acc: Dict[str, Any]):
         for k, lbl in self._summary.items():
@@ -241,6 +245,62 @@ class AccountPanelAdapter(PanelAdapter):
             if sym:
                 new_map[sym] = r
         self._row_index = new_map
+
+    # ---------- Headless/integration helpers ----------
+    def get_view(self) -> Dict[str, Any]:
+        try:
+            if self._logic is not None:
+                view = self._logic.get_view()
+                if isinstance(view, dict):
+                    self._apply_view(view)
+        except Exception:
+            pass
+        return dict(self._last_view)
+
+    def get_items(self) -> List[Dict[str, Any]]:
+        view = self.get_view()
+        positions = view.get("positions", {}) if isinstance(view, dict) else {}
+        items = positions.get("items", []) if isinstance(positions, dict) else []
+        return list(items) if isinstance(items, list) else []
+
+    def switch_account(self, account_id: str):
+        if self._logic is None:
+            return None
+        fn = getattr(self._logic, "switch_account", None)
+        if not callable(fn):
+            return None
+        try:
+            result = fn(account_id)
+            self.refresh()
+            return result
+        except Exception:
+            return None
+
+    def set_filter(self, symbol_substring: Optional[str]):
+        if self._logic is None:
+            return None
+        fn = getattr(self._logic, "set_filter", None)
+        if not callable(fn):
+            return None
+        try:
+            result = fn(symbol_substring)
+            self.refresh()
+            return result
+        except Exception:
+            return None
+
+    def set_page(self, page: int, page_size: int):
+        if self._logic is None:
+            return None
+        fn = getattr(self._logic, "set_page", None)
+        if not callable(fn):
+            return None
+        try:
+            result = fn(page, page_size)
+            self.refresh()
+            return result
+        except Exception:
+            return None
 
 
 __all__ = ["AccountPanelAdapter"]
