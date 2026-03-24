@@ -135,6 +135,10 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
         assert len(snapshot_rows) >= 1
 
         print('step:account_view')
+        try:
+            s.commit()
+        except Exception:
+            s.flush()
         account_panel.switch_account(buyer_id)
         account_view = account_panel.get_view()
         print('step:account_view_done')
@@ -146,6 +150,8 @@ def test_release_minimal_runtime_chain_from_instrument_to_account_and_market_vie
 
         positions = account_view["positions"]["items"]
         target_positions = [p for p in positions if p.get("symbol") == symbol]
+        if not target_positions:
+            print('debug_account_positions', positions)
         assert target_positions
         assert float(target_positions[0].get("quantity") or 0) >= 100_000
 

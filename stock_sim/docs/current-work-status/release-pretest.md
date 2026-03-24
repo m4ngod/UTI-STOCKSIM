@@ -38,7 +38,8 @@ verification-needed
     1. 原先的卡死点来自 `SnapshotPersistenceListener` 使用独立 SQLite session 写库，形成写锁竞争；改为同 session 后，链路可继续推进。
     2. 更关键的真实缺口不是 UI 假象，而是 IPO 开盘成交后，买方账户持仓并未进入 runtime 账户状态。debug 脚本里 `ipo_book.trades` 已有 `100000` 成交量，但 `AccountService.get_position(buyer, symbol)` 仍为 `qty=0`，说明 **IPO open path 与 account settlement 当前没有形成闭环**。
     3. 继续读代码后已确认根因：`services/ipo_service.py::maybe_auto_open_ipo()` 在第二阶段只发布 `Trade` 事件并扩展 `book.trades`，没有调用 `OrderService._after_trades()`、也没有走 `AccountService.settle_trades_batch()`。因此 IPO 开盘成交天然不会落到账户/持仓/账本层。
-    4. 已尝试引入一个最小 settlement callback / external-trades bridge，让 IPO 第二阶段把 trades 交给 `OrderService` 处理；但 buyer 持仓仍未更新，说明问题进一步收缩为：**IPO external trades 进入 `OrderService` 后，仍未真正完成 `AccountService` buy-leg settlement**。这已经不是“路径没接”层面的泛问题，而是可以定点修的运行时结算问题。
+    4. 已尝试引入一个最小 settlement callback / external-trades bridge，让 IPO 第二阶段把 trades 交给 `OrderService` 处理；随后新增尖锐回归 `tests/test_ipo_settlement_bridge.py`，其结果已通过，确认 **IPO external trades -> buyer runtime position** 这一层现在是通的。
+    5. 因而当前剩余问题已经从 runtime settlement 进一步上移为 **app-layer / account panel 可见性收敛问题**：`tests/test_release_minimal_runtime_chain.py` 仍未绿，但此时它失败的位置已不再证明 IPO runtime 不结算，而更像是在 account-panel 读取/展示 runtime 最新持仓时还未完全对齐。
   - 另外，`app/services/account_service.py` 先前完全依赖 synthetic fetcher，已补了一个“优先读 runtime 本地库、失败再回退 synthetic”的最小 runtime fetcher。这样 account panel 至少不再天然与 runtime truth 脱节。
 - **purpose**:
   - 用真实测试结果而不是主观判断来评估发布前主链路 readiness。
