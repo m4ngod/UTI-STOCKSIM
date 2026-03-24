@@ -693,6 +693,46 @@ Move snapshot-family normalization closer to the event producer so downstream li
 - Revisit event-log-side snapshot verification after producer-side shape settles.
 - Later align snapshot listener tests with this producer contract.
 
+## Snapshot listener convergence note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Reduce listener-side guesswork now that producer-side snapshot events are more explicit, while keeping the listener safe for older payload shapes.
+
+### files involved
+- `services/snapshot_listener.py`
+- `tests/test_snapshot_listener_contract.py`
+
+### total changed lines
+- small focused convergence step
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `if "sim_day" not in payload:`
+- **last line**: `if "sim_dt" not in payload:`
+
+#### fragment 2
+- **first line**: `def test_snapshot_listener_keeps_existing_sim_time_payload_fields():`
+- **last line**: `assert payload["sim_dt"] == "0001-01-07T00:00:00"`
+
+### Change summary
+- Tightened snapshot-listener stamping so it only fills missing simulation-time fields instead of casually overwriting producer-provided values.
+- Added a narrow listener-side regression that protects existing `sim_day` / `sim_dt` payload values.
+
+### Purpose
+- Keep BL-201 moving from producer-first normalization into safer listener behavior.
+- Prevent downstream listener logic from hiding producer-side contract mistakes by overwriting payload values too aggressively.
+
+### Impact / risk
+- Positive: listener behavior is now more contract-preserving.
+- Low risk: older payloads still get fallback stamping.
+
+### Next actions
+- Continue shifting snapshot-family correctness toward producer-side guarantees.
+- Later add row-side regression once listener/row ownership is more stable.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
