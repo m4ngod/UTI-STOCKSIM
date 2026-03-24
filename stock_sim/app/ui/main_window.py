@@ -392,13 +392,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Panel Ops --------
     def open_panel(self, name: str) -> Optional[Any]:
+        # 先看 workspace page，再看 dock；否则主页面已在 workspace 中时，
+        # 重复 open_panel(name) 会因为 _dock 中查不到而再挂一份同名页面。
+        if name in self._workspace_pages:
+            try:
+                self.show_workspace_page(name)
+            except Exception:
+                pass
+            return self._panel_widgets.get(name)
         existing = self._dock.get_panel(name)
         if existing is not None:
-            if name in self._workspace_pages:
-                try:
-                    self.show_workspace_page(name)
-                except Exception:
-                    pass
             return existing
         if not any(p["name"] == name for p in list_panels()):
             return None
