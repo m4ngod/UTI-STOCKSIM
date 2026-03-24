@@ -63,12 +63,12 @@ def test_ipo_minimal_open_path_transitions_to_continuous_and_produces_trade():
         assert ipo_book.phase is Phase.CALL_AUCTION
 
         engine._ipo_end_ts = time.time() - 0.001
-        maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
+        maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv.settle_external_trades)
         assert ipo_book.phase is Phase.CALL_AUCTION
         assert getattr(engine, '_ipo_cleared', False) is True
 
         sleep(settings.IPO_AUCTION_SETTLE_BUFFER_SECONDS + 0.02)
-        maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
+        maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv.settle_external_trades)
 
         assert ipo_book.phase is Phase.CONTINUOUS
         assert sum(t.quantity for t in ipo_book.trades) > 0

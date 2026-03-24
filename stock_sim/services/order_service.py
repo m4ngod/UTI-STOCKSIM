@@ -6,6 +6,7 @@ from stock_sim.services.fee_engine import FeeEngine
 from stock_sim.services.account_service import AccountService
 from stock_sim.services.instrument_service import InstrumentService, instrument_service_factory  # 新增
 from stock_sim.services.run_context import RunContext
+from stock_sim.services.simulation_run_service import SimulationRunService
 # 新增模拟时钟导入
 # ---- 兜底补丁: 若 AccountService 缺少新版方法则动态注入最小实现 ----
 try:
@@ -94,6 +95,7 @@ class OrderService:
         self.risk = RiskEngine()
         self.fees = FeeEngine()
         self.run_context = run_context
+        self.run_service = SimulationRunService(session) if run_context is not None else None
         self.accounts = AccountService(session, run_context=run_context)
         self.instrument_service = instrument_service or instrument_service_factory()
         self._mem_orders: dict[str, Order] = {}
@@ -246,6 +248,19 @@ class OrderService:
                 pass
         return view
 
+    def _ensure_run_registered(self):
+        if self.run_context is None or self.run_service is None:
+            return
+        try:
+            self.run_service.create_run(self.run_context)
+            self.run_service.mark_running(
+                self.run_context.run_id,
+                sim_day=current_sim_day(),
+                sim_dt=virtual_datetime(current_sim_day()) if current_sim_day() is not None else None,
+            )
+        except Exception:
+            pass
+
     # ---------------------- PUBLIC API ----------------------
     def place_order(self, order: Order):
         # ---- 恢复与只读保护 ----
@@ -273,6 +288,7 @@ class OrderService:
         # 处理（一次性）集合竞价未成交残余的释放与取消事件 (跨所有引擎)
         self._handle_auction_cancels()
 
+        self._ensure_run_registered()
         self._mem_orders[order.order_id] = order
         metrics.inc("orders_submitted")
         params = self._get_symbol_params(order.symbol)
@@ -646,6 +662,20 @@ class OrderService:
                             pass
                         break
 
+    def settle_external_trades(self, trades):
+        """Settle already-produced trades from external paths such as IPO open.
+
+        Unlike the normal matching path, these trades may be produced outside
+        ``submit_order()`` but still need full ORM/account/ledger settlement.
+        """
+        if not trades:
+            return
+        self._after_trades(trades)
+        try:
+            self.s.flush()
+        except Exception:
+            pass
+
     def _after_trades(self, trades):
         if not trades:
             return
@@ -671,6 +701,15 @@ class OrderService:
                 run_id=self._get_run_id(),
             ))
             buy_orm = self.s.get(OrderORM, tr.buy_order_id)
+            if buy_orm is None:
+                mem_buy = self._mem_orders.get(tr.buy_order_id)
+                if mem_buy is not None:
+                    self._persist_order(mem_buy, "REST", "IPO_EXTERNAL_PRESETTLE")
+                    try:
+                        self.s.flush()
+                    except Exception:
+                        pass
+                    buy_orm = self.s.get(OrderORM, tr.buy_order_id)
             if buy_orm:
                 buy_orm.filled += tr.quantity
                 buy_orm.status = (OrderStatus.FILLED
@@ -681,6 +720,15 @@ class OrderService:
                     ""
                 )
             sell_orm = self.s.get(OrderORM, tr.sell_order_id)
+            if sell_orm is None:
+                mem_sell = self._mem_orders.get(tr.sell_order_id)
+                if mem_sell is not None:
+                    self._persist_order(mem_sell, "REST", "IPO_EXTERNAL_PRESETTLE")
+                    try:
+                        self.s.flush()
+                    except Exception:
+                        pass
+                    sell_orm = self.s.get(OrderORM, tr.sell_order_id)
             if sell_orm:
                 sell_orm.filled += tr.quantity
                 sell_orm.status = (OrderStatus.FILLED

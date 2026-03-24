@@ -98,9 +98,9 @@ try:
     print('phase_after_orders', ipo_book.phase, flush=True)
     engine._ipo_end_ts = 0.0
     print('maybe_auto_open_ipo_1', flush=True)
-    maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
+    maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv.settle_external_trades)
     print('maybe_auto_open_ipo_2', flush=True)
-    maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv._after_trades)
+    maybe_auto_open_ipo(engine, ipo_book, settle_trades_callback=osrv.settle_external_trades)
     print('phase_after_ipo', ipo_book.phase, 'trades', sum(t.quantity for t in ipo_book.trades), flush=True)
     from stock_sim.persistence.models_order import OrderORM
     buy_orm = s.get(OrderORM, buy_order.order_id)
