@@ -37,6 +37,7 @@ verification-needed
   - 对该测试的进一步定位确认了两个事实：
     1. 原先的卡死点来自 `SnapshotPersistenceListener` 使用独立 SQLite session 写库，形成写锁竞争；改为同 session 后，链路可继续推进。
     2. 更关键的真实缺口不是 UI 假象，而是 IPO 开盘成交后，买方账户持仓并未进入 runtime 账户状态。debug 脚本里 `ipo_book.trades` 已有 `100000` 成交量，但 `AccountService.get_position(buyer, symbol)` 仍为 `qty=0`，说明 **IPO open path 与 account settlement 当前没有形成闭环**。
+    3. 继续读代码后已确认根因：`services/ipo_service.py::maybe_auto_open_ipo()` 在第二阶段只发布 `Trade` 事件并扩展 `book.trades`，没有调用 `OrderService._after_trades()`、也没有走 `AccountService.settle_trades_batch()`。因此 IPO 开盘成交天然不会落到账户/持仓/账本层。
   - 另外，`app/services/account_service.py` 先前完全依赖 synthetic fetcher，已补了一个“优先读 runtime 本地库、失败再回退 synthetic”的最小 runtime fetcher。这样 account panel 至少不再天然与 runtime truth 脱节。
 - **purpose**:
   - 用真实测试结果而不是主观判断来评估发布前主链路 readiness。
