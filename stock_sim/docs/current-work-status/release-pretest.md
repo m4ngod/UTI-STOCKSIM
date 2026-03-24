@@ -56,10 +56,13 @@ in-progress
   - 已通过补强发布前关键测试集：
     - `.\.venv\Scripts\python -m pytest tests\test_ipo_settlement_bridge.py tests\test_app_account_runtime_fetcher.py tests\test_release_minimal_runtime_chain.py tests\test_kline_and_account_events.py -q`
   - 结果：`6 passed, 5 warnings in 0.92s`
+  - 清理 Pydantic v2 warning 后再次复验同一关键测试集：
+    - `.\.venv\Scripts\python -m pytest tests\test_ipo_settlement_bridge.py tests\test_app_account_runtime_fetcher.py tests\test_release_minimal_runtime_chain.py tests\test_kline_and_account_events.py -q`
+  - 结果：`6 passed in 0.91s`
 - **current conclusion**:
   - 发布前核心 runtime / account / market 最小主链路现已通过验证。
   - `AccountPanelAdapter` 的 headless/account-created 异常已被纯 headless-safe 实现修复，不再是当前发布阻塞项。
-  - 当前更适合被视为“发布前未收尾项”的，是 Pydantic v2 弃用 warning 清理，而不是主链路打通问题。
+  - 当前关键验证集已达到无 warning 通过状态；就当前已验证范围而言，可以认为发布前最小主链路已经被打通。
 - **next actions**:
-  - 视发布要求决定是否继续清理 Pydantic v2 warning（`@validator` -> `@field_validator`，`.dict()` -> `model_dump()`）。
+  - 若需要进一步提高发布信心，可继续扩充更大范围回归，但不必再把“最小主链路是否打通”视为开放问题。
   - 如需最终发布报告，可基于现有通过测试集整理为简洁结论，不再新增计划型文档。

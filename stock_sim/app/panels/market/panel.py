@@ -191,9 +191,25 @@ class SymbolDetailPanel:
             series = self._series_cache
             stale = self._is_stale
             indicators_copy = {k: v if not isinstance(v, list) else list(v) for k, v in self._indicators.items()}
+            pending_jobs = set(self._pending_jobs)
             trades_list = [t.dict() for t in self._trades.to_list()]
+
         snapshot: Optional[SnapshotDTO] = self._ctl.get_snapshot(sym) if sym else None
+        snapshot_meta = {
+            'source': 'market-controller-merged-snapshot-cache',
+            'authoritative': True,
+            'status': 'available' if snapshot is not None else 'missing',
+            'refresh': 'event-batch',
+        }
+
         series_obj = None
+        series_status = 'missing'
+        series_meta = {
+            'source': 'app-market-data-service-bars-cache',
+            'authoritative': False,
+            'status': 'missing',
+            'refresh': 'service-load-refresh',
+        }
         if series is not None:
             try:
                 series_obj = {
@@ -204,37 +220,127 @@ class SymbolDetailPanel:
                     "close": list(series.close),
                     "volume": list(series.volume),
                 }
+                series_status = 'stale' if stale else 'available'
+                series_meta['status'] = series_status
             except Exception:  # pragma: no cover
                 series_obj = None
+                series_status = 'error'
+                series_meta['status'] = 'error'
+
         order_book = None
-        if snapshot:
+        order_book_meta = {
+            'source': 'snapshot-derived-order-book-view',
+            'authoritative': True,
+            'status': 'missing',
+            'refresh': 'snapshot-update',
+        }
+        if snapshot is not None:
             order_book = {"bids": snapshot.bid_levels, "asks": snapshot.ask_levels}
-        # holdings：尝试服务提供，否则占位
+            order_book_meta['status'] = 'available'
+
+        trades_status = 'available' if trades_list else 'empty'
+        trades_meta = {
+            'source': 'local-symbol-detail-ring-buffer',
+            'authoritative': False,
+            'status': trades_status,
+            'refresh': 'event-append',
+        }
+
+        indicators_status = 'available' if indicators_copy else ('pending' if pending_jobs else 'missing')
+        indicators_meta = {
+            'source': 'indicator-executor-from-series',
+            'authoritative': False,
+            'status': indicators_status,
+            'refresh': 'load-refresh-recompute',
+        }
+
+        # holdings：当前不是后端权威数据路径。
+        # 若 app-layer service 提供辅助数据则使用；否则显式返回占位态，
+        # 避免后续开发误把该字段当成真实运行时持仓来源。
         holdings = None
+        holdings_status = 'unavailable'
+        holdings_meta = {
+            'source': 'app-service-helper',
+            'authoritative': False,
+            'status': 'unavailable',
+            'refresh': 'helper-fetch',
+        }
         try:
             get_hold = getattr(self._svc, 'get_retail_holdings', None)
             if callable(get_hold) and sym:
-                holdings = get_hold(sym)
+                fetched = get_hold(sym)
+                if fetched is not None:
+                    holdings = fetched
+                    holdings_status = 'available'
+                    holdings_meta = {
+                        'source': 'app-service-helper',
+                        'authoritative': False,
+                        'status': 'available',
+                        'refresh': 'helper-fetch',
+                    }
         except Exception:
             holdings = None
+            holdings_status = 'error'
+            holdings_meta = {
+                'source': 'app-service-helper',
+                'authoritative': False,
+                'status': 'error',
+                'refresh': 'helper-fetch',
+            }
         if holdings is None:
-            try:
-                holdings = {
-                    'labels': ['Retail-MS-1','Retail-MS-2','Retail-MS-3'],
-                    'pct': [50.0, 30.0, 20.0],
-                }
-            except Exception:
-                holdings = None
+            holdings = {
+                'labels': [],
+                'pct': [],
+                'placeholder': True,
+                'note': 'non-authoritative holdings placeholder',
+            }
+            if holdings_status == 'unavailable':
+                holdings_status = 'placeholder'
+                holdings_meta['source'] = 'placeholder'
+                holdings_meta['status'] = 'placeholder'
+
+        core_block_status = {
+            'series': series_status,
+            'snapshot': snapshot_meta['status'],
+            'order_book': order_book_meta['status'],
+        }
+        degraded_core_states = {'missing', 'stale', 'error'}
+        overall = 'ok'
+        if any(v in degraded_core_states for v in core_block_status.values()):
+            overall = 'degraded'
+
+        detail_health = {
+            'series_status': series_status,
+            'snapshot_status': snapshot_meta['status'],
+            'order_book_status': order_book_meta['status'],
+            'trades_status': trades_status,
+            'holdings_status': holdings_status,
+            'indicators_status': indicators_status,
+            'overall': overall,
+            'core_blocks': core_block_status,
+            'auxiliary_blocks': {
+                'trades': trades_status,
+                'holdings': holdings_status,
+                'indicators': indicators_status,
+            },
+        }
         return {
             "symbol": sym,
             "timeframe": tf,
             "series": series_obj,
+            "series_meta": series_meta,
             "is_stale": stale,
-            "snapshot": None if snapshot is None else snapshot.dict(),
+            "snapshot": None if snapshot is None else snapshot.model_dump(),
+            "snapshot_meta": snapshot_meta,
             "order_book": order_book,
+            "order_book_meta": order_book_meta,
             "trades": trades_list,
+            "trades_meta": trades_meta,
             "indicators": indicators_copy,
+            "indicators_meta": indicators_meta,
             "holdings": holdings,
+            "holdings_meta": holdings_meta,
+            "detail_health": detail_health,
         }
 
 class MarketPanel:
