@@ -733,6 +733,41 @@ Reduce listener-side guesswork now that producer-side snapshot events are more e
 - Continue shifting snapshot-family correctness toward producer-side guarantees.
 - Later add row-side regression once listener/row ownership is more stable.
 
+## Snapshot row persistence note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Add a minimal stable row-side assertion for snapshot-family work without forcing a brittle event-log chain assumption.
+
+### files involved
+- `tests/test_snapshot_row_persistence.py`
+
+### total changed lines
+- new focused test
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `def test_snapshot_listener_writes_snapshot_row_for_symbol():`
+- **last line**: `assert row.volume == 100`
+
+### Change summary
+- Added a narrow snapshot row persistence regression.
+- Verified that snapshot-listener processing writes a `snapshots_1s` row with expected core fields.
+- Kept the assertion limited to stable row-side facts instead of unstable event-log coupling.
+
+### Purpose
+- Give BL-201 a durable row-side test anchor.
+- Separate row persistence validation from event persistence validation.
+
+### Impact / risk
+- Positive: snapshot-family work now has both producer-side and row-side stable tests.
+- Low risk: the assertion surface is intentionally small.
+
+### Next actions
+- Later bridge producer event + listener row + replay checks once the full chain is stable enough.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
