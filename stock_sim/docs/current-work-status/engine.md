@@ -813,6 +813,50 @@ Upgrade replay validation from pure event reading toward a first real comparison
 - Later compare replay validation with recovery report directly.
 - Expand from count checks toward fact-level reconciliation.
 
+## Replay-to-recovery binding note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Make replay validation a visible recovery input instead of leaving replay and recovery as parallel but separate backend tracks.
+
+### files involved
+- `services/recovery_service.py`
+- `tests/test_recovery.py`
+
+### total changed lines
+- focused integration step
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `replay_validation: dict[str | None, dict] = {}`
+- **last line**: `"replay_validation": replay_validation,`
+
+#### fragment 2
+- **first line**: `def test_recovery_service_emits_resumed_event_and_report():`
+- **last line**: `assert 'replay_validation' in rep['checks']`
+
+### Change summary
+- Wired replay validation into recovery report building.
+- Recovery now exposes per-run replay validation results inside `checks.replay_validation`.
+- Added regression coverage that verifies recovery report now includes replay-validation data on the ok path.
+
+### Purpose
+- Advance the third replay goal: deeper binding with recovery.
+- Make recovery report more actionable for run-scoped backend inspection.
+- Create a direct path for later recovery gating based on replay validation quality.
+
+### Impact / risk
+- Positive: replay is no longer only an external helper; it now informs recovery output.
+- Positive: recovery report is becoming the central backend health surface for a run.
+- Risk: current replay-validation integration is report-level, not yet hard recovery gating.
+- Risk: replay validation itself is still coarse/count-based.
+
+### Next actions
+- Later decide whether severe replay validation gaps should force degraded recovery.
+- Expand replay-validation detail so recovery can rely on more than count summaries.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.

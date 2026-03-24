@@ -4,6 +4,11 @@ from typing import Any, Dict
 from collections import defaultdict
 
 try:
+    from stock_sim.services.replay_service import replay_service  # type: ignore
+except Exception:  # noqa
+    from services.replay_service import replay_service  # type: ignore
+
+try:
     from stock_sim.infra.event_bus import event_bus  # type: ignore
     from stock_sim.core.const import EventType  # type: ignore
     from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
@@ -53,9 +58,15 @@ class RecoveryService:
                 per_run[getattr(r, "run_id", None)]["ledgers"] += 1
 
             inconsistent_runs = []
+            replay_validation: dict[str | None, dict] = {}
             for run_id, stats in per_run.items():
                 if (stats["trades"] > stats["ledgers"] and stats["trades"] > 0) or (stats["filled_orders"] > stats["trades"]):
                     inconsistent_runs.append(run_id)
+                if run_id:
+                    try:
+                        replay_validation[run_id] = replay_service.validate_against_persisted_facts(run_id)
+                    except Exception:
+                        replay_validation[run_id] = {"run_id": run_id, "ok": False, "error": "replay_validation_failed"}
 
             return {
                 "status": "ok",
@@ -74,6 +85,7 @@ class RecoveryService:
                     "filled_order_without_trade_possible": filled_orders > trades,
                     "event_log_available": events > 0,
                     "inconsistent_runs": inconsistent_runs,
+                    "replay_validation": replay_validation,
                 },
             }
         finally:

@@ -10,16 +10,21 @@ from stock_sim.services.run_context import RunContext
 from stock_sim.core.instruments import create_instrument
 from stock_sim.core.matching_engine import MatchingEngine
 from stock_sim.services.engine_registry import engine_registry
+from stock_sim.services.event_persistence_service import enable_event_persistence, disable_event_persistence
 
 
 def test_recovery_service_emits_resumed_event_and_report():
     models_init.init_models()
+    disable_event_persistence()
+    assert enable_event_persistence(force=True)
+    event_bus.publish(EventType.ACCOUNT_UPDATED, {'run_id': 'RUN-REC-OK-001', 'i': 1})
     captured = []
     event_bus.subscribe(EventType.RECOVERY_RESUMED, lambda t, p: captured.append(p))
     rep = recovery_service.recover()
     assert rep['status'] in ('ok', 'degraded')
     if rep['status'] == 'ok':
         assert captured and captured[-1]['status'] == 'ok'
+        assert 'replay_validation' in rep['checks']
 
 
 def test_recovery_service_switches_readonly_on_mismatch():
