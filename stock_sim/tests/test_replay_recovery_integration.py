@@ -6,6 +6,7 @@ from stock_sim.infra.event_bus import event_bus
 from stock_sim.core.const import EventType
 from stock_sim.services.replay_service import replay_service
 from stock_sim.services.recovery_service import recovery_service
+from stock_sim.services.snapshot_listener import SnapshotPersistenceListener
 
 
 def test_replay_and_recovery_integration():
@@ -71,9 +72,27 @@ def test_replay_validate_against_persisted_facts_for_trade_run():
     for i in range(2):
         event_bus.publish(EventType.ACCOUNT_UPDATED, {'i': i, 'run_id': run_id})
     event_bus.publish(EventType.TRADE, {'run_id': run_id, 'symbol': 'AAA', 'trade': {'symbol': 'AAA', 'price': 10.0, 'quantity': 100}})
+    listener = SnapshotPersistenceListener()
+    listener._on_snapshot('SnapshotUpdated', {
+        'symbol': 'AAA',
+        'sim_day': 1,
+        'sim_dt': '0001-01-01T00:00:00',
+        'snapshot': {
+            'symbol': 'AAA',
+            'last': 10.0,
+            'vol': 100,
+            'turnover': 1000.0,
+            'bid1': 9.9,
+            'ask1': 10.1,
+            'bid1_qty': 100,
+            'ask1_qty': 120,
+        },
+    })
+    event_bus.publish(EventType.SNAPSHOT_UPDATED, {'run_id': run_id, 'symbol': 'AAA', 'sim_day': 1, 'sim_dt': '0001-01-01T00:00:00', 'snapshot': {'symbol': 'AAA', 'last': 10.0, 'vol': 100, 'turnover': 1000.0}})
     time.sleep(0.05)
 
     report = replay_service.validate_against_persisted_facts(run_id)
     assert report['run_id'] == run_id
     assert report['event_side']['trades'] >= 1
     assert 'trade_event_vs_trade_row_gap' in report['checks']
+    assert 'snapshot_event_vs_snapshot_row_gap' in report['checks']

@@ -10,12 +10,14 @@ try:
     from stock_sim.persistence.models_order import OrderORM  # type: ignore
     from stock_sim.persistence.models_trade import TradeORM  # type: ignore
     from stock_sim.persistence.models_ledger import Ledger  # type: ignore
+    from stock_sim.persistence.models_snapshot import Snapshot1s  # type: ignore
 except Exception:  # noqa
     from persistence.models_event_log import EventLog  # type: ignore
     from persistence.models_imports import SessionLocal  # type: ignore
     from persistence.models_order import OrderORM  # type: ignore
     from persistence.models_trade import TradeORM  # type: ignore
     from persistence.models_ledger import Ledger  # type: ignore
+    from persistence.models_snapshot import Snapshot1s  # type: ignore
 
 
 class ReplayService:
@@ -144,15 +146,18 @@ class ReplayService:
                 "orders": s.query(OrderORM).filter(OrderORM.run_id == run_id).count(),
                 "trades": s.query(TradeORM).filter(TradeORM.run_id == run_id).count(),
                 "ledgers": s.query(Ledger).filter(Ledger.run_id == run_id).count(),
+                "snapshots": s.query(Snapshot1s).count(),
             }
             event_side = {
                 "orders": event_counts.get("OrderAccepted", 0) + event_counts.get("OrderRejected", 0),
                 "trades": event_counts.get("TradeEvent", 0) + event_counts.get("Trade", 0),
                 "accounts": event_counts.get("AccountUpdated", 0),
+                "snapshots": event_counts.get("SnapshotUpdated", 0),
             }
             checks = {
                 "trade_event_vs_trade_row_gap": abs(event_side["trades"] - persisted["trades"]),
                 "order_event_vs_order_row_gap": abs(event_side["orders"] - persisted["orders"]),
+                "snapshot_event_vs_snapshot_row_gap": abs(event_side["snapshots"] - persisted["snapshots"]),
             }
             return {
                 "run_id": run_id,

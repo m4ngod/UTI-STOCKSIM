@@ -857,6 +857,49 @@ Make replay validation a visible recovery input instead of leaving replay and re
 - Later decide whether severe replay validation gaps should force degraded recovery.
 - Expand replay-validation detail so recovery can rely on more than count summaries.
 
+## Replay snapshot integration note (2026-03-24)
+
+### status
+in-progress
+
+### goal
+Bring snapshot-family facts into replay validation so replay is not only order/trade/account aware but also market-state aware.
+
+### files involved
+- `services/replay_service.py`
+- `tests/test_replay_recovery_integration.py`
+
+### total changed lines
+- focused replay-extension step
+
+### Code fragment anchors
+#### fragment 1
+- **first line**: `"snapshots": s.query(Snapshot1s).count(),`
+- **last line**: `"snapshot_event_vs_snapshot_row_gap": abs(event_side["snapshots"] - persisted["snapshots"]),`
+
+#### fragment 2
+- **first line**: `listener = SnapshotPersistenceListener()`
+- **last line**: `assert 'snapshot_event_vs_snapshot_row_gap' in report['checks']`
+
+### Change summary
+- Extended replay persisted-facts validation to include snapshot rows and snapshot events.
+- Added integration coverage that feeds both a snapshot row and a snapshot event into replay validation.
+- Started bringing snapshot-family state into replay verification rather than leaving replay account/trade-only.
+
+### Purpose
+- Complete the fourth replay goal: include snapshot family in replay work.
+- Make replay more aligned with the real trading-simulation runtime, where market-state facts matter alongside account/trade facts.
+
+### Impact / risk
+- Positive: replay validation is now broader than execution facts alone.
+- Positive: snapshot family is starting to participate in run-scoped backend verification.
+- Risk: current snapshot persisted count is still global because snapshot rows do not yet carry `run_id`.
+- Risk: snapshot validation is still coarse/count-based.
+
+### Next actions
+- Later add run-scoped snapshot persistence if the data model evolves that way.
+- Tighten snapshot replay validation once snapshot event/row ownership is even more stable.
+
 ## Outstanding work
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
