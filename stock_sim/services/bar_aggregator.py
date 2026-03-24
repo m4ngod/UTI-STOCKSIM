@@ -100,14 +100,16 @@ class BarAggregator:
                         exists.sim_day = sim_day; exists.sim_dt = sim_dt
                     continue
                 # ...existing code 价格计算...
-                bar = Bar1m(ts=minute_start, symbol=symbol,
+                bar = Bar1m(ts=minute_start, symbol=symbol, run_id=run_id,
                             open=open_p, high=high_p, low=low_p, close=close_p,
                             volume=vol, turnover=turnover,
                             sim_day=sim_day if sim_day else 0, sim_dt=sim_dt)
                 sess.add(bar)
                 sess.flush()
+                run_id = next((getattr(x, 'run_id', None) for x in arr if getattr(x, 'run_id', None)), None)
                 event_bus.publish(EventType.BAR_UPDATED, {
                     "symbol": symbol,
+                    "run_id": run_id,
                     "timeframe": "1m",
                     "sim_day": sim_day,
                     "sim_dt": sim_dt.isoformat() if sim_dt else None,
@@ -150,14 +152,16 @@ class BarAggregator:
                         exists.sim_day = sim_day; exists.sim_dt = sim_dt
                     continue
                 # ...existing code 计算...
-                hb = Bar1h(ts=hour_start, symbol=symbol,
+                hb = Bar1h(ts=hour_start, symbol=symbol, run_id=run_id,
                            open=open_p, high=high_p, low=low_p, close=close_p,
                            volume=vol, turnover=turnover,
                            sim_day=sim_day if sim_day else 0, sim_dt=sim_dt)
                 sess.add(hb)
                 sess.flush()
+                run_id = next((getattr(x, 'run_id', None) for x in arr if getattr(x, 'run_id', None)), None)
                 event_bus.publish(EventType.BAR_UPDATED, {
                     "symbol": symbol,
+                    "run_id": run_id,
                     "timeframe": "1h",
                     "sim_day": sim_day,
                     "sim_dt": sim_dt.isoformat() if sim_dt else None,
@@ -200,14 +204,16 @@ class BarAggregator:
                         exists.sim_day = sim_day; exists.sim_dt = sim_dt
                     continue
                 # ...existing code 计算...
-                db = Bar1d(ts=day_start, symbol=symbol,
+                db = Bar1d(ts=day_start, symbol=symbol, run_id=run_id,
                            open=open_p, high=high_p, low=low_p, close=close_p,
                            volume=vol, turnover=turnover,
                            sim_day=sim_day if sim_day else 0, sim_dt=sim_dt)
                 sess.add(db)
                 sess.flush()
+                run_id = next((getattr(x, 'run_id', None) for x in arr if getattr(x, 'run_id', None)), None)
                 event_bus.publish(EventType.BAR_UPDATED, {
                     "symbol": symbol,
+                    "run_id": run_id,
                     "timeframe": "1d",
                     "sim_day": sim_day,
                     "sim_dt": sim_dt.isoformat() if sim_dt else None,

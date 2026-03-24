@@ -26,11 +26,12 @@ class _SimClock:
     def current_day(self) -> int:
         return self._day_index
 
-    def tick(self) -> int:
+    def tick(self, run_id: str | None = None) -> int:
         """人工推进一个模拟日 (测试/后续集成可用)."""
         self._day_index += 1
         try:
             event_bus.publish(EventType.SIM_DAY, {  # type: ignore
+                "run_id": run_id,
                 "sim_day_index": self._day_index,
                 "sim_day": self._day_index,
                 "sim_dt": (datetime(1, 1, 1) + timedelta(days=self._day_index - 1)).isoformat(),

@@ -8,6 +8,7 @@ def test_matching_engine_snapshot_event_contains_symbol_and_sim_time():
     inst = create_instrument('AAA', tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0)
     eng = MatchingEngine('AAA', inst)
     book = eng.get_book('AAA')
+    book.instrument_meta['run_id'] = 'RUN-SNAPSHOT-PRODUCER-001'
 
     captured = []
     def on_snapshot(topic, payload):
@@ -19,6 +20,7 @@ def test_matching_engine_snapshot_event_contains_symbol_and_sim_time():
     assert captured
     payload = captured[-1]
     assert payload['symbol'] == 'AAA'
+    assert payload['run_id'] == 'RUN-SNAPSHOT-PRODUCER-001'
     assert payload['snapshot']['symbol'] == 'AAA'
     assert 'sim_day' in payload
     assert 'sim_dt' in payload

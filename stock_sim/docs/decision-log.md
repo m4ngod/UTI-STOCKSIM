@@ -101,6 +101,22 @@ Implication:
 - Orders lines should carry lifecycle summaries and account-effect hints that later adapters can render more clearly.
 - Integration-level adapter instability should not block semantic contract convergence work.
 
+## 2026-03-24 - Bar-family recovery severity should distinguish primary vs derived runtime market facts
+
+Decision:
+- `bars_1m` should be treated as the primary persisted bar-health layer because it is the nearest stable derivative of snapshot/runtime market facts.
+- `bars_1h` and `bars_1d` should remain separately reported, but initially only as warning-level derived layers rather than degraded recovery gates.
+
+Why:
+- Treating all bar timeframes as equally severe would over-penalize higher-level aggregation drift.
+- Ignoring `1h / 1d` entirely would make bar-family health too opaque.
+- Separating primary-vs-derived severity keeps recovery honest without making it brittle.
+
+Implication:
+- Replay/run reports should expose `bars_1m / 1h / 1d` separately.
+- Recovery may degrade when snapshots exist but `bars_1m` are missing for a run.
+- Recovery should report missing `1h / 1d` bars as warnings, not full degraded failure.
+
 ## 2026-03-23 - Layout persistence should converge toward workspace-page state before any deep refactor
 
 Decision:

@@ -11,6 +11,7 @@ def test_snapshot_listener_writes_snapshot_row_for_symbol():
     listener = SnapshotPersistenceListener()
     payload = {
         "symbol": "AAA",
+        "run_id": "RUN-SNAP-ROW-001",
         "sim_day": 9,
         "sim_dt": "0001-01-09T00:00:00",
         "snapshot": {
@@ -32,6 +33,7 @@ def test_snapshot_listener_writes_snapshot_row_for_symbol():
         row = s.query(Snapshot1s).filter(Snapshot1s.symbol == "AAA").order_by(Snapshot1s.id.desc()).first()
         assert row is not None
         assert row.symbol == "AAA"
+        assert row.run_id == "RUN-SNAP-ROW-001"
         assert row.last_price == 10.0
         assert row.volume == 100
     finally:

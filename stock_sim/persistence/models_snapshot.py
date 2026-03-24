@@ -2,11 +2,13 @@
 from datetime import datetime
 from .models_imports import Base, Column, Integer, String, Float, DateTime, Index, SimTimeMixin
 
+
 class Snapshot1s(Base, SimTimeMixin):
     __tablename__ = "snapshots_1s"
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts = Column(DateTime, default=datetime.utcnow, index=True)
     symbol = Column(String(32), index=True)
+    run_id = Column(String(64), index=True, nullable=True)
     # 原始核心字段
     last_price = Column(Float)
     bid1 = Column(Float)

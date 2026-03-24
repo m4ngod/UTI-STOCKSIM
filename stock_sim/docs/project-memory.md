@@ -61,6 +61,7 @@ Current recommended direction:
 - `_DEFAULT_PRELOAD` has been retired from `app.main`; preload ownership now lives with `app.ui.main_window.DEFAULT_PRELOAD_PANELS`.
 - `setup_frontend_entry.py` has now absorbed product-facing GUI startup locally and no longer imports `app.main` as a GUI fallback.
 - dependency verification confirmed no internal project code still imports `app.main`; it has now been deleted, leaving `setup_frontend_entry.py` as the product-facing GUI entry and `app.headless` as the dedicated headless surface.
+- Backend run-scoped platform work now also covers market-state derivative layers: snapshot rows carry `run_id`, bar models (`bars_1m / 1h / 1d`) carry `run_id`, replay/run-report expose bar-family persisted facts, and recovery treats missing `bars_1m` as a severe gap while treating missing `1h / 1d` bars as warning-level gaps.
 
 ## 2026-03-23 account-orders semantic convergence update
 

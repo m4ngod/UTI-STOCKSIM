@@ -16,6 +16,8 @@ try:
     from stock_sim.persistence.models_trade import TradeORM  # type: ignore
     from stock_sim.persistence.models_ledger import Ledger  # type: ignore
     from stock_sim.persistence.models_event_log import EventLog  # type: ignore
+    from stock_sim.persistence.models_snapshot import Snapshot1s  # type: ignore
+    from stock_sim.persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
 except Exception:  # noqa
     from infra.event_bus import event_bus  # type: ignore
     from core.const import EventType  # type: ignore
@@ -24,6 +26,8 @@ except Exception:  # noqa
     from persistence.models_trade import TradeORM  # type: ignore
     from persistence.models_ledger import Ledger  # type: ignore
     from persistence.models_event_log import EventLog  # type: ignore
+    from persistence.models_snapshot import Snapshot1s  # type: ignore
+    from persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
 
 
 _READONLY = False
@@ -58,15 +62,37 @@ class RecoveryService:
                 per_run[getattr(r, "run_id", None)]["ledgers"] += 1
 
             inconsistent_runs = []
+            warning_runs = []
             replay_validation: dict[str | None, dict] = {}
-            for run_id, stats in per_run.items():
-                if (stats["trades"] > stats["ledgers"] and stats["trades"] > 0) or (stats["filled_orders"] > stats["trades"]):
+            run_ids = {rid for rid in per_run.keys() if rid is not None}
+            run_ids.update({getattr(r, 'run_id', None) for r in event_rows if getattr(r, 'run_id', None) is not None})
+            run_ids.update({getattr(r, 'run_id', None) for r in trade_rows if getattr(r, 'run_id', None) is not None})
+            run_ids.update({getattr(r, 'run_id', None) for r in ledger_rows if getattr(r, 'run_id', None) is not None})
+            run_ids.update({getattr(r, 'run_id', None) for r in order_rows if getattr(r, 'run_id', None) is not None})
+            run_ids.update({r[0] for r in s.query(Snapshot1s.run_id).filter(Snapshot1s.run_id.isnot(None)).distinct().all()})
+            run_ids.update({r[0] for r in s.query(Bar1m.run_id).filter(Bar1m.run_id.isnot(None)).distinct().all()})
+            run_ids.update({r[0] for r in s.query(Bar1h.run_id).filter(Bar1h.run_id.isnot(None)).distinct().all()})
+            run_ids.update({r[0] for r in s.query(Bar1d.run_id).filter(Bar1d.run_id.isnot(None)).distinct().all()})
+            for run_id in sorted(run_ids):
+                stats = per_run[run_id]
+                severe = (stats["trades"] > stats["ledgers"] and stats["trades"] > 0) or (stats["filled_orders"] > stats["trades"])
+                try:
+                    replay_validation[run_id] = replay_service.build_run_report(run_id)
+                except Exception:
+                    replay_validation[run_id] = {"run_id": run_id, "ok": False, "error": "replay_validation_failed"}
+                rep = replay_validation.get(run_id)
+                if rep:
+                    val = rep.get("validation", {})
+                    bars = val.get("bars", {})
+                    bars_1m = bars.get("1m", {})
+                    bars_1h = bars.get("1h", {})
+                    bars_1d = bars.get("1d", {})
+                    if val.get("persisted", {}).get("snapshots", 0) > 0 and bars_1m.get("count", 0) == 0:
+                        severe = True
+                    if bars_1m.get("count", 0) > 0 and (bars_1h.get("count", 0) == 0 or bars_1d.get("count", 0) == 0):
+                        warning_runs.append(run_id)
+                if severe:
                     inconsistent_runs.append(run_id)
-                if run_id:
-                    try:
-                        replay_validation[run_id] = replay_service.build_run_report(run_id)
-                    except Exception:
-                        replay_validation[run_id] = {"run_id": run_id, "ok": False, "error": "replay_validation_failed"}
 
             return {
                 "status": "ok",
@@ -85,6 +111,7 @@ class RecoveryService:
                     "filled_order_without_trade_possible": filled_orders > trades,
                     "event_log_available": events > 0,
                     "inconsistent_runs": inconsistent_runs,
+                    "warning_runs": sorted({r for r in warning_runs if r is not None}),
                     "replay_validation": replay_validation,
                 },
             }

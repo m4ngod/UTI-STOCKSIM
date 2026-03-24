@@ -7,6 +7,7 @@ class Bar1m(Base, SimTimeMixin):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts = Column(DateTime, index=True)  # 窗口起始 UTC 时间
     symbol = Column(String(32), index=True)
+    run_id = Column(String(64), index=True, nullable=True)
     open = Column(Float); high = Column(Float); low = Column(Float); close = Column(Float)
     volume = Column(Integer, default=0)
     turnover = Column(Float, default=0.0)
@@ -18,6 +19,7 @@ class Bar1h(Base, SimTimeMixin):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts = Column(DateTime, index=True)
     symbol = Column(String(32), index=True)
+    run_id = Column(String(64), index=True, nullable=True)
     open = Column(Float); high = Column(Float); low = Column(Float); close = Column(Float)
     volume = Column(Integer, default=0)
     turnover = Column(Float, default=0.0)
@@ -29,6 +31,7 @@ class Bar1d(Base, SimTimeMixin):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts = Column(DateTime, index=True)  # 交易日日期 00:00 (UTC 或本地需统一)
     symbol = Column(String(32), index=True)
+    run_id = Column(String(64), index=True, nullable=True)
     open = Column(Float); high = Column(Float); low = Column(Float); close = Column(Float)
     volume = Column(Integer, default=0)
     turnover = Column(Float, default=0.0)

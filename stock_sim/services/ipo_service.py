@@ -113,6 +113,7 @@ def maybe_auto_open_ipo(engine, book) -> bool:
             except Exception: pass
         event_bus.publish(EventType.IPO_OPENED, {
             'symbol': book.symbol,
+            'run_id': book.instrument_meta.get('run_id') if isinstance(book.instrument_meta, dict) else None,
             'open_price': auction_price,
             'executed_volume': sum(t.quantity for t in trades),
             'total_orders': len(getattr(book.call_auction, '_orders', [])),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from typing import Any
 
 try:
@@ -64,6 +65,11 @@ def _extract_sim_dt(payload: dict[str, Any], sim_day: int | None):
     if not isinstance(payload, dict):
         return virtual_datetime(sim_day) if sim_day is not None else None
     sim_dt = payload.get("sim_dt")
+    if isinstance(sim_dt, str):
+        try:
+            return datetime.fromisoformat(sim_dt.replace('Z', '+00:00')).replace(tzinfo=None)
+        except Exception:
+            sim_dt = None
     if sim_dt is not None:
         return sim_dt
     return virtual_datetime(sim_day) if sim_day is not None else None
