@@ -25,6 +25,7 @@ if _CHART_STAGE not in ("plot-only", "line", "candles"):
     _CHART_STAGE = "candles"
 
 from .base_adapter import PanelAdapter
+from .runtime_mode import ui_runtime_enabled
 from app.panels.market.dialog import CreateInstrumentDialog  # 新增：逻辑对话框
 from infra.event_bus import event_bus  # 新增：回退订阅
 try:
@@ -60,17 +61,28 @@ try:
 except Exception:  # pragma: no cover
     _open_panel = None  # type: ignore
 
-# Qt 导入（带 headless 降级）
-try:
-    from PySide6.QtWidgets import (
-        QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QFrame, QTableWidget, QTableWidgetItem,
-        QDialog, QLineEdit, QPushButton, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem
-    )  # type: ignore
-    from PySide6.QtGui import QBrush, QPen, QColor  # type: ignore
-except Exception:  # pragma: no cover
-    QWidget = object  # type: ignore
+# Qt 导入（默认走 headless-safe；仅在显式 real UI 模式下启用真实 Qt）
+if ui_runtime_enabled():
+    try:
+        from PySide6.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QFrame, QTableWidget, QTableWidgetItem,
+            QDialog, QLineEdit, QPushButton, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem
+        )  # type: ignore
+        from PySide6.QtGui import QBrush, QPen, QColor  # type: ignore
+    except Exception:  # pragma: no cover
+        ui_runtime = False
+    else:
+        ui_runtime = True
+else:
+    ui_runtime = False
+
+if not ui_runtime:
+    class _HeadlessRoot:
+        pass
     class _DummySignal:  # type: ignore
         def connect(self, *_): pass
+    class QWidget:  # type: ignore
+        def __init__(self, *_, **__): pass
     class QListWidget:  # type: ignore
         def __init__(self):
             self._items: List[str] = []
@@ -115,7 +127,8 @@ except Exception:  # pragma: no cover
         def __init__(self, text=""): self._text=text
         def text(self): return self._text
         def setText(self, t): self._text=t
-        def textChanged(self, *_): return _DummySignal()
+        @property
+        def textChanged(self): return _DummySignal()
     class QPushButton:  # type: ignore
         def __init__(self, text=""): self._text=text; self.clicked=_DummySignal()
         def setEnabled(self, *_): pass
@@ -220,7 +233,7 @@ class SymbolDetailAdapter:
     def widget(self):  # 创建并返回根组件
         if self._root is not None:
             return self._root
-        root = QWidget()  # type: ignore
+        root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
         try:
             layout = QVBoxLayout(root)  # type: ignore
             try:
@@ -536,7 +549,7 @@ class MarketPanelAdapter(PanelAdapter):
         self._throttle_sec: float = 0.2
 
     def _create_widget(self):  # noqa: D401
-        root = QWidget()  # type: ignore
+        root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
         try:
             h = QHBoxLayout(root)  # type: ignore
             # 左侧：自选 + 顶部操作区

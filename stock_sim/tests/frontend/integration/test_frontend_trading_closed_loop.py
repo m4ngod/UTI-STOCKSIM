@@ -83,9 +83,13 @@ def test_frontend_trading_closed_loop_market_order_account_orders():
         print('closed-loop:market-service-ready', flush=True)
         market_panel = MarketPanel(market_ctl, market_svc)
         print('closed-loop:market-panel-ready', flush=True)
+        from app.ui.adapters.market_adapter import MarketPanelAdapter
+        market_adapter = MarketPanelAdapter().bind(market_panel)
+        _ = market_adapter.widget()
+        print('closed-loop:market-widget-ready', flush=True)
         market_panel.add_symbol(symbol)
         print('closed-loop:market-add-symbol-done', flush=True)
-        market_panel.select_symbol(symbol)
+        market_adapter._handle_select(symbol)
         print('closed-loop:market-select-symbol-done', flush=True)
         from infra.event_bus import event_bus as app_event_bus
         try:
