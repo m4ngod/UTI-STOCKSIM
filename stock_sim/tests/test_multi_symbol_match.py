@@ -9,6 +9,7 @@ from time import sleep
 import time
 from stock_sim.persistence.models_imports import SessionLocal
 from stock_sim.services.instrument_service import InstrumentService
+from stock_sim.services.account_service import AccountService
 from stock_sim.core.matching_engine import MatchingEngine
 from stock_sim.core.instruments import create_instrument
 from stock_sim.core.order import Order
@@ -50,9 +51,20 @@ def test_multi_symbol_separation():
     inst_srv.create(symbol='IPOX', name='IPOX', tick_size=0.01, lot_size=100, min_qty=100,
                     total_shares=1_000_000, free_float_shares=300_000, initial_price=15.0, ipo_opened=False)
     # 直接构造引擎 — 使用 AAA 对象
-    stock0 = create_instrument('AAA', tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0)
+    stock0 = create_instrument('AAA', tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0, settlement_cycle=1)
     eng = MatchingEngine('AAA', stock0)
     osrv = OrderService(s, eng, instrument_service=inst_srv)
+    acc_svc = AccountService(s)
+    # 卖方显式准备持仓，避免依赖旧的隐式宽松裸卖语义
+    acc2 = acc_svc.get_or_create('ACC2', cash=100000.0)
+    pos_acc2 = acc_svc.get_position(acc2, 'AAA')
+    pos_acc2.quantity = 100
+    pos_acc2.avg_price = 10.0
+    issuer = acc_svc.get_or_create('ACC_ISSUER', cash=100000.0)
+    pos_issuer = acc_svc.get_position(issuer, 'IPOX')
+    pos_issuer.quantity = 120_000
+    pos_issuer.avg_price = 15.0
+    s.flush()
     # AAA 连续竞价立即成交
     buy1 = Order(symbol='AAA', side=OrderSide.BUY, price=10.00, quantity=100, account_id='ACC1')
     sell1 = Order(symbol='AAA', side=OrderSide.SELL, price=10.00, quantity=100, account_id='ACC2')

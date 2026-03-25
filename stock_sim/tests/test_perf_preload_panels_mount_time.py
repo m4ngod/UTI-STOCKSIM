@@ -22,8 +22,7 @@ def test_preload_panels_mount_performance():
     - 在无 Qt 环境被标记跳过，避免 CI 干扰
     """
     from app.panels import reset_registry, register_builtin_panels
-    from app.ui.main_window import MainWindow
-    from app.main import _DEFAULT_PRELOAD
+    from app.ui.main_window import DEFAULT_PRELOAD_PANELS, MainWindow
     from observability.metrics import metrics
 
     # 确保 QApplication
@@ -40,7 +39,7 @@ def test_preload_panels_mount_performance():
     # 计时挂载流程
     t0 = time.perf_counter()
     per_panel_ms = []
-    for name in _DEFAULT_PRELOAD:
+    for name in DEFAULT_PRELOAD_PANELS:
         t1 = time.perf_counter()
         mw.open_panel(name)
         per_panel_ms.append((time.perf_counter() - t1) * 1000.0)
@@ -50,7 +49,7 @@ def test_preload_panels_mount_performance():
     total_threshold = float(os.getenv("PANEL_MOUNT_TOTAL_MS", "800"))
     avg_threshold = float(os.getenv("PANEL_MOUNT_AVG_MS", "200"))
 
-    panel_cnt = len(_DEFAULT_PRELOAD) or 1
+    panel_cnt = len(DEFAULT_PRELOAD_PANELS) or 1
     avg_ms = total_ms / panel_cnt
 
     # 性能断言（温和阈值，主要用于本地回归）
@@ -69,6 +68,6 @@ def test_preload_panels_mount_performance():
 
     # 布局中应存在所有预期挂载的面板
     mounted = set(getattr(mw, '_panel_widgets', {}).keys())
-    expected = set(_DEFAULT_PRELOAD)
+    expected = set(DEFAULT_PRELOAD_PANELS)
     assert expected.issubset(mounted), f"已挂载: {mounted}, 预期: {expected}"
 

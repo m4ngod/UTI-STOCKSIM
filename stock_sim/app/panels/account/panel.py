@@ -132,12 +132,21 @@ class AccountPanel:
         return {
             'account_id': acc.account_id,
             'cash': acc.cash,
+            'frozen_cash': acc.frozen_cash,
+            'frozen_fee': getattr(acc, 'frozen_fee', 0.0),
             'equity': acc.equity,
             'utilization': acc.utilization,
             'realized_pnl': acc.realized_pnl,
             'unrealized_pnl': acc.unrealized_pnl,
             'snapshot_id': acc.snapshot_id,
             'sim_day': acc.sim_day,
+            'account_meta': {
+                'authoritative': False,
+                'source': 'app-account-dto-service',
+                'status': 'summary-view',
+                'semantic_gap': 'summary-oriented-view-runtime-order-lifecycle-may-be-richer',
+                'runtime_fields_emphasized': ['frozen_cash', 'frozen_fee'],
+            },
         }
 
     def _enrich_position(self, p: PositionDTO) -> Dict[str, Any]:
@@ -160,14 +169,23 @@ class AccountPanel:
                         )
                 except Exception:
                     pass
+        exposure_state = 'short' if p.borrowed_qty > 0 else ('frozen' if p.frozen_qty > 0 else 'normal')
         return {
             'symbol': p.symbol,
             'quantity': p.quantity,
+            'frozen_qty': p.frozen_qty,
             'avg_price': p.avg_price,
             'borrowed_qty': p.borrowed_qty,
             'pnl_unreal': p.pnl_unreal,
             'pnl_ratio': ratio,
             'highlight': highlight,
+            'position_meta': {
+                'authoritative': False,
+                'source': 'app-account-dto-service',
+                'exposure_state': exposure_state,
+                'has_frozen_qty': p.frozen_qty > 0,
+                'has_borrowed_qty': p.borrowed_qty > 0,
+            },
         }
 
     def _on_thresholds(self, kind: str, value, full):  # noqa: ANN001

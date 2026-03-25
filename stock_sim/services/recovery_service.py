@@ -5,8 +5,10 @@ from collections import defaultdict
 
 try:
     from stock_sim.services.replay_service import replay_service  # type: ignore
+    from stock_sim.services.simulation_run_service import SimulationRunService  # type: ignore
 except Exception:  # noqa
     from services.replay_service import replay_service  # type: ignore
+    from services.simulation_run_service import SimulationRunService  # type: ignore
 
 try:
     from stock_sim.infra.event_bus import event_bus  # type: ignore
@@ -78,6 +80,10 @@ class RecoveryService:
                 severe = (stats["trades"] > stats["ledgers"] and stats["trades"] > 0) or (stats["filled_orders"] > stats["trades"])
                 try:
                     replay_validation[run_id] = replay_service.build_run_report(run_id)
+                    try:
+                        SimulationRunService(s).sync_from_run_report(run_id, replay_validation[run_id])
+                    except Exception:
+                        pass
                 except Exception:
                     replay_validation[run_id] = {"run_id": run_id, "ok": False, "error": "replay_validation_failed"}
                 rep = replay_validation.get(run_id)
@@ -94,6 +100,10 @@ class RecoveryService:
                 if severe:
                     inconsistent_runs.append(run_id)
 
+            try:
+                s.commit()
+            except Exception:
+                s.rollback()
             return {
                 "status": "ok",
                 "readonly": False,

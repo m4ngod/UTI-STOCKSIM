@@ -6,8 +6,7 @@ from pathlib import Path
 # 运行在无图形环境
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from app.main import run_frontend  # noqa: E402
-from app.panels import get_panel  # noqa: E402
+from app.headless import run_headless_frontend  # noqa: E402
 
 
 def _write_artifact(name: str, data):
@@ -26,7 +25,7 @@ def _write_artifact(name: str, data):
 
 def test_core_user_journey_e2e():
     # 启动前端（headless）
-    mw = run_frontend(headless=True)
+    mw = run_headless_frontend()
 
     # 打开关键面板
     market = mw.open_panel("market")

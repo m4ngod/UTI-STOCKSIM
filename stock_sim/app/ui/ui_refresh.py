@@ -83,16 +83,20 @@ def open_symbol_page(symbol: str, *, controller: Any | None = None, service: Any
         if not exists:
             def _factory(_sym: str = symbol, _ctl: Any = ctl, _svc: Any = svc, _tf: str = timeframe):
                 logic = SymbolDetailPanel(_ctl, _svc)
-                # Preload symbol on designated timeframe (daily by default)
                 try:
                     logic.load_symbol(_sym, _tf)  # type: ignore[arg-type]
                 except Exception:
                     pass
-                return SymbolDetailPanelAdapter().bind(logic)  # type: ignore
+                adapter = SymbolDetailPanelAdapter().bind(logic)  # type: ignore
+                try:
+                    adapter.refresh()
+                except Exception:
+                    pass
+                return adapter
             # Human-friendly title like "AAPL Detail"
             title = f"{symbol} Detail"
             try:
-                register_panel(name, _factory, title=title, meta={"symbol": symbol, "timeframe": timeframe})
+                register_panel(name, _factory, title=title, meta={"symbol": symbol, "timeframe": timeframe, "kind": "workspace-page"})
             except Exception:
                 # If already registered by a race, ignore
                 pass
@@ -103,7 +107,13 @@ def open_symbol_page(symbol: str, *, controller: Any | None = None, service: Any
     mw = _main_window
     if mw is not None:
         try:
-            return mw.open_panel(name)  # type: ignore[attr-defined]
+            opened = mw.open_panel(name)  # type: ignore[attr-defined]
+            try:
+                if hasattr(mw, 'show_workspace_page'):
+                    mw.show_workspace_page(name)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return opened
         except Exception:
             pass
     try:

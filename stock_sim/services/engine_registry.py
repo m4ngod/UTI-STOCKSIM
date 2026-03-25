@@ -21,6 +21,7 @@ class _EngineMeta:
     pe: float | None = None
     market_cap: float | None = None
     initial_price: float | None = None
+    settlement_cycle: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -71,10 +72,16 @@ class EngineRegistry:
                 return eng
             meta = self._meta.get(sym)
             initial_price = meta.initial_price if meta else None
+            settlement_cycle = meta.settlement_cycle if meta else None
             stock = Stock(sym, 0, 0)
             if initial_price is not None:
                 try:
                     stock.initial_price = initial_price
+                except Exception:
+                    pass
+            if settlement_cycle is not None:
+                try:
+                    stock.settlement_cycle = int(settlement_cycle)
                 except Exception:
                     pass
             eng = MatchingEngine(sym, instrument=stock)
@@ -99,10 +106,10 @@ class EngineRegistry:
 
     def _merge_meta(self, symbol: str, meta: dict[str, Any]) -> None:
         cur = self._meta.setdefault(symbol, _EngineMeta())
-        for key in ("name", "pe", "market_cap", "initial_price"):
+        for key in ("name", "pe", "market_cap", "initial_price", "settlement_cycle"):
             if key in meta:
                 setattr(cur, key, meta[key])
-        extra = {k: v for k, v in meta.items() if k not in {"name", "pe", "market_cap", "initial_price"}}
+        extra = {k: v for k, v in meta.items() if k not in {"name", "pe", "market_cap", "initial_price", "settlement_cycle"}}
         if extra:
             cur.extra.update(extra)
 

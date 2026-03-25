@@ -11,6 +11,15 @@ PySide6 可能在 CI/headless 缺失, 采用降级占位实现: 若不可用则�
 from __future__ import annotations
 from typing import Dict, Optional, List, Any
 
+DEFAULT_DOCK_AREAS = {
+    'account': 'left',
+    'market': 'center',
+    'agents': 'right',
+    'leaderboard': 'bottom',
+    'clock': 'right',
+    'orders': 'bottom',
+}
+
 try:  # noqa: SIM105
     from PySide6.QtCore import Qt  # type: ignore
     from PySide6.QtWidgets import QMainWindow, QWidget, QDockWidget  # type: ignore
@@ -35,6 +44,16 @@ class DockManager:
         self._panels: Dict[str, Any] = {}      # name -> widget
         self._docks: Dict[str, Any] = {}       # name -> QDockWidget / placeholder
 
+    def _resolve_area(self, name: str):
+        pref = DEFAULT_DOCK_AREAS.get(name, 'left')
+        if pref == 'right':
+            return getattr(Qt, 'RightDockWidgetArea', getattr(Qt, 'LeftDockWidgetArea', 0))
+        if pref == 'bottom':
+            return getattr(Qt, 'BottomDockWidgetArea', getattr(Qt, 'LeftDockWidgetArea', 0))
+        if pref == 'top':
+            return getattr(Qt, 'TopDockWidgetArea', getattr(Qt, 'LeftDockWidgetArea', 0))
+        return getattr(Qt, 'LeftDockWidgetArea', 0)
+
     def add_panel(self, name: str, widget: Any) -> bool:
         if name in self._panels:
             return False
@@ -44,12 +63,13 @@ class DockManager:
                 dock = QDockWidget(name)  # type: ignore
                 if hasattr(dock, 'setWidget'):
                     dock.setWidget(widget)
-                # 缺省使用 Qt.LeftDockWidgetArea，旧实现常量名作为回退
-                area = getattr(Qt, 'LeftDockWidgetArea', None)
-                if area is None:
-                    area = getattr(self._mw, 'LeftDockWidgetArea', None)
-                if area is not None:
-                    self._mw.addDockWidget(area, dock)  # type: ignore
+                if hasattr(dock, 'setObjectName'):
+                    try:
+                        dock.setObjectName(f'dock::{name}')  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                area = self._resolve_area(name)
+                self._mw.addDockWidget(area, dock)  # type: ignore
                 self._docks[name] = dock
             except Exception:  # pragma: no cover - 防御
                 pass
