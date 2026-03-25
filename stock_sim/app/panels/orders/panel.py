@@ -146,9 +146,11 @@ class OrdersPanel:
             "ts", "type"
         }.issubset(payload.keys()):
             # Ensure required keys exist; fill defaults
+            line_type = self._normalize_type(payload.get("type")) or "Trade"
+            lifecycle_stage = self._lifecycle_stage(line_type, payload.get("status"), payload.get("reason"))
             return {
                 "ts": self._coerce_ts(payload.get("ts")),
-                "type": self._normalize_type(payload.get("type")) or "Trade",
+                "type": line_type,
                 "order_id": payload.get("order_id"),
                 "symbol": payload.get("symbol"),
                 "side": self._safe_lower(payload.get("side")),
@@ -157,6 +159,8 @@ class OrdersPanel:
                 "status": payload.get("status"),
                 "reason": payload.get("reason"),
                 "account_id": payload.get("account_id"),
+                "lifecycle_stage": lifecycle_stage,
+                "line_meta": self._line_meta(line_type, lifecycle_stage),
             }
 
         # Trade event: {"trade": {...}}
@@ -170,9 +174,11 @@ class OrdersPanel:
             price = self._safe_float(tr.get("price"))
             order_id = tr.get("order_id") or tr.get("buy_order_id") or tr.get("sell_order_id")
             account_id = tr.get("account_id") or payload.get("account_id")
+            line_type = "Trade"
+            lifecycle_stage = self._lifecycle_stage(line_type, "TRADE", None)
             return {
                 "ts": ts,
-                "type": "Trade",
+                "type": line_type,
                 "order_id": order_id,
                 "symbol": symbol,
                 "side": side,
@@ -181,6 +187,8 @@ class OrdersPanel:
                 "status": "TRADE",
                 "reason": None,
                 "account_id": account_id,
+                "lifecycle_stage": lifecycle_stage,
+                "line_meta": self._line_meta(line_type, lifecycle_stage),
             }
 
         # OrderRejected: {"order": {...}, "reason": str}
@@ -190,33 +198,45 @@ class OrdersPanel:
             if ts is None:
                 ts = self._try_order_ts(od) or self._now_ms()
             qty = self._safe_int(od.get("qty") if "qty" in od else od.get("quantity"))
+            line_type = "OrderRejected"
+            status = od.get("status") or "REJECTED"
+            reason = payload.get("reason")
+            lifecycle_stage = self._lifecycle_stage(line_type, status, reason)
             return {
                 "ts": ts,
-                "type": "OrderRejected",
+                "type": line_type,
                 "order_id": od.get("order_id"),
                 "symbol": od.get("symbol"),
                 "side": self._safe_lower(od.get("side")),
                 "price": self._safe_float(od.get("price")),
                 "qty": qty,
-                "status": od.get("status") or "REJECTED",
-                "reason": payload.get("reason"),
+                "status": status,
+                "reason": reason,
                 "account_id": od.get("account_id") or payload.get("account_id"),
+                "lifecycle_stage": lifecycle_stage,
+                "line_meta": self._line_meta(line_type, lifecycle_stage),
             }
 
         # OrderCanceled: {"order_id": str, "reason": str}
         if isinstance(payload.get("order_id"), str) and "reason" in payload:
             ts = self._coerce_ts(payload.get("ts")) or self._now_ms()
+            line_type = "OrderCanceled"
+            status = payload.get("status") or "CANCELED"
+            reason = payload.get("reason")
+            lifecycle_stage = self._lifecycle_stage(line_type, status, reason)
             return {
                 "ts": ts,
-                "type": "OrderCanceled",
+                "type": line_type,
                 "order_id": payload.get("order_id"),
                 "symbol": payload.get("symbol"),
                 "side": self._safe_lower(payload.get("side")),
                 "price": self._safe_float(payload.get("price")),
                 "qty": self._safe_int(payload.get("qty")),
-                "status": payload.get("status") or "CANCELED",
-                "reason": payload.get("reason"),
+                "status": status,
+                "reason": reason,
                 "account_id": payload.get("account_id"),
+                "lifecycle_stage": lifecycle_stage,
+                "line_meta": self._line_meta(line_type, lifecycle_stage),
             }
 
         # If cannot determine, skip
@@ -278,3 +298,44 @@ class OrdersPanel:
                 if ms is not None:
                     return ms
         return None
+
+    @staticmethod
+    def _line_meta(line_type: str, lifecycle_stage: str) -> Dict[str, Any]:
+        account_semantic_hint = {
+            'Trade': 'trade-events-should-correlate-with-account-position-or-cash-change',
+            'OrderRejected': 'rejected-orders-should-not-change-runtime-frozen-state',
+            'OrderCanceled': 'canceled-orders-may-release-frozen-cash-or-qty',
+        }.get(line_type, 'event-stream')
+        account_effect_summary = {
+            'Trade': 'may change account cash and position',
+            'OrderRejected': 'should not change runtime frozen cash or quantity',
+            'OrderCanceled': 'may release frozen cash or quantity',
+        }.get(line_type, 'event only')
+        return {
+            'authoritative': False,
+            'source': 'frontend-order-event-stream',
+            'line_kind': line_type,
+            'lifecycle_summary': lifecycle_stage,
+            'account_semantic_hint': account_semantic_hint,
+            'account_effect_summary': account_effect_summary,
+        }
+
+    @staticmethod
+    def _lifecycle_stage(line_type: str, status: Any, reason: Any) -> str:
+        status_s = str(status or '').upper()
+        reason_s = str(reason or '').upper()
+        if line_type == 'Trade':
+            return 'filled-event'
+        if line_type == 'OrderRejected':
+            return 'rejected'
+        if line_type == 'OrderCanceled':
+            if 'IOC' in reason_s or 'FOK' in reason_s or 'UNFILLABLE' in reason_s:
+                return 'canceled-residual'
+            return 'canceled'
+        if status_s in {'FILLED'}:
+            return 'filled'
+        if status_s in {'PARTIAL', 'PARTIALLY_FILLED'}:
+            return 'partial'
+        if status_s in {'NEW', 'REST'}:
+            return 'active'
+        return 'event'

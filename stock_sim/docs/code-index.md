@@ -35,3 +35,10 @@
 ## Existing architecture note
 
 - Frontend/backend dependency map: `docs/frontend-backend-dependency-map.md`
+- Storage layering / future runtime persistence direction: `docs/data/data-layering-design.md`
+- Table-level storage mapping / migration blueprint: `docs/data/data-layering-table-plan.md`
+- `simulation_runs` table design draft: `docs/data/simulation-runs-design.md`
+- `account_equity_snapshots` table design draft: `docs/data/account-equity-snapshots-design.md`
+- `run_id` migration / wiring blueprint: `docs/data/run-id-wiring-plan.md`
+- runtime `RunContext` bridge design: `docs/data/run-context-design.md`
+- runtime `RunContext` bridge design: `docs/data/run-context-design.md`

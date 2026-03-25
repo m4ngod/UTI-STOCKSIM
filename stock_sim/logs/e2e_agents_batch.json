@@ -3,7 +3,7 @@
     "total": 10,
     "items": [
       {
-        "agent_id": "ret-e2e-1758205954866-0",
+        "agent_id": "ret-e2e-1774367630852-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -13,7 +13,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954872-0",
+        "agent_id": "ret-e2e-1774367630860-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -23,7 +23,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954877-0",
+        "agent_id": "ret-e2e-1774367630865-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -33,7 +33,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954883-0",
+        "agent_id": "ret-e2e-1774367630870-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -43,7 +43,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954888-0",
+        "agent_id": "ret-e2e-1774367630876-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -53,7 +53,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954893-0",
+        "agent_id": "ret-e2e-1774367630881-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -63,7 +63,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954899-0",
+        "agent_id": "ret-e2e-1774367630886-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -73,7 +73,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954904-0",
+        "agent_id": "ret-e2e-1774367630891-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -83,7 +83,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954909-0",
+        "agent_id": "ret-e2e-1774367630897-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -93,7 +93,7 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1758205954915-0",
+        "agent_id": "ret-e2e-1774367630902-0",
         "name": "e2e-0",
         "type": "Retail",
         "status": "STOPPED",
@@ -111,6 +111,7 @@
     "failed": 0,
     "type": "Retail",
     "error": null,
-    "strategies": null
+    "strategies": null,
+    "initial_cash": null
   }
 }

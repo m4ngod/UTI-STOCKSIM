@@ -13,6 +13,7 @@ from .models_bars import Bar1m, Bar1h, Bar1d  # 新增
 from .models_agent_binding import AgentBinding  # 新增: 代理/散户绑定表
 from .models_feature_buffer import FeatureBuffer  # 新增: 模型特征缓冲表
 from .models_event_log import EventLog  # 新增: 事件日志表
+from .models_simulation_run import SimulationRun
 from sqlalchemy import inspect, text
 from stock_sim.persistence.models_imports import engine
 

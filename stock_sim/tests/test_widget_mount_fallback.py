@@ -88,8 +88,7 @@ def test_open_panel_idempotent_mount_no_duplicate_widgets():
 @pytest.mark.skipif(not HAS_PYSIDE, reason="PySide6 不可用，跳过 GUI 相关测试")
 def test_widget_preload_panels_all_mounted_via_mainwindow():
     from app.panels import reset_registry, register_builtin_panels
-    from app.ui.main_window import MainWindow
-    from app.main import _DEFAULT_PRELOAD
+    from app.ui.main_window import DEFAULT_PRELOAD_PANELS, MainWindow
 
     app = QApplication.instance() or QApplication([])
 
@@ -99,9 +98,9 @@ def test_widget_preload_panels_all_mounted_via_mainwindow():
     mw = MainWindow()
     mw._ensure_central_layout()
 
-    for name in _DEFAULT_PRELOAD:
+    for name in DEFAULT_PRELOAD_PANELS:
         mw.open_panel(name)
 
     keys = set(mw._panel_widgets.keys())
-    missing = [n for n in _DEFAULT_PRELOAD if n not in keys]
+    missing = [n for n in DEFAULT_PRELOAD_PANELS if n not in keys]
     assert not missing, f"缺少预期面板: {missing}, 已有: {keys}"

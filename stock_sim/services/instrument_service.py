@@ -120,7 +120,14 @@ class InstrumentService:
         if engine_registry.get(sym) is None:
             if TRACE_SIMDAY:
                 print(f"[TRACE InstrumentService.create] register_engine symbol={sym} ipo_opened={getattr(inst_row,'ipo_opened',False)} initial_price={initial_price}")
-            stock_obj: Stock = create_instrument(sym, tick_size=tick_size, lot_size=lot_size, min_qty=min_qty, initial_price=initial_price)
+            stock_obj: Stock = create_instrument(
+                sym,
+                tick_size=tick_size,
+                lot_size=lot_size,
+                min_qty=min_qty,
+                initial_price=initial_price,
+                settlement_cycle=inst_row.settlement_cycle,
+            )
             # 注入 IPO 相关属性供 MatchingEngine 判定
             try:
                 stock_obj.total_shares = inst_row.total_shares or 0

@@ -10,6 +10,7 @@ Options:
 """
 from __future__ import annotations
 import sys
+import os
 import argparse
 from typing import Optional
 
@@ -25,6 +26,8 @@ try:
 except Exception as e:  # pragma: no cover
     print("Failed to import frontend modules:", e, file=sys.stderr)
     sys.exit(2)
+
+_DEBUG_GUI_START = os.environ.get("STOCKSIM_DEBUG_GUI_START", "").strip().lower() in {"1", "true", "yes", "on"}
 
 def _init_settings(lang: str, theme: str):
     # 临时 settings.json 放在当前目录 (可扩展为 XDG 路径)
@@ -58,11 +61,16 @@ def _start_frontend(*, headless: bool):
     if QApplication is None:
         raise RuntimeError("GUI runtime unavailable: PySide6/QApplication is not available")
 
+    # Real GUI path must explicitly opt into real Qt widgets.
+    os.environ.setdefault("STOCKSIM_ENABLE_REAL_UI", "1")
+
     register_builtin_panels()
     try:
         register_ui_adapters()
-    except Exception:
-        pass
+    except Exception as e:
+        if _DEBUG_GUI_START:
+            print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
+        raise
     app = QApplication.instance() or QApplication([])
     mw = MainWindow()
     try:
@@ -73,8 +81,11 @@ def _start_frontend(*, headless: bool):
     for name in DEFAULT_PRELOAD_PANELS:
         try:
             mw.open_panel(name)
-        except Exception:
-            pass
+            if _DEBUG_GUI_START:
+                print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
+        except Exception as e:
+            if _DEBUG_GUI_START:
+                print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
     try:
         mw.show()
         app.exec()

@@ -32,11 +32,12 @@ class _DummyStorage:
 class RiskEngine:
     """最小风险引擎实现: 迭代已注册规则, 首个拒绝返回 RiskResult(False,...)
     若所有规则通过或未产生拒绝则 ok=True。
-    兼容 OrderService 需要的 update_tplus / reset_day_tplus / storage.reset_day 接口。"""
+    当前已承载一个真实规则：T+1 卖出限制。
+    """
     def __init__(self):
         self._rules_loaded = False
         self.storage = _DummyStorage()
-        # 日内 T+1 统计占位: {(account_id,symbol,side): qty}
+        # 日内 T+1 统计: {(account_id,symbol,side): qty}
         self._tplus: Dict[Tuple[str,str,OrderSide], int] = {}
 
     def _ensure_rules(self):
@@ -53,7 +54,8 @@ class RiskEngine:
                  context: dict | None = None) -> RiskResult:
         self._ensure_rules()
         positions = positions or []
-        ctx = context or {}
+        ctx = dict(context or {})
+        ctx.setdefault('risk_engine', self)
         for rule in risk_rule_registry.list_rules():  # type: ignore
             try:
                 r = rule.evaluate(account=account, positions=positions, symbol=symbol,
@@ -77,6 +79,9 @@ class RiskEngine:
             return
         key = (account_id, symbol, side)
         self._tplus[key] = self._tplus.get(key, 0) + qty
+
+    def get_tplus(self, account_id: str, symbol: str, side: OrderSide) -> int:
+        return int(self._tplus.get((account_id, symbol, side), 0) or 0)
 
     def reset_day_tplus(self, positions: List[Any]):  # positions 仅占位
         self._tplus.clear()

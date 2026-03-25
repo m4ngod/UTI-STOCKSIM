@@ -21,12 +21,13 @@ class Stock:
 FUTURE_PREFIXES = {"IF", "IH", "IC", "IM", "CU", "AL", "ZN", "RB", "AU", "AG", "BU", "RU", "FU", "HC", "SS", "PF", "PG", "SA"}
 
 def create_instrument(symbol: str, *, tick_size: float = 0.01, lot_size: int = 1, min_qty: int = 1,
-                      initial_price: float | None = None) -> Stock:
-    """根据符号自动推断 settlement_cycle 并可选设定 initial_price。
+                      initial_price: float | None = None, settlement_cycle: int | None = None) -> Stock:
+    """根据符号自动推断 settlement_cycle，并允许显式覆盖。
     增强: 支持前端配置的 initial_price 直接注入到 Stock, 避免后续因 slots 限制无法动态添加。
+    规则: 若显式传入 settlement_cycle，则其优先级高于符号推断。
     """
     upper = symbol.upper()
-    cycle = 1  # 默认股票 T+1
+    cycle = 1 if settlement_cycle is None else int(settlement_cycle)
     # 期货判断: 前缀字母 + 4 位数字
     m = re.match(r"^([A-Z]{1,3})(\d{3,4})$", upper)
     if m:
