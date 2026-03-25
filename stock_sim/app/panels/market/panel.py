@@ -19,7 +19,12 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any
 from threading import RLock
+from collections import deque
+import os
 import time
+import inspect
+
+_TRACE_MARKET_PANEL = os.environ.get("STOCKSIM_TRACE_MARKET_PANEL", "").strip().lower() in {"1", "true", "yes", "on"}
 # 新增: 可选 WatchlistStore 持久化
 try:  # pragma: no cover - 运行时若未导入
     from app.services.watchlist_store import WatchlistStore  # type: ignore
@@ -65,8 +70,10 @@ class SymbolDetailPanel:
         self._indicators: Dict[str, Any] = {}
         self._pending_jobs: set[str] = set()
         self._ma_window_default = 20
-        # 新增: 逐笔成交 ring buffer
-        self._trades: RingBuffer[TradeDTO] = RingBuffer(capacity=1000, metrics_prefix="trades_rb")
+        # 新增: 逐笔成交缓存
+        # 这里优先保证前端闭环状态稳定可见；使用简单 deque 作为权威视图源，
+        # 避免在 app/runtime 混合导入路径下把最后一层展示状态绑死在优化结构上。
+        self._trades: deque[TradeDTO] = deque(maxlen=1000)
 
     # ---------- Internal Helpers ----------
     def _schedule_indicators(self, symbol: str, timeframe: Timeframe):
@@ -104,6 +111,11 @@ class SymbolDetailPanel:
     # ---------- Public API ----------
     def load_symbol(self, symbol: str, timeframe: Optional[Timeframe] = None):
         start = time.perf_counter()
+        if _TRACE_MARKET_PANEL:
+            try:
+                print(f"[market-panel:load_symbol:begin] detail_id={id(self)} trades_id={id(self._trades)} old_symbol={self._symbol} new_symbol={symbol}", flush=True)
+            except Exception:
+                pass
         with self._lock:
             current_tf = self._timeframe
         tf: Timeframe = timeframe if timeframe is not None else current_tf
@@ -127,6 +139,11 @@ class SymbolDetailPanel:
         except Exception:
             pass
         self._schedule_indicators(symbol, tf)
+        if _TRACE_MARKET_PANEL:
+            try:
+                print(f"[market-panel:load_symbol:end] detail_id={id(self)} trades_id={id(self._trades)} symbol={self._symbol} trades_len={len(self._trades)}", flush=True)
+            except Exception:
+                pass
         metrics.inc("symbol_detail_load")
         metrics.add_timing("symbol_detail_load_ms", (time.perf_counter() - start) * 1000)
 
@@ -164,15 +181,91 @@ class SymbolDetailPanel:
 
     # 新增: 接收逐笔 (外部事件驱动调用)
     def add_trade(self, trade: TradeDTO | dict):  # noqa: D401
+        if _TRACE_MARKET_PANEL:
+            try:
+                print(f"[market-panel:add_trade:enter] detail_id={id(self)} trade_type={type(trade)} raw={trade}", flush=True)
+            except Exception:
+                pass
         if isinstance(trade, dict):
             try:
-                trade = TradeDTO(**trade)
-            except Exception:  # pragma: no cover
+                raw = dict(trade)
+                ts_v = raw.get('ts')
+                ts_ms: int
+                if isinstance(ts_v, int):
+                    ts_ms = ts_v if ts_v >= 10_000_000_000 else ts_v * 1000
+                elif isinstance(ts_v, float):
+                    ts_ms = int(ts_v if ts_v >= 10_000_000_000 else ts_v * 1000)
+                elif isinstance(ts_v, str):
+                    try:
+                        iv = int(ts_v)
+                        ts_ms = iv if iv >= 10_000_000_000 else iv * 1000
+                    except Exception:
+                        dt = time.strptime(ts_v.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                        ts_ms = int(time.mktime(dt) * 1000)
+                else:
+                    ts_ms = int(time.time() * 1000)
+
+                side_v = raw.get('side')
+                side_s = str(side_v).lower() if side_v is not None else ''
+                if side_s not in {'buy', 'sell'}:
+                    side_s = 'buy'
+
+                normalized = {
+                    'symbol': raw.get('symbol'),
+                    'price': raw.get('price'),
+                    'qty': raw.get('qty') if raw.get('qty') is not None else raw.get('quantity'),
+                    'side': side_s,
+                    'ts': ts_ms,
+                }
+                trade = TradeDTO(**normalized)
+                if _TRACE_MARKET_PANEL:
+                    try:
+                        print(f"[market-panel:add_trade:converted] detail_id={id(self)} trade={trade}", flush=True)
+                    except Exception:
+                        pass
+            except Exception as e:  # pragma: no cover
+                if _TRACE_MARKET_PANEL:
+                    try:
+                        print(f"[market-panel:add_trade:convert_error] detail_id={id(self)} err={e!r}", flush=True)
+                    except Exception:
+                        pass
                 return
         with self._lock:
-            if self._symbol is None or trade.symbol != self._symbol:
+            if _TRACE_MARKET_PANEL:
+                try:
+                    print(f"[market-panel:add_trade] detail_id={id(self)} trades_id={id(self._trades)} current_symbol={self._symbol} trade_symbol={getattr(trade, 'symbol', None)} before_len={len(self._trades)}", flush=True)
+                except Exception:
+                    pass
+            try:
+                trade_symbol = trade.symbol
+            except Exception as e:
+                if _TRACE_MARKET_PANEL:
+                    try:
+                        print(f"[market-panel:add_trade:symbol_error] detail_id={id(self)} err={e!r}", flush=True)
+                    except Exception:
+                        pass
                 return
-            self._trades.append(trade)
+            if self._symbol is None or trade_symbol != self._symbol:
+                if _TRACE_MARKET_PANEL:
+                    try:
+                        print(f"[market-panel:add_trade:skip] detail_id={id(self)} current_symbol={self._symbol} trade_symbol={trade_symbol}", flush=True)
+                    except Exception:
+                        pass
+                return
+            try:
+                self._trades.append(trade)
+            except Exception as e:
+                if _TRACE_MARKET_PANEL:
+                    try:
+                        print(f"[market-panel:add_trade:append_error] detail_id={id(self)} err={e!r}", flush=True)
+                    except Exception:
+                        pass
+                return
+            if _TRACE_MARKET_PANEL:
+                try:
+                    print(f"[market-panel:add_trade:done] detail_id={id(self)} trades_id={id(self._trades)} after_len={len(self._trades)}", flush=True)
+                except Exception:
+                    pass
 
     def add_trades(self, trades):  # 批量
         for t in trades:
@@ -192,7 +285,12 @@ class SymbolDetailPanel:
             stale = self._is_stale
             indicators_copy = {k: v if not isinstance(v, list) else list(v) for k, v in self._indicators.items()}
             pending_jobs = set(self._pending_jobs)
-            trades_list = [t.dict() for t in self._trades.to_list()]
+            trades_list = [t.model_dump() if hasattr(t, 'model_dump') else t.dict() for t in list(self._trades)]
+            if _TRACE_MARKET_PANEL:
+                try:
+                    print(f"[market-panel:get_view] detail_id={id(self)} trades_id={id(self._trades)} symbol={sym} trades_len={len(trades_list)}", flush=True)
+                except Exception:
+                    pass
 
         snapshot: Optional[SnapshotDTO] = self._ctl.get_snapshot(sym) if sym else None
         snapshot_meta = {
@@ -417,12 +515,38 @@ class MarketPanel:
             self._sort_by = sort_by
 
     def select_symbol(self, symbol: str, timeframe: Optional[Timeframe] = None):
+        if _TRACE_MARKET_PANEL:
+            try:
+                print(f"[market-panel:select_symbol] panel_id={id(self)} detail_id={id(self._detail)} symbol={symbol}", flush=True)
+            except Exception:
+                pass
         self._detail.load_symbol(symbol, timeframe)
 
     def add_trade(self, trade):  # 代理
-        self._detail.add_trade(trade)
+        if _TRACE_MARKET_PANEL:
+            try:
+                sym = trade.get('symbol') if isinstance(trade, dict) else getattr(trade, 'symbol', None)
+                print(f"[market-panel:add_trade_proxy] panel_id={id(self)} detail_id={id(self._detail)} symbol={sym} panel_mod={type(self).__module__} detail_mod={type(self._detail).__module__}", flush=True)
+                print(f"[market-panel:add_trade_proxy:src] panel_src={inspect.getsourcefile(type(self))} detail_src={inspect.getsourcefile(type(self._detail))}", flush=True)
+                print(f"[market-panel:add_trade_proxy:method] detail_add_trade={getattr(self._detail.add_trade, '__qualname__', None)} func_mod={getattr(self._detail.add_trade, '__module__', None)}", flush=True)
+            except Exception:
+                pass
+        try:
+            self._detail.add_trade(trade)
+        except Exception as e:
+            if _TRACE_MARKET_PANEL:
+                try:
+                    print(f"[market-panel:add_trade_proxy:error] panel_id={id(self)} detail_id={id(self._detail)} err={e!r}", flush=True)
+                except Exception:
+                    pass
+            raise
 
     def detail_view(self) -> Dict[str, Any]:  # 代理
+        if _TRACE_MARKET_PANEL:
+            try:
+                print(f"[market-panel:detail_view_proxy] panel_id={id(self)} detail_id={id(self._detail)}", flush=True)
+            except Exception:
+                pass
         return self._detail.get_view()
 
     # ---------- View ----------
