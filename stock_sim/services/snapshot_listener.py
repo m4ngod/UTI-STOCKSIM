@@ -85,8 +85,18 @@ class SnapshotPersistenceListener:
 
     # ---------------- Snapshot Event ----------------
     def _on_snapshot(self, topic: str, payload: dict):
+        if isinstance(payload, dict):
+            if "sim_day" not in payload:
+                payload["sim_day"] = current_sim_day()
+            try:
+                sd = payload.get("sim_day")
+                if "sim_dt" not in payload:
+                    payload["sim_dt"] = virtual_datetime(sd).isoformat() if sd else None
+            except Exception:
+                pass
         snap = payload.get("snapshot") if isinstance(payload, dict) else None
         symbol = (payload.get("symbol") or (snap or {}).get("symbol")) if payload else None
+        run_id = payload.get("run_id") if isinstance(payload, dict) else None
         if not symbol:
             return
         symbol_u = symbol.upper()
@@ -135,11 +145,23 @@ class SnapshotPersistenceListener:
             sess: Session = self._sf()
             try:
                 row = (sess.query(Snapshot1s)
-                        .filter(Snapshot1s.symbol == symbol_u, Snapshot1s.ts == now)
+                        .filter(Snapshot1s.symbol == symbol_u, Snapshot1s.ts == now, Snapshot1s.run_id == run_id)
                         .one_or_none())
-                sim_day = current_sim_day(); sim_dt = virtual_datetime(sim_day)
+                if row is None and run_id is None:
+                    row = (sess.query(Snapshot1s)
+                            .filter(Snapshot1s.symbol == symbol_u, Snapshot1s.ts == now, Snapshot1s.run_id.is_(None))
+                            .one_or_none())
+                sim_day = payload.get("sim_day") if isinstance(payload, dict) else None
+                sim_day = sim_day if sim_day is not None else current_sim_day()
+                sim_dt = payload.get("sim_dt") if isinstance(payload, dict) else None
+                if isinstance(sim_dt, str):
+                    try:
+                        sim_dt = datetime.fromisoformat(sim_dt.replace('Z', '+00:00')).replace(tzinfo=None)
+                    except Exception:
+                        sim_dt = None
+                sim_dt = sim_dt if sim_dt is not None else virtual_datetime(sim_day)
                 if row is None:
-                    row = Snapshot1s(symbol=symbol_u, ts=now,
+                    row = Snapshot1s(symbol=symbol_u, run_id=run_id, ts=now,
                                      last_price=last, bid1=bid1, ask1=ask1,
                                      bid1_qty=bid1_qty, ask1_qty=ask1_qty,
                                      volume=volume, turnover=turnover,
@@ -153,6 +175,7 @@ class SnapshotPersistenceListener:
                     sess.add(row)
                 else:
                     # 更新已有
+                    if run_id and not getattr(row, 'run_id', None): row.run_id = run_id
                     if last is not None: row.last_price = last
                     if bid1 is not None: row.bid1 = bid1
                     if ask1 is not None: row.ask1 = ask1
@@ -170,7 +193,7 @@ class SnapshotPersistenceListener:
                     row.imbalance = imb if imb is not None else row.imbalance
                     row.trade_count_sec = trade_count_sec if trade_count_sec is not None else row.trade_count_sec
                     row.vwap = vwap if vwap is not None else row.vwap
-                    if sim_day and not getattr(row, 'sim_day', None):
+                    if sim_day is not None and not getattr(row, 'sim_day', None):
                         row.sim_day = sim_day; row.sim_dt = sim_dt
                 sess.commit()
             except Exception:

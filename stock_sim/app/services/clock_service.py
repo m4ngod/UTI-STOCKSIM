@@ -69,7 +69,7 @@ class ClockService:
         if event_bus is None:
             return
         try:
-            event_bus.publish("clock.state", self._to_dto().dict())
+            event_bus.publish("clock.state", self._to_dto().model_dump())
         except Exception:  # pragma: no cover
             pass
 
@@ -150,7 +150,7 @@ class ClockService:
             # 发布 tick（轻量）
             if event_bus is not None:
                 try:
-                    event_bus.publish("clock.tick", self._to_dto().dict())
+                    event_bus.publish("clock.tick", self._to_dto().model_dump())
                 except Exception:  # pragma: no cover
                     pass
             return self._to_dto()

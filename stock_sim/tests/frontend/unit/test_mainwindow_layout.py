@@ -8,7 +8,7 @@ except Exception:
 
 @pytest.mark.skipif(not QT_AVAILABLE, reason="PySide6 not available")
 def test_mainwindow_layout_idempotent():
-    from app.main import MainWindow
+    from app.ui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication([])
     mw = MainWindow()

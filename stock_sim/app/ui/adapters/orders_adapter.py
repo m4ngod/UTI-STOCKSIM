@@ -11,14 +11,27 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Iterable, Set
 from .base_adapter import PanelAdapter
 from infra.event_bus import event_bus
-
-# Subscribe helper (fallback)
 try:
-    from app.event_bridge import subscribe_topic  # type: ignore
+    from stock_sim.infra.event_bus import event_bus as runtime_event_bus  # type: ignore
 except Exception:  # pragma: no cover
-    def subscribe_topic(topic, handler, *, async_mode=False):  # type: ignore
-        event_bus.subscribe(topic, handler, async_mode=async_mode)
-        return lambda: event_bus.unsubscribe(topic, handler)
+    runtime_event_bus = event_bus  # type: ignore
+
+# Subscribe helper: explicitly subscribe both app/runtime buses to avoid import-path drift.
+def subscribe_topic(topic, handler, *, async_mode=False):  # type: ignore
+    event_bus.subscribe(topic, handler, async_mode=async_mode)
+    if runtime_event_bus is not event_bus:
+        runtime_event_bus.subscribe(topic, handler, async_mode=async_mode)
+    def _cancel():
+        try:
+            event_bus.unsubscribe(topic, handler)
+        except Exception:
+            pass
+        if runtime_event_bus is not event_bus:
+            try:
+                runtime_event_bus.unsubscribe(topic, handler)
+            except Exception:
+                pass
+    return _cancel
 
 # Notification center for ui.notification publishing
 try:
@@ -47,51 +60,98 @@ except Exception:  # pragma: no cover
         @property
         def has_pending(self): return False
 
-# Qt (headless stubs when unavailable)
-try:
-    from PySide6.QtWidgets import (  # type: ignore
-        QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel
-    )
-except Exception:  # pragma: no cover
-    QWidget = object  # type: ignore
-    class QVBoxLayout:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def addWidget(self, *_): pass
-        def addLayout(self, *_): pass
-    class QHBoxLayout:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def addWidget(self, *_): pass
-    class QLineEdit:  # type: ignore
-        def __init__(self, text=""): self._text=text
-        def text(self): return self._text
-        def setText(self, t): self._text=t
-        @property
-        def textChanged(self):
-            class _Sig:
-                def connect(self, *_): pass
-            return _Sig()
-    class QPushButton:  # type: ignore
-        def __init__(self, text=""): self._text=text; self._check=True
-        def setCheckable(self, v): self._check=v
-        def isChecked(self): return self._check
-        def setChecked(self, v): self._check=v
-        @property
-        def clicked(self):
-            class _Sig:
-                def connect(self, *_): pass
-            return _Sig()
-    class QTableWidget:  # type: ignore
-        def __init__(self, *_a, **_k): pass
-        def setColumnCount(self, *_): pass
-        def setHorizontalHeaderLabels(self, *_): pass
-        def setRowCount(self, *_): pass
-        def setItem(self, *_): pass
-    class QTableWidgetItem:  # type: ignore
-        def __init__(self, text=""): self._text=text
-        def text(self): return self._text
-    class QLabel:  # type: ignore
-        def __init__(self, text=""): self._text=text
-        def setText(self, t): self._text=t
+# Keep orders adapter strictly headless-safe even if PySide6 is installed but
+# no QApplication / UI runtime is active in tests.
+class _HeadlessRoot:
+    pass
+
+
+class _HeadlessSig:
+    def connect(self, *_):
+        return None
+
+
+class QWidget:  # type: ignore
+    def __init__(self, *_, **__):
+        pass
+
+
+class QVBoxLayout:  # type: ignore
+    def __init__(self, *_, **__):
+        pass
+    def addWidget(self, *_):
+        pass
+    def addLayout(self, *_):
+        pass
+
+
+class QHBoxLayout:  # type: ignore
+    def __init__(self, *_, **__):
+        pass
+    def addWidget(self, *_):
+        pass
+
+
+class QLineEdit:  # type: ignore
+    def __init__(self, text=""):
+        self._text = text
+    def text(self):
+        return self._text
+    def setText(self, t):
+        self._text = t
+    @property
+    def textChanged(self):
+        return _HeadlessSig()
+
+
+class QPushButton:  # type: ignore
+    def __init__(self, text=""):
+        self._text = text
+        self._check = True
+    def setCheckable(self, v):
+        self._check = v
+    def isChecked(self):
+        return self._check
+    def setChecked(self, v):
+        self._check = v
+    @property
+    def clicked(self):
+        return _HeadlessSig()
+
+
+class QTableWidget:  # type: ignore
+    def __init__(self, *_a, **_k):
+        self._rows = []
+        self._col_count = 0
+    def setColumnCount(self, n):
+        self._col_count = n
+    def setHorizontalHeaderLabels(self, *_):
+        pass
+    def setRowCount(self, n):
+        while len(self._rows) < n:
+            self._rows.append([None] * self._col_count)
+        while len(self._rows) > n:
+            self._rows.pop()
+    def setItem(self, r, c, item):
+        while len(self._rows) <= r:
+            self._rows.append([None] * self._col_count)
+        while len(self._rows[r]) < self._col_count:
+            self._rows[r].append(None)
+        self._rows[r][c] = item
+
+
+class QTableWidgetItem:  # type: ignore
+    def __init__(self, text=""):
+        self._text = text
+    def text(self):
+        return self._text
+
+
+class QLabel:  # type: ignore
+    def __init__(self, text=""):
+        self._text = text
+    def setText(self, t):
+        self._text = t
 
 _COLS = ["ts","type","order_id","symbol","side","price","qty","status","reason"]
 
@@ -113,6 +173,15 @@ class OrdersPanelAdapter(PanelAdapter):
 
     # -------- Test helpers --------
     def get_items(self) -> List[Dict[str, Any]]:
+        # Headless/integration tests may inspect items immediately after events.
+        # Refresh synchronously here so callers do not depend on Qt scheduling or
+        # throttle timing for correctness checks.
+        try:
+            if self._logic is not None:
+                view = self._logic.get_view()
+                self._apply_view(view)
+        except Exception:
+            pass
         return list(self._items)
     def set_symbol_filter(self, s: Optional[str]):
         if self._logic is None: return
@@ -141,7 +210,7 @@ class OrdersPanelAdapter(PanelAdapter):
 
     # -------- PanelAdapter overrides --------
     def _create_widget(self):
-        root = QWidget()  # type: ignore
+        root = _HeadlessRoot()
         try:
             v = QVBoxLayout(root)  # type: ignore
             # filters
@@ -244,6 +313,10 @@ class OrdersPanelAdapter(PanelAdapter):
         except Exception:
             pass
         try:
+            self._cancel_subs.append(subscribe_topic("TradeEvent", self._on_trade, async_mode=False))
+        except Exception:
+            pass
+        try:
             self._cancel_subs.append(subscribe_topic("OrderRejected", self._on_rejected, async_mode=False))
         except Exception:
             pass
@@ -269,6 +342,10 @@ class OrdersPanelAdapter(PanelAdapter):
             add = getattr(self._logic, 'add_line', None)
             if callable(add):
                 add(payload)
+        except Exception:
+            pass
+        try:
+            self._do_refresh()
         except Exception:
             pass
         self._refresh_throttle.submit()

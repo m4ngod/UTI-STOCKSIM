@@ -22,7 +22,8 @@ def test_preload_panels_mount_performance():
     - 在无 Qt 环境被标记跳过，避免 CI 干扰
     """
     from app.panels import reset_registry, register_builtin_panels
-    from app.main import MainWindow, _DEFAULT_PRELOAD
+    from app.ui.main_window import MainWindow
+    from app.main import _DEFAULT_PRELOAD
     from observability.metrics import metrics
 
     # 确保 QApplication

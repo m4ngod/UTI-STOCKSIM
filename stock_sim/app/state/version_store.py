@@ -79,7 +79,7 @@ class VersionStore:
         tmp_path = self._path + ".tmp"
         serializable: Dict[str, List[Dict[str, Any]]] = {}
         for agent_id, chain in self._data.items():
-            serializable[agent_id] = [v.dict() for v in chain.versions]
+            serializable[agent_id] = [v.model_dump() for v in chain.versions]
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(serializable, f, ensure_ascii=False)
         os.replace(tmp_path, self._path)

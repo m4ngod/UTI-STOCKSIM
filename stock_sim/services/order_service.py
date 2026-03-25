@@ -5,6 +5,8 @@ from stock_sim.services.risk_engine import RiskEngine
 from stock_sim.services.fee_engine import FeeEngine
 from stock_sim.services.account_service import AccountService
 from stock_sim.services.instrument_service import InstrumentService, instrument_service_factory  # 新增
+from stock_sim.services.run_context import RunContext
+from stock_sim.services.simulation_run_service import SimulationRunService
 # 新增模拟时钟导入
 # ---- 兜底补丁: 若 AccountService 缺少新版方法则动态注入最小实现 ----
 try:
@@ -86,13 +88,15 @@ class OrderService:
     """
     订单生命周期 orchestrator
     """
-    def __init__(self, session: Session, engine: MatchingEngine | None = None, instrument_service: InstrumentService | None = None):
+    def __init__(self, session: Session, engine: MatchingEngine | None = None, instrument_service: InstrumentService | None = None, run_context: RunContext | None = None):
         # engine 现在可选: 仅作为向后兼容的默认引擎 (symbol 未注册时可用)
         self.s = session
         self.engine = engine  # deprecated: 动态路由后仅兜底
         self.risk = RiskEngine()
         self.fees = FeeEngine()
-        self.accounts = AccountService(session)
+        self.run_context = run_context
+        self.run_service = SimulationRunService(session) if run_context is not None else None
+        self.accounts = AccountService(session, run_context=run_context)
         self.instrument_service = instrument_service or instrument_service_factory()
         self._mem_orders: dict[str, Order] = {}
         self._batch_trades: list = []  # 批量模式缓冲
@@ -101,48 +105,93 @@ class OrderService:
     def _get_engine(self, symbol: str) -> MatchingEngine:
         sym = symbol.upper()
         eng_reg = engine_registry.get(sym)
-        if self.engine:
-            if eng_reg and eng_reg is not self.engine:
-                try:
-                    books = getattr(self.engine, '_books', {})
-                    # 若 self.engine 尚无该簿则注册；否则仅同步 phase
-                    if sym not in books and hasattr(self.engine, 'register_symbol'):
-                        self.engine.register_symbol(sym, getattr(eng_reg, 'instrument', None))
-                    # 同步 phase (保持 IPO 已开盘连续状态)
+        # 显式注入的 engine 优先，避免被 registry 中的同 symbol 旧实例“偷换”
+        if self.engine and getattr(self.engine, 'symbol', '').upper() == sym:
+            try:
+                books = getattr(self.engine, '_books', {})
+                if sym not in books and hasattr(self.engine, 'register_symbol'):
+                    src_inst = getattr(eng_reg, 'instrument', None) if eng_reg else getattr(self.engine, 'instrument', None)
+                    if src_inst is None:
+                        try:
+                            dto = self.instrument_service.get(sym)
+                        except Exception:
+                            dto = None
+                        if dto is not None:
+                            class _Tmp: ...
+                            tmp = _Tmp()
+                            tmp.tick_size = dto.tick_size
+                            tmp.lot_size = dto.lot_size
+                            tmp.min_qty = dto.min_qty
+                            tmp.settlement_cycle = dto.settlement_cycle
+                            tmp.market_cap = dto.market_cap
+                            tmp.total_shares = dto.total_shares
+                            tmp.free_float_shares = dto.free_float_shares
+                            tmp.initial_price = dto.initial_price
+                            tmp.pe = None
+                            tmp.ipo_opened = dto.ipo_opened
+                            src_inst = tmp
+                    self.engine.register_symbol(sym, src_inst)
+                if eng_reg and eng_reg is not self.engine:
                     try:
-                        src_book = eng_reg.get_book(sym)
+                        # 显式注入的 engine 视为当前权威实例，仅保留自身状态并覆盖 registry
                         dst_book = self.engine.get_book(sym)
-                        dst_book.phase = src_book.phase
-                        # 若已是连续阶段且尚未标记 has_continuous_started, 设 True
                         if getattr(dst_book, 'phase', None) and dst_book.phase.name == 'CONTINUOUS':
                             dst_book.has_continuous_started = True
                     except Exception:
                         pass
-                    engine_registry.register(sym, self.engine, overwrite=True)
-                except Exception:
-                    pass
-                return self.engine
-            if not eng_reg:
-                try:
-                    books = getattr(self.engine, '_books', {})
-                    if sym not in books and hasattr(self.engine, 'register_symbol'):
-                        self.engine.register_symbol(sym, getattr(self.engine, 'instrument', None))
-                        # 若 instrument 提示已开盘 (instrument.ipo_opened) 则设为连续
+                else:
+                    try:
+                        book = self.engine.get_book(sym)
+                        inst = getattr(self.engine, 'instrument', None)
+                        if inst and getattr(inst, 'ipo_opened', False):
+                            from stock_sim.core.const import Phase as _Phase  # type: ignore
+                            book.phase = _Phase.CONTINUOUS
+                            book.has_continuous_started = True
+                    except Exception:
+                        pass
+                engine_registry.register(sym, self.engine, overwrite=True)
+            except Exception:
+                pass
+            return self.engine
+        if self.engine:
+            try:
+                books = getattr(self.engine, '_books', {})
+                if sym not in books and hasattr(self.engine, 'register_symbol'):
+                    src_inst = getattr(eng_reg, 'instrument', None) if eng_reg else None
+                    if src_inst is None:
                         try:
-                            book = self.engine.get_book(sym)
-                            inst = getattr(self.engine, 'instrument', None)
-                            if inst and getattr(inst, 'ipo_opened', False):
-                                from stock_sim.core.const import Phase as _Phase  # type: ignore
-                                book.phase = _Phase.CONTINUOUS
-                                book.has_continuous_started = True
+                            dto = self.instrument_service.get(sym)
                         except Exception:
-                            pass
-                    engine_registry.register(sym, self.engine, overwrite=False)
-                    return self.engine
-                except Exception:
-                    pass
-            if eng_reg is self.engine or getattr(self.engine, 'symbol', '').upper() == sym:
+                            dto = None
+                        if dto is not None:
+                            class _Tmp: ...
+                            tmp = _Tmp()
+                            tmp.tick_size = dto.tick_size
+                            tmp.lot_size = dto.lot_size
+                            tmp.min_qty = dto.min_qty
+                            tmp.settlement_cycle = dto.settlement_cycle
+                            tmp.market_cap = dto.market_cap
+                            tmp.total_shares = dto.total_shares
+                            tmp.free_float_shares = dto.free_float_shares
+                            tmp.initial_price = dto.initial_price
+                            tmp.pe = None
+                            tmp.ipo_opened = dto.ipo_opened
+                            src_inst = tmp
+                    if src_inst is None:
+                        src_inst = getattr(self.engine, 'instrument', None)
+                    self.engine.register_symbol(sym, src_inst)
+                    try:
+                        book = self.engine.get_book(sym)
+                        if src_inst is not None and getattr(src_inst, 'ipo_opened', False):
+                            from stock_sim.core.const import Phase as _Phase  # type: ignore
+                            book.phase = _Phase.CONTINUOUS
+                            book.has_continuous_started = True
+                    except Exception:
+                        pass
+                engine_registry.register(sym, self.engine, overwrite=True)
                 return self.engine
+            except Exception:
+                pass
         if eng_reg:
             return eng_reg
         eng_new = engine_registry.get_or_create(sym)
@@ -199,6 +248,19 @@ class OrderService:
                 pass
         return view
 
+    def _ensure_run_registered(self):
+        if self.run_context is None or self.run_service is None:
+            return
+        try:
+            self.run_service.create_run(self.run_context)
+            self.run_service.mark_running(
+                self.run_context.run_id,
+                sim_day=current_sim_day(),
+                sim_dt=virtual_datetime(current_sim_day()) if current_sim_day() is not None else None,
+            )
+        except Exception:
+            pass
+
     # ---------------------- PUBLIC API ----------------------
     def place_order(self, order: Order):
         # ---- 恢复与只读保护 ----
@@ -215,7 +277,7 @@ class OrderService:
             metrics.inc("orders_rejected")
             metrics.inc(settings.REJECT_METRIC_PREFIX + reason.lower())
             try:
-                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason})
+                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason, "run_id": self._get_run_id(), "symbol": order.symbol})
             except Exception:
                 pass
             logger.log("order_reject", order_id=order.order_id, reason=reason)
@@ -226,6 +288,7 @@ class OrderService:
         # 处理（一次性）集合竞价未成交残余的释放与取消事件 (跨所有引擎)
         self._handle_auction_cancels()
 
+        self._ensure_run_registered()
         self._mem_orders[order.order_id] = order
         metrics.inc("orders_submitted")
         params = self._get_symbol_params(order.symbol)
@@ -253,7 +316,7 @@ class OrderService:
                         metrics.inc("orders_rejected")
                         metrics.inc(settings.REJECT_METRIC_PREFIX + "min_qty")
                         try:
-                            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "MIN_QTY"})
+                            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "MIN_QTY", "run_id": self._get_run_id(), "symbol": order.symbol})
                         except Exception:
                             pass
                         logger.log("order_reject", order_id=order.order_id, reason="MIN_QTY")
@@ -279,7 +342,7 @@ class OrderService:
             self._persist_order(order, "REJECT", reason)
             metrics.inc("orders_rejected")
             metrics.inc(settings.REJECT_METRIC_PREFIX + reason.lower())
-            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason})
+            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": reason, "run_id": self._get_run_id(), "symbol": order.symbol})
             logger.log("order_reject", order_id=order.order_id, reason=reason)
             if TRACE_ORDERS:
                 print(f"[TRACE OrderService.reject.basic] oid={order.order_id} sym={order.symbol} reason={reason} price={order.price} qty={order.quantity}")
@@ -319,7 +382,7 @@ class OrderService:
             self._persist_order(order, "REJECT", rr.reason)
             metrics.inc("orders_rejected")
             metrics.inc(settings.REJECT_METRIC_PREFIX + rr.code.lower())
-            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": rr.reason})
+            event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": rr.reason, "run_id": self._get_run_id(), "symbol": order.symbol})
             logger.log("order_reject", order_id=order.order_id, reason=rr.reason)
             if TRACE_ORDERS:
                 print(f"[TRACE OrderService.reject.risk] oid={order.order_id} code={rr.code} reason={rr.reason}")
@@ -341,7 +404,7 @@ class OrderService:
                 self._persist_order(order, "REJECT", "FEE_FREEZE_FAIL")
                 metrics.inc("orders_rejected")
                 metrics.inc(settings.REJECT_METRIC_PREFIX + "fee_freeze_fail")
-                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FEE_FREEZE_FAIL"})
+                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FEE_FREEZE_FAIL", "run_id": self._get_run_id(), "symbol": order.symbol})
                 logger.log("order_reject", order_id=order.order_id, reason="FEE_FREEZE_FAIL")
                 if TRACE_ORDERS:
                     print(f"[TRACE OrderService.reject.fee_freeze_fail] oid={order.order_id} fee={fee_est.est_fee} cash={acc.cash}")
@@ -372,7 +435,7 @@ class OrderService:
                 self._persist_order(order, "REJECT", "FREEZE_FAIL")
                 metrics.inc("orders_rejected")
                 metrics.inc(settings.REJECT_METRIC_PREFIX + "freeze_fail")
-                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FREEZE_FAIL"})
+                event_bus.publish("OrderRejected", {"order": order.to_dict(), "reason": "FREEZE_FAIL", "run_id": self._get_run_id(), "symbol": order.symbol})
                 logger.log("order_reject", order_id=order.order_id, reason="FREEZE_FAIL")
                 if TRACE_ORDERS:
                     print(f"[TRACE OrderService.reject.freeze_fail] oid={order.order_id} cash={acc.cash:.4f} frozen_cash={acc.frozen_cash:.4f}")
@@ -416,7 +479,7 @@ class OrderService:
             order.status = OrderStatus.CANCELED
             detail = "FOK_UNFILLABLE"
             self._persist_state(order, "CANCEL", detail)
-            event_bus.publish("OrderCanceled", {"order_id": order.order_id, "reason": detail})
+            event_bus.publish("OrderCanceled", {"order_id": order.order_id, "reason": detail, "run_id": self._get_run_id(), "symbol": order.symbol})
             logger.log("order_cancel", order_id=order.order_id, reason=detail)
             return trades
         elif order.tif is TimeInForce.IOC and order.remaining > 0:
@@ -433,7 +496,7 @@ class OrderService:
             order.status = OrderStatus.CANCELED
             detail = 'IOC_REMAIN_CANCEL' if order.filled > 0 else 'IOC_UNFILLABLE'
             self._persist_state(order, 'CANCEL', detail)
-            event_bus.publish('OrderCanceled', {'order_id': order.order_id, 'reason': detail})
+            event_bus.publish('OrderCanceled', {'order_id': order.order_id, 'reason': detail, 'run_id': self._get_run_id(), 'symbol': order.symbol})
             logger.log('order_cancel', order_id=order.order_id, reason=detail)
             return trades
 
@@ -468,7 +531,7 @@ class OrderService:
                 self.accounts.refund_fee(acc, refund_fee)
             orm.status = OrderStatus.CANCELED
             self._persist_event(order_id, "CANCEL", "USER")
-            event_bus.publish("OrderCanceled", {"order_id": order_id, "reason": "USER"})
+            event_bus.publish("OrderCanceled", {"order_id": order_id, "reason": "USER", "run_id": self._get_run_id(), "symbol": orm.symbol})
             logger.log("order_cancel", order_id=order_id, reason="USER")
             self._update_mem_order(order_id, orm, eng)
         return ok
@@ -535,7 +598,7 @@ class OrderService:
                             self.accounts.refund_fee(acc, refund_fee)
                     orm.status = OrderStatus.CANCELED
                     self._persist_event(oid, "CANCEL", "AUCTION_UNMATCHED")
-                    event_bus.publish("OrderCanceled", {"order_id": oid, "reason": "AUCTION_UNMATCHED"})
+                    event_bus.publish("OrderCanceled", {"order_id": oid, "reason": "AUCTION_UNMATCHED", "run_id": self._get_run_id(), "symbol": orm.symbol})
                     logger.log("order_cancel", order_id=oid, reason="AUCTION_UNMATCHED")
                 self._update_mem_order(oid, orm, eng)
             try:
@@ -599,6 +662,20 @@ class OrderService:
                             pass
                         break
 
+    def settle_external_trades(self, trades):
+        """Settle already-produced trades from external paths such as IPO open.
+
+        Unlike the normal matching path, these trades may be produced outside
+        ``submit_order()`` but still need full ORM/account/ledger settlement.
+        """
+        if not trades:
+            return
+        self._after_trades(trades)
+        try:
+            self.s.flush()
+        except Exception:
+            pass
+
     def _after_trades(self, trades):
         if not trades:
             return
@@ -620,9 +697,19 @@ class OrderService:
                 quantity=tr.quantity, buy_order_id=tr.buy_order_id,
                 sell_order_id=tr.sell_order_id,
                 buy_account_id=tr.buy_account_id, sell_account_id=tr.sell_account_id,
-                sim_day=sim_day, sim_dt=sim_dt
+                sim_day=sim_day, sim_dt=sim_dt,
+                run_id=self._get_run_id(),
             ))
             buy_orm = self.s.get(OrderORM, tr.buy_order_id)
+            if buy_orm is None:
+                mem_buy = self._mem_orders.get(tr.buy_order_id)
+                if mem_buy is not None:
+                    self._persist_order(mem_buy, "REST", "IPO_EXTERNAL_PRESETTLE")
+                    try:
+                        self.s.flush()
+                    except Exception:
+                        pass
+                    buy_orm = self.s.get(OrderORM, tr.buy_order_id)
             if buy_orm:
                 buy_orm.filled += tr.quantity
                 buy_orm.status = (OrderStatus.FILLED
@@ -633,6 +720,15 @@ class OrderService:
                     ""
                 )
             sell_orm = self.s.get(OrderORM, tr.sell_order_id)
+            if sell_orm is None:
+                mem_sell = self._mem_orders.get(tr.sell_order_id)
+                if mem_sell is not None:
+                    self._persist_order(mem_sell, "REST", "IPO_EXTERNAL_PRESETTLE")
+                    try:
+                        self.s.flush()
+                    except Exception:
+                        pass
+                    sell_orm = self.s.get(OrderORM, tr.sell_order_id)
             if sell_orm:
                 sell_orm.filled += tr.quantity
                 sell_orm.status = (OrderStatus.FILLED
@@ -668,7 +764,7 @@ class OrderService:
                     setattr(order_book, "_last_snapshot", prev)
                 except Exception:
                     pass
-            event_bus.publish("Trade", {"trade": tr.to_dict()})
+            event_bus.publish("Trade", {"trade": tr.to_dict(), "run_id": self._get_run_id(), "symbol": tr.symbol})
             logger.log("trade", **tr.to_dict())
             metrics.inc("trades_processed")
         # 批量结算
@@ -731,7 +827,8 @@ class OrderService:
                 quantity=tr.quantity, buy_order_id=tr.buy_order_id,
                 sell_order_id=tr.sell_order_id,
                 buy_account_id=tr.buy_account_id, sell_account_id=tr.sell_account_id,
-                sim_day=sim_day, sim_dt=sim_dt
+                sim_day=sim_day, sim_dt=sim_dt,
+                run_id=self._get_run_id(),
             ))
             buy_orm = self.s.get(OrderORM, tr.buy_order_id)
             if buy_orm:
@@ -814,6 +911,9 @@ class OrderService:
                 req[o.account_id] = req.get(o.account_id, 0.0) + need
         return req
 
+    def _get_run_id(self) -> str | None:
+        return None if self.run_context is None else self.run_context.run_id
+
     def _persist_order(self, order: Order, event: str, detail: str):
         """初次持久化订单并写事件。"""
         sim_day = current_sim_day(); sim_dt = virtual_datetime(sim_day)
@@ -829,7 +929,8 @@ class OrderService:
             quantity=order.quantity,
             filled=order.filled,
             status=order.status,
-            sim_day=sim_day, sim_dt=sim_dt
+            sim_day=sim_day, sim_dt=sim_dt,
+            run_id=self._get_run_id(),
         )
         self.s.add(orm)
         self._persist_event(order.order_id, event, detail)
@@ -853,4 +954,4 @@ class OrderService:
                 sd = current_sim_day(); existing.sim_day = sd; existing.sim_dt = virtual_datetime(sd)
         except Exception:
             pass
-        self.s.add(OrderEvent(order_id=order_id, event=event, detail=detail))
+        self.s.add(OrderEvent(order_id=order_id, event=event, detail=detail, run_id=self._get_run_id()))

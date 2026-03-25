@@ -27,11 +27,11 @@ class AppState:
     # --- 公共更新接口 -------------------------------------------------
     def update_account(self, account: AccountDTO):
         self.current_account = account
-        self._publish(field="account", value=account.dict())
+        self._publish(field="account", value=account.model_dump())
 
     def update_clock(self, clock: ClockStateDTO):
         self.clock = clock
-        self._publish(field="clock", value=clock.dict())
+        self._publish(field="clock", value=clock.model_dump())
 
     def apply_settings_overlay(self, *, language: Optional[str] = None, theme: Optional[str] = None):
         changed: Dict[str, Any] = {}
@@ -58,9 +58,9 @@ class AppState:
             "indicator_cache_key": self.indicator_cache_key,
         }
         if self.current_account:
-            data["account"] = self.current_account.dict()
+            data["account"] = self.current_account.model_dump()
         if self.clock:
-            data["clock"] = self.clock.dict()
+            data["clock"] = self.clock.model_dump()
         if full:
             data["full"] = True
         return data

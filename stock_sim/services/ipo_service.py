@@ -14,6 +14,7 @@ from stock_sim.core.const import Phase, OrderSide, EventType
 from stock_sim.core.trade import Trade
 from stock_sim.infra.event_bus import event_bus
 from stock_sim.settings import settings
+from stock_sim.services.sim_clock import current_sim_day
 
 # 价格选择: 最大撮合量 -> 最小不平衡 -> 距离 initial_price 最近 -> 价格本身序
 
@@ -40,7 +41,7 @@ def _compute_auction_price(buys: list, sells: list, initial_price: float | None)
     return best[3], best[0]
 
 
-def maybe_auto_open_ipo(engine, book) -> bool:
+def maybe_auto_open_ipo(engine, book, settle_trades_callback=None) -> bool:
     try:
         import time as _t
         if book.phase is not Phase.CALL_AUCTION:
@@ -105,17 +106,27 @@ def maybe_auto_open_ipo(engine, book) -> bool:
         # 切换
         auction_price = getattr(engine, '_ipo_auction_price', 0.0)
         trades = getattr(engine, '_ipo_trades_buffer', []) or []
-        for tr in trades:
-            event_bus.publish(EventType.TRADE, {"trade": tr.to_dict(), "phase": "CALL_AUCTION"})
+        settled = False
+        if trades and callable(settle_trades_callback):
+            try:
+                settle_trades_callback(trades)
+                settled = True
+            except Exception:
+                settled = False
+        if not settled:
+            for tr in trades:
+                event_bus.publish(EventType.TRADE, {"trade": tr.to_dict(), "phase": "CALL_AUCTION", "symbol": tr.symbol})
         if trades:
             try: book.trades.extend(trades)
             except Exception: pass
         event_bus.publish(EventType.IPO_OPENED, {
             'symbol': book.symbol,
+            'run_id': book.instrument_meta.get('run_id') if isinstance(book.instrument_meta, dict) else None,
             'open_price': auction_price,
             'executed_volume': sum(t.quantity for t in trades),
             'total_orders': len(getattr(book.call_auction, '_orders', [])),
-            'cleared': True
+            'cleared': True,
+            'sim_day': current_sim_day(),
         })
         # 取消未成交卖单, 保留未成交买单进入簿
         orders_all = list(getattr(book.call_auction, '_orders', []))

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Dict, Optional, List, Any
 
 try:  # noqa: SIM105
+    from PySide6.QtCore import Qt  # type: ignore
     from PySide6.QtWidgets import QMainWindow, QWidget, QDockWidget  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
     QMainWindow = object  # type: ignore
@@ -21,6 +22,8 @@ except Exception:  # pragma: no cover - headless fallback
             self._widget = None
         def setWidget(self, w):  # noqa: N802
             self._widget = w
+    class Qt:  # type: ignore
+        LeftDockWidgetArea = 0
 
 class DockManager:
     """最小 Dock 管理.
@@ -41,8 +44,10 @@ class DockManager:
                 dock = QDockWidget(name)  # type: ignore
                 if hasattr(dock, 'setWidget'):
                     dock.setWidget(widget)
-                # 缺省使用 LeftDockWidgetArea (常量存在才添加)
-                area = getattr(self._mw, 'LeftDockWidgetArea', None)
+                # 缺省使用 Qt.LeftDockWidgetArea，旧实现常量名作为回退
+                area = getattr(Qt, 'LeftDockWidgetArea', None)
+                if area is None:
+                    area = getattr(self._mw, 'LeftDockWidgetArea', None)
                 if area is not None:
                     self._mw.addDockWidget(area, dock)  # type: ignore
                 self._docks[name] = dock

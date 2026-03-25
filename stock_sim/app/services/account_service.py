@@ -27,6 +27,20 @@ import threading
 from observability.metrics import metrics
 from app.core_dto.account import AccountDTO, PositionDTO
 
+try:
+    from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
+    from stock_sim.persistence.models_account import Account as RuntimeAccount  # type: ignore
+    from stock_sim.persistence.models_position import Position as RuntimePosition  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from persistence.models_imports import SessionLocal  # type: ignore
+        from persistence.models_account import Account as RuntimeAccount  # type: ignore
+        from persistence.models_position import Position as RuntimePosition  # type: ignore
+    except Exception:  # pragma: no cover
+        SessionLocal = None  # type: ignore
+        RuntimeAccount = None  # type: ignore
+        RuntimePosition = None  # type: ignore
+
 # ---------------- Fetcher 协议 ----------------
 Fetcher = Callable[[str], AccountDTO]
 
@@ -47,7 +61,13 @@ class AccountService:
     # ---------------- Public API ----------------
     def load_account(self, account_id: str) -> AccountDTO:
         start = time.perf_counter()
-        acc = self._fetcher(account_id)
+        acc: AccountDTO | None = None
+        try:
+            acc = _runtime_fetcher(account_id)
+        except Exception:
+            acc = None
+        if acc is None:
+            acc = self._fetcher(account_id)
         with self._lock:
             self._last_account = acc
         dur_ms = (time.perf_counter() - start) * 1000
@@ -74,6 +94,66 @@ class AccountService:
             # 始终更新缓存为最新远端 (避免后续重复大差异警告)
             self._last_account = remote
         return remote, diff_ratio, exceeded
+
+# ---------------- Runtime Fetcher (preferred when local runtime DB is available) ----------------
+
+def _runtime_fetcher(account_id: str) -> AccountDTO | None:
+    if SessionLocal is None or RuntimeAccount is None or RuntimePosition is None:
+        return None
+    sess = SessionLocal()
+    try:
+        acc = sess.get(RuntimeAccount, account_id)
+        if acc is None:
+            return None
+        positions = (
+            sess.query(RuntimePosition)
+            .filter(RuntimePosition.account_id == account_id)
+            .order_by(RuntimePosition.symbol.asc())
+            .all()
+        )
+        pos_dtos: List[PositionDTO] = []
+        unreal_total = 0.0
+        market_value = 0.0
+        for p in positions:
+            qty = int(getattr(p, 'quantity', 0) or 0)
+            avg_price = float(getattr(p, 'avg_price', 0.0) or 0.0)
+            borrowed_qty = int(getattr(p, 'borrowed_qty', 0) or 0)
+            frozen_qty = int(getattr(p, 'frozen_qty', 0) or 0)
+            pnl_unreal = 0.0
+            market_value += qty * avg_price
+            pos_dtos.append(PositionDTO(
+                symbol=p.symbol,
+                quantity=qty,
+                frozen_qty=frozen_qty,
+                avg_price=avg_price,
+                borrowed_qty=borrowed_qty,
+                pnl_unreal=pnl_unreal,
+            ))
+        cash = float(getattr(acc, 'cash', 0.0) or 0.0)
+        frozen_cash = float(getattr(acc, 'frozen_cash', 0.0) or 0.0)
+        frozen_fee = float(getattr(acc, 'frozen_fee', 0.0) or 0.0)
+        equity = max(0.0, cash + frozen_cash + market_value)
+        utilization = 0.0
+        gross_locked = frozen_cash + frozen_fee
+        if equity > 0:
+            utilization = min(max(gross_locked / equity, 0.0), 1.0)
+        sim_day = getattr(acc, 'sim_day', None)
+        sim_day = str(sim_day) if sim_day is not None else time.strftime('%Y-%m-%d')
+        return AccountDTO(
+            account_id=account_id,
+            cash=cash,
+            frozen_cash=frozen_cash,
+            positions=pos_dtos,
+            realized_pnl=0.0,
+            unrealized_pnl=unreal_total,
+            equity=equity,
+            utilization=utilization,
+            snapshot_id=f"runtime-{account_id}-{int(time.time()*1000)}",
+            sim_day=sim_day,
+        )
+    finally:
+        sess.close()
+
 
 # ---------------- Synthetic Fetcher (Deterministic, No IO) ----------------
 

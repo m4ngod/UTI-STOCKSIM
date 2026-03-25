@@ -9,3 +9,4 @@ class OrderEvent(Base):
     order_id = Column(String(64), index=True)
     event = Column(String(32))
     detail = Column(String(128))
+    run_id = Column(String(64), nullable=True, index=True)
