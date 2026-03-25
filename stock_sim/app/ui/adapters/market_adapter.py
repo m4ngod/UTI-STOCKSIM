@@ -28,12 +28,28 @@ from .base_adapter import PanelAdapter
 from app.panels.market.dialog import CreateInstrumentDialog  # 新增：逻辑对话框
 from infra.event_bus import event_bus  # 新增：回退订阅
 try:
-    from app.event_bridge import subscribe_topic, FRONTEND_SNAPSHOT_BATCH_TOPIC  # 事件订阅助手 + 前端批量主题
+    from stock_sim.infra.event_bus import event_bus as runtime_event_bus  # type: ignore
 except Exception:  # pragma: no cover
-    def subscribe_topic(topic, handler, *, async_mode=False):  # type: ignore
-        event_bus.subscribe(topic, handler, async_mode=async_mode)
-        return lambda: event_bus.unsubscribe(topic, handler)
-    FRONTEND_SNAPSHOT_BATCH_TOPIC = "frontend.snapshot.batch"  # type: ignore
+    runtime_event_bus = event_bus  # type: ignore
+
+# 显式双总线订阅，避免 app/runtime 导入路径导致的消息丢失。
+def subscribe_topic(topic, handler, *, async_mode=False):  # type: ignore
+    event_bus.subscribe(topic, handler, async_mode=async_mode)
+    if runtime_event_bus is not event_bus:
+        runtime_event_bus.subscribe(topic, handler, async_mode=async_mode)
+    def _cancel():
+        try:
+            event_bus.unsubscribe(topic, handler)
+        except Exception:
+            pass
+        if runtime_event_bus is not event_bus:
+            try:
+                runtime_event_bus.unsubscribe(topic, handler)
+            except Exception:
+                pass
+    return _cancel
+
+FRONTEND_SNAPSHOT_BATCH_TOPIC = "frontend.snapshot.batch"  # type: ignore
 # UI 桥接：打开独立符号页面 + 兜底打开指定面板
 try:
     from app.ui.ui_refresh import open_symbol_page  # type: ignore
@@ -380,10 +396,17 @@ class SymbolDetailAdapter:
             return
         symbol = detail.get('symbol') or '-'
         snapshot = detail.get('snapshot') or {}
+        snapshot_meta = detail.get('snapshot_meta') or {}
         series = detail.get('series') or None
+        series_meta = detail.get('series_meta') or {}
         ob = detail.get('order_book') or None
+        order_book_meta = detail.get('order_book_meta') or {}
         trades = detail.get('trades') or []
+        trades_meta = detail.get('trades_meta') or {}
+        indicators_meta = detail.get('indicators_meta') or {}
         holdings = detail.get('holdings') or None
+        holdings_meta = detail.get('holdings_meta') or {}
+        detail_health = detail.get('detail_health') or {}
         # 顶部标签
         if self._symbol_label is not None:
             try: self._symbol_label.setText(f"symbol: {symbol}")  # type: ignore
@@ -397,10 +420,30 @@ class SymbolDetailAdapter:
             bars_count = 0
         if self._snapshot_label is not None:
             last = snapshot.get('last') if isinstance(snapshot, dict) else None
-            try: self._snapshot_label.setText(f"snapshot.last: {last} | bars: {bars_count}")  # type: ignore
+            order_book_status = detail_health.get('order_book_status') or order_book_meta.get('status') or ('available' if ob else 'missing')
+            overall = detail_health.get('overall') or 'unknown'
+            series_status = detail_health.get('series_status') or ('stale' if detail.get('is_stale') else 'available')
+            snap_status = detail_health.get('snapshot_status') or ('available' if snapshot else 'missing')
+            core_summary = f"state={overall} | snap={snap_status} | book={order_book_status} | series={series_status}"
+            try: self._snapshot_label.setText(
+                f"last={last} | bars={bars_count} | {core_summary}"
+            )  # type: ignore
             except Exception: pass
         if self._debug_label is not None:
-            try: self._debug_label.setText(f"detail debug: mode={chart_mode} symbol={symbol} bars={bars_count}")  # type: ignore
+            trades_status = detail_health.get('trades_status') or trades_meta.get('status') or ('available' if trades else 'empty')
+            holdings_status = detail_health.get('holdings_status') or holdings_meta.get('status') or 'unknown'
+            indicators_status = detail_health.get('indicators_status') or indicators_meta.get('status') or 'unknown'
+            holdings_auth = holdings_meta.get('authoritative')
+            holdings_tag = 'auth' if holdings_auth else 'non-auth'
+            holdings_note = ''
+            try:
+                if isinstance(holdings, dict) and holdings.get('placeholder'):
+                    holdings_note = ' | holdings_ui=placeholder'
+            except Exception:
+                holdings_note = ''
+            try: self._debug_label.setText(
+                f"detail debug: mode={chart_mode} symbol={symbol} bars={bars_count} trades={trades_status} indicators={indicators_status} holdings={holdings_status}/{holdings_tag}{holdings_note}"
+            )  # type: ignore
             except Exception: pass
         # K 线
         if _DETAIL_ENABLE_CHART:
@@ -425,7 +468,26 @@ class SymbolDetailAdapter:
                 except Exception: pass
         # 饼图
         if _DETAIL_ENABLE_PIE:
-            self._draw_pie(holdings)
+            # 仅在 holdings 至少有可视化数据时绘制；
+            # 对显式 placeholder / non-authoritative empty payload 保持空图，避免 UI 伪装成真实持仓分布。
+            try:
+                labels = (holdings or {}).get('labels') if isinstance(holdings, dict) else None
+                pct = (holdings or {}).get('pct') if isinstance(holdings, dict) else None
+                placeholder = bool((holdings or {}).get('placeholder')) if isinstance(holdings, dict) else False
+                if labels and pct and not placeholder:
+                    self._draw_pie(holdings)
+                elif self._pie_scene is not None:
+                    try:
+                        self._pie_scene.clear()
+                    except Exception:
+                        pass
+                    try:
+                        if self._debug_label is not None and placeholder:
+                            base = getattr(self._debug_label, '_text', None)
+                    except Exception:
+                        pass
+            except Exception:
+                self._draw_pie(holdings)
         # 更新盘口表 (仅展示前 5 档)
         if _DETAIL_ENABLE_ORDER_BOOK and self._order_book_table is not None and ob:
             bids = ob.get('bids') or []
@@ -582,7 +644,10 @@ class MarketPanelAdapter(PanelAdapter):
                         self._refresh_detail()
                 except Exception:
                     pass
-            self._cancel_trade = subscribe_topic("Trade", _on_trade, async_mode=False)
+            self._cancel_trade = [
+                subscribe_topic("Trade", _on_trade, async_mode=False),
+                subscribe_topic("TradeEvent", _on_trade, async_mode=False),
+            ]
         except Exception:
             self._cancel_trade = None
         # 新增：订阅前端批量快照并节流刷新
@@ -638,6 +703,13 @@ class MarketPanelAdapter(PanelAdapter):
         try:
             if callable(self._cancel_trade):
                 self._cancel_trade()
+            elif isinstance(self._cancel_trade, list):
+                for c in self._cancel_trade:
+                    try:
+                        if callable(c):
+                            c()
+                    except Exception:
+                        pass
         except Exception:
             pass
         try:

@@ -16,17 +16,22 @@ try:
 except Exception:  # pragma: no cover
     runtime_event_bus = event_bus  # type: ignore
 
-# Subscribe helper (fallback)
-try:
-    from app.event_bridge import subscribe_topic  # type: ignore
-except Exception:  # pragma: no cover
-    def subscribe_topic(topic, handler, *, async_mode=False):  # type: ignore
-        event_bus.subscribe(topic, handler, async_mode=async_mode)
+# Subscribe helper: explicitly subscribe both app/runtime buses to avoid import-path drift.
+def subscribe_topic(topic, handler, *, async_mode=False):  # type: ignore
+    event_bus.subscribe(topic, handler, async_mode=async_mode)
+    if runtime_event_bus is not event_bus:
         runtime_event_bus.subscribe(topic, handler, async_mode=async_mode)
-        return lambda: (
-            event_bus.unsubscribe(topic, handler),
-            runtime_event_bus.unsubscribe(topic, handler),
-        )
+    def _cancel():
+        try:
+            event_bus.unsubscribe(topic, handler)
+        except Exception:
+            pass
+        if runtime_event_bus is not event_bus:
+            try:
+                runtime_event_bus.unsubscribe(topic, handler)
+            except Exception:
+                pass
+    return _cancel
 
 # Notification center for ui.notification publishing
 try:
