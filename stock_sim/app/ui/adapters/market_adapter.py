@@ -16,6 +16,8 @@ from typing import Any, Dict, Optional, List
 import os
 import time  # 新增：节流
 
+_TRACE_MARKET_ADAPTER = os.environ.get("STOCKSIM_TRACE_MARKET_ADAPTER", "").strip().lower() in {"1", "true", "yes", "on"}
+
 _DETAIL_ENABLE_CHART = os.environ.get("STOCKSIM_DETAIL_ENABLE_CHART", "1").lower() in ("1", "true", "yes", "on")
 _DETAIL_ENABLE_ORDER_BOOK = os.environ.get("STOCKSIM_DETAIL_ENABLE_ORDER_BOOK", "1").lower() in ("1", "true", "yes", "on")
 _DETAIL_ENABLE_PIE = os.environ.get("STOCKSIM_DETAIL_ENABLE_PIE", "1").lower() in ("1", "true", "yes", "on")
@@ -641,6 +643,11 @@ class MarketPanelAdapter(PanelAdapter):
                     trade = None
                     if isinstance(payload, dict):
                         trade = payload.get('trade') or payload
+                    if _TRACE_MARKET_ADAPTER:
+                        try:
+                            print(f"[market-adapter:on_trade] topic={_topic} selected={self._selected_symbol} payload_symbol={getattr(trade, 'get', lambda *_: None)('symbol') if isinstance(trade, dict) else None}", flush=True)
+                        except Exception:
+                            pass
                     if not isinstance(trade, dict):
                         return
                     sym = str(trade.get('symbol') or '')
@@ -651,6 +658,13 @@ class MarketPanelAdapter(PanelAdapter):
                         if callable(add_trade):
                             try:
                                 add_trade(trade)
+                                if _TRACE_MARKET_ADAPTER:
+                                    try:
+                                        dv = getattr(self._logic, 'detail_view', lambda: {})()
+                                        trades = (dv or {}).get('trades') or []
+                                        print(f"[market-adapter:on_trade:added] symbol={sym} trades_len={len(trades)}", flush=True)
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
                         # 仅刷新详情（轻量），不改变主列表
