@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, Literal
 
 from infra.event_bus import event_bus
+try:
+    from stock_sim.infra.event_bus import event_bus as runtime_event_bus  # type: ignore
+except Exception:  # pragma: no cover
+    runtime_event_bus = event_bus  # type: ignore
 
 from stock_sim.persistence import models_init
 from stock_sim.persistence.models_imports import SessionLocal
@@ -129,6 +133,33 @@ class TradingService:
                 event_bus.publish("frontend.order.submitted", payload)
             except Exception:
                 pass
+
+            # Frontend-friendly trade bridge:
+            # runtime matching may already emit trade events, but app/runtime bus paths and
+            # adapter subscription timing can differ. Re-emit a normalized trade payload on
+            # both buses so orders/market/account-facing adapters can consume the same shape.
+            for tr in trades:
+                try:
+                    trade_payload = {"trade": tr.to_dict() if hasattr(tr, 'to_dict') else dict(tr)}
+                except Exception:
+                    continue
+                try:
+                    event_bus.publish("Trade", trade_payload)
+                except Exception:
+                    pass
+                try:
+                    event_bus.publish("TradeEvent", trade_payload)
+                except Exception:
+                    pass
+                if runtime_event_bus is not event_bus:
+                    try:
+                        runtime_event_bus.publish("Trade", trade_payload)
+                    except Exception:
+                        pass
+                    try:
+                        runtime_event_bus.publish("TradeEvent", trade_payload)
+                    except Exception:
+                        pass
             metrics.inc("frontend_order_submit")
             return payload
         finally:
