@@ -27,6 +27,9 @@ if _CHART_STAGE not in ("plot-only", "line", "candles"):
 from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
 from app.panels.market.dialog import CreateInstrumentDialog  # 新增：逻辑对话框
+from app.panels.market.trade_dialog import TradeOrderDialog
+from app.controllers.trading_controller import TradingController
+from app.services.trading_service import TradingService
 from infra.event_bus import event_bus  # 新增：回退订阅
 try:
     from stock_sim.infra.event_bus import event_bus as runtime_event_bus  # type: ignore
@@ -537,6 +540,9 @@ class MarketPanelAdapter(PanelAdapter):
         self._selected_symbol: Optional[str] = None
         # 新增：创建按钮
         self._btn_create: Optional[Any] = None
+        self._btn_buy: Optional[Any] = None
+        self._btn_sell: Optional[Any] = None
+        self._trade_ctl = TradingController(TradingService())
         # 新增：取消订阅句柄
         self._cancel_instrument_created = None
         self._cancel_trade = None
@@ -554,13 +560,23 @@ class MarketPanelAdapter(PanelAdapter):
             h = QHBoxLayout(root)  # type: ignore
             # 左侧：自选 + 顶部操作区
             left_v = QVBoxLayout()  # type: ignore
-            # 操作条：创建标的按钮
+            # 操作条：创建标的 / 交易按钮
             try:
                 self._btn_create = QPushButton("Create Instrument")  # type: ignore
+                self._btn_buy = QPushButton("Buy")  # type: ignore
+                self._btn_sell = QPushButton("Sell")  # type: ignore
                 def _on_create_clicked():
                     self._open_create_dialog()
+                def _on_buy_clicked():
+                    self._open_trade_dialog('buy')
+                def _on_sell_clicked():
+                    self._open_trade_dialog('sell')
                 self._btn_create.clicked.connect(_on_create_clicked)  # type: ignore[attr-defined]
+                self._btn_buy.clicked.connect(_on_buy_clicked)  # type: ignore[attr-defined]
+                self._btn_sell.clicked.connect(_on_sell_clicked)  # type: ignore[attr-defined]
                 left_v.addWidget(self._btn_create)  # type: ignore
+                left_v.addWidget(self._btn_buy)  # type: ignore
+                left_v.addWidget(self._btn_sell)  # type: ignore
             except Exception:
                 pass
             # 自选列表
@@ -743,6 +759,106 @@ class MarketPanelAdapter(PanelAdapter):
             pass
 
     # 新增：打开创建标的对话框（Qt 有则弹窗；无则使用默认参数直接创建并加入关注）
+    def _open_trade_dialog(self, side: str):
+        logic = self._logic
+        symbol = (self._selected_symbol or '').strip()
+        if logic is None or not symbol:
+            return
+        detail_view = getattr(logic, 'detail_view', lambda: {})()
+        snapshot = (detail_view or {}).get('snapshot') or {}
+        series = (detail_view or {}).get('series') or {}
+        default_price = snapshot.get('last')
+        if default_price in (None, 0, 0.0):
+            closes = series.get('close') if isinstance(series, dict) else None
+            if isinstance(closes, list) and closes:
+                default_price = closes[-1]
+        if default_price in (None, 0, 0.0):
+            default_price = 1.0
+
+        # headless / minimal path: allow env-provided account or default placeholder
+        if not ui_runtime_enabled():
+            account_id = os.environ.get('STOCKSIM_DEFAULT_TRADE_ACCOUNT', 'ACC-001').strip() or 'ACC-001'
+            dlg = TradeOrderDialog(self._trade_ctl)
+            dlg.set_context(symbol=symbol, side=side, price=default_price, qty=100, account_id=account_id)
+            dlg.submit()
+            try:
+                self.refresh()
+            except Exception:
+                pass
+            try:
+                self._refresh_detail()
+            except Exception:
+                pass
+            return
+
+        try:
+            dlg_widget = QDialog()  # type: ignore
+            layout = QVBoxLayout(dlg_widget)  # type: ignore
+            layout.addWidget(QLabel(f"Submit {side.upper()} Order"))  # type: ignore
+            sym_edit = QLineEdit(symbol)  # type: ignore
+            acct_edit = QLineEdit('ACC-001')  # type: ignore
+            price_edit = QLineEdit(str(default_price))  # type: ignore
+            qty_edit = QLineEdit('100')  # type: ignore
+            layout.addWidget(QLabel('Symbol'))  # type: ignore
+            layout.addWidget(sym_edit)  # type: ignore
+            layout.addWidget(QLabel('Account ID'))  # type: ignore
+            layout.addWidget(acct_edit)  # type: ignore
+            layout.addWidget(QLabel('Price'))  # type: ignore
+            layout.addWidget(price_edit)  # type: ignore
+            layout.addWidget(QLabel('Qty'))  # type: ignore
+            layout.addWidget(qty_edit)  # type: ignore
+            err_label = QLabel('')  # type: ignore
+            layout.addWidget(err_label)  # type: ignore
+            btn_row = QHBoxLayout()  # type: ignore
+            ok_btn = QPushButton('Submit')  # type: ignore
+            cancel_btn = QPushButton('Cancel')  # type: ignore
+            btn_row.addWidget(ok_btn)  # type: ignore
+            btn_row.addWidget(cancel_btn)  # type: ignore
+            layout.addLayout(btn_row)  # type: ignore
+
+            dialog_logic = TradeOrderDialog(self._trade_ctl)
+            dialog_logic.set_context(symbol=symbol, side=side, price=default_price, qty=100, account_id='ACC-001')
+
+            def _submit():
+                dialog_logic.set_context(
+                    symbol=getattr(sym_edit, 'text', lambda: symbol)(),
+                    side=side,
+                    price=getattr(price_edit, 'text', lambda: str(default_price))(),
+                    qty=getattr(qty_edit, 'text', lambda: '100')(),
+                    account_id=getattr(acct_edit, 'text', lambda: 'ACC-001')(),
+                )
+                if not dialog_logic.submit():
+                    view = dialog_logic.get_view()
+                    errs = view.get('errors') or {}
+                    last_error = view.get('last_error')
+                    msg = ', '.join(f'{k}:{v}' for k, v in errs.items()) if errs else str(last_error or 'SUBMIT_FAILED')
+                    getattr(err_label, 'setText', lambda *_: None)(msg)
+                    return
+                try:
+                    dlg_widget.accept()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+                try:
+                    self._refresh_detail()
+                except Exception:
+                    pass
+
+            def _cancel():
+                try:
+                    dlg_widget.reject()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            ok_btn.clicked.connect(_submit)  # type: ignore[attr-defined]
+            cancel_btn.clicked.connect(_cancel)  # type: ignore[attr-defined]
+            dlg_widget.exec()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     def _open_create_dialog(self):
         def _dbg(msg: str):
             try:
