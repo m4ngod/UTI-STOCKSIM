@@ -2,6 +2,14 @@
 
 _Last updated: 2026-03-22_
 
+## 2026-04-25 runtime backend implementation note
+
+- Added `docs/data/postgresql-runtime-migration.md` as the concrete first slice of this plan.
+- Runtime DB selection now prefers `STOCKSIM_DB_URL`, then legacy `DB_URL`, then SQLite fallback.
+- PostgreSQL URLs are normalized to `postgresql+psycopg://...`.
+- Startup schema guards now use cross-dialect one-column `ALTER TABLE` statements and create run-scoped indexes for current dynamic tables.
+- SQLite remains for pytest/dev/demo, but it is no longer treated as the target backend for high-volume desktop simulation.
+
 本文档是 `docs/data/data-layering-design.md` 的表级落地版。
 目标：把现有 persistence 模型、建议新增表、以及 Redis 热层职责，映射成可执行的存储蓝图。
 

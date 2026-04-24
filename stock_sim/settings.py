@@ -1,5 +1,13 @@
 # python
 # file: settings.py
+from __future__ import annotations
+
+import os
+
+try:
+    from stock_sim.persistence.db_config import SQLITE_FALLBACK_URL, normalize_database_url  # type: ignore
+except Exception:
+    from persistence.db_config import SQLITE_FALLBACK_URL, normalize_database_url  # type: ignore
 
 class Settings:
     # 数据库配置
@@ -65,9 +73,10 @@ class Settings:
     JSON_LOG_PATH: str = "logs/struct.log"
 
     def build_db_url(self) -> str:
-        if self.DB_URL:
-            return self.DB_URL
-        return "sqlite:///stock_sim_test.db"
+        raw = os.environ.get("STOCKSIM_DB_URL") or os.environ.get("DB_URL") or self.DB_URL
+        if raw:
+            return normalize_database_url(raw)
+        return SQLITE_FALLBACK_URL
 
     # 兼容旧代码
     def assembled_db_url(self) -> str:  # noqa: D401

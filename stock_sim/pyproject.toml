@@ -12,6 +12,7 @@ dependencies = [
     "pytorch==2.8.0+cu129",
     "redis>=5.0.0",
     "SQLAlchemy>=1.4",
+    "psycopg[binary]>=3.1",
     "pytest>=8.2",
     "pytest-cov>=4.1",  # Task41 增量: 覆盖率
     "numpy>=1.26",

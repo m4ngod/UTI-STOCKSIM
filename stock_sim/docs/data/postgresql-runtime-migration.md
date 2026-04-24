@@ -1,0 +1,103 @@
+# PostgreSQL runtime persistence migration
+
+_Last updated: 2026-04-25_
+
+## Status
+
+This is the first concrete iteration of the persistence upgrade described in:
+
+- `docs/data/data-layering-design.md`
+- `docs/data/data-layering-table-plan.md`
+- `docs/data/run-id-wiring-plan.md`
+
+The goal of this step is not to remove SQLite. SQLite remains the default dev/test fallback.
+The goal is to make PostgreSQL a first-class runtime backend for desktop simulations.
+
+## What changed
+
+### Database configuration
+
+Runtime database selection now follows this priority:
+
+1. `STOCKSIM_DB_URL`
+2. `DB_URL`
+3. built-in SQLite fallback: `sqlite:///stock_sim_test.db`
+
+Recommended PostgreSQL URL:
+
+```powershell
+$env:STOCKSIM_DB_URL = "postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
+```
+
+Compatibility shortcuts are normalized:
+
+- `postgres://...` -> `postgresql+psycopg://...`
+- `postgresql://...` -> `postgresql+psycopg://...`
+
+### Engine behavior
+
+SQLite keeps local-development settings:
+
+- WAL mode
+- `check_same_thread = False`
+- busy timeout
+
+PostgreSQL uses pooled SQLAlchemy connections:
+
+- `pool_pre_ping = True`
+- `STOCKSIM_DB_POOL_SIZE`, default `10`
+- `STOCKSIM_DB_MAX_OVERFLOW`, default `20`
+- `STOCKSIM_DB_POOL_RECYCLE`, default `1800`
+
+### Schema compatibility
+
+The startup schema guard now uses one-column-at-a-time `ALTER TABLE` statements so the same path works for SQLite and PostgreSQL.
+
+It also ensures the run-scoped columns and indexes required by the current design:
+
+- `orders.run_id`
+- `trades.run_id`
+- `ledgers.run_id`
+- `order_events.run_id`
+- `event_log.run_id`
+- `snapshots_1s.run_id`
+- `bars_1m.run_id`
+- `bars_1h.run_id`
+- `bars_1d.run_id`
+- `agent_bindings.run_id`
+- `account_equity_snapshots.run_id`
+
+## Current boundary
+
+This iteration makes the ORM and startup path PostgreSQL-ready, but it does not yet:
+
+- move latest market state to Redis
+- add Alembic-managed production migrations
+- migrate existing SQLite data into PostgreSQL
+- resolve every legacy uniqueness constraint for multi-run historical bars
+
+Those are separate follow-up slices.
+
+## Suggested local PostgreSQL smoke
+
+1. Create a database/user in PostgreSQL.
+2. Set `STOCKSIM_DB_URL`.
+3. Start the desktop app or run:
+
+```powershell
+..\Quent\.venv\Scripts\python.exe -c "from stock_sim.persistence import models_init; models_init.ensure_models(); print('ok')"
+```
+
+4. Start a run with 100+ retail agents and verify:
+
+- agent start does not freeze the UI
+- orders/trades/ledgers write without SQLite lock stalls
+- Market detail K-line can recover from persisted bars or runtime trade-log fallback
+
+## Next migration slices
+
+1. Add an explicit desktop database health indicator and fail-fast message when PostgreSQL is configured but unreachable.
+2. Introduce Alembic migrations for PostgreSQL and stop relying on startup `ALTER TABLE` for production mode.
+3. Move latest snapshot/order-book/leaderboard hot state to Redis or an in-memory service boundary with Redis-compatible interface.
+4. Rework bar uniqueness from global `(symbol, ts)` to run-aware persistence semantics for generated simulation bars.
+5. Add SQLite-to-PostgreSQL export/import tooling for existing local experiments.
