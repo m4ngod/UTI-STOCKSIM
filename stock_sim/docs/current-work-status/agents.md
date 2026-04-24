@@ -8,6 +8,53 @@ Retail strategy registry, retail population assignment, and agent-facing strateg
 
 in-progress
 
+## Task 2026-04-24-agents-06
+- **time**: 2026-04-24
+- **status**: done
+- **goal**: run fixed-seed retail calibration episodes through the real runtime order path and emit JSON metrics
+- **files involved**:
+  - `scripts/run_retail_calibration_episode.py`
+  - `docs/code-index.md`
+- **total changed lines**: small executable diagnostics layer
+
+### Change summary
+- Added a fixed-seed episode runner for 6, 20, and 100 retail populations.
+- The runner creates runtime instruments, bootstraps retail accounts, seeds initial inventory for sell-side participation, manually advances real `RuntimeRetailAgent` steps, and records submitted orders/trades/book samples into `RetailCalibrationReportCollector`.
+- Output is written as JSON under `output/retail_calibration/episode_stats.json`.
+
+### First run summary
+- 6 retail / 40 steps:
+  - buy/sell ratio: `0.5833` (`low`)
+  - two-sided book coverage: `0.0` (`low`)
+  - trade presence: `1.0` (`inside`)
+  - herding index: `0.625` (`inside`)
+  - passive share: `0.8947` (`high`)
+  - median trade interarrival seconds: `12.855` (`high`)
+- 20 retail / 40 steps:
+  - buy/sell ratio: `0.1379` (`low`)
+  - two-sided book coverage: `0.0` (`low`)
+  - trade presence: `1.0` (`inside`)
+  - herding index: `0.875` (`high`)
+  - passive share: `0.9688` (`high`)
+  - median trade interarrival seconds: `4.284` (`high`)
+- 100 retail / 40 steps:
+  - buy/sell ratio: `0.0435` (`low`)
+  - two-sided book coverage: `0.0` (`low`)
+  - trade presence: `1.0` (`inside`)
+  - herding index: `1.0` (`high`)
+  - passive share: `0.9894` (`high`)
+  - median trade interarrival seconds: `0.891` (`inside`)
+
+### Interpretation
+- The report path is now working against the real order runtime.
+- The current seeded episode setup and retail behavior produce real trades, but larger populations become strongly sell-dominant.
+- The immediate calibration issue is not trade absence; it is sell pressure, poor standing two-sided book coverage, and overly passive submissions.
+
+### Next actions
+- Add a calibration scenario knob for initial inventory distribution instead of seeding half the agents uniformly.
+- Reduce cold-start sell pressure from inventory holders, especially `liquidity_noise`, `mean_revert`, and `trend_follow`.
+- Add a bounded quote-support behavior so some agents maintain non-crossing bids and asks after the opening burst.
+
 ## Task 2026-04-24-agents-05
 - **time**: 2026-04-24
 - **status**: done

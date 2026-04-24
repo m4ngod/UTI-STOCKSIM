@@ -57,4 +57,5 @@
 - Retail calibration defaults / family mix targets / market metric bands: `agents/retail_calibration.py`
 - Retail episode calibration report collector: `agents/retail_calibration_report.py`
 - Runtime retail executor: `app/services/runtime_retail_agent.py`
+- Retail calibration episode runner: `scripts/run_retail_calibration_episode.py`
 - Retail persona calibration blueprint: `docs/architecture/runtime/retail-persona-calibration-blueprint.md`
