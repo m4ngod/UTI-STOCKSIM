@@ -4,14 +4,14 @@ _Last updated: 2026-04-25_
 
 ## Status
 
-This is the first concrete iteration of the persistence upgrade described in:
+This document tracks the concrete persistence upgrade described in:
 
 - `docs/data/data-layering-design.md`
 - `docs/data/data-layering-table-plan.md`
 - `docs/data/run-id-wiring-plan.md`
 
-The goal of this step is not to remove SQLite. PostgreSQL is now the default runtime backend.
-SQLite remains an explicit dev/test compatibility backend.
+PostgreSQL is now the default runtime backend for the desktop app and ORM persistence path.
+SQLite remains an explicit dev/test compatibility backend only.
 
 ## What changed
 
@@ -79,6 +79,12 @@ Generated bar tables now treat `run_id` as part of simulation bar identity:
 - run-aware unique indexes are created as `(run_id, symbol, ts)`
 - `BarAggregator` upserts bars by `(run_id, symbol, ts)` so multiple simulation runs can produce bars for the same symbol/time window
 
+The legacy `TransactionLogger` compatibility surface no longer writes a private `trade_log.db` SQLite file.
+It now writes through `SessionLocal` into the authoritative ORM tables:
+
+- trades go to `trades`
+- order changes go to `order_events`
+
 ### Database health check
 
 Desktop startup now performs a database health check before opening the GUI by default.
@@ -107,7 +113,7 @@ Startup control:
 
 ## Current boundary
 
-This iteration makes the ORM and startup path PostgreSQL-ready, but it does not yet:
+This iteration makes the desktop startup path and ORM persistence path PostgreSQL-first, but it does not yet:
 
 - move latest market state to Redis
 - add Alembic-managed production migrations

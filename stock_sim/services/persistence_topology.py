@@ -24,7 +24,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="run-tracking",
         truth_role="authoritative",
         target_backend="postgresql",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=("simulation_runs",),
         current_services=(
             "services/simulation_run_service.py",
@@ -37,7 +37,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="trading-facts",
         truth_role="authoritative",
         target_backend="postgresql",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=("orders", "order_events", "trades", "ledgers"),
         current_services=(
             "services/order_service.py",
@@ -52,7 +52,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="account-state",
         truth_role="authoritative",
         target_backend="postgresql",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=("accounts", "positions", "agent_bindings", "instruments"),
         current_services=(
             "services/account_service.py",
@@ -68,7 +68,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="historical-market-facts",
         truth_role="authoritative",
         target_backend="postgresql",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=("snapshots_1s", "bars_1m", "bars_1h", "bars_1d"),
         current_services=(
             "services/snapshot_listener.py",
@@ -83,7 +83,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="event-log",
         truth_role="authoritative",
         target_backend="postgresql",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=("event_log",),
         current_services=(
             "services/event_persistence_service.py",
@@ -96,7 +96,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="equity-snapshots",
         truth_role="authoritative",
         target_backend="postgresql",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=("account_equity_snapshots",),
         current_services=(
             "services/account_service.py",
@@ -108,7 +108,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
         name="realtime-hot-state",
         truth_role="hot-cache",
         target_backend="redis",
-        current_backend="sqlite",
+        current_backend="postgresql",
         current_tables=(),
         current_services=(
             "services/runtime_query_service.py",
@@ -117,7 +117,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
             "services/bar_aggregator.py",
             "app/event_bridge.py",
         ),
-        notes="Redis should be introduced only after relational truth boundaries are stable.",
+        notes="Hot state is still served from the relational runtime path; Redis should be introduced only after PostgreSQL truth boundaries are stable.",
     ),
     PersistenceDomain(
         name="compatibility-dev-store",
@@ -143,7 +143,7 @@ PERSISTENCE_DOMAINS: tuple[PersistenceDomain, ...] = (
             "persistence/models_imports.py",
             "persistence/models_init.py",
         ),
-        notes="SQLite remains the compatibility backend for dev/test/demo until formal migration is complete.",
+        notes="SQLite remains an explicit compatibility backend for tests/dev diagnostics, not the default runtime store.",
     ),
 )
 

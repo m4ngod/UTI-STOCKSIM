@@ -16,7 +16,7 @@ class Settings:
     DB_USER: str = "stock_sim"
     DB_PASSWORD: str = "stock_sim"
     DB_NAME: str = "stock_sim"
-    DB_URL: str | None = None  # 若为空使用内置 sqlite 回退
+    DB_URL: str | None = None  # empty means use the built-in PostgreSQL default
     ECHO_SQL: bool = False
 
     # 账户/系统参数
