@@ -95,27 +95,29 @@ class AgentsPanel:
     def _run_batch(self, count: int, agent_type: str, name_prefix: str, strategies: Optional[List[str]], initial_cash: Optional[float]):  # noqa: D401
         start = time.perf_counter()
         try:
-            # 逐个调用以展示进度
-            for i in range(count):
-                try:
-                    item_strategies = None
-                    if strategies:
-                        item_strategies = [strategies[i % len(strategies)]]
-                    cfg = BatchCreateConfig(count=1, agent_type=agent_type, name_prefix=name_prefix, strategies=item_strategies, initial_cash=(initial_cash if initial_cash is not None else 100_000.0))
-                    self._svc.batch_create_retail(cfg)
-                    with self._lock:
-                        self._batch_created += 1
-                except AgentServiceError as e:  # 捕获不允许类型错误
-                    with self._lock:
-                        self._batch_error = e.code
-                        self._batch_failed += 1
-                        # 不可用类型直接终止后续
-                        break
-                except Exception:  # 其他错误统计 failed
-                    with self._lock:
-                        self._batch_failed += 1
-                # 模拟轻微延迟 (避免测试过快无法看到进度; 可选)
-                time.sleep(0.005)
+            time.sleep(0.005)
+            cfg = BatchCreateConfig(
+                count=count,
+                agent_type=agent_type,
+                name_prefix=name_prefix,
+                strategies=strategies,
+                initial_cash=(initial_cash if initial_cash is not None else 100_000.0),
+            )
+            res = self._svc.batch_create_retail(cfg)
+            with self._lock:
+                self._batch_created += len(res.get("success_ids", []))
+                self._batch_failed += len(res.get("failed", []))
+                returned_strategies = res.get("strategies")
+                if returned_strategies:
+                    self._batch_strategies = list(returned_strategies)
+            return
+        except AgentServiceError as e:
+            with self._lock:
+                self._batch_error = e.code
+                self._batch_failed = max(self._batch_failed, count)
+        except Exception:
+            with self._lock:
+                self._batch_failed = max(self._batch_failed, count)
         finally:
             dur_ms = (time.perf_counter() - start) * 1000
             metrics.add_timing("agents_panel_batch_ms", dur_ms)

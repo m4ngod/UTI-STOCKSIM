@@ -142,8 +142,8 @@ def test_cold_start_profile_exposes_post_ipo_mix():
 def test_allocate_retail_strategies_uses_balanced_bootstrap_for_small_post_ipo_batches():
     assigned = allocate_retail_strategies(4, seed=1, mode="post_ipo_cold_start")
     assert assigned == [
+        "mean_revert",
+        "momentum_chase",
         "liquidity_noise",
         "buy_the_dip",
-        "profit_taking",
-        "mean_revert",
     ]

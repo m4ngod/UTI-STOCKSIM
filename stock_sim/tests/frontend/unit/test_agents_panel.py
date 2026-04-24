@@ -67,6 +67,29 @@ def test_agents_panel_preserves_explicit_strategy_rotation_across_progressive_ba
     assert [agent.name for agent in svc.list_agents()] == ['mean_revert001', 'momentum_chase001', 'buy_the_dip001']
 
 
+def test_agents_panel_auto_retail_batch_uses_population_mix_not_singleton_default():
+    panel, ctl, svc = _build_agents_panel()
+    ok = panel.start_batch_create(count=7, agent_type='Retail')
+    assert ok
+    for _ in range(200):
+        v = panel.get_view()
+        if not v['batch']['in_progress']:
+            break
+        time.sleep(0.01)
+
+    strategies = [agent.strategy for agent in svc.list_agents()]
+    assert strategies == [
+        'mean_revert',
+        'momentum_chase',
+        'liquidity_noise',
+        'buy_the_dip',
+        'slow_fundamental_allocator',
+        'profit_taking',
+        'noise',
+    ]
+    assert panel.get_view()['batch']['strategies'] == strategies
+
+
 def test_agents_panel_batch_create_unsupported_type():
     panel, ctl, svc = _build_agents_panel()
     ok = panel.start_batch_create(count=3, agent_type='PPO', name_prefix='ppo')  # 不被允许

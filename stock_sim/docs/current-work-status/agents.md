@@ -537,3 +537,43 @@ Practice the retail persona calibration blueprint against real runtime episodes 
 - Positive: the 100-agent runtime episode now has live two-sided books, real trades on all symbols, and buy/sell ratio inside the acceptance band.
 - Positive: 20-agent episodes now reliably produce two-sided coverage and trades; previously this scale could collapse into one-sided flow or empty coverage.
 - Risk: small populations remain statistically noisy. The next calibration pass should target herding/passive share and the 20-agent buy/sell ratio without sacrificing the 100-agent improvements.
+
+## Agent panel retail mix note (2026-04-25)
+
+### status
+done
+
+### goal
+Make desktop Agent panel Retail creation use the same population-level strategy mix as the calibration runner instead of repeatedly creating singleton `mean_revert` agents.
+
+### files involved
+- `app/panels/agents/panel.py`
+- `tests/frontend/unit/test_agents_panel.py`
+- `tests/frontend/unit/test_agent_service_strategy_assignment.py`
+
+### change summary
+- Fixed `AgentsPanel._run_batch(...)` so it sends the whole requested Retail batch to `AgentService.batch_create_retail(...)`.
+- Removed the previous panel-level `count=1` loop that reset `allocate_retail_strategies(..., mode="post_ipo_cold_start")` for every agent and therefore always picked the first bootstrap family.
+- Preserved explicit strategy selection: when the user chooses a specific Retail strategy, that explicit list still overrides the auto mix.
+- Updated the small-batch bootstrap expectation to match the current `POST_IPO_BOOTSTRAP_TEMPLATE`.
+
+### verification
+- `tests/frontend/unit/test_agents_panel.py`
+- `tests/frontend/unit/test_agent_service_strategy_assignment.py`
+- `tests/frontend/unit/test_agent_creation_modal.py`
+- `tests/test_retail_calibration_defaults.py`
+- `tests/frontend/unit/test_agent_controller_batch.py`
+- `tests/frontend/unit/test_agent_creation_controller_batch.py`
+- `tests/frontend/unit/test_controllers_agents.py`
+- `tests/frontend/integration/test_agents_flow.py`
+- `tests/frontend/integration/test_batch_create_agents.py`
+
+### smoke result
+- Creating 120 Retail agents through the panel path produced a mixed population:
+  - `momentum_chase`: 25
+  - `mean_revert`: 24
+  - `liquidity_noise`: 19
+  - `slow_fundamental_allocator`: 19
+  - `buy_the_dip`: 13
+  - `profit_taking`: 13
+  - `noise`: 7
