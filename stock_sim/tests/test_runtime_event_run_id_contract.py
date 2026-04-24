@@ -87,3 +87,52 @@ def test_bar_updated_event_carries_run_id_from_snapshot_rows():
     assert captured
     assert captured[-1]['run_id'] == 'RUN-BAR-001'
     assert captured[-1]['symbol'] == 'BAR1'
+
+
+def test_bar_aggregator_keeps_same_symbol_timestamp_separate_by_run():
+    models_init.init_models()
+    minute_start = datetime.utcnow().replace(second=0, microsecond=0)
+    s = SessionLocal()
+    try:
+        for run_id, base_price in (('RUN-BAR-A', 10.0), ('RUN-BAR-B', 20.0)):
+            s.add(
+                Snapshot1s(
+                    symbol='BARX',
+                    run_id=run_id,
+                    ts=minute_start,
+                    last_price=base_price,
+                    volume=100,
+                    turnover=base_price * 100,
+                    sim_day=4,
+                )
+            )
+            s.add(
+                Snapshot1s(
+                    symbol='BARX',
+                    run_id=run_id,
+                    ts=minute_start.replace(second=30),
+                    last_price=base_price + 0.5,
+                    volume=150,
+                    turnover=(base_price + 0.5) * 150,
+                    sim_day=4,
+                )
+            )
+        s.commit()
+    finally:
+        s.close()
+
+    agg = BarAggregator()
+    agg._build_minute_bars(minute_start)
+
+    s = SessionLocal()
+    try:
+        rows = (
+            s.query(Bar1m)
+            .filter(Bar1m.symbol == 'BARX', Bar1m.ts == minute_start)
+            .order_by(Bar1m.run_id.asc())
+            .all()
+        )
+        assert [row.run_id for row in rows] == ['RUN-BAR-A', 'RUN-BAR-B']
+        assert [row.close for row in rows] == [10.5, 20.5]
+    finally:
+        s.close()

@@ -67,6 +67,12 @@ It also ensures the run-scoped columns and indexes required by the current desig
 - `agent_bindings.run_id`
 - `account_equity_snapshots.run_id`
 
+Generated bar tables now treat `run_id` as part of simulation bar identity:
+
+- legacy global unique `(symbol, ts)` bar indexes are downgraded to non-unique lookup indexes when detected
+- run-aware unique indexes are created as `(run_id, symbol, ts)`
+- `BarAggregator` upserts bars by `(run_id, symbol, ts)` so multiple simulation runs can produce bars for the same symbol/time window
+
 ### Database health check
 
 Desktop startup now performs a database health check before opening the GUI by default.
@@ -98,7 +104,6 @@ This iteration makes the ORM and startup path PostgreSQL-ready, but it does not 
 - move latest market state to Redis
 - add Alembic-managed production migrations
 - migrate existing SQLite data into PostgreSQL
-- resolve every legacy uniqueness constraint for multi-run historical bars
 
 Those are separate follow-up slices.
 
@@ -122,5 +127,4 @@ Those are separate follow-up slices.
 
 1. Introduce Alembic migrations for PostgreSQL and stop relying on startup `ALTER TABLE` for production mode.
 2. Move latest snapshot/order-book/leaderboard hot state to Redis or an in-memory service boundary with Redis-compatible interface.
-3. Rework bar uniqueness from global `(symbol, ts)` to run-aware persistence semantics for generated simulation bars.
-4. Add SQLite-to-PostgreSQL export/import tooling for existing local experiments.
+3. Add SQLite-to-PostgreSQL export/import tooling for existing local experiments.

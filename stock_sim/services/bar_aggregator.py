@@ -183,12 +183,15 @@ class BarAggregator:
         sim_day: int,
         sim_dt: datetime,
     ):
-        existing = sess.query(model).filter(model.symbol == symbol, model.ts == ts).one_or_none()
+        resolved_run_id = run_id or next((getattr(item, "run_id", None) for item in arr if getattr(item, "run_id", None)), None)
+        query = sess.query(model).filter(model.symbol == symbol, model.ts == ts)
+        if resolved_run_id is None:
+            query = query.filter(model.run_id.is_(None))
+        else:
+            query = query.filter(model.run_id == resolved_run_id)
+        existing = query.one_or_none()
         ohlcv = self._aggregate_ohlcv(arr)
         if ohlcv is None:
-            return
-        resolved_run_id = run_id or next((getattr(item, "run_id", None) for item in arr if getattr(item, "run_id", None)), None)
-        if existing is not None and resolved_run_id and getattr(existing, "run_id", None) not in (None, resolved_run_id):
             return
         if existing is None:
             existing = model(

@@ -96,6 +96,27 @@ def _ensure_index(table: str, name: str, columns: tuple[str, ...]) -> None:
     _execute_ddl(f"CREATE INDEX {name} ON {table} ({cols_sql})")
 
 
+def _drop_index(name: str) -> None:
+    _execute_ddl(f"DROP INDEX IF EXISTS {name}")
+
+
+def _drop_legacy_unique_bar_indexes() -> None:
+    for table, name in (
+        ("bars_1m", "idx_bars1m_symbol_ts"),
+        ("bars_1h", "idx_bars1h_symbol_ts"),
+        ("bars_1d", "idx_bars1d_symbol_ts"),
+    ):
+        try:
+            insp = inspect(engine)
+            if table not in set(insp.get_table_names()):
+                continue
+            matching = next((idx for idx in insp.get_indexes(table) if idx.get("name") == name), None)
+            if matching is not None and bool(matching.get("unique")):
+                _drop_index(name)
+        except Exception:
+            pass
+
+
 def _ensure_event_log_table():
     try:
         insp = inspect(engine)
@@ -163,6 +184,9 @@ def _ensure_run_indexes():
         ("order_events", "ix_order_events_run_order_ts", ("run_id", "order_id", "ts")),
         ("event_log", "ix_event_log_run_ts", ("run_id", "ts_ms")),
         ("snapshots_1s", "ix_snapshots_run_symbol_ts", ("run_id", "symbol", "ts")),
+        ("bars_1m", "idx_bars1m_symbol_ts", ("symbol", "ts")),
+        ("bars_1h", "idx_bars1h_symbol_ts", ("symbol", "ts")),
+        ("bars_1d", "idx_bars1d_symbol_ts", ("symbol", "ts")),
         ("bars_1m", "ix_bars1m_run_symbol_ts", ("run_id", "symbol", "ts")),
         ("bars_1h", "ix_bars1h_run_symbol_ts", ("run_id", "symbol", "ts")),
         ("bars_1d", "ix_bars1d_run_symbol_ts", ("run_id", "symbol", "ts")),
@@ -180,6 +204,7 @@ def ensure_models():
 def _ensure_models_locked():
     _ensure_event_log_table()
     Base.metadata.create_all(engine)
+    _drop_legacy_unique_bar_indexes()
     _ensure_snapshot_columns()
     _ensure_sim_time_columns()
     _ensure_run_indexes()
