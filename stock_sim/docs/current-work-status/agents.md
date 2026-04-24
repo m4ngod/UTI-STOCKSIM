@@ -8,6 +8,45 @@ Retail strategy registry, retail population assignment, and agent-facing strateg
 
 in-progress
 
+## Task 2026-04-24-agents-05
+- **time**: 2026-04-24
+- **status**: done
+- **goal**: add the first episode-level retail calibration report collector so persona tuning can move from static bands to measured run output
+- **files involved**:
+  - `agents/retail_calibration_report.py`
+  - `tests/test_retail_calibration_report.py`
+  - `docs/architecture/runtime/retail-persona-calibration-blueprint.md`
+  - `docs/code-index.md`
+- **total changed lines**: small focused diagnostics layer
+
+### Change summary
+- Added normalized calibration samples for orders, trades, post-open book observations, and holding durations.
+- Added a collector that computes the market acceptance metrics from `agents/retail_calibration.py`:
+  - `buy_sell_order_ratio`
+  - `post_open_two_sided_book_coverage`
+  - `post_open_trade_presence`
+  - `order_flow_herding_index`
+  - `median_passive_submission_share`
+  - `median_trade_interarrival_seconds`
+- Added per-family diagnostics for order count, buy/sell imbalance, passive share, median holding bars, and expected-price capture.
+- Added target-band evaluations so a report can immediately say whether a metric is inside, low, high, or missing.
+
+### Purpose
+- Turn the persona calibration blueprint into a measurable episode artifact.
+- Keep metric math in one reusable module before wiring it to runtime event capture.
+- Preserve a clean boundary between runtime execution and calibration analysis.
+
+### Verification note
+- Targeted tests passed:
+  - `tests/test_retail_calibration_report.py`
+  - `tests/test_retail_calibration_defaults.py`
+  - `tests/test_retail_persona_model.py`
+
+### Next actions
+- Wire runtime order/trade/book events into `RetailCalibrationReportCollector`.
+- Add a fixed-seed smoke runner for 6, 20, and 100 retail populations that emits the report as JSON.
+- Use report deltas before changing family share defaults again.
+
 ## Task 2026-04-24-agents-04
 - **time**: 2026-04-24
 - **status**: done

@@ -234,8 +234,32 @@ This keeps calibration explainable. If multiple groups of settings are changed a
 The current code baseline for these targets is:
 
 - `agents/retail_calibration.py`
+- `agents/retail_calibration_report.py`
 - `agents/retail_persona.py`
 - `agents/retail_strategy.py`
 - `app/services/runtime_retail_agent.py`
 
 The calibration blueprint should evolve with the code. If the code moves but this document is not updated, treat the code as authoritative and revise the document in the same change set.
+
+## Episode report collector
+
+The first implementation of the episode-level calibration report lives in `agents/retail_calibration_report.py`.
+
+It accepts normalized samples for:
+
+- orders
+- trades
+- post-open book observations
+- holding-duration observations
+
+It produces:
+
+- market-level metrics aligned with `MARKET_METRIC_TARGETS`
+- target-band evaluations for each market metric
+- per-family order counts
+- per-family buy/sell imbalance
+- per-family passive submission share
+- per-family median holding bars
+- per-family expected-price capture statistics
+
+The collector is intentionally source-agnostic. A future runtime wiring step should translate real order/trade/book events into these samples, rather than duplicating metric logic inside runtime services.

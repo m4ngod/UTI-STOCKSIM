@@ -55,5 +55,6 @@
 - Retail strategy registry / cold-start mix: `agents/retail_strategy.py`
 - Retail persona sampling / expected-price model / loss-aversion / courage: `agents/retail_persona.py`
 - Retail calibration defaults / family mix targets / market metric bands: `agents/retail_calibration.py`
+- Retail episode calibration report collector: `agents/retail_calibration_report.py`
 - Runtime retail executor: `app/services/runtime_retail_agent.py`
 - Retail persona calibration blueprint: `docs/architecture/runtime/retail-persona-calibration-blueprint.md`
