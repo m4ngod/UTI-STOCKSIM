@@ -134,24 +134,24 @@ def test_snapshot_throttle():
 
     # 前4笔被动挂单(无成交) -> 0 次刷新
     for i in range(4):
-        osrv.place_order(Order(symbol=sym, side=OrderSide.SELL, price=9.0 + i, quantity=10, account_id=f'TH_S{i}'))
+        engine.submit_order(Order(symbol=sym, side=OrderSide.SELL, price=9.0 + i, quantity=10, account_id=f'TH_S{i}'))
     assert len(snap_events) == 0, f"前4笔不应刷新 实际 {len(snap_events)}"
 
     # 第5笔触发第一次节流刷新
-    osrv.place_order(Order(symbol=sym, side=OrderSide.SELL, price=9.4, quantity=10, account_id='TH_S4'))
+    engine.submit_order(Order(symbol=sym, side=OrderSide.SELL, price=9.4, quantity=10, account_id='TH_S4'))
     assert len(snap_events) == 1, f"第5笔应刷新1次 实际 {len(snap_events)}"
 
     # 再挂 4 笔 (第6~9) 仍 1 次
     for i in range(5,9):
-        osrv.place_order(Order(symbol=sym, side=OrderSide.SELL, price=9.0 + i, quantity=10, account_id=f'TH_S{i}'))
+        engine.submit_order(Order(symbol=sym, side=OrderSide.SELL, price=9.0 + i, quantity=10, account_id=f'TH_S{i}'))
     assert len(snap_events) == 1, f"至第9笔仍应仅1次 实际 {len(snap_events)}"
 
     # 第10笔 -> 第2次刷新
-    osrv.place_order(Order(symbol=sym, side=OrderSide.SELL, price=9.9, quantity=10, account_id='TH_S9'))
+    engine.submit_order(Order(symbol=sym, side=OrderSide.SELL, price=9.9, quantity=10, account_id='TH_S9'))
     assert len(snap_events) == 2, f"第10笔应触发第2次刷新 实际 {len(snap_events)}"
 
     # 下买单吃掉最优卖单 -> 有成交 => 强制刷新 (第3次)
     best_ask_price = min(p for p in [ord.price for arr in engine.get_book(sym).asks.values() for ord in arr])
-    osrv.place_order(Order(symbol=sym, side=OrderSide.BUY, price=best_ask_price, quantity=10, account_id='TH_B_TRADE'))
+    engine.submit_order(Order(symbol=sym, side=OrderSide.BUY, price=best_ask_price, quantity=10, account_id='TH_B_TRADE'))
     assert len(snap_events) == 3, f"成交应触发强制刷新 (第3次) 实际 {len(snap_events)}"
     s.close()

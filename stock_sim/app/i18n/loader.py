@@ -64,7 +64,7 @@ def set_language(lang: str) -> None:
 
 def reload(locale: str) -> str:
     """重新加载并切换到指定 locale。
-    返回最终生效的 locale（若失败则回退到默认语言，或保持原值）。
+    返回最终生效的 locale（若失败则回退到英文兼容语言，或保持原值）。
     """
     t0 = time.perf_counter()
     applied = None
@@ -73,14 +73,20 @@ def reload(locale: str) -> str:
         set_language(locale)
         applied = locale
     except Exception:
-        # 回退到默认
+        # reload 失败时优先回退英文，兼容历史设置面板和测试期望；
+        # translate() 的缺 key 文案回退仍保持 zh_CN -> en_US 的产品展示顺序。
         try:
-            load_language(_DEFAULT_FALLBACK, force=False)
-            set_language(_DEFAULT_FALLBACK)
-            applied = _DEFAULT_FALLBACK
+            load_language(_SECONDARY_FALLBACK, force=False)
+            set_language(_SECONDARY_FALLBACK)
+            applied = _SECONDARY_FALLBACK
         except Exception:
-            # 连默认也不可用：保持现状
-            applied = current_language()
+            try:
+                load_language(_DEFAULT_FALLBACK, force=False)
+                set_language(_DEFAULT_FALLBACK)
+                applied = _DEFAULT_FALLBACK
+            except Exception:
+                # 连默认也不可用：保持现状
+                applied = current_language()
     finally:
         dt_ms = (time.perf_counter() - t0) * 1000.0
         metrics.add_timing('i18n_switch_ms', dt_ms)

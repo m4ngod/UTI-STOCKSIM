@@ -12,6 +12,7 @@
   "panel.agents": "智能体",
   "panel.leaderboard": "排行",
   "panel.clock": "时钟",
+  "panel.orders": "订单",
   "panel.settings": "设置",
   "panel.agent_config": "参数配置",
   "panel.agent_creation": "批量创建"

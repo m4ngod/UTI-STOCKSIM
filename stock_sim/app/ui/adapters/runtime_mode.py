@@ -16,4 +16,10 @@ def ui_runtime_enabled() -> bool:
     installed but do not have a full QApplication / GUI lifecycle.
     """
     flag = os.environ.get("STOCKSIM_ENABLE_REAL_UI", "").strip().lower()
-    return flag in {"1", "true", "yes", "on"}
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        from PySide6.QtWidgets import QApplication  # type: ignore
+        return QApplication.instance() is not None
+    except Exception:
+        return False

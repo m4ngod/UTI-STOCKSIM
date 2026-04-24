@@ -24,6 +24,7 @@ if _CHART_STAGE not in ("plot-only", "line", "candles"):
 
 from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
+from app.services.trading_service import SubmitOrderRequest, TradingService
 from app.panels.market.dialog import CreateInstrumentDialog, suggest_next_symbol  # 新增：逻辑对话框
 from infra.event_bus import event_bus  # 新增：回退订阅
 try:
@@ -958,8 +959,11 @@ class MarketPanelAdapter(PanelAdapter):
         # 新增：节流状态
         self._last_refresh_ts: float = 0.0
         self._throttle_sec: float = 0.2
+        self._trade_ctl = TradingService()
 
     def _post_to_ui(self, cb) -> bool:
+        if not ui_runtime_enabled():
+            return False
         try:
             from PySide6.QtCore import QTimer  # type: ignore
             if getattr(self, "_root", None) is not None:
@@ -1015,27 +1019,6 @@ class MarketPanelAdapter(PanelAdapter):
                     try:
                         sym = (item.text() or "").strip()  # type: ignore
                         self._handle_select(sym)
-                        timeframe = '1d'
-                        logic = self._logic
-                        if logic is not None:
-                            detail_view = getattr(logic, 'detail_view', None)
-                            if callable(detail_view):
-                                try:
-                                    detail = detail_view()
-                                    if isinstance(detail, dict) and detail.get('timeframe'):
-                                        timeframe = str(detail.get('timeframe') or '1d')
-                                except Exception:
-                                    timeframe = '1d'
-                        if callable(open_symbol_page):
-                            try:
-                                open_symbol_page(
-                                    sym,
-                                    controller=getattr(logic, '_ctl', None) if logic is not None else None,
-                                    service=getattr(logic, '_svc', None) if logic is not None else None,
-                                    timeframe=timeframe,
-                                )
-                            except Exception:
-                                pass
                     except Exception:
                         pass
                 self._symbol_list.itemDoubleClicked.connect(_on_dbl)  # type: ignore[attr-defined]
@@ -1202,6 +1185,31 @@ class MarketPanelAdapter(PanelAdapter):
 
     # 新增：打开创建标的对话框（Qt 有则弹窗；无则使用默认参数直接创建并加入关注）
     def _open_create_dialog(self):
+        if ui_runtime_enabled():
+            try:
+                global QWidget, QVBoxLayout, QHBoxLayout, QDialog, QLineEdit, QPushButton, QFormLayout, QFrame, QLabel
+                from PySide6.QtWidgets import (  # type: ignore
+                    QWidget as _QWidget,
+                    QVBoxLayout as _QVBoxLayout,
+                    QHBoxLayout as _QHBoxLayout,
+                    QDialog as _QDialog,
+                    QLineEdit as _QLineEdit,
+                    QPushButton as _QPushButton,
+                    QFormLayout as _QFormLayout,
+                    QFrame as _QFrame,
+                    QLabel as _QLabel,
+                )
+                QWidget = _QWidget  # type: ignore
+                QVBoxLayout = _QVBoxLayout  # type: ignore
+                QHBoxLayout = _QHBoxLayout  # type: ignore
+                QDialog = _QDialog  # type: ignore
+                QLineEdit = _QLineEdit  # type: ignore
+                QPushButton = _QPushButton  # type: ignore
+                QFormLayout = _QFormLayout  # type: ignore
+                QFrame = _QFrame  # type: ignore
+                QLabel = _QLabel  # type: ignore
+            except Exception:
+                pass
         logic = self._logic
         if logic is None:
             return
@@ -1278,7 +1286,11 @@ class MarketPanelAdapter(PanelAdapter):
             return " ".join(messages)
 
         try:
-            dlg = QDialog(self._root if self._root is not None else None)  # type: ignore[arg-type]
+            try:
+                parent = self._root if isinstance(self._root, QWidget) else None
+            except Exception:
+                parent = None
+            dlg = QDialog(parent)  # type: ignore[arg-type]
             try:
                 dlg.setWindowTitle("Create Instrument")  # type: ignore[attr-defined]
                 dlg.setModal(True)  # type: ignore[attr-defined]
@@ -1515,7 +1527,6 @@ class MarketPanelAdapter(PanelAdapter):
                     if callable(add):
                         add(sym)
                     self.refresh()
-                    self._handle_select(sym)
                 except Exception:
                     pass
 
@@ -1585,11 +1596,50 @@ class MarketPanelAdapter(PanelAdapter):
                 except Exception:  # pragma: no cover
                     pass
         # 恢复详情刷新视图（尽量放到 UI 线程）
+        if ui_runtime_enabled():
+            try:
+                from PySide6.QtCore import QTimer  # type: ignore
+                QTimer.singleShot(0, self._refresh_detail)  # type: ignore
+                return
+            except Exception:
+                pass
+        self._refresh_detail()
+
+    def _open_trade_dialog(self, side: str) -> None:
+        symbol = (self._selected_symbol or "").strip()
+        if not symbol and self._logic is not None:
+            try:
+                detail = getattr(self._logic, "detail_view", lambda: {})()
+                if isinstance(detail, dict):
+                    symbol = str(detail.get("symbol") or "").strip()
+            except Exception:
+                symbol = ""
+        if not symbol:
+            return
+        price = 10.0
         try:
-            from PySide6.QtCore import QTimer  # type: ignore
-            QTimer.singleShot(0, self._refresh_detail)  # type: ignore
+            detail = getattr(self._logic, "detail_view", lambda: {})() if self._logic is not None else {}
+            snapshot = detail.get("snapshot") if isinstance(detail, dict) else None
+            if isinstance(snapshot, dict):
+                price = float(snapshot.get("last") or snapshot.get("last_price") or price)
         except Exception:
-            self._refresh_detail()
+            price = 10.0
+        payload = {
+            "symbol": symbol,
+            "side": str(side or "buy").lower(),
+            "price": price,
+            "qty": 100,
+            "account_id": "manual",
+        }
+        try:
+            self._trade_ctl.submit_order(**payload)
+        except TypeError:
+            try:
+                self._trade_ctl.submit_order(SubmitOrderRequest(**payload))
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _refresh_detail(self):
         if self._logic is None:

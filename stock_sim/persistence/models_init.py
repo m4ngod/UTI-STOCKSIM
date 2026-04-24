@@ -16,6 +16,9 @@ from .models_event_log import EventLog  # 新增: 事件日志表
 from .models_simulation_run import SimulationRun
 from sqlalchemy import inspect, text
 from stock_sim.persistence.models_imports import engine
+from threading import RLock
+
+_SCHEMA_LOCK = RLock()
 
 # 新增: 确保 sqlite 下 event_log 表存在 (若 metadata 未创建前调用)
 def _ensure_event_log_sqlite():
@@ -98,6 +101,11 @@ def _ensure_sim_time_columns():
             pass
 
 def ensure_models():
+    with _SCHEMA_LOCK:
+        _ensure_models_locked()
+
+
+def _ensure_models_locked():
     _ensure_event_log_sqlite()
     Base.metadata.create_all(engine)
     _ensure_snapshot_columns()
@@ -109,12 +117,17 @@ def ensure_models():
             insp = inspect(engine)
             if 'positions' in insp.get_table_names():
                 idx = insp.get_indexes('positions')
-                print('[init_models][debug] positions indexes:', idx)
+                pass
     except Exception:
         pass
 
 
 def init_models():
+    with _SCHEMA_LOCK:
+        _init_models_locked()
+
+
+def _init_models_locked():
     try:
         if engine.dialect.name == 'sqlite':
             # 彻底清理旧表 (可能含有历史 UNIQUE 约束)
@@ -123,4 +136,4 @@ def init_models():
             Base.metadata.drop_all(engine)
     except Exception:
         pass
-    ensure_models()
+    _ensure_models_locked()

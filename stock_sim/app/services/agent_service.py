@@ -80,6 +80,7 @@ class AgentService:
         self._runtime_agents: Dict[str, Any] = {}
         self._runtime_stop_threads: Dict[str, threading.Thread] = {}
         self._runtime_gateway = runtime_gateway or RuntimeGateway()
+        self._sync_runtime_bindings_enabled = runtime_gateway is not None
         self._retail_agent_factory = retail_agent_factory or self._default_retail_agent_factory
         self._account_bootstrapper = account_bootstrapper or self._bootstrap_runtime_account
 
@@ -157,9 +158,11 @@ class AgentService:
         created: List[AgentMetaDTO] = []
         pending_account_bootstrap: List[str] = []
         now = int(time.time() * 1000)
+        strategies = getattr(cfg, "strategies", None)
+        initial_cash = float(getattr(cfg, "initial_cash", 100_000.0) or 100_000.0)
         assigned_strategies = allocate_retail_strategies(
             cfg.count,
-            cfg.strategies,
+            strategies,
             seed=now,
             mode="post_ipo_cold_start" if cfg.agent_type == "Retail" else "normal",
         )
@@ -195,7 +198,7 @@ class AgentService:
                         runtime_agent = self._retail_agent_factory(
                             agent_id=agent_id,
                             strategy=strategy_name or "noise",
-                            initial_cash=cfg.initial_cash,
+                            initial_cash=initial_cash,
                             state_callback=self._on_runtime_state,
                         )
                         if runtime_agent is not None:
@@ -206,11 +209,11 @@ class AgentService:
 
         for account_id in pending_account_bootstrap:
             try:
-                self._account_bootstrapper(account_id, cfg.initial_cash)
+                self._account_bootstrapper(account_id, initial_cash)
             except Exception:
                 pass
             try:
-                publish_account_created({"account_id": account_id, "initial_cash": cfg.initial_cash})
+                publish_account_created({"account_id": account_id, "initial_cash": initial_cash})
             except Exception:
                 pass
 
@@ -222,7 +225,7 @@ class AgentService:
             "failed": list(failed),
             "type": cfg.agent_type,
             "count": cfg.count,
-            "initial_cash": cfg.initial_cash,
+            "initial_cash": initial_cash,
             "strategies": assigned_strategies,
         }
         try:
@@ -321,6 +324,8 @@ class AgentService:
         self._runtime_gateway.allocate_pending_ipo_distributions_if_running()
 
     def _runtime_binding_rows(self) -> List[Dict[str, Any]]:
+        if not self._sync_runtime_bindings_enabled:
+            return []
         try:
             rows = self._runtime_gateway.list_agent_bindings()
         except Exception:

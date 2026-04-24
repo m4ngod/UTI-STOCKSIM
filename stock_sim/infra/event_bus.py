@@ -10,6 +10,10 @@ try:
 except Exception:  # 回退本地
     from core.const import EventType  # type: ignore
 
+def _topic_key(topic: str | EventType) -> str:
+    return topic.value if hasattr(topic, "value") else str(topic)
+
+
 class EventBus:
     def __init__(self, async_workers: int = 4):
         self._subs_sync: Dict[str, List[Callable[[str, dict], None]]] = defaultdict(list)
@@ -34,14 +38,14 @@ class EventBus:
             self._bg_thread.join(timeout=1)
 
     def subscribe(self, topic: str | EventType, handler: Callable[[str, dict], None], *, async_mode: bool = False):
-        key = topic.value if isinstance(topic, EventType) else topic
+        key = _topic_key(topic)
         with self._lock:
             target = self._subs_async if async_mode else self._subs_sync
             target[key].append(handler)
         return handler  # 返回 handler 方便上层保存用于取消
 
     def unsubscribe(self, topic: str | EventType, handler: Callable[[str, dict], None]):
-        key = topic.value if isinstance(topic, EventType) else topic
+        key = _topic_key(topic)
         with self._lock:
             arr = self._subs_sync.get(key)
             if arr and handler in arr:
@@ -57,7 +61,7 @@ class EventBus:
                     pass
 
     def publish(self, topic: str | EventType, payload: dict):
-        key = topic.value if isinstance(topic, EventType) else topic
+        key = _topic_key(topic)
         sync_handlers: List[Callable[[str, dict], None]]
         async_handlers: List[Callable[[str, dict], None]]
         with self._lock:

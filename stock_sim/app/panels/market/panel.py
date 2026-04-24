@@ -435,7 +435,11 @@ class SymbolDetailPanel:
             series_meta['note'] = 'default synthetic series for non-authoritative fallback only'
 
         order_book, order_book_meta = self._build_order_book_block(snapshot, snapshot_meta)
-        trades_info = self._svc.get_trades_detail(sym) if sym else {"trades": [], "trades_meta": {}}
+        get_trades_detail = getattr(self._svc, "get_trades_detail", None)
+        if callable(get_trades_detail) and sym:
+            trades_info = get_trades_detail(sym)
+        else:
+            trades_info = {"trades": [], "trades_meta": {"status": "missing", "source": "unavailable"}}
         runtime_trades = list(trades_info.get("trades") or [])
         trades_list = self._merge_trades(runtime_trades, local_trades, limit=20)
         trades_meta = self._build_trades_meta(
@@ -444,7 +448,18 @@ class SymbolDetailPanel:
             local_trades,
         )
         indicators_meta = self._build_indicators_meta(indicators_copy, pending_jobs)
-        holdings_info = self._svc.get_holdings_detail(sym) if sym else self._svc.get_holdings_detail("")
+        get_holdings_detail = getattr(self._svc, "get_holdings_detail", None)
+        if callable(get_holdings_detail):
+            holdings_info = get_holdings_detail(sym or "")
+        else:
+            holdings_info = {
+                "holdings": None,
+                "holdings_meta": {
+                    "status": "unavailable",
+                    "source": "service-missing",
+                    "authoritative": False,
+                },
+            }
         holdings = holdings_info.get("holdings")
         holdings_meta = dict(holdings_info.get("holdings_meta") or {})
         detail_health = self._build_detail_health(

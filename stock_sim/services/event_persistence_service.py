@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 try:
+    from stock_sim.persistence import models_init  # type: ignore
     from stock_sim.persistence.models_event_log import EventLog  # type: ignore
     from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
     from stock_sim.observability.metrics import metrics  # type: ignore
@@ -13,6 +14,7 @@ try:
     from stock_sim.settings import settings  # type: ignore
     from stock_sim.services.sim_clock import current_sim_day, virtual_datetime  # type: ignore
 except Exception:  # noqa
+    from persistence import models_init  # type: ignore
     from persistence.models_event_log import EventLog  # type: ignore
     from persistence.models_imports import SessionLocal  # type: ignore
     from observability.metrics import metrics  # type: ignore
@@ -98,31 +100,48 @@ def _sync_write(evt_type: Any, payload: dict[str, Any]):
     evt_name = evt_type.value if hasattr(evt_type, "value") else str(evt_type)
     sim_day = _extract_sim_day(payload)
     sim_dt = _extract_sim_dt(payload, sim_day)
-    session = SessionLocal()
+    ts_ms = _extract_ts_ms(payload)
+    schema_lock = getattr(models_init, "_SCHEMA_LOCK", None)
+    if schema_lock is not None:
+        schema_lock.acquire()
     try:
-        ev = EventLog(
-            ts_ms=_extract_ts_ms(payload),
-            type=evt_name,
-            symbol=_extract_symbol(payload),
-            run_id=_extract_run_id(payload),
-            sim_day=sim_day,
-            sim_dt=sim_dt,
-            payload=json.dumps(payload, ensure_ascii=False),
-        )
-        session.add(ev)
-        session.commit()
-        try:
-            metrics.inc("event_persist_written", 1)
-        except Exception:
-            pass
-    except Exception:
-        session.rollback()
-        try:
-            metrics.inc("event_persist_failures", 1)
-        except Exception:
-            pass
+        for attempt in range(3):
+            session = SessionLocal()
+            try:
+                ev = EventLog(
+                    ts_ms=ts_ms,
+                    type=evt_name,
+                    symbol=_extract_symbol(payload),
+                    run_id=_extract_run_id(payload),
+                    sim_day=sim_day,
+                    sim_dt=sim_dt,
+                    payload=json.dumps(payload, ensure_ascii=False),
+                )
+                session.add(ev)
+                session.commit()
+                try:
+                    metrics.inc("event_persist_written", 1)
+                except Exception:
+                    pass
+                return
+            except Exception:
+                session.rollback()
+                if attempt < 2:
+                    try:
+                        EventLog.__table__.create(bind=session.get_bind(), checkfirst=True)
+                    except Exception:
+                        pass
+                    time.sleep(0.05 * (attempt + 1))
+                    continue
+                try:
+                    metrics.inc("event_persist_failures", 1)
+                except Exception:
+                    pass
+            finally:
+                session.close()
     finally:
-        session.close()
+        if schema_lock is not None:
+            schema_lock.release()
 
 
 def enable_event_persistence(force: bool = False):

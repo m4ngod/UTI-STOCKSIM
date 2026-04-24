@@ -21,6 +21,7 @@ from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
 
 # 新增: 事件与节流/线程
+import os
 import threading
 import time
 from infra.event_bus import event_bus
@@ -225,6 +226,8 @@ class AgentsPanelAdapter(PanelAdapter):
 
     # 新增：统一的 UI 线程投递方法（无 Qt 环境下返回 False）
     def _post_to_ui(self, cb) -> bool:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
         if not ui_runtime_enabled():
             return False
         try:

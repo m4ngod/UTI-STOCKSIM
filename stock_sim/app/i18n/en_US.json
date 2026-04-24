@@ -13,6 +13,7 @@
   "panel.agents": "Agents",
   "panel.leaderboard": "Leaderboard",
   "panel.clock": "Clock",
+  "panel.orders": "Orders",
   "panel.settings": "Settings",
   "panel.agent_config": "Agent Config",
   "panel.agent_creation": "Agent Creation"

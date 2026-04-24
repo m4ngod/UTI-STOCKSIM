@@ -43,6 +43,7 @@ class CreateInstrumentDialog:
         self._symbol: str = ""
         self._initial_price: Optional[str] = None
         self._float_shares: Optional[str] = None
+        self._market_cap: Optional[str] = None
         self._total_shares: Optional[str] = None
         self._norm_price: Optional[float] = None
         self._norm_float_shares: Optional[int] = None
@@ -72,9 +73,10 @@ class CreateInstrumentDialog:
                 self._initial_price = initial_price if initial_price != "" else None
             if float_shares is not None:
                 self._float_shares = float_shares if float_shares != "" else None
+            if market_cap is not None:
+                self._market_cap = market_cap if market_cap != "" else None
             if total_shares is not None:
                 self._total_shares = total_shares if total_shares != "" else None
-            _ = market_cap
             self._recompute()
 
     def clear(self) -> None:
@@ -118,14 +120,36 @@ class CreateInstrumentDialog:
             except Exception:
                 self._errors["float_shares"] = "ERR_FLOAT_SHARES_INVALID"
 
+        if self._market_cap is not None:
+            try:
+                norm_market_cap = safe_float(self._market_cap, min_value=0)
+                if norm_market_cap <= 0:
+                    raise ValueError("non-positive")
+            except Exception:
+                self._errors["market_cap"] = "ERR_MARKET_CAP_INVALID"
+
         if self._total_shares is not None:
             try:
                 norm_total_shares = safe_int(self._total_shares, min_value=0)
             except Exception:
                 self._errors["total_shares"] = "ERR_TOTAL_SHARES_INVALID"
 
-        if norm_price is not None and norm_float_shares is not None:
+        missing_triad = sum(
+            value is None
+            for value in (self._initial_price, self._float_shares, self._market_cap)
+        )
+        if missing_triad != 1:
+            self._errors["triad"] = "ERR_TRIAD_NEED_EXACTLY_ONE_EMPTY"
+
+        if norm_market_cap is None and norm_price is not None and norm_float_shares is not None:
             norm_market_cap = float(norm_price) * int(norm_float_shares)
+        elif norm_price is None and norm_market_cap is not None and norm_float_shares:
+            norm_price = float(norm_market_cap) / int(norm_float_shares)
+        elif norm_float_shares is None and norm_market_cap is not None and norm_price:
+            try:
+                norm_float_shares = int(round(float(norm_market_cap) / float(norm_price)))
+            except Exception:
+                norm_float_shares = None
 
         if norm_total_shares is not None and norm_float_shares is not None and norm_total_shares < norm_float_shares:
             self._errors["total_shares"] = "ERR_TOTAL_LT_FLOAT"
@@ -145,7 +169,7 @@ class CreateInstrumentDialog:
                     "symbol": self._symbol,
                     "initial_price": self._initial_price,
                     "float_shares": self._float_shares,
-                    "market_cap": self._norm_market_cap,
+                    "market_cap": self._market_cap if self._market_cap is not None else self._norm_market_cap,
                     "total_shares": self._total_shares,
                 },
                 "normalized": {
@@ -175,6 +199,7 @@ class CreateInstrumentDialog:
             symbol = self._symbol
             price = self._norm_price
             float_shares = self._norm_float_shares
+            market_cap = self._norm_market_cap if self._market_cap is not None else None
             total_shares = self._norm_total_shares if self._norm_total_shares is not None else float_shares
         try:
             payload = self._ctl.create_instrument(
@@ -182,7 +207,7 @@ class CreateInstrumentDialog:
                 symbol=symbol,
                 initial_price=price,
                 float_shares=float_shares,
-                market_cap=None,
+                market_cap=market_cap,
                 total_shares=total_shares,
                 price_step=self._price_step,
             )

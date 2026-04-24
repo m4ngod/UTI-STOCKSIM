@@ -111,7 +111,9 @@ class LeaderboardPanel:
         if selected_id:
             r = next((x for x in rows if x.agent_id == selected_id), None)
             if r:
-                curves = self._ctl.get_curves(r.agent_id, window=window, points=50) or {}
+                get_curves = getattr(self._ctl, "get_curves", None)
+                curves = get_curves(r.agent_id, window=window, points=50) if callable(get_curves) else {}
+                curves = curves or {}
                 selected_block = {
                     'agent_id': r.agent_id,
                     'equity_curve': list(curves.get('equity_curve') or self._equity_curve(r)),

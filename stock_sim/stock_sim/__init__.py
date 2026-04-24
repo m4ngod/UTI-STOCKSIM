@@ -21,6 +21,42 @@ for name in _SUBPACKAGES:
     sys.modules[f'{PKG}.{name}'] = mod
     setattr(sys.modules[PKG], name, mod)
 
+def _alias_submodule(fullname: str):
+    try:
+        mod = importlib.import_module(fullname)
+    except Exception:
+        return None
+    sys.modules[f'{PKG}.{fullname}'] = mod
+    parent_name, _, child_name = fullname.rpartition('.')
+    parent = sys.modules.get(f'{PKG}.{parent_name}')
+    if parent is not None:
+        setattr(parent, child_name, mod)
+    return mod
+
+
+for fullname in [
+    'core.const',
+    'infra.event_bus',
+    'observability.metrics',
+    'observability.struct_logger',
+]:
+    _alias_submodule(fullname)
+
+_alias_submodule('persistence.models_init')
+for loaded_name, loaded_mod in list(sys.modules.items()):
+    if loaded_name.startswith('persistence.'):
+        sys.modules[f'{PKG}.{loaded_name}'] = loaded_mod
+        parent_name, _, child_name = loaded_name.rpartition('.')
+        parent = sys.modules.get(f'{PKG}.{parent_name}')
+        if parent is not None:
+            setattr(parent, child_name, loaded_mod)
+
+for fullname in [
+    'services.sim_clock',
+    'services.event_persistence_service',
+]:
+    _alias_submodule(fullname)
+
 # 公开常用对象 (与原根 __init__.py 类似)
 try:
     from core.order import Order  # type: ignore
