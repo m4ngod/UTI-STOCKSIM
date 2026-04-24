@@ -1,9 +1,11 @@
 import pytest
+import os
 import sys, pathlib
 
 # 确保项目根在 sys.path 开头 (避免上级目录存在同名 app 包冲突)
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 root_str = str(_ROOT)
+os.environ.setdefault("STOCKSIM_DB_URL", "sqlite:///stock_sim_test.db")
 # 移除已存在的其它位置
 sys.path = [p for p in sys.path if p != root_str]
 # 插入最前

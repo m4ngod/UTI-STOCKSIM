@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
+POSTGRES_DEFAULT_URL = "postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
 SQLITE_FALLBACK_URL = "sqlite:///stock_sim_test.db"
 
 
@@ -59,7 +60,7 @@ def resolve_database_url(default_url: str | None = None) -> str:
         os.environ.get("STOCKSIM_DB_URL")
         or os.environ.get("DB_URL")
         or default_url
-        or SQLITE_FALLBACK_URL
+        or POSTGRES_DEFAULT_URL
     )
     return normalize_database_url(raw)
 
@@ -91,6 +92,7 @@ def build_database_config(*, default_url: str | None = None, default_echo: bool 
 
 __all__ = [
     "DatabaseConfig",
+    "POSTGRES_DEFAULT_URL",
     "SQLITE_FALLBACK_URL",
     "build_database_config",
     "database_dialect",

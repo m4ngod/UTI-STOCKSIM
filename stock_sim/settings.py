@@ -5,16 +5,16 @@ from __future__ import annotations
 import os
 
 try:
-    from stock_sim.persistence.db_config import SQLITE_FALLBACK_URL, normalize_database_url  # type: ignore
+    from stock_sim.persistence.db_config import POSTGRES_DEFAULT_URL, normalize_database_url  # type: ignore
 except Exception:
-    from persistence.db_config import SQLITE_FALLBACK_URL, normalize_database_url  # type: ignore
+    from persistence.db_config import POSTGRES_DEFAULT_URL, normalize_database_url  # type: ignore
 
 class Settings:
     # 数据库配置
-    DB_HOST: str = "localhost"
-    DB_PORT: int = 3308
-    DB_USER: str = "root"
-    DB_PASSWORD: str = "yu20010402"
+    DB_HOST: str = "127.0.0.1"
+    DB_PORT: int = 5432
+    DB_USER: str = "stock_sim"
+    DB_PASSWORD: str = "stock_sim"
     DB_NAME: str = "stock_sim"
     DB_URL: str | None = None  # 若为空使用内置 sqlite 回退
     ECHO_SQL: bool = False
@@ -76,7 +76,7 @@ class Settings:
         raw = os.environ.get("STOCKSIM_DB_URL") or os.environ.get("DB_URL") or self.DB_URL
         if raw:
             return normalize_database_url(raw)
-        return SQLITE_FALLBACK_URL
+        return POSTGRES_DEFAULT_URL
 
     # 兼容旧代码
     def assembled_db_url(self) -> str:  # noqa: D401

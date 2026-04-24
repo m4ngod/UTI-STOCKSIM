@@ -10,8 +10,8 @@ This is the first concrete iteration of the persistence upgrade described in:
 - `docs/data/data-layering-table-plan.md`
 - `docs/data/run-id-wiring-plan.md`
 
-The goal of this step is not to remove SQLite. SQLite remains the default dev/test fallback.
-The goal is to make PostgreSQL a first-class runtime backend for desktop simulations.
+The goal of this step is not to remove SQLite. PostgreSQL is now the default runtime backend.
+SQLite remains an explicit dev/test compatibility backend.
 
 ## What changed
 
@@ -21,12 +21,18 @@ Runtime database selection now follows this priority:
 
 1. `STOCKSIM_DB_URL`
 2. `DB_URL`
-3. built-in SQLite fallback: `sqlite:///stock_sim_test.db`
+3. built-in PostgreSQL default: `postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim`
 
 Recommended PostgreSQL URL:
 
 ```powershell
 $env:STOCKSIM_DB_URL = "postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
+```
+
+SQLite is still available for tests or local diagnostics by setting:
+
+```powershell
+$env:STOCKSIM_DB_URL = "sqlite:///stock_sim_test.db"
 ```
 
 Compatibility shortcuts are normalized:
@@ -111,9 +117,8 @@ Those are separate follow-up slices.
 
 ## Suggested local PostgreSQL smoke
 
-1. Create a database/user in PostgreSQL.
-2. Set `STOCKSIM_DB_URL`.
-3. Start the desktop app or run:
+1. Create a database/user in PostgreSQL matching the default URL, or set `STOCKSIM_DB_URL` to your own PostgreSQL database.
+2. Start the desktop app or run:
 
 ```powershell
 ..\Quent\.venv\Scripts\python.exe setup_frontend_entry.py --check-db

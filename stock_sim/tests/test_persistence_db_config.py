@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from stock_sim.persistence.db_config import (
+    POSTGRES_DEFAULT_URL,
     SQLITE_FALLBACK_URL,
     build_database_config,
     database_dialect,
@@ -9,11 +10,11 @@ from stock_sim.persistence.db_config import (
 )
 
 
-def test_resolve_database_url_uses_sqlite_fallback(monkeypatch):
+def test_resolve_database_url_uses_postgres_default(monkeypatch):
     monkeypatch.delenv("STOCKSIM_DB_URL", raising=False)
     monkeypatch.delenv("DB_URL", raising=False)
 
-    assert resolve_database_url() == SQLITE_FALLBACK_URL
+    assert resolve_database_url() == POSTGRES_DEFAULT_URL
 
 
 def test_stocksim_db_url_overrides_legacy_db_url(monkeypatch):
@@ -45,7 +46,7 @@ def test_database_config_builds_postgres_pool_options(monkeypatch):
 
 
 def test_database_config_builds_sqlite_connect_args(monkeypatch):
-    monkeypatch.delenv("STOCKSIM_DB_URL", raising=False)
+    monkeypatch.setenv("STOCKSIM_DB_URL", SQLITE_FALLBACK_URL)
     monkeypatch.delenv("DB_URL", raising=False)
 
     cfg = build_database_config()
@@ -60,3 +61,13 @@ def test_settings_build_db_url_reads_environment_at_call_time(monkeypatch):
     monkeypatch.setenv("STOCKSIM_DB_URL", "postgresql://u:p@localhost:5432/stock_sim")
 
     assert settings.build_db_url() == "postgresql+psycopg://u:p@localhost:5432/stock_sim"
+
+
+def test_settings_build_db_url_defaults_to_postgres(monkeypatch):
+    from stock_sim.settings import settings
+
+    monkeypatch.delenv("STOCKSIM_DB_URL", raising=False)
+    monkeypatch.delenv("DB_URL", raising=False)
+    monkeypatch.setattr(settings, "DB_URL", None)
+
+    assert settings.build_db_url() == POSTGRES_DEFAULT_URL
