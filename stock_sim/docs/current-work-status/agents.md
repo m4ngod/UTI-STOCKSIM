@@ -611,3 +611,27 @@ Start landing the persistence/run-boundary plan for Agent panel data so old pers
 - Positive: a fresh desktop session starts with a clean current-run Agent panel instead of replaying old `mean_revert` rows.
 - Positive: new retail populations are now visibly tied to the same run identity used by runtime history.
 - Risk: account and position current-state tables are still not fully run-scoped; a later phase should split static account identity from run-local account state.
+
+## Agent panel multi-control note (2026-04-25)
+
+### status
+done
+
+### goal
+Make starting retail agents from the Agent panel responsive at population scale and allow selecting multiple agents before applying Start/Pause/Stop.
+
+### files involved
+- `app/ui/adapters/agents_adapter.py`
+- `app/services/agent_service.py`
+- `tests/frontend/unit/test_agents_adapter_control.py`
+
+### change summary
+- Enabled row-level extended selection on the Agent table, so users can drag-select or shift/control-select multiple rows.
+- Kept the existing control target logic but added regression coverage that selected rows are all controlled.
+- Moved real-GUI control execution into a background worker thread so starting many runtime retail agents does not block the Qt main thread.
+- Removed an extra runtime-binding resync during `AgentService.control(..., "start"/"pause")` by reusing the already-loaded in-memory agent state.
+
+### impact / risk
+- Positive: Start/Pause/Stop can now be applied to a selected group instead of one agent at a time.
+- Positive: bulk start is less likely to show as "not responding" because thread creation and status persistence no longer run directly in the UI callback.
+- Risk: each running retail agent still owns a lightweight runtime thread; very large populations may need a later shared scheduler/executor design.

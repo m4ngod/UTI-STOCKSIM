@@ -117,7 +117,8 @@ class AgentService:
         if action == "start":
             if runtime_agent is not None:
                 runtime_agent.start()
-            current = self.get(agent_id)
+            with self._lock:
+                current = self._agents.get(agent_id)
             self._apply_runtime_state(
                 agent_id,
                 status="RUNNING",
@@ -128,7 +129,8 @@ class AgentService:
         elif action == "pause":
             if runtime_agent is not None:
                 runtime_agent.pause()
-            current = self.get(agent_id)
+            with self._lock:
+                current = self._agents.get(agent_id)
             self._apply_runtime_state(
                 agent_id,
                 status="PAUSED",

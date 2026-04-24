@@ -29,6 +29,24 @@ class _FakeTable:
             return None
 
 
+class _FakeIndex:
+    def __init__(self, row: int):
+        self._row = row
+
+    def row(self):
+        return self._row
+
+
+class _FakeSelectionModel:
+    def selectedRows(self):
+        return [_FakeIndex(0), _FakeIndex(1)]
+
+
+class _MultiFakeTable(_FakeTable):
+    def selectionModel(self):
+        return _FakeSelectionModel()
+
+
 class _FakeLogic:
     def __init__(self):
         self.control_calls = []
@@ -47,3 +65,18 @@ def test_agents_adapter_control_targets_current_row_instead_of_all_rows():
     adapter._do_control("stop")
 
     assert logic.control_calls == [("agent-001", "stop")]
+
+
+def test_agents_adapter_control_targets_all_selected_rows():
+    adapter = AgentsPanelAdapter()
+    logic = _FakeLogic()
+    adapter._logic = logic
+    adapter._table = _MultiFakeTable()
+    adapter._selected_agent = "agent-001"
+
+    adapter._do_control("start")
+
+    assert logic.control_calls == [
+        ("agent-001", "start"),
+        ("agent-002", "start"),
+    ]

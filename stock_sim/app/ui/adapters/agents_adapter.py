@@ -69,7 +69,7 @@ try:
     from PySide6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
         QPushButton, QLabel, QListWidget, QListWidgetItem, QTextEdit,
-        QDialog, QLineEdit, QComboBox
+        QDialog, QLineEdit, QComboBox, QAbstractItemView
     )  # type: ignore
     from PySide6.QtGui import QColor  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
@@ -122,6 +122,9 @@ except Exception:  # pragma: no cover - headless fallback
         def __init__(self): self._items=["Retail","MultiStrategyRetail"]; self._idx=0
         def addItems(self, items): self._items=list(items)
         def currentText(self): return self._items[self._idx] if self._items else "Retail"
+    class QAbstractItemView:  # type: ignore
+        SelectRows = 1
+        ExtendedSelection = 2
     QColor = lambda *a, **k: None  # type: ignore
 
 _ROW_COLOR_STALE = QColor(255, 240, 240) if callable(getattr(QColor, '__call__', None)) else QColor(255, 240, 240)  # type: ignore
@@ -180,6 +183,11 @@ class AgentsPanelAdapter(PanelAdapter):
             self._table = QTableWidget(0, len(self.COLS))  # type: ignore
             self._table.setColumnCount(len(self.COLS))  # type: ignore
             self._table.setHorizontalHeaderLabels(self.COLS)  # type: ignore
+            try:
+                self._table.setSelectionBehavior(QAbstractItemView.SelectRows)  # type: ignore[attr-defined]
+                self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)  # type: ignore[attr-defined]
+            except Exception:
+                pass
             main_v.addWidget(self._table)  # type: ignore
             # 控制区
             ctrl_h = QHBoxLayout()  # type: ignore
@@ -486,6 +494,20 @@ class AgentsPanelAdapter(PanelAdapter):
         if not targets and getattr(self, '_selected_agent', None):
             targets = [self._selected_agent]  # type: ignore[attr-defined]
         if not targets:
+            return
+        if ui_runtime_enabled() and not os.environ.get("PYTEST_CURRENT_TEST"):
+            def _worker():
+                for target_id in targets:
+                    try:
+                        ctl_fn(target_id, action)
+                    except Exception:
+                        pass
+                self.refresh()
+            threading.Thread(
+                target=_worker,
+                name=f"AgentsAdapter-Control-{action}",
+                daemon=True,
+            ).start()
             return
         # 执行动作
         for aid in targets:
