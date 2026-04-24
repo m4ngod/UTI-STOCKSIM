@@ -39,6 +39,11 @@ class RuntimeGateway:
             return None
         return self._queries.get_current_run_id()
 
+    def ensure_desktop_run(self) -> str | None:
+        if self._commands is None:
+            return self.get_current_run_id()
+        return self._commands.ensure_desktop_run()
+
     def get_account_snapshot(self, account_id: str) -> Dict[str, Any] | None:
         if self._queries is None:
             return None

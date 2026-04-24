@@ -55,6 +55,7 @@ class AppContext:
 def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppContext:
     settings_store = SettingsStore(path=settings_path, auto_save=False)
     runtime_gateway = RuntimeGateway()
+    runtime_gateway.ensure_desktop_run()
 
     market_data_service = MarketDataService(
         enable_runtime_holdings=True,

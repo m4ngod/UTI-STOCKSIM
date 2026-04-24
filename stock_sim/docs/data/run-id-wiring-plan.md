@@ -210,6 +210,12 @@ _Last updated: 2026-03-22_
 - `run_id`
 - `binding_scope`
 
+#### 2026-04-25 实施调整
+- 已提前为 `agent_bindings` 增加 nullable `run_id`。
+- 原因：Agent 面板会从持久化 binding 水合当前 agent 列表；如果这里没有 run 边界，旧 run / 旧实验批次会直接出现在当前桌面。
+- 当前策略：默认查询只返回 active run 的 agent bindings，历史 binding 暂不在 Agent 面板展示。
+- 后续策略：如果需要历史 run 浏览，应增加显式 run selector，而不是恢复全表默认水合。
+
 ---
 
 ## 4. 不建议第一时间挂 `run_id` 的表

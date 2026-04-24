@@ -577,3 +577,37 @@ Make desktop Agent panel Retail creation use the same population-level strategy 
   - `buy_the_dip`: 13
   - `profit_taking`: 13
   - `noise`: 7
+
+## Agent binding run-scope note (2026-04-25)
+
+### status
+done
+
+### goal
+Start landing the persistence/run-boundary plan for Agent panel data so old persisted retail bindings do not pollute the current desktop session.
+
+### files involved
+- `persistence/models_agent_binding.py`
+- `persistence/models_init.py`
+- `services/agent_binding_service.py`
+- `services/runtime_command_service.py`
+- `services/runtime_query_service.py`
+- `app/runtime_gateway.py`
+- `app/app_context.py`
+- `tests/test_agent_binding_run_scope.py`
+
+### change summary
+- Added nullable `agent_bindings.run_id` and migration support in `ensure_models()`.
+- Desktop app context now ensures a current run exists before constructing app services.
+- Runtime agent bootstrap stamps new bindings with the current desktop `run_id` and mirrors it into binding metadata.
+- Runtime agent binding queries now return only bindings from the active run.
+- Old unscoped or previous-run bindings remain in storage for now, but they no longer appear in the current Agent panel by default.
+
+### reason for deviating from the original minimal plan
+- The first RunContext plan originally left `agent_bindings` out of scope.
+- The live GUI issue showed `agent_bindings` needs an earlier run boundary because it directly controls what the Agent panel hydrates on startup.
+
+### impact / risk
+- Positive: a fresh desktop session starts with a clean current-run Agent panel instead of replaying old `mean_revert` rows.
+- Positive: new retail populations are now visibly tied to the same run identity used by runtime history.
+- Risk: account and position current-state tables are still not fully run-scoped; a later phase should split static account identity from run-local account state.

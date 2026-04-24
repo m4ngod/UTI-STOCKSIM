@@ -96,6 +96,12 @@ _Last updated: 2026-03-22_
 - `effective_to`
 - `config_version`
 
+#### 落地状态更新（2026-04-25）
+- `agent_bindings.run_id` 已作为 nullable 字段落地。
+- 当前桌面默认只水合 active run 的 agent bindings，避免旧批次 agent 污染当前 Agent 面板。
+- 这次提前接入 `agent_bindings` 是对原先最小 RunContext 计划的调整：虽然它不是 orders/trades 事实链的一部分，但它直接决定 GUI 当前 agent 集合。
+- 后续仍需要把 account / position 当前状态从长期身份中拆出来，形成更完整的 run-local account state。
+
 ---
 
 ## 3.2 核心运行状态表

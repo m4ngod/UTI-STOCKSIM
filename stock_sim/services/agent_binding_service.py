@@ -57,11 +57,15 @@ class AgentBindingService:
                 return None
 
     # -------- CRUD --------
-    def bind(self, agent_name: str, agent_type: str, account_id: str, *, overwrite: bool = False, meta: dict | None = None) -> AgentBinding:
+    def bind(self, agent_name: str, agent_type: str, account_id: str, *, overwrite: bool = False, meta: dict | None = None, run_id: str | None = None) -> AgentBinding:
         agent_name = agent_name.strip()
         if not agent_name:
             raise ValueError("agent_name 不能为空")
-        meta_json = json.dumps(meta, ensure_ascii=False) if meta else None
+        normalized_run_id = str(run_id or "").strip() or None
+        meta_obj = dict(meta or {})
+        if normalized_run_id is not None:
+            meta_obj.setdefault("run_id", normalized_run_id)
+        meta_json = json.dumps(meta_obj, ensure_ascii=False) if meta_obj else None
         with self._get_session() as s:
             row = self._sa_get(s, AgentBinding, agent_name)
             if row and not overwrite:
@@ -70,13 +74,16 @@ class AgentBindingService:
                 # 可选择更新 meta
                 if meta_json and row.meta != meta_json:
                     row.meta = meta_json; row.touch(); s.commit()
+                if normalized_run_id is not None and getattr(row, "run_id", None) != normalized_run_id:
+                    row.run_id = normalized_run_id; row.touch(); s.commit()
                 return row
             if row is None:
-                row = AgentBinding(agent_name=agent_name, agent_type=agent_type.upper(), account_id=account_id, meta=meta_json)
+                row = AgentBinding(agent_name=agent_name, agent_type=agent_type.upper(), account_id=account_id, run_id=normalized_run_id, meta=meta_json)
                 s.add(row)
             else:
                 row.account_id = account_id
                 row.agent_type = agent_type.upper() or row.agent_type
+                row.run_id = normalized_run_id
                 if meta_json:
                     row.meta = meta_json
                 row.touch()
@@ -168,6 +175,7 @@ class AgentBindingService:
                     "agent": r.agent_name,
                     "agent_type": getattr(r, 'agent_type', None),
                     "account_id": r.account_id,
+                    "run_id": getattr(r, 'run_id', None),
                     "created_at": getattr(r, 'created_at', None),
                     "meta": meta_obj
                 }

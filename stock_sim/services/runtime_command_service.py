@@ -225,9 +225,28 @@ class RuntimeCommandService:
         run_id = self._normalize_run_id(snap.get("run_id"))
         if run_id is None:
             run_id = self._generate_run_id()
+            if ensure_sim_clock_started is not None:
+                try:
+                    ensure_sim_clock_started().configure(run_id=run_id)
+                except Exception:
+                    pass
         self._mark_run_running(run_id, sim_day=sim_day, speed=speed)
         self._stamp_registered_engine_run_id(run_id)
         return run_id
+
+    def ensure_desktop_run(self) -> str | None:
+        snap = self._current_clock_snapshot()
+        sim_day_raw = snap.get("sim_day")
+        try:
+            sim_day = None if sim_day_raw is None else max(0, int(sim_day_raw))
+        except Exception:
+            sim_day = None
+        speed_raw = snap.get("speed")
+        try:
+            speed = None if speed_raw is None else float(speed_raw)
+        except Exception:
+            speed = None
+        return self._ensure_active_run_id(sim_day=sim_day, speed=speed)
 
     def _resolve_active_run_context(self) -> RunContext | None:
         snap = self._current_clock_snapshot()
@@ -252,6 +271,7 @@ class RuntimeCommandService:
         if models_init is None or SessionLocal is None or RuntimeAccountService is None:
             return
         self._ensure_models()
+        run_id = self.ensure_desktop_run()
         try:
             sess = SessionLocal()
         except Exception:
@@ -269,6 +289,7 @@ class RuntimeCommandService:
                     "params_version": 0,
                     "start_time": None,
                     "last_heartbeat": None,
+                    "run_id": run_id,
                 }
                 RuntimeAgentBindingService(sess).bind(
                     account_id,
@@ -276,6 +297,7 @@ class RuntimeCommandService:
                     account_id,
                     overwrite=True,
                     meta=binding_meta,
+                    run_id=run_id,
                 )
             sess.commit()
         except Exception:

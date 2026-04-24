@@ -111,7 +111,15 @@ class RuntimeQueryService:
         except Exception:
             return []
         try:
-            rows = sess.query(AgentBinding).order_by(AgentBinding.agent_name.asc()).all()
+            active_run_id = self.get_current_run_id()
+            if active_run_id is None:
+                return []
+            rows = (
+                sess.query(AgentBinding)
+                .filter(AgentBinding.run_id == active_run_id)
+                .order_by(AgentBinding.agent_name.asc())
+                .all()
+            )
             out: List[Dict[str, Any]] = []
             for row in rows:
                 meta_raw = getattr(row, "meta", None)
@@ -124,6 +132,7 @@ class RuntimeQueryService:
                         "agent_name": str(getattr(row, "agent_name", "") or ""),
                         "agent_type": str(getattr(row, "agent_type", "") or ""),
                         "account_id": str(getattr(row, "account_id", "") or ""),
+                        "run_id": str(getattr(row, "run_id", "") or ""),
                         "meta": meta if isinstance(meta, dict) else None,
                     }
                 )
