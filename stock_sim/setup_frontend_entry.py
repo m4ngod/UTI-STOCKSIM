@@ -15,9 +15,12 @@ import argparse
 from typing import Optional
 
 try:
+    from app.app_context import reset_app_context
     from app.headless import run_headless_frontend
+    from app.event_bridge import start_frontend_bridge, stop_frontend_bridge
     from app.state.settings_store import SettingsStore
     from app.panels import register_builtin_panels, register_ui_adapters
+    from app.runtime_bootstrap import start_runtime_support_services
     from app.ui.main_window import DEFAULT_PRELOAD_PANELS, MainWindow
     try:
         from PySide6.QtWidgets import QApplication  # type: ignore
@@ -63,6 +66,9 @@ def _start_frontend(*, headless: bool):
 
     # Real GUI path must explicitly opt into real Qt widgets.
     os.environ.setdefault("STOCKSIM_ENABLE_REAL_UI", "1")
+    reset_app_context()
+    start_frontend_bridge()
+    start_runtime_support_services()
 
     register_builtin_panels()
     try:
@@ -72,6 +78,10 @@ def _start_frontend(*, headless: bool):
             print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
         raise
     app = QApplication.instance() or QApplication([])
+    try:
+        app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
+    except Exception:
+        pass
     mw = MainWindow()
     try:
         from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore

@@ -18,6 +18,7 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
 from .base_adapter import PanelAdapter
+from .runtime_mode import ui_runtime_enabled
 
 # 新增: 事件与节流/线程
 import threading
@@ -56,6 +57,14 @@ except Exception:  # pragma: no cover
         return lambda: event_bus.unsubscribe(topic, h)
 
 try:
+    from agents.retail_strategy import list_registered_retail_strategies
+except Exception:  # pragma: no cover
+    def list_registered_retail_strategies():  # type: ignore
+        return ["mean_revert", "momentum_chase", "buy_the_dip", "profit_taking", "liquidity_noise", "noise"]
+
+try:
+    if not ui_runtime_enabled():
+        raise ImportError("real Qt UI disabled")
     from PySide6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
         QPushButton, QLabel, QListWidget, QListWidgetItem, QTextEdit,
@@ -63,7 +72,8 @@ try:
     )  # type: ignore
     from PySide6.QtGui import QColor  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
-    QWidget = object  # type: ignore
+    class QWidget:  # type: ignore
+        def __init__(self, *_, **__): pass
     class QVBoxLayout:  # type: ignore
         def __init__(self, *_, **__): pass
         def addWidget(self, *_): pass
@@ -121,7 +131,7 @@ _AGENT_COMPLETED_TOPIC = "agent.batch.create.completed"
 _AGENT_STATUS_CHANGED = "agent-status-changed"  # 预留：若后端发布状态事件，将自动接入
 
 class AgentsPanelAdapter(PanelAdapter):
-    COLS = ["agent_id", "name", "type", "status", "params_version", "heartbeat_stale"]
+    COLS = ["agent_id", "name", "type", "strategy", "status", "params_version", "heartbeat_stale"]
 
     def __init__(self):
         super().__init__()
@@ -215,6 +225,8 @@ class AgentsPanelAdapter(PanelAdapter):
 
     # 新增：统一的 UI 线程投递方法（无 Qt 环境下返回 False）
     def _post_to_ui(self, cb) -> bool:
+        if not ui_runtime_enabled():
+            return False
         try:
             from PySide6.QtCore import QTimer  # type: ignore
             # 若已有根部件，则将回调排入其所属线程；否则退化为全局 singleShot
@@ -438,7 +450,6 @@ class AgentsPanelAdapter(PanelAdapter):
         ctl_fn = getattr(self._logic, 'control', None)
         if not callable(ctl_fn):
             return
-        # 优先: 选中行；若无选中，则对所有可见行执行
         targets: List[str] = []
         try:
             table = self._table
@@ -451,12 +462,12 @@ class AgentsPanelAdapter(PanelAdapter):
                     except Exception:
                         selected_rows = []
                 if not selected_rows:
-                    # 回退：全部行
                     try:
-                        rc = table.rowCount()  # type: ignore[attr-defined]
+                        current_row = table.currentRow()  # type: ignore[attr-defined]
                     except Exception:
-                        rc = 0
-                    selected_rows = list(range(rc))
+                        current_row = -1
+                    if isinstance(current_row, int) and current_row >= 0:
+                        selected_rows = [current_row]
                 # 从第一列取 agent_id
                 for r in selected_rows:
                     try:
@@ -471,6 +482,8 @@ class AgentsPanelAdapter(PanelAdapter):
         # 若仍没有目标，使用当前选择的单个智能体（兼容旧逻辑）
         if not targets and getattr(self, '_selected_agent', None):
             targets = [self._selected_agent]  # type: ignore[attr-defined]
+        if not targets:
+            return
         # 执行动作
         for aid in targets:
             try:
@@ -551,12 +564,16 @@ class AgentsPanelAdapter(PanelAdapter):
                 pass
             layout.addWidget(type_combo)  # type: ignore
             # Name Prefix (hidden/disabled when MSR)
-            name_label = QLabel("Name Prefix")  # type: ignore
-            name_edit = QLineEdit("agent")  # type: ignore
-            layout.addWidget(name_label)  # type: ignore
-            layout.addWidget(name_edit)  # type: ignore
-            # Strategies
-            layout.addWidget(QLabel("Strategies (one per line, for MultiStrategyRetail)"))  # type: ignore
+            retail_strategy_label = QLabel("Retail Strategy")  # type: ignore
+            retail_strategy_combo = QComboBox()  # type: ignore
+            try:
+                retail_strategy_combo.addItems(["Auto (cold-start mix)"] + list_registered_retail_strategies())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            layout.addWidget(retail_strategy_label)  # type: ignore
+            layout.addWidget(retail_strategy_combo)  # type: ignore
+            msr_strategies_label = QLabel("Strategies (one per line, for MultiStrategyRetail)")  # type: ignore
+            layout.addWidget(msr_strategies_label)  # type: ignore
             try:
                 strategies_edit = QTextEdit()  # type: ignore
             except Exception:
@@ -586,15 +603,17 @@ class AgentsPanelAdapter(PanelAdapter):
                 is_msr = (t == 'MultiStrategyRetail')
                 try:
                     # MSR: 隐藏/禁用 name prefix；显示 initial cash
-                    name_label.setVisible(not is_msr)  # type: ignore[attr-defined]
-                    name_edit.setVisible(not is_msr)  # type: ignore[attr-defined]
+                    retail_strategy_label.setVisible(not is_msr)  # type: ignore[attr-defined]
+                    retail_strategy_combo.setVisible(not is_msr)  # type: ignore[attr-defined]
                 except Exception:
                     try:
                         # 降级：禁用
-                        name_edit.setEnabled(not is_msr)  # type: ignore[attr-defined]
+                        pass
                     except Exception:
                         pass
                 try:
+                    msr_strategies_label.setVisible(is_msr)  # type: ignore[attr-defined]
+                    strategies_edit.setVisible(is_msr)  # type: ignore[attr-defined]
                     init_cash_label.setVisible(is_msr)  # type: ignore[attr-defined]
                     init_cash_edit.setVisible(is_msr)  # type: ignore[attr-defined]
                 except Exception:
@@ -612,19 +631,23 @@ class AgentsPanelAdapter(PanelAdapter):
                     except Exception:
                         cnt = 0
                     agent_type = getattr(type_combo, 'currentText', lambda: 'Retail')()
-                    name_prefix = getattr(name_edit, 'text', lambda: 'agent')()
-                    if hasattr(strategies_edit, 'toPlainText'):
-                        raw = strategies_edit.toPlainText()  # type: ignore[attr-defined]
-                    else:
-                        raw = getattr(strategies_edit, 'text', lambda: '')()
-                    strategies = [s.strip() for s in (raw.splitlines() if raw else []) if s.strip()]
                     initial_cash = None
+                    strategies = None
+                    if agent_type == 'Retail':
+                        selected = getattr(retail_strategy_combo, 'currentText', lambda: 'Auto (cold-start mix)')()
+                        strategies = None if not selected or str(selected).startswith('Auto') else [str(selected)]
+                    else:
+                        if hasattr(strategies_edit, 'toPlainText'):
+                            raw = strategies_edit.toPlainText()  # type: ignore[attr-defined]
+                        else:
+                            raw = getattr(strategies_edit, 'text', lambda: '')()
+                        strategies = [s.strip() for s in (raw.splitlines() if raw else []) if s.strip()]
                     if agent_type == 'MultiStrategyRetail':
                         try:
                             initial_cash = float(getattr(init_cash_edit, 'text', lambda: '100000')())
                         except Exception:
                             initial_cash = 100000.0
-                    ok = modal.submit(agent_type=agent_type, count=cnt, name_prefix=name_prefix, strategies=strategies, initial_cash=initial_cash)
+                    ok = modal.submit(agent_type=agent_type, count=cnt, strategies=strategies, initial_cash=initial_cash)
                     if not ok:
                         v = modal.get_view()
                         code = v.get('error')

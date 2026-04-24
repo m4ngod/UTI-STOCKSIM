@@ -111,10 +111,14 @@ class LeaderboardPanel:
         if selected_id:
             r = next((x for x in rows if x.agent_id == selected_id), None)
             if r:
+                curves = self._ctl.get_curves(r.agent_id, window=window, points=50) or {}
                 selected_block = {
                     'agent_id': r.agent_id,
-                    'equity_curve': self._equity_curve(r),
-                    'drawdown_curve': self._drawdown_curve(r),
+                    'equity_curve': list(curves.get('equity_curve') or self._equity_curve(r)),
+                    'drawdown_curve': list(curves.get('drawdown_curve') or self._drawdown_curve(r)),
+                    'curve_source': curves.get('source') or 'synthetic-leaderboard-placeholder',
+                    'curve_authoritative': bool(curves.get('authoritative', False)),
+                    'active_run_id': curves.get('active_run_id'),
                 }
         return {
             'window': window,

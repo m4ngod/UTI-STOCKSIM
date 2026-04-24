@@ -48,12 +48,12 @@ def test_detail_overall_health_depends_on_core_blocks_not_auxiliary_holdings_onl
     panel.select_symbol("AAA", timeframe="1m")
     detail = panel.detail_view()
 
-    assert detail["detail_health"]["series_status"] == "available"
+    assert detail["detail_health"]["series_status"] == "placeholder"
     assert detail["detail_health"]["snapshot_status"] == "available"
     assert detail["detail_health"]["order_book_status"] == "available"
-    assert detail["detail_health"]["overall"] == "ok"
+    assert detail["detail_health"]["overall"] == "degraded"
     assert detail["detail_health"]["core_blocks"] == {
-        "series": "available",
+        "series": "placeholder",
         "snapshot": "available",
         "order_book": "available",
     }

@@ -129,6 +129,8 @@ class AccountPanel:
 
     # ---------------- Internal ----------------
     def _account_summary(self, acc: AccountDTO) -> Dict[str, Any]:
+        svc = getattr(self._ctl, '_service', None)
+        authoritative = bool(getattr(svc, 'is_runtime_authoritative', lambda: False)())
         return {
             'account_id': acc.account_id,
             'cash': acc.cash,
@@ -141,8 +143,8 @@ class AccountPanel:
             'snapshot_id': acc.snapshot_id,
             'sim_day': acc.sim_day,
             'account_meta': {
-                'authoritative': False,
-                'source': 'app-account-dto-service',
+                'authoritative': authoritative,
+                'source': 'runtime-account-dto-service' if authoritative else 'app-account-dto-service',
                 'status': 'summary-view',
                 'semantic_gap': 'summary-oriented-view-runtime-order-lifecycle-may-be-richer',
                 'runtime_fields_emphasized': ['frozen_cash', 'frozen_fee'],
@@ -150,6 +152,8 @@ class AccountPanel:
         }
 
     def _enrich_position(self, p: PositionDTO) -> Dict[str, Any]:
+        svc = getattr(self._ctl, '_service', None)
+        authoritative = bool(getattr(svc, 'is_runtime_authoritative', lambda: False)())
         mv_base = max(p.avg_price * p.quantity, 1.0)
         pnl = p.pnl_unreal or 0.0
         ratio = pnl / mv_base
@@ -180,8 +184,8 @@ class AccountPanel:
             'pnl_ratio': ratio,
             'highlight': highlight,
             'position_meta': {
-                'authoritative': False,
-                'source': 'app-account-dto-service',
+                'authoritative': authoritative,
+                'source': 'runtime-account-dto-service' if authoritative else 'app-account-dto-service',
                 'exposure_state': exposure_state,
                 'has_frozen_qty': p.frozen_qty > 0,
                 'has_borrowed_qty': p.borrowed_qty > 0,

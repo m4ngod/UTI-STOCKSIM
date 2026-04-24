@@ -15,6 +15,7 @@
 - Logic panel: `app/panels/market/panel.py`
 - UI adapter: `app/ui/adapters/market_adapter.py`
 - Bars/K-line cache service: `app/services/market_data_service.py`
+- Market detail contract: `docs/contracts/market/market-detail-contract.md`
 - Snapshot/event bridge: `app/event_bridge.py`
 
 ## Account frontend
@@ -26,11 +27,17 @@
 ## Backend/runtime trading
 
 - Order orchestration: `services/order_service.py`
+- Order pre-trade policy: `services/order_pretrade_service.py`
+- Order cancellation lifecycle: `services/order_cancel_service.py`
+- Order engine routing: `services/order_engine_router.py`
+- Order runtime sync bridge: `services/order_runtime_sync_service.py`
+- Order post-trade settlement: `services/order_trade_settlement_service.py`
+- Order auction reconciliation: `services/order_auction_reconciliation_service.py`
+- Order day-boundary maintenance: `services/order_maintenance_service.py`
 - Runtime account service: `services/account_service.py`
 - Engine registry: `services/engine_registry.py`
 - Instrument creation / engine registration: `services/instrument_service.py`
 - Backend snapshot service: `services/market_data_service.py`
-- Snapshot dump service: `services/snapshot_service.py`
 
 ## Existing architecture note
 
@@ -42,3 +49,11 @@
 - `run_id` migration / wiring blueprint: `docs/data/run-id-wiring-plan.md`
 - runtime `RunContext` bridge design: `docs/data/run-context-design.md`
 - runtime `RunContext` bridge design: `docs/data/run-context-design.md`
+
+## Retail runtime persona
+
+- Retail strategy registry / cold-start mix: `agents/retail_strategy.py`
+- Retail persona sampling / expected-price model / loss-aversion / courage: `agents/retail_persona.py`
+- Retail calibration defaults / family mix targets / market metric bands: `agents/retail_calibration.py`
+- Runtime retail executor: `app/services/runtime_retail_agent.py`
+- Retail persona calibration blueprint: `docs/architecture/runtime/retail-persona-calibration-blueprint.md`

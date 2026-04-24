@@ -2,24 +2,17 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import datetime
 from typing import Callable, List, Dict, Any
 
 try:
     from stock_sim.persistence.models_event_log import EventLog  # type: ignore
     from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
-    from stock_sim.persistence.models_order import OrderORM  # type: ignore
-    from stock_sim.persistence.models_trade import TradeORM  # type: ignore
-    from stock_sim.persistence.models_ledger import Ledger  # type: ignore
-    from stock_sim.persistence.models_snapshot import Snapshot1s  # type: ignore
-    from stock_sim.persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
+    from stock_sim.services.run_persistence_query_service import RunPersistenceQueryService  # type: ignore
 except Exception:  # noqa
     from persistence.models_event_log import EventLog  # type: ignore
     from persistence.models_imports import SessionLocal  # type: ignore
-    from persistence.models_order import OrderORM  # type: ignore
-    from persistence.models_trade import TradeORM  # type: ignore
-    from persistence.models_ledger import Ledger  # type: ignore
-    from persistence.models_snapshot import Snapshot1s  # type: ignore
-    from persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
+    from services.run_persistence_query_service import RunPersistenceQueryService  # type: ignore
 
 
 class ReplayService:
@@ -130,6 +123,7 @@ class ReplayService:
         type_counts = Counter(ev["type"] for ev in events)
         symbols = sorted({ev["symbol"] for ev in events if ev.get("symbol")})
         sim_days = [ev["sim_day"] for ev in events if ev.get("sim_day") is not None]
+        sim_dts = [ev["sim_dt"] for ev in events if ev.get("sim_dt") is not None]
         return {
             "mode": "dry-run",
             "event_count": len(events),
@@ -137,6 +131,7 @@ class ReplayService:
             "symbols": symbols,
             "run_id": run_id,
             "sim_day_range": None if not sim_days else [min(sim_days), max(sim_days)],
+            "sim_dt_range": None if not sim_dts else [min(sim_dts), max(sim_dts)],
         }
 
     def validate_against_persisted_facts(self, run_id: str) -> Dict[str, Any]:
@@ -144,19 +139,12 @@ class ReplayService:
         try:
             events = self.load_events(run_id=run_id)
             event_counts = Counter(ev["type"] for ev in events)
-            snapshot_rows = s.query(Snapshot1s).filter(Snapshot1s.run_id == run_id).all()
-            bar1m_rows = s.query(Bar1m).filter(Bar1m.run_id == run_id).all()
-            bar1h_rows = s.query(Bar1h).filter(Bar1h.run_id == run_id).all()
-            bar1d_rows = s.query(Bar1d).filter(Bar1d.run_id == run_id).all()
-            persisted = {
-                "orders": s.query(OrderORM).filter(OrderORM.run_id == run_id).count(),
-                "trades": s.query(TradeORM).filter(TradeORM.run_id == run_id).count(),
-                "ledgers": s.query(Ledger).filter(Ledger.run_id == run_id).count(),
-                "snapshots": len(snapshot_rows),
-                "bars_1m": len(bar1m_rows),
-                "bars_1h": len(bar1h_rows),
-                "bars_1d": len(bar1d_rows),
-            }
+            facts = RunPersistenceQueryService(s).load_run_fact_rows(run_id)
+            snapshot_rows = facts.snapshot_rows
+            bar1m_rows = facts.bar1m_rows
+            bar1h_rows = facts.bar1h_rows
+            bar1d_rows = facts.bar1d_rows
+            persisted = facts.persisted
             event_side = {
                 "orders": event_counts.get("OrderAccepted", 0) + event_counts.get("OrderRejected", 0),
                 "trades": event_counts.get("TradeEvent", 0) + event_counts.get("Trade", 0),
@@ -178,18 +166,49 @@ class ReplayService:
             bar1m_sim_days = sorted({getattr(r, "sim_day", None) for r in bar1m_rows if getattr(r, "sim_day", None) is not None})
             bar1h_sim_days = sorted({getattr(r, "sim_day", None) for r in bar1h_rows if getattr(r, "sim_day", None) is not None})
             bar1d_sim_days = sorted({getattr(r, "sim_day", None) for r in bar1d_rows if getattr(r, "sim_day", None) is not None})
+            mismatch_details = {
+                "trade_event_vs_trade_row_gap": {
+                    "event_side": event_side["trades"],
+                    "persisted": persisted["trades"],
+                    "gap": abs(event_side["trades"] - persisted["trades"]),
+                    "ok": abs(event_side["trades"] - persisted["trades"]) == 0,
+                },
+                "order_event_vs_order_row_gap": {
+                    "event_side": event_side["orders"],
+                    "persisted": persisted["orders"],
+                    "gap": abs(event_side["orders"] - persisted["orders"]),
+                    "ok": abs(event_side["orders"] - persisted["orders"]) == 0,
+                },
+                "snapshot_event_vs_snapshot_row_gap": {
+                    "event_side": event_side["snapshots"],
+                    "persisted": persisted["snapshots"],
+                    "gap": abs(event_side["snapshots"] - persisted["snapshots"]),
+                    "ok": abs(event_side["snapshots"] - persisted["snapshots"]) == 0,
+                },
+                "snapshot_symbol_set_match": {
+                    "event_side": event_snapshot_symbols,
+                    "persisted": row_snapshot_symbols,
+                    "ok": (event_snapshot_symbols == row_snapshot_symbols) if snapshot_event_coverage_available else None,
+                },
+                "snapshot_sim_day_set_match": {
+                    "event_side": event_snapshot_sim_days,
+                    "persisted": row_snapshot_sim_days,
+                    "ok": (event_snapshot_sim_days == row_snapshot_sim_days) if snapshot_event_coverage_available else None,
+                },
+            }
             checks = {
-                "trade_event_vs_trade_row_gap": abs(event_side["trades"] - persisted["trades"]),
-                "order_event_vs_order_row_gap": abs(event_side["orders"] - persisted["orders"]),
-                "snapshot_event_vs_snapshot_row_gap": abs(event_side["snapshots"] - persisted["snapshots"]),
+                "trade_event_vs_trade_row_gap": mismatch_details["trade_event_vs_trade_row_gap"]["gap"],
+                "order_event_vs_order_row_gap": mismatch_details["order_event_vs_order_row_gap"]["gap"],
+                "snapshot_event_vs_snapshot_row_gap": mismatch_details["snapshot_event_vs_snapshot_row_gap"]["gap"],
                 "snapshot_event_coverage_available": snapshot_event_coverage_available,
-                "snapshot_symbol_set_match": (event_snapshot_symbols == row_snapshot_symbols) if snapshot_event_coverage_available else None,
-                "snapshot_sim_day_set_match": (event_snapshot_sim_days == row_snapshot_sim_days) if snapshot_event_coverage_available else None,
+                "snapshot_symbol_set_match": mismatch_details["snapshot_symbol_set_match"]["ok"],
+                "snapshot_sim_day_set_match": mismatch_details["snapshot_sim_day_set_match"]["ok"],
             }
             return {
                 "run_id": run_id,
                 "persisted": persisted,
                 "event_side": event_side,
+                "mismatches": mismatch_details,
                 "snapshot_symbols": {
                     "event_side": event_snapshot_symbols,
                     "persisted": row_snapshot_symbols,

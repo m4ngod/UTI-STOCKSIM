@@ -1,11 +1,12 @@
 {
   "agents": {
-    "total": 10,
+    "total": 14,
     "items": [
       {
-        "agent_id": "ret-e2e-1774367630852-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise001",
+        "name": "liquidity_noise001",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -13,9 +14,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630860-0",
-        "name": "e2e-0",
-        "type": "Retail",
+        "agent_id": "MSR0001",
+        "name": "MSR0001",
+        "type": "MultiStrategyRetail",
+        "strategy": "s1",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -23,9 +25,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630865-0",
-        "name": "e2e-0",
+        "agent_id": "buy_the_dip001",
+        "name": "buy_the_dip001",
         "type": "Retail",
+        "strategy": "buy_the_dip",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -33,9 +36,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630870-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise002",
+        "name": "liquidity_noise002",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -43,9 +47,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630876-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise003",
+        "name": "liquidity_noise003",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -53,9 +58,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630881-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise004",
+        "name": "liquidity_noise004",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -63,9 +69,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630886-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise005",
+        "name": "liquidity_noise005",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -73,9 +80,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630891-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise006",
+        "name": "liquidity_noise006",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -83,9 +91,10 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630897-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise007",
+        "name": "liquidity_noise007",
         "type": "Retail",
+        "strategy": "liquidity_noise",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,
@@ -93,9 +102,54 @@
         "heartbeat_stale": false
       },
       {
-        "agent_id": "ret-e2e-1774367630902-0",
-        "name": "e2e-0",
+        "agent_id": "liquidity_noise008",
+        "name": "liquidity_noise008",
         "type": "Retail",
+        "strategy": "liquidity_noise",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "liquidity_noise009",
+        "name": "liquidity_noise009",
+        "type": "Retail",
+        "strategy": "liquidity_noise",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "liquidity_noise010",
+        "name": "liquidity_noise010",
+        "type": "Retail",
+        "strategy": "liquidity_noise",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "mean_revert001",
+        "name": "mean_revert001",
+        "type": "Retail",
+        "strategy": "mean_revert",
+        "status": "STOPPED",
+        "start_time": null,
+        "last_heartbeat": null,
+        "params_version": 0,
+        "heartbeat_stale": false
+      },
+      {
+        "agent_id": "profit_taking001",
+        "name": "profit_taking001",
+        "type": "Retail",
+        "strategy": "profit_taking",
         "status": "STOPPED",
         "start_time": null,
         "last_heartbeat": null,

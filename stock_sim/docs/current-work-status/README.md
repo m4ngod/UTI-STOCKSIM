@@ -27,6 +27,7 @@ This directory stores module-level work status notes.
 - `market-detail.md`
 - `engine.md`
 - `account.md`
+- `agents.md`
 
 ## Status labels
 

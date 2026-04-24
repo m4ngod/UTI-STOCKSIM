@@ -1,7 +1,9 @@
 """Snapshot & related market data DTOs."""
 from __future__ import annotations
 from typing import List, Tuple
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from ._compat import BaseModel
 
 Level = Tuple[float, float]  # price, qty
 

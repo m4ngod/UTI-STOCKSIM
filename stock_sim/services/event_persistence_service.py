@@ -75,6 +75,25 @@ def _extract_sim_dt(payload: dict[str, Any], sim_day: int | None):
     return virtual_datetime(sim_day) if sim_day is not None else None
 
 
+def _extract_ts_ms(payload: dict[str, Any]) -> int:
+    if isinstance(payload, dict):
+        for candidate in (
+            payload.get("ts_ms"),
+            payload.get("ts"),
+            payload.get("snapshot", {}).get("ts_ms") if isinstance(payload.get("snapshot"), dict) else None,
+            payload.get("snapshot", {}).get("ts") if isinstance(payload.get("snapshot"), dict) else None,
+            payload.get("trade", {}).get("ts_ms") if isinstance(payload.get("trade"), dict) else None,
+            payload.get("trade", {}).get("ts") if isinstance(payload.get("trade"), dict) else None,
+        ):
+            if candidate is None:
+                continue
+            try:
+                return int(candidate)
+            except Exception:
+                continue
+    return int(time.time() * 1000)
+
+
 def _sync_write(evt_type: Any, payload: dict[str, Any]):
     evt_name = evt_type.value if hasattr(evt_type, "value") else str(evt_type)
     sim_day = _extract_sim_day(payload)
@@ -82,7 +101,7 @@ def _sync_write(evt_type: Any, payload: dict[str, Any]):
     session = SessionLocal()
     try:
         ev = EventLog(
-            ts_ms=int(time.time() * 1000),
+            ts_ms=_extract_ts_ms(payload),
             type=evt_name,
             symbol=_extract_symbol(payload),
             run_id=_extract_run_id(payload),

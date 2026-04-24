@@ -3,7 +3,9 @@ Aligned with design document Data Models.
 """
 from __future__ import annotations
 from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field
+
+from ._compat import BaseModel, field_validator
 
 class PositionDTO(BaseModel):
     symbol: str
@@ -26,14 +28,12 @@ class AccountDTO(BaseModel):
     sim_day: str  # YYYY-MM-DD
 
     @field_validator("equity")
-    @classmethod
     def equity_non_negative(cls, v: float):
         if v < 0:
             raise ValueError("equity must be >=0")
         return v
 
     @field_validator("cash")
-    @classmethod
     def cash_non_negative(cls, v: float):
         if v < 0:
             raise ValueError("cash must be >=0")

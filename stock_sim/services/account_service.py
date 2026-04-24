@@ -18,7 +18,6 @@ from typing import Iterable, Any
 try:
     from stock_sim.persistence.models_account import Account  # type: ignore
     from stock_sim.persistence.models_position import Position  # type: ignore
-    from stock_sim.persistence.models_ledger import Ledger  # type: ignore
     from stock_sim.observability.metrics import metrics  # type: ignore
     from stock_sim.infra.event_bus import event_bus  # type: ignore
     from stock_sim.core.const import EventType, OrderSide  # type: ignore
@@ -27,7 +26,6 @@ try:
 except Exception:  # noqa
     from persistence.models_account import Account  # type: ignore
     from persistence.models_position import Position  # type: ignore
-    from persistence.models_ledger import Ledger  # type: ignore
     from observability.metrics import metrics  # type: ignore
     from infra.event_bus import event_bus  # type: ignore
     from core.const import EventType, OrderSide  # type: ignore
@@ -38,10 +36,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 try:
-    from stock_sim.persistence.models_account_equity_snapshot import AccountEquitySnapshot  # type: ignore
+    from stock_sim.services.account_persistence_service import AccountPersistenceService  # type: ignore
     from stock_sim.services.run_context import RunContext  # type: ignore
 except Exception:  # noqa
-    from persistence.models_account_equity_snapshot import AccountEquitySnapshot  # type: ignore
+    from services.account_persistence_service import AccountPersistenceService  # type: ignore
     from services.run_context import RunContext  # type: ignore
 
 
@@ -49,6 +47,7 @@ class AccountService:
     def __init__(self, session: Session, run_context: RunContext | None = None):
         self.s = session
         self.run_context = run_context
+        self.persistence = AccountPersistenceService(session)
 
     # ---- Public API ----
     def get_or_create(self, account_id: str, *, cash: float | None = None) -> Account:
@@ -323,7 +322,7 @@ class AccountService:
     def _write_ledger(self, account_id: str, symbol: str, side: str, price: float, qty: int,
                       cash_delta: float, pnl_real: float, fee: float, tax: float,
                       order_id: str | None = None, extra_json: str | None = None):
-        led = Ledger(
+        self.persistence.write_ledger(
             account_id=account_id,
             symbol=symbol,
             side=side,
@@ -336,9 +335,8 @@ class AccountService:
             order_id=order_id,
             extra_json=extra_json,
             run_id=self._get_run_id(),
+            stamp_fn=self._stamp,
         )
-        self._stamp(led)
-        self.s.add(led)
 
     def _get_run_id(self) -> str | None:
         return None if self.run_context is None else self.run_context.run_id
@@ -362,7 +360,7 @@ class AccountService:
         cash = float(getattr(acc, "cash", 0.0) or 0.0)
         frozen_cash = float(getattr(acc, "frozen_cash", 0.0) or 0.0)
         equity = cash + frozen_cash + market_value
-        snap = AccountEquitySnapshot(
+        self.persistence.write_equity_snapshot(
             run_id=self._get_run_id(),
             account_id=acc.id,
             sim_day=getattr(acc, "sim_day", 0) or 0,
@@ -376,7 +374,6 @@ class AccountService:
             drawdown=0.0,
             borrowed_notional=borrowed_notional,
         )
-        self.s.add(snap)
 
     def _account_payload(self, acc: Account) -> dict[str, Any]:
         positions = []

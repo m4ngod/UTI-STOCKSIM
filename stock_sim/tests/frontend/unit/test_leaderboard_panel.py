@@ -63,3 +63,45 @@ def test_leaderboard_panel_export_csv(tmp_path="."):
         head = f.readline()
     assert head.startswith('# meta ')
 
+
+class _RuntimeLeaderboardGateway:
+    def list_leaderboard_snapshots(self):
+        return [
+            {
+                "agent_id": "retail001",
+                "equity": 120000.0,
+                "initial_cash": 100000.0,
+                "gross_exposure": 20000.0,
+                "long_count": 2,
+                "short_count": 0,
+            }
+        ]
+
+    def get_leaderboard_history(self, agent_id: str, *, window: str, points: int = 50):
+        return {
+            "agent_id": agent_id,
+            "equity_curve": [100000.0, 105000.0, 120000.0],
+            "drawdown_curve": [0.0, -0.02, 0.0],
+            "source": "runtime-account-equity-snapshots",
+            "authoritative": True,
+            "active_run_id": "RUN-LB-UI-001",
+        }
+
+
+def test_leaderboard_panel_selected_block_prefers_runtime_curves():
+    reset_registry()
+    register_builtin_panels()
+    svc = LeaderboardService(use_runtime=True, runtime_gateway=_RuntimeLeaderboardGateway())
+    ctl = LeaderboardController(svc, ExportService())
+    register_leaderboard_panel(ctl)
+    panel = get_panel('leaderboard')
+
+    view = panel.get_view()
+
+    assert view["selected"] is not None
+    assert view["selected"]["equity_curve"] == [100000.0, 105000.0, 120000.0]
+    assert view["selected"]["drawdown_curve"] == [0.0, -0.02, 0.0]
+    assert view["selected"]["curve_source"] == "runtime-account-equity-snapshots"
+    assert view["selected"]["curve_authoritative"] is True
+    assert view["selected"]["active_run_id"] == "RUN-LB-UI-001"
+

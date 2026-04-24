@@ -97,15 +97,7 @@ def _ensure_sim_time_columns():
         except Exception:
             pass
 
-def init_models():
-    try:
-        if engine.dialect.name == 'sqlite':
-            # 彻底清理旧表 (可能含有历史 UNIQUE 约束)
-            with engine.begin() as conn:
-                conn.exec_driver_sql('DROP TABLE IF EXISTS positions')
-            Base.metadata.drop_all(engine)
-    except Exception:
-        pass
+def ensure_models():
     _ensure_event_log_sqlite()
     Base.metadata.create_all(engine)
     _ensure_snapshot_columns()
@@ -120,3 +112,15 @@ def init_models():
                 print('[init_models][debug] positions indexes:', idx)
     except Exception:
         pass
+
+
+def init_models():
+    try:
+        if engine.dialect.name == 'sqlite':
+            # 彻底清理旧表 (可能含有历史 UNIQUE 约束)
+            with engine.begin() as conn:
+                conn.exec_driver_sql('DROP TABLE IF EXISTS positions')
+            Base.metadata.drop_all(engine)
+    except Exception:
+        pass
+    ensure_models()

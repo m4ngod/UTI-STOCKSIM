@@ -50,8 +50,7 @@ except Exception:  # pragma: no cover
 
 __all__ = ["MarketPanel", "SymbolDetailPanel"]
 
-_DEFAULT_TIMEFRAME: Timeframe = "1d"
-
+_DEFAULT_TIMEFRAME: Timeframe = "1m"
 class SymbolDetailPanel:
     def __init__(self, controller: MarketController, service: MarketDataService):
         self._ctl = controller
@@ -61,6 +60,8 @@ class SymbolDetailPanel:
         self._timeframe: Timeframe = _DEFAULT_TIMEFRAME
         self._series_cache: Optional[Any] = None  # BarsSeries
         self._is_stale: bool = False
+        self._series_meta: Dict[str, Any] = {}
+        self._chart_meta: Dict[str, Any] = {}
         self._last_loaded_ts: float = 0.0
         # 指标缓存 (已转换为 list)
         self._indicators: Dict[str, Any] = {}
@@ -70,6 +71,7 @@ class SymbolDetailPanel:
         # 这里优先保证前端闭环状态稳定可见；使用简单 deque 作为权威视图源，
         # 避免在 app/runtime 混合导入路径下把最后一层展示状态绑死在优化结构上。
         self._trades: deque[TradeDTO] = deque(maxlen=1000)
+        self._seen_trade_keys: deque[tuple[str, float, int, str, int]] = deque(maxlen=256)
 
     # ---------- Internal Helpers ----------
     def _schedule_indicators(self, symbol: str, timeframe: Timeframe):
@@ -104,6 +106,173 @@ class SymbolDetailPanel:
                 self._pending_jobs.discard(key_macd)
         indicator_executor.submit('macd', arr, symbol=symbol, fast=12, slow=26, signal=9, callback=_cb_macd)
 
+    def _apply_series_info(self, series_info: Dict[str, Any]) -> None:
+        self._series_cache = series_info.get("series")
+        self._is_stale = bool(series_info.get("is_stale"))
+        self._series_meta = dict(series_info.get("series_meta") or {})
+        self._chart_meta = dict(series_info.get("chart_meta") or {})
+        self._last_loaded_ts = time.time()
+
+    def _build_snapshot_block(self, snapshot: Optional[SnapshotDTO]) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+        describe = getattr(self._ctl, "get_detail_snapshot", None)
+        if callable(describe):
+            detail = describe(self._symbol or "")
+            return detail.get("snapshot"), dict(detail.get("snapshot_meta") or {})
+        snapshot_status = 'missing'
+        snapshot_age_ms: int | None = None
+        if snapshot is not None:
+            try:
+                snapshot_age_ms = max(0, int(time.time() * 1000) - int(snapshot.ts))
+            except Exception:
+                snapshot_age_ms = None
+            snapshot_status = 'available'
+        snapshot_meta = {
+            'source': 'market-controller-merged-snapshot-cache',
+            'authoritative': True,
+            'status': snapshot_status,
+            'refresh': 'event-batch',
+            'freshness_model': 'snapshot-ts-age',
+            'timestamp_ms': None if snapshot is None else int(snapshot.ts),
+            'age_ms': snapshot_age_ms,
+            'stale_after_ms': 15_000,
+        }
+        return (None if snapshot is None else snapshot.model_dump(), snapshot_meta)
+
+    def _build_order_book_block(
+        self,
+        snapshot: Optional[SnapshotDTO],
+        snapshot_meta: Dict[str, Any],
+    ) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+        describe = getattr(self._ctl, "get_detail_snapshot", None)
+        if callable(describe):
+            detail = describe(self._symbol or "")
+            return detail.get("order_book"), dict(detail.get("order_book_meta") or {})
+        order_book = None
+        order_book_meta = {
+            'source': 'snapshot-derived-order-book-view',
+            'authoritative': True,
+            'status': 'missing',
+            'refresh': 'snapshot-update',
+            'freshness_model': 'inherit-snapshot-age',
+            'derived_from': 'snapshot',
+        }
+        if snapshot is not None:
+            order_book = {"bids": snapshot.bid_levels, "asks": snapshot.ask_levels}
+            order_book_meta['status'] = 'stale' if snapshot_meta.get('status') == 'stale' else 'available'
+            order_book_meta['age_ms'] = snapshot_meta.get('age_ms')
+            order_book_meta['stale_after_ms'] = snapshot_meta.get('stale_after_ms')
+        return order_book, order_book_meta
+
+    def _trade_key(self, trade: Dict[str, Any]) -> tuple[str, int | None, float, int]:
+        return (
+            str(trade.get('symbol') or ''),
+            int(trade.get('ts')) if trade.get('ts') is not None else None,
+            float(trade.get('price') or 0.0),
+            int(trade.get('qty') or trade.get('quantity') or 0),
+        )
+
+    def _merge_trades(
+        self,
+        runtime_trades: List[Dict[str, Any]],
+        local_trades: List[Dict[str, Any]],
+        *,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        seen: set[tuple[str, int | None, float, int]] = set()
+        for row in list(local_trades) + list(runtime_trades):
+            key = self._trade_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(row))
+            if len(merged) >= max(int(limit), 1):
+                break
+        merged.sort(key=lambda item: int(item.get('ts') or 0), reverse=True)
+        return merged[: max(int(limit), 1)]
+
+    def _build_trades_meta(
+        self,
+        runtime_meta: Dict[str, Any],
+        runtime_trades: List[Dict[str, Any]],
+        local_trades: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        meta = dict(runtime_meta or {})
+        if not local_trades:
+            return meta or {
+                'source': 'runtime-trade-log',
+                'authoritative': True,
+                'status': 'empty',
+                'refresh': 'runtime-query',
+            }
+        if meta.get('status') == 'error':
+            return {
+                'source': 'local-symbol-detail-ring-buffer',
+                'authoritative': False,
+                'status': 'available',
+                'refresh': 'event-append',
+            }
+        if runtime_trades:
+            return {
+                'source': 'runtime-trade-log+local-overlay',
+                'authoritative': bool(meta.get('authoritative', True)),
+                'status': 'available',
+                'refresh': 'runtime-query+event-append',
+            }
+        return {
+            'source': 'runtime-trade-log+local-overlay',
+            'authoritative': bool(meta.get('authoritative', True)),
+            'status': 'available',
+            'refresh': 'runtime-query+event-append',
+        }
+
+    def _build_indicators_meta(self, indicators_copy: Dict[str, Any], pending_jobs: set[str]) -> Dict[str, Any]:
+        return {
+            'source': 'indicator-executor-from-series',
+            'authoritative': False,
+            'status': 'available' if indicators_copy else ('pending' if pending_jobs else 'missing'),
+            'refresh': 'load-refresh-recompute',
+        }
+
+    def _build_detail_health(
+        self,
+        *,
+        series_meta: Dict[str, Any],
+        snapshot_meta: Dict[str, Any],
+        order_book_meta: Dict[str, Any],
+        trades_meta: Dict[str, Any],
+        holdings_meta: Dict[str, Any],
+        indicators_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        series_status = str(series_meta.get('status') or 'missing')
+        snapshot_status = str(snapshot_meta.get('status') or 'missing')
+        order_book_status = str(order_book_meta.get('status') or 'missing')
+        trades_status = str(trades_meta.get('status') or 'empty')
+        holdings_status = str(holdings_meta.get('status') or 'placeholder')
+        indicators_status = str(indicators_meta.get('status') or 'missing')
+        core_block_status = {
+            'series': series_status,
+            'snapshot': snapshot_status,
+            'order_book': order_book_status,
+        }
+        degraded_core_states = {'missing', 'stale', 'error', 'placeholder'}
+        overall = 'degraded' if any(v in degraded_core_states for v in core_block_status.values()) else 'ok'
+        return {
+            'series_status': series_status,
+            'snapshot_status': snapshot_status,
+            'order_book_status': order_book_status,
+            'trades_status': trades_status,
+            'holdings_status': holdings_status,
+            'indicators_status': indicators_status,
+            'overall': overall,
+            'core_blocks': core_block_status,
+            'auxiliary_blocks': {
+                'trades': trades_status,
+                'holdings': holdings_status,
+                'indicators': indicators_status,
+            },
+        }
+
     # ---------- Public API ----------
     def load_symbol(self, symbol: str, timeframe: Optional[Timeframe] = None):
         start = time.perf_counter()
@@ -115,14 +284,13 @@ class SymbolDetailPanel:
         with self._lock:
             self._symbol = symbol
             self._timeframe = tf
-            self._series_cache = series_info.get("series")
-            self._is_stale = bool(series_info.get("is_stale"))
-            self._last_loaded_ts = time.time()
+            self._apply_series_info(series_info)
             # 清空旧指标 (长度可能不同)
             self._indicators.clear()
             self._pending_jobs.clear()
             # 新 symbol 清空逐笔
             self._trades.clear()
+            self._seen_trade_keys.clear()
         # 指标缓存失效（同一 symbol 重新加载）
         try:  # pragma: no cover
             if indicator_executor is not None:
@@ -150,9 +318,7 @@ class SymbolDetailPanel:
         series_info = self._svc.request_detail(sym, tf, ensure_loaded=True)
         with self._lock:
             old_len = len(self._series_cache.ts) if self._series_cache is not None else 0  # type: ignore[arg-type]
-            self._series_cache = series_info.get("series")
-            self._is_stale = bool(series_info.get("is_stale"))
-            self._last_loaded_ts = time.time()
+            self._apply_series_info(series_info)
             new_len = len(self._series_cache.ts) if self._series_cache is not None else 0  # type: ignore[arg-type]
         # 若长度变化, 失效对应 symbol 缓存 (避免缓存无限增长 & 及时使用最新数据)
         if new_len != old_len:
@@ -205,7 +371,24 @@ class SymbolDetailPanel:
             trade_symbol = trade.symbol
             if self._symbol is None or trade_symbol != self._symbol:
                 return
+            trade_key = (trade.symbol, float(trade.price), int(trade.qty), str(trade.side), int(trade.ts))
+            if trade_key in self._seen_trade_keys:
+                return
+            self._seen_trade_keys.append(trade_key)
             self._trades.append(trade)
+        try:
+            self._svc.record_runtime_trade(
+                trade.symbol,
+                price=float(trade.price),
+                qty=int(trade.qty),
+                ts_ms=int(trade.ts),
+            )
+        except Exception:
+            pass
+        try:
+            self.refresh()
+        except Exception:
+            pass
 
     def add_trades(self, trades):  # 批量
         for t in trades:
@@ -223,26 +406,17 @@ class SymbolDetailPanel:
             tf = self._timeframe
             series = self._series_cache
             stale = self._is_stale
+            series_meta = dict(self._series_meta)
+            chart_meta = dict(self._chart_meta)
             indicators_copy = {k: v if not isinstance(v, list) else list(v) for k, v in self._indicators.items()}
             pending_jobs = set(self._pending_jobs)
-            trades_list = [t.model_dump() if hasattr(t, 'model_dump') else t.dict() for t in list(self._trades)]
+            local_trades = [t.model_dump() if hasattr(t, 'model_dump') else t.dict() for t in list(self._trades)]
 
         snapshot: Optional[SnapshotDTO] = self._ctl.get_snapshot(sym) if sym else None
-        snapshot_meta = {
-            'source': 'market-controller-merged-snapshot-cache',
-            'authoritative': True,
-            'status': 'available' if snapshot is not None else 'missing',
-            'refresh': 'event-batch',
-        }
+        snapshot_obj, snapshot_meta = self._build_snapshot_block(snapshot)
 
         series_obj = None
-        series_status = 'missing'
-        series_meta = {
-            'source': 'app-market-data-service-bars-cache',
-            'authoritative': False,
-            'status': 'missing',
-            'refresh': 'service-load-refresh',
-        }
+        series_status = str(series_meta.get('status') or 'missing')
         if series is not None:
             try:
                 series_obj = {
@@ -253,117 +427,42 @@ class SymbolDetailPanel:
                     "close": list(series.close),
                     "volume": list(series.volume),
                 }
-                series_status = 'stale' if stale else 'available'
-                series_meta['status'] = series_status
             except Exception:  # pragma: no cover
                 series_obj = None
                 series_status = 'error'
                 series_meta['status'] = 'error'
+        if bool(series_meta.get('placeholder')):
+            series_meta['note'] = 'default synthetic series for non-authoritative fallback only'
 
-        order_book = None
-        order_book_meta = {
-            'source': 'snapshot-derived-order-book-view',
-            'authoritative': True,
-            'status': 'missing',
-            'refresh': 'snapshot-update',
-        }
-        if snapshot is not None:
-            order_book = {"bids": snapshot.bid_levels, "asks": snapshot.ask_levels}
-            order_book_meta['status'] = 'available'
-
-        trades_status = 'available' if trades_list else 'empty'
-        trades_meta = {
-            'source': 'local-symbol-detail-ring-buffer',
-            'authoritative': False,
-            'status': trades_status,
-            'refresh': 'event-append',
-        }
-
-        indicators_status = 'available' if indicators_copy else ('pending' if pending_jobs else 'missing')
-        indicators_meta = {
-            'source': 'indicator-executor-from-series',
-            'authoritative': False,
-            'status': indicators_status,
-            'refresh': 'load-refresh-recompute',
-        }
-
-        # holdings：当前不是后端权威数据路径。
-        # 若 app-layer service 提供辅助数据则使用；否则显式返回占位态，
-        # 避免后续开发误把该字段当成真实运行时持仓来源。
-        holdings = None
-        holdings_status = 'unavailable'
-        holdings_meta = {
-            'source': 'app-service-helper',
-            'authoritative': False,
-            'status': 'unavailable',
-            'refresh': 'helper-fetch',
-        }
-        try:
-            get_hold = getattr(self._svc, 'get_retail_holdings', None)
-            if callable(get_hold) and sym:
-                fetched = get_hold(sym)
-                if fetched is not None:
-                    holdings = fetched
-                    holdings_status = 'available'
-                    holdings_meta = {
-                        'source': 'app-service-helper',
-                        'authoritative': False,
-                        'status': 'available',
-                        'refresh': 'helper-fetch',
-                    }
-        except Exception:
-            holdings = None
-            holdings_status = 'error'
-            holdings_meta = {
-                'source': 'app-service-helper',
-                'authoritative': False,
-                'status': 'error',
-                'refresh': 'helper-fetch',
-            }
-        if holdings is None:
-            holdings = {
-                'labels': [],
-                'pct': [],
-                'placeholder': True,
-                'note': 'non-authoritative holdings placeholder',
-            }
-            if holdings_status == 'unavailable':
-                holdings_status = 'placeholder'
-                holdings_meta['source'] = 'placeholder'
-                holdings_meta['status'] = 'placeholder'
-
-        core_block_status = {
-            'series': series_status,
-            'snapshot': snapshot_meta['status'],
-            'order_book': order_book_meta['status'],
-        }
-        degraded_core_states = {'missing', 'stale', 'error'}
-        overall = 'ok'
-        if any(v in degraded_core_states for v in core_block_status.values()):
-            overall = 'degraded'
-
-        detail_health = {
-            'series_status': series_status,
-            'snapshot_status': snapshot_meta['status'],
-            'order_book_status': order_book_meta['status'],
-            'trades_status': trades_status,
-            'holdings_status': holdings_status,
-            'indicators_status': indicators_status,
-            'overall': overall,
-            'core_blocks': core_block_status,
-            'auxiliary_blocks': {
-                'trades': trades_status,
-                'holdings': holdings_status,
-                'indicators': indicators_status,
-            },
-        }
+        order_book, order_book_meta = self._build_order_book_block(snapshot, snapshot_meta)
+        trades_info = self._svc.get_trades_detail(sym) if sym else {"trades": [], "trades_meta": {}}
+        runtime_trades = list(trades_info.get("trades") or [])
+        trades_list = self._merge_trades(runtime_trades, local_trades, limit=20)
+        trades_meta = self._build_trades_meta(
+            dict(trades_info.get("trades_meta") or {}),
+            runtime_trades,
+            local_trades,
+        )
+        indicators_meta = self._build_indicators_meta(indicators_copy, pending_jobs)
+        holdings_info = self._svc.get_holdings_detail(sym) if sym else self._svc.get_holdings_detail("")
+        holdings = holdings_info.get("holdings")
+        holdings_meta = dict(holdings_info.get("holdings_meta") or {})
+        detail_health = self._build_detail_health(
+            series_meta=series_meta,
+            snapshot_meta=snapshot_meta,
+            order_book_meta=order_book_meta,
+            trades_meta=trades_meta,
+            holdings_meta=holdings_meta,
+            indicators_meta=indicators_meta,
+        )
         return {
             "symbol": sym,
             "timeframe": tf,
             "series": series_obj,
             "series_meta": series_meta,
+            "chart_meta": chart_meta,
             "is_stale": stale,
-            "snapshot": None if snapshot is None else snapshot.model_dump(),
+            "snapshot": snapshot_obj,
             "snapshot_meta": snapshot_meta,
             "order_book": order_book,
             "order_book_meta": order_book_meta,

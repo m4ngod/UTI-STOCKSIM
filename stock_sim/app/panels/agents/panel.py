@@ -98,7 +98,10 @@ class AgentsPanel:
             # 逐个调用以展示进度
             for i in range(count):
                 try:
-                    cfg = BatchCreateConfig(count=1, agent_type=agent_type, name_prefix=name_prefix, strategies=strategies, initial_cash=(initial_cash if initial_cash is not None else 100_000.0))
+                    item_strategies = None
+                    if strategies:
+                        item_strategies = [strategies[i % len(strategies)]]
+                    cfg = BatchCreateConfig(count=1, agent_type=agent_type, name_prefix=name_prefix, strategies=item_strategies, initial_cash=(initial_cash if initial_cash is not None else 100_000.0))
                     self._svc.batch_create_retail(cfg)
                     with self._lock:
                         self._batch_created += 1
@@ -163,6 +166,7 @@ class AgentsPanel:
             'agent_id': a.agent_id,
             'name': a.name,
             'type': a.type,
+            'strategy': getattr(a, 'strategy', None),
             'status': a.status,
             'start_time': a.start_time,
             'last_heartbeat': a.last_heartbeat,

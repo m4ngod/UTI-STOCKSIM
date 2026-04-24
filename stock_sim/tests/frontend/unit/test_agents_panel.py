@@ -6,10 +6,27 @@ from app.panels import reset_registry, register_builtin_panels, get_panel
 from app.panels.agents import register_agents_panel
 
 
+class _FakeRuntimeRetailAgent:
+    def __init__(self, **_kwargs):
+        pass
+
+    def start(self):
+        return None
+
+    def pause(self):
+        return None
+
+    def stop(self):
+        return None
+
+
 def _build_agents_panel(threshold_ms=10000):
     reset_registry()
     register_builtin_panels()
-    svc = AgentService()
+    svc = AgentService(
+        retail_agent_factory=lambda **kwargs: _FakeRuntimeRetailAgent(**kwargs),
+        account_bootstrapper=lambda *_args, **_kwargs: None,
+    )
     ctl = AgentController(svc)
     register_agents_panel(ctl, svc, heartbeat_threshold_ms=threshold_ms)
     panel = get_panel('agents')
@@ -31,6 +48,23 @@ def test_agents_panel_batch_create_success():
     assert v['batch']['created'] == 5
     assert v['batch']['failed'] == 0
     assert v['agents']['total'] == 5
+
+
+def test_agents_panel_preserves_explicit_strategy_rotation_across_progressive_batch_creation():
+    panel, ctl, svc = _build_agents_panel()
+    ok = panel.start_batch_create(
+        count=3,
+        agent_type='Retail',
+        strategies=['mean_revert', 'momentum_chase', 'buy_the_dip'],
+    )
+    assert ok
+    for _ in range(200):
+        v = panel.get_view()
+        if not v['batch']['in_progress']:
+            break
+        time.sleep(0.01)
+    assert [agent.strategy for agent in svc.list_agents()] == ['mean_revert', 'momentum_chase', 'buy_the_dip']
+    assert [agent.name for agent in svc.list_agents()] == ['mean_revert001', 'momentum_chase001', 'buy_the_dip001']
 
 
 def test_agents_panel_batch_create_unsupported_type():

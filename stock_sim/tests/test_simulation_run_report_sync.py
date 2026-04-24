@@ -33,6 +33,7 @@ def test_recovery_syncs_simulation_run_from_run_report():
         assert row is not None
         assert row.event_count >= 1
         assert row.last_sim_day == 9
+        assert row.last_sim_dt is not None
         assert row.status in ('running', 'completed', 'recovered', 'created', 'degraded', 'failed') or row.status is not None
     finally:
         s.close()

@@ -1,36 +1,30 @@
 # python
-"""Bar Aggregator
-将 snapshots_1s 聚合为 1m / 1h / 1d Bars 并发布 BAR_UPDATED 事件。
-策略(简化 MVP):
-  - 后台线程每秒检查是否有新的完整分钟 (now - delay)
-  - 对上一完整分钟做一次聚合(按 symbol 扫描)
-  - minute 聚合: open/high/low/close 取快照 last_price 序列；volume = max(volume)-min(volume)
-  - turnover 同上差值；若 volume/turnover 为 None 则置 0
-  - 生成 1m bar 后若 minute_start.minute == 59 => 聚合该小时 (60 根 1m bar)
-  - 若同时 hour == 23 且 minute == 59 => 聚合当日 (所有当日 1m)
-  - 聚合完成后发布 EventType.BAR_UPDATED 事件 (timeframe: '1m'/'1h'/'1d')
-幂等: 再次运行同一窗口会尝试 upsert (若存在则跳过)。
-"""
+"""Aggregate persisted snapshots into 1m/1h/1d bars."""
 from __future__ import annotations
-import threading, time
-from datetime import datetime, timedelta
+
+import threading
+import time
 from collections import defaultdict
-from typing import Dict, List
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Type
+
 from sqlalchemy.orm import Session
+
+from stock_sim.core.const import EventType
+from stock_sim.infra.event_bus import event_bus
+from stock_sim.persistence.models_bars import Bar1d, Bar1h, Bar1m
 from stock_sim.persistence.models_imports import SessionLocal
 from stock_sim.persistence.models_snapshot import Snapshot1s
-from stock_sim.persistence.models_bars import Bar1m, Bar1h, Bar1d
-from stock_sim.infra.event_bus import event_bus
-from stock_sim.core.const import EventType
-from stock_sim.services.sim_clock import current_sim_day, virtual_datetime  # 新增: 模拟时钟
+from stock_sim.services.sim_clock import current_sim_day, virtual_datetime
+
 
 class BarAggregator:
     def __init__(self, *, poll_interval: float = 1.0, delay_sec: int = 2):
         self.poll_interval = poll_interval
-        self.delay_sec = delay_sec  # 等待 N 秒避免秒尾写入尚未完成
+        self.delay_sec = delay_sec
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._processed_minutes: set[datetime] = set()  # 已聚合的 minute 起始 UTC 时间
+        self._processed_minutes: set[datetime] = set()
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -43,7 +37,6 @@ class BarAggregator:
         if self._thread:
             self._thread.join(timeout=2)
 
-    # ---------------- Loop ----------------
     def _run(self):
         while not self._stop.is_set():
             try:
@@ -52,25 +45,20 @@ class BarAggregator:
                 pass
             time.sleep(self.poll_interval)
 
-    # ---------------- Core Aggregation ----------------
     def _aggregate_pending_minutes(self):
         now = datetime.utcnow()
-        # 已完成的上一分钟 (考虑 delay)
         target_end = now - timedelta(seconds=self.delay_sec)
         minute_start = target_end.replace(second=0, microsecond=0)
-        # 不处理当前尚未完整的一分钟
         if minute_start >= now.replace(second=0, microsecond=0):
             return
         if minute_start in self._processed_minutes:
             return
         self._build_minute_bars(minute_start)
         self._processed_minutes.add(minute_start)
-        # 触发小时/日聚合
         if minute_start.minute == 59:
             self._build_hour_bar(minute_start.replace(minute=0, second=0, microsecond=0))
             if minute_start.hour == 23:
                 self._build_day_bar(minute_start.date())
-        # 裁剪已处理集合（保留最近 1440）
         if len(self._processed_minutes) > 2000:
             cutoff = minute_start - timedelta(days=2)
             self._processed_minutes = {m for m in self._processed_minutes if m >= cutoff}
@@ -79,50 +67,32 @@ class BarAggregator:
         minute_end = minute_start + timedelta(minutes=1)
         sess: Session = SessionLocal()
         try:
-            snaps: List[Snapshot1s] = (sess.query(Snapshot1s)
-                                       .filter(Snapshot1s.ts >= minute_start, Snapshot1s.ts < minute_end)
-                                       .order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc())
-                                       .all())
+            snaps: List[Snapshot1s] = (
+                sess.query(Snapshot1s)
+                .filter(Snapshot1s.ts >= minute_start, Snapshot1s.ts < minute_end)
+                .order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc())
+                .all()
+            )
             if not snaps:
                 return
-            sim_day = current_sim_day(); sim_dt = virtual_datetime(sim_day)
-            # ...existing code 分组...
-            grouped: Dict[str, List[Snapshot1s]] = defaultdict(list)
-            for s in snaps:
-                if s.last_price is not None:
-                    grouped[s.symbol].append(s)
-            for symbol, arr in grouped.items():
-                # ...existing code...
-                exists = (sess.query(Bar1m).filter(Bar1m.symbol==symbol, Bar1m.ts==minute_start).one_or_none())
-                if exists:
-                    # 若历史 bar 未打 sim_day 补齐
-                    if sim_day and not getattr(exists, 'sim_day', None):
-                        exists.sim_day = sim_day; exists.sim_dt = sim_dt
-                    continue
-                # ...existing code 价格计算...
-                bar = Bar1m(ts=minute_start, symbol=symbol, run_id=run_id,
-                            open=open_p, high=high_p, low=low_p, close=close_p,
-                            volume=vol, turnover=turnover,
-                            sim_day=sim_day if sim_day else 0, sim_dt=sim_dt)
-                sess.add(bar)
-                sess.flush()
-                run_id = next((getattr(x, 'run_id', None) for x in arr if getattr(x, 'run_id', None)), None)
-                event_bus.publish(EventType.BAR_UPDATED, {
-                    "symbol": symbol,
-                    "run_id": run_id,
-                    "timeframe": "1m",
-                    "sim_day": sim_day,
-                    "sim_dt": sim_dt.isoformat() if sim_dt else None,
-                    "bar": {
-                        "ts": minute_start.isoformat(),
-                        "open": open_p,
-                        "high": high_p,
-                        "low": low_p,
-                        "close": close_p,
-                        "volume": vol,
-                        "turnover": turnover,
-                    }
-                })
+            grouped: Dict[tuple[str, str | None], List[Snapshot1s]] = defaultdict(list)
+            for snap in snaps:
+                if snap.last_price is not None:
+                    grouped[(str(snap.symbol), getattr(snap, "run_id", None))].append(snap)
+            sim_day = current_sim_day()
+            sim_dt = virtual_datetime(sim_day)
+            for (symbol, run_id), arr in grouped.items():
+                self._upsert_bar(
+                    sess=sess,
+                    model=Bar1m,
+                    ts=minute_start,
+                    symbol=symbol,
+                    run_id=run_id,
+                    arr=arr,
+                    timeframe="1m",
+                    sim_day=sim_day,
+                    sim_dt=sim_dt,
+                )
             sess.commit()
         except Exception:
             sess.rollback()
@@ -133,108 +103,173 @@ class BarAggregator:
         hour_end = hour_start + timedelta(hours=1)
         sess: Session = SessionLocal()
         try:
-            bars: List[Bar1m] = (sess.query(Bar1m)
-                                  .filter(Bar1m.ts >= hour_start, Bar1m.ts < hour_end)
-                                  .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
-                                  .all())
+            bars: List[Bar1m] = (
+                sess.query(Bar1m)
+                .filter(Bar1m.ts >= hour_start, Bar1m.ts < hour_end)
+                .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
+                .all()
+            )
             if not bars:
                 return
-            sim_day = current_sim_day(); sim_dt = virtual_datetime(sim_day)
-            # ...existing code 分组...
-            grouped: Dict[str, List[Bar1m]] = defaultdict(list)
-            for b in bars:
-                grouped[b.symbol].append(b)
-            for symbol, arr in grouped.items():
-                exists = (sess.query(Bar1h)
-                          .filter(Bar1h.symbol==symbol, Bar1h.ts==hour_start).one_or_none())
-                if exists:
-                    if sim_day and not getattr(exists, 'sim_day', None):
-                        exists.sim_day = sim_day; exists.sim_dt = sim_dt
-                    continue
-                # ...existing code 计算...
-                hb = Bar1h(ts=hour_start, symbol=symbol, run_id=run_id,
-                           open=open_p, high=high_p, low=low_p, close=close_p,
-                           volume=vol, turnover=turnover,
-                           sim_day=sim_day if sim_day else 0, sim_dt=sim_dt)
-                sess.add(hb)
-                sess.flush()
-                run_id = next((getattr(x, 'run_id', None) for x in arr if getattr(x, 'run_id', None)), None)
-                event_bus.publish(EventType.BAR_UPDATED, {
-                    "symbol": symbol,
-                    "run_id": run_id,
-                    "timeframe": "1h",
-                    "sim_day": sim_day,
-                    "sim_dt": sim_dt.isoformat() if sim_dt else None,
-                    "bar": {
-                        "ts": hour_start.isoformat(),
-                        "open": open_p,
-                        "high": high_p,
-                        "low": low_p,
-                        "close": close_p,
-                        "volume": vol,
-                        "turnover": turnover,
-                    }
-                })
+            grouped: Dict[tuple[str, str | None], List[Bar1m]] = defaultdict(list)
+            for bar in bars:
+                grouped[(str(bar.symbol), getattr(bar, "run_id", None))].append(bar)
+            sim_day = current_sim_day()
+            sim_dt = virtual_datetime(sim_day)
+            for (symbol, run_id), arr in grouped.items():
+                self._upsert_bar(
+                    sess=sess,
+                    model=Bar1h,
+                    ts=hour_start,
+                    symbol=symbol,
+                    run_id=run_id,
+                    arr=arr,
+                    timeframe="1h",
+                    sim_day=sim_day,
+                    sim_dt=sim_dt,
+                )
             sess.commit()
         except Exception:
             sess.rollback()
         finally:
             sess.close()
 
-    def _build_day_bar(self, day_date):
-        day_start = datetime(day_date.year, day_date.month, day_date.day)
+    def _build_day_bar(self, day_value: date):
+        day_start = datetime(day_value.year, day_value.month, day_value.day)
         day_end = day_start + timedelta(days=1)
         sess: Session = SessionLocal()
         try:
-            bars: List[Bar1m] = (sess.query(Bar1m)
-                                  .filter(Bar1m.ts >= day_start, Bar1m.ts < day_end)
-                                  .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
-                                  .all())
+            bars: List[Bar1m] = (
+                sess.query(Bar1m)
+                .filter(Bar1m.ts >= day_start, Bar1m.ts < day_end)
+                .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
+                .all()
+            )
             if not bars:
                 return
-            sim_day = current_sim_day(); sim_dt = virtual_datetime(sim_day)
-            grouped: Dict[str, List[Bar1m]] = defaultdict(list)
-            for b in bars:
-                grouped[b.symbol].append(b)
-            for symbol, arr in grouped.items():
-                exists = (sess.query(Bar1d)
-                          .filter(Bar1d.symbol==symbol, Bar1d.ts==day_start).one_or_none())
-                if exists:
-                    if sim_day and not getattr(exists, 'sim_day', None):
-                        exists.sim_day = sim_day; exists.sim_dt = sim_dt
-                    continue
-                # ...existing code 计算...
-                db = Bar1d(ts=day_start, symbol=symbol, run_id=run_id,
-                           open=open_p, high=high_p, low=low_p, close=close_p,
-                           volume=vol, turnover=turnover,
-                           sim_day=sim_day if sim_day else 0, sim_dt=sim_dt)
-                sess.add(db)
-                sess.flush()
-                run_id = next((getattr(x, 'run_id', None) for x in arr if getattr(x, 'run_id', None)), None)
-                event_bus.publish(EventType.BAR_UPDATED, {
-                    "symbol": symbol,
-                    "run_id": run_id,
-                    "timeframe": "1d",
-                    "sim_day": sim_day,
-                    "sim_dt": sim_dt.isoformat() if sim_dt else None,
-                    "bar": {
-                        "ts": day_start.isoformat(),
-                        "open": open_p,
-                        "high": high_p,
-                        "low": low_p,
-                        "close": close_p,
-                        "volume": vol,
-                        "turnover": turnover,
-                    }
-                })
+            grouped: Dict[tuple[str, str | None], List[Bar1m]] = defaultdict(list)
+            for bar in bars:
+                grouped[(str(bar.symbol), getattr(bar, "run_id", None))].append(bar)
+            sim_day = current_sim_day()
+            sim_dt = virtual_datetime(sim_day)
+            for (symbol, run_id), arr in grouped.items():
+                self._upsert_bar(
+                    sess=sess,
+                    model=Bar1d,
+                    ts=day_start,
+                    symbol=symbol,
+                    run_id=run_id,
+                    arr=arr,
+                    timeframe="1d",
+                    sim_day=sim_day,
+                    sim_dt=sim_dt,
+                )
             sess.commit()
         except Exception:
             sess.rollback()
         finally:
             sess.close()
 
-# --------- 全局便捷函数 ---------
+    def _upsert_bar(
+        self,
+        *,
+        sess: Session,
+        model: Type[Bar1m] | Type[Bar1h] | Type[Bar1d],
+        ts: datetime,
+        symbol: str,
+        run_id: str | None,
+        arr: List[Snapshot1s] | List[Bar1m],
+        timeframe: str,
+        sim_day: int,
+        sim_dt: datetime,
+    ):
+        existing = sess.query(model).filter(model.symbol == symbol, model.ts == ts).one_or_none()
+        ohlcv = self._aggregate_ohlcv(arr)
+        if ohlcv is None:
+            return
+        resolved_run_id = run_id or next((getattr(item, "run_id", None) for item in arr if getattr(item, "run_id", None)), None)
+        if existing is not None and resolved_run_id and getattr(existing, "run_id", None) not in (None, resolved_run_id):
+            return
+        if existing is None:
+            existing = model(
+                ts=ts,
+                symbol=symbol,
+                run_id=resolved_run_id,
+                open=ohlcv["open"],
+                high=ohlcv["high"],
+                low=ohlcv["low"],
+                close=ohlcv["close"],
+                volume=ohlcv["volume"],
+                turnover=ohlcv["turnover"],
+                sim_day=sim_day if sim_day else 0,
+                sim_dt=sim_dt,
+            )
+            sess.add(existing)
+        else:
+            existing.run_id = resolved_run_id or getattr(existing, "run_id", None)
+            existing.open = ohlcv["open"]
+            existing.high = ohlcv["high"]
+            existing.low = ohlcv["low"]
+            existing.close = ohlcv["close"]
+            existing.volume = ohlcv["volume"]
+            existing.turnover = ohlcv["turnover"]
+            if sim_day and not getattr(existing, "sim_day", None):
+                existing.sim_day = sim_day
+                existing.sim_dt = sim_dt
+        event_bus.publish(
+            EventType.BAR_UPDATED,
+            {
+                "symbol": symbol,
+                "run_id": resolved_run_id,
+                "timeframe": timeframe,
+                "sim_day": sim_day,
+                "sim_dt": sim_dt.isoformat() if sim_dt else None,
+                "bar": {
+                    "ts": ts.isoformat(),
+                    "open": ohlcv["open"],
+                    "high": ohlcv["high"],
+                    "low": ohlcv["low"],
+                    "close": ohlcv["close"],
+                    "volume": ohlcv["volume"],
+                    "turnover": ohlcv["turnover"],
+                },
+            },
+        )
+
+    @staticmethod
+    def _aggregate_ohlcv(arr: List[Snapshot1s] | List[Bar1m]) -> dict | None:
+        if not arr:
+            return None
+        open_p = float(getattr(arr[0], "last_price", getattr(arr[0], "open", 0.0)) or 0.0)
+        close_p = float(getattr(arr[-1], "last_price", getattr(arr[-1], "close", 0.0)) or 0.0)
+        prices = [float(getattr(item, "last_price", getattr(item, "close", 0.0)) or 0.0) for item in arr]
+        prices = [p for p in prices if p > 0]
+        if not prices:
+            return None
+        high_p = max(prices)
+        low_p = min(prices)
+        first_volume = float(getattr(arr[0], "volume", 0.0) or 0.0)
+        last_volume = float(getattr(arr[-1], "volume", 0.0) or 0.0)
+        first_turnover = float(getattr(arr[0], "turnover", 0.0) or 0.0)
+        last_turnover = float(getattr(arr[-1], "turnover", 0.0) or 0.0)
+        if hasattr(arr[0], "last_price"):
+            volume = max(last_volume - first_volume, 0.0)
+            turnover = max(last_turnover - first_turnover, 0.0)
+        else:
+            volume = sum(float(getattr(item, "volume", 0.0) or 0.0) for item in arr)
+            turnover = sum(float(getattr(item, "turnover", 0.0) or 0.0) for item in arr)
+        return {
+            "open": open_p,
+            "high": high_p,
+            "low": low_p,
+            "close": close_p,
+            "volume": int(volume),
+            "turnover": float(turnover),
+        }
+
+
 _bar_aggregator_singleton: BarAggregator | None = None
+
 
 def ensure_bar_aggregator_started() -> BarAggregator:
     global _bar_aggregator_singleton

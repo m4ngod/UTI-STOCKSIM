@@ -1,1 +1,1 @@
-{"panels": {"agents": {"open": true, "order": 0}, "leaderboard": {"open": true, "order": 1}, "clock": {"open": true, "order": 2}, "market": {"open": true, "order": 3}}, "workspace": {"active_page": "clock"}}
+{"panels": {"account": {"open": true, "order": 0}, "market": {"open": true, "order": 1}, "agents": {"open": true, "order": 2}, "leaderboard": {"open": true, "order": 3}, "clock": {"open": true, "order": 4}, "orders": {"open": true, "order": 5}}, "workspace": {"active_page": "orders"}}

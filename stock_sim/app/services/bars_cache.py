@@ -97,7 +97,18 @@ class BarsCache:
                 metrics.inc("barscache_new_series")
                 return
             # 追加: 过滤掉 <= last_ts 的重复
-            mask = ts_arr > (cur.ts[-1] if len(cur.ts) else -1)
+            last_ts = cur.ts[-1] if len(cur.ts) else -1
+            equal_mask = ts_arr == last_ts
+            if equal_mask.any() and len(cur.ts):
+                last_idx = int(np.where(equal_mask)[0][-1])
+                cur.open[-1] = open_arr[last_idx]
+                cur.high[-1] = high_arr[last_idx]
+                cur.low[-1] = low_arr[last_idx]
+                cur.close[-1] = close_arr[last_idx]
+                cur.volume[-1] = vol_arr[last_idx]
+                self._data[key] = BarsSeries(symbol, timeframe, cur.ts, cur.open, cur.high, cur.low, cur.close, cur.volume, int(time.time()*1000))
+                metrics.inc("barscache_replace_last")
+            mask = ts_arr > last_ts
             if not mask.any():
                 return
             ts_arr = ts_arr[mask]
