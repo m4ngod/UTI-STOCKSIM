@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 frontend-trading-ui = "setup_frontend_entry:main"
+stock-sim-db-health = "stock_sim.persistence.db_health:main"
 
 [tool.setuptools]
 # 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?

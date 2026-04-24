@@ -67,6 +67,30 @@ It also ensures the run-scoped columns and indexes required by the current desig
 - `agent_bindings.run_id`
 - `account_equity_snapshots.run_id`
 
+### Database health check
+
+Desktop startup now performs a database health check before opening the GUI by default.
+If PostgreSQL is configured but unavailable, startup returns a non-zero code instead of continuing into a partially initialized UI.
+
+Manual checks:
+
+```powershell
+..\Quent\.venv\Scripts\python.exe setup_frontend_entry.py --check-db
+..\Quent\.venv\Scripts\python.exe -m stock_sim.persistence.db_health
+```
+
+Installed script:
+
+```powershell
+stock-sim-db-health
+```
+
+Startup control:
+
+- `--skip-db-check` skips the startup check for emergency diagnostics.
+- `STOCKSIM_DB_CHECK_ON_START=0` disables automatic startup checks.
+- `STOCKSIM_DB_CHECK_ON_START=1` forces checks even in headless mode.
+
 ## Current boundary
 
 This iteration makes the ORM and startup path PostgreSQL-ready, but it does not yet:
@@ -85,7 +109,7 @@ Those are separate follow-up slices.
 3. Start the desktop app or run:
 
 ```powershell
-..\Quent\.venv\Scripts\python.exe -c "from stock_sim.persistence import models_init; models_init.ensure_models(); print('ok')"
+..\Quent\.venv\Scripts\python.exe setup_frontend_entry.py --check-db
 ```
 
 4. Start a run with 100+ retail agents and verify:
@@ -96,8 +120,7 @@ Those are separate follow-up slices.
 
 ## Next migration slices
 
-1. Add an explicit desktop database health indicator and fail-fast message when PostgreSQL is configured but unreachable.
-2. Introduce Alembic migrations for PostgreSQL and stop relying on startup `ALTER TABLE` for production mode.
-3. Move latest snapshot/order-book/leaderboard hot state to Redis or an in-memory service boundary with Redis-compatible interface.
-4. Rework bar uniqueness from global `(symbol, ts)` to run-aware persistence semantics for generated simulation bars.
-5. Add SQLite-to-PostgreSQL export/import tooling for existing local experiments.
+1. Introduce Alembic migrations for PostgreSQL and stop relying on startup `ALTER TABLE` for production mode.
+2. Move latest snapshot/order-book/leaderboard hot state to Redis or an in-memory service boundary with Redis-compatible interface.
+3. Rework bar uniqueness from global `(symbol, ts)` to run-aware persistence semantics for generated simulation bars.
+4. Add SQLite-to-PostgreSQL export/import tooling for existing local experiments.

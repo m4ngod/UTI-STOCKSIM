@@ -22,6 +22,7 @@ try:
     from app.panels import register_builtin_panels, register_ui_adapters
     from app.runtime_bootstrap import start_runtime_support_services
     from app.ui.main_window import DEFAULT_PRELOAD_PANELS, MainWindow
+    from stock_sim.persistence.db_health import check_database_health, format_database_health
     try:
         from PySide6.QtWidgets import QApplication  # type: ignore
     except Exception:  # pragma: no cover
@@ -46,9 +47,28 @@ def _init_settings(lang: str, theme: str):
 def parse_args(argv: Optional[list[str]] = None):
     p = argparse.ArgumentParser(prog="frontend-trading-ui", add_help=True)
     p.add_argument("--headless", action="store_true", help="run without GUI event loop")
+    p.add_argument("--check-db", action="store_true", help="check database connectivity and schema, then exit")
+    p.add_argument("--skip-db-check", action="store_true", help="skip startup database health check")
     p.add_argument("--lang", default="zh_CN", help="initial language")
     p.add_argument("--theme", default="light", help="initial theme")
     return p.parse_args(argv)
+
+
+def _database_check_enabled(*, headless: bool, skip: bool) -> bool:
+    if skip:
+        return False
+    flag = os.environ.get("STOCKSIM_DB_CHECK_ON_START", "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return not headless
+
+
+def _run_database_check(*, ensure_schema: bool = True) -> int:
+    health = check_database_health(ensure_schema=ensure_schema)
+    print(f"database {format_database_health(health)}", file=sys.stderr)
+    return 0 if health.ok else 3
 
 def _start_frontend(*, headless: bool):
     """Entry-local startup wrapper.
@@ -106,6 +126,12 @@ def _start_frontend(*, headless: bool):
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    if args.check_db:
+        return _run_database_check(ensure_schema=True)
+    if _database_check_enabled(headless=args.headless, skip=args.skip_db_check):
+        rc = _run_database_check(ensure_schema=True)
+        if rc != 0:
+            return rc
     store, changes = _init_settings(args.lang, args.theme)
     mw = _start_frontend(headless=args.headless)
     # 注意：GUI 路径已在 _start_frontend() 内完成默认预加载。
