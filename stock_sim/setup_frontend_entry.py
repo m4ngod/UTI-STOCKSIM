@@ -49,6 +49,7 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument("--headless", action="store_true", help="run without GUI event loop")
     p.add_argument("--check-db", action="store_true", help="check database connectivity and schema, then exit")
     p.add_argument("--skip-db-check", action="store_true", help="skip startup database health check")
+    p.add_argument("--require-postgres", action="store_true", help="fail unless the configured database is PostgreSQL")
     p.add_argument("--lang", default="zh_CN", help="initial language")
     p.add_argument("--theme", default="light", help="initial theme")
     return p.parse_args(argv)
@@ -65,8 +66,17 @@ def _database_check_enabled(*, headless: bool, skip: bool) -> bool:
     return not headless
 
 
-def _run_database_check(*, ensure_schema: bool = True) -> int:
-    health = check_database_health(ensure_schema=ensure_schema)
+def _require_postgres_enabled(cli_value: bool = False) -> bool:
+    if cli_value:
+        return True
+    return os.environ.get("STOCKSIM_REQUIRE_POSTGRES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _run_database_check(*, ensure_schema: bool = True, require_postgres: bool = False) -> int:
+    health = check_database_health(
+        ensure_schema=ensure_schema,
+        required_dialect="postgresql" if require_postgres else None,
+    )
     print(f"database {format_database_health(health)}", file=sys.stderr)
     return 0 if health.ok else 3
 
@@ -126,10 +136,11 @@ def _start_frontend(*, headless: bool):
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    require_postgres = _require_postgres_enabled(args.require_postgres)
     if args.check_db:
-        return _run_database_check(ensure_schema=True)
+        return _run_database_check(ensure_schema=True, require_postgres=require_postgres)
     if _database_check_enabled(headless=args.headless, skip=args.skip_db_check):
-        rc = _run_database_check(ensure_schema=True)
+        rc = _run_database_check(ensure_schema=True, require_postgres=require_postgres)
         if rc != 0:
             return rc
     store, changes = _init_settings(args.lang, args.theme)

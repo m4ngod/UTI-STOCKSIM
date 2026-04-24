@@ -67,6 +67,26 @@ def test_check_database_health_failure():
     assert "RuntimeError" in str(health.error)
 
 
+def test_check_database_health_can_require_postgresql():
+    health = check_database_health(engine_obj=_Engine(), required_dialect="postgresql")
+
+    assert health.ok is True
+    assert health.required_dialect == "postgresql"
+
+
+def test_check_database_health_fails_on_required_dialect_mismatch():
+    class _SqliteDialect:
+        name = "sqlite"
+
+    class _SqliteEngine(_Engine):
+        dialect = _SqliteDialect()
+
+    health = check_database_health(engine_obj=_SqliteEngine(), required_dialect="postgresql")
+
+    assert health.ok is False
+    assert "required postgresql" in health.message
+
+
 def test_format_database_health_is_human_readable():
     health = check_database_health(engine_obj=_Engine())
 

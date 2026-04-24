@@ -94,8 +94,10 @@ stock-sim-db-health
 Startup control:
 
 - `--skip-db-check` skips the startup check for emergency diagnostics.
+- `--require-postgres` fails unless the configured database dialect is PostgreSQL.
 - `STOCKSIM_DB_CHECK_ON_START=0` disables automatic startup checks.
 - `STOCKSIM_DB_CHECK_ON_START=1` forces checks even in headless mode.
+- `STOCKSIM_REQUIRE_POSTGRES=1` enforces PostgreSQL for formal runtime profiles.
 
 ## Current boundary
 

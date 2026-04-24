@@ -14,6 +14,7 @@ class DatabaseHealth:
     schema_checked: bool
     message: str
     error: str | None = None
+    required_dialect: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -23,6 +24,7 @@ class DatabaseHealth:
             "schema_checked": self.schema_checked,
             "message": self.message,
             "error": self.error,
+            "required_dialect": self.required_dialect,
         }
 
 
@@ -43,12 +45,23 @@ def check_database_health(
     engine_obj: Any | None = None,
     ensure_schema: bool = False,
     ensure_models_fn: Callable[[], Any] | None = None,
+    required_dialect: str | None = None,
 ) -> DatabaseHealth:
     if engine_obj is None:
         from stock_sim.persistence.models_imports import engine as engine_obj  # type: ignore
 
     dialect = str(getattr(getattr(engine_obj, "dialect", None), "name", "") or "unknown")
     url = safe_database_url(str(getattr(engine_obj, "url", "") or ""))
+    required = str(required_dialect or "").strip().lower() or None
+    if required and dialect.lower() != required:
+        return DatabaseHealth(
+            ok=False,
+            dialect=dialect,
+            url=url,
+            schema_checked=False,
+            message=f"database dialect mismatch; required {required}",
+            required_dialect=required,
+        )
     try:
         with engine_obj.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -64,6 +77,7 @@ def check_database_health(
             url=url,
             schema_checked=bool(ensure_schema),
             message="database reachable",
+            required_dialect=required,
         )
     except Exception as exc:
         return DatabaseHealth(
@@ -73,6 +87,7 @@ def check_database_health(
             schema_checked=False,
             message="database unavailable",
             error=f"{type(exc).__name__}: {exc}",
+            required_dialect=required,
         )
 
 
@@ -85,6 +100,8 @@ def format_database_health(health: DatabaseHealth) -> str:
         f"schema_checked={str(health.schema_checked).lower()}",
         f"message={health.message}",
     ]
+    if health.required_dialect:
+        parts.append(f"required_dialect={health.required_dialect}")
     if health.error:
         parts.append(f"error={health.error}")
     return " ".join(parts)
