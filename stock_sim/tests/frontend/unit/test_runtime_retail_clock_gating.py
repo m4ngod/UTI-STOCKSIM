@@ -1,4 +1,4 @@
-from app.services.runtime_retail_agent import RuntimeRetailAgent
+from app.services.runtime_retail_agent import MarketContext, RuntimeRetailAgent
 from services.sim_clock import ensure_sim_clock_started
 
 
@@ -103,3 +103,28 @@ def test_runtime_retail_cold_start_holding_agent_can_still_post_buy_interest(mon
         assert fake_trading.calls[0].side == "buy"
     finally:
         clk.stop_loop()
+
+
+def test_runtime_retail_passive_quotes_seed_empty_book_on_both_sides():
+    agent = RuntimeRetailAgent(
+        agent_id="retail-price-001",
+        strategy="liquidity_noise",
+        trading_service=_FakeTradingService(),
+        seed=1,
+    )
+    ctx = MarketContext(
+        symbol="AAA",
+        reference_price=10.0,
+        initial_price=10.0,
+        tick_size=0.01,
+        lot_size=1,
+        settlement_cycle=0,
+        best_bid=None,
+        best_ask=None,
+        phase="CONTINUOUS",
+        trade_count=0,
+        cold_start=True,
+    )
+
+    assert agent._price_for_side(ctx, "buy", aggressive=False) == 9.99
+    assert agent._price_for_side(ctx, "sell", aggressive=False) == 10.01

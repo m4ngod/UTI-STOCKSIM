@@ -94,8 +94,9 @@ class RuntimeRetailAgent:
         self._history: dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=24))
         self._persona_state: dict[str, RetailPersonaState] = defaultdict(RetailPersonaState)
         self._holding_started_ms: dict[str, int] = {}
-        self._turn = 0
+        self._turn = self._stable_agent_key % 997
         self._sell_blocked_until_day: dict[str, int] = {}
+        self._passive_side_cooldown_until_turn: dict[tuple[str, str], int] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -161,6 +162,8 @@ class RuntimeRetailAgent:
         if decision is None:
             return
         side, price, qty = decision
+        if self._passive_side_cooldown_until_turn.get((symbol, side), -1) > self._turn:
+            return
         sim_day = int(self._runtime_gateway.get_current_sim_day())
         if side == "sell" and self._sell_blocked_until_day.get(symbol) == sim_day:
             return
@@ -192,6 +195,8 @@ class RuntimeRetailAgent:
         )
         if ctx.settlement_cycle >= 1 and side == "sell" and not bool((result or {}).get("ok", True)):
             self._sell_blocked_until_day[symbol] = sim_day
+        if not self._is_crossing(ctx, side, price):
+            self._passive_side_cooldown_until_turn[(symbol, side)] = self._turn + max(2, len(symbols) * 2)
         metrics.inc("runtime_retail_orders_submitted")
 
     def _market_time_open(self) -> bool:
@@ -308,6 +313,8 @@ class RuntimeRetailAgent:
         parity_buy = self._cold_start_parity(ctx.symbol)
         if available_qty > 0:
             if self.strategy == "profit_taking":
+                if self._rng.random() > 0.65:
+                    return None
                 side = "sell"
             elif self.strategy in {"liquidity_noise", "noise", "mean_revert", "breakout", "vol_scaling"}:
                 side = "buy" if parity_buy else "sell"
@@ -317,8 +324,12 @@ class RuntimeRetailAgent:
                 qty = min(max(ctx.lot_size, ctx.lot_size), available_qty)
                 lot_qty = (qty // max(ctx.lot_size, 1)) * max(ctx.lot_size, 1)
                 qty = lot_qty if lot_qty > 0 else min(available_qty, max(ctx.lot_size, 1))
-                return side, self._price_for_side(ctx, side, aggressive=True), max(qty, 1)
-            return side, self._price_for_side(ctx, side, aggressive=(preferred_buy or parity_buy)), ctx.lot_size
+                sell_cross_prob = 0.35 if self.strategy == "profit_taking" else 0.20
+                aggressive_sell = ctx.best_bid is not None and self._rng.random() < sell_cross_prob
+                return side, self._price_for_side(ctx, side, aggressive=aggressive_sell), max(qty, 1)
+            buy_cross_prob = 0.65 if preferred_buy else 0.30
+            aggressive_buy = ctx.best_ask is not None and self._rng.random() < buy_cross_prob
+            return side, self._price_for_side(ctx, side, aggressive=aggressive_buy), ctx.lot_size
         return self._cold_start_buy_fallback(ctx, preferred_buy=preferred_buy, parity_buy=parity_buy)
 
     def _cold_start_buy_fallback(
@@ -337,10 +348,15 @@ class RuntimeRetailAgent:
         elif self.strategy in {"liquidity_noise", "noise"}:
             if not parity_buy:
                 return None
+        elif self.strategy in {"mean_revert", "slow_fundamental_allocator"}:
+            if not (parity_buy or self._rng.random() < 0.65):
+                return None
         elif not (preferred_buy or parity_buy):
             return None
         qty = ctx.lot_size
-        return "buy", self._price_for_side(ctx, "buy", aggressive=(preferred_buy or parity_buy)), qty
+        buy_cross_prob = 0.65 if preferred_buy else 0.30
+        aggressive_buy = ctx.best_ask is not None and self._rng.random() < buy_cross_prob
+        return "buy", self._price_for_side(ctx, "buy", aggressive=aggressive_buy), qty
 
     def _price_for_side(
         self,
@@ -354,18 +370,31 @@ class RuntimeRetailAgent:
         if side == "buy":
             if aggressive and ctx.best_ask is not None:
                 return max(ctx.best_ask, ctx.reference_price)
-            bid_anchor = ctx.best_bid if ctx.best_bid is not None else ctx.reference_price
-            passive = bid_anchor + tick
+            if ctx.best_bid is not None:
+                passive = ctx.best_bid + tick
+                if ctx.best_ask is not None:
+                    passive = min(passive, ctx.best_ask - tick)
+            else:
+                passive = ctx.reference_price - tick
             if expected_price is not None:
                 passive = min(passive, max(tick, expected_price - tick))
             return max(tick, passive)
         if aggressive and ctx.best_bid is not None:
             return max(tick, min(ctx.best_bid, ctx.reference_price))
-        ask_anchor = ctx.best_ask if ctx.best_ask is not None else ctx.reference_price
-        passive = ask_anchor - tick
+        if ctx.best_ask is not None:
+            passive = ctx.best_ask - tick
+            if ctx.best_bid is not None:
+                passive = max(passive, ctx.best_bid + tick)
+        else:
+            passive = ctx.reference_price + tick
         if expected_price is not None:
             passive = max(passive, expected_price + tick)
         return max(tick, passive)
+
+    def _is_crossing(self, ctx: MarketContext, side: str, price: float) -> bool:
+        if side == "buy":
+            return bool(ctx.best_ask is not None and price >= ctx.best_ask)
+        return bool(ctx.best_bid is not None and price <= ctx.best_bid)
 
     def _decision_interval_s(self) -> float:
         if self._persona.family in {"liquidity_noise", "noise"}:

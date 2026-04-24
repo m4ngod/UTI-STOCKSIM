@@ -7,6 +7,7 @@ from agents.retail_calibration import (
     family_share_targets,
     metric_targets_by_name,
 )
+from agents.retail_strategy import allocate_retail_strategies
 
 
 def test_retail_calibration_family_share_targets_sum_to_one():
@@ -44,3 +45,22 @@ def test_retail_calibration_metric_targets_are_addressable():
     assert metrics["post_open_two_sided_book_coverage"].target >= 0.9
     assert len(MARKET_METRIC_TARGETS) >= 5
     assert CALIBRATION_SEQUENCE[0] == "market-level acceptance metrics"
+
+
+def test_post_ipo_strategy_mix_tracks_calibration_family_targets():
+    strategies = allocate_retail_strategies(100, seed=20260424, mode="post_ipo_cold_start")
+    counts = {name: strategies.count(name) for name in set(strategies)}
+
+    assert set(counts) == {
+        "momentum_chase",
+        "mean_revert",
+        "buy_the_dip",
+        "profit_taking",
+        "slow_fundamental_allocator",
+        "liquidity_noise",
+        "noise",
+    }
+    assert counts["momentum_chase"] >= counts["liquidity_noise"]
+    assert counts["mean_revert"] >= counts["liquidity_noise"]
+    assert counts["noise"] <= 10
+    assert counts["profit_taking"] <= 15

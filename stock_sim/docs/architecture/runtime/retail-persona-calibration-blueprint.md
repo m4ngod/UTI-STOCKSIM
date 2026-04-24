@@ -263,3 +263,34 @@ It produces:
 - per-family expected-price capture statistics
 
 The collector is intentionally source-agnostic. A future runtime wiring step should translate real order/trade/book events into these samples, rather than duplicating metric logic inside runtime services.
+
+## Runtime large-population practice notes
+
+The first runtime-backed 20-to-100 retail calibration pass found four market-structure issues that matter more than single-agent formula tuning:
+
+- post-IPO strategy allocation must stay close to the family target mix at 100 agents; otherwise `liquidity_noise`, `profit_taking`, and `noise` can dominate the tape
+- empty-book passive quotes must seed both sides without crossing: passive buys quote below reference, passive sells quote above reference
+- agent symbol rotation must be desynchronized by stable agent key, otherwise larger populations submit into the same symbol cadence
+- episode inventory seeding should be a cold-start liquidity scaffold, not a broad artificial position distribution
+
+The current practice baseline therefore uses:
+
+- a post-IPO weighted mix close to the calibration share table: `mean_revert=4`, `momentum_chase=4`, `slow_fundamental_allocator=3`, `liquidity_noise=3`, `buy_the_dip=2`, `profit_taking=2`, `noise=1`
+- a small deterministic bootstrap template that exposes every calibrated family before repeating the weighted bag
+- per-symbol sell anchors for calibration episodes, selected from sell-capable families and kept out of `mean_revert`, `buy_the_dip`, `momentum_chase`, and pure `noise`
+- lower random inventory seeding than the original episode runner, so seeded holdings do not become persistent artificial sell pressure
+- a passive same-side cooldown in `RuntimeRetailAgent` so one account does not stack repeated passive orders next to its own unfilled interest
+
+Latest fixed-seed snapshot after this pass, using `scripts/run_retail_calibration_episode.py --sizes 6,20,100 --steps 40`:
+
+| population | buy/sell | two-sided coverage | trade presence | herding | passive share | trade interarrival |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6 | `0.765` | `1.00` | `1.00` | `1.00` | `0.760` | `8.570s` |
+| 20 | `0.667` | `1.00` | `1.00` | `1.00` | `0.760` | `2.856s` |
+| 100 | `0.878` | `1.00` | `1.00` | `0.909` | `0.638` | `0.594s` |
+
+Interpretation:
+
+- the 100-agent market is now usable for runtime calibration: buy/sell, two-sided coverage, trade presence, and trade interarrival are inside target bands; passive share is just above band
+- 20-agent markets now satisfy the critical "market is alive" requirements, but still need a small-sample tuning pass for buy/sell balance, herding, passive share, and interarrival
+- 6-agent episodes are useful as smoke tests, not as full statistical acceptance tests; herding and interarrival are expected to remain noisy at that scale

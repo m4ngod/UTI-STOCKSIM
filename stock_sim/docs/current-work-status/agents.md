@@ -489,3 +489,51 @@ Make previously created retail agents able to submit orders again after the desk
 - Positive: retail agents restored from a previous GUI session are no longer "startable in the UI but inert in runtime".
 - Positive: this closes an important gap between persisted agent identity and actual runtime execution.
 - Risk: executor rehydration still assumes the standard retail runtime implementation; if a future agent type needs a different executor, it should get an explicit factory path.
+
+## Task 2026-04-24-agents-07
+
+### status
+done
+
+### goal
+Practice the retail persona calibration blueprint against real runtime episodes and make the 20-to-100 retail population behave more like a market participant layer instead of a synchronized heuristic crowd.
+
+### files involved
+- `agents/retail_strategy.py`
+- `app/services/runtime_retail_agent.py`
+- `scripts/run_retail_calibration_episode.py`
+- `tests/frontend/unit/test_runtime_retail_clock_gating.py`
+- `tests/test_retail_calibration_defaults.py`
+- `docs/architecture/runtime/retail-persona-calibration-blueprint.md`
+
+### change summary
+- Rebalanced `POST_IPO_COLD_START_MIX` toward the documented calibration shares: trend/mean-revert families are now the largest groups, pure noise is small, and liquidity/profit-taking no longer dominate large populations.
+- Desynchronized runtime retail symbol rotation by stable agent key so 20-to-100 agents do not all step through symbols in the same phase.
+- Fixed empty-book passive quote seeding:
+  - passive buy starts below reference price
+  - passive sell starts above reference price
+  - existing spreads are improved without crossing through the opposite side
+- Moderated cold-start behavior:
+  - inventory-backed sells are not all immediate aggressive orders
+  - mean-revert and slow allocator can place valuation-probe buys during cold start
+  - profit-taking releases inventory intermittently instead of acting like a continuous sell program
+- Added a passive same-side cooldown so one retail account does not repeatedly stack unfilled passive orders on the same symbol/side.
+- Changed the episode runner's seeded holdings from broad artificial inventory to small per-symbol sell anchors plus light randomized holdings.
+- Added guardrail tests for empty-book passive quote direction and post-IPO strategy mix shape.
+
+### verification
+- `..\Quent\.venv\Scripts\python.exe -m pytest tests\frontend\unit\test_runtime_retail_clock_gating.py tests\test_retail_calibration_report.py tests\test_retail_calibration_defaults.py tests\test_retail_persona_model.py -q`
+  - `16 passed`
+- `..\Quent\.venv\Scripts\python.exe scripts\run_retail_calibration_episode.py --sizes 6,20,100 --steps 40 --output output\retail_calibration\episode_stats_after.json`
+
+### latest fixed-seed episode snapshot
+| population | buy/sell | two-sided coverage | trade presence | herding | passive share | trade interarrival |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6 | `0.765` | `1.00` | `1.00` | `1.00` | `0.760` | `8.570s` |
+| 20 | `0.667` | `1.00` | `1.00` | `1.00` | `0.760` | `2.856s` |
+| 100 | `0.878` | `1.00` | `1.00` | `0.909` | `0.638` | `0.594s` |
+
+### impact / risk
+- Positive: the 100-agent runtime episode now has live two-sided books, real trades on all symbols, and buy/sell ratio inside the acceptance band.
+- Positive: 20-agent episodes now reliably produce two-sided coverage and trades; previously this scale could collapse into one-sided flow or empty coverage.
+- Risk: small populations remain statistically noisy. The next calibration pass should target herding/passive share and the 20-agent buy/sell ratio without sacrificing the 100-agent improvements.

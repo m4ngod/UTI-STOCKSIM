@@ -232,22 +232,22 @@ DEFAULT_RETAIL_NOISE_MIX = (
 
 
 POST_IPO_COLD_START_MIX = (
+    WeightedStrategy("mean_revert", 4),
+    WeightedStrategy("momentum_chase", 4),
+    WeightedStrategy("slow_fundamental_allocator", 3),
     WeightedStrategy("liquidity_noise", 3),
-    WeightedStrategy("momentum_chase", 1),
-    WeightedStrategy("buy_the_dip", 1),
-    WeightedStrategy("mean_revert", 2),
+    WeightedStrategy("buy_the_dip", 2),
     WeightedStrategy("profit_taking", 2),
-    WeightedStrategy("noise", 2),
-    WeightedStrategy("slow_fundamental_allocator", 1),
+    WeightedStrategy("noise", 1),
 )
 
 POST_IPO_BOOTSTRAP_TEMPLATE = (
+    "mean_revert",
+    "momentum_chase",
     "liquidity_noise",
     "buy_the_dip",
-    "profit_taking",
-    "mean_revert",
     "slow_fundamental_allocator",
-    "momentum_chase",
+    "profit_taking",
     "noise",
 )
 
@@ -296,11 +296,11 @@ def cold_start_profile() -> Dict[str, object]:
         "strategy_mix": [item.name for item in POST_IPO_COLD_START_MIX],
         "bootstrap_template": list(POST_IPO_BOOTSTRAP_TEMPLATE),
         "ideas": [
-            "favor two-sided liquidity_noise immediately after IPO open",
-            "guarantee at least one early sell-leaning participant in small retail batches",
+            "keep trend-follow and mean-revert families as the largest post-IPO retail blocks",
+            "seed small batches with every calibrated family before repeating weighted families",
             "let slow_fundamental_allocator provide a slower valuation anchor than purely technical retail",
-            "keep momentum_chase and buy_the_dip in the first wave to create small but real directional follow-through",
-            "seed short-window agents first, and let longer-window mean_revert agents join after a few prints exist",
+            "keep liquidity_noise present without letting it dominate large populations",
+            "limit profit_taking and pure noise so inventory release does not overwhelm buy interest",
         ],
     }
 

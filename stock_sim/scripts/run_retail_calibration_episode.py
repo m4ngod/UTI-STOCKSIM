@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -131,7 +132,7 @@ def run_episode(
             agent_type="Retail",
             strategy=strategy,
         )
-    _seed_inventory(agent_ids, symbols)
+    _seed_inventory(agent_ids, strategies, symbols)
 
     agents: dict[str, RuntimeRetailAgent] = {}
     trading = RecordingTradingService(
@@ -258,21 +259,78 @@ def _create_symbols(gateway: RuntimeGateway, symbols: tuple[str, ...]) -> None:
             pass
 
 
-def _seed_inventory(agent_ids: list[str], symbols: tuple[str, ...]) -> None:
+def _seed_inventory(agent_ids: list[str], strategies: list[str], symbols: tuple[str, ...]) -> None:
     session = SessionLocal()
     try:
         svc = AccountService(session)
-        for idx, agent_id in enumerate(agent_ids):
+        anchor_slots = _sell_anchor_slots(agent_ids, strategies, symbols)
+        seed_thresholds = {
+            "profit_taking": 0.30,
+            "liquidity_noise": 0.10,
+            "mean_revert": 0.08,
+            "momentum_chase": 0.06,
+            "buy_the_dip": 0.06,
+            "slow_fundamental_allocator": 0.08,
+            "noise": 0.06,
+        }
+        for agent_id, strategy in zip(agent_ids, strategies):
             account = svc.get_or_create(agent_id, cash=1_000_000.0)
-            if idx % 2 != 0:
-                continue
-            for symbol_idx, symbol in enumerate(symbols):
+            for symbol_idx, symbol in anchor_slots.get(agent_id, []):
                 pos = svc.get_position(account, symbol)
-                pos.quantity = 2_000
+                pos.quantity = max(pos.quantity, 36)
                 pos.avg_price = _initial_price_for_symbol(symbol_idx)
+            key = _stable_key(f"{agent_id}:{strategy}:inventory")
+            draw = (key % 10_000) / 10_000.0
+            if draw > seed_thresholds.get(strategy, 0.25):
+                continue
+            symbol_idx = key % len(symbols)
+            symbol = symbols[symbol_idx]
+            pos = svc.get_position(account, symbol)
+            pos.quantity = 80 + ((key // max(1, len(symbols))) % 4) * 40
+            pos.avg_price = _initial_price_for_symbol(symbol_idx)
         session.commit()
     finally:
         session.close()
+
+
+def _sell_anchor_slots(
+    agent_ids: list[str],
+    strategies: list[str],
+    symbols: tuple[str, ...],
+) -> dict[str, list[tuple[int, str]]]:
+    anchors_per_symbol = 2 if len(agent_ids) <= 30 else 1
+    used: set[str] = set()
+    slots: dict[str, list[tuple[int, str]]] = {}
+    candidates = list(zip(agent_ids, strategies))
+    for symbol_idx, symbol in enumerate(symbols):
+        chosen = 0
+        ranked = sorted(
+            (
+                (_stable_key(f"{agent_id}:{symbol}:sell-anchor"), agent_id, strategy)
+                for agent_id, strategy in candidates
+                if _can_seed_cold_start_sell(agent_id, strategy, symbol)
+            ),
+            key=lambda item: item[0],
+        )
+        for _key, agent_id, _strategy in ranked:
+            if agent_id in used and len(ranked) >= anchors_per_symbol * len(symbols):
+                continue
+            slots.setdefault(agent_id, []).append((symbol_idx, symbol))
+            used.add(agent_id)
+            chosen += 1
+            if chosen >= anchors_per_symbol:
+                break
+    return slots
+
+
+def _can_seed_cold_start_sell(agent_id: str, strategy: str, symbol: str) -> bool:
+    if strategy == "profit_taking":
+        return True
+    if strategy == "noise":
+        return False
+    if strategy in {"buy_the_dip", "momentum_chase", "mean_revert"}:
+        return False
+    return (_stable_key(f"{agent_id}:{symbol}") % 2) != 0
 
 
 def _record_book(collector: RetailCalibrationReportCollector, symbol: str, *, ts_ms: int) -> None:
@@ -375,6 +433,10 @@ def _counts(values: list[str]) -> dict[str, int]:
 
 def _initial_price_for_symbol(index: int) -> float:
     return 10.0 + index * 3.0
+
+
+def _stable_key(value: str) -> int:
+    return zlib.crc32(str(value or "").encode("utf-8")) & 0xFFFFFFFF
 
 
 def _parse_sizes(value: str) -> tuple[int, ...]:
