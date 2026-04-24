@@ -274,6 +274,10 @@ class SymbolDetailPanel:
         }
 
     # ---------- Public API ----------
+    def selected_symbol(self) -> Optional[str]:
+        with self._lock:
+            return self._symbol
+
     def load_symbol(self, symbol: str, timeframe: Optional[Timeframe] = None):
         start = time.perf_counter()
         with self._lock:
@@ -612,7 +616,7 @@ class MarketPanel:
             },
             "filter": filt,
             "sort_by": sort_by,
-            "selected": self._detail.get_view().get("symbol"),
+            "selected": self._detail.selected_symbol(),
         }
 
     @staticmethod

@@ -351,7 +351,8 @@ class MarketDataService:
 
     def _runtime_fetch_trade_bars(self, symbol: str, timeframe: Timeframe, limit: int) -> List[BarDict]:
         try:
-            trade_rows = self.get_recent_trades(symbol, limit=max(int(limit) * 8, 200))
+            trade_lookup_limit = min(max(int(limit) * 8, 200), 1_000)
+            trade_rows = self.get_recent_trades(symbol, limit=trade_lookup_limit)
         except Exception:
             return []
         trades: List[Dict[str, object]] = []

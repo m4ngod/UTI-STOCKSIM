@@ -14,6 +14,7 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
 import os
+import threading
 import time  # 新增：节流
 
 _DETAIL_ENABLE_CHART = os.environ.get("STOCKSIM_DETAIL_ENABLE_CHART", "1").lower() in ("1", "true", "yes", "on")
@@ -959,6 +960,9 @@ class MarketPanelAdapter(PanelAdapter):
         # 新增：节流状态
         self._last_refresh_ts: float = 0.0
         self._throttle_sec: float = 0.2
+        self._last_detail_refresh_ts: float = 0.0
+        self._detail_throttle_sec: float = 0.5
+        self._selection_generation: int = 0
         self._trade_ctl = TradingService()
 
     def _post_to_ui(self, cb) -> bool:
@@ -1587,22 +1591,43 @@ class MarketPanelAdapter(PanelAdapter):
         if not symbol:
             return
         self._selected_symbol = symbol
+        self._selection_generation += 1
+        generation = self._selection_generation
         # 调用逻辑 select_symbol (若存在)
         if self._logic is not None:
             sel = getattr(self._logic, 'select_symbol', None)
             if callable(sel):
+                if ui_runtime_enabled() and not os.environ.get("PYTEST_CURRENT_TEST"):
+                    def _worker():
+                        try:
+                            sel(symbol)
+                        except Exception:  # pragma: no cover
+                            pass
+                        if generation != self._selection_generation:
+                            return
+                        self._post_to_ui(lambda: self._refresh_detail_throttled(force=True))
+
+                    threading.Thread(
+                        target=_worker,
+                        name=f"MarketAdapter-Select-{symbol}",
+                        daemon=True,
+                    ).start()
+                    return
                 try:
                     sel(symbol)
                 except Exception:  # pragma: no cover
                     pass
         # 恢复详情刷新视图（尽量放到 UI 线程）
         if ui_runtime_enabled():
-            try:
-                from PySide6.QtCore import QTimer  # type: ignore
-                QTimer.singleShot(0, self._refresh_detail)  # type: ignore
-                return
-            except Exception:
-                pass
+            self._post_to_ui(lambda: self._refresh_detail_throttled(force=True))
+            return
+        self._refresh_detail_throttled(force=True)
+
+    def _refresh_detail_throttled(self, *, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_detail_refresh_ts) < self._detail_throttle_sec:
+            return
+        self._last_detail_refresh_ts = now
         self._refresh_detail()
 
     def _open_trade_dialog(self, side: str) -> None:
@@ -1677,7 +1702,9 @@ class MarketPanelAdapter(PanelAdapter):
             sel = view.get('selected') if isinstance(view, dict) else None
         except Exception:
             sel = None
+        selection_changed = False
         if sel:
+            selection_changed = sel != self._selected_symbol
             self._selected_symbol = sel
         # 确保列表高亮与内部一致
         if self._symbol_list is not None and self._selected_symbol in watch:
@@ -1687,7 +1714,7 @@ class MarketPanelAdapter(PanelAdapter):
             except Exception:  # pragma: no cover
                 pass
         # 刷新详情
-        self._refresh_detail()
+        self._refresh_detail_throttled(force=selection_changed)
 
 
 class SymbolDetailPanelAdapter(PanelAdapter):

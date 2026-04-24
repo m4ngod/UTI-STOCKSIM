@@ -87,3 +87,19 @@ def test_market_panel_sort_and_detail():
     # snapshot 字段包含 symbol
     assert detail['snapshot'] is None or detail['snapshot']['symbol'] == 'AAA'
 
+
+def test_market_panel_get_view_uses_lightweight_selected_symbol():
+    panel, _, svc = _build_market_panel()
+    panel.add_symbol('AAA')
+    panel.select_symbol('AAA')
+
+    def _fail_detail_fetch(*_args, **_kwargs):
+        raise AssertionError("get_view should not build the full detail view")
+
+    svc.get_trades_detail = _fail_detail_fetch  # type: ignore[method-assign]
+    svc.get_holdings_detail = _fail_detail_fetch  # type: ignore[method-assign]
+
+    view = panel.get_view()
+
+    assert view["selected"] == "AAA"
+

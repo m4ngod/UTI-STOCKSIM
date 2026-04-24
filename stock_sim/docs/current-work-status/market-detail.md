@@ -805,3 +805,32 @@ Reduce accidental creation of "cold-start impossible" instruments in the desktop
   - `tests/test_runtime_query_run_scoped_bars.py`
   - `tests/test_release_minimal_runtime_chain.py`
   - `tests/test_kline_and_account_events.py`
+
+## Task 2026-04-25-market-detail-13
+- **time**: 2026-04-25
+- **status**: done
+- **goal**: keep Market detail responsive while many retail agents and the clock are producing trades
+- **files involved**:
+  - `app/ui/adapters/market_adapter.py`
+  - `app/panels/market/panel.py`
+  - `app/services/market_data_service.py`
+  - `tests/frontend/unit/test_market_panel.py`
+  - `tests/frontend/unit/test_market_runtime_only_mode.py`
+- **change summary**:
+  - Market symbol selection now runs `select_symbol(...)` on a daemon worker in real UI sessions, then posts the detail repaint back to the Qt thread.
+  - Repeated market refreshes throttle full detail repaint work separately from the lightweight watchlist refresh.
+  - `MarketPanel.get_view()` now reads the selected symbol through a lightweight accessor instead of building the full detail payload, avoiding repeated runtime trade/holding queries during list refresh.
+  - Runtime trade-log K-line reconstruction now caps its recent-trade lookup at 1,000 rows, which is enough for the current UI window while reducing SQLite pressure during high-volume simulations.
+- **purpose**:
+  - Prevent the UI from becoming unresponsive when double-clicking an instrument or when snapshot/trade events arrive quickly.
+  - Make the previous trade-log K-line fallback more practical under 100+ retail-agent runs.
+- **verification**:
+  - `tests/frontend/unit/test_market_panel_detail_open_regression.py`
+  - `tests/frontend/unit/test_market_runtime_only_mode.py`
+  - `tests/frontend/unit/test_market_panel.py`
+  - `tests/frontend/unit/test_market_adapter_snapshot_batch_bridge.py`
+  - `tests/frontend/unit/test_market_detail_adapter_contract_labels.py`
+  - `tests/frontend/unit/test_market_detail_chart_geometry.py`
+  - `tests/test_runtime_query_run_scoped_bars.py`
+  - `tests/frontend/integration/test_frontend_trading_closed_loop.py`
+  - `tests/frontend/integration/test_market_trade_entry.py`

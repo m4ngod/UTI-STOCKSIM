@@ -32,8 +32,12 @@ def test_market_data_service_runtime_only_mode_does_not_fallback_to_synthetic():
 
 
 class _TradeOnlyRuntimeGateway(_EmptyRuntimeGateway):
+    def __init__(self):
+        self.trade_limits = []
+
     def get_recent_trades(self, symbol: str, *, limit: int = 20):
         assert symbol == "AAA"
+        self.trade_limits.append(limit)
         return [
             {"symbol": "AAA", "price": 10.3, "qty": 20, "ts": 1_700_000_070_000},
             {"symbol": "AAA", "price": 10.2, "qty": 30, "ts": 1_700_000_030_000},
@@ -42,9 +46,10 @@ class _TradeOnlyRuntimeGateway(_EmptyRuntimeGateway):
 
 
 def test_market_data_service_runtime_only_builds_bars_from_trade_log_when_persisted_bars_missing():
+    gateway = _TradeOnlyRuntimeGateway()
     svc = MarketDataService(
         allow_synthetic_fallback=False,
-        runtime_gateway=_TradeOnlyRuntimeGateway(),
+        runtime_gateway=gateway,
     )
 
     detail = svc.request_detail("AAA", "1m", ensure_loaded=True, limit=10)
@@ -56,3 +61,16 @@ def test_market_data_service_runtime_only_builds_bars_from_trade_log_when_persis
     assert detail["chart_meta"]["history_scope_resolved"] == "runtime-trade-log"
     assert list(series.close) == [10.2, 10.3]
     assert list(series.volume) == [40.0, 20.0]
+    assert gateway.trade_limits == [200]
+
+
+def test_market_data_service_trade_log_bar_lookup_is_bounded():
+    gateway = _TradeOnlyRuntimeGateway()
+    svc = MarketDataService(
+        allow_synthetic_fallback=False,
+        runtime_gateway=gateway,
+    )
+
+    svc.request_detail("AAA", "1m", ensure_loaded=True, limit=500)
+
+    assert gateway.trade_limits == [1000]
