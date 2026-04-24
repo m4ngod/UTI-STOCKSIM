@@ -777,3 +777,31 @@ Reduce accidental creation of "cold-start impossible" instruments in the desktop
   - Positive: Market detail is more honest about whether the user is seeing active-run history, unscoped historical fallback, synthetic placeholder bars, or no runtime history at all
   - Positive: snapshot freshness problems are now visible in contract/UI status instead of silently reading as healthy market state
   - Risk: some existing debug expectations/tests needed to move from inferred `active-run` history labels to resolved history labels
+
+## Task 2026-04-25-market-detail-12
+- **time**: 2026-04-25
+- **status**: done
+- **goal**: recover Market detail K-line bars from runtime trade history when persisted runtime bars are missing or delayed
+- **files involved**:
+  - `app/services/market_data_service.py`
+  - `tests/frontend/unit/test_market_runtime_only_mode.py`
+- **change summary**:
+  - Added a runtime trade-log OHLCV fallback inside `MarketDataService.load_initial(...)`.
+  - When persisted runtime bars are empty, the service now queries recent runtime trades for the selected symbol and aggregates them into timeframe buckets before considering the history path missing.
+  - The recovered series is marked as `source = runtime-trade-log-bars`, authoritative, runtime-backed, and resolved to `history_scope_resolved = runtime-trade-log`.
+  - Kept desktop runtime-only behavior honest: if both persisted bars and trade log are empty, the UI still shows `K: no runtime history` instead of drawing synthetic bars.
+  - Added a regression proving that trade-only runtime history produces visible bar data and does not overwrite the source metadata with `runtime-empty`.
+- **purpose**:
+  - Fix the user-visible state where the Market panel could show many executions while the K-line chart still stayed empty with `K: no runtime history`.
+  - Bridge the practical gap between live trades already persisted in `TradeORM` and bar sidecar persistence that may not have produced rows yet.
+- **impact / risk**:
+  - Positive: Market/detail now has a second authoritative runtime path for chart recovery during active simulation.
+  - Positive: the fix preserves the earlier decision to hide synthetic placeholder bars in the real desktop app.
+  - Risk: this is still a recent-window reconstruction, not a replacement for the durable bar persistence pipeline.
+- **verification**:
+  - `tests/frontend/unit/test_market_runtime_only_mode.py`
+  - `tests/frontend/unit/test_market_active_run_meta.py`
+  - `tests/frontend/unit/test_market_detail_adapter_contract_labels.py`
+  - `tests/test_runtime_query_run_scoped_bars.py`
+  - `tests/test_release_minimal_runtime_chain.py`
+  - `tests/test_kline_and_account_events.py`

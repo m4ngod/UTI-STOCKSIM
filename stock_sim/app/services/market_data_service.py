@@ -82,31 +82,45 @@ class MarketDataService:
                 history_scope_requested=requested_scope,
                 history_scope_resolved=str(runtime_meta.get("history_scope_resolved") or "unscoped"),
             )
-        elif self._allow_synthetic_fallback:
-            bars = self._fetcher(symbol, timeframe, lim)
+        else:
+            bars = self._runtime_fetch_trade_bars(symbol, timeframe, lim)
             if bars:
-                is_default_synthetic = bool(self._series_placeholder)
                 self._record_series_path_meta(
                     symbol,
                     timeframe,
-                    source="default-synthetic-fetcher" if is_default_synthetic else "fetcher",
-                    authoritative=False,
-                    runtime_backed=False,
-                    refresh="synthetic-fallback" if is_default_synthetic else "fetcher-load",
+                    source="runtime-trade-log-bars",
+                    authoritative=True,
+                    runtime_backed=True,
+                    refresh="runtime-query-trade-bars",
                     history_scope_requested=requested_scope,
-                    history_scope_resolved="synthetic-fallback" if is_default_synthetic else "fetcher",
+                    history_scope_resolved="runtime-trade-log",
                 )
-        else:
-            self._record_series_path_meta(
-                symbol,
-                timeframe,
-                source="runtime-empty",
-                authoritative=False,
-                runtime_backed=True,
-                refresh="runtime-query-load",
-                history_scope_requested=requested_scope,
-                history_scope_resolved="none",
-            )
+        if not bars:
+            if self._allow_synthetic_fallback:
+                bars = self._fetcher(symbol, timeframe, lim)
+                if bars:
+                    is_default_synthetic = bool(self._series_placeholder)
+                    self._record_series_path_meta(
+                        symbol,
+                        timeframe,
+                        source="default-synthetic-fetcher" if is_default_synthetic else "fetcher",
+                        authoritative=False,
+                        runtime_backed=False,
+                        refresh="synthetic-fallback" if is_default_synthetic else "fetcher-load",
+                        history_scope_requested=requested_scope,
+                        history_scope_resolved="synthetic-fallback" if is_default_synthetic else "fetcher",
+                    )
+            else:
+                self._record_series_path_meta(
+                    symbol,
+                    timeframe,
+                    source="runtime-empty",
+                    authoritative=False,
+                    runtime_backed=True,
+                    refresh="runtime-query-load",
+                    history_scope_requested=requested_scope,
+                    history_scope_resolved="none",
+                )
         if not bars:
             raise RuntimeError("failed to load initial bars")
         self._cache.upsert(symbol, timeframe, bars)
@@ -334,6 +348,53 @@ class MarketDataService:
 
     def _runtime_fetch_bars(self, symbol: str, timeframe: Timeframe, limit: int) -> List[BarDict]:
         return self._runtime_gateway.get_bars(symbol, timeframe, limit=limit)  # type: ignore[return-value]
+
+    def _runtime_fetch_trade_bars(self, symbol: str, timeframe: Timeframe, limit: int) -> List[BarDict]:
+        try:
+            trade_rows = self.get_recent_trades(symbol, limit=max(int(limit) * 8, 200))
+        except Exception:
+            return []
+        trades: List[Dict[str, object]] = []
+        for row in trade_rows:
+            if not isinstance(row, dict):
+                continue
+            normalized = self._normalize_trade_row(row)
+            if not normalized:
+                continue
+            try:
+                ts = int(normalized.get("ts") or 0)
+                price = float(normalized.get("price") or 0.0)
+                qty = int(normalized.get("qty") or 0)
+            except Exception:
+                continue
+            if ts <= 0 or price <= 0 or qty <= 0:
+                continue
+            trades.append({"ts": ts, "price": price, "qty": qty})
+        if not trades:
+            return []
+        trades.sort(key=lambda item: int(item["ts"]))
+        grouped: Dict[int, BarDict] = {}
+        for trade in trades:
+            bucket_ts = self._bucket_start_ms(int(trade["ts"]), timeframe)
+            price = float(trade["price"])
+            qty = int(trade["qty"])
+            bar = grouped.get(bucket_ts)
+            if bar is None:
+                grouped[bucket_ts] = {
+                    "ts": bucket_ts,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": float(qty),
+                }
+            else:
+                bar["high"] = float(max(float(bar["high"]), price))
+                bar["low"] = float(min(float(bar["low"]), price))
+                bar["close"] = price
+                bar["volume"] = float(bar.get("volume", 0.0)) + float(qty)
+        bars = [grouped[key] for key in sorted(grouped)]
+        return bars[-max(int(limit), 1):]
 
     def _normalize_trade_row(self, row: Dict[str, Any]) -> Dict[str, object]:
         ts_raw = row.get("ts")
