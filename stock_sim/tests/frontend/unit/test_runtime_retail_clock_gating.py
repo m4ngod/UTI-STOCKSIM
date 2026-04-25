@@ -137,6 +137,30 @@ def test_runtime_retail_passive_quotes_seed_empty_book_on_both_sides():
     assert agent._price_for_side(ctx, "sell", aggressive=False) == 10.01
 
 
+def test_runtime_retail_cold_start_buy_quote_is_capped_when_no_ask():
+    agent = RuntimeRetailAgent(
+        agent_id="retail-price-cap-001",
+        strategy="liquidity_noise",
+        trading_service=_FakeTradingService(),
+        seed=1,
+    )
+    ctx = MarketContext(
+        symbol="AAA",
+        reference_price=10.15,
+        initial_price=10.0,
+        tick_size=0.01,
+        lot_size=1,
+        settlement_cycle=0,
+        best_bid=10.15,
+        best_ask=None,
+        phase="CONTINUOUS",
+        trade_count=0,
+        cold_start=True,
+    )
+
+    assert agent._price_for_side(ctx, "buy", aggressive=False) == 10.02
+
+
 def test_runtime_retail_patience_cancels_stale_live_orders():
     fake_trading = _FakeTradingService()
     agent = RuntimeRetailAgent(

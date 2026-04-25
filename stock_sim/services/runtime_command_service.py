@@ -5,9 +5,12 @@ import json
 from typing import Any, Dict
 from uuid import uuid4
 
+from sqlalchemy import or_
+
 try:
     from stock_sim.persistence import models_init  # type: ignore
     from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
+    from stock_sim.persistence.models_order import OrderORM  # type: ignore
     from stock_sim.services.account_service import AccountService as RuntimeAccountService  # type: ignore
     from stock_sim.services.agent_binding_service import AgentBindingService as RuntimeAgentBindingService  # type: ignore
     from stock_sim.services.instrument_service import InstrumentService  # type: ignore
@@ -18,13 +21,17 @@ try:
     from stock_sim.core.matching_engine import MatchingEngine  # type: ignore
     from stock_sim.core.instruments import create_instrument  # type: ignore
     from stock_sim.core.order import Order  # type: ignore
-    from stock_sim.core.const import OrderSide  # type: ignore
+    from stock_sim.core.const import OrderSide, OrderStatus  # type: ignore
     from stock_sim.services.sim_clock import ensure_sim_clock_started, virtual_datetime  # type: ignore
-    from stock_sim.services.ipo_retail_distribution import allocate_pending_ipo_distributions  # type: ignore
+    from stock_sim.services.ipo_retail_distribution import (  # type: ignore
+        allocate_ipo_retail_distribution,
+        allocate_pending_ipo_distributions,
+    )
 except Exception:  # pragma: no cover
     try:
         from persistence import models_init  # type: ignore
         from persistence.models_imports import SessionLocal  # type: ignore
+        from persistence.models_order import OrderORM  # type: ignore
         from services.account_service import AccountService as RuntimeAccountService  # type: ignore
         from services.agent_binding_service import AgentBindingService as RuntimeAgentBindingService  # type: ignore
         from services.instrument_service import InstrumentService  # type: ignore
@@ -35,12 +42,16 @@ except Exception:  # pragma: no cover
         from core.matching_engine import MatchingEngine  # type: ignore
         from core.instruments import create_instrument  # type: ignore
         from core.order import Order  # type: ignore
-        from core.const import OrderSide  # type: ignore
+        from core.const import OrderSide, OrderStatus  # type: ignore
         from services.sim_clock import ensure_sim_clock_started, virtual_datetime  # type: ignore
-        from services.ipo_retail_distribution import allocate_pending_ipo_distributions  # type: ignore
+        from services.ipo_retail_distribution import (  # type: ignore
+            allocate_ipo_retail_distribution,
+            allocate_pending_ipo_distributions,
+        )
     except Exception:  # pragma: no cover
         models_init = None  # type: ignore
         SessionLocal = None  # type: ignore
+        OrderORM = None  # type: ignore
         RuntimeAccountService = None  # type: ignore
         RuntimeAgentBindingService = None  # type: ignore
         InstrumentService = None  # type: ignore
@@ -52,8 +63,10 @@ except Exception:  # pragma: no cover
         create_instrument = None  # type: ignore
         Order = None  # type: ignore
         OrderSide = None  # type: ignore
+        OrderStatus = None  # type: ignore
         ensure_sim_clock_started = None  # type: ignore
         virtual_datetime = None  # type: ignore
+        allocate_ipo_retail_distribution = None  # type: ignore
         allocate_pending_ipo_distributions = None  # type: ignore
 
 
@@ -246,7 +259,117 @@ class RuntimeCommandService:
             speed = None if speed_raw is None else float(speed_raw)
         except Exception:
             speed = None
-        return self._ensure_active_run_id(sim_day=sim_day, speed=speed)
+        run_id = self._ensure_active_run_id(sim_day=sim_day, speed=speed)
+        if run_id is not None:
+            self.cancel_stale_open_orders(active_run_id=run_id)
+        return run_id
+
+    def cancel_stale_open_orders(self, *, active_run_id: str) -> Dict[str, Any]:
+        """Cancel live DB orders from previous desktop runs and release reserves."""
+        normalized_run_id = self._normalize_run_id(active_run_id)
+        if (
+            normalized_run_id is None
+            or SessionLocal is None
+            or RuntimeAccountService is None
+            or OrderORM is None
+            or OrderStatus is None
+        ):
+            return {"ok": False, "canceled": 0, "reason": "runtime services unavailable"}
+        try:
+            self._ensure_models()
+            session = SessionLocal()
+        except Exception as exc:
+            return {"ok": False, "canceled": 0, "reason": str(exc)}
+        canceled = 0
+        released_qty = 0
+        released_notional = 0.0
+        try:
+            rows = (
+                session.query(OrderORM)
+                .filter(OrderORM.status.in_([OrderStatus.NEW, OrderStatus.PARTIAL]))
+                .filter(or_(OrderORM.run_id.is_(None), OrderORM.run_id != normalized_run_id))
+                .order_by(OrderORM.ts_created.asc())
+                .all()
+            )
+            accounts = RuntimeAccountService(session)
+            now = datetime.utcnow()
+            for orm in rows:
+                remaining = max(0, int(getattr(orm, "quantity", 0) or 0) - int(getattr(orm, "filled", 0) or 0))
+                if remaining > 0:
+                    account_id = str(getattr(orm, "account_id", "") or "").strip()
+                    symbol = str(getattr(orm, "symbol", "") or "").strip().upper()
+                    side = getattr(orm, "side", None)
+                    if not account_id or not symbol or side is None:
+                        orm.status = OrderStatus.CANCELED
+                        orm.ts_last = now
+                        canceled += 1
+                        continue
+                    acc = accounts.get_or_create(account_id)
+                    accounts.release(
+                        acc,
+                        symbol,
+                        side,
+                        float(getattr(orm, "price", 0.0) or 0.0),
+                        remaining,
+                    )
+                    released_qty += remaining
+                    released_notional += float(getattr(orm, "price", 0.0) or 0.0) * remaining
+                orm.status = OrderStatus.CANCELED
+                orm.ts_last = now
+                canceled += 1
+            session.commit()
+            return {
+                "ok": True,
+                "canceled": canceled,
+                "released_qty": released_qty,
+                "released_notional": released_notional,
+            }
+        except Exception as exc:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return {"ok": False, "canceled": canceled, "reason": str(exc)}
+        finally:
+            session.close()
+
+    def ensure_open_instrument_retail_distributions(self, *, sim_day: int | None = None) -> Dict[str, Any]:
+        if (
+            SessionLocal is None
+            or InstrumentService is None
+            or models_init is None
+            or allocate_ipo_retail_distribution is None
+        ):
+            return {"ok": False, "symbols": [], "reason": "runtime services unavailable"}
+        try:
+            self._ensure_models()
+            session = SessionLocal()
+        except Exception as exc:
+            return {"ok": False, "symbols": [], "reason": str(exc)}
+        try:
+            instruments = InstrumentService(session).list(active_only=True)
+            symbols = [
+                dto.symbol
+                for dto in instruments
+                if bool(getattr(dto, "ipo_opened", False))
+                and float(getattr(dto, "free_float_shares", 0.0) or 0.0) > 0
+            ]
+        except Exception as exc:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return {"ok": False, "symbols": [], "reason": str(exc)}
+        finally:
+            session.close()
+
+        results = []
+        for symbol in symbols:
+            try:
+                results.append(allocate_ipo_retail_distribution(symbol, sim_day=sim_day))
+            except Exception as exc:
+                results.append({"symbol": symbol, "applied": False, "reason": "error", "error": str(exc)})
+        return {"ok": True, "symbols": symbols, "results": results}
 
     def _resolve_active_run_context(self) -> RunContext | None:
         snap = self._current_clock_snapshot()
@@ -425,8 +548,16 @@ class RuntimeCommandService:
             if run_ctx is not None:
                 for dto in restored:
                     self._stamp_engine_run_id(dto.symbol, run_ctx.run_id)
+            distribution_result = self.ensure_open_instrument_retail_distributions(
+                sim_day=None if run_ctx is None else run_ctx.sim_day
+            )
             symbols = [dto.symbol for dto in restored]
-            return {"ok": True, "restored": len(symbols), "symbols": symbols}
+            return {
+                "ok": True,
+                "restored": len(symbols),
+                "symbols": symbols,
+                "retail_distribution": distribution_result,
+            }
         except Exception as exc:
             try:
                 session.rollback()

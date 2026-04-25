@@ -378,6 +378,7 @@ class RuntimeRetailAgent:
         expected_price: float | None = None,
     ) -> float:
         tick = ctx.tick_size
+        anchor = ctx.initial_price if ctx.cold_start and ctx.initial_price > 0 else ctx.reference_price
         if side == "buy":
             if aggressive and ctx.best_ask is not None:
                 return max(ctx.best_ask, ctx.reference_price)
@@ -385,8 +386,10 @@ class RuntimeRetailAgent:
                 passive = ctx.best_bid + tick
                 if ctx.best_ask is not None:
                     passive = min(passive, ctx.best_ask - tick)
+                elif ctx.cold_start:
+                    passive = min(passive, anchor + (2 * tick))
             else:
-                passive = ctx.reference_price - tick
+                passive = anchor - tick
             if expected_price is not None:
                 passive = min(passive, max(tick, expected_price - tick))
             return max(tick, passive)
@@ -396,8 +399,10 @@ class RuntimeRetailAgent:
             passive = ctx.best_ask - tick
             if ctx.best_bid is not None:
                 passive = max(passive, ctx.best_bid + tick)
+            elif ctx.cold_start:
+                passive = max(passive, anchor - (2 * tick))
         else:
-            passive = ctx.reference_price + tick
+            passive = anchor + tick
         if expected_price is not None:
             passive = max(passive, expected_price + tick)
         return max(tick, passive)
