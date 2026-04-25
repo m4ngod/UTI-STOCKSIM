@@ -402,6 +402,36 @@ class RuntimeCommandService:
                 pass
         return True
 
+    def restore_runtime_instruments(self) -> Dict[str, Any]:
+        if SessionLocal is None or InstrumentService is None or models_init is None:
+            return {"ok": False, "restored": 0, "symbols": [], "reason": "runtime services unavailable"}
+        try:
+            self._ensure_models()
+            session = SessionLocal()
+        except Exception as exc:
+            return {"ok": False, "restored": 0, "symbols": [], "reason": str(exc)}
+        try:
+            svc = InstrumentService(session)
+            restored = svc.restore_active_runtime_engines()
+            session.commit()
+            run_ctx = self._resolve_active_run_context()
+            if run_ctx is not None:
+                for dto in restored:
+                    self._stamp_engine_run_id(dto.symbol, run_ctx.run_id)
+            symbols = [dto.symbol for dto in restored]
+            return {"ok": True, "restored": len(symbols), "symbols": symbols}
+        except Exception as exc:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return {"ok": False, "restored": 0, "symbols": [], "reason": str(exc)}
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
     def submit_order(
         self,
         *,

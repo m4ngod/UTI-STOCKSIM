@@ -103,3 +103,33 @@ def test_market_panel_get_view_uses_lightweight_selected_symbol():
 
     assert view["selected"] == "AAA"
 
+
+class _InstrumentGateway:
+    def list_instruments(self, *, active_only=True):
+        assert active_only is True
+        return [
+            {
+                "symbol": "PST1",
+                "name": "Persisted 1",
+                "initial_price": 12.34,
+                "tick_size": 0.01,
+                "is_active": True,
+                "ipo_opened": True,
+            }
+        ]
+
+
+def test_market_panel_loads_persisted_instruments_into_watchlist_and_snapshots():
+    svc = MarketDataService(allow_synthetic_fallback=False, runtime_gateway=_InstrumentGateway())
+    ctl = MarketController(svc, runtime_gateway=_InstrumentGateway())
+    panel = __import__("app.panels.market.panel", fromlist=["MarketPanel"]).MarketPanel(ctl, svc)
+
+    loaded = panel.load_persisted_instruments()
+    view = panel.get_view()
+    items = view["watchlist"]["snapshots"]["items"]
+
+    assert loaded == ["PST1"]
+    assert view["watchlist"]["symbols"] == ["PST1"]
+    assert items[0]["symbol"] == "PST1"
+    assert items[0]["last"] == 12.34
+

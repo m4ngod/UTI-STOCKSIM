@@ -76,6 +76,11 @@ class RuntimeGateway:
             return []
         return self._queries.list_agent_bindings()
 
+    def list_instruments(self, *, active_only: bool = True) -> List[Dict[str, Any]]:
+        if self._queries is None:
+            return []
+        return self._queries.list_instruments(active_only=active_only)
+
     def update_agent_binding_meta(self, agent_id: str, **updates: Any) -> None:
         if self._commands is None:
             return
@@ -103,6 +108,11 @@ class RuntimeGateway:
             market_cap=market_cap,
             total_shares=total_shares,
         )
+
+    def restore_runtime_instruments(self) -> Dict[str, Any]:
+        if self._commands is None:
+            return {"ok": False, "restored": 0, "symbols": [], "reason": "runtime command service unavailable"}
+        return self._commands.restore_runtime_instruments()
 
     def submit_order(
         self,

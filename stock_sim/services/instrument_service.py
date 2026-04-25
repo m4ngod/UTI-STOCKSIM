@@ -206,3 +206,16 @@ class InstrumentService:
         if active_only:
             query = query.filter(Instrument.is_active.is_(True))
         return [InstrumentDTO.from_model(model) for model in query.order_by(Instrument.symbol.asc()).all()]
+
+    def restore_active_runtime_engines(self) -> List[InstrumentDTO]:
+        rows = (
+            self.s.query(Instrument)
+            .filter(Instrument.is_active.is_(True))
+            .order_by(Instrument.symbol.asc())
+            .all()
+        )
+        restored: List[InstrumentDTO] = []
+        for inst_row in rows:
+            ensure_runtime_engine_for_instrument(inst_row)
+            restored.append(InstrumentDTO.from_model(inst_row))
+        return restored

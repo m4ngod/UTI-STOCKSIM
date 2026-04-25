@@ -12,6 +12,7 @@ try:
     from stock_sim.persistence.models_position import Position as RuntimePosition  # type: ignore
     from stock_sim.persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
     from stock_sim.persistence.models_trade import TradeORM  # type: ignore
+    from stock_sim.persistence.models_instrument import Instrument  # type: ignore
     from stock_sim.services.account_service import AccountService as RuntimeAccountService  # type: ignore
     from stock_sim.services.sim_clock import current_sim_day, ensure_sim_clock_started  # type: ignore
 except Exception:  # pragma: no cover
@@ -24,6 +25,7 @@ except Exception:  # pragma: no cover
         from persistence.models_position import Position as RuntimePosition  # type: ignore
         from persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
         from persistence.models_trade import TradeORM  # type: ignore
+        from persistence.models_instrument import Instrument  # type: ignore
         from services.account_service import AccountService as RuntimeAccountService  # type: ignore
         from services.sim_clock import current_sim_day, ensure_sim_clock_started  # type: ignore
     except Exception:  # pragma: no cover
@@ -37,6 +39,7 @@ except Exception:  # pragma: no cover
         Bar1h = None  # type: ignore
         Bar1d = None  # type: ignore
         TradeORM = None  # type: ignore
+        Instrument = None  # type: ignore
         RuntimeAccountService = None  # type: ignore
         current_sim_day = None  # type: ignore
         ensure_sim_clock_started = None  # type: ignore
@@ -134,6 +137,44 @@ class RuntimeQueryService:
                         "account_id": str(getattr(row, "account_id", "") or ""),
                         "run_id": str(getattr(row, "run_id", "") or ""),
                         "meta": meta if isinstance(meta, dict) else None,
+                    }
+                )
+            return out
+        except Exception:
+            return []
+        finally:
+            sess.close()
+
+    def list_instruments(self, *, active_only: bool = True) -> List[Dict[str, Any]]:
+        if SessionLocal is None or Instrument is None:
+            return []
+        try:
+            sess = SessionLocal()
+        except Exception:
+            return []
+        try:
+            query = sess.query(Instrument)
+            if active_only:
+                query = query.filter(Instrument.is_active.is_(True))
+            rows = query.order_by(Instrument.symbol.asc()).all()
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                created_at = getattr(row, "created_at", None)
+                out.append(
+                    {
+                        "symbol": str(getattr(row, "symbol", "") or ""),
+                        "name": str(getattr(row, "name", "") or getattr(row, "symbol", "") or ""),
+                        "tick_size": float(getattr(row, "tick_size", 0.01) or 0.01),
+                        "lot_size": int(getattr(row, "lot_size", 1) or 1),
+                        "min_qty": int(getattr(row, "min_qty", 1) or 1),
+                        "settlement_cycle": int(getattr(row, "settlement_cycle", 1) or 1),
+                        "market_cap": getattr(row, "market_cap", None),
+                        "total_shares": getattr(row, "total_shares", None),
+                        "free_float_shares": getattr(row, "free_float_shares", None),
+                        "initial_price": getattr(row, "initial_price", None),
+                        "is_active": bool(getattr(row, "is_active", True)),
+                        "ipo_opened": bool(getattr(row, "ipo_opened", False)),
+                        "created_at": created_at.isoformat() if created_at is not None else None,
                     }
                 )
             return out

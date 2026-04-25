@@ -990,6 +990,20 @@ class MarketPanelAdapter(PanelAdapter):
         if not self._post_to_ui(_do):
             _do()
 
+    def bind(self, logic):  # type: ignore[override]
+        super().bind(logic)
+        try:
+            self._detail.bind(logic)
+        except Exception:
+            pass
+        try:
+            loader = getattr(logic, "load_persisted_instruments", None)
+            if callable(loader):
+                loader()
+        except Exception:
+            pass
+        return self
+
     def _create_widget(self):  # noqa: D401
         root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
         try:

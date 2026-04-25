@@ -538,6 +538,32 @@ class MarketPanel:
         self._svc.ensure_symbol(symbol)
         metrics.inc("market_panel_add_symbol")
 
+    def load_persisted_instruments(self) -> List[str]:
+        loader = getattr(self._ctl, "load_persisted_instruments", None)
+        if not callable(loader):
+            return []
+        try:
+            symbols = [str(s or "").strip().upper() for s in loader()]
+        except Exception:
+            return []
+        symbols = [s for s in symbols if s]
+        if not symbols:
+            return []
+        persist_needed = False
+        with self._lock:
+            for symbol in symbols:
+                if symbol not in self._watchlist:
+                    self._watchlist.append(symbol)
+                    persist_needed = True
+        if persist_needed:
+            self._persist()
+        for symbol in symbols:
+            try:
+                self._svc.ensure_symbol(symbol)
+            except Exception:
+                pass
+        return symbols
+
     def remove_symbol(self, symbol: str):
         changed = False
         with self._lock:

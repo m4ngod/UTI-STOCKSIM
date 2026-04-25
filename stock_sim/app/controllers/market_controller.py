@@ -135,6 +135,64 @@ class MarketController:
             paged = items[start:start + page_size]
         return {"total": total, "page": page, "page_size": page_size, "items": paged}
 
+    def load_persisted_instruments(self) -> List[str]:
+        gateway = self._runtime_gateway
+        if gateway is None or not hasattr(gateway, "list_instruments"):
+            return []
+        try:
+            rows = gateway.list_instruments(active_only=True)
+        except Exception:
+            return []
+        snapshots: List[SnapshotDTO] = []
+        symbols: List[str] = []
+        now_ms = int(time.time() * 1000)
+        for row in rows or []:
+            symbol = str((row or {}).get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            symbols.append(symbol)
+            price_raw = (row or {}).get("initial_price")
+            try:
+                reference_price = float(price_raw)
+            except Exception:
+                reference_price = 0.0
+            if reference_price <= 0:
+                reference_price = 0.0
+            step_raw = (row or {}).get("tick_size")
+            try:
+                price_step = float(step_raw)
+            except Exception:
+                price_step = 0.01
+            try:
+                self._service.ensure_symbol(symbol)
+                self._service.register_symbol_meta(
+                    symbol,
+                    reference_price=reference_price if reference_price > 0 else None,
+                    price_step=price_step if price_step > 0 else 0.01,
+                    limit_pct=0.10,
+                )
+            except Exception:
+                pass
+            with self._lock:
+                exists = symbol in self._snapshots
+            if exists:
+                continue
+            snapshots.append(
+                SnapshotDTO(
+                    symbol=symbol,
+                    last=reference_price,
+                    bid_levels=[],
+                    ask_levels=[],
+                    volume=0,
+                    turnover=0.0,
+                    ts=now_ms,
+                    snapshot_id=f"{symbol}-instrument-bootstrap-{now_ms}",
+                )
+            )
+        if snapshots:
+            self.merge_batch(snapshots)
+        return symbols
+
     # ---------------- Indicator Requests ---------------
     def request_indicator(self, *, symbol: str, timeframe: Timeframe, name: str, callback: Optional[IndicatorCallback] = None, **params):
         """提交指标计算任务。callback 可为两种签名之一:
