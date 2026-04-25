@@ -80,7 +80,13 @@ class TPlusOneSellRestrictionRule:
         pos = next((p for p in positions if getattr(p, 'symbol', None) == symbol), None)
         long_qty = max(0, int(getattr(pos, 'quantity', 0) or 0)) if pos is not None else 0
         frozen_qty = max(0, int(getattr(pos, 'frozen_qty', 0) or 0)) if pos is not None else 0
-        same_day_buy_qty = int(risk_engine.get_tplus(account_id, symbol, OrderSide.BUY) or 0)
+        memory_same_day_buy_qty = int(risk_engine.get_tplus(account_id, symbol, OrderSide.BUY) or 0)
+        persisted_same_day_buy_qty = (
+            int(context.get("same_day_buy_qty") or 0)
+            if "same_day_buy_qty" in context
+            else 0
+        )
+        same_day_buy_qty = max(memory_same_day_buy_qty, persisted_same_day_buy_qty)
 
         sellable_qty = max(0, long_qty - same_day_buy_qty - frozen_qty)
         if qty > sellable_qty:

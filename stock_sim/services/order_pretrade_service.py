@@ -14,6 +14,8 @@ from stock_sim.core.validators import (
 from stock_sim.infra.event_bus import event_bus
 from stock_sim.observability.metrics import metrics
 from stock_sim.observability.struct_logger import logger
+from stock_sim.persistence.models_trade import TradeORM
+from stock_sim.services.sim_clock import current_sim_day
 from stock_sim.settings import settings
 
 
@@ -74,6 +76,10 @@ class OrderPreTradeService:
 
         risk_positions = acc.positions
         settlement_cycle = getattr(params, "settlement_cycle", 0) if params else 0
+        same_day_buy_qty = self._persisted_same_day_buy_qty(
+            account_id=acc.id,
+            symbol=order.symbol,
+        )
         rr = self._risk.validate(
             account=acc,
             positions=risk_positions,
@@ -85,6 +91,7 @@ class OrderPreTradeService:
                 "settlement_cycle": settlement_cycle,
                 "tif": order.tif,
                 "engine": engine,
+                "same_day_buy_qty": same_day_buy_qty,
             },
             order_type=order.order_type,
         )
@@ -125,6 +132,24 @@ class OrderPreTradeService:
             return False, None
 
         return True, acc
+
+    def _persisted_same_day_buy_qty(self, *, account_id: str, symbol: str) -> int:
+        session = getattr(self._accounts, "s", None)
+        if session is None:
+            return 0
+        try:
+            sim_day = current_sim_day()
+            query = session.query(TradeORM.quantity).filter(
+                TradeORM.buy_account_id == account_id,
+                TradeORM.symbol == symbol,
+                TradeORM.sim_day == sim_day,
+            )
+            run_id = self._run_id_provider()
+            if run_id:
+                query = query.filter(TradeORM.run_id == run_id)
+            return sum(max(0, int(qty or 0)) for (qty,) in query.all())
+        except Exception:
+            return 0
 
     def normalize_order(self, order: Order, params) -> tuple[bool, str | None]:
         if not params:

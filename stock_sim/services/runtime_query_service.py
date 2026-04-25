@@ -263,7 +263,21 @@ class RuntimeQueryService:
             position = accounts.get_position(account, normalized_symbol)
             quantity = int(getattr(position, "quantity", 0) or 0)
             frozen_qty = int(getattr(position, "frozen_qty", 0) or 0)
-            return max(0, quantity - frozen_qty)
+            available = max(0, quantity - frozen_qty)
+            instrument = sess.get(Instrument, normalized_symbol) if Instrument is not None else None
+            settlement_cycle = int(getattr(instrument, "settlement_cycle", 0) or 0) if instrument is not None else 0
+            if settlement_cycle >= 1 and TradeORM is not None:
+                trade_query = sess.query(TradeORM.quantity).filter(
+                    TradeORM.buy_account_id == normalized_account_id,
+                    TradeORM.symbol == normalized_symbol,
+                    TradeORM.sim_day == self.get_current_sim_day(),
+                )
+                active_run_id = self.get_current_run_id()
+                if active_run_id:
+                    trade_query = trade_query.filter(TradeORM.run_id == active_run_id)
+                same_day_buy_qty = sum(max(0, int(qty or 0)) for (qty,) in trade_query.all())
+                available = max(0, available - same_day_buy_qty)
+            return available
         except Exception:
             try:
                 sess.rollback()
