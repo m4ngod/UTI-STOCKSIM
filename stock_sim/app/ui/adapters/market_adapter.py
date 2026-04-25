@@ -1312,7 +1312,11 @@ class MarketPanelAdapter(PanelAdapter):
             try:
                 dlg.setWindowTitle("Create Instrument")  # type: ignore[attr-defined]
                 dlg.setModal(True)  # type: ignore[attr-defined]
-                dlg.resize(520, 0)  # type: ignore[attr-defined]
+                if hasattr(dlg, "setMinimumSize"):
+                    dlg.setMinimumSize(520, 420)  # type: ignore[attr-defined]
+                if hasattr(dlg, "setSizeGripEnabled"):
+                    dlg.setSizeGripEnabled(True)  # type: ignore[attr-defined]
+                dlg.resize(560, 520)  # type: ignore[attr-defined]
             except Exception:
                 pass
             try:

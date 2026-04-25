@@ -329,22 +329,43 @@ class AgentService:
         if not self._sync_runtime_bindings_enabled:
             return []
         try:
-            rows = self._runtime_gateway.list_agent_bindings()
+            rows = self._runtime_gateway.list_agent_bindings(include_all_runs=True)
+        except TypeError:
+            try:
+                rows = self._runtime_gateway.list_agent_bindings()
+            except Exception:
+                return []
         except Exception:
             return []
         return list(rows or [])
+
+    def _active_runtime_run_id(self) -> str | None:
+        getter = getattr(self._runtime_gateway, "get_current_run_id", None)
+        if not callable(getter):
+            return None
+        try:
+            value = str(getter() or "").strip()
+        except Exception:
+            return None
+        return value or None
 
     def _sync_from_runtime_bindings(self) -> None:
         rows = self._runtime_binding_rows()
         if not rows:
             return
         retail_ids_to_hydrate: List[str] = []
+        active_run_id = self._active_runtime_run_id()
         with self._lock:
             for row in rows:
                 agent_id = str(row.get("agent_name") or row.get("account_id") or "").strip()
                 if not agent_id:
                     continue
                 meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+                row_run_id = str(row.get("run_id") or meta.get("run_id") or "").strip() or None
+                restored_from_previous_run = active_run_id is not None and row_run_id is not None and row_run_id != active_run_id
+                status_value = "STOPPED" if restored_from_previous_run else meta.get("status")
+                heartbeat_value = None if restored_from_previous_run else meta.get("last_heartbeat")
+                start_time_value = None if restored_from_previous_run else meta.get("start_time")
                 agent_type = _normalize_agent_type(row.get("agent_type") or meta.get("type") or "GENERIC")
                 strategy = meta.get("strategy")
                 current = self._agents.get(agent_id)
@@ -353,9 +374,9 @@ class AgentService:
                         agent_id=agent_id,
                         name=str(meta.get("name") or agent_id),
                         type=agent_type,
-                        status=self._normalize_status(meta.get("status")),
-                        start_time=self._maybe_int(meta.get("start_time")),
-                        last_heartbeat=self._maybe_int(meta.get("last_heartbeat")),
+                        status=self._normalize_status(status_value),
+                        start_time=self._maybe_int(start_time_value),
+                        last_heartbeat=self._maybe_int(heartbeat_value),
                         params_version=int(meta.get("params_version") or 0),
                         strategy=(str(strategy) if strategy is not None and str(strategy).strip() else None),
                     )
@@ -364,11 +385,11 @@ class AgentService:
                     continue
                 current.name = str(meta.get("name") or current.name or agent_id)
                 current.type = agent_type
-                current.status = self._normalize_status(meta.get("status"), fallback=current.status)  # type: ignore[assignment]
-                if "start_time" in meta:
-                    current.start_time = self._maybe_int(meta.get("start_time"))
-                if "last_heartbeat" in meta:
-                    current.last_heartbeat = self._maybe_int(meta.get("last_heartbeat"))
+                current.status = self._normalize_status(status_value, fallback=current.status)  # type: ignore[assignment]
+                if restored_from_previous_run or "start_time" in meta:
+                    current.start_time = self._maybe_int(start_time_value)
+                if restored_from_previous_run or "last_heartbeat" in meta:
+                    current.last_heartbeat = self._maybe_int(heartbeat_value)
                 if strategy is not None and str(strategy).strip():
                     current.strategy = str(strategy)
                 if meta.get("params_version") is not None:

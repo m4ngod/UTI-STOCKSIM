@@ -106,7 +106,7 @@ class RuntimeQueryService:
         except Exception:
             return None
 
-    def list_agent_bindings(self) -> List[Dict[str, Any]]:
+    def list_agent_bindings(self, *, include_all_runs: bool = False) -> List[Dict[str, Any]]:
         if SessionLocal is None or AgentBinding is None:
             return []
         try:
@@ -115,14 +115,12 @@ class RuntimeQueryService:
             return []
         try:
             active_run_id = self.get_current_run_id()
-            if active_run_id is None:
+            if active_run_id is None and not include_all_runs:
                 return []
-            rows = (
-                sess.query(AgentBinding)
-                .filter(AgentBinding.run_id == active_run_id)
-                .order_by(AgentBinding.agent_name.asc())
-                .all()
-            )
+            query = sess.query(AgentBinding)
+            if not include_all_runs:
+                query = query.filter(AgentBinding.run_id == active_run_id)
+            rows = query.order_by(AgentBinding.updated_at.desc(), AgentBinding.agent_name.asc()).all()
             out: List[Dict[str, Any]] = []
             for row in rows:
                 meta_raw = getattr(row, "meta", None)

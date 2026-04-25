@@ -44,6 +44,9 @@ def test_runtime_query_service_returns_only_active_run_agent_bindings():
     assert rows[0]["run_id"] == "RUN-AGENT-SCOPE-A"
     assert rows[0]["meta"]["strategy"] == "mean_revert"
 
+    all_rows = RuntimeQueryService().list_agent_bindings(include_all_runs=True)
+    assert {"mean_revert001", "momentum_chase001"} <= {row["agent_name"] for row in all_rows}
+
     if hasattr(clk, "configure"):
         clk.configure(run_id="")
 

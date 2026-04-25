@@ -184,8 +184,23 @@ class AgentsPanelAdapter(PanelAdapter):
             self._table.setColumnCount(len(self.COLS))  # type: ignore
             self._table.setHorizontalHeaderLabels(self.COLS)  # type: ignore
             try:
-                self._table.setSelectionBehavior(QAbstractItemView.SelectRows)  # type: ignore[attr-defined]
-                self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)  # type: ignore[attr-defined]
+                select_rows = getattr(QAbstractItemView, "SelectRows", None)
+                if select_rows is None:
+                    select_rows = getattr(getattr(QAbstractItemView, "SelectionBehavior", object), "SelectRows", None)
+                extended = getattr(QAbstractItemView, "ExtendedSelection", None)
+                if extended is None:
+                    extended = getattr(getattr(QAbstractItemView, "SelectionMode", object), "ExtendedSelection", None)
+                if select_rows is not None:
+                    self._table.setSelectionBehavior(select_rows)  # type: ignore[attr-defined]
+                if extended is not None:
+                    self._table.setSelectionMode(extended)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                if hasattr(self._table, "setDragEnabled"):
+                    self._table.setDragEnabled(False)  # type: ignore[attr-defined]
+                if hasattr(self._table, "setAlternatingRowColors"):
+                    self._table.setAlternatingRowColors(True)  # type: ignore[attr-defined]
             except Exception:
                 pass
             main_v.addWidget(self._table)  # type: ignore
@@ -470,6 +485,18 @@ class AgentsPanelAdapter(PanelAdapter):
                 if sel_model is not None:
                     try:
                         selected_rows = [idx.row() for idx in sel_model.selectedRows()]  # type: ignore[attr-defined]
+                    except Exception:
+                        selected_rows = []
+                if not selected_rows and table is not None:
+                    try:
+                        selected_items = getattr(table, "selectedItems", lambda: [])()
+                        selected_rows = sorted(
+                            {
+                                int(getattr(item, "row", lambda: -1)())
+                                for item in selected_items
+                                if int(getattr(item, "row", lambda: -1)()) >= 0
+                            }
+                        )
                     except Exception:
                         selected_rows = []
                 if not selected_rows:

@@ -81,6 +81,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.setWindowTitle("StockSim Frontend")  # type: ignore
             except Exception:  # pragma: no cover
                 pass
+        try:
+            if hasattr(self, 'setMinimumSize'):
+                self.setMinimumSize(900, 600)  # type: ignore[attr-defined]
+            if hasattr(self, 'resize'):
+                self.resize(1280, 820)  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self._init_menu()
         self._init_window_style()
         self._restore_layout_safe()  # 启动时恢复

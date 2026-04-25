@@ -47,6 +47,23 @@ class _MultiFakeTable(_FakeTable):
         return _FakeSelectionModel()
 
 
+class _SelectedItem(_FakeItem):
+    def __init__(self, text: str, row: int):
+        super().__init__(text)
+        self._row = row
+
+    def row(self):
+        return self._row
+
+
+class _SelectedItemsTable(_FakeTable):
+    def selectionModel(self):
+        return None
+
+    def selectedItems(self):
+        return [_SelectedItem("agent-001", 0), _SelectedItem("agent-002", 1)]
+
+
 class _FakeLogic:
     def __init__(self):
         self.control_calls = []
@@ -72,6 +89,21 @@ def test_agents_adapter_control_targets_all_selected_rows():
     logic = _FakeLogic()
     adapter._logic = logic
     adapter._table = _MultiFakeTable()
+    adapter._selected_agent = "agent-001"
+
+    adapter._do_control("start")
+
+    assert logic.control_calls == [
+        ("agent-001", "start"),
+        ("agent-002", "start"),
+    ]
+
+
+def test_agents_adapter_control_falls_back_to_selected_items_rows():
+    adapter = AgentsPanelAdapter()
+    logic = _FakeLogic()
+    adapter._logic = logic
+    adapter._table = _SelectedItemsTable()
     adapter._selected_agent = "agent-001"
 
     adapter._do_control("start")

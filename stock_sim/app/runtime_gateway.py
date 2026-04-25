@@ -71,10 +71,10 @@ class RuntimeGateway:
             strategy=strategy,
         )
 
-    def list_agent_bindings(self) -> List[Dict[str, Any]]:
+    def list_agent_bindings(self, *, include_all_runs: bool = False) -> List[Dict[str, Any]]:
         if self._queries is None:
             return []
-        return self._queries.list_agent_bindings()
+        return self._queries.list_agent_bindings(include_all_runs=include_all_runs)
 
     def list_instruments(self, *, active_only: bool = True) -> List[Dict[str, Any]]:
         if self._queries is None:

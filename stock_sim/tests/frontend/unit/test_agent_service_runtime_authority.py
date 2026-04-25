@@ -3,6 +3,7 @@ from app.services.agent_service import AgentService
 
 class _RuntimeBindingGateway:
     def __init__(self):
+        self.current_run_id = None
         self.rows = [
             {
                 "agent_name": "mean_revert001",
@@ -25,7 +26,8 @@ class _RuntimeBindingGateway:
         ]
         self.meta_updates = []
 
-    def list_agent_bindings(self):
+    def list_agent_bindings(self, *, include_all_runs=False):
+        self.include_all_runs = include_all_runs
         return list(self.rows)
 
     def update_agent_binding_meta(self, agent_id: str, **updates):
@@ -37,16 +39,21 @@ class _RuntimeBindingGateway:
                 row["meta"] = meta
                 break
 
+    def get_current_run_id(self):
+        return self.current_run_id
+
 
 def test_agent_service_hydrates_agents_from_runtime_bindings():
+    gateway = _RuntimeBindingGateway()
     svc = AgentService(
         retail_agent_factory=lambda **_kwargs: None,
         account_bootstrapper=lambda *_args, **_kwargs: None,
-        runtime_gateway=_RuntimeBindingGateway(),
+        runtime_gateway=gateway,
     )
 
     agents = svc.list_agents()
 
+    assert gateway.include_all_runs is True
     assert [agent.agent_id for agent in agents] == ["mean_revert001", "momentum_chase001"]
     assert [agent.strategy for agent in agents] == ["mean_revert", "momentum_chase"]
     assert all(agent.status == "STOPPED" for agent in agents)
@@ -109,6 +116,33 @@ def test_agent_service_recovers_persisted_runtime_status_from_binding_meta():
     assert hydrated.start_time == 2234567000
     assert hydrated.last_heartbeat == 2234567890
     assert hydrated.params_version == 7
+
+
+def test_agent_service_restores_previous_run_agents_as_stopped():
+    gateway = _RuntimeBindingGateway()
+    gateway.current_run_id = "RUN-CURRENT"
+    gateway.rows[0]["run_id"] = "RUN-OLD"
+    gateway.rows[0]["meta"].update(
+        {
+            "run_id": "RUN-OLD",
+            "status": "RUNNING",
+            "start_time": 2234567000,
+            "last_heartbeat": 2234567890,
+        }
+    )
+
+    svc = AgentService(
+        retail_agent_factory=lambda **_kwargs: None,
+        account_bootstrapper=lambda *_args, **_kwargs: None,
+        runtime_gateway=gateway,
+    )
+
+    hydrated = svc.get("mean_revert001")
+
+    assert hydrated is not None
+    assert hydrated.status == "STOPPED"
+    assert hydrated.start_time is None
+    assert hydrated.last_heartbeat is None
 
 
 def test_agent_service_persists_params_version_to_runtime_meta():
