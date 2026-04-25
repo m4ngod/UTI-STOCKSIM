@@ -8,6 +8,31 @@ Retail strategy registry, retail population assignment, and agent-facing strateg
 
 in-progress
 
+## Task 2026-04-25-agents-01
+- **time**: 2026-04-25
+- **status**: done
+- **goal**: add a distinct retail patience parameter and prevent stale passive orders from freezing the market tape
+- **files involved**:
+  - `agents/retail_persona.py`
+  - `agents/retail_calibration.py`
+  - `app/services/runtime_retail_agent.py`
+  - `services/bar_aggregator.py`
+  - `tests/test_retail_persona_model.py`
+  - `tests/test_runtime_event_run_id_contract.py`
+
+### Change summary
+- Added `patience_seconds` as a separate persona parameter from `execution_patience`.
+- `execution_patience` still controls aggressive vs passive order style.
+- `patience_seconds` controls how long finite-patience retail agents tolerate stale held positions and live unfilled orders.
+- `None` patience represents very patient agents whose sell/hold behavior is determined by the existing persona model.
+- Runtime retail now tracks its own live unfilled orders and cancels stale orders when patience expires.
+- Bar aggregation now backfills completed snapshot minutes so missed aggregation windows can still produce 1m bars.
+
+### Database observation
+- The live PostgreSQL run inspected on 2026-04-25 had one symbol with 70 orders and 31 trades.
+- Trades stopped while later sell orders kept resting, leaving large unfilled sell interest.
+- `snapshots_1s` had rows in two real-time minute buckets, but `bars_1m` only had the earlier minute, showing that the aggregator could miss a completed minute.
+
 ## Task 2026-04-24-agents-06
 - **time**: 2026-04-24
 - **status**: done

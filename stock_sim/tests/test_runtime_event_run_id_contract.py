@@ -9,7 +9,7 @@ from stock_sim.persistence import models_init
 from stock_sim.persistence.models_imports import SessionLocal
 from stock_sim.persistence.models_snapshot import Snapshot1s
 from stock_sim.persistence.models_bars import Bar1m
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def test_sim_day_event_can_carry_run_id():
@@ -134,5 +134,59 @@ def test_bar_aggregator_keeps_same_symbol_timestamp_separate_by_run():
         )
         assert [row.run_id for row in rows] == ['RUN-BAR-A', 'RUN-BAR-B']
         assert [row.close for row in rows] == [10.5, 20.5]
+    finally:
+        s.close()
+
+
+def test_bar_aggregator_backfills_completed_snapshot_minutes():
+    models_init.init_models()
+    first_minute = (datetime.utcnow() - timedelta(minutes=6)).replace(second=0, microsecond=0)
+    second_minute = first_minute + timedelta(minutes=1)
+    run_id = 'RUN-BAR-BACKFILL-001'
+    s = SessionLocal()
+    try:
+        for minute_start, first_price, second_price in (
+            (first_minute, 10.0, 10.2),
+            (second_minute, 10.2, 10.4),
+        ):
+            s.add(
+                Snapshot1s(
+                    symbol='BARBF',
+                    run_id=run_id,
+                    ts=minute_start,
+                    last_price=first_price,
+                    volume=100,
+                    turnover=first_price * 100,
+                    sim_day=5,
+                )
+            )
+            s.add(
+                Snapshot1s(
+                    symbol='BARBF',
+                    run_id=run_id,
+                    ts=minute_start + timedelta(seconds=30),
+                    last_price=second_price,
+                    volume=150,
+                    turnover=second_price * 150,
+                    sim_day=5,
+                )
+            )
+        s.commit()
+    finally:
+        s.close()
+
+    agg = BarAggregator(backfill_lookback_minutes=30, max_backfill_minutes=10)
+    agg._aggregate_pending_minutes()
+
+    s = SessionLocal()
+    try:
+        rows = (
+            s.query(Bar1m)
+            .filter(Bar1m.symbol == 'BARBF', Bar1m.run_id == run_id)
+            .order_by(Bar1m.ts.asc())
+            .all()
+        )
+        assert [row.ts for row in rows] == [first_minute, second_minute]
+        assert [row.close for row in rows] == [10.2, 10.4]
     finally:
         s.close()

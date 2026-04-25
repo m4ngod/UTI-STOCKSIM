@@ -19,9 +19,18 @@ from stock_sim.services.sim_clock import current_sim_day, virtual_datetime
 
 
 class BarAggregator:
-    def __init__(self, *, poll_interval: float = 1.0, delay_sec: int = 2):
+    def __init__(
+        self,
+        *,
+        poll_interval: float = 1.0,
+        delay_sec: int = 2,
+        backfill_lookback_minutes: int = 240,
+        max_backfill_minutes: int = 60,
+    ):
         self.poll_interval = poll_interval
         self.delay_sec = delay_sec
+        self.backfill_lookback_minutes = max(1, int(backfill_lookback_minutes))
+        self.max_backfill_minutes = max(1, int(max_backfill_minutes))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._processed_minutes: set[datetime] = set()
@@ -48,20 +57,43 @@ class BarAggregator:
     def _aggregate_pending_minutes(self):
         now = datetime.utcnow()
         target_end = now - timedelta(seconds=self.delay_sec)
-        minute_start = target_end.replace(second=0, microsecond=0)
-        if minute_start >= now.replace(second=0, microsecond=0):
+        latest_safe_minute = target_end.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        if latest_safe_minute < datetime(1970, 1, 1):
             return
-        if minute_start in self._processed_minutes:
-            return
-        self._build_minute_bars(minute_start)
-        self._processed_minutes.add(minute_start)
-        if minute_start.minute == 59:
-            self._build_hour_bar(minute_start.replace(minute=0, second=0, microsecond=0))
-            if minute_start.hour == 23:
-                self._build_day_bar(minute_start.date())
+        for minute_start in self._completed_snapshot_minutes(latest_safe_minute):
+            if minute_start in self._processed_minutes:
+                continue
+            self._build_minute_bars(minute_start)
+            self._processed_minutes.add(minute_start)
+            if minute_start.minute == 59:
+                self._build_hour_bar(minute_start.replace(minute=0, second=0, microsecond=0))
+                if minute_start.hour == 23:
+                    self._build_day_bar(minute_start.date())
         if len(self._processed_minutes) > 2000:
-            cutoff = minute_start - timedelta(days=2)
+            cutoff = latest_safe_minute - timedelta(days=2)
             self._processed_minutes = {m for m in self._processed_minutes if m >= cutoff}
+
+    def _completed_snapshot_minutes(self, latest_safe_minute: datetime) -> list[datetime]:
+        lower_bound = latest_safe_minute - timedelta(minutes=self.backfill_lookback_minutes)
+        upper_bound = latest_safe_minute + timedelta(minutes=1)
+        sess: Session = SessionLocal()
+        try:
+            rows = (
+                sess.query(Snapshot1s.ts)
+                .filter(Snapshot1s.ts >= lower_bound, Snapshot1s.ts < upper_bound)
+                .order_by(Snapshot1s.ts.asc())
+                .all()
+            )
+        finally:
+            sess.close()
+        minutes = sorted(
+            {
+                row[0].replace(second=0, microsecond=0)
+                for row in rows
+                if row and row[0] is not None and row[0].replace(second=0, microsecond=0) <= latest_safe_minute
+            }
+        )
+        return minutes[-self.max_backfill_minutes :]
 
     def _build_minute_bars(self, minute_start: datetime):
         minute_end = minute_start + timedelta(minutes=1)

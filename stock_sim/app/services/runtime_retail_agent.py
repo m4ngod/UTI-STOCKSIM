@@ -58,6 +58,14 @@ class PositionContext:
     unrealized_pnl_norm: float
 
 
+@dataclass
+class ManagedOrder:
+    order_id: str
+    symbol: str
+    side: str
+    submitted_at: float
+
+
 class RuntimeRetailAgent:
     """Lightweight retail auto-trader owned by AgentService.
 
@@ -97,6 +105,7 @@ class RuntimeRetailAgent:
         self._turn = self._stable_agent_key % 997
         self._sell_blocked_until_day: dict[str, int] = {}
         self._passive_side_cooldown_until_turn: dict[tuple[str, str], int] = {}
+        self._managed_orders: dict[str, ManagedOrder] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -148,6 +157,7 @@ class RuntimeRetailAgent:
     def _step(self) -> None:
         if not self._market_time_open():
             return
+        self._enforce_order_patience()
         symbols = engine_registry.symbols()
         if not symbols:
             return
@@ -193,6 +203,7 @@ class RuntimeRetailAgent:
                 account_id=self.agent_id,
             )
         )
+        self._remember_live_order(result, symbol=symbol, side=side)
         if ctx.settlement_cycle >= 1 and side == "sell" and not bool((result or {}).get("ok", True)):
             self._sell_blocked_until_day[symbol] = sim_day
         if not self._is_crossing(ctx, side, price):
@@ -398,12 +409,58 @@ class RuntimeRetailAgent:
 
     def _decision_interval_s(self) -> float:
         if self._persona.family in {"liquidity_noise", "noise"}:
-            return 0.4 + self._rng.random() * 0.5
-        if self._persona.family in {"trend_follow", "buy_the_dip"}:
-            return 0.55 + self._rng.random() * 0.55
-        if self._persona.family == "slow_fundamental_allocator":
-            return 1.0 + self._rng.random() * 0.8
-        return 0.8 + self._rng.random() * 0.6
+            base = 0.4 + self._rng.random() * 0.5
+        elif self._persona.family in {"trend_follow", "buy_the_dip"}:
+            base = 0.55 + self._rng.random() * 0.55
+        elif self._persona.family == "slow_fundamental_allocator":
+            base = 1.0 + self._rng.random() * 0.8
+        else:
+            base = 0.8 + self._rng.random() * 0.6
+        patience_s = self._persona.patience_seconds
+        if patience_s is None:
+            return base
+        return min(base, max(0.25, patience_s / 6.0))
+
+    def _remember_live_order(self, result: dict | None, *, symbol: str, side: str) -> None:
+        if not isinstance(result, dict) or not bool(result.get("ok", True)):
+            return
+        order_id = str(result.get("order_id") or "")
+        status = str(result.get("status") or "").upper()
+        if not order_id:
+            return
+        if status in {"NEW", "PARTIAL"}:
+            self._managed_orders[order_id] = ManagedOrder(
+                order_id=order_id,
+                symbol=symbol,
+                side=side,
+                submitted_at=time.monotonic(),
+            )
+        else:
+            self._managed_orders.pop(order_id, None)
+
+    def _enforce_order_patience(self) -> None:
+        patience_s = self._persona.patience_seconds
+        if patience_s is None or patience_s <= 0 or not self._managed_orders:
+            return
+        now = time.monotonic()
+        stale_order_ids = [
+            order_id
+            for order_id, order in list(self._managed_orders.items())
+            if now - order.submitted_at >= patience_s
+        ]
+        if not stale_order_ids:
+            return
+        trading = self._trading or TradingService()
+        self._trading = trading
+        for order_id in stale_order_ids[:3]:
+            try:
+                result = trading.cancel_order(order_id)
+                if bool((result or {}).get("ok", False)):
+                    metrics.inc("runtime_retail_orders_patience_canceled")
+            except Exception:
+                metrics.inc("runtime_retail_order_patience_cancel_error")
+            finally:
+                self._managed_orders.pop(order_id, None)
 
     def _cold_start_parity(self, symbol: str) -> bool:
         return (_stable_agent_key(f"{self.agent_id}:{symbol}") % 2) == 0

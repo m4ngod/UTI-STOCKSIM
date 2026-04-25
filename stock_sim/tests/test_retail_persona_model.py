@@ -11,6 +11,7 @@ from agents.retail_persona import (
     courage_effective,
     hold_probability,
     plan_retail_decision,
+    patience_exit_probability,
     sample_retail_persona,
     transform_loss_aversion,
     utility,
@@ -73,6 +74,7 @@ def test_mean_revert_plan_uses_partial_expected_price_not_full_reversion():
         entry_selectiveness=1.0,
         target_conservatism=0.5,
         execution_patience=0.4,
+        patience_seconds=30.0,
         position_budget=1.0,
         profit_realization_bias=1.0,
         crowd_susceptibility=0.2,
@@ -107,6 +109,7 @@ def test_slow_fundamental_allocator_builds_buy_plan_when_price_is_below_anchor()
         entry_selectiveness=1.1,
         target_conservatism=0.72,
         execution_patience=0.8,
+        patience_seconds=None,
         position_budget=1.25,
         profit_realization_bias=0.9,
         crowd_susceptibility=0.12,
@@ -128,3 +131,47 @@ def test_slow_fundamental_allocator_builds_buy_plan_when_price_is_below_anchor()
     assert plan.action == "buy"
     assert plan.expected_price > market.current_price
     assert plan.quantity_lots >= 1
+
+
+def test_patience_seconds_adds_time_based_exit_pressure():
+    persona = RetailPersona(
+        agent_id="fast-001",
+        strategy="noise",
+        family="noise",
+        loss_aversion_raw=0.3,
+        courage_raw=0.35,
+        thesis_horizon_bars=6,
+        entry_selectiveness=0.9,
+        target_conservatism=0.45,
+        execution_patience=0.25,
+        patience_seconds=3.0,
+        position_budget=1.0,
+        profit_realization_bias=1.0,
+        crowd_susceptibility=0.5,
+    )
+    fresh = RetailPositionSnapshot(quantity=10, available_qty=10, avg_price=10.0, holding_time_s=1.0, unrealized_pnl_norm=0.0)
+    stale = RetailPositionSnapshot(quantity=10, available_qty=10, avg_price=10.0, holding_time_s=12.0, unrealized_pnl_norm=0.0)
+
+    assert patience_exit_probability(persona, fresh, expected_edge=0.0, thesis_quality=0.2) == 0.0
+    assert patience_exit_probability(persona, stale, expected_edge=0.0, thesis_quality=0.2) > 0.5
+
+
+def test_none_patience_leaves_time_exit_to_other_persona_inputs():
+    persona = RetailPersona(
+        agent_id="patient-001",
+        strategy="slow_fundamental_allocator",
+        family="slow_fundamental_allocator",
+        loss_aversion_raw=0.3,
+        courage_raw=0.65,
+        thesis_horizon_bars=18,
+        entry_selectiveness=1.1,
+        target_conservatism=0.7,
+        execution_patience=0.85,
+        patience_seconds=None,
+        position_budget=1.2,
+        profit_realization_bias=0.9,
+        crowd_susceptibility=0.1,
+    )
+    stale = RetailPositionSnapshot(quantity=10, available_qty=10, avg_price=10.0, holding_time_s=600.0, unrealized_pnl_norm=0.0)
+
+    assert patience_exit_probability(persona, stale, expected_edge=-0.02, thesis_quality=0.0) == 0.0

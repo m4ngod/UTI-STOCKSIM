@@ -1,4 +1,6 @@
-from app.services.runtime_retail_agent import MarketContext, RuntimeRetailAgent
+import time
+
+from app.services.runtime_retail_agent import ManagedOrder, MarketContext, RuntimeRetailAgent
 from services.sim_clock import ensure_sim_clock_started
 
 
@@ -35,10 +37,15 @@ class _FakeEngine:
 class _FakeTradingService:
     def __init__(self):
         self.calls = []
+        self.cancel_calls = []
 
     def submit_order(self, req):
         self.calls.append(req)
         return {"ok": True}
+
+    def cancel_order(self, order_id):
+        self.cancel_calls.append(order_id)
+        return {"ok": True, "order_id": order_id}
 
 
 def test_runtime_retail_waits_for_clock_start(monkeypatch):
@@ -128,3 +135,30 @@ def test_runtime_retail_passive_quotes_seed_empty_book_on_both_sides():
 
     assert agent._price_for_side(ctx, "buy", aggressive=False) == 9.99
     assert agent._price_for_side(ctx, "sell", aggressive=False) == 10.01
+
+
+def test_runtime_retail_patience_cancels_stale_live_orders():
+    fake_trading = _FakeTradingService()
+    agent = RuntimeRetailAgent(
+        agent_id="retail-impatient-001",
+        strategy="liquidity_noise",
+        trading_service=fake_trading,
+        seed=1,
+    )
+    agent._persona = agent._persona.__class__(
+        **{
+            **agent._persona.__dict__,
+            "patience_seconds": 2.0,
+        }
+    )
+    agent._managed_orders["O-STALE"] = ManagedOrder(
+        order_id="O-STALE",
+        symbol="AAA",
+        side="buy",
+        submitted_at=time.monotonic() - 5.0,
+    )
+
+    agent._enforce_order_patience()
+
+    assert fake_trading.cancel_calls == ["O-STALE"]
+    assert agent._managed_orders == {}

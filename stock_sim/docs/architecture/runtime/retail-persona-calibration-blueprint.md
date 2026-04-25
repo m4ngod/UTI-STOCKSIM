@@ -160,6 +160,7 @@ The current runtime persona model exposes these main axes:
 - `entry_selectiveness`
 - `target_conservatism`
 - `execution_patience`
+- `patience_seconds`
 - `position_budget`
 - `profit_realization_bias`
 - `crowd_susceptibility`
@@ -170,6 +171,7 @@ Recommended interpretation:
 - tune `loss_aversion_raw` first when risk shrinking, panic exits, and add-to-loser behavior feel off
 - tune `courage_raw` only after `loss_aversion_raw` is already sensible
 - tune `execution_patience` when the passive/aggressive order mix is unrealistic
+- tune `patience_seconds` when passive orders or stale positions make the market stop changing; `None` means no extra time-based impatience and the sell decision is left to loss aversion, courage, thesis quality, invalidation, and target logic
 - tune `position_budget` when the market moves but trade sizes feel too small or too large
 
 Avoid simultaneously widening every parameter distribution. First set family target means, then widen only the one or two dimensions that produce visible within-family diversity.

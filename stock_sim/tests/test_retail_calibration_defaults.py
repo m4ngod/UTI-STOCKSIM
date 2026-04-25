@@ -33,6 +33,7 @@ def test_retail_calibration_profiles_have_ordered_bands():
             profile.median_holding_bars,
             profile.expected_price_capture,
             profile.execution_patience,
+            profile.finite_patience_seconds,
             profile.loss_aversion_raw,
             profile.courage_raw,
         ):

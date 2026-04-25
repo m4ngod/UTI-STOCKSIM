@@ -17,6 +17,7 @@ class FamilyCalibrationProfile:
     median_holding_bars: CalibrationBand
     expected_price_capture: CalibrationBand
     execution_patience: CalibrationBand
+    finite_patience_seconds: CalibrationBand
     loss_aversion_raw: CalibrationBand
     courage_raw: CalibrationBand
 
@@ -37,6 +38,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(5.0, 9.0, 16.0),
         expected_price_capture=CalibrationBand(0.42, 0.58, 0.78),
         execution_patience=CalibrationBand(0.12, 0.32, 0.58),
+        finite_patience_seconds=CalibrationBand(4.0, 18.0, 34.0),
         loss_aversion_raw=CalibrationBand(0.12, 0.32, 0.56),
         courage_raw=CalibrationBand(0.42, 0.65, 0.90),
     ),
@@ -46,6 +48,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(6.0, 10.0, 18.0),
         expected_price_capture=CalibrationBand(0.25, 0.42, 0.62),
         execution_patience=CalibrationBand(0.30, 0.52, 0.80),
+        finite_patience_seconds=CalibrationBand(14.0, 48.0, 95.0),
         loss_aversion_raw=CalibrationBand(0.28, 0.52, 0.82),
         courage_raw=CalibrationBand(0.28, 0.48, 0.72),
     ),
@@ -55,6 +58,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(5.0, 8.0, 14.0),
         expected_price_capture=CalibrationBand(0.18, 0.34, 0.52),
         execution_patience=CalibrationBand(0.18, 0.38, 0.64),
+        finite_patience_seconds=CalibrationBand(6.0, 22.0, 48.0),
         loss_aversion_raw=CalibrationBand(0.20, 0.40, 0.68),
         courage_raw=CalibrationBand(0.36, 0.58, 0.84),
     ),
@@ -64,6 +68,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(4.0, 7.0, 12.0),
         expected_price_capture=CalibrationBand(0.08, 0.20, 0.36),
         execution_patience=CalibrationBand(0.24, 0.44, 0.72),
+        finite_patience_seconds=CalibrationBand(5.0, 18.0, 36.0),
         loss_aversion_raw=CalibrationBand(0.38, 0.62, 0.88),
         courage_raw=CalibrationBand(0.18, 0.36, 0.58),
     ),
@@ -73,6 +78,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(12.0, 20.0, 36.0),
         expected_price_capture=CalibrationBand(0.16, 0.28, 0.42),
         execution_patience=CalibrationBand(0.52, 0.72, 0.92),
+        finite_patience_seconds=CalibrationBand(60.0, 150.0, 240.0),
         loss_aversion_raw=CalibrationBand(0.18, 0.38, 0.62),
         courage_raw=CalibrationBand(0.36, 0.56, 0.78),
     ),
@@ -82,6 +88,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(2.0, 4.0, 8.0),
         expected_price_capture=CalibrationBand(0.05, 0.14, 0.24),
         execution_patience=CalibrationBand(0.10, 0.30, 0.62),
+        finite_patience_seconds=CalibrationBand(2.5, 10.0, 24.0),
         loss_aversion_raw=CalibrationBand(0.14, 0.32, 0.58),
         courage_raw=CalibrationBand(0.26, 0.46, 0.74),
     ),
@@ -91,6 +98,7 @@ FAMILY_CALIBRATION_PROFILES: dict[str, FamilyCalibrationProfile] = {
         median_holding_bars=CalibrationBand(1.0, 3.0, 6.0),
         expected_price_capture=CalibrationBand(0.04, 0.10, 0.18),
         execution_patience=CalibrationBand(0.08, 0.24, 0.56),
+        finite_patience_seconds=CalibrationBand(2.5, 8.0, 24.0),
         loss_aversion_raw=CalibrationBand(0.12, 0.28, 0.54),
         courage_raw=CalibrationBand(0.24, 0.42, 0.70),
     ),

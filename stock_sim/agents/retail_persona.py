@@ -21,6 +21,7 @@ class RetailPersona:
     entry_selectiveness: float
     target_conservatism: float
     execution_patience: float
+    patience_seconds: float | None
     position_budget: float
     profit_realization_bias: float
     crowd_susceptibility: float
@@ -100,6 +101,7 @@ def sample_retail_persona(agent_id: str, strategy: str, *, seed: int | None = No
         entry_selectiveness=params["entry_selectiveness"],
         target_conservatism=params["target_conservatism"],
         execution_patience=params["execution_patience"],
+        patience_seconds=params["patience_seconds"],
         position_budget=params["position_budget"],
         profit_realization_bias=params["profit_realization_bias"],
         crowd_susceptibility=params["crowd_susceptibility"],
@@ -258,6 +260,27 @@ def _plan_position_action(
             aggressive=True,
         )
 
+    patience_p = patience_exit_probability(
+        persona,
+        position,
+        expected_edge=expected_edge,
+        thesis_quality=thesis_quality,
+    )
+    if patience_p > 0.0 and rng.random() < patience_p:
+        quantity_lots = max(1, position.available_qty // max(market.lot_size, 1))
+        reduce_only = patience_p < 0.72 and position.available_qty > market.lot_size
+        return RetailDecisionPlan(
+            action="reduce" if reduce_only else "exit",
+            expected_price=expected_price,
+            expected_edge=expected_edge,
+            conviction=max(0.45, patience_p),
+            thesis_quality=thesis_quality,
+            invalidation_score=invalidation_score,
+            risk_multiplier=risk_multiplier,
+            quantity_lots=max(1, quantity_lots // (2 if reduce_only else 1)),
+            aggressive=patience_p >= 0.55,
+        )
+
     favorable_inventory_edge = max(0.0, (market.current_price - entry_price) / entry_price)
     take_profit_pressure = favorable_inventory_edge * (1.0 + persona.profit_realization_bias)
     if expected_edge < 0 and favorable_inventory_edge > 0.004:
@@ -337,6 +360,34 @@ def hold_probability(
     )
     z_hold = theta0 + alpha_c * b + alpha_q * q_thesis - pressure
     return _sigmoid(z_hold)
+
+
+def patience_exit_probability(
+    persona: RetailPersona,
+    position: RetailPositionSnapshot,
+    *,
+    expected_edge: float,
+    thesis_quality: float,
+) -> float:
+    """Return impatience-driven exit pressure for stale held positions.
+
+    `None` patience means the persona does not add an extra time-based exit
+    motive; loss aversion, courage, thesis quality, and invalidation still drive
+    the ordinary hold/reduce/exit path.
+    """
+
+    patience_s = persona.patience_seconds
+    if patience_s is None or patience_s <= 0 or position.available_qty <= 0:
+        return 0.0
+    age_s = max(0.0, float(position.holding_time_s or 0.0))
+    if age_s <= patience_s:
+        return 0.0
+    overdue_ratio = age_s / max(patience_s, 1e-6) - 1.0
+    thesis_buffer = 1.25 * _clip(thesis_quality, 0.0, 1.0)
+    edge_buffer = 36.0 * max(0.0, expected_edge)
+    courage_buffer = 0.55 * courage_effective(persona.courage_raw)
+    pressure = -1.15 + (1.45 * overdue_ratio) - thesis_buffer - edge_buffer - courage_buffer
+    return _clip(_sigmoid(pressure), 0.0, 0.95)
 
 
 def _expected_price_triplet(
@@ -449,7 +500,7 @@ def _relative_edge(*, current_price: float, expected_price: float, has_inventory
     return max(buy_edge, sell_edge)
 
 
-def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | int]:
+def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | int | None]:
     base = {
         "loss_aversion_raw": rng.uniform(0.18, 0.72),
         "courage_raw": rng.uniform(0.28, 0.78),
@@ -457,6 +508,7 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
         "entry_selectiveness": rng.uniform(0.85, 1.2),
         "target_conservatism": rng.uniform(0.28, 0.72),
         "execution_patience": rng.uniform(0.25, 0.78),
+        "patience_seconds": _sample_patience_seconds(rng, 10.0, 80.0, patient_tail_prob=0.12),
         "position_budget": rng.uniform(0.85, 1.2),
         "profit_realization_bias": rng.uniform(0.85, 1.18),
         "crowd_susceptibility": rng.uniform(0.18, 0.82),
@@ -468,6 +520,7 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
             entry_selectiveness=rng.uniform(0.8, 1.12),
             target_conservatism=rng.uniform(0.22, 0.58),
             execution_patience=rng.uniform(0.12, 0.58),
+            patience_seconds=_sample_patience_seconds(rng, 4.0, 34.0, patient_tail_prob=0.08),
             crowd_susceptibility=rng.uniform(0.55, 0.96),
         )
     elif family == "mean_revert":
@@ -477,6 +530,7 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
             entry_selectiveness=rng.uniform(0.95, 1.35),
             target_conservatism=rng.uniform(0.42, 0.82),
             execution_patience=rng.uniform(0.35, 0.82),
+            patience_seconds=_sample_patience_seconds(rng, 14.0, 95.0, patient_tail_prob=0.15),
         )
     elif family == "buy_the_dip":
         base.update(
@@ -484,6 +538,7 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
             entry_selectiveness=rng.uniform(0.88, 1.18),
             target_conservatism=rng.uniform(0.3, 0.68),
             execution_patience=rng.uniform(0.22, 0.62),
+            patience_seconds=_sample_patience_seconds(rng, 6.0, 48.0, patient_tail_prob=0.10),
             position_budget=rng.uniform(0.92, 1.28),
         )
     elif family == "profit_taking":
@@ -493,6 +548,7 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
             profit_realization_bias=rng.uniform(1.05, 1.35),
             entry_selectiveness=rng.uniform(1.02, 1.32),
             target_conservatism=rng.uniform(0.52, 0.88),
+            patience_seconds=_sample_patience_seconds(rng, 5.0, 36.0, patient_tail_prob=0.08),
         )
     elif family == "slow_fundamental_allocator":
         base.update(
@@ -502,6 +558,7 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
             entry_selectiveness=rng.uniform(1.02, 1.38),
             target_conservatism=rng.uniform(0.5, 0.88),
             execution_patience=rng.uniform(0.48, 0.92),
+            patience_seconds=_sample_patience_seconds(rng, 60.0, 240.0, patient_tail_prob=0.45),
             position_budget=rng.uniform(1.0, 1.45),
             crowd_susceptibility=rng.uniform(0.05, 0.35),
         )
@@ -513,9 +570,22 @@ def _sample_family_params(family: str, rng: random.Random) -> dict[str, float | 
             entry_selectiveness=rng.uniform(0.7, 1.05),
             target_conservatism=rng.uniform(0.18, 0.56),
             execution_patience=rng.uniform(0.15, 0.76),
+            patience_seconds=_sample_patience_seconds(rng, 2.5, 24.0, patient_tail_prob=0.06),
             position_budget=rng.uniform(0.8, 1.1),
         )
     return base
+
+
+def _sample_patience_seconds(
+    rng: random.Random,
+    low: float,
+    high: float,
+    *,
+    patient_tail_prob: float,
+) -> float | None:
+    if rng.random() < patient_tail_prob:
+        return None
+    return rng.uniform(float(low), float(high))
 
 
 def _mean_tail(values: list[float], window: int) -> float:
@@ -601,6 +671,7 @@ __all__ = [
     "utility",
     "courage_effective",
     "hold_probability",
+    "patience_exit_probability",
     "update_persona_state",
     "plan_retail_decision",
 ]
