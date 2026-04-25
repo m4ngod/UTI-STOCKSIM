@@ -38,3 +38,34 @@ def test_market_adapter_merges_frontend_snapshot_batch_into_controller():
     assert detail["snapshot"]["last"] == 12.34
     assert detail["snapshot"]["bid_levels"] == [(12.33, 100.0)]
     assert detail["snapshot"]["ask_levels"] == [(12.35, 120.0)]
+
+
+class _PersistedInstrumentLogic:
+    def __init__(self):
+        self.loaded = 0
+
+    def load_persisted_instruments(self):
+        self.loaded += 1
+        return ["OLD1"]
+
+    def get_view(self):
+        return {
+            "watchlist": {
+                "symbols": ["OLD1"],
+                "snapshots": {"items": [{"symbol": "OLD1"}]},
+            },
+            "selected": None,
+        }
+
+    def detail_view(self):
+        return {}
+
+
+def test_market_adapter_refreshes_persisted_instruments_when_widget_is_created():
+    logic = _PersistedInstrumentLogic()
+    adapter = MarketPanelAdapter().bind(logic)
+
+    _ = adapter.widget()
+
+    assert logic.loaded >= 1
+    assert getattr(adapter._symbol_list, "_items", []) == ["OLD1"]

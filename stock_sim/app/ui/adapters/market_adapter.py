@@ -1164,6 +1164,14 @@ class MarketPanelAdapter(PanelAdapter):
         except Exception:
             self._cancel_clock_state = None
             self._cancel_clock_tick = None
+        try:
+            if self._logic is not None:
+                loader = getattr(self._logic, "load_persisted_instruments", None)
+                if callable(loader):
+                    loader()
+        except Exception:
+            pass
+        self.refresh()
         return root
 
     def __del__(self):  # 释放订阅

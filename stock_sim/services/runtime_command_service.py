@@ -329,6 +329,13 @@ class RuntimeCommandService:
                 if value is None and key not in {"start_time", "last_heartbeat"}:
                     continue
                 merged[key] = value
+            run_id_update = self._normalize_run_id(merged.get("run_id"))
+            if run_id_update is not None:
+                try:
+                    row.run_id = run_id_update
+                    row.touch()
+                except Exception:
+                    pass
             bindings.set_meta(normalized_agent_id, merged)
             try:
                 sess.commit()

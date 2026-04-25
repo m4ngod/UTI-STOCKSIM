@@ -115,6 +115,9 @@ class AgentService:
         runtime_agent = self._ensure_runtime_agent(agent_id, agent=agent)
         now = int(time.time() * 1000)
         if action == "start":
+            run_id = self._active_runtime_run_id()
+            if run_id:
+                self._persist_runtime_agent_meta(agent_id, run_id=run_id)
             if runtime_agent is not None:
                 runtime_agent.start()
             with self._lock:

@@ -195,3 +195,22 @@ def test_agent_service_rehydrates_runtime_retail_executor_before_start():
 
     assert "mean_revert001" in created
     assert created["mean_revert001"].start_calls == 1
+
+
+def test_agent_service_claims_previous_run_agent_when_starting():
+    gateway = _RuntimeBindingGateway()
+    gateway.current_run_id = "RUN-CURRENT"
+    gateway.rows[0]["run_id"] = "RUN-OLD"
+    gateway.rows[0]["meta"].update({"run_id": "RUN-OLD", "status": "STOPPED"})
+
+    svc = AgentService(
+        retail_agent_factory=lambda **_kwargs: None,
+        account_bootstrapper=lambda *_args, **_kwargs: None,
+        runtime_gateway=gateway,
+    )
+
+    started = svc.control("mean_revert001", "start")
+
+    assert started.status == "RUNNING"
+    assert gateway.meta_updates[0] == ("mean_revert001", {"run_id": "RUN-CURRENT"})
+    assert gateway.rows[0]["meta"]["run_id"] == "RUN-CURRENT"
