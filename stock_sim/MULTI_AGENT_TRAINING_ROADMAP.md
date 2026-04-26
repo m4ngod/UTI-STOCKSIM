@@ -83,10 +83,16 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] `RuntimeModelAgent` can run registry-backed subprocess policies without runtime branching.
 - [x] Subprocess adapter failures fall back to `hold` with error metadata instead of crashing the runtime loop.
 
+### Completed in round 10
+
+- [x] Added tensor checkpoint save/load support to `ModelCheckpointService`.
+- [x] Tensor checkpoints materialize `.npz` weight files plus JSON manifests.
+- [x] Tensor checkpoint manifests record tensor names, shapes, dtypes, score, generation, episode, and Hall-of-Fame metadata.
+- [x] Tensor checkpoint rows update `meta_json` with artifact schema, tensor file path, and tensor count.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
-- [ ] Real neural-network weight tensor checkpoint adapter.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

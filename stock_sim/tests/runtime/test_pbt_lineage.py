@@ -1,6 +1,8 @@
 import json
 import random
 
+import numpy as np
+
 from stock_sim.persistence import models_init
 from stock_sim.persistence.models_imports import SessionLocal
 from stock_sim.persistence.models_training import ModelCheckpoint, ModelLineage
@@ -89,6 +91,41 @@ def test_checkpoint_service_writes_json_artifact(tmp_path):
         assert payload["checkpoint_id"] == checkpoint.checkpoint_id
         assert payload["artifact"]["weights_ref"] == "dummy-policy"
         assert json.loads(checkpoint.meta_json)["artifact_written"] is True
+    finally:
+        session.close()
+
+
+def test_checkpoint_service_writes_and_loads_tensor_checkpoint(tmp_path):
+    models_init.init_models()
+    session = SessionLocal()
+    try:
+        service = ModelCheckpointService(session, checkpoint_root=tmp_path)
+        checkpoint = service.save_tensor_checkpoint(
+            model_id="ppo_lstm_v1",
+            agent_id="MODEL_TOP",
+            generation=6,
+            episode_id="episode-tensor",
+            score=2.5,
+            meta={"rank": 1, "framework": "numpy"},
+            tensors={
+                "encoder.weight": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+                "policy.bias": np.array([0.1, -0.1], dtype=np.float32),
+            },
+            hall_of_fame=True,
+        )
+        session.commit()
+
+        manifest_path = tmp_path / "ppo_lstm_v1" / f"{checkpoint.checkpoint_id}.json"
+        tensor_path = tmp_path / "ppo_lstm_v1" / f"{checkpoint.checkpoint_id}.npz"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        loaded = service.load_tensor_checkpoint(checkpoint.checkpoint_id)
+
+        assert manifest["schema"] == "stock_sim.tensor_checkpoint.v1"
+        assert manifest["tensor_file"] == tensor_path.name
+        assert manifest["tensors"]["encoder.weight"]["shape"] == [2, 2]
+        assert tensor_path.exists()
+        assert np.allclose(loaded["tensors"]["encoder.weight"], [[1.0, 2.0], [3.0, 4.0]])
+        assert json.loads(checkpoint.meta_json)["tensor_count"] == 2
     finally:
         session.close()
 

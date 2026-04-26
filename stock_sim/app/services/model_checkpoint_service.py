@@ -83,6 +83,73 @@ class ModelCheckpointService:
         self.s.flush()
         return row
 
+    def save_tensor_checkpoint(
+        self,
+        *,
+        model_id: str,
+        tensors: dict[str, Any],
+        agent_id: str | None,
+        generation: int,
+        episode_id: str | None,
+        score: float | None,
+        meta: dict[str, Any] | None = None,
+        path: str | None = None,
+        hall_of_fame: bool = False,
+    ) -> ModelCheckpoint:
+        if not isinstance(tensors, dict) or not tensors:
+            raise ValueError("tensors must be a non-empty dict")
+        row = self.save_checkpoint(
+            model_id=model_id,
+            agent_id=agent_id,
+            generation=generation,
+            episode_id=episode_id,
+            score=score,
+            meta={**(meta or {}), "artifact_schema": "stock_sim.tensor_checkpoint.v1"},
+            path=path,
+            hall_of_fame=hall_of_fame,
+            write_artifact=False,
+        )
+        manifest_path = Path(row.path)
+        tensor_path = manifest_path.with_suffix(".npz")
+        manifest = self._write_tensor_checkpoint_artifact(
+            manifest_path=manifest_path,
+            tensor_path=tensor_path,
+            checkpoint_id=row.checkpoint_id,
+            model_id=model_id,
+            agent_id=agent_id,
+            generation=int(generation),
+            episode_id=episode_id,
+            score=score,
+            hall_of_fame=hall_of_fame,
+            tensors=tensors,
+            meta=meta or {},
+        )
+        meta_payload = _json_loads(row.meta_json) or {}
+        meta_payload.update(
+            {
+                "artifact_schema": "stock_sim.tensor_checkpoint.v1",
+                "artifact_written": True,
+                "tensor_file": str(tensor_path),
+                "tensor_count": len(manifest.get("tensors") or {}),
+            }
+        )
+        row.meta_json = _json_dumps(meta_payload)
+        self.s.flush()
+        return row
+
+    def load_tensor_checkpoint(self, checkpoint: str | ModelCheckpoint) -> dict[str, Any]:
+        row: ModelCheckpoint | None
+        if isinstance(checkpoint, ModelCheckpoint):
+            row = checkpoint
+        else:
+            raw = str(checkpoint)
+            row = self.s.get(ModelCheckpoint, raw)
+            if row is None and Path(raw).exists():
+                return self._read_tensor_checkpoint_artifact(Path(raw))
+        if row is None:
+            raise ValueError(f"checkpoint not found: {checkpoint}")
+        return self._read_tensor_checkpoint_artifact(Path(row.path))
+
     def mark_hall_of_fame(self, checkpoint_id: str) -> ModelCheckpoint:
         row = self.s.get(ModelCheckpoint, checkpoint_id)
         if row is None:
@@ -168,6 +235,62 @@ class ModelCheckpointService:
         resolved = Path(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(_json_dumps(payload), encoding="utf-8")
+
+    @staticmethod
+    def _write_tensor_checkpoint_artifact(
+        *,
+        manifest_path: Path,
+        tensor_path: Path,
+        checkpoint_id: str,
+        model_id: str,
+        agent_id: str | None,
+        generation: int,
+        episode_id: str | None,
+        score: float | None,
+        hall_of_fame: bool,
+        tensors: dict[str, Any],
+        meta: dict[str, Any],
+    ) -> dict[str, Any]:
+        import numpy as np
+
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        tensor_path.parent.mkdir(parents=True, exist_ok=True)
+        arrays = {str(name): np.asarray(value) for name, value in tensors.items()}
+        np.savez_compressed(tensor_path, **arrays)
+        manifest = {
+            "schema": "stock_sim.tensor_checkpoint.v1",
+            "checkpoint_id": checkpoint_id,
+            "model_id": model_id,
+            "agent_id": agent_id,
+            "generation": int(generation),
+            "episode_id": episode_id,
+            "score": None if score is None else float(score),
+            "hall_of_fame": bool(hall_of_fame),
+            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "tensor_file": tensor_path.name,
+            "tensors": {
+                name: {
+                    "shape": list(array.shape),
+                    "dtype": str(array.dtype),
+                }
+                for name, array in arrays.items()
+            },
+            "meta": dict(meta or {}),
+        }
+        manifest_path.write_text(_json_dumps(manifest), encoding="utf-8")
+        return manifest
+
+    @staticmethod
+    def _read_tensor_checkpoint_artifact(manifest_path: Path) -> dict[str, Any]:
+        import numpy as np
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tensor_path = Path(str(manifest.get("tensor_file") or ""))
+        if not tensor_path.is_absolute():
+            tensor_path = manifest_path.parent / tensor_path
+        with np.load(tensor_path, allow_pickle=False) as data:
+            tensors = {name: data[name].copy() for name in data.files}
+        return {"manifest": manifest, "tensors": tensors}
 
 
 __all__ = ["ModelCheckpointService"]

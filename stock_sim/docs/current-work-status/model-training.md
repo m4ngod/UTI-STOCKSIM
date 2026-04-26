@@ -437,3 +437,45 @@ Continue Phase 5 by adding a subprocess adapter so local model workers can run o
 - Add the first real external model service or Recurrent PPO baseline behind the callable/HTTP/subprocess adapters.
 - Add real neural-network tensor checkpoint materialization when that baseline lands.
 - Build the dedicated Arena panel for training control and observability.
+
+## Task 2026-04-26-model-training-10
+
+### status
+
+done
+
+### goal
+
+Close the existing tensor checkpoint gap without expanding scope: add a real weight artifact adapter that can save and load neural-network-like tensor state separately from the checkpoint DB row.
+
+### files involved
+
+- `app/services/model_checkpoint_service.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_pbt_lineage.py`
+
+### change summary
+
+- Added `ModelCheckpointService.save_tensor_checkpoint(...)`.
+- Added `ModelCheckpointService.load_tensor_checkpoint(...)`.
+- Tensor checkpoints now write a compressed `.npz` tensor artifact plus a JSON manifest.
+- Manifest metadata includes tensor names, shapes, dtypes, score, generation, episode id, model id, agent id, and Hall-of-Fame status.
+- Checkpoint DB rows now record tensor artifact schema, tensor file path, and tensor count in `meta_json`.
+- Updated the roadmap progress ledger with round 10 completion markers and removed the tensor checkpoint item from the not-done list.
+
+### verification
+
+- `tests/runtime/test_pbt_lineage.py`
+
+### impact / risk
+
+- Positive: future PPO/LSTM or external model adapters now have a concrete tensor artifact format to write into.
+- Positive: checkpoint metadata and physical tensor files can be loaded together for restore or inspection.
+- Risk: no PPO/LSTM model is trained yet; this is the storage adapter for real weights, not the model algorithm itself.
+
+### next actions
+
+- Implement the first real model behind the existing callable, HTTP, or subprocess adapter boundary.
+- Build the dedicated Arena panel for training control and observability.
