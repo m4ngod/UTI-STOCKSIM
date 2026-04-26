@@ -458,8 +458,9 @@ class _DetailChartWidget(QWidget):
                         path.lineTo(point)
 
             painter.setPen(line_pen)
-            painter.setBrush(QBrush(QColor(0, 220, 255)))
+            painter.setBrush(Qt.NoBrush)
             painter.drawPath(path)
+            painter.setBrush(QBrush(QColor(0, 220, 255)))
             for index in range(min(len(close), bars)):
                 x = self._map_x(index, float(plot.left()), float(plot.width()), bars)
                 y = self._map_y(float(close[index]), float(plot.top()), float(plot.height()), y_min, y_max)
