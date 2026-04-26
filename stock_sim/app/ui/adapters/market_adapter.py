@@ -1038,6 +1038,7 @@ class MarketPanelAdapter(PanelAdapter):
                     try:
                         sym = (item.text() or "").strip()  # type: ignore
                         self._handle_select(sym)
+                        self._open_symbol_detail_page(sym)
                     except Exception:
                         pass
                 self._symbol_list.itemDoubleClicked.connect(_on_dbl)  # type: ignore[attr-defined]
@@ -1638,6 +1639,37 @@ class MarketPanelAdapter(PanelAdapter):
                 self.refresh()
         except Exception:
             pass
+
+    def _open_symbol_detail_page(self, symbol: str) -> bool:
+        symbol = (symbol or "").strip()
+        if not symbol:
+            return False
+        controller = getattr(self._logic, "_ctl", None) if self._logic is not None else None
+        service = getattr(self._logic, "_svc", None) if self._logic is not None else None
+        opened = None
+        if callable(open_symbol_page):
+            try:
+                opened = open_symbol_page(
+                    symbol,
+                    controller=controller,
+                    service=service,
+                    timeframe="1d",
+                )
+            except TypeError:
+                try:
+                    opened = open_symbol_page(symbol)  # type: ignore[misc]
+                except Exception:
+                    opened = None
+            except Exception:
+                opened = None
+        if opened is not None:
+            return True
+        if callable(_open_panel):
+            try:
+                return _open_panel(f"symbol:{symbol}") is not None
+            except Exception:
+                return False
+        return False
 
     def _handle_select(self, symbol: str):
         symbol = (symbol or "").strip()
