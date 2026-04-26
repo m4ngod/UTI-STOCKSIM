@@ -398,6 +398,22 @@ class SymbolDetailPanel:
         for t in trades:
             self.add_trade(t)
 
+    def add_bar_update(self, payload: Dict[str, Any]):  # noqa: D401
+        if not isinstance(payload, dict):
+            return
+        bar_symbol = str(payload.get('symbol') or '').strip()
+        with self._lock:
+            if self._symbol is None or bar_symbol != self._symbol:
+                return
+        try:
+            self._svc.record_runtime_bar_update(payload)
+        except Exception:
+            return
+        try:
+            self.refresh()
+        except Exception:
+            pass
+
     def get_view(self) -> Dict[str, Any]:
         # 轮询执行器回调 (轻量, 由 UI 周期调用 get_view 即可触发更新)
         try:
@@ -601,6 +617,9 @@ class MarketPanel:
 
     def detail_view(self) -> Dict[str, Any]:  # 代理
         return self._detail.get_view()
+
+    def add_bar_update(self, payload):
+        self._detail.add_bar_update(payload)
 
     # ---------- View ----------
     def get_view(self) -> Dict[str, Any]:

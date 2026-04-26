@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Set
+from datetime import date, datetime, timezone
 import math
 import threading
 import time
@@ -170,7 +171,7 @@ class MarketDataService:
             meta.setdefault("limit_pct", 0.10)
             self._symbol_meta[sym] = meta
             for timeframe in ("1m", "5m", "15m", "60m", "1d"):
-                bucket_ts = self._bucket_start_ms(event_ts, timeframe)
+                bucket_ts = self._runtime_trade_bucket_start_ms(event_ts, timeframe)
                 key = (sym, timeframe, bucket_ts)
                 bar = self._realtime_bars.get(key)
                 if bar is None:
@@ -204,6 +205,57 @@ class MarketDataService:
                     history_scope_resolved="runtime-trade-cache",
                 )
         metrics.inc("market_runtime_trade_bar")
+
+    def record_runtime_bar_update(self, payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        sym = str(payload.get("symbol") or "").strip().upper()
+        timeframe = self._normalize_timeframe(str(payload.get("timeframe") or ""))
+        raw_bar = payload.get("bar") or {}
+        if not sym or timeframe is None or not isinstance(raw_bar, dict):
+            return
+        try:
+            open_p = float(raw_bar.get("open") or 0.0)
+            high_p = float(raw_bar.get("high") or 0.0)
+            low_p = float(raw_bar.get("low") or 0.0)
+            close_p = float(raw_bar.get("close") or 0.0)
+            volume = float(raw_bar.get("volume") or 0.0)
+        except Exception:
+            return
+        if open_p <= 0 or high_p <= 0 or low_p <= 0 or close_p <= 0:
+            return
+        ts = self._bar_event_ts_ms(raw_bar.get("ts"), timeframe, payload.get("sim_day"))
+        bar: BarDict = {
+            "ts": ts,
+            "open": open_p,
+            "high": high_p,
+            "low": low_p,
+            "close": close_p,
+            "volume": volume,
+        }
+        requested_scope = self._requested_history_scope()
+        with self._lock:
+            if sym not in self._runtime_symbols:
+                self._cache.clear_symbol(sym)
+                self._runtime_symbols.add(sym)
+            meta = dict(self._symbol_meta.get(sym) or {})
+            meta.setdefault("reference_price", open_p)
+            meta.setdefault("price_step", 0.01)
+            meta.setdefault("limit_pct", 0.10)
+            self._symbol_meta[sym] = meta
+            self._realtime_bars[(sym, timeframe, ts)] = bar
+            self.append_realtime(sym, timeframe, bar)
+            self._record_series_path_meta(
+                sym,
+                timeframe,
+                source="runtime-persisted-bars",
+                authoritative=True,
+                runtime_backed=True,
+                refresh="bar-event-append",
+                history_scope_requested=requested_scope,
+                history_scope_resolved="active-run" if payload.get("run_id") else "runtime-bar-event",
+            )
+        metrics.inc("market_runtime_bar_update")
 
     def get_closes(self, symbol: str, timeframe: Timeframe) -> Optional[np.ndarray]:
         return self._cache.get_close(symbol, timeframe)
@@ -345,6 +397,58 @@ class MarketDataService:
     def _bucket_start_ms(ts_ms: int, timeframe: Timeframe) -> int:
         interval = _TIMEFRAME_MS[timeframe]
         return int(ts_ms // interval) * interval
+
+    def _runtime_trade_bucket_start_ms(self, ts_ms: int, timeframe: Timeframe) -> int:
+        if timeframe == "1d":
+            try:
+                sim_day = int(self._runtime_gateway.get_current_sim_day() or 0)
+            except Exception:
+                sim_day = 0
+            return max(sim_day, 0) * _TIMEFRAME_MS["1d"]
+        return self._bucket_start_ms(ts_ms, timeframe)
+
+    @staticmethod
+    def _normalize_timeframe(timeframe: str) -> Timeframe | None:
+        mapping = {
+            "1m": "1m",
+            "5m": "5m",
+            "15m": "15m",
+            "60m": "60m",
+            "1h": "60m",
+            "1d": "1d",
+        }
+        value = mapping.get(str(timeframe or "").strip().lower())
+        return value  # type: ignore[return-value]
+
+    @staticmethod
+    def _bar_event_ts_ms(raw_ts: object, timeframe: Timeframe, raw_sim_day: object = None) -> int:
+        if timeframe == "1d":
+            try:
+                sim_day = int(raw_sim_day)  # type: ignore[arg-type]
+            except Exception:
+                sim_day = None
+            if sim_day is not None:
+                return max(sim_day, 0) * _TIMEFRAME_MS["1d"]
+        if isinstance(raw_ts, (int, float)):
+            ts_num = int(raw_ts)
+            return ts_num if ts_num >= 10_000_000_000 else ts_num * 1000
+        if isinstance(raw_ts, str) and raw_ts.strip():
+            text = raw_ts.strip()
+            try:
+                ts_num = int(text)
+                return ts_num if ts_num >= 10_000_000_000 else ts_num * 1000
+            except Exception:
+                pass
+            try:
+                dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if timeframe == "1d" and dt.year <= 1:
+                    return max((dt.date() - date(1, 1, 1)).days, 0) * _TIMEFRAME_MS["1d"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except Exception:
+                pass
+        return int(time.time() * 1000)
 
     def _runtime_fetch_bars(self, symbol: str, timeframe: Timeframe, limit: int) -> List[BarDict]:
         return self._runtime_gateway.get_bars(symbol, timeframe, limit=limit)  # type: ignore[return-value]

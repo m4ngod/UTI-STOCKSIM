@@ -953,6 +953,7 @@ class MarketPanelAdapter(PanelAdapter):
         # 新增：取消订阅句柄
         self._cancel_instrument_created = None
         self._cancel_trade = None
+        self._cancel_bar_update = None
         self._cancel_batch = None
         # 新增：clock 订阅取消句柄
         self._cancel_clock_state = None
@@ -1114,6 +1115,27 @@ class MarketPanelAdapter(PanelAdapter):
             self._cancel_trade = None
         # 新增：订阅前端批量快照并节流刷新
         try:
+            def _on_bar_updated(_topic: str, payload: Dict[str, Any]):
+                try:
+                    if not isinstance(payload, dict):
+                        return
+                    sym = str(payload.get('symbol') or '')
+                    if not sym:
+                        return
+                    if self._selected_symbol and sym == self._selected_symbol and self._logic is not None:
+                        add_bar_update = getattr(self._logic, 'add_bar_update', None)
+                        if callable(add_bar_update):
+                            try:
+                                add_bar_update(payload)
+                            except Exception:
+                                pass
+                        self.refresh()
+                except Exception:
+                    pass
+            self._cancel_bar_update = subscribe_topic("BarUpdated", _on_bar_updated, async_mode=False)
+        except Exception:
+            self._cancel_bar_update = None
+        try:
             def _on_batch(_topic: str, payload: Dict[str, Any]):
                 try:
                     snapshots = []
@@ -1190,6 +1212,11 @@ class MarketPanelAdapter(PanelAdapter):
                             c()
                     except Exception:
                         pass
+        except Exception:
+            pass
+        try:
+            if callable(self._cancel_bar_update):
+                self._cancel_bar_update()
         except Exception:
             pass
         try:
@@ -1753,6 +1780,7 @@ class SymbolDetailPanelAdapter(PanelAdapter):
         self._detail = SymbolDetailAdapter()
         self._root: Optional[Any] = None
         self._cancel_trade = None
+        self._cancel_bar_update = None
         self._cancel_batch = None
 
     def _create_widget(self):  # type: ignore[override]
@@ -1774,6 +1802,21 @@ class SymbolDetailPanelAdapter(PanelAdapter):
             self._cancel_trade = _subscribe_trade_topics(_on_trade)
         except Exception:
             self._cancel_trade = None
+        try:
+            def _on_bar_updated(_topic: str, payload: Dict[str, Any]):
+                if not isinstance(payload, dict) or self._logic is None:
+                    return
+                add_bar_update = getattr(self._logic, "add_bar_update", None)
+                if callable(add_bar_update):
+                    try:
+                        add_bar_update(payload)
+                    except Exception:
+                        pass
+                self.refresh()
+
+            self._cancel_bar_update = subscribe_topic("BarUpdated", _on_bar_updated, async_mode=False)
+        except Exception:
+            self._cancel_bar_update = None
         try:
             def _on_batch(_topic: str, payload: Dict[str, Any]):
                 snapshots = payload.get("snapshots") if isinstance(payload, dict) else None
@@ -1822,7 +1865,7 @@ class SymbolDetailPanelAdapter(PanelAdapter):
             pass
 
     def __del__(self):
-        for cancel in (self._cancel_batch,):
+        for cancel in (self._cancel_batch, self._cancel_bar_update):
             try:
                 if callable(cancel):
                     cancel()
