@@ -28,6 +28,7 @@ This directory stores module-level work status notes.
 - `engine.md`
 - `account.md`
 - `agents.md`
+- `model-training.md`
 
 ## Status labels
 

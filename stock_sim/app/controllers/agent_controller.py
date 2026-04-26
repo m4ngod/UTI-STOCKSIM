@@ -64,3 +64,22 @@ class AgentController:
         cfg = BatchCreateConfig(count=count, agent_type=agent_type, name_prefix=name_prefix)
         return self._service.batch_create_retail(cfg)
 
+    def create_model_agent(
+        self,
+        *,
+        agent_id: str | None = None,
+        model_id: str = "hold_model_v1",
+        name: str | None = None,
+        mode: str = "inference",
+        initial_cash: float = 100_000.0,
+        episode_id: str | None = None,
+    ) -> AgentMetaDTO:
+        return self._service.create_model_agent(
+            agent_id=agent_id,
+            model_id=model_id,
+            name=name,
+            mode=mode,
+            initial_cash=initial_cash,
+            episode_id=episode_id,
+        )
+

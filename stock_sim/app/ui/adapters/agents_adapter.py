@@ -83,11 +83,11 @@ except Exception:  # pragma: no cover - headless fallback
         def __init__(self, *_, **__): pass
         def addWidget(self, *_): pass
     class QTableWidget:  # type: ignore
-        def __init__(self, *_, **__): self._rows=[]
-        def setColumnCount(self, n): pass
+        def __init__(self, *_, **__): self._rows=[]; self._cols=0
+        def setColumnCount(self, n): self._cols=int(n)
         def setHorizontalHeaderLabels(self, labels): pass
         def rowCount(self): return len(self._rows)
-        def insertRow(self, r): self._rows.insert(r, [None]*5)
+        def insertRow(self, r): self._rows.insert(r, [None]*max(self._cols, 1))
         def removeRow(self, r): self._rows.pop(r)
         def setItem(self, r,c,item): self._rows[r][c]=item
         def item(self, r,c):
@@ -119,7 +119,7 @@ except Exception:  # pragma: no cover - headless fallback
         def text(self): return self._text
         def setText(self, t): self._text=t
     class QComboBox:  # type: ignore
-        def __init__(self): self._items=["Retail","MultiStrategyRetail"]; self._idx=0
+        def __init__(self): self._items=["Retail","MultiStrategyRetail"]; self._idx=0; self.currentIndexChanged=_DummySig()
         def addItems(self, items): self._items=list(items)
         def currentText(self): return self._items[self._idx] if self._items else "Retail"
     class QAbstractItemView:  # type: ignore
@@ -135,7 +135,19 @@ _AGENT_COMPLETED_TOPIC = "agent.batch.create.completed"
 _AGENT_STATUS_CHANGED = "agent-status-changed"  # 预留：若后端发布状态事件，将自动接入
 
 class AgentsPanelAdapter(PanelAdapter):
-    COLS = ["agent_id", "name", "type", "strategy", "status", "params_version", "heartbeat_stale"]
+    COLS = [
+        "agent_id",
+        "type",
+        "family_model",
+        "status",
+        "mode",
+        "episode_id",
+        "last_reward",
+        "equity",
+        "pnl",
+        "last_action",
+        "heartbeat_stale",
+    ]
 
     def __init__(self):
         super().__init__()
@@ -146,6 +158,7 @@ class AgentsPanelAdapter(PanelAdapter):
         self._btn_start: Optional[Any] = None
         self._btn_pause: Optional[Any] = None
         self._btn_stop: Optional[Any] = None
+        self._filter_combo: Optional[Any] = None
         # 新增：批量创建按钮
         self._btn_batch: Optional[Any] = None
         self._progress_label: Optional[Any] = None
@@ -180,6 +193,16 @@ class AgentsPanelAdapter(PanelAdapter):
         root = QWidget()  # type: ignore
         try:
             main_v = QVBoxLayout(root)  # type: ignore
+            filter_h = QHBoxLayout()  # type: ignore
+            filter_h.addWidget(QLabel("View"))  # type: ignore
+            self._filter_combo = QComboBox()  # type: ignore
+            try:
+                self._filter_combo.addItems(["All", "Retail", "Model"])  # type: ignore[attr-defined]
+                self._filter_combo.currentIndexChanged.connect(lambda *_: self._on_filter_changed())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            filter_h.addWidget(self._filter_combo)  # type: ignore
+            main_v.addLayout(filter_h)  # type: ignore
             self._table = QTableWidget(0, len(self.COLS))  # type: ignore
             self._table.setColumnCount(len(self.COLS))  # type: ignore
             self._table.setHorizontalHeaderLabels(self.COLS)  # type: ignore
@@ -285,6 +308,18 @@ class AgentsPanelAdapter(PanelAdapter):
         # Diff 行
         self._sync_rows(items)
         self._refresh_log_tail()
+
+    def _on_filter_changed(self):
+        logic = self._logic
+        if logic is None or self._filter_combo is None:
+            return
+        setter = getattr(logic, "set_agent_type_filter", None)
+        if callable(setter):
+            try:
+                setter(self._filter_combo.currentText())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        self.refresh()
 
     # ---------- Public lifecycle ----------
     def stop(self):

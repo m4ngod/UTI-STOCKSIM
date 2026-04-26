@@ -73,6 +73,7 @@ class AgentsPanel:
         self._batch_strategies: Optional[List[str]] = None
         # 可选：记录最近一次初始资金（仅调试/查看）
         self._batch_initial_cash: Optional[float] = None
+        self._agent_type_filter = "All"
 
     # -------------- 批量创建 --------------
     def start_batch_create(self, *, count: int, agent_type: str, name_prefix: str = "agent", strategies: Optional[List[str]] = None, initial_cash: Optional[float] = None) -> bool:
@@ -133,7 +134,8 @@ class AgentsPanel:
     def get_view(self) -> Dict[str, Any]:
         agents = self._ctl.list_agents()
         now_ms = int(time.time()*1000)
-        items = [self._agent_view(a, now_ms) for a in agents]
+        items_all = [self._agent_view(a, now_ms) for a in agents]
+        items = [it for it in items_all if self._matches_filter(it)]
         with self._lock:
             batch = {
                 'in_progress': self._batch_in_progress,
@@ -148,6 +150,8 @@ class AgentsPanel:
         return {
             'agents': {
                 'total': len(items),
+                'unfiltered_total': len(items_all),
+                'filter': self._agent_type_filter,
                 'items': items,
             },
             'batch': batch,
@@ -169,12 +173,38 @@ class AgentsPanel:
             'name': a.name,
             'type': a.type,
             'strategy': getattr(a, 'strategy', None),
+            'model_id': getattr(a, 'model_id', None),
+            'family_model': getattr(a, 'model_id', None) or getattr(a, 'strategy', None),
             'status': a.status,
             'start_time': a.start_time,
             'last_heartbeat': a.last_heartbeat,
             'params_version': a.params_version,
             'heartbeat_stale': stale,
+            'mode': getattr(a, 'mode', None) or ('retail' if a.type == 'Retail' else None),
+            'episode_id': getattr(a, 'episode_id', None),
+            'last_reward': getattr(a, 'last_reward', None),
+            'equity': getattr(a, 'equity', None),
+            'pnl': getattr(a, 'pnl', None),
+            'last_action': getattr(a, 'last_action', None),
         }
+
+    def set_agent_type_filter(self, value: str) -> None:
+        normalized = str(value or "All").strip().lower()
+        if normalized == "retail":
+            selected = "Retail"
+        elif normalized == "model":
+            selected = "Model"
+        else:
+            selected = "All"
+        with self._lock:
+            self._agent_type_filter = selected
+
+    def _matches_filter(self, item: Dict[str, Any]) -> bool:
+        with self._lock:
+            selected = self._agent_type_filter
+        if selected == "All":
+            return True
+        return str(item.get("type") or "") == selected
 
     def _notify_stale_once(self, agent_id: str):  # 去重通知
         try:

@@ -59,3 +59,19 @@
 - Runtime retail executor: `app/services/runtime_retail_agent.py`
 - Retail calibration episode runner: `scripts/run_retail_calibration_episode.py`
 - Retail persona calibration blueprint: `docs/architecture/runtime/retail-persona-calibration-blueprint.md`
+
+## Model training foundation
+
+- Training design: `MODEL_TRAINING_DESIGN.md`
+- Multi-agent roadmap: `MULTI_AGENT_TRAINING_ROADMAP.md`
+- Model action contract: `docs/contracts/runtime/model-action-contract.md`
+- Model observation contract: `docs/contracts/runtime/model-observation-contract.md`
+- Model reward contract: `docs/contracts/runtime/model-reward-contract.md`
+- Model contract constants: `rl/contracts.py`
+- Observation builder: `rl/observation_builder.py`
+- Action parser: `rl/action_parser.py`
+- In-process model bridge: `rl/model_bridge.py`
+- Reward builder: `rl/reward_builder.py`
+- Model registry and built-in placeholder policies: `app/services/model_registry_service.py`
+- Runtime model lifecycle MVP: `app/services/runtime_model_agent.py`
+- Model/Retail agent visibility: `app/panels/agents/panel.py`, `app/ui/adapters/agents_adapter.py`

@@ -42,6 +42,13 @@ try:
 except Exception:  # pragma: no cover
     RuntimeRetailAgent = None  # type: ignore
 
+try:
+    from app.services.runtime_model_agent import RuntimeModelAgent
+    from app.services.model_registry_service import ModelRegistryService
+except Exception:  # pragma: no cover
+    RuntimeModelAgent = None  # type: ignore
+    ModelRegistryService = None  # type: ignore
+
 
 ActionType = Literal["start", "pause", "stop"]
 BATCH_ALLOWED_TYPES = {"Retail", "MultiStrategyRetail"}
@@ -69,6 +76,7 @@ class AgentService:
         *,
         log_stream: Optional[LogStreamService] = None,
         retail_agent_factory: Optional[Callable[..., Any]] = None,
+        model_agent_factory: Optional[Callable[..., Any]] = None,
         account_bootstrapper: Optional[Callable[[str, float], None]] = None,
         runtime_gateway: RuntimeGateway | None = None,
     ):
@@ -82,7 +90,9 @@ class AgentService:
         self._runtime_gateway = runtime_gateway or RuntimeGateway()
         self._sync_runtime_bindings_enabled = runtime_gateway is not None
         self._retail_agent_factory = retail_agent_factory or self._default_retail_agent_factory
+        self._model_agent_factory = model_agent_factory or self._default_model_agent_factory
         self._account_bootstrapper = account_bootstrapper or self._bootstrap_runtime_account
+        self._model_counter = 0
 
     def list_agents(self) -> List[AgentMetaDTO]:
         self._sync_from_runtime_bindings()
@@ -240,6 +250,53 @@ class AgentService:
             pass
         return {"success_ids": success, "failed": failed, "strategies": assigned_strategies}
 
+    def create_model_agent(
+        self,
+        *,
+        agent_id: str | None = None,
+        model_id: str = "hold_model_v1",
+        name: str | None = None,
+        mode: str = "inference",
+        initial_cash: float = 100_000.0,
+        episode_id: str | None = None,
+    ) -> AgentMetaDTO:
+        model_id = str(model_id or "hold_model_v1").strip() or "hold_model_v1"
+        mode = str(mode or "inference").strip() or "inference"
+        with self._lock:
+            if agent_id is None:
+                self._model_counter += 1
+                agent_id = f"MODEL{self._model_counter:04d}"
+            agent_id = str(agent_id).strip()
+            if not agent_id:
+                raise AgentServiceError("INVALID_AGENT_ID", "agent_id is required")
+            if agent_id in self._agents:
+                raise AgentServiceError("AGENT_ALREADY_EXISTS", f"agent already exists: {agent_id}")
+            meta = _synthetic_factory(
+                agent_id=agent_id,
+                name=name or agent_id,
+                a_type="Model",
+                model_id=model_id,
+                mode=mode,
+                episode_id=episode_id,
+            )
+            self._agents[agent_id] = meta
+        try:
+            self._account_bootstrapper(agent_id, float(initial_cash))
+            publish_account_created({"account_id": agent_id, "initial_cash": float(initial_cash)})
+        except Exception:
+            pass
+        self._persist_runtime_agent_meta(
+            agent_id,
+            type="Model",
+            name=name or agent_id,
+            model_id=model_id,
+            mode=mode,
+            episode_id=episode_id,
+            params_version=0,
+        )
+        self._log.generate_initial(agent_id)
+        return meta
+
     def tail_logs(self, agent_id: str, n: int = 100) -> List[str]:
         return self._log.tail(agent_id, n)
 
@@ -275,7 +332,25 @@ class AgentService:
             if existing is not None:
                 return existing
             resolved = agent or self._agents.get(agent_id)
-        if resolved is None or str(getattr(resolved, "type", "") or "") != "Retail":
+        if resolved is None:
+            return None
+        agent_type = str(getattr(resolved, "type", "") or "")
+        if agent_type == "Model":
+            try:
+                runtime_agent = self._model_agent_factory(
+                    agent_id=agent_id,
+                    model_id=str(getattr(resolved, "model_id", None) or "hold_model_v1"),
+                    mode=str(getattr(resolved, "mode", None) or "inference"),
+                    runtime_gateway=self._runtime_gateway,
+                    state_callback=self._on_runtime_state,
+                )
+            except Exception:
+                runtime_agent = None
+            if runtime_agent is not None:
+                with self._lock:
+                    self._runtime_agents[agent_id] = runtime_agent
+            return runtime_agent
+        if agent_type != "Retail":
             return None
         strategy = str(getattr(resolved, "strategy", None) or "noise")
         try:
@@ -291,6 +366,27 @@ class AgentService:
             with self._lock:
                 self._runtime_agents[agent_id] = runtime_agent
         return runtime_agent
+
+    def _default_model_agent_factory(
+        self,
+        *,
+        agent_id: str,
+        model_id: str,
+        mode: str,
+        runtime_gateway: RuntimeGateway,
+        state_callback: Callable[..., None] | None = None,
+    ) -> Any:
+        if RuntimeModelAgent is None:
+            return None
+        registry = ModelRegistryService() if ModelRegistryService is not None else None
+        return RuntimeModelAgent(
+            agent_id=agent_id,
+            model_id=model_id,
+            mode=mode,
+            runtime_gateway=runtime_gateway,
+            state_callback=state_callback or self._on_runtime_state,
+            registry=registry,
+        )
 
     def _stop_runtime_agent_async(self, agent_id: str, runtime_agent: Any) -> None:
         with self._lock:
@@ -357,6 +453,7 @@ class AgentService:
         if not rows:
             return
         retail_ids_to_hydrate: List[str] = []
+        model_ids_to_hydrate: List[str] = []
         active_run_id = self._active_runtime_run_id()
         with self._lock:
             for row in rows:
@@ -371,6 +468,7 @@ class AgentService:
                 start_time_value = None if restored_from_previous_run else meta.get("start_time")
                 agent_type = _normalize_agent_type(row.get("agent_type") or meta.get("type") or "GENERIC")
                 strategy = meta.get("strategy")
+                model_id = meta.get("model_id")
                 current = self._agents.get(agent_id)
                 if current is None:
                     self._agents[agent_id] = AgentMetaDTO(
@@ -382,9 +480,18 @@ class AgentService:
                         last_heartbeat=self._maybe_int(heartbeat_value),
                         params_version=int(meta.get("params_version") or 0),
                         strategy=(str(strategy) if strategy is not None and str(strategy).strip() else None),
+                        model_id=(str(model_id) if model_id is not None and str(model_id).strip() else None),
+                        mode=(str(meta.get("mode")) if meta.get("mode") is not None and str(meta.get("mode")).strip() else None),
+                        episode_id=(str(meta.get("episode_id")) if meta.get("episode_id") is not None and str(meta.get("episode_id")).strip() else None),
+                        last_reward=self._maybe_float(meta.get("last_reward")),
+                        equity=self._maybe_float(meta.get("equity")),
+                        pnl=self._maybe_float(meta.get("pnl")),
+                        last_action=(str(meta.get("last_action")) if meta.get("last_action") is not None and str(meta.get("last_action")).strip() else None),
                     )
                     if agent_type == "Retail":
                         retail_ids_to_hydrate.append(agent_id)
+                    elif agent_type == "Model":
+                        model_ids_to_hydrate.append(agent_id)
                     continue
                 current.name = str(meta.get("name") or current.name or agent_id)
                 current.type = agent_type
@@ -395,6 +502,16 @@ class AgentService:
                     current.last_heartbeat = self._maybe_int(heartbeat_value)
                 if strategy is not None and str(strategy).strip():
                     current.strategy = str(strategy)
+                if model_id is not None and str(model_id).strip():
+                    current.model_id = str(model_id)
+                for attr in ("mode", "episode_id", "last_action"):
+                    value = meta.get(attr)
+                    if value is not None and str(value).strip():
+                        setattr(current, attr, str(value))
+                for attr in ("last_reward", "equity", "pnl"):
+                    value = self._maybe_float(meta.get(attr))
+                    if value is not None:
+                        setattr(current, attr, value)
                 if meta.get("params_version") is not None:
                     try:
                         current.params_version = int(meta.get("params_version") or 0)
@@ -403,7 +520,11 @@ class AgentService:
                 self._agents[agent_id] = current
                 if agent_type == "Retail":
                     retail_ids_to_hydrate.append(agent_id)
+                elif agent_type == "Model":
+                    self._ensure_runtime_agent(agent_id, agent=current)
         for agent_id in retail_ids_to_hydrate:
+            self._ensure_runtime_agent(agent_id)
+        for agent_id in model_ids_to_hydrate:
             self._ensure_runtime_agent(agent_id)
 
     def _on_runtime_state(
@@ -480,6 +601,15 @@ class AgentService:
             return None
 
     @staticmethod
+    def _maybe_float(value: object) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
     def _normalize_status(value: object, *, fallback: str = "STOPPED") -> str:
         raw = str(value or "").strip().upper()
         if raw in {"RUNNING", "PAUSED", "STOPPED", "INACTIVE"}:
@@ -487,7 +617,16 @@ class AgentService:
         return fallback
 
 
-def _synthetic_factory(*, agent_id: str, name: str, a_type: str, strategy: str | None = None) -> AgentMetaDTO:
+def _synthetic_factory(
+    *,
+    agent_id: str,
+    name: str,
+    a_type: str,
+    strategy: str | None = None,
+    model_id: str | None = None,
+    mode: str | None = None,
+    episode_id: str | None = None,
+) -> AgentMetaDTO:
     return AgentMetaDTO(
         agent_id=agent_id,
         name=name,
@@ -497,6 +636,9 @@ def _synthetic_factory(*, agent_id: str, name: str, a_type: str, strategy: str |
         last_heartbeat=None,
         params_version=0,
         strategy=strategy,
+        model_id=model_id,
+        mode=mode,
+        episode_id=episode_id,
     )
 
 
@@ -509,6 +651,8 @@ def _normalize_agent_type(value: object) -> str:
         return "Retail"
     if upper == "MULTISTRATEGYRETAIL":
         return "MultiStrategyRetail"
+    if upper == "MODEL":
+        return "Model"
     return raw
 
 

@@ -1,5 +1,9 @@
 # Agents / Retail Strategy Status
 
+## Cross-link: Model training agents
+
+Model-agent work has started in `docs/current-work-status/model-training.md`. The Agent panel now supports an `All / Retail / Model` view path, while retail-specific population work remains documented here.
+
 ## Module
 
 Retail strategy registry, retail population assignment, and agent-facing strategy visibility
