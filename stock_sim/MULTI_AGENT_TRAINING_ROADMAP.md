@@ -34,11 +34,19 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] Arena evaluate ranks episode results and completes the episode.
 - [x] Arena service can optionally create and start retail background agents.
 
+### Completed in round 4
+
+- [x] Added `model_checkpoints` and `model_lineage` persistence.
+- [x] Added `ModelCheckpointService` for checkpoint, Hall-of-Fame, and lineage records.
+- [x] Added `ModelPopulationService` MVP for episode-based PBT inheritance.
+- [x] Top episode models are saved as Hall-of-Fame checkpoints.
+- [x] Bottom episode models receive full-clone-plus-mutation lineage records.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
-- [ ] Checkpoint persistence and Hall-of-Fame.
-- [ ] PBT inheritance / mutation.
+- [ ] Real checkpoint file materialization for trained neural network weights.
+- [ ] Full PBT application that updates live model registry/checkpoint adapters.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

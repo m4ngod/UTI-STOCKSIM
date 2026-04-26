@@ -65,8 +65,46 @@ class ModelTransition(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
+class ModelCheckpoint(Base):
+    __tablename__ = "model_checkpoints"
+
+    checkpoint_id = Column(String(96), primary_key=True)
+    model_id = Column(String(128), nullable=False, index=True)
+    agent_id = Column(String(128), nullable=True, index=True)
+    generation = Column(Integer, nullable=False, default=0, index=True)
+    episode_id = Column(String(96), nullable=True, index=True)
+    path = Column(String(512), nullable=False)
+    score = Column(Float, nullable=True, index=True)
+    is_hall_of_fame = Column(Integer, nullable=False, default=0, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    meta_json = Column(Text, nullable=True)
+
+
+class ModelLineage(Base):
+    __tablename__ = "model_lineage"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    child_model_id = Column(String(128), nullable=False, index=True)
+    child_agent_id = Column(String(128), nullable=True, index=True)
+    parent_model_id = Column(String(128), nullable=False, index=True)
+    parent_checkpoint_id = Column(String(96), nullable=True, index=True)
+    generation = Column(Integer, nullable=False, default=0, index=True)
+    inheritance_mode = Column(String(64), nullable=False, default="full_clone_mutation")
+    mutation_json = Column(Text, nullable=True)
+    episode_id = Column(String(96), nullable=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
 Index("ix_model_results_episode_agent", ModelEpisodeResult.episode_id, ModelEpisodeResult.agent_id)
 Index("ix_model_transitions_episode_agent_step", ModelTransition.episode_id, ModelTransition.agent_id, ModelTransition.step_index)
+Index("ix_model_checkpoints_hof_score", ModelCheckpoint.is_hall_of_fame, ModelCheckpoint.score)
+Index("ix_model_lineage_child_parent", ModelLineage.child_model_id, ModelLineage.parent_model_id)
 
 
-__all__ = ["ModelEpisodeResult", "ModelTransition", "TrainingEpisode"]
+__all__ = [
+    "ModelCheckpoint",
+    "ModelEpisodeResult",
+    "ModelLineage",
+    "ModelTransition",
+    "TrainingEpisode",
+]

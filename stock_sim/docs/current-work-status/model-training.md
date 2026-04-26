@@ -172,3 +172,49 @@ Start Phase 4 by adding a service-layer Arena MVP that can create, start, stop, 
 - Add checkpoint and lineage persistence.
 - Add a minimal model population service for Hall-of-Fame and PBT mutation.
 - Add Arena panel only after the service API stabilizes.
+
+## Task 2026-04-26-model-training-04
+
+### status
+
+done
+
+### goal
+
+Start Phase 5 by adding checkpoint, Hall-of-Fame, lineage, and PBT inheritance records before connecting real neural-network checkpoint files.
+
+### files involved
+
+- `persistence/models_training.py`
+- `persistence/models_init.py`
+- `app/services/model_checkpoint_service.py`
+- `app/services/model_population_service.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_pbt_lineage.py`
+
+### change summary
+
+- Added `model_checkpoints` persistence for model checkpoint metadata.
+- Added `model_lineage` persistence for parent/child model inheritance records.
+- Added `ModelCheckpointService` to save checkpoints, mark/list Hall-of-Fame entries, and record lineage.
+- Added `ModelPopulationService` MVP that reads ranked episode results, saves top models as Hall-of-Fame checkpoints, and creates full-clone-plus-mutation lineage records for bottom models.
+- Updated the roadmap progress ledger with round 4 completion markers.
+
+### verification
+
+- `tests/runtime/test_pbt_lineage.py`
+
+### impact / risk
+
+- Positive: the platform now has a durable audit trail for "winner teaches loser" cycles.
+- Positive: Hall-of-Fame and lineage can be queried before real model weights are introduced.
+- Positive: PBT can now be layered onto Arena evaluation without inventing storage later.
+- Risk: checkpoint rows currently describe intended checkpoint artifacts; real neural-network weight materialization is still future work.
+
+### next actions
+
+- Add real checkpoint file writing/copying once a true policy adapter is connected.
+- Add a population adapter that updates live model agents after lineage creation.
+- Add Arena UI only after checkpoint/PBT service APIs settle.
