@@ -75,11 +75,18 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] `RuntimeModelAgent` can run registry-backed HTTP policies without runtime branching.
 - [x] HTTP adapter failures fall back to `hold` with error metadata instead of crashing the runtime loop.
 
+### Completed in round 9
+
+- [x] Added subprocess mode to `ExternalPolicyAdapter`.
+- [x] Subprocess policies exchange JSON over stdin/stdout.
+- [x] Subprocess policies can provide `act`, `learn`, and `checkpoint` operations.
+- [x] `RuntimeModelAgent` can run registry-backed subprocess policies without runtime branching.
+- [x] Subprocess adapter failures fall back to `hold` with error metadata instead of crashing the runtime loop.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
 - [ ] Real neural-network weight tensor checkpoint adapter.
-- [ ] Process/subprocess model adapter.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

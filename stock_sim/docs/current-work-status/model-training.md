@@ -394,3 +394,46 @@ Continue Phase 5 by allowing external model services to run outside the desktop 
 - Add a subprocess adapter only if the first model should be launched and supervised by the desktop app.
 - Add the first Recurrent PPO or external model service behind the HTTP/callable adapter.
 - Build the dedicated Arena panel once model adapter and evolution APIs stabilize.
+
+## Task 2026-04-26-model-training-09
+
+### status
+
+done
+
+### goal
+
+Continue Phase 5 by adding a subprocess adapter so local model workers can run outside the desktop process while still using stdin/stdout JSON and `act.v1`.
+
+### files involved
+
+- `app/services/model_registry_service.py`
+- `docs/contracts/runtime/model-adapter-contract.md`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_model_registry_external.py`
+
+### change summary
+
+- Added subprocess mode to `ExternalPolicyAdapter`.
+- Subprocess policies receive one JSON request on stdin and return one JSON object on stdout.
+- Subprocess policies support `op=act`, `op=learn`, and `op=checkpoint`.
+- Runtime model agents can run registered subprocess policies without new runtime branching.
+- Subprocess policy failures return a safe `hold` action with error metadata.
+- Updated the adapter contract and roadmap progress ledger with round 9 completion markers.
+
+### verification
+
+- `tests/runtime/test_model_registry_external.py`
+
+### impact / risk
+
+- Positive: models can now run in a separate local Python process or environment without requiring an HTTP service.
+- Positive: adapter failure is isolated to a safe no-op action rather than crashing the runtime loop.
+- Risk: subprocess mode is short-lived per call; a future long-running worker protocol may be needed for high-frequency training.
+
+### next actions
+
+- Add the first real external model service or Recurrent PPO baseline behind the callable/HTTP/subprocess adapters.
+- Add real neural-network tensor checkpoint materialization when that baseline lands.
+- Build the dedicated Arena panel for training control and observability.

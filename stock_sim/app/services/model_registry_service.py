@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import random
+import shlex
+import subprocess
 from typing import Any, Callable, Protocol
 from urllib import request as urlrequest
 import zlib
@@ -135,6 +137,7 @@ class ExternalPolicyAdapter:
     - static_action: deterministic contract action, useful for wiring tests.
     - callable: an injected factory-owned policy object for local trainable code.
     - http: an out-of-process policy endpoint that returns act.v1.
+    - subprocess: a short-lived local process that exchanges JSON over stdio.
     """
 
     def __init__(
@@ -153,6 +156,8 @@ class ExternalPolicyAdapter:
     def act(self, observation: dict[str, Any]) -> dict[str, Any]:
         if self.adapter_type == "http":
             action = self._act_http(observation)
+        elif self.adapter_type == "subprocess":
+            action = self._act_subprocess(observation)
         elif self._policy is not None:
             action = dict(self._policy.act(observation))
         else:
@@ -165,6 +170,11 @@ class ExternalPolicyAdapter:
             if not endpoint:
                 return {"ok": False, "reason": "LEARN_NOT_SUPPORTED", "model_id": self.model_id}
             return self._post_json(endpoint, {"model_id": self.model_id, "transition": transition})
+        if self.adapter_type == "subprocess":
+            command = self._process_command("learn_command")
+            if not command:
+                return {"ok": False, "reason": "LEARN_NOT_SUPPORTED", "model_id": self.model_id}
+            return self._run_process_json(command, {"op": "learn", "model_id": self.model_id, "transition": transition})
         learner = getattr(self._policy, "learn", None)
         if callable(learner):
             result = learner(transition)
@@ -176,6 +186,12 @@ class ExternalPolicyAdapter:
             endpoint = self._http_endpoint("checkpoint_endpoint", default_suffix="/checkpoint")
             if endpoint:
                 result = self._post_json(endpoint, {"model_id": self.model_id, "path": path})
+                if isinstance(result, dict) and result.get("ok") is not False:
+                    return result
+        if self.adapter_type == "subprocess":
+            command = self._process_command("checkpoint_command")
+            if command:
+                result = self._run_process_json(command, {"op": "checkpoint", "model_id": self.model_id, "path": path})
                 if isinstance(result, dict) and result.get("ok") is not False:
                     return result
         saver = getattr(self._policy, "save_checkpoint", None)
@@ -250,6 +266,24 @@ class ExternalPolicyAdapter:
         action = payload.get("action") if isinstance(payload, dict) and isinstance(payload.get("action"), dict) else payload
         return action if isinstance(action, dict) else self._hold_action(observation)
 
+    def _act_subprocess(self, observation: dict[str, Any]) -> dict[str, Any]:
+        command = self._process_command("command")
+        if not command:
+            return self._hold_action(observation)
+        try:
+            payload = self._run_process_json(command, {"op": "act", "model_id": self.model_id, "observation": observation})
+        except Exception as exc:
+            fallback = self._hold_action(observation)
+            fallback["meta"] = {
+                "model_id": self.model_id,
+                "adapter_type": "subprocess",
+                "error": str(exc),
+                "fallback": "hold",
+            }
+            return fallback
+        action = payload.get("action") if isinstance(payload, dict) and isinstance(payload.get("action"), dict) else payload
+        return action if isinstance(action, dict) else self._hold_action(observation)
+
     def _http_endpoint(self, key: str, *, default_suffix: str) -> str | None:
         explicit = str(self.config.get(key) or "").strip()
         if explicit:
@@ -270,6 +304,33 @@ class ExternalPolicyAdapter:
         timeout_s = float(self.config.get("timeout_s") or 2.0)
         with urlrequest.urlopen(req, timeout=max(0.1, timeout_s)) as response:
             raw = response.read().decode("utf-8")
+        result = json.loads(raw) if raw else {}
+        return result if isinstance(result, dict) else {"result": result}
+
+    def _process_command(self, key: str) -> list[str]:
+        value = self.config.get(key) or self.config.get("command")
+        if isinstance(value, list):
+            return [str(part) for part in value if str(part).strip()]
+        if isinstance(value, str) and value.strip():
+            return shlex.split(value)
+        return []
+
+    def _run_process_json(self, command: list[str], payload: dict[str, Any]) -> dict[str, Any]:
+        timeout_s = float(self.config.get("timeout_s") or 2.0)
+        cwd = self.config.get("cwd")
+        proc = subprocess.run(
+            command,
+            input=_json_dumps(payload),
+            text=True,
+            capture_output=True,
+            cwd=str(cwd) if cwd else None,
+            timeout=max(0.1, timeout_s),
+            check=False,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"process adapter failed rc={proc.returncode}: {detail}")
+        raw = (proc.stdout or "").strip()
         result = json.loads(raw) if raw else {}
         return result if isinstance(result, dict) else {"result": result}
 

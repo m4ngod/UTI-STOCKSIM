@@ -105,6 +105,53 @@ Explicit endpoints can override the defaults:
 
 If the HTTP adapter cannot reach the endpoint, it returns a safe `hold` action with error metadata.
 
+### `subprocess`
+
+The adapter can launch a short-lived local process and exchange JSON through stdin/stdout. This is useful when a model should run in a separate Python environment but does not need a long-running HTTP service.
+
+Registry config:
+
+```json
+{
+  "command": ["python", "path/to/policy_worker.py"],
+  "timeout_s": 2.0
+}
+```
+
+The process receives one JSON request on stdin:
+
+```json
+{
+  "op": "act",
+  "model_id": "process_policy_v1",
+  "observation": {}
+}
+```
+
+For learning:
+
+```json
+{
+  "op": "learn",
+  "model_id": "process_policy_v1",
+  "transition": {}
+}
+```
+
+For checkpointing:
+
+```json
+{
+  "op": "checkpoint",
+  "model_id": "process_policy_v1",
+  "path": "output/model_checkpoints/process_policy_v1/ckpt.json"
+}
+```
+
+The process must print one JSON object to stdout. For `act`, it may return either an `act.v1` action directly or `{ "action": ... }`.
+
+If the process exits non-zero, times out, or returns invalid JSON, the adapter returns a safe `hold` action with error metadata.
+
 ## Optional Trainable Interface
 
 Trainable policies may implement:
@@ -168,6 +215,5 @@ They only receive observations and return `act.v1` actions. Runtime truth remain
 
 ## Current Limitations
 
-- Process/subprocess adapters are not implemented yet.
 - Real neural-network tensor checkpoints are not implemented yet.
-- The callable and HTTP adapters are intentionally minimal before a full training worker architecture is introduced.
+- The callable, HTTP, and subprocess adapters are intentionally minimal before a full training worker architecture is introduced.

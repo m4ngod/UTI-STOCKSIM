@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -266,4 +267,101 @@ def test_http_policy_adapter_falls_back_to_hold_on_remote_error():
 
     assert action["action_type"] == "hold"
     assert action["target"]["account_id"] == "MODEL_DOWN"
+    assert action["meta"]["fallback"] == "hold"
+
+
+def _write_process_policy(tmp_path):
+    script = tmp_path / "process_policy.py"
+    script.write_text(
+        """
+import json
+import pathlib
+import sys
+
+payload = json.loads(sys.stdin.read() or "{}")
+op = payload.get("op")
+if op == "act":
+    print(json.dumps({
+        "action": {
+            "contract_version": "act.v1",
+            "action_type": "target_weight",
+            "payload": {"weights": {"001": 0.4}},
+            "meta": {"process": True}
+        }
+    }))
+elif op == "learn":
+    print(json.dumps({"ok": True, "loss": 0.789}))
+elif op == "checkpoint":
+    path = pathlib.Path(payload["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"model_id": payload["model_id"], "source": "process"}), encoding="utf-8")
+    print(json.dumps({"ok": True, "path": str(path)}))
+else:
+    print(json.dumps({"ok": False, "error": "unknown op"}))
+""".strip(),
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_subprocess_policy_adapter_calls_process_act_learn_and_checkpoint(tmp_path):
+    script = _write_process_policy(tmp_path)
+    command = [sys.executable, str(script)]
+    policy = ExternalPolicyAdapter(
+        model_id="process_policy_v1",
+        adapter_type="subprocess",
+        config={"command": command, "timeout_s": 2.0},
+    )
+
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_PROC"}})
+    learn_result = policy.learn({"reward": {"step_reward": 0.3}})
+    checkpoint_path = tmp_path / "process-checkpoint.json"
+    checkpoint_result = policy.save_checkpoint(str(checkpoint_path))
+
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_PROC"
+    assert action["meta"]["adapter_type"] == "subprocess"
+    assert action["meta"]["process"] is True
+    assert learn_result["loss"] == 0.789
+    assert checkpoint_result["ok"] is True
+    assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["source"] == "process"
+
+
+def test_runtime_model_agent_runs_registered_subprocess_policy(tmp_path):
+    script = _write_process_policy(tmp_path)
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+    registry.register_external_policy(
+        "process_runtime_v1",
+        adapter_type="subprocess",
+        config={"command": [sys.executable, str(script)], "timeout_s": 2.0},
+    )
+    gateway = _Gateway()
+    agent = RuntimeModelAgent(
+        agent_id="MODEL_PROC",
+        model_id="process_runtime_v1",
+        runtime_gateway=gateway,
+        registry=registry,
+        persist_transitions=False,
+    )
+
+    transition = agent.step_once()
+
+    assert transition["action"]["meta"]["adapter_type"] == "subprocess"
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_PROC"
+
+
+def test_subprocess_policy_adapter_falls_back_to_hold_on_process_error(tmp_path):
+    script = tmp_path / "bad_policy.py"
+    script.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    policy = ExternalPolicyAdapter(
+        model_id="process_down_v1",
+        adapter_type="subprocess",
+        config={"command": [sys.executable, str(script)], "timeout_s": 1.0},
+    )
+
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_BAD_PROC"}})
+
+    assert action["action_type"] == "hold"
+    assert action["target"]["account_id"] == "MODEL_BAD_PROC"
     assert action["meta"]["fallback"] == "hold"
