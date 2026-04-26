@@ -19,6 +19,7 @@ import time  # 新增：节流
 
 _DETAIL_ENABLE_CHART = os.environ.get("STOCKSIM_DETAIL_ENABLE_CHART", "1").lower() in ("1", "true", "yes", "on")
 _DETAIL_ENABLE_ORDER_BOOK = os.environ.get("STOCKSIM_DETAIL_ENABLE_ORDER_BOOK", "1").lower() in ("1", "true", "yes", "on")
+_DETAIL_DEBUG_UI = os.environ.get("STOCKSIM_DETAIL_DEBUG_UI", "").lower() in ("1", "true", "yes", "on")
 _CHART_STAGE = os.environ.get("STOCKSIM_CHART_STAGE", "candles").strip().lower()
 if _CHART_STAGE not in ("plot-only", "line", "candles"):
     _CHART_STAGE = "candles"
@@ -55,7 +56,7 @@ if ui_runtime_enabled():
     try:
         from PySide6.QtWidgets import (
             QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QFrame, QTableWidget, QTableWidgetItem,
-            QDialog, QLineEdit, QPushButton, QFormLayout
+            QDialog, QLineEdit, QPushButton, QFormLayout, QHeaderView
         )  # type: ignore
         from PySide6.QtCore import Qt, QRectF, QPointF  # type: ignore
         from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QBrush  # type: ignore
@@ -111,8 +112,11 @@ if not ui_runtime:
         def setHorizontalHeaderLabels(self, labels): pass
         def setRowCount(self, n): pass
         def setItem(self, r,c,item): pass
+        def horizontalHeader(self): return None
+        def verticalHeader(self): return None
     class QTableWidgetItem:  # type: ignore
         def __init__(self, text=""): self._text=text
+        def setTextAlignment(self, *_): pass
     class QDialog:  # type: ignore
         def __init__(self, *_, **__): pass
         def exec(self): return 0
@@ -125,10 +129,16 @@ if not ui_runtime:
     class QPushButton:  # type: ignore
         def __init__(self, text=""): self._text=text; self.clicked=_DummySignal()
         def setEnabled(self, *_): pass
+    class QHeaderView:  # type: ignore
+        Stretch = 1
+        ResizeToContents = 2
     class Qt:  # type: ignore
         AlignCenter = 0
+        AlignRight = 0
+        AlignVCenter = 0
         DashLine = 0
         NoPen = 0
+        NoBrush = 0
     class QRectF:  # type: ignore
         def __init__(self, *_, **__): pass
     class QPointF:  # type: ignore
@@ -323,8 +333,10 @@ class _DetailChartWidget(QWidget):
         self._geometry: Dict[str, Any] = {}
         self._empty_text = "K: no data"
         try:
+            if hasattr(self, "setObjectName"):
+                self.setObjectName("detailChartWidget")  # type: ignore[attr-defined]
             if hasattr(self, "setMinimumHeight"):
-                self.setMinimumHeight(260)  # type: ignore[attr-defined]
+                self.setMinimumHeight(340)  # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -370,8 +382,8 @@ class _DetailChartWidget(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing, True)
             full = self.rect()
-            painter.fillRect(full, QColor(7, 10, 14))
-            plot = full.adjusted(52, 16, -18, -34)
+            painter.fillRect(full, QColor(8, 13, 20))
+            plot = full.adjusted(62, 20, -20, -36)
             if plot.width() <= 24 or plot.height() <= 24:
                 return
 
@@ -578,10 +590,14 @@ def _build_detail_snapshot_label_text(detail: Dict[str, Any], *, bars_count: int
     snapshot_status = _resolve_detail_status(detail_health, "snapshot_status", snapshot_meta, "missing")
     order_book_status = _resolve_detail_status(detail_health, "order_book_status", order_book_meta, "missing")
     snapshot_age_ms = snapshot_meta.get("age_ms")
-    snapshot_age_note = f" | snap_age_ms={snapshot_age_ms}" if snapshot_age_ms is not None else ""
+    try:
+        snapshot_age_note = f" | age {int(float(snapshot_age_ms))}ms" if snapshot_age_ms is not None else ""
+    except Exception:
+        snapshot_age_note = ""
+    last_text = "-" if last is None else str(last)
     return (
-        f"last={last} | bars={bars_count} | state={overall} | "
-        f"snap={snapshot_status} | book={order_book_status} | series={series_status}{snapshot_age_note}"
+        f"Last {last_text} | {bars_count} bars | {overall} | "
+        f"snapshot {snapshot_status} | book {order_book_status} | series {series_status}{snapshot_age_note}"
     )
 
 
@@ -644,7 +660,17 @@ def _build_chart_empty_text(detail: Dict[str, Any]) -> str:
 
 
 def _build_symbol_label_text(symbol: Any) -> str:
-    return f"symbol: {symbol or '-'}"
+    return f"Symbol {symbol or '-'}"
+
+
+def _build_detail_status_text(detail: Dict[str, Any], *, bars_count: int) -> str:
+    detail_health = detail.get("detail_health") or {}
+    series_meta = detail.get("series_meta") or {}
+    trades_meta = detail.get("trades_meta") or {}
+    overall = str(detail_health.get("overall") or "unknown")
+    series_source = str(series_meta.get("source") or "unknown")
+    trades_status = _resolve_detail_status(detail_health, "trades_status", trades_meta, "empty")
+    return f"{overall.upper()} · {bars_count} bars · {trades_status} trades · {series_source}"
 
 
 def _count_render_bars(series: Any) -> int:
@@ -678,6 +704,7 @@ class SymbolDetailAdapter:
     def __init__(self):
         self._symbol_label: Optional[Any] = None
         self._snapshot_label: Optional[Any] = None
+        self._status_label: Optional[Any] = None
         self._debug_label: Optional[Any] = None
         self._order_book_table: Optional[Any] = None
         self._chart_widget: Optional[Any] = None
@@ -690,11 +717,25 @@ class SymbolDetailAdapter:
         if self._order_book_table is None:
             return
         try:
+            if not rows:
+                self._order_book_table.setRowCount(1)  # type: ignore
+                self._order_book_table.setItem(0, 0, QTableWidgetItem("-"))  # type: ignore
+                self._order_book_table.setItem(0, 1, QTableWidgetItem("No book"))  # type: ignore
+                self._order_book_table.setItem(0, 2, QTableWidgetItem("-"))  # type: ignore
+                return
             self._order_book_table.setRowCount(len(rows))  # type: ignore
             for row_idx, (side, price, qty) in enumerate(rows):
-                self._order_book_table.setItem(row_idx, 0, QTableWidgetItem(side))  # type: ignore
-                self._order_book_table.setItem(row_idx, 1, QTableWidgetItem(price))  # type: ignore
-                self._order_book_table.setItem(row_idx, 2, QTableWidgetItem(qty))  # type: ignore
+                side_item = QTableWidgetItem(side)  # type: ignore
+                price_item = QTableWidgetItem(price)  # type: ignore
+                qty_item = QTableWidgetItem(qty)  # type: ignore
+                try:
+                    price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore[attr-defined]
+                    qty_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                self._order_book_table.setItem(row_idx, 0, side_item)  # type: ignore
+                self._order_book_table.setItem(row_idx, 1, price_item)  # type: ignore
+                self._order_book_table.setItem(row_idx, 2, qty_item)  # type: ignore
         except Exception:
             pass
 
@@ -720,21 +761,59 @@ class SymbolDetailAdapter:
             return self._root
         root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
         try:
+            try:
+                if hasattr(root, "setObjectName"):
+                    root.setObjectName("symbolDetailRoot")  # type: ignore[attr-defined]
+            except Exception:
+                pass
             layout = QVBoxLayout(root)  # type: ignore
             try:
                 if hasattr(layout, 'setContentsMargins'):
-                    layout.setContentsMargins(8, 8, 8, 8)
+                    layout.setContentsMargins(0, 0, 0, 0)
                 if hasattr(layout, 'setSpacing'):
                     layout.setSpacing(10)
             except Exception:
                 pass
-            # 顶部 symbol / snapshot 简要
-            self._symbol_label = QLabel("symbol: -")  # type: ignore
-            layout.addWidget(self._symbol_label)  # type: ignore
-            self._snapshot_label = QLabel("snapshot: -")  # type: ignore
-            layout.addWidget(self._snapshot_label)  # type: ignore
-            self._debug_label = QLabel("detail debug: init")  # type: ignore
-            layout.addWidget(self._debug_label)  # type: ignore
+            header = QFrame()  # type: ignore
+            try:
+                header.setObjectName("detailHeader")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            header_layout = QVBoxLayout(header)  # type: ignore
+            try:
+                if hasattr(header_layout, 'setContentsMargins'):
+                    header_layout.setContentsMargins(14, 12, 14, 12)
+                if hasattr(header_layout, 'setSpacing'):
+                    header_layout.setSpacing(6)
+            except Exception:
+                pass
+            title_row = QHBoxLayout()  # type: ignore
+            self._symbol_label = QLabel("Symbol -")  # type: ignore
+            self._status_label = QLabel("WAITING")  # type: ignore
+            try:
+                self._symbol_label.setObjectName("detailSymbolLabel")  # type: ignore[attr-defined]
+                self._status_label.setObjectName("detailStatusLabel")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            title_row.addWidget(self._symbol_label, 1)  # type: ignore
+            title_row.addWidget(self._status_label)  # type: ignore
+            header_layout.addLayout(title_row)  # type: ignore
+            self._snapshot_label = QLabel("No symbol selected")  # type: ignore
+            try:
+                self._snapshot_label.setObjectName("detailMetaLabel")  # type: ignore[attr-defined]
+                self._snapshot_label.setWordWrap(True)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            header_layout.addWidget(self._snapshot_label)  # type: ignore
+            if _DETAIL_DEBUG_UI:
+                self._debug_label = QLabel("detail debug: init")  # type: ignore
+                try:
+                    self._debug_label.setObjectName("detailDebugLabel")  # type: ignore[attr-defined]
+                    self._debug_label.setWordWrap(True)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                header_layout.addWidget(self._debug_label)  # type: ignore
+            layout.addWidget(header)  # type: ignore
             # K 线
             chart_ok = False
             if _DETAIL_ENABLE_CHART and ui_runtime_enabled():
@@ -754,11 +833,27 @@ class SymbolDetailAdapter:
             # 盘口表 (side, price, qty)
             if _DETAIL_ENABLE_ORDER_BOOK:
                 self._order_book_table = QTableWidget(0, 3)  # type: ignore
+                try:
+                    self._order_book_table.setObjectName("detailOrderBookTable")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 self._order_book_table.setColumnCount(3)  # type: ignore
                 self._order_book_table.setHorizontalHeaderLabels(["Side","Price","Qty"])  # type: ignore
                 try:
                     if hasattr(self._order_book_table, 'setMinimumHeight'):
-                        self._order_book_table.setMinimumHeight(180)  # type: ignore[attr-defined]
+                        self._order_book_table.setMinimumHeight(130)  # type: ignore[attr-defined]
+                    if hasattr(self._order_book_table, 'setMaximumHeight'):
+                        self._order_book_table.setMaximumHeight(190)  # type: ignore[attr-defined]
+                    if hasattr(self._order_book_table, 'setAlternatingRowColors'):
+                        self._order_book_table.setAlternatingRowColors(True)  # type: ignore[attr-defined]
+                    horizontal = self._order_book_table.horizontalHeader()  # type: ignore[attr-defined]
+                    if horizontal is not None and hasattr(horizontal, 'setSectionResizeMode'):
+                        horizontal.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # type: ignore[attr-defined]
+                        horizontal.setSectionResizeMode(1, QHeaderView.Stretch)  # type: ignore[attr-defined]
+                        horizontal.setSectionResizeMode(2, QHeaderView.Stretch)  # type: ignore[attr-defined]
+                    vertical = self._order_book_table.verticalHeader()  # type: ignore[attr-defined]
+                    if vertical is not None and hasattr(vertical, 'setVisible'):
+                        vertical.setVisible(False)  # type: ignore[attr-defined]
                 except Exception:
                     pass
                 layout.addWidget(self._order_book_table)  # type: ignore
@@ -892,10 +987,13 @@ class SymbolDetailAdapter:
             except Exception: pass
         chart_mode = 'qt-canvas' if hasattr(self._chart_widget, "set_chart_geometry") else ('pyqtgraph' if self._chart_plot is not None else 'fallback')
         bars_count = _count_render_bars(render_series)
+        if self._status_label is not None:
+            try: self._status_label.setText(_build_detail_status_text(detail, bars_count=bars_count))  # type: ignore
+            except Exception: pass
         if self._snapshot_label is not None:
             try: self._snapshot_label.setText(_build_detail_snapshot_label_text(detail, bars_count=bars_count))  # type: ignore
             except Exception: pass
-        if self._debug_label is not None:
+        if _DETAIL_DEBUG_UI and self._debug_label is not None:
             try: self._debug_label.setText(
                 _build_detail_debug_label_text(
                     detail,
@@ -1010,8 +1108,33 @@ class MarketPanelAdapter(PanelAdapter):
         root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
         try:
             h = QHBoxLayout(root)  # type: ignore
+            try:
+                if hasattr(root, "setObjectName"):
+                    root.setObjectName("marketPanelRoot")  # type: ignore[attr-defined]
+                if hasattr(h, "setContentsMargins"):
+                    h.setContentsMargins(0, 0, 0, 0)
+                if hasattr(h, "setSpacing"):
+                    h.setSpacing(12)
+            except Exception:
+                pass
             # 左侧：自选 + 顶部操作区
-            left_v = QVBoxLayout()  # type: ignore
+            left_frame = QFrame()  # type: ignore
+            try:
+                left_frame.setObjectName("marketSidebar")  # type: ignore[attr-defined]
+                if hasattr(left_frame, "setMinimumWidth"):
+                    left_frame.setMinimumWidth(170)  # type: ignore[attr-defined]
+                if hasattr(left_frame, "setMaximumWidth"):
+                    left_frame.setMaximumWidth(240)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            left_v = QVBoxLayout(left_frame)  # type: ignore
+            try:
+                if hasattr(left_v, "setContentsMargins"):
+                    left_v.setContentsMargins(10, 10, 10, 10)
+                if hasattr(left_v, "setSpacing"):
+                    left_v.setSpacing(8)
+            except Exception:
+                pass
             # 操作条：创建标的按钮
             try:
                 self._btn_create = QPushButton("Create Instrument")  # type: ignore
@@ -1023,6 +1146,10 @@ class MarketPanelAdapter(PanelAdapter):
                 pass
             # 自选列表
             self._symbol_list = QListWidget()  # type: ignore
+            try:
+                self._symbol_list.setObjectName("marketSymbolList")  # type: ignore[attr-defined]
+            except Exception:
+                pass
             def _on_click(item):
                 try:
                     sym = (item.text() or "").strip()  # type: ignore
@@ -1051,11 +1178,11 @@ class MarketPanelAdapter(PanelAdapter):
                         pass
             except Exception:
                 pass
-            left_v.addWidget(self._symbol_list)  # type: ignore
-            h.addLayout(left_v)  # type: ignore
+            left_v.addWidget(self._symbol_list, 1)  # type: ignore
+            h.addWidget(left_frame)  # type: ignore
             # 右侧详情区
             detail_widget = self._detail.widget()
-            h.addWidget(detail_widget)  # type: ignore
+            h.addWidget(detail_widget, 1)  # type: ignore
         except Exception:  # pragma: no cover
             pass
         self._root = root

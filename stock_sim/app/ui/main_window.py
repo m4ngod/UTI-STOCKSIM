@@ -12,7 +12,7 @@ from typing import Any, Optional, List, Dict
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
-    from PySide6.QtGui import QAction  # type: ignore
+    from PySide6.QtGui import QAction, QFont  # type: ignore
     from PySide6.QtWidgets import (
         QMainWindow, QWidget, QLabel, QMenuBar, QVBoxLayout, QDockWidget,
         QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QPushButton
@@ -30,6 +30,9 @@ except Exception:  # pragma: no cover - headless fallback
         def __init__(self, *_, **__):
             pass
     class QAction:  # type: ignore
+        def __init__(self, *_, **__):
+            pass
+    class QFont:  # type: ignore
         def __init__(self, *_, **__):
             pass
     class QVBoxLayout:  # type: ignore
@@ -126,11 +129,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 pass
 
             workspace_wrap = QWidget()  # type: ignore
+            if hasattr(workspace_wrap, 'setObjectName'):
+                workspace_wrap.setObjectName('workspaceWrap')  # type: ignore[attr-defined]
             workspace_layout = QVBoxLayout(workspace_wrap)  # type: ignore
             if hasattr(workspace_layout, 'setContentsMargins'):
-                workspace_layout.setContentsMargins(12, 12, 12, 12)
+                workspace_layout.setContentsMargins(20, 18, 20, 18)
             if hasattr(workspace_layout, 'setSpacing'):
-                workspace_layout.setSpacing(8)
+                workspace_layout.setSpacing(12)
             stack = QStackedWidget()  # type: ignore
             workspace_layout.addWidget(stack)  # type: ignore
 
@@ -247,6 +252,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _init_window_style(self):
         try:
+            if hasattr(self, 'setFont'):
+                self.setFont(QFont("Segoe UI", 10))  # type: ignore[attr-defined]
             if hasattr(self, 'setDockOptions'):
                 opts = 0
                 for name in ('AllowNestedDocks', 'AllowTabbedDocks', 'AnimatedDocks'):
@@ -260,20 +267,40 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         try:
             if hasattr(self, 'setStyleSheet'):
                 self.setStyleSheet(
-                    'QMainWindow { background: #1f2329; } '
-                    'QWidget { color: #e6edf3; font-size: 13px; background: #1f2329; } '
-                    'QDockWidget::title { background: #262c36; padding: 6px 10px; font-weight: 600; border: none; } '
-                    'QDockWidget { color: #dce4ec; border: 1px solid #2d333b; } '
-                    'QMenuBar { background: #1f2329; color: #c9d1d9; border-bottom: 1px solid #2d333b; } '
+                    'QMainWindow { background: #0f141b; } '
+                    'QWidget { color: #d8dee8; font-family: "Segoe UI", "Microsoft YaHei UI", Arial; font-size: 13px; background: #121821; } '
+                    'QWidget#workspaceWrap { background: #121821; } '
+                    'QStackedWidget { background: #121821; border: none; } '
+                    'QDockWidget::title { background: #171f2a; padding: 6px 10px; font-weight: 600; border: none; } '
+                    'QDockWidget { color: #d8dee8; border: 1px solid #26313f; } '
+                    'QMenuBar { background: #0f141b; color: #c6d0dd; border-bottom: 1px solid #26313f; } '
                     'QMenuBar::item { padding: 6px 10px; border-radius: 6px; } '
-                    'QMenuBar::item:selected { background: #2d333b; } '
-                    'QListWidget#mainNavList { background: #161b22; border: none; padding: 14px 10px; outline: none; } '
-                    'QListWidget#mainNavList::item { padding: 12px 14px; margin: 3px 6px; border-radius: 12px; color: #c9d1d9; } '
-                    'QListWidget#mainNavList::item:selected { background: #2d333b; color: #ffffff; } '
-                    'QListWidget#mainNavList::item:hover { background: #21262d; } '
-                    'QPushButton { background: #262c36; border: 1px solid #30363d; padding: 6px 10px; border-radius: 10px; color: #e6edf3; } '
-                    'QPushButton:hover { background: #2d333b; } '
+                    'QMenuBar::item:selected { background: #202a36; color: #ffffff; } '
+                    'QListWidget#mainNavList { background: #0b1017; border: none; padding: 18px 10px; outline: none; } '
+                    'QListWidget#mainNavList::item { padding: 11px 14px; margin: 3px 0; border-radius: 8px; color: #9da8b7; } '
+                    'QListWidget#mainNavList::item:selected { background: #1e2937; color: #ffffff; border-left: 3px solid #38bdf8; } '
+                    'QListWidget#mainNavList::item:hover { background: #182231; color: #e7edf5; } '
+                    'QPushButton { background: #1a2430; border: 1px solid #2b3848; padding: 7px 12px; border-radius: 7px; color: #dfe7f1; font-weight: 500; } '
+                    'QPushButton:hover { background: #223044; border-color: #3b4a60; } '
+                    'QPushButton:pressed { background: #111923; } '
+                    'QPushButton#primaryAction { background: #0e7490; border-color: #0891b2; color: #ffffff; } '
+                    'QPushButton#secondaryAction { background: #151e29; color: #b9c3d0; } '
+                    'QLineEdit, QComboBox { background: #0d131b; border: 1px solid #273444; border-radius: 6px; padding: 6px 8px; color: #e5edf7; selection-background-color: #0e7490; } '
+                    'QLineEdit:focus, QComboBox:focus { border-color: #38bdf8; } '
+                    'QTableWidget { background: #111821; alternate-background-color: #151e29; color: #d8dee8; gridline-color: #26313f; border: 1px solid #26313f; border-radius: 6px; selection-background-color: #1f3b52; selection-color: #ffffff; } '
+                    'QHeaderView::section { background: #17202b; color: #9fb0c3; border: none; border-right: 1px solid #26313f; border-bottom: 1px solid #26313f; padding: 6px 8px; font-weight: 600; } '
+                    'QTextEdit { background: #0d131b; border: 1px solid #26313f; border-radius: 6px; color: #cfd8e3; } '
                     'QLabel { background: transparent; } '
+                    'QLabel#detailSymbolLabel { color: #f8fafc; font-size: 22px; font-weight: 700; } '
+                    'QLabel#detailMetaLabel { color: #9fb0c3; font-size: 12px; } '
+                    'QLabel#detailStatusLabel { color: #67e8f9; font-size: 12px; font-weight: 600; } '
+                    'QLabel#detailDebugLabel { color: #94a3b8; font-size: 11px; } '
+                    'QFrame#detailHeader { background: #141d28; border: 1px solid #26313f; border-radius: 8px; } '
+                    'QFrame#marketSidebar { background: #0d131b; border: 1px solid #26313f; border-radius: 8px; } '
+                    'QListWidget#marketSymbolList { background: #0d131b; border: none; outline: none; padding: 6px; } '
+                    'QListWidget#marketSymbolList::item { padding: 8px 10px; margin: 2px 0; border-radius: 6px; color: #b8c2cf; } '
+                    'QListWidget#marketSymbolList::item:selected { background: #1f3b52; color: #ffffff; } '
+                    'QListWidget#marketSymbolList::item:hover { background: #172334; } '
                 )  # type: ignore[attr-defined]
         except Exception:
             pass
