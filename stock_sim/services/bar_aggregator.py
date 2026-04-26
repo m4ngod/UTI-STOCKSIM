@@ -38,6 +38,10 @@ class BarAggregator:
     def start(self):
         if self._thread and self._thread.is_alive():
             return
+        try:
+            event_bus.subscribe(EventType.SIM_DAY, self._on_sim_day, async_mode=False)
+        except Exception:
+            pass
         self._thread = threading.Thread(target=self._run, name="BarAggregator", daemon=True)
         self._thread.start()
 
@@ -67,11 +71,18 @@ class BarAggregator:
             self._processed_minutes.add(minute_start)
             if minute_start.minute == 59:
                 self._build_hour_bar(minute_start.replace(minute=0, second=0, microsecond=0))
-                if minute_start.hour == 23:
-                    self._build_day_bar(minute_start.date())
         if len(self._processed_minutes) > 2000:
             cutoff = latest_safe_minute - timedelta(days=2)
             self._processed_minutes = {m for m in self._processed_minutes if m >= cutoff}
+
+    def _on_sim_day(self, _topic: str, payload: dict):
+        try:
+            day = int((payload or {}).get("sim_day", (payload or {}).get("sim_day_index", 0)) or 0)
+        except Exception:
+            return
+        if day > 0:
+            self._build_day_bar_by_sim_day(day - 1)
+        self._build_day_bar_by_sim_day(day)
 
     def _completed_snapshot_minutes(self, latest_safe_minute: datetime) -> list[datetime]:
         lower_bound = latest_safe_minute - timedelta(minutes=self.backfill_lookback_minutes)
@@ -111,9 +122,11 @@ class BarAggregator:
             for snap in snaps:
                 if snap.last_price is not None:
                     grouped[(str(snap.symbol), getattr(snap, "run_id", None))].append(snap)
-            sim_day = current_sim_day()
-            sim_dt = virtual_datetime(sim_day)
+            touched_days: set[int] = set()
             for (symbol, run_id), arr in grouped.items():
+                sim_day = self._resolve_sim_day(arr)
+                sim_dt = virtual_datetime(sim_day)
+                touched_days.add(sim_day)
                 self._upsert_bar(
                     sess=sess,
                     model=Bar1m,
@@ -126,6 +139,8 @@ class BarAggregator:
                     sim_dt=sim_dt,
                 )
             sess.commit()
+            for sim_day in touched_days:
+                self._build_day_bar_by_sim_day(sim_day)
         except Exception:
             sess.rollback()
         finally:
@@ -194,6 +209,67 @@ class BarAggregator:
                     arr=arr,
                     timeframe="1d",
                     sim_day=sim_day,
+                    sim_dt=sim_dt,
+                )
+            sess.commit()
+        except Exception:
+            sess.rollback()
+        finally:
+            sess.close()
+
+    def _build_day_bar_by_sim_day(self, sim_day: int):
+        day = max(0, int(sim_day))
+        sess: Session = SessionLocal()
+        try:
+            bars: List[Bar1m] = (
+                sess.query(Bar1m)
+                .filter(Bar1m.sim_day == day)
+                .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
+                .all()
+            )
+            if bars:
+                grouped: Dict[tuple[str, str | None], List[Bar1m]] = defaultdict(list)
+                for bar in bars:
+                    grouped[(str(bar.symbol), getattr(bar, "run_id", None))].append(bar)
+                sim_dt = virtual_datetime(day)
+                for (symbol, run_id), arr in grouped.items():
+                    self._upsert_bar(
+                        sess=sess,
+                        model=Bar1d,
+                        ts=sim_dt,
+                        symbol=symbol,
+                        run_id=run_id,
+                        arr=arr,
+                        timeframe="1d",
+                        sim_day=day,
+                        sim_dt=sim_dt,
+                    )
+                sess.commit()
+                return
+
+            snaps: List[Snapshot1s] = (
+                sess.query(Snapshot1s)
+                .filter(Snapshot1s.sim_day == day)
+                .order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc())
+                .all()
+            )
+            if not snaps:
+                return
+            grouped_snaps: Dict[tuple[str, str | None], List[Snapshot1s]] = defaultdict(list)
+            for snap in snaps:
+                if snap.last_price is not None:
+                    grouped_snaps[(str(snap.symbol), getattr(snap, "run_id", None))].append(snap)
+            sim_dt = virtual_datetime(day)
+            for (symbol, run_id), arr in grouped_snaps.items():
+                self._upsert_bar(
+                    sess=sess,
+                    model=Bar1d,
+                    ts=sim_dt,
+                    symbol=symbol,
+                    run_id=run_id,
+                    arr=arr,
+                    timeframe="1d",
+                    sim_day=day,
                     sim_dt=sim_dt,
                 )
             sess.commit()
@@ -301,6 +377,17 @@ class BarAggregator:
             "volume": int(volume),
             "turnover": float(turnover),
         }
+
+    @staticmethod
+    def _resolve_sim_day(arr: List[Snapshot1s] | List[Bar1m]) -> int:
+        days = [
+            int(getattr(item, "sim_day", 0) or 0)
+            for item in arr
+            if getattr(item, "sim_day", None) is not None
+        ]
+        if days:
+            return max(days)
+        return int(current_sim_day() or 0)
 
 
 _bar_aggregator_singleton: BarAggregator | None = None

@@ -383,6 +383,8 @@ class RuntimeQueryService:
                 )
                 if rows:
                     resolved_scope = "active-run"
+                else:
+                    return []
             if not rows:
                 rows = (
                     query.order_by(model.ts.desc())
@@ -395,10 +397,8 @@ class RuntimeQueryService:
             rows.reverse()
             out: List[Dict[str, Any]] = []
             for row in rows:
-                ts = getattr(row, "ts", None)
-                try:
-                    ts_ms = int(ts.timestamp() * 1000)
-                except Exception:
+                ts_ms = self._bar_ts_ms(row, str(timeframe))
+                if ts_ms is None:
                     continue
                 out.append(
                     {
@@ -417,6 +417,20 @@ class RuntimeQueryService:
             return []
         finally:
             sess.close()
+
+    @staticmethod
+    def _bar_ts_ms(row: object, timeframe: str) -> int | None:
+        if timeframe == "1d":
+            try:
+                sim_day = int(getattr(row, "sim_day", 0) or 0)
+                return sim_day * 24 * 60 * 60 * 1000
+            except Exception:
+                pass
+        ts = getattr(row, "ts", None)
+        try:
+            return int(ts.timestamp() * 1000)
+        except Exception:
+            return None
 
     def get_recent_trades(self, symbol: str, *, limit: int = 20) -> List[Dict[str, Any]]:
         if SessionLocal is None or TradeORM is None:
@@ -442,6 +456,8 @@ class RuntimeQueryService:
                 )
                 if rows:
                     resolved_scope = "active-run"
+                else:
+                    return []
             if not rows:
                 rows = (
                     base_query.order_by(TradeORM.ts.desc())

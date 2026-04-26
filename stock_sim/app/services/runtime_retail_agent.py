@@ -492,6 +492,11 @@ class RuntimeRetailAgent:
             avg_price = float(row.get("avg_price") or 0.0)
             break
         available_qty = max(0, quantity - frozen_qty)
+        if quantity > 0:
+            try:
+                available_qty = min(available_qty, self._available_sell_qty(symbol))
+            except Exception:
+                pass
         now_ms = int(time.time() * 1000)
         if quantity > 0:
             self._holding_started_ms.setdefault(symbol, now_ms)
@@ -519,7 +524,8 @@ class RuntimeRetailAgent:
         if plan.action == "reduce":
             qty = max(ctx.lot_size, ctx.lot_size * lots)
             return min(position.available_qty, qty)
-        return position.available_qty
+        qty = max(ctx.lot_size, ctx.lot_size * lots)
+        return min(position.available_qty, qty)
 
     def _emit_state(self, status: str, *, emit_heartbeat: bool) -> None:
         cb = self._state_callback

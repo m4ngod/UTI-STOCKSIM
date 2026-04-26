@@ -1,6 +1,6 @@
 import time
 
-from app.services.runtime_retail_agent import ManagedOrder, MarketContext, RuntimeRetailAgent
+from app.services.runtime_retail_agent import ManagedOrder, MarketContext, PositionContext, RuntimeRetailAgent
 from services.sim_clock import ensure_sim_clock_started
 
 
@@ -159,6 +159,41 @@ def test_runtime_retail_cold_start_buy_quote_is_capped_when_no_ask():
     )
 
     assert agent._price_for_side(ctx, "buy", aggressive=False) == 10.02
+
+
+def test_runtime_retail_sell_plan_uses_planned_lots_not_full_inventory():
+    agent = RuntimeRetailAgent(
+        agent_id="retail-sell-size-001",
+        strategy="liquidity_noise",
+        trading_service=_FakeTradingService(),
+        seed=1,
+    )
+    ctx = MarketContext(
+        symbol="AAA",
+        reference_price=10.0,
+        initial_price=10.0,
+        tick_size=0.01,
+        lot_size=100,
+        settlement_cycle=1,
+        best_bid=9.99,
+        best_ask=10.01,
+        phase="CONTINUOUS",
+        trade_count=10,
+        cold_start=False,
+    )
+    position = PositionContext(
+        quantity=50_000,
+        available_qty=50_000,
+        avg_price=10.0,
+        holding_time_s=60.0,
+        unrealized_pnl_norm=0.0,
+    )
+
+    class _Plan:
+        action = "sell"
+        quantity_lots = 2
+
+    assert agent._quantity_for_plan(ctx, position, _Plan()) == 200
 
 
 def test_runtime_retail_patience_cancels_stale_live_orders():

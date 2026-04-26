@@ -36,3 +36,26 @@ def test_runtime_query_service_prefers_active_run_bars():
     if hasattr(clk, "configure"):
         clk.configure(run_id="")
 
+
+def test_runtime_query_service_does_not_mix_old_bars_into_active_run():
+    models_init.init_models()
+    symbol = "RUNBARY"
+    old_run = "RUN-BAR-OLD-001"
+    active_run = "RUN-BAR-ACTIVE-MISSING"
+    ts0 = datetime.utcnow().replace(second=0, microsecond=0) - timedelta(minutes=2)
+
+    s = SessionLocal()
+    try:
+        s.add(Bar1m(symbol=symbol, run_id=old_run, ts=ts0, open=10.0, high=10.2, low=9.9, close=10.1, volume=100, turnover=1000.0, sim_day=1))
+        s.commit()
+    finally:
+        s.close()
+
+    clk = ensure_sim_clock_started()
+    if hasattr(clk, "configure"):
+        clk.configure(run_id=active_run)
+
+    assert RuntimeQueryService().get_bars(symbol, "1m", limit=10) == []
+
+    if hasattr(clk, "configure"):
+        clk.configure(run_id="")

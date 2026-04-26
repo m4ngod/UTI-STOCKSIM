@@ -14,7 +14,10 @@ try:
     from stock_sim.persistence.models_account import Account as RuntimeAccount  # type: ignore
     from stock_sim.persistence.models_position import Position  # type: ignore
     from stock_sim.persistence.models_agent_binding import AgentBinding  # type: ignore
+    from stock_sim.persistence.models_order import OrderORM  # type: ignore
+    from stock_sim.persistence.models_trade import TradeORM  # type: ignore
     from stock_sim.services.account_service import AccountService  # type: ignore
+    from stock_sim.core.const import OrderSide, OrderStatus  # type: ignore
 except Exception:  # pragma: no cover
     try:
         from persistence import models_init  # type: ignore
@@ -23,7 +26,10 @@ except Exception:  # pragma: no cover
         from persistence.models_account import Account as RuntimeAccount  # type: ignore
         from persistence.models_position import Position  # type: ignore
         from persistence.models_agent_binding import AgentBinding  # type: ignore
+        from persistence.models_order import OrderORM  # type: ignore
+        from persistence.models_trade import TradeORM  # type: ignore
         from services.account_service import AccountService  # type: ignore
+        from core.const import OrderSide, OrderStatus  # type: ignore
     except Exception:  # pragma: no cover
         models_init = None  # type: ignore
         SessionLocal = None  # type: ignore
@@ -31,7 +37,11 @@ except Exception:  # pragma: no cover
         RuntimeAccount = None  # type: ignore
         Position = None  # type: ignore
         AgentBinding = None  # type: ignore
+        OrderORM = None  # type: ignore
+        TradeORM = None  # type: ignore
         AccountService = None  # type: ignore
+        OrderSide = None  # type: ignore
+        OrderStatus = None  # type: ignore
 
 
 IPO_RETAIL_ACCOUNT_RATIO = 0.20
@@ -123,16 +133,6 @@ def allocate_ipo_retail_distribution(
         account_ids, cohort_scope = _retail_account_ids(session)
         if not account_ids:
             return {"symbol": sym, "applied": False, "reason": "no_retail_accounts"}
-        existing = _existing_positive_qty(session, sym, account_ids)
-        if existing > 0:
-            _mark_allocated(sym)
-            return {
-                "symbol": sym,
-                "applied": False,
-                "reason": "already_allocated",
-                "existing_qty": existing,
-                "cohort_scope": cohort_scope,
-            }
         recipient_count = _resolve_recipient_count(
             account_count=len(account_ids),
             free_float=free_float,
@@ -141,6 +141,20 @@ def allocate_ipo_retail_distribution(
         )
         if recipient_count <= 0:
             return {"symbol": sym, "applied": False, "reason": "no_recipients"}
+        existing = _existing_positive_qty(session, sym, account_ids)
+        existing_recipient_count = _existing_positive_recipient_count(session, sym, account_ids)
+        if existing > 0:
+            if not _can_rebalance_existing_distribution(session, sym, existing_recipient_count, recipient_count):
+                _mark_allocated(sym)
+                return {
+                    "symbol": sym,
+                    "applied": False,
+                    "reason": "already_allocated",
+                    "existing_qty": existing,
+                    "existing_recipients": existing_recipient_count,
+                    "target_recipients": recipient_count,
+                    "cohort_scope": cohort_scope,
+                }
         rng = random.Random(f"{sym}:{0 if sim_day is None else int(sim_day)}")
         selected_ids = rng.sample(account_ids, recipient_count)
         grants = _split_evenly(free_float, recipient_count)
@@ -148,15 +162,20 @@ def allocate_ipo_retail_distribution(
         ref_price = float(getattr(inst, "initial_price", 0.0) or 0.0)
         granted_total = 0
         changed_accounts = []
+        selected_set = set(selected_ids)
+        if existing > 0:
+            _clear_unselected_distribution_positions(session, sym, account_ids, selected_set)
         for account_id, grant_qty in zip(selected_ids, grants):
             if grant_qty <= 0:
                 continue
             acc = account_service.get_or_create(account_id)
             pos = account_service.get_position(acc, sym)
-            old_qty = int(getattr(pos, "quantity", 0) or 0)
-            old_avg = float(getattr(pos, "avg_price", 0.0) or 0.0)
-            new_qty = old_qty + int(grant_qty)
+            old_qty = 0 if existing > 0 else int(getattr(pos, "quantity", 0) or 0)
+            old_avg = 0.0 if existing > 0 else float(getattr(pos, "avg_price", 0.0) or 0.0)
+            new_qty = (old_qty + int(grant_qty)) if existing <= 0 else int(grant_qty)
             pos.quantity = new_qty
+            if existing > 0:
+                pos.frozen_qty = 0
             if ref_price > 0:
                 if old_qty > 0 and old_avg > 0:
                     pos.avg_price = ((old_qty * old_avg) + (grant_qty * ref_price)) / max(new_qty, 1)
@@ -178,6 +197,8 @@ def allocate_ipo_retail_distribution(
             "granted_qty": granted_total,
             "free_float_shares": free_float,
             "cohort_scope": cohort_scope,
+            "existing_recipients": existing_recipient_count,
+            "target_recipients": recipient_count,
         }
     except Exception as exc:
         try:
@@ -306,6 +327,77 @@ def _existing_positive_qty(session, symbol: str, account_ids: Iterable[str]) -> 
     except Exception:
         return 0
     return sum(max(0, int(getattr(row, "quantity", 0) or 0)) for row in rows)
+
+
+def _existing_positive_recipient_count(session, symbol: str, account_ids: Iterable[str]) -> int:
+    ids = [str(x).strip() for x in account_ids if str(x).strip()]
+    if not ids:
+        return 0
+    try:
+        return int(
+            session.query(Position)
+            .filter(Position.symbol == symbol, Position.account_id.in_(ids), Position.quantity > 0)
+            .count()
+        )
+    except Exception:
+        return 0
+
+
+def _can_rebalance_existing_distribution(session, symbol: str, existing_count: int, target_count: int) -> bool:
+    if existing_count <= 0 or existing_count >= target_count:
+        return False
+    if TradeORM is not None:
+        try:
+            if session.query(TradeORM).filter(TradeORM.symbol == symbol).first() is not None:
+                return False
+        except Exception:
+            return False
+    if OrderORM is not None and OrderStatus is not None and OrderSide is not None:
+        try:
+            active_sell = (
+                session.query(OrderORM)
+                .filter(
+                    OrderORM.symbol == symbol,
+                    OrderORM.side == OrderSide.SELL,
+                    OrderORM.status.in_([OrderStatus.NEW, OrderStatus.PARTIAL]),
+                )
+                .first()
+            )
+            if active_sell is not None:
+                return False
+        except Exception:
+            return False
+    try:
+        frozen = (
+            session.query(Position)
+            .filter(Position.symbol == symbol, Position.frozen_qty > 0)
+            .first()
+        )
+        return frozen is None
+    except Exception:
+        return False
+
+
+def _clear_unselected_distribution_positions(
+    session,
+    symbol: str,
+    account_ids: Iterable[str],
+    selected_ids: set[str],
+) -> None:
+    ids = [str(x).strip() for x in account_ids if str(x).strip()]
+    if not ids:
+        return
+    rows = (
+        session.query(Position)
+        .filter(Position.symbol == symbol, Position.account_id.in_(ids), Position.quantity > 0)
+        .all()
+    )
+    for row in rows:
+        if str(row.account_id) in selected_ids:
+            continue
+        row.quantity = 0
+        row.frozen_qty = 0
+        row.avg_price = 0.0
 
 
 def _dedupe(items: Iterable[str]) -> list[str]:
