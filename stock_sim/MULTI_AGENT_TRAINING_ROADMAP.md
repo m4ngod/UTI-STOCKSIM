@@ -90,9 +90,15 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] Tensor checkpoint manifests record tensor names, shapes, dtypes, score, generation, episode, and Hall-of-Fame metadata.
 - [x] Tensor checkpoint rows update `meta_json` with artifact schema, tensor file path, and tensor count.
 
+### Completed in round 11
+
+- [x] Added a dedicated Arena logic panel.
+- [x] Added an Arena UI adapter for create/start/stop/evaluate controls and episode ranking display.
+- [x] Registered Arena as a first-class desktop panel and workspace page.
+- [x] Added Arena panel unit coverage for registry, service-backed view state, and headless adapter rendering.
+
 ### Not done yet
 
-- [ ] Dedicated Arena panel.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

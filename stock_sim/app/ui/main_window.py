@@ -57,7 +57,7 @@ try:
 except Exception:  # pragma: no cover
     _register_mw = None  # type: ignore
 
-DEFAULT_PRELOAD_PANELS = ["account", "market", "agents", "leaderboard", "clock", "orders"]
+DEFAULT_PRELOAD_PANELS = ["account", "market", "agents", "arena", "leaderboard", "clock", "orders"]
 
 __all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS"]
 
@@ -365,7 +365,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         ]
         if not ordered_names:
             ordered_names = [
-                name for name in ['market', 'account', 'agents', 'leaderboard', 'clock', 'orders']
+                name for name in ['market', 'account', 'agents', 'arena', 'leaderboard', 'clock', 'orders']
                 if name in self._workspace_pages
             ]
         active_page = getattr(self, '_last_non_symbol_page', 'market') or 'market'
@@ -457,7 +457,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._ensure_central_layout()
         try:
             self._panel_widgets[name] = widget
-            primary_panels = {'market', 'account', 'agents', 'clock', 'leaderboard', 'orders'} | {n for n in self.list_open() if str(n).startswith('symbol:')}
+            primary_panels = {'market', 'account', 'agents', 'arena', 'clock', 'leaderboard', 'orders'} | {n for n in self.list_open() if str(n).startswith('symbol:')}
             if name in primary_panels or str(name).startswith('symbol:'):
                 try:
                     if self._workspace_stack is not None and hasattr(self._workspace_stack, 'addWidget'):
@@ -472,6 +472,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                                 'market': 'Market',
                                 'account': 'Account',
                                 'agents': 'Agents',
+                                'arena': 'Arena',
                                 'clock': 'Clock',
                                 'leaderboard': 'Leaderboard',
                                 'orders': 'Orders',

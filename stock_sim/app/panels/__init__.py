@@ -34,6 +34,7 @@ _PLACEHOLDER_NAMES = [
     "account",
     "market",
     "agents",
+    "arena",
     "leaderboard",
     "clock",
     # "settings",  # 已移除 Settings 面板
@@ -103,6 +104,16 @@ def register_ui_adapters():
             logic = _LbLogic(ctx.leaderboard_controller)
             return LeaderboardPanelAdapter().bind(logic)  # type: ignore
         replace_panel("leaderboard", _lb_factory, title="Leaderboard", meta={"i18n_key": "panel.leaderboard"})
+    except Exception:
+        pass
+    # arena
+    try:
+        from app.panels.arena.panel import ArenaPanel as _ArenaLogic
+        from app.ui.adapters.arena_adapter import ArenaPanelAdapter
+        def _arena_factory():
+            logic = _ArenaLogic(ctx.training_arena_service)
+            return ArenaPanelAdapter().bind(logic)  # type: ignore
+        replace_panel("arena", _arena_factory, title="Arena", meta={"i18n_key": "panel.arena"})
     except Exception:
         pass
     # agents（若有）

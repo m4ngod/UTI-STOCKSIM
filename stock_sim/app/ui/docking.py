@@ -15,6 +15,7 @@ DEFAULT_DOCK_AREAS = {
     'account': 'left',
     'market': 'center',
     'agents': 'right',
+    'arena': 'center',
     'leaderboard': 'bottom',
     'clock': 'right',
     'orders': 'bottom',

@@ -479,3 +479,53 @@ Close the existing tensor checkpoint gap without expanding scope: add a real wei
 
 - Implement the first real model behind the existing callable, HTTP, or subprocess adapter boundary.
 - Build the dedicated Arena panel for training control and observability.
+
+## Task 2026-04-26-model-training-11
+
+### status
+
+done
+
+### goal
+
+Finish the dedicated Arena panel promised in the roadmap without expanding the platform checklist.
+
+### files involved
+
+- `app/panels/arena/panel.py`
+- `app/ui/adapters/arena_adapter.py`
+- `app/app_context.py`
+- `app/panels/__init__.py`
+- `app/ui/main_window.py`
+- `app/ui/docking.py`
+- `app/i18n/en_US.json`
+- `app/i18n/zh_CN.json`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/frontend/unit/test_arena_panel.py`
+- `tests/frontend/unit/test_panel_registry_main.py`
+
+### change summary
+
+- Added `ArenaPanel`, a pure logic panel that wraps `TrainingArenaService` for create/start/stop/evaluate and exposes selected Arena state.
+- Added `ArenaPanelAdapter`, with desktop/headless rendering for Arena rows, control buttons, status text, and episode leaderboard rows.
+- Registered Arena as a built-in panel and workspace page in the desktop shell.
+- Added `TrainingArenaService` to the shared app context so the UI uses one service instance.
+- Added regression tests for registry presence, service-backed view state, evaluation leaderboard output, and headless adapter rendering.
+
+### verification
+
+- `tests/frontend/unit/test_arena_panel.py`
+- `tests/runtime/test_training_arena_service.py`
+- `tests/frontend/unit/test_panel_registry_main.py`
+
+### impact / risk
+
+- Positive: Arena control no longer has to be driven manually through service calls or overloaded Agent panel flows.
+- Positive: the next real-model integration can use the Arena page as its operator-facing control surface.
+- Risk: Arena state is still in-process and should become durable before long training sessions need restart recovery.
+
+### next actions
+
+- Implement the first real PPO/LSTM or external model through the existing adapter boundary.
