@@ -262,3 +262,46 @@ Continue Phase 5 by turning checkpoint and PBT records into an actionable genera
 - Add a checkpoint-backed policy loader to `ModelRegistryService`.
 - Add real neural-network weight save/load adapters once the first trainable policy lands.
 - Expose Arena/PBT controls in a dedicated training panel after service APIs stabilize.
+
+## Task 2026-04-26-model-training-06
+
+### status
+
+done
+
+### goal
+
+Continue Phase 5 by making checkpoint-backed child model ids executable through the model registry and runtime model agent.
+
+### files involved
+
+- `app/services/model_registry_service.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_pbt_lineage.py`
+
+### change summary
+
+- Added `CheckpointBackedModel`, a lightweight wrapper that runs a parent policy while preserving child model id, parent model id, checkpoint id, checkpoint path, and mutation metadata.
+- `ModelRegistryService.list_models()` now discovers child models from `model_lineage`.
+- `ModelRegistryService.create_policy(...)` now resolves child model ids through `model_lineage -> model_checkpoints -> JSON artifact`.
+- Runtime model creation can now use a PBT child model id such as `random_weight_v1.gen5.MODEL_LOW`.
+- Added a defensive fallback for unknown `*.gen*` ids whose built-in parent exists, so a stale child id does not immediately crash policy creation if lineage is temporarily unavailable.
+- Updated the roadmap progress ledger with round 6 completion markers.
+
+### verification
+
+- `tests/runtime/test_pbt_lineage.py`
+
+### impact / risk
+
+- Positive: the PBT loop now has a runnable next-generation model identity instead of only an audit record.
+- Positive: checkpoint artifacts and lineage can drive runtime policy loading without adding UI responsibility.
+- Risk: checkpoint-backed policies still wrap built-in placeholder policies; real neural-network weights require a dedicated tensor/checkpoint adapter.
+
+### next actions
+
+- Add a trainable/external policy adapter contract to the model registry.
+- Add real neural-network weight checkpoint save/load once the first trainable baseline lands.
+- Start a dedicated Arena panel after the service API has one more integration pass.

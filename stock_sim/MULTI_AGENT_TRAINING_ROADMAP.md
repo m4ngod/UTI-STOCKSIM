@@ -50,11 +50,19 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] `ModelPopulationService` can apply PBT inheritance back to losing live Model Agents.
 - [x] Applied inheritance increments `params_version`, records parent checkpoint metadata, and clears stale runtime instances.
 
+### Completed in round 6
+
+- [x] `ModelRegistryService` can discover checkpoint-backed child models from `model_lineage`.
+- [x] `ModelRegistryService.create_policy(...)` can instantiate checkpoint-backed child policies.
+- [x] Checkpoint-backed policies expose parent checkpoint metadata in action `meta`.
+- [x] `RuntimeModelAgent` can run a PBT child model id produced by lineage.
+- [x] Unknown `*.gen*` child ids gracefully fall back to their known built-in parent policy when DB lineage is unavailable.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
 - [ ] Real neural-network weight tensor checkpoint adapter.
-- [ ] Model registry loader for materialized checkpoint-backed policies.
+- [ ] Persistent policy registry for external/trainable model adapters.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

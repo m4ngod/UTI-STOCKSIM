@@ -8,6 +8,8 @@ from stock_sim.services.training_episode_service import EpisodeAgentAccumulator,
 from app.services.agent_service import AgentService
 from app.services.model_checkpoint_service import ModelCheckpointService
 from app.services.model_population_service import ModelPopulationService, PopulationEvolutionConfig
+from app.services.model_registry_service import CheckpointBackedModel, ModelRegistryService
+from app.services.runtime_model_agent import RuntimeModelAgent
 
 
 def _seed_episode_results(session, episode_id="episode-pbt"):
@@ -128,6 +130,36 @@ class _FakeRuntimeGateway:
         self.meta_updates.setdefault(agent_id, {}).update(updates)
 
 
+class _PolicyRuntimeGateway:
+    def __init__(self):
+        self.orders = []
+
+    def list_instruments(self, *, active_only=True):
+        return [{"symbol": "001", "initial_price": 10.0}]
+
+    def get_recent_trades(self, symbol, *, limit=1):
+        return []
+
+    def get_bars(self, symbol, timeframe, *, limit):
+        return [{"close": 10.0}]
+
+    def get_account_snapshot(self, account_id):
+        return {"account_id": account_id, "cash": 100_000.0, "equity": 100_000.0, "positions": []}
+
+    def get_current_run_id(self):
+        return "run-policy-test"
+
+    def get_current_sim_day(self):
+        return 5
+
+    def clock_snapshot(self):
+        return {"running": True}
+
+    def submit_order(self, **kwargs):
+        self.orders.append(kwargs)
+        return {"ok": True, "order_id": f"order-{len(self.orders)}"}
+
+
 def test_population_service_applies_inheritance_to_model_agent():
     models_init.init_models()
     session = SessionLocal()
@@ -163,3 +195,86 @@ def test_population_service_applies_inheritance_to_model_agent():
         assert gateway.meta_updates["MODEL_LOW"]["parent_checkpoint_id"] == result["lineage"][0]["parent_checkpoint_id"]
     finally:
         session.close()
+
+
+def test_registry_loads_checkpoint_backed_child_policy(tmp_path):
+    models_init.init_models()
+    session = SessionLocal()
+    try:
+        episode_id = "episode-pbt-loader"
+        _seed_episode_results(session, episode_id=episode_id)
+        checkpoint_service = ModelCheckpointService(session, checkpoint_root=tmp_path)
+        population = ModelPopulationService(session, checkpoint_service=checkpoint_service, rng=random.Random(9))
+        result = population.evolve_from_episode(
+            episode_id,
+            config=PopulationEvolutionConfig(top_fraction=0.34, bottom_fraction=0.34, mutation_scale=0.02),
+        )
+        session.commit()
+
+        child_model_id = result["lineage"][0]["child_model_id"]
+        registry = ModelRegistryService()
+        specs = registry.list_models()
+        policy = registry.create_policy(child_model_id, seed=13)
+        action = policy.act(
+            {
+                "contract_version": "obs.v1",
+                "context": {"agent_id": "MODEL_LOW", "symbol_universe": ["001"]},
+            }
+        )
+
+        assert child_model_id in {spec.model_id for spec in specs}
+        assert isinstance(policy, CheckpointBackedModel)
+        assert action["action_type"] == "target_weight"
+        assert action["meta"]["model_id"] == child_model_id
+        assert action["meta"]["parent_model_id"] == "random_weight_v1"
+        assert action["meta"]["checkpoint_id"] == result["lineage"][0]["parent_checkpoint_id"]
+    finally:
+        session.close()
+
+
+def test_runtime_model_agent_can_run_checkpoint_backed_child(tmp_path):
+    models_init.init_models()
+    session = SessionLocal()
+    try:
+        episode_id = "episode-pbt-runtime-loader"
+        _seed_episode_results(session, episode_id=episode_id)
+        checkpoint_service = ModelCheckpointService(session, checkpoint_root=tmp_path)
+        population = ModelPopulationService(session, checkpoint_service=checkpoint_service, rng=random.Random(11))
+        result = population.evolve_from_episode(
+            episode_id,
+            config=PopulationEvolutionConfig(top_fraction=0.34, bottom_fraction=0.34, mutation_scale=0.02),
+        )
+        session.commit()
+
+        gateway = _PolicyRuntimeGateway()
+        agent = RuntimeModelAgent(
+            agent_id="MODEL_LOW",
+            model_id=result["lineage"][0]["child_model_id"],
+            runtime_gateway=gateway,
+            persist_transitions=False,
+        )
+        transition = agent.step_once()
+
+        assert transition["action"]["meta"]["policy_type"] == "checkpoint_backed"
+        assert transition["action"]["meta"]["parent_model_id"] == "random_weight_v1"
+        assert transition["execution_result"]["status"] == "EXECUTED"
+        assert gateway.orders
+    finally:
+        session.close()
+
+
+def test_registry_falls_back_for_known_parent_child_id_without_lineage():
+    registry = ModelRegistryService(session_factory=None)
+    policy = registry.create_policy("random_weight_v1.gen99.MODEL_X", seed=17)
+
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_X", "symbol_universe": ["001"]},
+        }
+    )
+
+    assert isinstance(policy, CheckpointBackedModel)
+    assert action["action_type"] == "target_weight"
+    assert action["meta"]["model_id"] == "random_weight_v1.gen99.MODEL_X"
+    assert action["meta"]["parent_model_id"] == "random_weight_v1"

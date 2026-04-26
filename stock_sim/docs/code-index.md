@@ -72,7 +72,7 @@
 - Action parser: `rl/action_parser.py`
 - In-process model bridge: `rl/model_bridge.py`
 - Reward builder: `rl/reward_builder.py`
-- Model registry and built-in placeholder policies: `app/services/model_registry_service.py`
+- Model registry, built-in placeholder policies, and checkpoint-backed child policy loader: `app/services/model_registry_service.py`
 - Runtime model lifecycle MVP: `app/services/runtime_model_agent.py`
 - Training persistence models: `persistence/models_training.py`
 - Training episode/result service: `services/training_episode_service.py`
