@@ -1258,7 +1258,7 @@ class MarketPanelAdapter(PanelAdapter):
                                 add_bar_update(payload)
                             except Exception:
                                 pass
-                        self.refresh()
+                        self._refresh_detail_for_runtime_bar()
                 except Exception:
                     pass
             self._cancel_bar_update = subscribe_topic("BarUpdated", _on_bar_updated, async_mode=False)
@@ -1842,6 +1842,11 @@ class MarketPanelAdapter(PanelAdapter):
             return
         self._last_detail_refresh_ts = now
         self._refresh_detail()
+
+    def _refresh_detail_for_runtime_bar(self) -> None:
+        """Runtime bar events are sparse bar-boundary signals, so they must repaint."""
+        if not self._post_to_ui(lambda: self._refresh_detail_throttled(force=True)):
+            self._refresh_detail_throttled(force=True)
 
     def _open_trade_dialog(self, side: str) -> None:
         symbol = (self._selected_symbol or "").strip()

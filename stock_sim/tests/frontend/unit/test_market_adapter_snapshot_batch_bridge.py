@@ -1,3 +1,5 @@
+import time
+
 from app.controllers.market_controller import MarketController
 from app.panels.market.panel import MarketPanel
 from app.services.market_data_service import MarketDataService
@@ -69,3 +71,56 @@ def test_market_adapter_refreshes_persisted_instruments_when_widget_is_created()
 
     assert logic.loaded >= 1
     assert getattr(adapter._symbol_list, "_items", []) == ["OLD1"]
+
+
+class _BarUpdateLogic:
+    def __init__(self):
+        self.bar_updates = []
+
+    def load_persisted_instruments(self):
+        return ["AAA"]
+
+    def get_view(self):
+        return {
+            "watchlist": {
+                "symbols": ["AAA"],
+                "snapshots": {"items": [{"symbol": "AAA"}]},
+            },
+            "selected": "AAA",
+        }
+
+    def detail_view(self):
+        return {
+            "symbol": "AAA",
+            "timeframe": "1d",
+            "series": {"ts": [0], "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1]},
+            "series_meta": {"status": "available", "source": "runtime-persisted-bars"},
+            "snapshot": None,
+            "order_book": {"bids": [], "asks": []},
+        }
+
+    def add_bar_update(self, payload):
+        self.bar_updates.append(payload)
+
+
+def test_market_adapter_forces_detail_repaint_on_runtime_bar_update():
+    logic = _BarUpdateLogic()
+    adapter = MarketPanelAdapter().bind(logic)
+    _ = adapter.widget()
+    adapter._selected_symbol = "AAA"
+    adapter._last_detail_refresh_ts = time.time()
+
+    calls = []
+    adapter._refresh_detail = lambda: calls.append("refresh")  # type: ignore[method-assign]
+
+    event_bus.publish(
+        "BarUpdated",
+        {
+            "symbol": "AAA",
+            "timeframe": "1d",
+            "bar": {"ts": "0001-01-02T00:00:00", "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1},
+        },
+    )
+
+    assert logic.bar_updates
+    assert calls == ["refresh"]
