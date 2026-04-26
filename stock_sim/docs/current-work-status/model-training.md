@@ -127,3 +127,48 @@ Start Phase 3 by making model episodes produce persistent transition and result 
 - Add `TrainingArenaService` to orchestrate multiple model agents plus retail background agents under one episode.
 - Add checkpoint and lineage tables/services before implementing PBT inheritance.
 - Promote episode summaries into a future Arena panel instead of overloading the Agent panel.
+
+## Task 2026-04-26-model-training-03
+
+### status
+
+done
+
+### goal
+
+Start Phase 4 by adding a service-layer Arena MVP that can create, start, stop, and evaluate multi-model episodes without placing training orchestration in the UI.
+
+### files involved
+
+- `app/services/training_arena_service.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_training_arena_service.py`
+
+### change summary
+
+- Added `TrainingArenaService` with in-process Arena state and the standard Arena states from the roadmap.
+- Added `TrainingArenaConfig`, `ArenaModelSpec`, and `TrainingArenaState`.
+- `create_arena(...)` registers a model/retail training container.
+- `start_arena(...)` creates a training episode, creates or binds model agents, optionally creates retail background agents, and starts all participants.
+- `stop_arena(...)` stops all model and retail participants known to the Arena.
+- `evaluate_arena(...)` ranks `model_episode_results`, completes the training episode, and stores the latest summary on the Arena state.
+- Updated the roadmap progress ledger so round 1, round 2, and round 3 completed items are explicitly marked.
+
+### verification
+
+- `tests/runtime/test_training_arena_service.py`
+
+### impact / risk
+
+- Positive: multi-model episodes now have a service-level owner instead of being a loose manual sequence.
+- Positive: future Arena UI can call a small service API instead of owning orchestration logic.
+- Positive: PBT and checkpoint work now has a clear place to hook into after `evaluate_arena(...)`.
+- Risk: Arena state is still in-process. Durable Arena rows should be added before long-running or restart-resilient training workflows.
+
+### next actions
+
+- Add checkpoint and lineage persistence.
+- Add a minimal model population service for Hall-of-Fame and PBT mutation.
+- Add Arena panel only after the service API stabilizes.

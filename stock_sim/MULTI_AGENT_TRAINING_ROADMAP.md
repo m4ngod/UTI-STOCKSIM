@@ -26,9 +26,16 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] `RuntimeModelAgent` reports `last_reward`, `last_action`, `equity`, and `pnl` back to `AgentService`.
 - [x] Agent panel model rows can display the latest model metrics.
 
+### Completed in round 3
+
+- [x] Added `TrainingArenaService` MVP.
+- [x] Arena service supports create/start/stop/evaluate.
+- [x] Arena start creates a training episode and binds model agents to it.
+- [x] Arena evaluate ranks episode results and completes the episode.
+- [x] Arena service can optionally create and start retail background agents.
+
 ### Not done yet
 
-- [ ] Dedicated `TrainingArenaService`.
 - [ ] Dedicated Arena panel.
 - [ ] Checkpoint persistence and Hall-of-Fame.
 - [ ] PBT inheritance / mutation.
