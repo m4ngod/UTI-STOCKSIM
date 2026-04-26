@@ -55,7 +55,7 @@ except Exception:  # pragma: no cover
 if ui_runtime_enabled():
     try:
         from PySide6.QtWidgets import (
-            QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QFrame, QTableWidget, QTableWidgetItem,
+            QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QLabel, QFrame, QTableWidget, QTableWidgetItem,
             QDialog, QLineEdit, QPushButton, QFormLayout, QHeaderView
         )  # type: ignore
         from PySide6.QtCore import Qt, QRectF, QPointF  # type: ignore
@@ -157,13 +157,9 @@ if not ui_runtime:
 # pyqtgraph（可选）
 try:  # pragma: no cover
     import pyqtgraph as pg  # type: ignore
-    from pyqtgraph import GraphicsLayoutWidget  # type: ignore
     from pyqtgraph import AxisItem, InfiniteLine, ViewBox  # type: ignore
 except Exception:  # pragma: no cover
     pg = None  # type: ignore
-    class GraphicsLayoutWidget:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def addPlot(self, *_, **__): return _Plot()
     class _Plot:  # type: ignore
         def clear(self): pass
         def addItem(self, *_ , **__): pass

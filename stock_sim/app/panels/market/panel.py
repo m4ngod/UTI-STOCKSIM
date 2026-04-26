@@ -31,7 +31,6 @@ from app.controllers.market_controller import MarketController
 from app.services.market_data_service import MarketDataService, Timeframe
 from app.core_dto.snapshot import SnapshotDTO
 from app.core_dto.trade import TradeDTO  # 新增
-from app.utils.ring_buffer import RingBuffer  # 新增
 # 新增: 指标执行器
 try:
     from app.indicators.executor import indicator_executor

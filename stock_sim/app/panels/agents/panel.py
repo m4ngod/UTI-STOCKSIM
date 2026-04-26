@@ -33,7 +33,7 @@ from threading import RLock, Thread
 import time
 
 from app.controllers.agent_controller import AgentController
-from app.services.agent_service import AgentService, BatchCreateConfig, AgentServiceError, BATCH_ALLOWED_TYPES
+from app.services.agent_service import AgentService, BatchCreateConfig, AgentServiceError
 from app.core_dto.agent import AgentMetaDTO
 # 新增: 通知中心 (可选)
 try:  # pragma: no cover

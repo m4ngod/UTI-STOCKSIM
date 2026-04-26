@@ -20,7 +20,7 @@ from __future__ import annotations
 import json, os, time
 from dataclasses import dataclass
 from threading import RLock
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 __all__ = ["TemplateStore", "TemplateStoreError", "TemplateDTO"]
 
