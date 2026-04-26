@@ -3,11 +3,12 @@
 ## Frontend structure
 
 - Real main window: `app/ui/main_window.py`
-- Legacy entry wrapper: `app/main.py`
+- Product startup entry: `setup_frontend_entry.py`
+- Headless frontend surface: `app/headless.py`
+- App composition root: `app/app_context.py`
 - UI bridge / dynamic page opening: `app/ui/ui_refresh.py`
 - Dock host: `app/ui/docking.py`
 - Panel registry: `app/panels/__init__.py`, `app/panels/registry.py`
-- Startup entry: `setup_frontend_entry.py`
 
 ## Market frontend
 
@@ -41,14 +42,13 @@
 
 ## Existing architecture note
 
-- Frontend/backend dependency map: `docs/frontend-backend-dependency-map.md`
 - Storage layering / future runtime persistence direction: `docs/data/data-layering-design.md`
 - Table-level storage mapping / migration blueprint: `docs/data/data-layering-table-plan.md`
 - `simulation_runs` table design draft: `docs/data/simulation-runs-design.md`
 - `account_equity_snapshots` table design draft: `docs/data/account-equity-snapshots-design.md`
 - `run_id` migration / wiring blueprint: `docs/data/run-id-wiring-plan.md`
 - runtime `RunContext` bridge design: `docs/data/run-context-design.md`
-- runtime `RunContext` bridge design: `docs/data/run-context-design.md`
+- PostgreSQL runtime migration status: `docs/data/postgresql-runtime-migration.md`
 
 ## Retail runtime persona
 
