@@ -151,6 +151,7 @@ class RuntimeModelAgent:
             "execution_result": execution,
             "reward": reward,
         }
+        transition["learn_result"] = self._learn_if_enabled(transition)
         self._record_step(transition, account=current_account)
         return transition
 
@@ -276,6 +277,7 @@ class RuntimeModelAgent:
             "pnl": _pnl(account),
             "step_index": self._step_index,
             "reward_total": getattr(self._accumulator, "reward_total", None),
+            "learn_result": transition.get("learn_result"),
         }
         if self._metrics_callback is not None:
             try:
@@ -315,6 +317,18 @@ class RuntimeModelAgent:
             session.rollback()
         finally:
             session.close()
+
+    def _learn_if_enabled(self, transition: dict[str, Any]) -> dict[str, Any] | None:
+        if self.mode not in {"online_train", "train"}:
+            return None
+        learner = getattr(self._policy, "learn", None)
+        if not callable(learner):
+            return {"ok": False, "reason": "LEARN_NOT_SUPPORTED", "model_id": self.model_id}
+        try:
+            result = learner(transition)
+            return result if isinstance(result, dict) else {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "reason": "LEARN_FAILED", "error": str(exc), "model_id": self.model_id}
 
 
 def _pnl(account: dict[str, Any]) -> float:

@@ -75,6 +75,7 @@
 - Reward builder: `rl/reward_builder.py`
 - Model registry, built-in placeholder policies, checkpoint-backed child loader, and external/callable/HTTP/subprocess policy adapters: `app/services/model_registry_service.py`
 - Runtime model lifecycle MVP: `app/services/runtime_model_agent.py`
+- Real recurrent PPO/LSTM policy adapter: `rl/model_adapters/ppo_recurrent_adapter.py`
 - Training persistence models: `persistence/models_training.py`
 - Training episode/result service: `services/training_episode_service.py`
 - Training Arena service MVP: `app/services/training_arena_service.py`

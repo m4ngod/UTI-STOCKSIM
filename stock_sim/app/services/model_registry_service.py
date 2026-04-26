@@ -346,6 +346,12 @@ class ModelRegistryService:
         self._specs: dict[str, ModelSpec] = {
             "hold_model_v1": ModelSpec("hold_model_v1", "hold", "Always emits hold actions."),
             "random_weight_v1": ModelSpec("random_weight_v1", "random_weight", "Random long-only target weights."),
+            "ppo_lstm_v1": ModelSpec(
+                "ppo_lstm_v1",
+                "ppo_recurrent",
+                "PyTorch PPO-style recurrent actor-critic baseline.",
+                config={"max_symbols": 8, "device": "cpu"},
+            ),
         }
         self._session_factory = session_factory if session_factory is not None else SessionLocal
         self._registry_path = Path(registry_path) if registry_path is not None else None
@@ -407,6 +413,10 @@ class ModelRegistryService:
         spec = self._specs.get(model_id)
         if spec is not None and spec.policy_type == "random_weight":
             return RandomWeightModel(model_id=model_id, seed=seed)
+        if spec is not None and spec.policy_type == "ppo_recurrent":
+            from rl.model_adapters.ppo_recurrent_adapter import RecurrentPPOPolicyAdapter
+
+            return RecurrentPPOPolicyAdapter(model_id=model_id, config=spec.config or {}, seed=seed)
         return HoldModel(model_id=model_id)
 
     def _create_external_policy(self, spec: ModelSpec) -> ModelPolicy:

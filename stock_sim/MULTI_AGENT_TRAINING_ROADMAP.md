@@ -97,9 +97,17 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] Registered Arena as a first-class desktop panel and workspace page.
 - [x] Added Arena panel unit coverage for registry, service-backed view state, and headless adapter rendering.
 
+### Completed in round 12
+
+- [x] Added `ppo_lstm_v1` as a real PyTorch recurrent actor-critic policy in the model registry.
+- [x] Added a recurrent PPO-style adapter that emits `act.v1 target_weight` actions.
+- [x] Runtime Model Agents can call `learn(...)` in `online_train` mode.
+- [x] The PPO/LSTM adapter can materialize checkpoint manifests and torch weight files.
+- [x] Added regression coverage for registry creation, runtime execution, online learning, and checkpoint output.
+
 ### Not done yet
 
-- [ ] Real PPO/LSTM or external model adapter.
+No fixed checklist item remains in this platform rewrite slice.
 
 ## 1. 文档目的
 

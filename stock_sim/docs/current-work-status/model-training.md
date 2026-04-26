@@ -529,3 +529,47 @@ Finish the dedicated Arena panel promised in the roadmap without expanding the p
 ### next actions
 
 - Implement the first real PPO/LSTM or external model through the existing adapter boundary.
+
+## Task 2026-04-27-model-training-12
+
+### status
+
+done
+
+### goal
+
+Connect the first real model baseline through the existing platform model boundary, using the `MODEL_TRAINING_DESIGN.md` Phase 3 recommendation: PPO + GRU/LSTM recurrent actor-critic.
+
+### files involved
+
+- `rl/model_adapters/ppo_recurrent_adapter.py`
+- `rl/model_adapters/__init__.py`
+- `app/services/model_registry_service.py`
+- `app/services/runtime_model_agent.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_recurrent_ppo_adapter.py`
+
+### change summary
+
+- Added `RecurrentPPOPolicyAdapter`, a PyTorch LSTM actor-critic policy that consumes `obs.v1` and emits `act.v1 target_weight`.
+- Registered `ppo_lstm_v1` as a built-in model id in `ModelRegistryService`.
+- Added lightweight PPO-style online learning through `learn(...)` over recent on-policy mini rollouts.
+- Updated `RuntimeModelAgent` so `online_train` and `train` modes call policy `learn(...)` after each transition.
+- Added checkpoint output for the adapter: JSON manifest plus `.pt` torch weights.
+- Added regression tests for registry discovery, runtime order execution, online learning, and checkpoint materialization.
+
+### verification
+
+- `tests/runtime/test_recurrent_ppo_adapter.py`
+
+### impact / risk
+
+- Positive: the platform now has a real torch-backed recurrent model id instead of only hold/random/external stubs.
+- Positive: users can create Model Agents with `model_id=ppo_lstm_v1` and run them through the same Arena/runtime path.
+- Risk: the v1 learner is intentionally lightweight and single-process; full rollout scheduling, league sampling, and large-batch PPO updates remain service-level work after the adapter proves stable.
+
+### next actions
+
+- Run `ppo_lstm_v1` inside Arena against retail background agents and inspect its episode metrics before adding heavier league automation.
