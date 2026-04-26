@@ -58,11 +58,20 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] `RuntimeModelAgent` can run a PBT child model id produced by lineage.
 - [x] Unknown `*.gen*` child ids gracefully fall back to their known built-in parent policy when DB lineage is unavailable.
 
+### Completed in round 7
+
+- [x] Added `ExternalPolicyAdapter` for registry-backed non-built-in policies.
+- [x] Added `TrainableModelPolicy` protocol for optional `learn(...)` and `save_checkpoint(...)` support.
+- [x] `ModelRegistryService` can persist external policy metadata to `output/model_registry/policies.json`.
+- [x] `ModelRegistryService` can load `static_action` and injected `callable` policy adapters.
+- [x] `RuntimeModelAgent` can run registered external policies through the same `act.v1` path.
+- [x] Added `docs/contracts/runtime/model-adapter-contract.md`.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
 - [ ] Real neural-network weight tensor checkpoint adapter.
-- [ ] Persistent policy registry for external/trainable model adapters.
+- [ ] HTTP/process model adapter.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

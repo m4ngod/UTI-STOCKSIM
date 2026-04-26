@@ -67,12 +67,13 @@
 - Model action contract: `docs/contracts/runtime/model-action-contract.md`
 - Model observation contract: `docs/contracts/runtime/model-observation-contract.md`
 - Model reward contract: `docs/contracts/runtime/model-reward-contract.md`
+- Model adapter contract: `docs/contracts/runtime/model-adapter-contract.md`
 - Model contract constants: `rl/contracts.py`
 - Observation builder: `rl/observation_builder.py`
 - Action parser: `rl/action_parser.py`
 - In-process model bridge: `rl/model_bridge.py`
 - Reward builder: `rl/reward_builder.py`
-- Model registry, built-in placeholder policies, and checkpoint-backed child policy loader: `app/services/model_registry_service.py`
+- Model registry, built-in placeholder policies, checkpoint-backed child loader, and external policy adapters: `app/services/model_registry_service.py`
 - Runtime model lifecycle MVP: `app/services/runtime_model_agent.py`
 - Training persistence models: `persistence/models_training.py`
 - Training episode/result service: `services/training_episode_service.py`

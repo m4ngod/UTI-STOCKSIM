@@ -305,3 +305,48 @@ Continue Phase 5 by making checkpoint-backed child model ids executable through 
 - Add a trainable/external policy adapter contract to the model registry.
 - Add real neural-network weight checkpoint save/load once the first trainable baseline lands.
 - Start a dedicated Arena panel after the service API has one more integration pass.
+
+## Task 2026-04-26-model-training-07
+
+### status
+
+done
+
+### goal
+
+Continue Phase 5 by adding a persistent adapter boundary for non-built-in, trainable, or external model policies before introducing a real PPO/LSTM implementation.
+
+### files involved
+
+- `app/services/model_registry_service.py`
+- `docs/contracts/runtime/model-adapter-contract.md`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/code-index.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_model_registry_external.py`
+
+### change summary
+
+- Added `TrainableModelPolicy` protocol for optional `learn(...)` and `save_checkpoint(...)` support.
+- Added `ExternalPolicyAdapter`, which normalizes adapter output into `act.v1` and preserves model/adapter metadata in action `meta`.
+- `ModelRegistryService.register_external_policy(...)` can persist adapter metadata to `output/model_registry/policies.json`.
+- `ModelRegistryService.create_policy(...)` can load registry-backed `static_action` policies and injected local `callable` policies.
+- `RuntimeModelAgent` can run registered external policies without new runtime branching.
+- Added a dedicated model adapter contract document.
+- Updated the roadmap progress ledger with round 7 completion markers.
+
+### verification
+
+- `tests/runtime/test_model_registry_external.py`
+
+### impact / risk
+
+- Positive: real trainable policies now have a clean service-layer attachment point.
+- Positive: external policy metadata can be registered and reloaded without changing UI or runtime agent code.
+- Risk: HTTP/process adapters and real tensor checkpoint loading are still future work.
+
+### next actions
+
+- Add HTTP/process adapter variants if the first real model runs outside the desktop process.
+- Add the first Recurrent PPO baseline behind the callable adapter.
+- Add Arena UI controls after adapter and PBT APIs stabilize.
