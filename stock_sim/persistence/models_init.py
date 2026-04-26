@@ -19,6 +19,7 @@ from .models_position import Position
 from .models_simulation_run import SimulationRun
 from .models_snapshot import Snapshot1s
 from .models_trade import TradeORM
+from .models_training import ModelEpisodeResult, ModelTransition, TrainingEpisode
 
 _SCHEMA_LOCK = RLock()
 
@@ -34,6 +35,9 @@ _RUNTIME_RUN_TABLES = {
     "bars_1m",
     "bars_1h",
     "bars_1d",
+    "training_episodes",
+    "model_episode_results",
+    "model_transitions",
 }
 
 
@@ -161,6 +165,9 @@ def _ensure_sim_time_columns():
         "instruments",
         "account_equity_snapshots",
         "event_log",
+        "training_episodes",
+        "model_episode_results",
+        "model_transitions",
     ]
     for table in tables:
         required = {

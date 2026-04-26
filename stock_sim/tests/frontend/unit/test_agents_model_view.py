@@ -59,3 +59,28 @@ def test_agent_controller_can_create_and_start_model_agent():
     started = ctl.control("MODEL_BETA", "start")
     assert started.status == "RUNNING"
     assert svc.get("MODEL_BETA").last_heartbeat is not None
+
+
+def test_agent_service_applies_model_step_metrics_to_view():
+    panel, ctl, svc = _panel()
+    ctl.create_model_agent(agent_id="MODEL_GAMMA", model_id="hold_model_v1", episode_id="episode-ui")
+
+    svc._on_model_metrics(
+        "MODEL_GAMMA",
+        {
+            "model_id": "hold_model_v1",
+            "mode": "collect_only",
+            "episode_id": "episode-ui",
+            "last_reward": 0.125,
+            "last_action": "hold",
+            "equity": 100_500.0,
+            "pnl": 500.0,
+        },
+    )
+
+    panel.set_agent_type_filter("Model")
+    item = panel.get_view()["agents"]["items"][0]
+    assert item["last_reward"] == 0.125
+    assert item["last_action"] == "hold"
+    assert item["equity"] == 100_500.0
+    assert item["pnl"] == 500.0

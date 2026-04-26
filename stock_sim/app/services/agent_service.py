@@ -341,8 +341,10 @@ class AgentService:
                     agent_id=agent_id,
                     model_id=str(getattr(resolved, "model_id", None) or "hold_model_v1"),
                     mode=str(getattr(resolved, "mode", None) or "inference"),
+                    episode_id=getattr(resolved, "episode_id", None),
                     runtime_gateway=self._runtime_gateway,
                     state_callback=self._on_runtime_state,
+                    metrics_callback=self._on_model_metrics,
                 )
             except Exception:
                 runtime_agent = None
@@ -373,8 +375,10 @@ class AgentService:
         agent_id: str,
         model_id: str,
         mode: str,
+        episode_id: str | None = None,
         runtime_gateway: RuntimeGateway,
         state_callback: Callable[..., None] | None = None,
+        metrics_callback: Callable[[str, Dict[str, Any]], None] | None = None,
     ) -> Any:
         if RuntimeModelAgent is None:
             return None
@@ -383,8 +387,10 @@ class AgentService:
             agent_id=agent_id,
             model_id=model_id,
             mode=mode,
+            episode_id=episode_id,
             runtime_gateway=runtime_gateway,
             state_callback=state_callback or self._on_runtime_state,
+            metrics_callback=metrics_callback or self._on_model_metrics,
             registry=registry,
         )
 
@@ -580,6 +586,37 @@ class AgentService:
             status=status,
             start_time=start_time_ms,
             last_heartbeat=heartbeat_ms,
+        )
+
+    def _on_model_metrics(self, agent_id: str, payload: Dict[str, Any]) -> None:
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return
+            if payload.get("model_id") is not None:
+                agent.model_id = str(payload.get("model_id"))
+            if payload.get("mode") is not None:
+                agent.mode = str(payload.get("mode"))
+            if payload.get("episode_id") is not None:
+                agent.episode_id = str(payload.get("episode_id"))
+            if payload.get("last_action") is not None:
+                agent.last_action = str(payload.get("last_action"))
+            if payload.get("last_reward") is not None:
+                agent.last_reward = self._maybe_float(payload.get("last_reward"))
+            if payload.get("equity") is not None:
+                agent.equity = self._maybe_float(payload.get("equity"))
+            if payload.get("pnl") is not None:
+                agent.pnl = self._maybe_float(payload.get("pnl"))
+            self._agents[agent_id] = agent
+        self._persist_runtime_agent_meta(
+            agent_id,
+            model_id=payload.get("model_id"),
+            mode=payload.get("mode"),
+            episode_id=payload.get("episode_id"),
+            last_action=payload.get("last_action"),
+            last_reward=payload.get("last_reward"),
+            equity=payload.get("equity"),
+            pnl=payload.get("pnl"),
         )
 
     def _persist_runtime_agent_meta(self, agent_id: str, **updates: Any) -> None:

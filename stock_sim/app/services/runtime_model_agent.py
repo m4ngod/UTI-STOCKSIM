@@ -10,8 +10,17 @@ from app.services.model_registry_service import ModelRegistryService, ModelPolic
 from rl.action_parser import ActionParser
 from rl.reward_builder import RewardBuilder
 
+try:
+    from stock_sim.persistence.models_imports import SessionLocal
+    from stock_sim.services.training_episode_service import EpisodeAgentAccumulator, TrainingEpisodeService
+except Exception:  # pragma: no cover
+    SessionLocal = None  # type: ignore
+    EpisodeAgentAccumulator = None  # type: ignore
+    TrainingEpisodeService = None  # type: ignore
+
 
 RuntimeStateCallback = Callable[[str, str, int | None, int | None], None]
+ModelMetricsCallback = Callable[[str, dict[str, Any]], None]
 
 
 class RuntimeModelAgent:
@@ -29,15 +38,24 @@ class RuntimeModelAgent:
         mode: str = "inference",
         runtime_gateway: RuntimeGateway | None = None,
         state_callback: RuntimeStateCallback | None = None,
+        metrics_callback: ModelMetricsCallback | None = None,
         registry: ModelRegistryService | None = None,
         policy: ModelPolicy | None = None,
         decision_interval_s: float = 1.0,
+        episode_id: str | None = None,
+        arena_id: str | None = None,
+        generation: int = 0,
+        persist_transitions: bool = True,
     ):
         self.agent_id = agent_id
         self.model_id = model_id or "hold_model_v1"
         self.mode = mode or "inference"
+        self.episode_id = episode_id
+        self.arena_id = arena_id
+        self.generation = int(generation)
         self._runtime_gateway = runtime_gateway or RuntimeGateway()
         self._state_callback = state_callback
+        self._metrics_callback = metrics_callback
         self._registry = registry or ModelRegistryService()
         seed = zlib.crc32(f"{self.agent_id}:{self.model_id}".encode("utf-8")) & 0xFFFFFFFF
         self._policy = policy or self._registry.create_policy(self.model_id, seed=seed)
@@ -55,6 +73,12 @@ class RuntimeModelAgent:
         self.last_reward: float | None = None
         self.last_execution: dict[str, Any] | None = None
         self._previous_account: dict[str, Any] | None = None
+        self._persist_transitions = bool(persist_transitions)
+        self._accumulator = (
+            EpisodeAgentAccumulator(agent_id=agent_id, model_id=self.model_id)
+            if EpisodeAgentAccumulator is not None
+            else None
+        )
 
     def start(self) -> None:
         with self._lock:
@@ -121,12 +145,14 @@ class RuntimeModelAgent:
         self.last_action = parsed["action_type"]
         self.last_reward = float(reward["step_reward"])
         self.last_execution = execution
-        return {
+        transition = {
             "observation": observation,
             "action": parsed,
             "execution_result": execution,
             "reward": reward,
         }
+        self._record_step(transition, account=current_account)
+        return transition
 
     def _build_observation(self) -> dict[str, Any]:
         symbols = [str(row.get("symbol")) for row in self._runtime_gateway.list_instruments(active_only=True) if row.get("symbol")]
@@ -148,7 +174,7 @@ class RuntimeModelAgent:
             "account": account,
             "context": {
                 "run_id": self._runtime_gateway.get_current_run_id(),
-                "episode_id": None,
+                "episode_id": self.episode_id,
                 "step_index": self._step_index,
                 "sim_day": self._runtime_gateway.get_current_sim_day(),
                 "clock_running": bool((self._runtime_gateway.clock_snapshot() or {}).get("running", False)),
@@ -229,5 +255,74 @@ class RuntimeModelAgent:
         except Exception:
             pass
 
+    def _record_step(self, transition: dict[str, Any], *, account: dict[str, Any]) -> None:
+        action = transition.get("action") or {}
+        execution = transition.get("execution_result") or {}
+        reward = transition.get("reward") or {}
+        if self._accumulator is not None:
+            self._accumulator.apply_step(
+                account=account,
+                action=action,
+                execution_result=execution,
+                reward=reward,
+            )
+        metrics_payload = {
+            "model_id": self.model_id,
+            "mode": self.mode,
+            "episode_id": self.episode_id,
+            "last_reward": float(reward.get("step_reward") or 0.0),
+            "last_action": action.get("action_type"),
+            "equity": float(account.get("equity") or 0.0),
+            "pnl": _pnl(account),
+            "step_index": self._step_index,
+            "reward_total": getattr(self._accumulator, "reward_total", None),
+        }
+        if self._metrics_callback is not None:
+            try:
+                self._metrics_callback(self.agent_id, metrics_payload)
+            except Exception:
+                pass
+        if not self._persist_transitions or not self.episode_id or SessionLocal is None or TrainingEpisodeService is None:
+            return
+        session = SessionLocal()
+        try:
+            service = TrainingEpisodeService(session)
+            service.create_episode(
+                episode_id=self.episode_id,
+                arena_id=self.arena_id,
+                run_id=self._runtime_gateway.get_current_run_id(),
+                generation=self.generation,
+                config={"source": "RuntimeModelAgent", "model_id": self.model_id, "mode": self.mode},
+                sim_day_start=self._runtime_gateway.get_current_sim_day(),
+            )
+            service.record_transition(
+                run_id=self._runtime_gateway.get_current_run_id(),
+                episode_id=self.episode_id,
+                arena_id=self.arena_id,
+                agent_id=self.agent_id,
+                model_id=self.model_id,
+                step_index=self._step_index,
+                observation=transition.get("observation"),
+                action=action,
+                execution_result=execution,
+                reward=reward,
+            )
+            if self._accumulator is not None:
+                service.upsert_result(self._accumulator, episode_id=self.episode_id, generation=self.generation)
+                service.rank_episode(self.episode_id)
+            session.commit()
+        except Exception:
+            session.rollback()
+        finally:
+            session.close()
 
-__all__ = ["RuntimeModelAgent", "RuntimeStateCallback"]
+
+def _pnl(account: dict[str, Any]) -> float:
+    if account.get("pnl") is not None:
+        return float(account.get("pnl") or 0.0)
+    equity = float(account.get("equity") or account.get("cash") or 0.0)
+    initial_cash = float(account.get("initial_cash") or account.get("starting_cash") or equity)
+    return equity - initial_cash
+
+
+__all__ = ["ModelMetricsCallback", "RuntimeModelAgent", "RuntimeStateCallback"]

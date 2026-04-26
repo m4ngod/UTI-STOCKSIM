@@ -78,3 +78,52 @@ Start implementing the first work packages from `MODEL_TRAINING_DESIGN.md` and `
 - Record per-step transitions for model agents.
 - Surface model reward/action metrics back into the Agent panel after each runtime step.
 - Add Arena service orchestration for two or more model agents plus retail background agents.
+
+## Task 2026-04-26-model-training-02
+
+### status
+
+done
+
+### goal
+
+Start Phase 3 by making model episodes produce persistent transition and result records, and surface live model metrics back into the Agent panel.
+
+### files involved
+
+- `persistence/models_training.py`
+- `persistence/models_init.py`
+- `services/training_episode_service.py`
+- `app/services/runtime_model_agent.py`
+- `app/services/agent_service.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `tests/runtime/test_training_episode_report.py`
+- `tests/frontend/unit/test_agents_model_view.py`
+
+### change summary
+
+- Added persistence models for `training_episodes`, `model_episode_results`, and `model_transitions`.
+- Added `TrainingEpisodeService` to create episodes, record model transitions, upsert model results, rank episode results, and return episode summaries.
+- Added a lightweight `EpisodeAgentAccumulator` for reward total, equity return, drawdown, turnover, fee, and trade-count aggregation.
+- Extended `RuntimeModelAgent` so each `step_once()` can persist a transition and update a per-agent episode result when `episode_id` is present.
+- Added model metrics callback wiring from `RuntimeModelAgent` to `AgentService`.
+- Agent metadata now receives live `last_reward`, `last_action`, `equity`, and `pnl` updates after model steps.
+- Added an implementation progress ledger to `MULTI_AGENT_TRAINING_ROADMAP.md` so completed work is clearly marked and not repeated.
+
+### verification
+
+- `tests/runtime/test_training_episode_report.py`
+- `tests/frontend/unit/test_agents_model_view.py`
+
+### impact / risk
+
+- Positive: model-agent runs now produce persistent episode artifacts instead of only transient in-memory step output.
+- Positive: the Agent panel can observe model behavior through current metrics without taking ownership of training logic.
+- Positive: later Arena and PBT services can build on durable episode/result rows.
+- Risk: episode result aggregation is still MVP-level and does not yet include benchmark-relative scoring, checkpoint lineage, or complete slippage/risk diagnostics.
+
+### next actions
+
+- Add `TrainingArenaService` to orchestrate multiple model agents plus retail background agents under one episode.
+- Add checkpoint and lineage tables/services before implementing PBT inheritance.
+- Promote episode summaries into a future Arena panel instead of overloading the Agent panel.

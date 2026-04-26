@@ -2,6 +2,38 @@
 
 _Last updated: 2026-04-26_
 
+## Implementation Progress Ledger
+
+This section is the authoritative anti-duplication checklist for the platform rewrite.
+
+### Completed in round 1
+
+- [x] Agent panel supports `All / Retail / Model` filtering.
+- [x] `Model` is a first-class app-layer agent type.
+- [x] `ModelRegistryService` exists with `HoldModel` and `RandomWeightModel`.
+- [x] `RuntimeModelAgent` MVP exists.
+- [x] `obs.v1` has a multi-symbol builder path.
+- [x] `act.v1` parses `target_weight` and `target_position`.
+- [x] `ModelBridge` translates `target_weight` into runtime orders.
+- [x] `rew.v1` exists through `RewardBuilder`.
+- [x] Model reward contract documentation exists.
+
+### Completed in round 2
+
+- [x] Added persistence models for `training_episodes`, `model_episode_results`, and `model_transitions`.
+- [x] Added `TrainingEpisodeService` for episode creation, transition recording, result upsert, and ranking.
+- [x] `RuntimeModelAgent` can persist per-step transitions and update per-agent episode results.
+- [x] `RuntimeModelAgent` reports `last_reward`, `last_action`, `equity`, and `pnl` back to `AgentService`.
+- [x] Agent panel model rows can display the latest model metrics.
+
+### Not done yet
+
+- [ ] Dedicated `TrainingArenaService`.
+- [ ] Dedicated Arena panel.
+- [ ] Checkpoint persistence and Hall-of-Fame.
+- [ ] PBT inheritance / mutation.
+- [ ] Real PPO/LSTM or external model adapter.
+
 ## 1. 文档目的
 
 本文件用于规划 UTI-STOCKSIM 下一阶段的主线工作：从“桌面级交易仿真平台”改造为“多智能体对抗交易训练平台”。
@@ -625,4 +657,3 @@ tests/runtime/test_pbt_lineage.py
 - `docs/current-work-status/model-training.md`
 
 本文档应在每个 phase 完成后更新状态，避免路线和实现再次分离。
-
