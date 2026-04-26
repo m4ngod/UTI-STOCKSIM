@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import random
 from typing import Any, Callable, Protocol
+from urllib import request as urlrequest
 import zlib
 
 try:
@@ -133,6 +134,7 @@ class ExternalPolicyAdapter:
     The first supported providers are intentionally simple:
     - static_action: deterministic contract action, useful for wiring tests.
     - callable: an injected factory-owned policy object for local trainable code.
+    - http: an out-of-process policy endpoint that returns act.v1.
     """
 
     def __init__(
@@ -149,13 +151,20 @@ class ExternalPolicyAdapter:
         self._policy = policy
 
     def act(self, observation: dict[str, Any]) -> dict[str, Any]:
-        if self._policy is not None:
+        if self.adapter_type == "http":
+            action = self._act_http(observation)
+        elif self._policy is not None:
             action = dict(self._policy.act(observation))
         else:
             action = dict(self.config.get("action") or self._hold_action(observation))
         return self._normalize_action(action, observation)
 
     def learn(self, transition: dict[str, Any]) -> dict[str, Any]:
+        if self.adapter_type == "http":
+            endpoint = self._http_endpoint("learn_endpoint", default_suffix="/learn")
+            if not endpoint:
+                return {"ok": False, "reason": "LEARN_NOT_SUPPORTED", "model_id": self.model_id}
+            return self._post_json(endpoint, {"model_id": self.model_id, "transition": transition})
         learner = getattr(self._policy, "learn", None)
         if callable(learner):
             result = learner(transition)
@@ -163,6 +172,12 @@ class ExternalPolicyAdapter:
         return {"ok": False, "reason": "LEARN_NOT_SUPPORTED", "model_id": self.model_id}
 
     def save_checkpoint(self, path: str) -> dict[str, Any]:
+        if self.adapter_type == "http":
+            endpoint = self._http_endpoint("checkpoint_endpoint", default_suffix="/checkpoint")
+            if endpoint:
+                result = self._post_json(endpoint, {"model_id": self.model_id, "path": path})
+                if isinstance(result, dict) and result.get("ok") is not False:
+                    return result
         saver = getattr(self._policy, "save_checkpoint", None)
         if callable(saver):
             result = saver(path)
@@ -216,6 +231,47 @@ class ExternalPolicyAdapter:
             "constraints": {},
             "meta": {"model_id": self.model_id},
         }
+
+    def _act_http(self, observation: dict[str, Any]) -> dict[str, Any]:
+        endpoint = self._http_endpoint("endpoint", default_suffix="/act")
+        if not endpoint:
+            return self._hold_action(observation)
+        try:
+            payload = self._post_json(endpoint, {"model_id": self.model_id, "observation": observation})
+        except Exception as exc:
+            fallback = self._hold_action(observation)
+            fallback["meta"] = {
+                "model_id": self.model_id,
+                "adapter_type": "http",
+                "error": str(exc),
+                "fallback": "hold",
+            }
+            return fallback
+        action = payload.get("action") if isinstance(payload, dict) and isinstance(payload.get("action"), dict) else payload
+        return action if isinstance(action, dict) else self._hold_action(observation)
+
+    def _http_endpoint(self, key: str, *, default_suffix: str) -> str | None:
+        explicit = str(self.config.get(key) or "").strip()
+        if explicit:
+            return explicit
+        base_url = str(self.config.get("base_url") or "").strip().rstrip("/")
+        if not base_url:
+            return None
+        return f"{base_url}{default_suffix}"
+
+    def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        body = _json_dumps(payload).encode("utf-8")
+        req = urlrequest.Request(
+            endpoint,
+            data=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        timeout_s = float(self.config.get("timeout_s") or 2.0)
+        with urlrequest.urlopen(req, timeout=max(0.1, timeout_s)) as response:
+            raw = response.read().decode("utf-8")
+        result = json.loads(raw) if raw else {}
+        return result if isinstance(result, dict) else {"result": result}
 
 
 class ModelRegistryService:

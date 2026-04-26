@@ -48,6 +48,63 @@ factory(model_id: str, config: dict, spec: ModelSpec) -> ModelPolicy
 
 The returned object should implement `act(...)`. If it also implements `learn(...)` and `save_checkpoint(...)`, `ExternalPolicyAdapter` will delegate to those methods.
 
+### `http`
+
+The adapter can call an out-of-process model service over HTTP. This is the preferred boundary when a model needs its own Python environment, GPU process, or training loop.
+
+Registry config:
+
+```json
+{
+  "base_url": "http://127.0.0.1:9001",
+  "timeout_s": 2.0
+}
+```
+
+Default endpoints:
+
+```text
+POST /act
+POST /learn
+POST /checkpoint
+```
+
+Explicit endpoints can override the defaults:
+
+```json
+{
+  "endpoint": "http://127.0.0.1:9001/policy/act",
+  "learn_endpoint": "http://127.0.0.1:9001/policy/learn",
+  "checkpoint_endpoint": "http://127.0.0.1:9001/policy/checkpoint"
+}
+```
+
+`/act` request:
+
+```json
+{
+  "model_id": "remote_policy_v1",
+  "observation": {}
+}
+```
+
+`/act` may return either an `act.v1` action directly or wrap it:
+
+```json
+{
+  "action": {
+    "contract_version": "act.v1",
+    "action_type": "hold",
+    "target": {},
+    "payload": {},
+    "constraints": {},
+    "meta": {}
+  }
+}
+```
+
+If the HTTP adapter cannot reach the endpoint, it returns a safe `hold` action with error metadata.
+
 ## Optional Trainable Interface
 
 Trainable policies may implement:
@@ -111,6 +168,6 @@ They only receive observations and return `act.v1` actions. Runtime truth remain
 
 ## Current Limitations
 
-- HTTP/process adapters are not implemented yet.
+- Process/subprocess adapters are not implemented yet.
 - Real neural-network tensor checkpoints are not implemented yet.
-- The callable adapter is intentionally local and testable before a full training worker architecture is introduced.
+- The callable and HTTP adapters are intentionally minimal before a full training worker architecture is introduced.

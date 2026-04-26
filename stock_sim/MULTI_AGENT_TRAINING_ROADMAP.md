@@ -67,11 +67,19 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] `RuntimeModelAgent` can run registered external policies through the same `act.v1` path.
 - [x] Added `docs/contracts/runtime/model-adapter-contract.md`.
 
+### Completed in round 8
+
+- [x] Added HTTP mode to `ExternalPolicyAdapter`.
+- [x] HTTP policies can call remote `/act` endpoints and normalize returned actions into `act.v1`.
+- [x] HTTP policies can optionally call remote `/learn` and `/checkpoint` endpoints.
+- [x] `RuntimeModelAgent` can run registry-backed HTTP policies without runtime branching.
+- [x] HTTP adapter failures fall back to `hold` with error metadata instead of crashing the runtime loop.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
 - [ ] Real neural-network weight tensor checkpoint adapter.
-- [ ] HTTP/process model adapter.
+- [ ] Process/subprocess model adapter.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

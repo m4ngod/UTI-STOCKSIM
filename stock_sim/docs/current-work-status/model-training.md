@@ -350,3 +350,47 @@ Continue Phase 5 by adding a persistent adapter boundary for non-built-in, train
 - Add HTTP/process adapter variants if the first real model runs outside the desktop process.
 - Add the first Recurrent PPO baseline behind the callable adapter.
 - Add Arena UI controls after adapter and PBT APIs stabilize.
+
+## Task 2026-04-26-model-training-08
+
+### status
+
+done
+
+### goal
+
+Continue Phase 5 by allowing external model services to run outside the desktop process through an HTTP adapter while preserving the same `act.v1` runtime path.
+
+### files involved
+
+- `app/services/model_registry_service.py`
+- `docs/contracts/runtime/model-adapter-contract.md`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_model_registry_external.py`
+
+### change summary
+
+- Added HTTP mode to `ExternalPolicyAdapter`.
+- HTTP policies can call remote `/act` endpoints and normalize either direct `act.v1` actions or `{ "action": ... }` wrappers.
+- HTTP policies can optionally delegate `learn(...)` to `/learn`.
+- HTTP policies can optionally delegate `save_checkpoint(...)` to `/checkpoint`, with local JSON fallback still available.
+- Runtime model agents can run registered HTTP policies without new runtime branching.
+- HTTP policy failures fall back to a safe `hold` action with error metadata.
+- Updated the adapter contract and roadmap progress ledger with round 8 completion markers.
+
+### verification
+
+- `tests/runtime/test_model_registry_external.py`
+
+### impact / risk
+
+- Positive: real models can now live in a separate service/process boundary and still attach to the platform through the registry.
+- Positive: remote model outages do not crash the model runtime loop.
+- Risk: process/subprocess adapters and real neural-network tensor checkpoint management are still future work.
+
+### next actions
+
+- Add a subprocess adapter only if the first model should be launched and supervised by the desktop app.
+- Add the first Recurrent PPO or external model service behind the HTTP/callable adapter.
+- Build the dedicated Arena panel once model adapter and evolution APIs stabilize.

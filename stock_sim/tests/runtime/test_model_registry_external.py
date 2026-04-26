@@ -1,4 +1,6 @@
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.services.model_registry_service import ExternalPolicyAdapter, ModelRegistryService
 from app.services.runtime_model_agent import RuntimeModelAgent
@@ -55,6 +57,56 @@ class _TrainableStub:
 
     def save_checkpoint(self, path):
         return {"ok": True, "path": path, "kind": "stub"}
+
+
+class _PolicyHandler(BaseHTTPRequestHandler):
+    requests = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8")
+        payload = json.loads(body or "{}")
+        self.__class__.requests.append({"path": self.path, "payload": payload})
+        if self.path == "/act":
+            response = {
+                "action": {
+                    "contract_version": "act.v1",
+                    "action_type": "target_weight",
+                    "payload": {"weights": {"001": 0.35}},
+                    "meta": {"remote": True},
+                }
+            }
+        elif self.path == "/learn":
+            response = {"ok": True, "loss": 0.456}
+        elif self.path == "/checkpoint":
+            response = {"ok": True, "remote_path": payload.get("path")}
+        else:
+            response = {"ok": False, "error": "unknown path"}
+        data = json.dumps(response).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args):
+        return
+
+
+class _PolicyServer:
+    def __enter__(self):
+        _PolicyHandler.requests = []
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _PolicyHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.base_url = f"http://{host}:{port}"
+        return self
+
+    def __exit__(self, *_exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2.0)
 
 
 def test_registry_persists_and_loads_static_external_policy(tmp_path):
@@ -157,3 +209,61 @@ def test_runtime_model_agent_runs_registered_external_policy(tmp_path):
     assert transition["action"]["meta"]["policy_type"] == "external"
     assert transition["execution_result"]["status"] == "EXECUTED"
     assert gateway.orders[0]["account_id"] == "MODEL_EXT"
+
+
+def test_http_policy_adapter_calls_remote_act_learn_and_checkpoint(tmp_path):
+    with _PolicyServer() as server:
+        policy = ExternalPolicyAdapter(
+            model_id="remote_policy_v1",
+            adapter_type="http",
+            config={"base_url": server.base_url, "timeout_s": 1.0},
+        )
+        action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_HTTP"}})
+        learn_result = policy.learn({"reward": {"step_reward": 0.2}})
+        checkpoint_result = policy.save_checkpoint(str(tmp_path / "remote.json"))
+
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_HTTP"
+    assert action["meta"]["model_id"] == "remote_policy_v1"
+    assert action["meta"]["adapter_type"] == "http"
+    assert action["meta"]["remote"] is True
+    assert learn_result["loss"] == 0.456
+    assert checkpoint_result["remote_path"].endswith("remote.json")
+    assert [item["path"] for item in _PolicyHandler.requests] == ["/act", "/learn", "/checkpoint"]
+
+
+def test_runtime_model_agent_runs_registered_http_policy(tmp_path):
+    with _PolicyServer() as server:
+        registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+        registry.register_external_policy(
+            "remote_runtime_v1",
+            adapter_type="http",
+            config={"base_url": server.base_url, "timeout_s": 1.0},
+        )
+        gateway = _Gateway()
+        agent = RuntimeModelAgent(
+            agent_id="MODEL_HTTP",
+            model_id="remote_runtime_v1",
+            runtime_gateway=gateway,
+            registry=registry,
+            persist_transitions=False,
+        )
+        transition = agent.step_once()
+
+    assert transition["action"]["meta"]["adapter_type"] == "http"
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_HTTP"
+
+
+def test_http_policy_adapter_falls_back_to_hold_on_remote_error():
+    policy = ExternalPolicyAdapter(
+        model_id="remote_down_v1",
+        adapter_type="http",
+        config={"endpoint": "http://127.0.0.1:1/act", "timeout_s": 0.1},
+    )
+
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_DOWN"}})
+
+    assert action["action_type"] == "hold"
+    assert action["target"]["account_id"] == "MODEL_DOWN"
+    assert action["meta"]["fallback"] == "hold"
