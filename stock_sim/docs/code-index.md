@@ -77,6 +77,6 @@
 - Training persistence models: `persistence/models_training.py`
 - Training episode/result service: `services/training_episode_service.py`
 - Training Arena service MVP: `app/services/training_arena_service.py`
-- Model checkpoint/Hall-of-Fame service: `app/services/model_checkpoint_service.py`
-- Model population/PBT service: `app/services/model_population_service.py`
+- Model checkpoint/Hall-of-Fame service and JSON artifact writer: `app/services/model_checkpoint_service.py`
+- Model population/PBT service with optional live Agent inheritance application: `app/services/model_population_service.py`
 - Model/Retail agent visibility: `app/panels/agents/panel.py`, `app/ui/adapters/agents_adapter.py`

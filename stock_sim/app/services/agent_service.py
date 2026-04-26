@@ -116,6 +116,51 @@ class AgentService:
         with self._lock:
             return agent
 
+    def apply_model_inheritance(
+        self,
+        agent_id: str,
+        *,
+        child_model_id: str,
+        parent_model_id: str,
+        parent_checkpoint_id: str | None,
+        generation: int,
+        mutation: dict[str, Any] | None = None,
+        inheritance_mode: str = "full_clone_mutation",
+        episode_id: str | None = None,
+    ) -> AgentMetaDTO:
+        self._sync_from_runtime_bindings()
+        child_model_id = str(child_model_id or "").strip()
+        if not child_model_id:
+            raise AgentServiceError("INVALID_MODEL_ID", "child_model_id is required")
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                raise AgentServiceError("AGENT_NOT_FOUND", f"agent not found: {agent_id}")
+            if str(getattr(agent, "type", "") or "") != "Model":
+                raise AgentServiceError("AGENT_TYPE_UNSUPPORTED", f"agent is not a Model: {agent_id}")
+            agent.model_id = child_model_id
+            if episode_id is not None:
+                agent.episode_id = str(episode_id)
+            agent.params_version = int(getattr(agent, "params_version", 0) or 0) + 1
+            agent.last_action = "inheritance"
+            self._agents[agent_id] = agent
+            self._runtime_agents.pop(agent_id, None)
+        self._persist_runtime_agent_meta(
+            agent_id,
+            type="Model",
+            model_id=child_model_id,
+            parent_model_id=parent_model_id,
+            parent_checkpoint_id=parent_checkpoint_id,
+            generation=int(generation),
+            mutation=mutation or {},
+            inheritance_mode=inheritance_mode,
+            episode_id=episode_id,
+            params_version=agent.params_version,
+            last_action="inheritance",
+        )
+        self._log.append(agent_id, f"Inherited model={child_model_id} from checkpoint={parent_checkpoint_id}")
+        return agent
+
     def control(self, agent_id: str, action: ActionType) -> AgentMetaDTO:
         self._sync_from_runtime_bindings()
         with self._lock:

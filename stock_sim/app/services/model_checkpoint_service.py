@@ -38,11 +38,35 @@ class ModelCheckpointService:
         episode_id: str | None,
         score: float | None,
         meta: dict[str, Any] | None = None,
+        artifact: dict[str, Any] | None = None,
         path: str | None = None,
         hall_of_fame: bool = False,
+        write_artifact: bool = True,
     ) -> ModelCheckpoint:
         checkpoint_id = f"ckpt-{uuid.uuid4().hex[:12]}"
         resolved_path = path or str(self.checkpoint_root / str(model_id) / f"{checkpoint_id}.json")
+        created_at = datetime.utcnow()
+        meta_payload = dict(meta or {})
+        meta_payload.setdefault("artifact_schema", "stock_sim.model_checkpoint.v1")
+        meta_payload["artifact_written"] = False
+        if write_artifact:
+            self._write_checkpoint_artifact(
+                path=resolved_path,
+                payload={
+                    "schema": "stock_sim.model_checkpoint.v1",
+                    "checkpoint_id": checkpoint_id,
+                    "model_id": model_id,
+                    "agent_id": agent_id,
+                    "generation": int(generation),
+                    "episode_id": episode_id,
+                    "score": None if score is None else float(score),
+                    "hall_of_fame": bool(hall_of_fame),
+                    "created_at": created_at.isoformat(timespec="seconds") + "Z",
+                    "meta": dict(meta or {}),
+                    "artifact": artifact or {},
+                },
+            )
+            meta_payload["artifact_written"] = True
         row = ModelCheckpoint(
             checkpoint_id=checkpoint_id,
             model_id=model_id,
@@ -52,8 +76,8 @@ class ModelCheckpointService:
             path=resolved_path,
             score=None if score is None else float(score),
             is_hall_of_fame=1 if hall_of_fame else 0,
-            created_at=datetime.utcnow(),
-            meta_json=_json_dumps(meta or {}),
+            created_at=created_at,
+            meta_json=_json_dumps(meta_payload),
         )
         self.s.add(row)
         self.s.flush()
@@ -138,6 +162,12 @@ class ModelCheckpointService:
             "is_hall_of_fame": bool(row.is_hall_of_fame),
             "meta": _json_loads(row.meta_json) or {},
         }
+
+    @staticmethod
+    def _write_checkpoint_artifact(*, path: str, payload: dict[str, Any]) -> None:
+        resolved = Path(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(_json_dumps(payload), encoding="utf-8")
 
 
 __all__ = ["ModelCheckpointService"]

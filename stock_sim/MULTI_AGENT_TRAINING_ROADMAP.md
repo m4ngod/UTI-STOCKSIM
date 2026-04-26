@@ -42,11 +42,19 @@ This section is the authoritative anti-duplication checklist for the platform re
 - [x] Top episode models are saved as Hall-of-Fame checkpoints.
 - [x] Bottom episode models receive full-clone-plus-mutation lineage records.
 
+### Completed in round 5
+
+- [x] `ModelCheckpointService` materializes JSON checkpoint artifacts alongside DB rows.
+- [x] Checkpoint artifacts include episode score, rank metrics, generation, Hall-of-Fame flag, and payload metadata.
+- [x] `AgentService` exposes `apply_model_inheritance(...)` for controlled Model Agent identity updates.
+- [x] `ModelPopulationService` can apply PBT inheritance back to losing live Model Agents.
+- [x] Applied inheritance increments `params_version`, records parent checkpoint metadata, and clears stale runtime instances.
+
 ### Not done yet
 
 - [ ] Dedicated Arena panel.
-- [ ] Real checkpoint file materialization for trained neural network weights.
-- [ ] Full PBT application that updates live model registry/checkpoint adapters.
+- [ ] Real neural-network weight tensor checkpoint adapter.
+- [ ] Model registry loader for materialized checkpoint-backed policies.
 - [ ] Real PPO/LSTM or external model adapter.
 
 ## 1. 文档目的

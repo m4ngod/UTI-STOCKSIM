@@ -18,6 +18,7 @@ class PopulationEvolutionConfig:
     mutation_scale: float = 0.05
     hall_of_fame_limit: int = 20
     inheritance_mode: str = "full_clone_mutation"
+    apply_to_agents: bool = False
     mutation_keys: list[str] = field(default_factory=lambda: ["learning_rate", "entropy_coef", "action_noise"])
 
 
@@ -29,10 +30,12 @@ class ModelPopulationService:
         session: Session,
         *,
         checkpoint_service: ModelCheckpointService | None = None,
+        agent_service: Any | None = None,
         rng: random.Random | None = None,
     ):
         self.s = session
         self.checkpoints = checkpoint_service or ModelCheckpointService(session)
+        self.agent_service = agent_service
         self._rng = rng or random.Random()
 
     def evolve_from_episode(
@@ -71,10 +74,28 @@ class ModelPopulationService:
                         "equity_return": winner.equity_return,
                         "reward_total": winner.reward_total,
                     },
+                    artifact={
+                        "source": "model_episode_results",
+                        "episode_id": winner.episode_id,
+                        "agent_id": winner.agent_id,
+                        "model_id": winner.model_id,
+                        "generation": winner.generation,
+                        "rank": winner.rank,
+                        "score": winner.score,
+                        "equity_start": winner.equity_start,
+                        "equity_end": winner.equity_end,
+                        "equity_return": winner.equity_return,
+                        "max_drawdown": winner.max_drawdown,
+                        "turnover": winner.turnover,
+                        "fee_total": winner.fee_total,
+                        "trade_count": winner.trade_count,
+                        "reward_total": winner.reward_total,
+                    },
                     hall_of_fame=True,
                 )
             )
         lineage_rows = []
+        applied_agents = []
         if checkpoint_rows:
             for idx, loser in enumerate(losers):
                 parent = checkpoint_rows[idx % len(checkpoint_rows)]
@@ -94,6 +115,33 @@ class ModelPopulationService:
                         episode_id=episode_id,
                     )
                 )
+                if cfg.apply_to_agents and self.agent_service is not None:
+                    try:
+                        updated = self.agent_service.apply_model_inheritance(
+                            loser.agent_id,
+                            child_model_id=child_model_id,
+                            parent_model_id=parent.model_id,
+                            parent_checkpoint_id=parent.checkpoint_id,
+                            generation=gen + 1,
+                            mutation=mutation,
+                            inheritance_mode=cfg.inheritance_mode,
+                            episode_id=episode_id,
+                        )
+                        applied_agents.append(
+                            {
+                                "agent_id": updated.agent_id,
+                                "model_id": updated.model_id,
+                                "params_version": updated.params_version,
+                            }
+                        )
+                    except Exception as exc:
+                        applied_agents.append(
+                            {
+                                "agent_id": loser.agent_id,
+                                "model_id": child_model_id,
+                                "error": str(exc),
+                            }
+                        )
         self.s.flush()
         return {
             "episode_id": episode_id,
@@ -121,6 +169,7 @@ class ModelPopulationService:
                 }
                 for row in lineage_rows
             ],
+            "applied_agents": applied_agents,
             "hall_of_fame": self.checkpoints.list_hall_of_fame(limit=cfg.hall_of_fame_limit),
         }
 

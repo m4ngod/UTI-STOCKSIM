@@ -218,3 +218,47 @@ Start Phase 5 by adding checkpoint, Hall-of-Fame, lineage, and PBT inheritance r
 - Add real checkpoint file writing/copying once a true policy adapter is connected.
 - Add a population adapter that updates live model agents after lineage creation.
 - Add Arena UI only after checkpoint/PBT service APIs settle.
+
+## Task 2026-04-26-model-training-05
+
+### status
+
+done
+
+### goal
+
+Continue Phase 5 by turning checkpoint and PBT records into an actionable generation handoff: materialize checkpoint artifacts and optionally apply inheritance back to live Model Agents.
+
+### files involved
+
+- `app/services/model_checkpoint_service.py`
+- `app/services/model_population_service.py`
+- `app/services/agent_service.py`
+- `MULTI_AGENT_TRAINING_ROADMAP.md`
+- `docs/current-work-status/model-training.md`
+- `tests/runtime/test_pbt_lineage.py`
+
+### change summary
+
+- `ModelCheckpointService.save_checkpoint(...)` now writes a JSON artifact file by default and records artifact metadata in `meta_json`.
+- Checkpoint artifacts include schema, checkpoint id, model id, agent id, generation, episode id, score, Hall-of-Fame flag, metrics metadata, and payload data.
+- Added `AgentService.apply_model_inheritance(...)` so PBT can update a Model Agent to a child model id, increment `params_version`, persist parent checkpoint metadata, and discard stale runtime instances.
+- `ModelPopulationService` can now apply full-clone-plus-mutation inheritance to losing live Model Agents when `PopulationEvolutionConfig.apply_to_agents=True`.
+- PBT evolution results now report `applied_agents` alongside checkpoints, lineage, and Hall-of-Fame entries.
+- Updated the roadmap progress ledger with round 5 completion markers.
+
+### verification
+
+- `tests/runtime/test_pbt_lineage.py`
+
+### impact / risk
+
+- Positive: PBT now has a minimal end-to-end handoff from ranked episode result to checkpoint artifact to loser model identity update.
+- Positive: later Arena workflows can trigger population evolution without manually rewriting Agent metadata.
+- Risk: checkpoint artifacts still contain JSON policy payloads and episode metrics, not real neural-network tensor weights.
+
+### next actions
+
+- Add a checkpoint-backed policy loader to `ModelRegistryService`.
+- Add real neural-network weight save/load adapters once the first trainable policy lands.
+- Expose Arena/PBT controls in a dedicated training panel after service APIs stabilize.
