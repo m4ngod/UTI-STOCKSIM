@@ -112,6 +112,32 @@ def test_runtime_retail_cold_start_holding_agent_can_still_post_buy_interest(mon
         clk.stop_loop()
 
 
+def test_runtime_retail_scans_other_symbols_when_first_symbol_has_no_trade(monkeypatch):
+    clk = ensure_sim_clock_started()
+    if hasattr(clk, "stop_loop"):
+        clk.stop_loop()
+    fake_engine = _FakeEngine()
+    fake_trading = _FakeTradingService()
+    monkeypatch.setattr("app.services.runtime_retail_agent.engine_registry.symbols", lambda: ["AAA", "BBB"])
+    monkeypatch.setattr("app.services.runtime_retail_agent.engine_registry.get", lambda _symbol: fake_engine)
+
+    agent = RuntimeRetailAgent(agent_id="retail-universe-001", strategy="liquidity_noise", trading_service=fake_trading, seed=1)
+    agent._turn = -1
+    monkeypatch.setattr(
+        agent,
+        "_decide",
+        lambda ctx, _position: None if ctx.symbol == "AAA" else ("buy", 10.0, 1),
+    )
+
+    clk.start_loop(day_seconds=999, speed=1.0)
+    try:
+        agent._step()
+        assert len(fake_trading.calls) == 1
+        assert fake_trading.calls[0].symbol == "BBB"
+    finally:
+        clk.stop_loop()
+
+
 def test_runtime_retail_passive_quotes_seed_empty_book_on_both_sides():
     agent = RuntimeRetailAgent(
         agent_id="retail-price-001",

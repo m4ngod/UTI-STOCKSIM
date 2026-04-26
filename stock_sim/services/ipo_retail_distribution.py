@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 from threading import RLock
 import time
@@ -44,11 +43,9 @@ except Exception:  # pragma: no cover
         OrderStatus = None  # type: ignore
 
 
-IPO_RETAIL_ACCOUNT_RATIO = 0.20
+IPO_RETAIL_ACCOUNT_RATIO = 1.0
 ACTIVE_RETAIL_STATUSES = {"RUNNING", "PAUSED"}
 ACTIVE_RETAIL_MAX_AGE_MS = 15 * 60 * 1000
-SMALL_ACTIVE_COHORT_FULL_COVERAGE_THRESHOLD = 8
-ACTIVE_COHORT_MIN_RECIPIENT_RATIO = 0.60
 
 _PENDING_SYMBOLS: set[str] = set()
 _ALLOCATED_SYMBOLS: set[str] = set()
@@ -231,11 +228,8 @@ def _resolve_recipient_count(
     if account_count <= 0 or free_float <= 0:
         return 0
     target = max(1, int(round(account_count * max(0.0, float(account_ratio)))))
-    if cohort_scope == "recent-active-retail-bindings":
-        if account_count <= SMALL_ACTIVE_COHORT_FULL_COVERAGE_THRESHOLD:
-            target = account_count
-        else:
-            target = max(target, int(math.ceil(account_count * ACTIVE_COHORT_MIN_RECIPIENT_RATIO)))
+    if cohort_scope in {"all-retail-bindings", "recent-active-retail-bindings"}:
+        target = account_count
     return min(account_count, target, free_float)
 
 
@@ -258,9 +252,6 @@ def _retail_account_ids(session) -> tuple[list[str], str]:
                 if _is_recently_active_binding(meta):
                     active_ids.append(account_id)
                 ids.append(account_id)
-            active_ids = _dedupe(active_ids)
-            if active_ids:
-                return active_ids, "recent-active-retail-bindings"
         except Exception:
             ids = []
     if ids or RuntimeAccount is None:

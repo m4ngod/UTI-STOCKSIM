@@ -12,7 +12,7 @@ from stock_sim.services.ipo_retail_distribution import allocate_ipo_retail_distr
 from stock_sim.services.runtime_command_service import RuntimeCommandService
 
 
-def test_ipo_distribution_prefers_recent_active_retail_cohort_and_fully_covers_small_group():
+def test_ipo_distribution_allocates_to_all_retail_bindings():
     models_init.init_models()
     symbol = f"IPOA{uuid.uuid4().hex[:4].upper()}"
     svc = RuntimeCommandService()
@@ -58,8 +58,8 @@ def test_ipo_distribution_prefers_recent_active_retail_cohort_and_fully_covers_s
     result = allocate_ipo_retail_distribution(symbol, sim_day=1)
 
     assert result["applied"] is True
-    assert result["cohort_scope"] == "recent-active-retail-bindings"
-    assert result["recipients"] == len(active_accounts)
+    assert result["cohort_scope"] == "all-retail-bindings"
+    assert result["recipients"] == len(active_accounts + stale_accounts)
 
     session = SessionLocal()
     try:
@@ -69,7 +69,7 @@ def test_ipo_distribution_prefers_recent_active_retail_cohort_and_fully_covers_s
             .order_by(Position.account_id.asc())
             .all()
         )
-        assert [row.account_id for row in rows] == sorted(active_accounts)
+        assert [row.account_id for row in rows] == sorted(active_accounts + stale_accounts)
         assert sum(int(row.quantity or 0) for row in rows) == 400
     finally:
         session.close()
@@ -117,7 +117,7 @@ def test_ipo_distribution_rebalances_underallocated_untraded_symbol_to_active_co
 
     assert result["applied"] is True
     assert result["existing_recipients"] == 4
-    assert result["target_recipients"] == 12
+    assert result["target_recipients"] == len(account_ids)
 
     session = SessionLocal()
     try:
@@ -126,7 +126,7 @@ def test_ipo_distribution_rebalances_underallocated_untraded_symbol_to_active_co
             .filter(Position.symbol == symbol, Position.quantity > 0)
             .all()
         )
-        assert len(rows) == 12
+        assert len(rows) == len(account_ids)
         assert sum(int(row.quantity or 0) for row in rows) == 1200
     finally:
         session.close()

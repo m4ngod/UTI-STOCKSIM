@@ -158,40 +158,48 @@ class RuntimeRetailAgent:
         if not self._market_time_open():
             return
         self._enforce_order_patience()
-        symbols = engine_registry.symbols()
+        symbols = list(engine_registry.symbols())
         if not symbols:
             return
         self._turn += 1
-        symbol = symbols[self._turn % len(symbols)]
+        offset = self._turn % len(symbols)
+        candidates = symbols[offset:] + symbols[:offset]
+        if len(candidates) > 2:
+            self._rng.shuffle(candidates)
+        for symbol in candidates:
+            if self._try_step_symbol(symbol, universe_size=len(symbols)):
+                return
+
+    def _try_step_symbol(self, symbol: str, *, universe_size: int) -> bool:
         ctx = self._build_context(symbol)
         if ctx is None:
-            return
+            return False
         self._history[symbol].append(ctx.reference_price)
         position = self._build_position_context(symbol, current_price=ctx.reference_price)
         decision = self._decide(ctx, position)
         if decision is None:
-            return
+            return False
         side, price, qty = decision
         if self._passive_side_cooldown_until_turn.get((symbol, side), -1) > self._turn:
-            return
+            return False
         sim_day = int(self._runtime_gateway.get_current_sim_day())
         if side == "sell" and self._sell_blocked_until_day.get(symbol) == sim_day:
-            return
+            return False
         if side == "sell":
             available_qty = self._available_sell_qty(symbol)
             if available_qty <= 0:
                 if ctx.cold_start:
                     fallback = self._cold_start_buy_fallback(ctx)
                     if fallback is None:
-                        return
+                        return False
                     side, price, qty = fallback
                 else:
-                    return
+                    return False
             else:
                 max_lot_qty = (available_qty // max(ctx.lot_size, 1)) * max(ctx.lot_size, 1)
                 qty = min(qty, max_lot_qty)
                 if qty <= 0:
-                    return
+                    return False
         trading = self._trading or TradingService()
         self._trading = trading
         result = trading.submit_order(
@@ -207,8 +215,9 @@ class RuntimeRetailAgent:
         if ctx.settlement_cycle >= 1 and side == "sell" and not bool((result or {}).get("ok", True)):
             self._sell_blocked_until_day[symbol] = sim_day
         if not self._is_crossing(ctx, side, price):
-            self._passive_side_cooldown_until_turn[(symbol, side)] = self._turn + max(2, len(symbols) * 2)
+            self._passive_side_cooldown_until_turn[(symbol, side)] = self._turn + max(2, universe_size * 2)
         metrics.inc("runtime_retail_orders_submitted")
+        return bool((result or {}).get("ok", True))
 
     def _market_time_open(self) -> bool:
         try:

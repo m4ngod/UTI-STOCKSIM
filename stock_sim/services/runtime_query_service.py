@@ -384,7 +384,15 @@ class RuntimeQueryService:
                 if rows:
                     resolved_scope = "active-run"
                 else:
-                    return []
+                    latest_run_id = self._latest_history_run_id(sess, model, sym)
+                    if latest_run_id is not None:
+                        rows = (
+                            query.filter(model.run_id == latest_run_id)
+                            .order_by(model.ts.desc())
+                            .limit(int(limit))
+                            .all()
+                        )
+                        resolved_scope = "latest-persisted-run"
             if not rows:
                 rows = (
                     query.order_by(model.ts.desc())
@@ -417,6 +425,20 @@ class RuntimeQueryService:
             return []
         finally:
             sess.close()
+
+    @staticmethod
+    def _latest_history_run_id(sess, model, symbol: str) -> str | None:
+        try:
+            row = (
+                sess.query(model.run_id)
+                .filter(model.symbol == symbol, model.run_id.isnot(None))
+                .order_by(model.ts.desc())
+                .first()
+            )
+            value = str(row[0] or "").strip() if row else ""
+            return value or None
+        except Exception:
+            return None
 
     @staticmethod
     def _bar_ts_ms(row: object, timeframe: str) -> int | None:
@@ -457,7 +479,15 @@ class RuntimeQueryService:
                 if rows:
                     resolved_scope = "active-run"
                 else:
-                    return []
+                    latest_run_id = self._latest_trade_run_id(sess, sym)
+                    if latest_run_id is not None:
+                        rows = (
+                            base_query.filter(TradeORM.run_id == latest_run_id)
+                            .order_by(TradeORM.ts.desc())
+                            .limit(int(limit))
+                            .all()
+                        )
+                        resolved_scope = "latest-persisted-run"
             if not rows:
                 rows = (
                     base_query.order_by(TradeORM.ts.desc())
@@ -493,6 +523,20 @@ class RuntimeQueryService:
             return []
         finally:
             sess.close()
+
+    @staticmethod
+    def _latest_trade_run_id(sess, symbol: str) -> str | None:
+        try:
+            row = (
+                sess.query(TradeORM.run_id)
+                .filter(TradeORM.symbol == symbol, TradeORM.run_id.isnot(None))
+                .order_by(TradeORM.ts.desc())
+                .first()
+            )
+            value = str(row[0] or "").strip() if row else ""
+            return value or None
+        except Exception:
+            return None
 
     def list_leaderboard_snapshots(self) -> List[Dict[str, Any]]:
         if SessionLocal is None or AgentBinding is None or RuntimeAccount is None or RuntimePosition is None:

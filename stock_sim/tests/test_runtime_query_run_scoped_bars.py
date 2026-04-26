@@ -37,15 +37,17 @@ def test_runtime_query_service_prefers_active_run_bars():
         clk.configure(run_id="")
 
 
-def test_runtime_query_service_does_not_mix_old_bars_into_active_run():
+def test_runtime_query_service_loads_latest_persisted_run_when_active_run_has_no_bars():
     models_init.init_models()
     symbol = "RUNBARY"
     old_run = "RUN-BAR-OLD-001"
+    older_run = "RUN-BAR-OLDER-001"
     active_run = "RUN-BAR-ACTIVE-MISSING"
     ts0 = datetime.utcnow().replace(second=0, microsecond=0) - timedelta(minutes=2)
 
     s = SessionLocal()
     try:
+        s.add(Bar1m(symbol=symbol, run_id=older_run, ts=ts0 - timedelta(minutes=10), open=7.0, high=7.2, low=6.9, close=7.1, volume=80, turnover=700.0, sim_day=0))
         s.add(Bar1m(symbol=symbol, run_id=old_run, ts=ts0, open=10.0, high=10.2, low=9.9, close=10.1, volume=100, turnover=1000.0, sim_day=1))
         s.commit()
     finally:
@@ -55,7 +57,11 @@ def test_runtime_query_service_does_not_mix_old_bars_into_active_run():
     if hasattr(clk, "configure"):
         clk.configure(run_id=active_run)
 
-    assert RuntimeQueryService().get_bars(symbol, "1m", limit=10) == []
+    rows = RuntimeQueryService().get_bars(symbol, "1m", limit=10)
+
+    assert [round(float(row["close"]), 4) for row in rows] == [10.1]
+    assert rows[0]["run_id"] == old_run
+    assert rows[0]["_history_scope"] == "latest-persisted-run"
 
     if hasattr(clk, "configure"):
         clk.configure(run_id="")
