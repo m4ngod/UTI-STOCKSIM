@@ -73,6 +73,7 @@ class OrderTradeSettlementService:
         sim_dt = virtual_datetime(sim_day)
         cost_map: dict[str, float] = {}
         actual_buy_fee_accum: dict[str, float] = {}
+        changed_order_ids: set[str] = set()
         batch_entries = []
         fee_entries = []
 
@@ -103,11 +104,7 @@ class OrderTradeSettlementService:
                     if buy_orm.filled >= buy_orm.quantity
                     else OrderStatus.PARTIAL
                 )
-                self._persist_event(
-                    buy_orm.id,
-                    "FILL" if buy_orm.status == OrderStatus.FILLED else "PARTIAL",
-                    "",
-                )
+                changed_order_ids.add(buy_orm.id)
 
             sell_orm = self._load_order_for_trade(
                 trade.sell_order_id,
@@ -120,11 +117,7 @@ class OrderTradeSettlementService:
                     if sell_orm.filled >= sell_orm.quantity
                     else OrderStatus.PARTIAL
                 )
-                self._persist_event(
-                    sell_orm.id,
-                    "FILL" if sell_orm.status == OrderStatus.FILLED else "PARTIAL",
-                    "",
-                )
+                changed_order_ids.add(sell_orm.id)
 
             self._mem_order_updater(trade.buy_order_id, buy_orm, trade_engine)
             self._mem_order_updater(trade.sell_order_id, sell_orm, trade_engine)
@@ -199,6 +192,7 @@ class OrderTradeSettlementService:
                 logger.log("trade", **trade.to_dict())
             metrics.inc("trades_processed")
 
+        self._persist_changed_order_events(changed_order_ids)
         self._accounts.settle_trades_batch(batch_entries, fee_entries)
         self._session.flush()
         self._refund_buy_cash_price_improvements(cost_map)
@@ -225,6 +219,17 @@ class OrderTradeSettlementService:
         except Exception:
             pass
         return self._session.get(OrderORM, order_id)
+
+    def _persist_changed_order_events(self, order_ids: set[str]) -> None:
+        for order_id in order_ids:
+            orm = self._session.get(OrderORM, order_id)
+            if orm is None:
+                continue
+            self._persist_event(
+                orm.id,
+                "FILL" if orm.status == OrderStatus.FILLED else "PARTIAL",
+                "",
+            )
 
     def _update_order_book_snapshot(
         self,

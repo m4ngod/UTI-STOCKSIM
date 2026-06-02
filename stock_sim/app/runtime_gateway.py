@@ -183,6 +183,11 @@ class RuntimeGateway:
             return
         self._commands.allocate_pending_ipo_distributions_if_running()
 
+    def ensure_open_instrument_retail_distributions(self, *, sim_day: int | None = None) -> Dict[str, Any]:
+        if self._commands is None:
+            return {}
+        return self._commands.ensure_open_instrument_retail_distributions(sim_day=sim_day)
+
     def get_retail_holdings(self, symbol: str, *, limit: int = 8) -> Dict[str, Any] | None:
         if self._queries is None:
             return None
@@ -197,6 +202,11 @@ class RuntimeGateway:
         if self._queries is None:
             return []
         return self._queries.get_recent_trades(symbol, limit=limit)
+
+    def list_order_events(self, *, limit: int = 500, include_all_runs: bool = True) -> List[Dict[str, Any]]:
+        if self._queries is None:
+            return []
+        return self._queries.list_order_events(limit=limit, include_all_runs=include_all_runs)
 
     def list_leaderboard_snapshots(self) -> List[Dict[str, Any]]:
         if self._queries is None:

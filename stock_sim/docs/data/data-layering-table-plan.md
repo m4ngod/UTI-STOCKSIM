@@ -10,6 +10,13 @@ _Last updated: 2026-03-22_
 - Startup schema guards now use cross-dialect one-column `ALTER TABLE` statements and create run-scoped indexes for current dynamic tables.
 - SQLite remains for pytest/dev/demo, but it is no longer treated as the target backend for high-volume desktop simulation.
 
+## 2026-05-07 PostgreSQL runtime driver implementation note
+
+- The current Windows Python 3.11 runtime can import SQLAlchemy but cannot load `psycopg` because `psycopg-binary` is unavailable and system `libpq` is not installed.
+- Runtime PostgreSQL driver normalization now selects an available installed driver, with `STOCKSIM_POSTGRES_DRIVER` as an explicit override.
+- `pg8000` is declared as the pure-Python fallback driver and was verified against the local `stock_sim` PostgreSQL database.
+- A live `ArenaExperimentRunner` 5-generation series was run through PostgreSQL-backed `training_episodes`, `model_episode_results`, and `model_transitions` tables.
+
 本文档是 `docs/data/data-layering-design.md` 的表级落地版。
 目标：把现有 persistence 模型、建议新增表、以及 Redis 热层职责，映射成可执行的存储蓝图。
 

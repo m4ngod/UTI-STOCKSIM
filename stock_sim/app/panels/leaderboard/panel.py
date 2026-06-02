@@ -134,6 +134,14 @@ class LeaderboardPanel:
     # ------------- Helpers -------------
     @staticmethod
     def _row_view(r: LeaderboardRowDTO) -> Dict[str, Any]:
+        equity = r.equity
+        pnl = None
+        if equity is not None:
+            try:
+                base = float(equity) / max(1.0 + float(r.return_pct), 1e-9)
+                pnl = float(equity) - base
+            except Exception:
+                pnl = None
         return {
             'agent_id': r.agent_id,
             'rank': r.rank,
@@ -142,7 +150,8 @@ class LeaderboardPanel:
             'sharpe': r.sharpe,
             'max_drawdown': r.max_drawdown,
             'win_rate': r.win_rate,
-            'equity': r.equity,
+            'equity': equity,
+            'pnl': pnl,
         }
 
     @staticmethod

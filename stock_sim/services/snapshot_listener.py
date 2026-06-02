@@ -5,7 +5,7 @@
  - 需要 instruments 表中 free_float_shares / lot_size（lot_size 通过 InstrumentService 已存）
 """
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import RLock
 from sqlalchemy.orm import Session
 from stock_sim.infra.event_bus import event_bus
@@ -232,7 +232,10 @@ class SnapshotPersistenceListener:
                 if candidate is None:
                     continue
                 try:
-                    return datetime.utcfromtimestamp(int(candidate) / 1000.0).replace(microsecond=0)
+                    return datetime.fromtimestamp(
+                        int(candidate) / 1000.0,
+                        tz=timezone.utc,
+                    ).replace(microsecond=0, tzinfo=None)
                 except Exception:
                     pass
             sim_dt = cls._second_ts(payload.get("sim_dt"))

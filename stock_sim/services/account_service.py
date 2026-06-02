@@ -181,8 +181,9 @@ class AccountService:
         - 买方：释放对应冻结现金；增加持仓；若在回补空头则优先减少 borrowed_qty/空头仓
         - 卖方：减少/释放多头；若卖超出已有多头则形成净空头并提高 borrowed_qty；增加卖出现金净额
         - 双方都写 Ledger
-        - 每笔成交后发布 ACCOUNT_UPDATED
+        - 同一批撮合只为每个受影响账户发布一次 ACCOUNT_UPDATED / equity snapshot
         """
+        touched_accounts: dict[str, Account] = {}
         for idx, entry in enumerate(batch_entries):
             buy_acc, sell_acc, symbol, price, qty, buy_oid, sell_oid = entry
             fee_buy, fee_sell, tax_sell = fee_entries[idx]
@@ -199,7 +200,9 @@ class AccountService:
                     order_id=buy_oid,
                     fee_buy=float(fee_buy or 0.0),
                     frozen_notional=notional,
+                    publish_account=False,
                 )
+                touched_accounts[buy_acc.id] = buy_acc
 
             if sell_acc is not None:
                 self._settle_sell_leg(
@@ -211,17 +214,20 @@ class AccountService:
                     fee_sell=float(fee_sell or 0.0),
                     tax_sell=float(tax_sell or 0.0),
                     gross_notional=notional,
+                    publish_account=False,
                 )
+                touched_accounts[sell_acc.id] = sell_acc
 
             metrics.inc("trades_settled")
-            if buy_acc is not None:
-                self.write_equity_snapshot(buy_acc)
-            if sell_acc is not None and sell_acc is not buy_acc:
-                self.write_equity_snapshot(sell_acc)
+
+        for acc in touched_accounts.values():
+            self.write_equity_snapshot(acc)
+            self._publish_account(acc)
 
     # ---- Internal settlement helpers ----
     def _settle_buy_leg(self, *, buy_acc: Account, symbol: str, price: float, qty: int,
-                        order_id: str | None, fee_buy: float, frozen_notional: float):
+                        order_id: str | None, fee_buy: float, frozen_notional: float,
+                        publish_account: bool = True):
         if frozen_notional > 0:
             reduce = min(frozen_notional, float(buy_acc.frozen_cash or 0.0))
             buy_acc.frozen_cash -= reduce
@@ -273,10 +279,12 @@ class AccountService:
             order_id=order_id,
             extra_json=None,
         )
-        self._publish_account(buy_acc)
+        if publish_account:
+            self._publish_account(buy_acc)
 
     def _settle_sell_leg(self, *, sell_acc: Account, symbol: str, price: float, qty: int,
-                         order_id: str | None, fee_sell: float, tax_sell: float, gross_notional: float):
+                         order_id: str | None, fee_sell: float, tax_sell: float, gross_notional: float,
+                         publish_account: bool = True):
         pos = self.get_position(sell_acc, symbol)
         old_qty = int(pos.quantity or 0)
         old_borrowed = int(pos.borrowed_qty or 0)
@@ -316,7 +324,8 @@ class AccountService:
             order_id=order_id,
             extra_json=None,
         )
-        self._publish_account(sell_acc)
+        if publish_account:
+            self._publish_account(sell_acc)
 
     # ---- Internal helpers ----
     def _write_ledger(self, account_id: str, symbol: str, side: str, price: float, qty: int,

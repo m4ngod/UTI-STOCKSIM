@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import random
 import shlex
@@ -45,18 +46,68 @@ class ModelSpec:
 
 
 class HoldModel:
-    def __init__(self, *, model_id: str = "hold_model_v1"):
+    def __init__(self, *, model_id: str = "hold_model_v1", seed: int | None = None):
         self.model_id = model_id
+        self._rng = random.Random(seed)
 
     def act(self, observation: dict[str, Any]) -> dict[str, Any]:
         context = observation.get("context") if isinstance(observation, dict) else {}
+        account = observation.get("account") if isinstance(observation, dict) else {}
+        market = observation.get("market") if isinstance(observation, dict) else {}
+        symbols = [str(item).strip() for item in ((context or {}).get("symbol_universe") or []) if str(item).strip()]
+        order_books = (market or {}).get("order_books") if isinstance(market, dict) else {}
+        cash = _positive_float((account or {}).get("cash"))
+        candidates: list[dict[str, Any]] = []
+        for symbol in symbols:
+            book = (order_books or {}).get(symbol) if isinstance(order_books, dict) else {}
+            best_bid = _positive_float((book or {}).get("best_bid") or (book or {}).get("best_bid_price"))
+            best_ask = _positive_float((book or {}).get("best_ask") or (book or {}).get("best_ask_price"))
+            if best_ask is not None:
+                candidates.append({"symbol": symbol, "side": "BUY", "price": best_ask})
+            if best_bid is None:
+                continue
+            sellable_qty = _available_qty_from_account(account if isinstance(account, dict) else {}, symbol)
+            candidates.append({"symbol": symbol, "side": "SELL", "price": best_bid, "sellable_qty": sellable_qty})
+        if candidates:
+            choice = dict(self._rng.choice(candidates))
+            price = float(choice["price"])
+            side = str(choice["side"])
+            if side == "BUY":
+                available_cash = float(cash or 0.0)
+                cash_budget = max(price, min(available_cash * 0.08, max(available_cash * 0.02, price)))
+                qty_cap = int(cash_budget / price)
+            else:
+                sellable_qty = int(choice.get("sellable_qty") or 0)
+                qty_cap = sellable_qty if sellable_qty > 0 else 5000
+            qty_cap = max(0, min(qty_cap, 5000))
+            if qty_cap > 0:
+                min_qty = max(1, qty_cap // 5)
+                quantity = self._rng.randint(min_qty, qty_cap)
+                return {
+                    "contract_version": "act.v1",
+                    "action_type": "order",
+                    "target": {"account_id": (context or {}).get("agent_id"), "symbol": choice["symbol"]},
+                    "payload": {
+                        "symbol": choice["symbol"],
+                        "side": side,
+                        "order_type": "LIMIT",
+                        "tif": "GFD",
+                        "quantity": quantity,
+                        "price": price,
+                    },
+                    "constraints": {"clip_to_limits": True},
+                    "meta": {
+                        "model_id": self.model_id,
+                        "policy_type": "random_top_of_book",
+                    },
+                }
         return {
             "contract_version": "act.v1",
             "action_type": "hold",
             "target": {"account_id": (context or {}).get("agent_id")},
             "payload": {},
             "constraints": {},
-            "meta": {"model_id": self.model_id},
+            "meta": {"model_id": self.model_id, "reason": "NO_TOP_OF_BOOK_CANDIDATE"},
         }
 
 
@@ -91,6 +142,129 @@ class RandomWeightModel:
             },
             "meta": {"model_id": self.model_id},
         }
+
+
+class TargetWeightNaiveRebalanceModel:
+    def __init__(
+        self,
+        *,
+        model_id: str = "target_weight_naive_rebalance_v1",
+        gross_budget: float = 0.6,
+        cash_buffer_ratio: float = 0.05,
+    ):
+        self.model_id = model_id
+        self.gross_budget = max(0.0, min(1.0, float(gross_budget)))
+        self.cash_buffer_ratio = max(0.0, min(0.95, float(cash_buffer_ratio)))
+
+    def act(self, observation: dict[str, Any]) -> dict[str, Any]:
+        context = observation.get("context") if isinstance(observation, dict) else {}
+        symbols = [str(item).strip() for item in ((context or {}).get("symbol_universe") or []) if str(item).strip()]
+        if not symbols:
+            return HoldModel(model_id=self.model_id).act(observation)
+        weight = round(self.gross_budget / len(symbols), 6)
+        weights = {symbol: weight for symbol in symbols}
+        return {
+            "contract_version": "act.v1",
+            "action_type": "target_weight",
+            "target": {"account_id": (context or {}).get("agent_id"), "symbols": symbols},
+            "payload": {
+                "weights": weights,
+                "cash_buffer_ratio": self.cash_buffer_ratio,
+                "rebalance_mode": "market",
+            },
+            "constraints": {
+                "allow_short": False,
+                "max_gross_leverage": 1.0,
+                "clip_to_limits": True,
+            },
+            "meta": {
+                "model_id": self.model_id,
+                "baseline_kind": "target_weight_naive_rebalance",
+            },
+        }
+
+
+class ScheduledExecutionBaselineModel:
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        baseline_kind: str,
+        rebalance_mode: str,
+        gross_budget: float = 0.6,
+        cash_buffer_ratio: float = 0.05,
+        horizon_steps: int = 10,
+        volume_curve: list[float] | None = None,
+        sigma: float = 0.02,
+        eta: float = 0.01,
+        risk_aversion: float = 1.0,
+    ):
+        self.model_id = model_id
+        self.baseline_kind = baseline_kind
+        self.rebalance_mode = rebalance_mode
+        self.gross_budget = max(0.0, min(1.0, float(gross_budget)))
+        self.cash_buffer_ratio = max(0.0, min(0.95, float(cash_buffer_ratio)))
+        self.horizon_steps = max(1, int(horizon_steps or 1))
+        self.volume_curve = list(volume_curve or [])
+        self.sigma = max(0.0, float(sigma))
+        self.eta = max(1e-9, float(eta))
+        self.risk_aversion = max(0.0, float(risk_aversion))
+
+    def act(self, observation: dict[str, Any]) -> dict[str, Any]:
+        context = observation.get("context") if isinstance(observation, dict) else {}
+        symbols = [str(item).strip() for item in ((context or {}).get("symbol_universe") or []) if str(item).strip()]
+        if not symbols:
+            return HoldModel(model_id=self.model_id).act(observation)
+        step_index = _step_index(observation)
+        progress = self._progress(step_index)
+        total_budget = round(self.gross_budget * progress, 6)
+        weight = round(total_budget / len(symbols), 6)
+        return {
+            "contract_version": "act.v1",
+            "action_type": "target_weight",
+            "target": {"account_id": (context or {}).get("agent_id"), "symbols": symbols},
+            "payload": {
+                "weights": {symbol: weight for symbol in symbols},
+                "cash_buffer_ratio": self.cash_buffer_ratio,
+                "rebalance_mode": self.rebalance_mode,
+                "schedule": {
+                    "schedule_type": self.baseline_kind,
+                    "step_index": step_index,
+                    "horizon_steps": self.horizon_steps,
+                    "progress": progress,
+                    "target_gross_budget": self.gross_budget,
+                    "sigma": self.sigma if self.baseline_kind == "ac_lite" else None,
+                    "eta": self.eta if self.baseline_kind == "ac_lite" else None,
+                    "risk_aversion": self.risk_aversion if self.baseline_kind == "ac_lite" else None,
+                },
+            },
+            "constraints": {
+                "allow_short": False,
+                "max_gross_leverage": 1.0,
+                "clip_to_limits": True,
+            },
+            "meta": {
+                "model_id": self.model_id,
+                "baseline_kind": self.baseline_kind,
+                "policy_type": "scheduled_execution_baseline",
+            },
+        }
+
+    def _progress(self, step_index: int) -> float:
+        bounded_step = max(0, min(self.horizon_steps - 1, int(step_index)))
+        if self.baseline_kind == "vwap" and self.volume_curve:
+            curve = [max(0.0, float(item)) for item in self.volume_curve[: self.horizon_steps]]
+            if len(curve) < self.horizon_steps:
+                curve.extend([1.0] * (self.horizon_steps - len(curve)))
+            total = sum(curve) or 1.0
+            return min(1.0, sum(curve[: bounded_step + 1]) / total)
+        if self.baseline_kind == "ac_lite":
+            t = (bounded_step + 1) / self.horizon_steps
+            kappa = (max(self.risk_aversion * self.sigma * self.sigma / self.eta, 1e-12)) ** 0.5
+            denominator = max(math.sinh(kappa), 1e-9)
+            remaining = math.sinh(kappa * (1.0 - t)) / denominator
+            return min(1.0, max(0.0, 1.0 - remaining))
+        return min(1.0, (bounded_step + 1) / self.horizon_steps)
 
 
 class CheckpointBackedModel:
@@ -344,8 +518,47 @@ class ModelRegistryService:
         external_policy_factories: dict[str, Callable[..., ModelPolicy]] | None = None,
     ):
         self._specs: dict[str, ModelSpec] = {
-            "hold_model_v1": ModelSpec("hold_model_v1", "hold", "Always emits hold actions."),
+            "hold_model_v1": ModelSpec(
+                "hold_model_v1",
+                "hold",
+                "Randomly buys at best ask or sells at best bid when executable top-of-book liquidity exists.",
+            ),
             "random_weight_v1": ModelSpec("random_weight_v1", "random_weight", "Random long-only target weights."),
+            "target_weight_naive_rebalance_v1": ModelSpec(
+                "target_weight_naive_rebalance_v1",
+                "target_weight_naive_rebalance",
+                "Deterministic long-only equal-weight target rebalance baseline.",
+            ),
+            "twap_execution_v1": ModelSpec(
+                "twap_execution_v1",
+                "scheduled_execution_baseline",
+                "Time-weighted scheduled target-weight execution baseline.",
+                config={"baseline_kind": "twap", "rebalance_mode": "twap", "horizon_steps": 10},
+            ),
+            "vwap_execution_v1": ModelSpec(
+                "vwap_execution_v1",
+                "scheduled_execution_baseline",
+                "Volume-weighted scheduled target-weight execution baseline.",
+                config={
+                    "baseline_kind": "vwap",
+                    "rebalance_mode": "vwap",
+                    "horizon_steps": 10,
+                    "volume_curve": [1.5, 1.3, 1.1, 0.9, 0.7, 0.7, 0.8, 0.9, 1.0, 1.1],
+                },
+            ),
+            "ac_lite_execution_v1": ModelSpec(
+                "ac_lite_execution_v1",
+                "scheduled_execution_baseline",
+                "Simplified Almgren-Chriss style risk/cost scheduled target-weight execution baseline.",
+                config={
+                    "baseline_kind": "ac_lite",
+                    "rebalance_mode": "ac_lite",
+                    "horizon_steps": 10,
+                    "sigma": 0.02,
+                    "eta": 0.01,
+                    "risk_aversion": 1.0,
+                },
+            ),
             "ppo_lstm_v1": ModelSpec(
                 "ppo_lstm_v1",
                 "ppo_recurrent",
@@ -413,11 +626,25 @@ class ModelRegistryService:
         spec = self._specs.get(model_id)
         if spec is not None and spec.policy_type == "random_weight":
             return RandomWeightModel(model_id=model_id, seed=seed)
+        if spec is not None and spec.policy_type == "target_weight_naive_rebalance":
+            return TargetWeightNaiveRebalanceModel(model_id=model_id)
+        if spec is not None and spec.policy_type == "scheduled_execution_baseline":
+            config = dict(spec.config or {})
+            return ScheduledExecutionBaselineModel(
+                model_id=model_id,
+                baseline_kind=str(config.get("baseline_kind") or model_id),
+                rebalance_mode=str(config.get("rebalance_mode") or config.get("baseline_kind") or "market"),
+                horizon_steps=int(config.get("horizon_steps") or 10),
+                volume_curve=list(config.get("volume_curve") or []),
+                sigma=float(config.get("sigma") or 0.02),
+                eta=float(config.get("eta") or 0.01),
+                risk_aversion=float(config.get("risk_aversion") or 1.0),
+            )
         if spec is not None and spec.policy_type == "ppo_recurrent":
             from rl.model_adapters.ppo_recurrent_adapter import RecurrentPPOPolicyAdapter
 
             return RecurrentPPOPolicyAdapter(model_id=model_id, config=spec.config or {}, seed=seed)
-        return HoldModel(model_id=model_id)
+        return HoldModel(model_id=model_id, seed=seed)
 
     def _create_external_policy(self, spec: ModelSpec) -> ModelPolicy:
         adapter_type = spec.adapter_type or "static_action"
@@ -615,6 +842,47 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _step_index(observation: dict[str, Any]) -> int:
+    sources = []
+    if isinstance(observation, dict):
+        sources.extend([
+            observation.get("context"),
+            observation.get("market"),
+            observation,
+        ])
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("step_index", "step", "bar_index"):
+            if source.get(key) is None:
+                continue
+            try:
+                return max(0, int(source.get(key)))
+            except Exception:
+                return 0
+    return 0
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _available_qty_from_account(account: dict[str, Any], symbol: str) -> int:
+    for position in account.get("positions") or []:
+        if not isinstance(position, dict):
+            continue
+        if str(position.get("symbol") or "") != str(symbol):
+            continue
+        quantity = int(position.get("quantity") or 0)
+        frozen_qty = int(position.get("frozen_qty") or 0)
+        return max(0, quantity - frozen_qty)
+    return 0
+
+
 __all__ = [
     "CheckpointBackedModel",
     "ExternalPolicyAdapter",
@@ -623,5 +891,7 @@ __all__ = [
     "ModelRegistryService",
     "ModelSpec",
     "RandomWeightModel",
+    "ScheduledExecutionBaselineModel",
+    "TargetWeightNaiveRebalanceModel",
     "TrainableModelPolicy",
 ]

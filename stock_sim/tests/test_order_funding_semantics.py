@@ -1,5 +1,7 @@
 from stock_sim.persistence import models_init
 from stock_sim.persistence.models_imports import SessionLocal
+from stock_sim.persistence.models_account_equity_snapshot import AccountEquitySnapshot
+from stock_sim.persistence.models_order_event import OrderEvent
 from stock_sim.services.instrument_service import InstrumentService
 from stock_sim.services.order_service import OrderService
 from stock_sim.services.account_service import AccountService
@@ -103,4 +105,55 @@ def test_sell_order_freeze_does_not_reduce_position_before_trade():
     assert seller_pos.quantity == 300
     assert seller_pos.frozen_qty == 200
     assert seller_pos.borrowed_qty == 0
+    s.close()
+
+
+def test_multi_fill_batch_writes_one_snapshot_per_touched_account_and_one_final_buy_event():
+    s, osrv, acc_svc = _prepare_runtime("BATCHF")
+    seller_ids = [f"ACC_BATCHF_SELL_{idx}" for idx in range(3)]
+    for seller_id in seller_ids:
+        seller = acc_svc.get_or_create(seller_id, cash=100000.0)
+        seller_pos = acc_svc.get_position(seller, "BATCHF")
+        seller_pos.quantity = 100
+        seller_pos.avg_price = 10.0
+        s.flush()
+        osrv.place_order(
+            Order(
+                symbol="BATCHF",
+                side=OrderSide.SELL,
+                price=10.0,
+                quantity=100,
+                account_id=seller_id,
+            )
+        )
+
+    buyer = acc_svc.get_or_create("ACC_BATCHF_BUY", cash=100000.0)
+    s.flush()
+    buy_order = Order(
+        symbol="BATCHF",
+        side=OrderSide.BUY,
+        price=10.0,
+        quantity=300,
+        account_id=buyer.id,
+    )
+    trades = osrv.place_order(buy_order)
+    s.flush()
+
+    account_ids = seller_ids + [buyer.id]
+    snapshot_count = (
+        s.query(AccountEquitySnapshot)
+        .filter(AccountEquitySnapshot.account_id.in_(account_ids))
+        .count()
+    )
+    buy_events = (
+        s.query(OrderEvent)
+        .filter(OrderEvent.order_id == buy_order.order_id)
+        .order_by(OrderEvent.id.asc())
+        .all()
+    )
+
+    assert len(trades) == 3
+    assert buy_order.status == OrderStatus.FILLED
+    assert snapshot_count == len(account_ids)
+    assert [event.event for event in buy_events] == ["NEW", "FILL"]
     s.close()

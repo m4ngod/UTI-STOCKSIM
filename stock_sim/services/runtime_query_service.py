@@ -11,6 +11,7 @@ try:
     from stock_sim.persistence.models_agent_binding import AgentBinding  # type: ignore
     from stock_sim.persistence.models_position import Position as RuntimePosition  # type: ignore
     from stock_sim.persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
+    from stock_sim.persistence.models_order import OrderORM  # type: ignore
     from stock_sim.persistence.models_trade import TradeORM  # type: ignore
     from stock_sim.persistence.models_instrument import Instrument  # type: ignore
     from stock_sim.services.account_service import AccountService as RuntimeAccountService  # type: ignore
@@ -24,6 +25,7 @@ except Exception:  # pragma: no cover
         from persistence.models_agent_binding import AgentBinding  # type: ignore
         from persistence.models_position import Position as RuntimePosition  # type: ignore
         from persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
+        from persistence.models_order import OrderORM  # type: ignore
         from persistence.models_trade import TradeORM  # type: ignore
         from persistence.models_instrument import Instrument  # type: ignore
         from services.account_service import AccountService as RuntimeAccountService  # type: ignore
@@ -38,6 +40,7 @@ except Exception:  # pragma: no cover
         Bar1m = None  # type: ignore
         Bar1h = None  # type: ignore
         Bar1d = None  # type: ignore
+        OrderORM = None  # type: ignore
         TradeORM = None  # type: ignore
         Instrument = None  # type: ignore
         RuntimeAccountService = None  # type: ignore
@@ -249,11 +252,6 @@ class RuntimeQueryService:
         if not normalized_account_id or not normalized_symbol:
             return 0
         try:
-            ensure = getattr(models_init, "ensure_models", None)
-            if callable(ensure):
-                ensure()
-            else:
-                models_init.init_models()
             sess = SessionLocal()
         except Exception:
             return 0
@@ -266,7 +264,11 @@ class RuntimeQueryService:
             available = max(0, quantity - frozen_qty)
             instrument = sess.get(Instrument, normalized_symbol) if Instrument is not None else None
             settlement_cycle = int(getattr(instrument, "settlement_cycle", 0) or 0) if instrument is not None else 0
-            if settlement_cycle >= 1 and TradeORM is not None:
+            if (
+                settlement_cycle >= 1
+                and TradeORM is not None
+                and self._agent_type_for_account(sess, normalized_account_id) == "RETAIL"
+            ):
                 trade_query = sess.query(TradeORM.quantity).filter(
                     TradeORM.buy_account_id == normalized_account_id,
                     TradeORM.symbol == normalized_symbol,
@@ -286,6 +288,28 @@ class RuntimeQueryService:
             return 0
         finally:
             sess.close()
+
+    def _agent_type_for_account(self, sess, account_id: str) -> str:
+        normalized = str(account_id or "").strip()
+        if not normalized:
+            return "RETAIL"
+        upper = normalized.upper()
+        if "MODEL" in upper:
+            return "MODEL"
+        if "LIQUIDITY" in upper:
+            return "LIQUIDITY"
+        if AgentBinding is not None:
+            try:
+                row = (
+                    sess.query(AgentBinding.agent_type)
+                    .filter(AgentBinding.account_id == normalized)
+                    .one_or_none()
+                )
+                if row is not None:
+                    return str(row[0] or "RETAIL").strip().upper() or "RETAIL"
+            except Exception:
+                pass
+        return "RETAIL"
 
     def get_retail_holdings(self, symbol: str, *, limit: int = 8) -> Dict[str, Any] | None:
         if SessionLocal is None or RuntimePosition is None:
@@ -524,6 +548,82 @@ class RuntimeQueryService:
         finally:
             sess.close()
 
+    def list_order_events(self, *, limit: int = 500, include_all_runs: bool = True) -> List[Dict[str, Any]]:
+        if SessionLocal is None:
+            return []
+        max_rows = max(1, min(int(limit or 500), 5000))
+        try:
+            sess = SessionLocal()
+        except Exception:
+            return []
+        try:
+            active_run_id = self.get_current_run_id()
+            events: List[Dict[str, Any]] = []
+            if OrderORM is not None:
+                order_query = sess.query(OrderORM)
+                if active_run_id and not include_all_runs:
+                    order_query = order_query.filter(OrderORM.run_id == active_run_id)
+                for row in order_query.order_by(OrderORM.ts_last.desc()).limit(max_rows).all():
+                    status = _enum_value(getattr(row, "status", None))
+                    events.append(
+                        {
+                            "ts": _datetime_ms(getattr(row, "ts_last", None)) or _datetime_ms(getattr(row, "ts_created", None)),
+                            "type": "OrderSubmitted",
+                            "order_id": str(getattr(row, "id", "") or ""),
+                            "symbol": str(getattr(row, "symbol", "") or ""),
+                            "side": _enum_value(getattr(row, "side", None)).lower() or None,
+                            "price": float(getattr(row, "price", 0.0) or 0.0),
+                            "qty": int(getattr(row, "quantity", 0) or 0),
+                            "status": status,
+                            "reason": None,
+                            "account_id": str(getattr(row, "account_id", "") or ""),
+                            "run_id": str(getattr(row, "run_id", "") or "") or None,
+                            "source": "runtime-order-table",
+                        }
+                    )
+            if TradeORM is not None:
+                trade_query = sess.query(TradeORM)
+                if active_run_id and not include_all_runs:
+                    trade_query = trade_query.filter(TradeORM.run_id == active_run_id)
+                for row in trade_query.order_by(TradeORM.ts.desc()).limit(max_rows).all():
+                    ts_ms = _datetime_ms(getattr(row, "ts", None))
+                    base = {
+                        "ts": ts_ms,
+                        "type": "Trade",
+                        "symbol": str(getattr(row, "symbol", "") or ""),
+                        "price": float(getattr(row, "price", 0.0) or 0.0),
+                        "qty": int(getattr(row, "quantity", 0) or 0),
+                        "status": "TRADE",
+                        "reason": None,
+                        "run_id": str(getattr(row, "run_id", "") or "") or None,
+                        "source": "runtime-trade-table",
+                    }
+                    buy_account = str(getattr(row, "buy_account_id", "") or "")
+                    sell_account = str(getattr(row, "sell_account_id", "") or "")
+                    events.append(
+                        {
+                            **base,
+                            "order_id": str(getattr(row, "buy_order_id", "") or ""),
+                            "side": "buy",
+                            "account_id": buy_account,
+                        }
+                    )
+                    if sell_account:
+                        events.append(
+                            {
+                                **base,
+                                "order_id": str(getattr(row, "sell_order_id", "") or ""),
+                                "side": "sell",
+                                "account_id": sell_account,
+                            }
+                        )
+            events.sort(key=lambda item: int(item.get("ts") or 0), reverse=True)
+            return list(reversed(events[:max_rows]))
+        except Exception:
+            return []
+        finally:
+            sess.close()
+
     @staticmethod
     def _latest_trade_run_id(sess, symbol: str) -> str | None:
         try:
@@ -547,16 +647,27 @@ class RuntimeQueryService:
             return []
         try:
             bindings = sess.query(AgentBinding).order_by(AgentBinding.agent_name.asc()).all()
+            account_ids = [
+                str(getattr(binding, "account_id", "") or "").strip()
+                for binding in bindings
+                if str(getattr(binding, "account_id", "") or "").strip()
+            ]
+            if not account_ids:
+                return []
+            accounts = {
+                str(getattr(account, "id", "") or ""): account
+                for account in sess.query(RuntimeAccount).filter(RuntimeAccount.id.in_(account_ids)).all()
+            }
+            positions_by_account: Dict[str, List[Any]] = {}
+            for pos in sess.query(RuntimePosition).filter(RuntimePosition.account_id.in_(account_ids)).all():
+                positions_by_account.setdefault(str(getattr(pos, "account_id", "") or ""), []).append(pos)
             out: List[Dict[str, Any]] = []
             for binding in bindings:
-                account = sess.get(RuntimeAccount, binding.account_id)
+                account_id = str(getattr(binding, "account_id", "") or "").strip()
+                account = accounts.get(account_id)
                 if account is None:
                     continue
-                positions = (
-                    sess.query(RuntimePosition)
-                    .filter(RuntimePosition.account_id == binding.account_id)
-                    .all()
-                )
+                positions = positions_by_account.get(account_id, [])
                 cash = float(getattr(account, "cash", 0.0) or 0.0)
                 frozen_cash = float(getattr(account, "frozen_cash", 0.0) or 0.0)
                 equity = cash + frozen_cash
@@ -576,7 +687,7 @@ class RuntimeQueryService:
                 out.append(
                     {
                         "agent_id": str(getattr(binding, "agent_name", "") or ""),
-                        "account_id": str(getattr(binding, "account_id", "") or ""),
+                        "account_id": account_id,
                         "initial_cash": float(meta.get("initial_cash") or 100_000.0),
                         "equity": equity,
                         "gross_exposure": gross_exposure,
@@ -677,6 +788,20 @@ def _safe_parse_meta(raw: str | None) -> Dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _enum_value(value: Any) -> str:
+    raw = getattr(value, "name", None) or getattr(value, "value", value)
+    return str(raw or "")
+
+
+def _datetime_ms(value: Any) -> int | None:
+    try:
+        if value is not None and hasattr(value, "timestamp"):
+            return int(float(value.timestamp()) * 1000)
+    except Exception:
+        return None
+    return None
 
 
 def _sample_rows(rows: List[Any], points: int) -> List[Any]:

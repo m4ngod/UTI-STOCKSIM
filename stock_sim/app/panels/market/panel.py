@@ -49,7 +49,7 @@ except Exception:  # pragma: no cover
 
 __all__ = ["MarketPanel", "SymbolDetailPanel"]
 
-_DEFAULT_TIMEFRAME: Timeframe = "1m"
+_DEFAULT_TIMEFRAME: Timeframe = "1d"
 class SymbolDetailPanel:
     def __init__(self, controller: MarketController, service: MarketDataService):
         self._ctl = controller
@@ -335,7 +335,7 @@ class SymbolDetailPanel:
         metrics.inc("symbol_detail_refresh")
 
     # 新增: 接收逐笔 (外部事件驱动调用)
-    def add_trade(self, trade: TradeDTO | dict):  # noqa: D401
+    def add_trade(self, trade: TradeDTO | dict, *, refresh: bool = True):  # noqa: D401
         if isinstance(trade, dict):
             try:
                 raw = dict(trade)
@@ -388,16 +388,17 @@ class SymbolDetailPanel:
             )
         except Exception:
             pass
-        try:
-            self.refresh()
-        except Exception:
-            pass
+        if refresh:
+            try:
+                self.refresh()
+            except Exception:
+                pass
 
     def add_trades(self, trades):  # 批量
         for t in trades:
             self.add_trade(t)
 
-    def add_bar_update(self, payload: Dict[str, Any]):  # noqa: D401
+    def add_bar_update(self, payload: Dict[str, Any], *, refresh: bool = True):  # noqa: D401
         if not isinstance(payload, dict):
             return
         bar_symbol = str(payload.get('symbol') or '').strip()
@@ -408,10 +409,11 @@ class SymbolDetailPanel:
             self._svc.record_runtime_bar_update(payload)
         except Exception:
             return
-        try:
-            self.refresh()
-        except Exception:
-            pass
+        if refresh:
+            try:
+                self.refresh()
+            except Exception:
+                pass
 
     def get_view(self) -> Dict[str, Any]:
         # 轮询执行器回调 (轻量, 由 UI 周期调用 get_view 即可触发更新)
@@ -611,14 +613,14 @@ class MarketPanel:
     def select_symbol(self, symbol: str, timeframe: Optional[Timeframe] = None):
         self._detail.load_symbol(symbol, timeframe)
 
-    def add_trade(self, trade):  # 代理
-        self._detail.add_trade(trade)
+    def add_trade(self, trade, *, refresh: bool = True):  # 代理
+        self._detail.add_trade(trade, refresh=refresh)
 
     def detail_view(self) -> Dict[str, Any]:  # 代理
         return self._detail.get_view()
 
-    def add_bar_update(self, payload):
-        self._detail.add_bar_update(payload)
+    def add_bar_update(self, payload, *, refresh: bool = True):
+        self._detail.add_bar_update(payload, refresh=refresh)
 
     # ---------- View ----------
     def get_view(self) -> Dict[str, Any]:

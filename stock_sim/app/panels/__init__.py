@@ -111,7 +111,10 @@ def register_ui_adapters():
         from app.panels.arena.panel import ArenaPanel as _ArenaLogic
         from app.ui.adapters.arena_adapter import ArenaPanelAdapter
         def _arena_factory():
-            logic = _ArenaLogic(ctx.training_arena_service)
+            logic = _ArenaLogic(
+                ctx.training_arena_service,
+                experiment_runner=getattr(ctx, "arena_experiment_runner", None),
+            )
             return ArenaPanelAdapter().bind(logic)  # type: ignore
         replace_panel("arena", _arena_factory, title="Arena", meta={"i18n_key": "panel.arena"})
     except Exception:

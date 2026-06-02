@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, List, Dict, Any
 
 try:
@@ -13,6 +13,18 @@ except Exception:  # noqa
     from persistence.models_event_log import EventLog  # type: ignore
     from persistence.models_imports import SessionLocal  # type: ignore
     from services.run_persistence_query_service import RunPersistenceQueryService  # type: ignore
+
+
+def _coerce_sim_dt(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc)
+            return parsed.replace(tzinfo=None)
+        except Exception:
+            return value
+    return value
 
 
 class ReplayService:
@@ -29,6 +41,8 @@ class ReplayService:
     ) -> List[Dict[str, Any]]:
         s = SessionLocal()
         try:
+            start_sim_dt = _coerce_sim_dt(start_sim_dt)
+            end_sim_dt = _coerce_sim_dt(end_sim_dt)
             q = s.query(EventLog)
             if start_ts is not None:
                 q = q.filter(EventLog.ts_ms >= start_ts)

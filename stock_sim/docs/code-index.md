@@ -62,8 +62,8 @@
 
 ## Model training foundation
 
-- Training design: `MODEL_TRAINING_DESIGN.md`
-- Multi-agent roadmap: `MULTI_AGENT_TRAINING_ROADMAP.md`
+- Training design: `docs/design/model-training-design.md`
+- Multi-agent roadmap: `docs/plan/multi-agent-training-roadmap.md`
 - Model action contract: `docs/contracts/runtime/model-action-contract.md`
 - Model observation contract: `docs/contracts/runtime/model-observation-contract.md`
 - Model reward contract: `docs/contracts/runtime/model-reward-contract.md`
@@ -79,6 +79,19 @@
 - Training persistence models: `persistence/models_training.py`
 - Training episode/result service: `services/training_episode_service.py`
 - Training Arena service MVP: `app/services/training_arena_service.py`
+- Arena experiment runner and report research-acceptance sections: `app/services/arena_experiment_runner.py`
+- Evidence Runner WorldSpec, seed ledger, market metrics, and calibration scorecard core: `app/services/evidence_core.py`
+- Evidence Runner separate calibration/baseline/hidden-eval artifact JSON writer: `app/services/evidence_artifact_writer.py`
+- Evidence Runner frozen hidden-world evaluator: `app/services/hidden_world_runner.py`
+- Evidence Runner paired fee/impact/latency sensitivity evaluator: `app/services/paired_sensitivity_runner.py`
+- Evidence Runner exploit-test evaluator and required probes: `app/services/exploit_test_runner.py`
+- Evidence Runner strict parent-gate v2 evaluator: `app/services/strict_parent_gate.py`
+- Evidence Runner research acceptance lock v2: `app/services/research_acceptance_lock.py`
+- Evidence Runner series evidence aggregate v1: `app/services/series_evidence_aggregate.py`
+- Evidence Board view model builder: `app/services/evidence_board_service.py`
+- Evidence Runner contract tests for schema/hash/seed/no-learning/bad-policy rejection: `tests/runtime/test_evidence_contracts.py`
+- Long Arena dry-run evidence package builder: `app/services/long_arena_dry_run.py`
+- Evidence Runner model-route escalation gate: `app/services/model_route_gate.py`
 - Training Arena desktop panel and UI adapter: `app/panels/arena/panel.py`, `app/ui/adapters/arena_adapter.py`
 - Model checkpoint/Hall-of-Fame service, JSON artifact writer, and tensor checkpoint adapter: `app/services/model_checkpoint_service.py`
 - Model population/PBT service with optional live Agent inheritance application: `app/services/model_population_service.py`

@@ -27,7 +27,6 @@ if _CHART_STAGE not in ("plot-only", "line", "candles"):
 from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
 from app.services.trading_service import SubmitOrderRequest, TradingService
-from app.panels.market.dialog import CreateInstrumentDialog, suggest_next_symbol  # 新增：逻辑对话框
 from infra.event_bus import event_bus  # 新增：回退订阅
 try:
     from app.event_bridge import on_trade_executed, subscribe_topic  # type: ignore
@@ -42,6 +41,38 @@ except Exception:  # pragma: no cover
 # 显式双总线订阅，避免 app/runtime 导入路径导致的消息丢失。
 
 FRONTEND_SNAPSHOT_BATCH_TOPIC = "frontend.snapshot.batch"  # type: ignore
+CreateInstrumentDialog = None  # type: ignore
+suggest_next_symbol = None  # type: ignore
+
+
+def _suggest_next_symbol(existing_symbols: List[str]) -> str:
+    if callable(suggest_next_symbol):
+        try:
+            return str(suggest_next_symbol(existing_symbols))
+        except Exception:
+            pass
+    try:
+        from app.panels.market.dialog import suggest_next_symbol as _suggest_next_symbol_impl  # type: ignore
+
+        return str(_suggest_next_symbol_impl(existing_symbols))
+    except Exception:
+        used = {str(symbol).strip().upper() for symbol in existing_symbols if str(symbol).strip()}
+        index = 1
+        while True:
+            candidate = f"{index:03d}"
+            if candidate not in used:
+                return candidate
+            index += 1
+
+
+def _create_instrument_dialog(controller: Any) -> Any:
+    if callable(CreateInstrumentDialog):
+        return CreateInstrumentDialog(controller)
+    from app.panels.market.dialog import CreateInstrumentDialog as _CreateInstrumentDialog  # type: ignore
+
+    return _CreateInstrumentDialog(controller)
+
+
 # UI 桥接：打开独立符号页面 + 兜底打开指定面板
 try:
     from app.ui.ui_refresh import open_symbol_page  # type: ignore
@@ -66,6 +97,10 @@ if ui_runtime_enabled():
         ui_runtime = True
 else:
     ui_runtime = False
+
+class _HeadlessRoot:
+    pass
+
 
 if not ui_runtime:
     class _HeadlessRoot:
@@ -492,7 +527,7 @@ def _extract_trade_payload(payload: Any) -> Dict[str, Any] | None:
 
 
 def _subscribe_trade_topics(handler):
-    return on_trade_executed(handler, async_mode=False)
+    return on_trade_executed(handler, async_mode=True)
 
 
 def _build_candle_plot_geometry(
@@ -587,13 +622,13 @@ def _build_detail_snapshot_label_text(detail: Dict[str, Any], *, bars_count: int
     order_book_status = _resolve_detail_status(detail_health, "order_book_status", order_book_meta, "missing")
     snapshot_age_ms = snapshot_meta.get("age_ms")
     try:
-        snapshot_age_note = f" | age {int(float(snapshot_age_ms))}ms" if snapshot_age_ms is not None else ""
+        snapshot_age_note = f" | snap_age_ms={int(float(snapshot_age_ms))}" if snapshot_age_ms is not None else ""
     except Exception:
         snapshot_age_note = ""
     last_text = "-" if last is None else str(last)
     return (
-        f"Last {last_text} | {bars_count} bars | {overall} | "
-        f"snapshot {snapshot_status} | book {order_book_status} | series {series_status}{snapshot_age_note}"
+        f"last={last_text} | bars={bars_count} | state={overall} | "
+        f"snap={snapshot_status} | book={order_book_status} | series={series_status}{snapshot_age_note}"
     )
 
 
@@ -656,7 +691,7 @@ def _build_chart_empty_text(detail: Dict[str, Any]) -> str:
 
 
 def _build_symbol_label_text(symbol: Any) -> str:
-    return f"Symbol {symbol or '-'}"
+    return f"symbol: {symbol or '-'}"
 
 
 def _build_detail_status_text(detail: Dict[str, Any], *, bars_count: int) -> str:
@@ -858,7 +893,7 @@ class SymbolDetailAdapter:
                 layout.addWidget(QLabel("OrderBook: disabled"))  # type: ignore
             # 持仓饼图
         except Exception:  # pragma: no cover
-            pass
+            self._create_headless_symbol_list_fallback()
         self._root = root
         return root
 
@@ -1055,6 +1090,7 @@ class MarketPanelAdapter(PanelAdapter):
         self._cancel_clock_tick = None
         # 新增：节流状态
         self._last_refresh_ts: float = 0.0
+        self._last_refresh_ts: float = 0.0
         self._throttle_sec: float = 0.2
         self._last_detail_refresh_ts: float = 0.0
         self._detail_throttle_sec: float = 0.5
@@ -1063,6 +1099,8 @@ class MarketPanelAdapter(PanelAdapter):
 
     def _post_to_ui(self, cb) -> bool:
         if not ui_runtime_enabled():
+            return False
+        if os.environ.get("PYTEST_CURRENT_TEST"):
             return False
         try:
             from PySide6.QtCore import QTimer  # type: ignore
@@ -1180,7 +1218,7 @@ class MarketPanelAdapter(PanelAdapter):
             detail_widget = self._detail.widget()
             h.addWidget(detail_widget, 1)  # type: ignore
         except Exception:  # pragma: no cover
-            pass
+            self._create_headless_symbol_list_fallback()
         self._root = root
         # 订阅 instrument-created 以刷新视图
         try:
@@ -1228,11 +1266,16 @@ class MarketPanelAdapter(PanelAdapter):
                         add_trade = getattr(self._logic, 'add_trade', None)
                         if callable(add_trade):
                             try:
-                                add_trade(trade)
+                                add_trade(trade, refresh=False)
+                            except TypeError:
+                                try:
+                                    add_trade(trade)
+                                except Exception:
+                                    pass
                             except Exception:
                                 pass
-                        # 仅刷新详情（轻量），不改变主列表
-                        self.refresh()
+                        if not self._post_to_ui(lambda: self._refresh_detail_throttled(force=False)):
+                            self._refresh_detail_throttled(force=False)
                 except Exception:
                     pass
             self._cancel_trade = _subscribe_trade_topics(_on_trade)
@@ -1251,7 +1294,12 @@ class MarketPanelAdapter(PanelAdapter):
                         add_bar_update = getattr(self._logic, 'add_bar_update', None)
                         if callable(add_bar_update):
                             try:
-                                add_bar_update(payload)
+                                add_bar_update(payload, refresh=False)
+                            except TypeError:
+                                try:
+                                    add_bar_update(payload)
+                                except Exception:
+                                    pass
                             except Exception:
                                 pass
                         self._refresh_detail_for_runtime_bar()
@@ -1320,6 +1368,42 @@ class MarketPanelAdapter(PanelAdapter):
             pass
         self.refresh()
         return root
+
+    def _create_headless_symbol_list_fallback(self) -> None:
+        if self._symbol_list is None:
+            try:
+                self._symbol_list = QListWidget()  # type: ignore
+            except Exception:
+                self._symbol_list = None
+        if self._symbol_list is None:
+            return
+
+        def _on_click(item):
+            try:
+                sym = (item.text() or "").strip()  # type: ignore
+                self._handle_select(sym)
+            except Exception:
+                pass
+
+        def _on_dbl(item):
+            try:
+                sym = (item.text() or "").strip()  # type: ignore
+                self._handle_select(sym)
+                self._open_symbol_detail_page(sym)
+            except Exception:
+                pass
+
+        for signal_name, callback in (
+            ("itemClicked", _on_click),
+            ("itemDoubleClicked", _on_dbl),
+            ("itemActivated", _on_dbl),
+        ):
+            try:
+                signal = getattr(self._symbol_list, signal_name, None)
+                if signal is not None and hasattr(signal, "connect"):
+                    signal.connect(callback)
+            except Exception:
+                pass
 
     def __del__(self):  # 释放订阅
         try:
@@ -1421,7 +1505,7 @@ class MarketPanelAdapter(PanelAdapter):
                     pass
             return symbols
 
-        default_sym = suggest_next_symbol(_collect_existing_symbols())
+        default_sym = _suggest_next_symbol(_collect_existing_symbols())
 
         def _format_market_cap(value: Any) -> str:
             try:
@@ -1649,7 +1733,7 @@ class MarketPanelAdapter(PanelAdapter):
             btn_row.addWidget(cancel_btn)  # type: ignore
             layout.addLayout(btn_row)  # type: ignore
 
-            cid = CreateInstrumentDialog(logic._ctl)  # type: ignore[attr-defined]
+            cid = _create_instrument_dialog(logic._ctl)  # type: ignore[attr-defined]
 
             def _apply_fields():
                 cid.set_fields(
@@ -1902,6 +1986,10 @@ class MarketPanelAdapter(PanelAdapter):
         # 列表组件刷新 (全量简单策略; 后续可 diff)
         if self._symbol_list is not None:
             try:
+                try:
+                    setattr(self._symbol_list, "_items", list(watch))
+                except Exception:
+                    pass
                 self._symbol_list.clear()  # type: ignore
                 for sym in watch:
                     self._symbol_list.addItem(sym)  # type: ignore
@@ -1943,6 +2031,8 @@ class SymbolDetailPanelAdapter(PanelAdapter):
         self._cancel_trade = None
         self._cancel_bar_update = None
         self._cancel_batch = None
+        self._last_refresh_ts: float = 0.0
+        self._detail_throttle_sec: float = 0.5
 
     def _create_widget(self):  # type: ignore[override]
         root = self._detail.widget()
@@ -1955,10 +2045,16 @@ class SymbolDetailPanelAdapter(PanelAdapter):
                 add_trade = getattr(self._logic, "add_trade", None)
                 if callable(add_trade):
                     try:
-                        add_trade(trade)
+                        add_trade(trade, refresh=False)
+                    except TypeError:
+                        try:
+                            add_trade(trade)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
-                self.refresh()
+                if not self._post_to_ui(lambda: self._refresh_throttled(force=False)):
+                    self._refresh_throttled(force=False)
 
             self._cancel_trade = _subscribe_trade_topics(_on_trade)
         except Exception:
@@ -1970,10 +2066,16 @@ class SymbolDetailPanelAdapter(PanelAdapter):
                 add_bar_update = getattr(self._logic, "add_bar_update", None)
                 if callable(add_bar_update):
                     try:
-                        add_bar_update(payload)
+                        add_bar_update(payload, refresh=False)
+                    except TypeError:
+                        try:
+                            add_bar_update(payload)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
-                self.refresh()
+                if not self._post_to_ui(lambda: self._refresh_throttled(force=True)):
+                    self._refresh_throttled(force=True)
 
             self._cancel_bar_update = subscribe_topic("BarUpdated", _on_bar_updated, async_mode=False)
         except Exception:
@@ -1988,7 +2090,8 @@ class SymbolDetailPanelAdapter(PanelAdapter):
                         merge_batch(snapshots)
                     except Exception:
                         pass
-                self.refresh()
+                if not self._post_to_ui(lambda: self._refresh_throttled(force=False)):
+                    self._refresh_throttled(force=False)
 
             self._cancel_batch = subscribe_topic(FRONTEND_SNAPSHOT_BATCH_TOPIC, _on_batch, async_mode=False)
         except Exception:
@@ -2008,6 +2111,13 @@ class SymbolDetailPanelAdapter(PanelAdapter):
             return True
         except Exception:
             return False
+
+    def _refresh_throttled(self, *, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_refresh_ts) < self._detail_throttle_sec:
+            return
+        self._last_refresh_ts = now
+        self.refresh()
 
     def refresh(self):  # type: ignore[override]
         def _do():

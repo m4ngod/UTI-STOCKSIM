@@ -9,7 +9,12 @@ from stock_sim.persistence.models_training import ModelCheckpoint, ModelLineage
 from stock_sim.services.training_episode_service import EpisodeAgentAccumulator, TrainingEpisodeService
 from app.services.agent_service import AgentService
 from app.services.model_checkpoint_service import ModelCheckpointService
-from app.services.model_population_service import ModelPopulationService, PopulationEvolutionConfig
+from app.services.model_population_service import (
+    ModelPopulationService,
+    PopulationEvolutionConfig,
+    _strict_parent_gate,
+    _strict_parent_gate_passes,
+)
 from app.services.model_registry_service import CheckpointBackedModel, ModelRegistryService
 from app.services.runtime_model_agent import RuntimeModelAgent
 
@@ -154,6 +159,209 @@ def test_population_service_evolves_bottom_models_from_episode_winner():
         assert result["hall_of_fame"][0]["agent_id"] == "MODEL_TOP"
     finally:
         session.close()
+
+
+def test_population_service_requires_active_parent_when_configured():
+    models_init.init_models()
+    session = SessionLocal()
+    try:
+        episode_id = "episode-pbt-active-parent"
+        service = TrainingEpisodeService(session)
+        service.create_episode(episode_id=episode_id, run_id="run-pbt", generation=1)
+        specs = [
+            ("MODEL_IDLE_TOP", "ppo_lstm_v1", 0.10, {}),
+            (
+                "MODEL_ACTIVE_MID",
+                "ppo_lstm_v1",
+                0.02,
+                {
+                    "orders": [
+                        {
+                            "qty": 100,
+                            "price": 10.0,
+                            "result": {"ok": True, "status": "FILLED", "filled": 100},
+                        }
+                    ],
+                    "trades": [],
+                },
+            ),
+            ("MODEL_IDLE_LOW", "ppo_lstm_v1", -0.05, {}),
+        ]
+        for agent_id, model_id, reward, execution_result in specs:
+            acc = EpisodeAgentAccumulator(agent_id=agent_id, model_id=model_id)
+            acc.apply_step(
+                account={"equity": 100_000.0},
+                action={"action_type": "target_weight"},
+                execution_result=execution_result,
+                reward={"step_reward": reward},
+            )
+            service.upsert_result(acc, episode_id=episode_id, generation=1)
+        service.rank_episode(episode_id)
+
+        population = ModelPopulationService(session, rng=random.Random(3))
+        result = population.evolve_from_episode(
+            episode_id,
+            generation=1,
+            config=PopulationEvolutionConfig(
+                top_fraction=0.34,
+                bottom_fraction=0.34,
+                min_parent_trade_count=1,
+            ),
+        )
+        session.commit()
+
+        assert result["winners"] == ["MODEL_ACTIVE_MID"]
+        assert result["parent_eligible_agents"] == ["MODEL_ACTIVE_MID"]
+        assert result["losers"] == ["MODEL_IDLE_LOW"]
+        assert result["lineage"][0]["parent_model_id"] == "ppo_lstm_v1"
+    finally:
+        session.close()
+
+
+def test_population_service_strict_parent_gate_is_opt_in():
+    models_init.init_models()
+    session = SessionLocal()
+    try:
+        episode_id = "episode-pbt-strict-parent"
+        service = TrainingEpisodeService(session)
+        service.create_episode(episode_id=episode_id, run_id="run-pbt-strict", generation=1)
+        for agent_id, reward in [
+            ("MODEL_TOP", 0.10),
+            ("MODEL_LOW", -0.05),
+        ]:
+            acc = EpisodeAgentAccumulator(agent_id=agent_id, model_id="ppo_lstm_v1")
+            acc.apply_step(
+                account={"equity": 100_000.0},
+                action={"action_type": "target_weight"},
+                execution_result={
+                    "orders": [
+                        {
+                            "qty": 100,
+                            "price": 10.0,
+                            "result": {"ok": True, "status": "FILLED", "filled": 100},
+                        }
+                    ],
+                    "trades": [],
+                },
+                reward={"step_reward": reward},
+            )
+            service.upsert_result(acc, episode_id=episode_id, generation=1)
+        service.rank_episode(episode_id)
+
+        population = ModelPopulationService(session, rng=random.Random(5))
+        default_result = population.evolve_from_episode(
+            episode_id,
+            generation=1,
+            config=PopulationEvolutionConfig(
+                top_fraction=0.5,
+                bottom_fraction=0.5,
+                min_parent_trade_count=1,
+            ),
+        )
+        strict_result = population.evolve_from_episode(
+            episode_id,
+            generation=1,
+            config=PopulationEvolutionConfig(
+                top_fraction=0.5,
+                bottom_fraction=0.5,
+                min_parent_trade_count=1,
+                strict_parent_eligibility=True,
+                research_acceptance={
+                    "is_research_accepted": False,
+                    "strict_parent_eligibility_allowed": False,
+                    "acceptance_lock": {
+                        "status": "locked",
+                        "blocking_sections": {
+                            "hidden_evaluation": "not_available",
+                            "exploit_detector": "partial",
+                        },
+                        "reason": "required_sections_not_complete",
+                    },
+                    "required_sections": {
+                        "baseline_suite": "complete",
+                        "hidden_evaluation": "not_available",
+                        "exploit_detector": "partial",
+                    },
+                },
+            ),
+        )
+
+        assert default_result["winners"] == ["MODEL_TOP"]
+        assert default_result["strict_parent_gate"]["enabled"] is False
+        assert default_result["strict_parent_gate"]["passes"] is True
+        assert default_result["strict_parent_gate"]["reason"] == "strict_parent_gate_disabled"
+        assert default_result["strict_parent_gate"]["blocking_reasons"] == []
+        assert strict_result["skipped"] is True
+        assert strict_result["reason"] == "no_parent_eligible_models"
+        assert strict_result["parent_eligible_agents"] == []
+        assert strict_result["strict_parent_gate"]["enabled"] is True
+        assert strict_result["strict_parent_gate"]["passes"] is False
+        assert strict_result["strict_parent_gate"]["reason"] == "strict_parent_gate_blocked"
+        assert strict_result["strict_parent_gate"]["strict_parent_eligibility_allowed"] is False
+        assert strict_result["strict_parent_gate"]["acceptance_lock"]["status"] == "locked"
+        assert strict_result["strict_parent_gate"]["acceptance_lock"]["blocking_sections"] == {
+            "hidden_evaluation": "not_available",
+            "exploit_detector": "partial",
+        }
+        assert strict_result["strict_parent_gate"]["blocking_reasons"] == [
+            "research_acceptance_not_true",
+            "strict_parent_eligibility_not_allowed",
+            "acceptance_lock_not_open",
+            "acceptance_lock_has_blocking_sections",
+            "hidden_evaluation_not_complete",
+            "exploit_detector_not_complete",
+        ]
+        assert strict_result["strict_parent_gate"]["required_sections"]["hidden_evaluation"] == "not_available"
+    finally:
+        session.close()
+
+
+def test_population_strict_parent_gate_requires_open_acceptance_lock():
+    locked_cfg = PopulationEvolutionConfig(
+        strict_parent_eligibility=True,
+        research_acceptance={
+            "is_research_accepted": True,
+            "strict_parent_eligibility_allowed": True,
+            "acceptance_lock": {
+                "status": "locked",
+                "blocking_sections": {"hidden_evaluation": "not_available"},
+                "reason": "required_sections_not_complete",
+            },
+            "required_sections": {
+                "baseline_suite": "complete",
+                "hidden_evaluation": "complete",
+                "exploit_detector": "complete",
+            },
+        },
+    )
+    allowed_cfg = PopulationEvolutionConfig(
+        strict_parent_eligibility=True,
+        research_acceptance={
+            "is_research_accepted": True,
+            "strict_parent_eligibility_allowed": True,
+            "acceptance_lock": {
+                "status": "open",
+                "blocking_sections": {},
+                "reason": "required_sections_complete",
+            },
+            "required_sections": {
+                "baseline_suite": "complete",
+                "hidden_evaluation": "complete",
+                "exploit_detector": "complete",
+            },
+        },
+    )
+
+    assert _strict_parent_gate_passes(locked_cfg) is False
+    assert _strict_parent_gate(locked_cfg)["reason"] == "strict_parent_gate_blocked"
+    assert _strict_parent_gate(locked_cfg)["blocking_reasons"] == [
+        "acceptance_lock_not_open",
+        "acceptance_lock_has_blocking_sections",
+    ]
+    assert _strict_parent_gate_passes(allowed_cfg) is True
+    assert _strict_parent_gate(allowed_cfg)["reason"] == "strict_parent_gate_passed"
+    assert _strict_parent_gate(allowed_cfg)["blocking_reasons"] == []
+    assert _strict_parent_gate(PopulationEvolutionConfig())["reason"] == "strict_parent_gate_disabled"
 
 
 class _FakeRuntimeGateway:

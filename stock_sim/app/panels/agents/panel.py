@@ -130,6 +130,20 @@ class AgentsPanel:
         ag = self._ctl.control(agent_id, action)  # action 校验由 service 完成
         return ag
 
+    def control_many(self, agent_ids: List[str], action: str) -> Dict[str, Any]:
+        ctrl = getattr(self._ctl, "control_many", None)
+        if callable(ctrl):
+            return ctrl(agent_ids, action)  # type: ignore[arg-type]
+        success: List[str] = []
+        failed: List[Dict[str, str]] = []
+        for agent_id in agent_ids:
+            try:
+                self.control(agent_id, action)
+                success.append(agent_id)
+            except Exception as exc:
+                failed.append({"agent_id": agent_id, "error": str(exc)})
+        return {"success_ids": success, "failed": failed, "action": action}
+
     # -------------- 视图 --------------
     def get_view(self) -> Dict[str, Any]:
         agents = self._ctl.list_agents()

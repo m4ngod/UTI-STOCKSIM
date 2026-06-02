@@ -16,6 +16,7 @@ Implementation notes:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, List, Literal, Optional
@@ -52,6 +53,17 @@ except Exception:  # pragma: no cover
 
 ActionType = Literal["start", "pause", "stop"]
 BATCH_ALLOWED_TYPES = {"Retail", "MultiStrategyRetail"}
+DEFAULT_MODEL_INITIAL_CASH = 50_000_000.0
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
 
 
 class AgentServiceError(RuntimeError):
@@ -91,8 +103,16 @@ class AgentService:
         self._sync_runtime_bindings_enabled = runtime_gateway is not None
         self._retail_agent_factory = retail_agent_factory or self._default_retail_agent_factory
         self._model_agent_factory = model_agent_factory or self._default_model_agent_factory
+        self._uses_default_account_bootstrapper = account_bootstrapper is None
         self._account_bootstrapper = account_bootstrapper or self._bootstrap_runtime_account
         self._model_counter = 0
+        self._last_state_persist_ms: Dict[str, int] = {}
+        self._heartbeat_persist_interval_ms = max(
+            1_000,
+            _env_int("STOCKSIM_AGENT_HEARTBEAT_PERSIST_INTERVAL_MS", 15_000),
+        )
+        self._last_runtime_sync_ts = 0.0
+        self._runtime_sync_min_interval_s = 0.75
 
     def list_agents(self) -> List[AgentMetaDTO]:
         self._sync_from_runtime_bindings()
@@ -100,7 +120,7 @@ class AgentService:
             return list(self._agents.values())
 
     def get(self, agent_id: str) -> Optional[AgentMetaDTO]:
-        self._sync_from_runtime_bindings()
+        self._sync_from_runtime_bindings(force=True)
         with self._lock:
             return self._agents.get(agent_id)
 
@@ -161,8 +181,89 @@ class AgentService:
         self._log.append(agent_id, f"Inherited model={child_model_id} from checkpoint={parent_checkpoint_id}")
         return agent
 
-    def control(self, agent_id: str, action: ActionType) -> AgentMetaDTO:
+    def bind_model_episode(
+        self,
+        agent_id: str,
+        *,
+        episode_id: str | None,
+        model_id: str | None = None,
+        mode: str | None = None,
+    ) -> AgentMetaDTO:
         self._sync_from_runtime_bindings()
+        stale_runtime_agent = None
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                raise AgentServiceError("AGENT_NOT_FOUND", f"agent not found: {agent_id}")
+            if str(getattr(agent, "type", "") or "") != "Model":
+                raise AgentServiceError("AGENT_TYPE_UNSUPPORTED", f"agent is not a Model: {agent_id}")
+            if model_id is not None and str(model_id).strip():
+                agent.model_id = str(model_id)
+            if mode is not None and str(mode).strip():
+                agent.mode = str(mode)
+            agent.episode_id = str(episode_id) if episode_id is not None else None
+            self._agents[agent_id] = agent
+            stale_runtime_agent = self._runtime_agents.pop(agent_id, None)
+        if stale_runtime_agent is not None:
+            self._call_runtime_lifecycle(stale_runtime_agent, "stop", emit_state=False)
+        self._persist_runtime_agent_meta(
+            agent_id,
+            type="Model",
+            model_id=agent.model_id,
+            mode=agent.mode,
+            episode_id=agent.episode_id,
+        )
+        self._log.append(agent_id, f"Bound model episode={agent.episode_id}")
+        return agent
+
+    def complete_model_episode(self, agent_ids: List[str], *, episode_id: str | None = None) -> Dict[str, Any]:
+        normalized_ids: List[str] = []
+        seen: set[str] = set()
+        for raw_id in agent_ids or []:
+            agent_id = str(raw_id or "").strip()
+            if agent_id and agent_id not in seen:
+                normalized_ids.append(agent_id)
+                seen.add(agent_id)
+        if not normalized_ids:
+            return {"success_ids": [], "failed": []}
+
+        self._sync_from_runtime_bindings(force=True)
+        success: List[str] = []
+        failed: List[Dict[str, str]] = []
+        meta_updates: Dict[str, Dict[str, Any]] = {}
+
+        for agent_id in normalized_ids:
+            with self._lock:
+                agent = self._agents.get(agent_id)
+                runtime_agent = self._runtime_agents.get(agent_id)
+            if agent is None:
+                failed.append({"agent_id": agent_id, "error": "AGENT_NOT_FOUND"})
+                continue
+            if str(getattr(agent, "type", "") or "") != "Model":
+                failed.append({"agent_id": agent_id, "error": "AGENT_TYPE_UNSUPPORTED"})
+                continue
+            try:
+                complete = getattr(runtime_agent, "complete_episode", None)
+                if callable(complete):
+                    try:
+                        complete(episode_id=episode_id)
+                    except TypeError:
+                        complete()
+                with self._lock:
+                    current = self._agents.get(agent_id)
+                    if current is not None:
+                        current.episode_id = None
+                        self._agents[agent_id] = current
+                meta_updates[agent_id] = {"episode_id": None}
+                self._log.append(agent_id, f"Completed model episode={episode_id or '-'}")
+                success.append(agent_id)
+            except Exception as exc:
+                failed.append({"agent_id": agent_id, "error": str(exc)})
+        self._persist_runtime_agent_meta_bulk(meta_updates)
+        return {"success_ids": success, "failed": failed}
+
+    def control(self, agent_id: str, action: ActionType) -> AgentMetaDTO:
+        self._sync_from_runtime_bindings(force=True)
         with self._lock:
             agent = self._agents.get(agent_id)
             if agent is None:
@@ -174,25 +275,35 @@ class AgentService:
             if run_id:
                 self._persist_runtime_agent_meta(agent_id, run_id=run_id)
             if runtime_agent is not None:
-                runtime_agent.start()
+                self._call_runtime_lifecycle(runtime_agent, "start", emit_state=False)
             with self._lock:
                 current = self._agents.get(agent_id)
+            heartbeat_ms = (
+                current.last_heartbeat
+                if current and current.status == "RUNNING" and current.last_heartbeat is not None
+                else now
+            )
             self._apply_runtime_state(
                 agent_id,
                 status="RUNNING",
-                heartbeat_ms=(current.last_heartbeat if current and current.last_heartbeat is not None else now),
+                heartbeat_ms=heartbeat_ms,
                 start_time_ms=(current.start_time if current and current.start_time is not None else now),
                 emit_event=True,
             )
         elif action == "pause":
             if runtime_agent is not None:
-                runtime_agent.pause()
+                self._call_runtime_lifecycle(runtime_agent, "pause", emit_state=False)
             with self._lock:
                 current = self._agents.get(agent_id)
+            heartbeat_ms = (
+                current.last_heartbeat
+                if current and current.status == "PAUSED" and current.last_heartbeat is not None
+                else now
+            )
             self._apply_runtime_state(
                 agent_id,
                 status="PAUSED",
-                heartbeat_ms=(current.last_heartbeat if current and current.last_heartbeat is not None else now),
+                heartbeat_ms=heartbeat_ms,
                 emit_event=True,
             )
         elif action == "stop":
@@ -205,6 +316,90 @@ class AgentService:
         self._log.append(agent_id, f"Control action={action}")
         with self._lock:
             return self._agents[agent_id]
+
+    def control_many(self, agent_ids: List[str], action: ActionType) -> Dict[str, Any]:
+        """Apply one lifecycle action to many agents with a single binding sync.
+
+        The UI can select dozens of rows. Calling ``control`` in a loop is much
+        more expensive than the action itself because each call rehydrates all
+        persisted bindings. This method keeps the single-agent semantics but
+        amortizes the sync and avoids duplicate RUNNING/PAUSED persistence when
+        runtime agents already emit their state through callbacks.
+        """
+        normalized_ids: List[str] = []
+        seen: set[str] = set()
+        for raw_id in agent_ids or []:
+            agent_id = str(raw_id or "").strip()
+            if agent_id and agent_id not in seen:
+                normalized_ids.append(agent_id)
+                seen.add(agent_id)
+        if not normalized_ids:
+            return {"success_ids": [], "failed": [], "action": action}
+        if action not in {"start", "pause", "stop"}:
+            raise AgentServiceError("INVALID_ACTION", str(action))
+
+        self._sync_from_runtime_bindings(force=True)
+        now = int(time.time() * 1000)
+        run_id = self._active_runtime_run_id() if action == "start" else None
+        success: List[str] = []
+        failed: List[Dict[str, str]] = []
+        meta_updates: Dict[str, Dict[str, Any]] = {}
+
+        for agent_id in normalized_ids:
+            with self._lock:
+                agent = self._agents.get(agent_id)
+            if agent is None:
+                failed.append({"agent_id": agent_id, "error": "AGENT_NOT_FOUND"})
+                continue
+            try:
+                runtime_agent = self._ensure_runtime_agent(agent_id, agent=agent)
+                if action == "start":
+                    if runtime_agent is not None:
+                        self._call_runtime_lifecycle(runtime_agent, "start", emit_state=False)
+                    start_time_ms = agent.start_time if agent.start_time is not None else now
+                    self._apply_runtime_state(
+                        agent_id,
+                        status="RUNNING",
+                        heartbeat_ms=now,
+                        start_time_ms=start_time_ms,
+                        emit_event=True,
+                        persist=False,
+                    )
+                    meta_updates[agent_id] = {
+                        "run_id": run_id,
+                        "status": "RUNNING",
+                        "last_heartbeat": now,
+                        "start_time": start_time_ms,
+                    }
+                elif action == "pause":
+                    if runtime_agent is not None:
+                        self._call_runtime_lifecycle(runtime_agent, "pause", emit_state=False)
+                    self._apply_runtime_state(
+                        agent_id,
+                        status="PAUSED",
+                        heartbeat_ms=now,
+                        emit_event=True,
+                        persist=False,
+                    )
+                    meta_updates[agent_id] = {"status": "PAUSED", "last_heartbeat": now}
+                else:
+                    if runtime_agent is not None:
+                        self._stop_runtime_agent_async(agent_id, runtime_agent)
+                    self._apply_runtime_state(
+                        agent_id,
+                        status="STOPPED",
+                        heartbeat_ms=None,
+                        emit_event=True,
+                        persist=False,
+                    )
+                    meta_updates[agent_id] = {"status": "STOPPED", "last_heartbeat": None}
+                metrics.inc(f"agent_control_action_{action}")
+                self._log.append(agent_id, f"Control action={action}")
+                success.append(agent_id)
+            except Exception as exc:
+                failed.append({"agent_id": agent_id, "error": str(exc)})
+        self._persist_runtime_agent_meta_bulk(meta_updates)
+        return {"success_ids": success, "failed": failed, "action": action}
 
     def batch_create_retail(self, cfg: BatchCreateConfig) -> Dict[str, Any]:
         if cfg.count <= 0:
@@ -267,11 +462,15 @@ class AgentService:
                     failed.append(f"{cfg.agent_type}-{i}")
                     metrics.inc("agent_create_fail")
 
+        if self._uses_default_account_bootstrapper:
+            self._bootstrap_runtime_accounts_bulk(created, initial_cash)
+        else:
+            for account_id in pending_account_bootstrap:
+                try:
+                    self._account_bootstrapper(account_id, initial_cash)
+                except Exception:
+                    pass
         for account_id in pending_account_bootstrap:
-            try:
-                self._account_bootstrapper(account_id, initial_cash)
-            except Exception:
-                pass
             try:
                 publish_account_created({"account_id": account_id, "initial_cash": initial_cash})
             except Exception:
@@ -302,7 +501,7 @@ class AgentService:
         model_id: str = "hold_model_v1",
         name: str | None = None,
         mode: str = "inference",
-        initial_cash: float = 100_000.0,
+        initial_cash: float = DEFAULT_MODEL_INITIAL_CASH,
         episode_id: str | None = None,
     ) -> AgentMetaDTO:
         model_id = str(model_id or "hold_model_v1").strip() or "hold_model_v1"
@@ -439,6 +638,16 @@ class AgentService:
             registry=registry,
         )
 
+    @staticmethod
+    def _call_runtime_lifecycle(runtime_agent: Any, method_name: str, *, emit_state: bool) -> None:
+        method = getattr(runtime_agent, method_name, None)
+        if not callable(method):
+            return
+        try:
+            method(emit_state=emit_state)
+        except TypeError:
+            method()
+
     def _stop_runtime_agent_async(self, agent_id: str, runtime_agent: Any) -> None:
         with self._lock:
             existing = self._runtime_stop_threads.get(agent_id)
@@ -475,6 +684,104 @@ class AgentService:
         )
         self._runtime_gateway.allocate_pending_ipo_distributions_if_running()
 
+    def _bootstrap_runtime_accounts_bulk(self, agents: List[AgentMetaDTO], initial_cash: float) -> None:
+        if not agents:
+            return
+        try:
+            from stock_sim.persistence.models_imports import SessionLocal
+            from stock_sim.persistence.models_account import Account
+            from stock_sim.persistence.models_agent_binding import AgentBinding
+            from stock_sim.persistence import models_init
+        except Exception:  # pragma: no cover
+            try:
+                from persistence.models_imports import SessionLocal  # type: ignore
+                from persistence.models_account import Account  # type: ignore
+                from persistence.models_agent_binding import AgentBinding  # type: ignore
+                from persistence import models_init  # type: ignore
+            except Exception:
+                for meta in agents:
+                    try:
+                        self._bootstrap_runtime_account(meta.agent_id, initial_cash)
+                    except Exception:
+                        pass
+                return
+
+        try:
+            ensure = getattr(models_init, "ensure_models", None)
+            ensure() if callable(ensure) else models_init.init_models()
+            run_id = self._runtime_gateway.ensure_desktop_run()
+            session = SessionLocal()
+        except Exception:
+            for meta in agents:
+                try:
+                    self._bootstrap_runtime_account(meta.agent_id, initial_cash)
+                except Exception:
+                    pass
+            return
+        try:
+            import json
+
+            agent_ids = [meta.agent_id for meta in agents]
+            existing_accounts = {
+                row[0]
+                for row in session.query(Account.id).filter(Account.id.in_(agent_ids)).all()
+            }
+            existing_bindings = {
+                row.agent_name: row
+                for row in session.query(AgentBinding).filter(AgentBinding.agent_name.in_(agent_ids)).all()
+            }
+            for meta in agents:
+                if meta.agent_id not in existing_accounts:
+                    session.add(Account(id=meta.agent_id, cash=float(initial_cash)))
+                binding_meta = {
+                    "name": meta.name or meta.agent_id,
+                    "initial_cash": float(initial_cash),
+                    "strategy": getattr(meta, "strategy", None),
+                    "type": meta.type,
+                    "status": "STOPPED",
+                    "params_version": int(getattr(meta, "params_version", 0) or 0),
+                    "start_time": None,
+                    "last_heartbeat": None,
+                    "run_id": run_id,
+                }
+                row = existing_bindings.get(meta.agent_id)
+                if row is None:
+                    session.add(
+                        AgentBinding(
+                            agent_name=meta.agent_id,
+                            agent_type=str(meta.type or "GENERIC").upper(),
+                            account_id=meta.agent_id,
+                            run_id=run_id,
+                            meta=json.dumps(binding_meta, ensure_ascii=False),
+                        )
+                    )
+                else:
+                    row.agent_type = str(meta.type or "GENERIC").upper()
+                    row.account_id = meta.agent_id
+                    row.run_id = run_id
+                    row.meta = json.dumps(binding_meta, ensure_ascii=False)
+                    row.touch()
+            session.commit()
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            for meta in agents:
+                try:
+                    self._bootstrap_runtime_account(meta.agent_id, initial_cash)
+                except Exception:
+                    pass
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+        try:
+            self._runtime_gateway.allocate_pending_ipo_distributions_if_running()
+        except Exception:
+            pass
+
     def _runtime_binding_rows(self) -> List[Dict[str, Any]]:
         if not self._sync_runtime_bindings_enabled:
             return []
@@ -499,12 +806,15 @@ class AgentService:
             return None
         return value or None
 
-    def _sync_from_runtime_bindings(self) -> None:
+    def _sync_from_runtime_bindings(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if not force and (now - self._last_runtime_sync_ts) < self._runtime_sync_min_interval_s:
+                return
+            self._last_runtime_sync_ts = now
         rows = self._runtime_binding_rows()
         if not rows:
             return
-        retail_ids_to_hydrate: List[str] = []
-        model_ids_to_hydrate: List[str] = []
         active_run_id = self._active_runtime_run_id()
         with self._lock:
             for row in rows:
@@ -540,9 +850,7 @@ class AgentService:
                         last_action=(str(meta.get("last_action")) if meta.get("last_action") is not None and str(meta.get("last_action")).strip() else None),
                     )
                     if agent_type == "Retail":
-                        retail_ids_to_hydrate.append(agent_id)
-                    elif agent_type == "Model":
-                        model_ids_to_hydrate.append(agent_id)
+                        self._remember_retail_name(agent_id)
                     continue
                 current.name = str(meta.get("name") or current.name or agent_id)
                 current.type = agent_type
@@ -555,7 +863,14 @@ class AgentService:
                     current.strategy = str(strategy)
                 if model_id is not None and str(model_id).strip():
                     current.model_id = str(model_id)
-                for attr in ("mode", "episode_id", "last_action"):
+                if "episode_id" in meta:
+                    raw_episode_id = meta.get("episode_id")
+                    current.episode_id = (
+                        str(raw_episode_id)
+                        if raw_episode_id is not None and str(raw_episode_id).strip()
+                        else None
+                    )
+                for attr in ("mode", "last_action"):
                     value = meta.get(attr)
                     if value is not None and str(value).strip():
                         setattr(current, attr, str(value))
@@ -570,13 +885,7 @@ class AgentService:
                         pass
                 self._agents[agent_id] = current
                 if agent_type == "Retail":
-                    retail_ids_to_hydrate.append(agent_id)
-                elif agent_type == "Model":
-                    self._ensure_runtime_agent(agent_id, agent=current)
-        for agent_id in retail_ids_to_hydrate:
-            self._ensure_runtime_agent(agent_id)
-        for agent_id in model_ids_to_hydrate:
-            self._ensure_runtime_agent(agent_id)
+                    self._remember_retail_name(agent_id)
 
     def _on_runtime_state(
         self,
@@ -601,12 +910,15 @@ class AgentService:
         heartbeat_ms: int | None = None,
         start_time_ms: int | None = None,
         emit_event: bool = False,
+        persist: bool = True,
     ) -> None:
         payload: Dict[str, Any] | None = None
+        persist_state = False
         with self._lock:
             agent = self._agents.get(agent_id)
             if agent is None:
                 return
+            previous_status = agent.status
             if status is not None:
                 agent.status = status  # type: ignore[assignment]
             if start_time_ms is not None and agent.start_time is None:
@@ -614,6 +926,16 @@ class AgentService:
             if heartbeat_ms is not None:
                 agent.last_heartbeat = heartbeat_ms
             self._agents[agent_id] = agent
+            now_ms = heartbeat_ms or int(time.time() * 1000)
+            last_persist_ms = self._last_state_persist_ms.get(agent_id, 0)
+            persist_state = (
+                emit_event
+                or heartbeat_ms is None
+                or (status is not None and status != previous_status)
+                or (now_ms - last_persist_ms) >= self._heartbeat_persist_interval_ms
+            )
+            if persist_state:
+                self._last_state_persist_ms[agent_id] = now_ms
             if emit_event:
                 payload = {
                     "agent_id": agent.agent_id,
@@ -626,12 +948,13 @@ class AgentService:
                 publish_agent_status_changed(payload)
             except Exception:
                 pass
-        self._persist_runtime_agent_meta(
-            agent_id,
-            status=status,
-            start_time=start_time_ms,
-            last_heartbeat=heartbeat_ms,
-        )
+        if persist and persist_state:
+            self._persist_runtime_agent_meta(
+                agent_id,
+                status=status,
+                start_time=start_time_ms,
+                last_heartbeat=heartbeat_ms,
+            )
 
     def _on_model_metrics(self, agent_id: str, payload: Dict[str, Any]) -> None:
         with self._lock:
@@ -642,8 +965,9 @@ class AgentService:
                 agent.model_id = str(payload.get("model_id"))
             if payload.get("mode") is not None:
                 agent.mode = str(payload.get("mode"))
-            if payload.get("episode_id") is not None:
-                agent.episode_id = str(payload.get("episode_id"))
+            if "episode_id" in payload:
+                raw_episode_id = payload.get("episode_id")
+                agent.episode_id = str(raw_episode_id) if raw_episode_id is not None else None
             if payload.get("last_action") is not None:
                 agent.last_action = str(payload.get("last_action"))
             if payload.get("last_reward") is not None:
@@ -673,6 +997,66 @@ class AgentService:
         except Exception:
             pass
 
+    def _persist_runtime_agent_meta_bulk(self, updates_by_agent: Dict[str, Dict[str, Any]]) -> None:
+        if not updates_by_agent:
+            return
+        try:
+            from stock_sim.persistence.models_imports import SessionLocal
+            from stock_sim.persistence.models_agent_binding import AgentBinding
+        except Exception:  # pragma: no cover
+            try:
+                from persistence.models_imports import SessionLocal  # type: ignore
+                from persistence.models_agent_binding import AgentBinding  # type: ignore
+            except Exception:
+                for agent_id, updates in updates_by_agent.items():
+                    self._persist_runtime_agent_meta(agent_id, **updates)
+                return
+        try:
+            import json
+
+            session = SessionLocal()
+        except Exception:
+            for agent_id, updates in updates_by_agent.items():
+                self._persist_runtime_agent_meta(agent_id, **updates)
+            return
+        try:
+            rows = (
+                session.query(AgentBinding)
+                .filter(AgentBinding.agent_name.in_(list(updates_by_agent.keys())))
+                .all()
+            )
+            for row in rows:
+                agent_id = str(row.agent_name)
+                updates = updates_by_agent.get(agent_id) or {}
+                try:
+                    merged = json.loads(row.meta) if row.meta else {}
+                    if not isinstance(merged, dict):
+                        merged = {}
+                except Exception:
+                    merged = {}
+                for key, value in updates.items():
+                    if value is None and key not in {"start_time", "last_heartbeat", "episode_id"}:
+                        continue
+                    merged[key] = value
+                run_id = str(merged.get("run_id") or "").strip()
+                if run_id:
+                    row.run_id = run_id
+                row.meta = json.dumps(merged, ensure_ascii=False)
+                row.touch()
+            session.commit()
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            for agent_id, updates in updates_by_agent.items():
+                self._persist_runtime_agent_meta(agent_id, **updates)
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
     @staticmethod
     def _maybe_int(value: object) -> int | None:
         if value is None or value == "":
@@ -697,6 +1081,25 @@ class AgentService:
         if raw in {"RUNNING", "PAUSED", "STOPPED", "INACTIVE"}:
             return raw
         return fallback
+
+    def _remember_retail_name(self, agent_id: str) -> None:
+        text = str(agent_id or "").strip().lower()
+        if not text:
+            return
+        idx = len(text)
+        while idx > 0 and text[idx - 1].isdigit():
+            idx -= 1
+        if idx == len(text):
+            return
+        prefix = text[:idx].strip()
+        suffix = text[idx:].strip()
+        if not prefix or not suffix:
+            return
+        try:
+            value = int(suffix)
+        except Exception:
+            return
+        self._retail_counters[prefix] = max(self._retail_counters.get(prefix, 0), value)
 
 
 def _synthetic_factory(

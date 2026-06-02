@@ -160,6 +160,50 @@ def test_same_day_buy_then_sell_allowed_for_t0_instrument():
     s.close()
 
 
+def test_same_day_sell_allowed_for_model_on_t1_instrument():
+    symbol = f"T1M{uuid.uuid4().hex[:6].upper()}"
+    model_account = f"MODEL_T1_{uuid.uuid4().hex[:6].upper()}"
+    engine_registry.remove(symbol)
+    models_init.init_models()
+    s = SessionLocal()
+    try:
+        inst_srv = InstrumentService(s)
+        inst_srv.create(
+            symbol=symbol,
+            name=symbol,
+            tick_size=0.01,
+            lot_size=100,
+            min_qty=100,
+            settlement_cycle=1,
+            total_shares=1_000_000,
+            free_float_shares=500_000,
+            initial_price=10.0,
+            ipo_opened=True,
+        )
+
+        engine = MatchingEngine(
+            symbol,
+            create_instrument(symbol, tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0, settlement_cycle=1),
+        )
+        osrv = OrderService(s, engine, instrument_service=inst_srv)
+        acc_svc = AccountService(s)
+        acc = acc_svc.get_or_create(model_account, cash=100000.0)
+        pos = acc_svc.get_position(acc, symbol)
+        pos.quantity = 100
+        pos.avg_price = 10.0
+        s.flush()
+        osrv.risk.update_tplus(acc.id, symbol, OrderSide.BUY, 100)
+
+        same_day_sell = Order(symbol=symbol, side=OrderSide.SELL, price=10.0, quantity=100, account_id=model_account)
+        trades = osrv.place_order(same_day_sell)
+
+        assert same_day_sell.status != OrderStatus.REJECTED
+        assert same_day_sell.status in (OrderStatus.NEW, OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELED)
+        assert isinstance(trades, list)
+    finally:
+        s.close()
+
+
 def test_ipo_open_then_same_day_sell_is_blocked_for_t1_instrument():
     ipo_symbol = f"IPO{uuid.uuid4().hex[:6].upper()}"
     engine_registry.remove(ipo_symbol)

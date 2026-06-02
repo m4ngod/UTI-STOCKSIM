@@ -449,7 +449,7 @@ class RuntimeCommandService:
                 return
             merged = self._coerce_binding_meta(getattr(row, "meta", None))
             for key, value in updates.items():
-                if value is None and key not in {"start_time", "last_heartbeat"}:
+                if value is None and key not in {"start_time", "last_heartbeat", "episode_id"}:
                     continue
                 merged[key] = value
             run_id_update = self._normalize_run_id(merged.get("run_id"))
@@ -657,6 +657,8 @@ class RuntimeCommandService:
                 run_context=run_context,
             ).place_order(order)
             session.commit()
+            order_meta = getattr(order, "_meta", {}) or {}
+            reason = order_meta.get("reject_reason") or order_meta.get("cancel_reason")
             return {
                 "ok": order.status.name != "REJECTED",
                 "order_id": order.order_id,
@@ -667,6 +669,7 @@ class RuntimeCommandService:
                 "qty": int(order.quantity),
                 "filled": int(order.filled),
                 "status": order.status.name,
+                "reason": reason,
                 "trade_count": len(trades),
                 "trades": [
                     trade.to_dict() if hasattr(trade, "to_dict") else dict(trade)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
+import os
 import random
 import threading
 import time
@@ -32,6 +33,29 @@ except Exception:  # pragma: no cover
 
 
 RuntimeStateCallback = Callable[[str, str, int | None, int | None], None]
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, default)).strip())
+    except Exception:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.environ.get(name, default)).strip())
+    except Exception:
+        return default
+
+
+_RETAIL_STEP_CONCURRENCY = max(1, _env_int("STOCKSIM_RETAIL_STEP_CONCURRENCY", 4))
+_RETAIL_DECISION_INTERVAL_MULTIPLIER = max(
+    1.0,
+    _env_float("STOCKSIM_RETAIL_DECISION_INTERVAL_MULTIPLIER", 3.0),
+)
+_RETAIL_MAX_OPEN_ORDERS = max(0, _env_int("STOCKSIM_RETAIL_MAX_OPEN_ORDERS", 2))
+_RETAIL_STEP_SEMAPHORE = threading.BoundedSemaphore(_RETAIL_STEP_CONCURRENCY)
 
 
 @dataclass
@@ -103,15 +127,23 @@ class RuntimeRetailAgent:
         self._persona_state: dict[str, RetailPersonaState] = defaultdict(RetailPersonaState)
         self._holding_started_ms: dict[str, int] = {}
         self._turn = self._stable_agent_key % 997
+        self._defer_first_step_until = 0.0
         self._sell_blocked_until_day: dict[str, int] = {}
         self._passive_side_cooldown_until_turn: dict[tuple[str, str], int] = {}
         self._managed_orders: dict[str, ManagedOrder] = {}
 
-    def start(self) -> None:
+    def start(self, *, emit_state: bool = True) -> None:
         with self._lock:
             self._paused = False
             if self._start_time_ms is None:
                 self._start_time_ms = int(time.time() * 1000)
+            # Stagger the first real market step when a large cohort is started.
+            # The UI can mark agents RUNNING immediately, while order flow ramps in
+            # over less than a second instead of stampeding PostgreSQL at once.
+            self._defer_first_step_until = max(
+                self._defer_first_step_until,
+                time.monotonic() + ((self._stable_agent_key % 900) / 1000.0),
+            )
             if self._thread is None or not self._thread.is_alive():
                 self._stop_evt.clear()
                 self._thread = threading.Thread(
@@ -121,13 +153,15 @@ class RuntimeRetailAgent:
                 )
                 self._thread.start()
         self._wake_evt.set()
-        self._emit_state("RUNNING", emit_heartbeat=True)
+        if emit_state:
+            self._emit_state("RUNNING", emit_heartbeat=True)
 
-    def pause(self) -> None:
+    def pause(self, *, emit_state: bool = True) -> None:
         with self._lock:
             self._paused = True
         self._wake_evt.set()
-        self._emit_state("PAUSED", emit_heartbeat=True)
+        if emit_state:
+            self._emit_state("PAUSED", emit_heartbeat=True)
 
     def stop(self) -> None:
         with self._lock:
@@ -146,11 +180,24 @@ class RuntimeRetailAgent:
                 self._wake_evt.wait(0.5)
                 self._wake_evt.clear()
                 continue
+            defer_for = self._defer_first_step_until - time.monotonic()
+            if defer_for > 0:
+                self._wake_evt.wait(min(defer_for, 0.25))
+                self._wake_evt.clear()
+                continue
             self._emit_state("RUNNING", emit_heartbeat=True)
+            acquired = _RETAIL_STEP_SEMAPHORE.acquire(timeout=0.05)
+            if not acquired:
+                metrics.inc("runtime_retail_step_backpressure")
+                self._wake_evt.wait(0.05 + self._rng.random() * 0.1)
+                self._wake_evt.clear()
+                continue
             try:
                 self._step()
             except Exception:
                 metrics.inc("runtime_retail_step_error")
+            finally:
+                _RETAIL_STEP_SEMAPHORE.release()
             self._wake_evt.wait(self._decision_interval_s())
             self._wake_evt.clear()
 
@@ -158,6 +205,9 @@ class RuntimeRetailAgent:
         if not self._market_time_open():
             return
         self._enforce_order_patience()
+        if _RETAIL_MAX_OPEN_ORDERS and len(self._managed_orders) >= _RETAIL_MAX_OPEN_ORDERS:
+            metrics.inc("runtime_retail_open_order_backpressure")
+            return
         symbols = list(engine_registry.symbols())
         if not symbols:
             return
@@ -344,10 +394,10 @@ class RuntimeRetailAgent:
                 qty = min(max(ctx.lot_size, ctx.lot_size), available_qty)
                 lot_qty = (qty // max(ctx.lot_size, 1)) * max(ctx.lot_size, 1)
                 qty = lot_qty if lot_qty > 0 else min(available_qty, max(ctx.lot_size, 1))
-                sell_cross_prob = 0.35 if self.strategy == "profit_taking" else 0.20
+                sell_cross_prob = 0.85 if self.strategy == "profit_taking" else 0.70
                 aggressive_sell = ctx.best_bid is not None and self._rng.random() < sell_cross_prob
                 return side, self._price_for_side(ctx, side, aggressive=aggressive_sell), max(qty, 1)
-            buy_cross_prob = 0.65 if preferred_buy else 0.30
+            buy_cross_prob = 0.90 if preferred_buy else 0.75
             aggressive_buy = ctx.best_ask is not None and self._rng.random() < buy_cross_prob
             return side, self._price_for_side(ctx, side, aggressive=aggressive_buy), ctx.lot_size
         return self._cold_start_buy_fallback(ctx, preferred_buy=preferred_buy, parity_buy=parity_buy)
@@ -374,7 +424,7 @@ class RuntimeRetailAgent:
         elif not (preferred_buy or parity_buy):
             return None
         qty = ctx.lot_size
-        buy_cross_prob = 0.65 if preferred_buy else 0.30
+        buy_cross_prob = 0.90 if preferred_buy else 0.75
         aggressive_buy = ctx.best_ask is not None and self._rng.random() < buy_cross_prob
         return "buy", self._price_for_side(ctx, "buy", aggressive=aggressive_buy), qty
 
@@ -432,8 +482,9 @@ class RuntimeRetailAgent:
             base = 0.8 + self._rng.random() * 0.6
         patience_s = self._persona.patience_seconds
         if patience_s is None:
-            return base
-        return min(base, max(0.25, patience_s / 6.0))
+            return base * _RETAIL_DECISION_INTERVAL_MULTIPLIER
+        cadence = min(base, max(0.25, patience_s / 6.0))
+        return cadence * _RETAIL_DECISION_INTERVAL_MULTIPLIER
 
     def _remember_live_order(self, result: dict | None, *, symbol: str, side: str) -> None:
         if not isinstance(result, dict) or not bool(result.get("ok", True)):

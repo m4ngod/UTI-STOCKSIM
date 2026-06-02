@@ -24,6 +24,8 @@ class Settings:
 
     # Redis / 功能开关
     REDIS_ENABLED: bool = False
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_CONN_TIMEOUT: float = 1.0
 
     # 借券 / 费用
     BORROW_FEE_ENABLED: bool = True

@@ -17,3 +17,37 @@ __pycache__/
 .DS_Store
 
 Quent.zip
+
+# Runtime output and local test artifacts
+logs/
+stock_sim/logs/
+stock_sim/artifacts/
+stock_sim/output/
+stock_sim/tmp/
+stock_sim/backups/
+
+# Local package/build/cache output
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local databases and SQLite sidecars
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Ad hoc simulation exports and archives
+export_snap-*.csv
+stock_sim/export_snap-*.csv
+stock_sim.zip
+
+# Local document/rendering tool cache
+tools/bin/
+tools/downloads/
+tools/LibreOffice*/

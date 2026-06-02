@@ -1,0 +1,1193 @@
+UTI-STOCKSIM 论文撰写建议整合版
+
+更新时间：2026-05-08
+
+本文档已将两次论文撰写建议合并为统一版本。第一版建议给出了论文定位、题目、核心论点和完整章节大纲；第二版建议根据项目最新进展修正了 Evidence Runner 的表述。整合后的最终口径是：
+
+不是把项目写成“我做了一个交易软件”，而是写成：
+
+> 本文面向机器学习交易策略训练中的环境失真与评估证据不足问题，设计并实现了一个具有真实交易语义、多智能体行为生态、模型训练闭环与证据门控机制的交易仿真研究平台 UTI-STOCKSIM。
+
+这会把论文从“项目说明书”升级为“研究型工程论文”。
+
+当前最新项目状态必须这样表述：
+
+> UTI-STOCKSIM 已经不是普通 Python GUI 或简单回测项目，而是一个包含交易 runtime、PostgreSQL-first 持久化、多智能体训练、Arena/PBT 和 Evidence Runner 的研究平台。项目最新状态不是“Evidence Runner 还没跑通”，而是“Evidence Runner 已经生成 live PostgreSQL/runtime evidence package，但 package 状态仍为 complete / no_go”。这说明系统已经具备真实 runtime/database 证据生成能力，同时证据门控能够正确阻止证据不足的模型进入父代继承、模型晋升或研究结论。
+
+论文不要主张“训练出了可以实盘赚钱的模型”。更强、更稳、更容易答辩的论点是：
+
+> 本文解决的是交易模型训练环境可信度不足的问题，而不是直接证明某个模型已经具备真实市场盈利能力。
+
+---
+
+# 1. 推荐论文题目
+
+最推荐题目：
+
+**《面向机器学习交易策略训练的真实交易语义多智能体仿真平台设计与实现》**
+
+备选题目：
+
+1. **《基于多智能体行为生态的股票交易仿真与强化学习训练平台设计》**
+2. **《面向量化策略研究的交易仿真运行时与证据评估机制设计》**
+3. **《融合订单撮合、行为金融模拟与强化学习训练的股票市场仿真系统》**
+4. **《面向可信交易策略研究的多智能体仿真平台与证据门控机制设计》**
+
+选题建议：
+
+- 如果学校偏软件工程，选第 1 个。
+- 如果学校偏人工智能或量化研究，选第 2 个或第 4 个。
+- 如果学校更看重系统实现，选第 3 个。
+
+最稳妥的是第 1 个，因为它既包含机器学习训练，又包含真实交易语义、多智能体和平台实现。
+
+---
+
+# 2. 论文核心论点
+
+论文核心论点建议写成：
+
+> 传统价格序列回测或简化强化学习环境忽略订单簿、撮合、账户冻结、交易费用、T+1、卖空约束、散户行为噪声和市场时钟等真实交易约束，容易导致模型在玩具环境中学到不可迁移策略。本文设计并实现 UTI-STOCKSIM，使模型必须通过正式订单、账户、风控和撮合路径参与市场，并通过 retail 行为生态、Arena 对抗训练、Observation/Action/Reward 契约、PBT 继承和 Evidence Runner 证据门控形成完整训练与评估闭环。
+
+这个论点的好处是，它避开了“你凭什么证明模型能赚钱”的陷阱，转而证明：
+
+**本文构建了一个面向机器学习交易策略研究的可信仿真实验基础设施。**
+
+---
+
+# 3. 必须更新后的 Evidence Runner 论文口径
+
+两次建议的最大差异在 Evidence Runner 状态。最终论文必须采用最新口径。
+
+旧口径：
+
+```text
+Evidence Runner schema、runner、gate 已形成，但 live PostgreSQL/runtime 长 Arena series 尚未完成，因此当前 No-Go。
+```
+
+新口径：
+
+```text
+Task 101 已完成 live PostgreSQL/runtime evidence package 构建，能够通过真实 build_app_context()、ArenaExperimentRunner.run_generations(...)、RuntimeModelAgent、TrainingArenaService、TrainingEpisodeService 和 PostgreSQL ORM 生成 database/runtime 证据包。当前 package 状态为 complete / no_go。No-Go 不再是环境或链路阻塞，而是 strict evidence gate 在真实 runtime/database 证据上发现 calibration、exploit test、paired sensitivity 等上游证据仍不满足通过条件。
+```
+
+这一变化不是削弱论文，而是增强论文。因为这说明系统已经从“能不能跑通”升级到“真实证据是否足够支撑研究结论”。
+
+必须写清楚：
+
+- `complete` 表示 evidence package 所需槽位已生成并可被聚合。
+- `no_go` 表示至少存在未通过的 evidence gate。
+- `complete / no_go` 并不矛盾。
+- 它说明工程链路已经可运行，但研究结论尚不能放行。
+- 这是 Evidence Runner 正常工作的表现，不是系统失败。
+
+---
+
+# 4. 摘要写法
+
+摘要建议按四段写。
+
+第一段：研究背景。
+
+机器学习和强化学习逐渐用于量化交易策略研究，但许多训练环境只基于价格序列，缺少订单簿、账户、撮合、费用、交易规则和市场参与者行为等真实交易语义。
+
+第二段：问题。
+
+简化训练环境可能导致模型在仿真中表现良好，却在真实市场中因为冻结资金、成交规则、费用、流动性、T+1、卖空约束或市场噪声而失效。因此，交易策略研究需要一个更接近真实交易约束、可观察、可复现、可审计的仿真训练平台。
+
+第三段：方法。
+
+本文设计并实现 UTI-STOCKSIM，一个桌面级交易仿真、多智能体训练与研究证据平台。系统包含真实交易 runtime、订单簿撮合、账户与持仓管理、retail agent 行为生态、模型 Observation/Action/Reward 契约、Arena/PBT 训练闭环、PostgreSQL-first 持久化和 Evidence Runner 证据门控机制。
+
+第四段：结果与意义。
+
+系统实现了从市场仿真、agent 运行、模型训练、实验记录到证据门控的闭环。最新 live PostgreSQL/runtime evidence package 已能从真实 runtime/database 中读回训练、订单、成交、agent binding 和账户权益等事实，并生成 `complete / no_go` 的证据包。实验表明，平台已具备真实运行证据生成能力，但 calibration、exploit test 与 paired sensitivity 等上游证据仍未通过，因此本文不将当前结果解释为模型研究有效性通过，而将其作为可信证据门控机制的阶段性验证。
+
+关键词：
+
+**交易仿真；多智能体系统；强化学习；订单撮合；行为金融；量化交易；Evidence Runner；PostgreSQL**
+
+---
+
+# 5. 最终论文目录建议
+
+可以直接作为论文目录初稿：
+
+```text
+摘 要
+Abstract
+
+第 1 章 绪论
+1.1 研究背景
+1.2 研究问题
+1.3 研究目标
+1.4 本文主要工作
+1.5 论文组织结构
+
+第 2 章 相关技术与理论基础
+2.1 传统回测框架及其局限
+2.2 订单簿与撮合机制
+2.3 多智能体市场仿真
+2.4 强化学习在交易策略中的应用
+2.5 实验可复现与模型评估方法
+
+第 3 章 系统需求分析与总体设计
+3.1 功能需求分析
+3.2 非功能需求分析
+3.3 研究性需求分析
+3.4 系统总体架构
+3.5 系统模块划分
+3.6 关键设计原则
+
+第 4 章 真实交易语义 Runtime 设计与实现
+4.1 Runtime 设计目标
+4.2 订单模型设计
+4.3 撮合引擎设计
+4.4 账户与持仓语义设计
+4.5 交易规则与风控约束
+4.6 事件、快照与 K 线生成机制
+4.7 本章小结
+
+第 5 章 Retail Agent 行为生态设计
+5.1 Retail Agent 设计动机
+5.2 行为家族设计
+5.3 性格参数设计
+5.4 状态变量设计
+5.5 Retail Calibration 指标
+5.6 本章小结
+
+第 6 章 Model Agent 与 Arena 训练机制
+6.1 Model Agent 设计
+6.2 Observation / Action / Reward 契约
+6.3 PPO-LSTM baseline 接入
+6.4 Arena episode 生命周期
+6.5 Population Based Training 与模型继承
+6.6 Checkpoint 与 Lineage 记录
+6.7 本章小结
+
+第 7 章 数据持久化与桌面可观察性设计
+7.1 PostgreSQL-first 持久化设计
+7.2 run_id 与实验事实边界
+7.3 桌面前端模块设计
+7.4 RuntimeGateway 与前后端边界
+7.5 Market / Orders / Account / Agents / Arena 可视化
+7.6 本章小结
+
+第 8 章 Evidence Runner 与模型证据门控机制设计
+8.1 Evidence Runner 设计动机
+8.2 Evidence Artifact Schema 设计
+8.3 Baseline、Hidden Evaluation 与 Exploit Test
+8.4 Paired Fee/Impact Sensitivity
+8.5 Strict Parent Gate 与 Research Acceptance Lock
+8.6 Model Route Gate
+8.7 Live Evidence Package 状态语义
+8.8 Strict Aggregate 与旧格式 Artifact 拒绝机制
+8.9 本章小结
+
+第 9 章 系统测试与实验分析
+9.1 实验环境
+9.2 功能测试
+9.3 交易语义一致性测试
+9.4 Retail Calibration 实验
+9.5 Arena 训练闭环实验
+9.6 基于 Live PostgreSQL Runtime 的 Evidence Runner 阶段性验证
+9.7 实验结果分析
+
+第 10 章 总结与展望
+10.1 本文工作总结
+10.2 主要创新点
+10.3 不足与局限
+10.4 后续研究方向
+
+参考文献
+附录 A 核心数据表结构
+附录 B 主要接口与契约
+附录 C 系统运行截图
+附录 D 关键测试用例
+附录 E Evidence Artifact 示例
+```
+
+---
+
+# 6. 第 1 章 绪论
+
+## 1.1 研究背景
+
+写机器学习交易策略训练面临的问题：
+
+传统回测通常把市场简化成价格序列，策略只需要决定买卖信号。但真实交易中，策略会受到订单簿深度、撮合机制、账户资金、持仓冻结、交易费用、T+1、卖空约束、散户噪声和市场时钟影响。如果训练环境过于简化，模型可能只学到玩具环境中有效的行为。
+
+## 1.2 研究问题
+
+明确提出论文要解决的问题：
+
+1. 如何构建一个比传统回测更接近真实交易运行时的仿真环境？
+2. 如何让模型在训练时面对订单、账户、撮合、费用、风控和交易日规则？
+3. 如何构建稳定但不死板的 retail agent 行为生态？
+4. 如何让多个模型 agent 在同一市场环境中训练、对抗、评估和继承？
+5. 如何避免仅凭 leaderboard 收益就错误判断模型有效？
+
+## 1.3 研究目标
+
+建议写成：
+
+本文目标是设计并实现一个面向机器学习交易策略训练的真实交易语义多智能体仿真平台。平台需要支持多标的交易、订单簿撮合、账户与持仓管理、费用与冻结、retail agent 行为生态、模型 agent 接入、Arena 训练、PBT 继承、实验持久化和证据门控。
+
+## 1.4 本文主要工作
+
+建议写 5 点：
+
+1. 设计真实交易语义 runtime，使所有 agent 必须通过订单、撮合、账户、风控和结算路径参与市场。
+2. 构建 retail agent 行为生态，用行为家族、性格参数和状态变量生成市场噪声。
+3. 设计模型交互契约，将 Observation、Action、Reward 与交易运行时解耦。
+4. 实现多模型 Arena、PBT 继承、checkpoint 和 lineage 训练闭环。
+5. 引入 Evidence Runner / Evidence Gate，使模型晋升和研究结论不只依赖收益排名。
+
+## 1.5 论文组织结构
+
+简要介绍后续章节即可，不要写得太长。
+
+---
+
+# 7. 第 2 章 相关技术与理论基础
+
+这一章不要写太散，要服务系统设计。
+
+## 2.1 传统回测框架及其局限
+
+写传统回测通常关注历史价格、技术指标、收益曲线，但缺少微观交易约束，特别是订单簿、成交可达性、冻结资金、手续费和实际执行风险。
+
+## 2.2 订单簿与撮合机制
+
+介绍限价单、市价单、买卖盘口、价格优先、时间优先、成交、撤单、部分成交等概念。
+
+## 2.3 多智能体市场仿真
+
+介绍 agent-based simulation 思想：市场不是一个单一价格序列，而是多个参与者行为共同形成的结果。
+
+## 2.4 强化学习在交易策略中的应用
+
+介绍状态、动作、奖励、策略、episode、Actor-Critic、Recurrent Policy 等概念。项目当前用 `ppo_lstm_v1` 作为 baseline，重点不是证明它最优，而是验证观察、决策、下单、成交、奖励、学习、评估和继承闭环。
+
+## 2.5 实验可复现与模型评估
+
+引出 Evidence Runner：交易模型不能只看收益，还需要 baseline、hidden evaluation、exploit test、fee/impact sensitivity、parent gate 和 research acceptance lock。
+
+---
+
+# 8. 第 3 章 系统需求分析与总体设计
+
+## 3.1 系统需求分析
+
+功能需求：
+
+1. 支持多标的模拟交易。
+2. 支持订单提交、撤单、撮合、成交和拒单。
+3. 支持账户现金、冻结资金、持仓、费用和结算。
+4. 支持 retail agent 和 model agent。
+5. 支持 Arena 训练、排行榜、checkpoint 和 lineage。
+6. 支持 K 线、快照、成交和账户状态可视化。
+7. 支持实验数据持久化和证据记录。
+
+非功能需求：
+
+1. 可扩展性。
+2. 可观察性。
+3. 可复现性。
+4. 数据一致性。
+5. 交易语义真实性。
+6. 实验结果可追踪。
+
+研究性需求：
+
+1. 模型不能绕过 runtime truth。
+2. leaderboard 不能直接等于模型有效。
+3. 训练结果必须有 evidence artifacts 支撑。
+
+## 3.2 系统总体架构
+
+建议放一张总架构图：
+
+```text
+PySide6 桌面应用层
+  -> RuntimeGateway
+  -> RuntimeQueryService / RuntimeCommandService
+  -> Order / Account / Matching / Clock / Agent Runtime
+  -> PostgreSQL Persistence
+  -> Arena / PBT / Evidence Runner
+```
+
+也可以写成：
+
+```text
+桌面可视化与控制层
+  -> 应用服务与控制器层
+  -> RuntimeGateway 边界
+  -> 交易运行时服务层
+  -> 核心撮合与账户语义层
+  -> PostgreSQL 持久化层
+  -> Arena 训练与 Evidence Runner 评估层
+```
+
+## 3.3 系统模块划分
+
+建议分为：
+
+1. 交易运行时模块。
+2. 市场数据与事件模块。
+3. 账户与订单模块。
+4. Retail agent 模块。
+5. Model agent 与 Arena 模块。
+6. 数据持久化模块。
+7. 前端可视化模块。
+8. Evidence Runner 模块。
+
+## 3.4 关键设计原则
+
+这一节很有答辩价值：
+
+1. **Runtime Truth 原则**：订单、账户、成交、K线、快照来自同一套运行事实。
+2. **Agent 不越权原则**：模型只能通过 Observation/Action/Reward 契约参与市场。
+3. **收益不等于证据原则**：模型晋升必须通过 evidence gate。
+4. **前后端边界原则**：GUI 不直接操作核心交易语义。
+5. **可复现实验原则**：训练 episode、transition、checkpoint、lineage 必须持久化。
+
+---
+
+# 9. 第 4 章 真实交易语义 Runtime 设计与实现
+
+这是论文的核心技术章节之一。
+
+## 4.1 Runtime 设计目标
+
+写清楚：
+
+交易 runtime 是系统根基。所有模型和 retail agent 都必须通过正式订单、账户、风控和撮合路径参与市场，不能直接修改价格或账户结果。
+
+## 4.2 订单模型设计
+
+写订单字段和订单状态生命周期：
+
+```text
+NEW -> PARTIALLY_FILLED -> FILLED
+NEW -> CANCELLED
+NEW -> REJECTED
+```
+
+字段包括：
+
+1. 买卖方向。
+2. 订单类型。
+3. 价格。
+4. 数量。
+5. 已成交数量。
+6. 剩余数量。
+7. 订单状态。
+8. 所属账户。
+9. 所属 run_id。
+
+## 4.3 撮合引擎设计
+
+写订单簿结构：
+
+1. 买盘队列。
+2. 卖盘队列。
+3. 价格优先。
+4. 时间优先。
+5. 部分成交。
+6. 盘口快照。
+
+## 4.4 账户与持仓语义
+
+重点写：
+
+1. 现金。
+2. 冻结现金。
+3. 冻结费用。
+4. 持仓。
+5. 可卖数量。
+6. 借入数量。
+7. 结算账本。
+8. 费用扣除。
+
+这部分是区别于普通回测的关键。
+
+## 4.5 交易规则约束
+
+写：
+
+1. T+1。
+2. 卖空约束。
+3. IPO 分配。
+4. 费用。
+5. 风控。
+6. 集合竞价。
+
+## 4.6 事件、快照与 K 线
+
+建议放链路图：
+
+```text
+OrderService / MatchingEngine / AccountService
+  -> EventBus
+  -> SnapshotPersistenceListener
+  -> snapshots_1s
+  -> BarAggregator
+  -> bars_1m / bars_1h / bars_1d
+  -> Frontend EventBridge
+```
+
+这里要强调：K线不是随手伪造的展示数据，而应来自 runtime 事件、快照和成交事实。
+
+---
+
+# 10. 第 5 章 Retail Agent 行为生态设计
+
+这是论文的第二个亮点。
+
+## 5.1 Retail Agent 的设计动机
+
+写真实市场不是只有模型互相交易，还需要大量具有差异化行为的散户 agent 作为市场噪声、流动性来源和行为金融环境。Retail agent 用行为家族、性格参数和状态变量驱动市场噪声，而不是简单随机买卖。
+
+## 5.2 行为家族设计
+
+建议写：
+
+1. 均值回归型。
+2. 逢跌买入型。
+3. 止盈型。
+4. 流动性噪声型。
+5. 动量型。
+6. 随机扰动型。
+
+## 5.3 性格参数设计
+
+写：
+
+1. 风险偏好。
+2. 损失厌恶。
+3. 勇敢程度。
+4. 耐心。
+5. 价格敏感度。
+6. 持仓倾向。
+
+“勇敢程度”可以定义为 agent 在亏损、波动、回撤或不确定环境下继续交易或加仓的倾向，很适合写进论文。
+
+## 5.4 状态变量设计
+
+写：
+
+1. 当前现金。
+2. 当前持仓。
+3. 可卖数量。
+4. 未成交挂单。
+5. 近期盈亏。
+6. 持仓时间。
+7. 近期成交情况。
+
+## 5.5 Retail Calibration 指标
+
+写：
+
+1. 买卖比例。
+2. 双边挂单覆盖率。
+3. 成交活跃度。
+4. 持仓周期。
+5. 价格波动特征。
+6. 流动性状态。
+
+## 5.6 本章小结
+
+强调 retail 生态的作用不是精确预测真实散户，而是构建一个比随机噪声更稳定、更可调、更接近交易行为约束的背景市场。
+
+---
+
+# 11. 第 6 章 Model Agent 与 Arena 训练机制
+
+这是人工智能章节。
+
+## 6.1 Model Agent 设计
+
+写 model agent 是平台中的一等参与者，与 retail agent 一样必须通过 runtime 下单。
+
+## 6.2 Observation / Action / Reward 契约
+
+这一节非常关键。
+
+Observation 写模型能看到什么：
+
+1. 市场状态。
+2. 盘口信息。
+3. K 线特征。
+4. 账户状态。
+5. 持仓状态。
+6. 时间上下文。
+
+Action 写模型能做什么：
+
+1. hold。
+2. order。
+3. target position。
+4. target weight。
+
+Reward 写模型如何得到反馈：
+
+1. 收益。
+2. 风险。
+3. 回撤。
+4. 手续费。
+5. 换手率。
+6. 库存暴露。
+7. 成交质量。
+
+关键论点：
+
+> 模型不能依赖 GUI 或数据库表结构，而是通过 Observation、Action、Reward 和 Adapter contract 与平台交互。
+
+## 6.3 PPO-LSTM baseline
+
+不要吹模型复杂度。写成：
+
+> 本文选取 `ppo_lstm_v1` 作为第一代 recurrent actor-critic baseline，目标不是追求最终最优模型，而是验证完整训练闭环是否成立。
+
+## 6.4 Arena 训练容器
+
+写 Arena 负责：
+
+1. 创建模型 agent 和 retail agent。
+2. 启动 episode。
+3. 绑定同一市场环境。
+4. 收集 transition。
+5. 统计收益、风险和成交质量。
+6. episode 结束后排名。
+7. 触发 checkpoint、lineage 和 PBT。
+
+## 6.5 Population Based Training
+
+写 PBT 逻辑：
+
+```text
+同代多个模型训练
+  -> episode 结束后排名
+  -> 胜者保存 checkpoint
+  -> 失败者继承胜者参数并扰动
+  -> 进入下一代训练
+```
+
+强调 PBT 的目标不是让所有模型快速同质化，而是在继承优秀经验的同时保留种群多样性，减少过拟合某一轮对手或某一种市场状态的风险。
+
+---
+
+# 12. 第 7 章 数据持久化与桌面可观察性设计
+
+这一章体现工程完整度。
+
+## 7.1 PostgreSQL-first 持久化设计
+
+写 PostgreSQL 保存：
+
+1. accounts / positions / ledgers。
+2. instruments。
+3. orders / order_events / trades。
+4. snapshots / bars。
+5. simulation_runs。
+6. training_episodes。
+7. model_episode_results。
+8. model_transitions。
+9. model_checkpoints。
+10. model_lineage。
+
+PostgreSQL 的目的不是做数据展示工具，而是保证每次训练和仿真产生的关键事实可以被追踪、诊断、统计和比较。
+
+## 7.2 run_id 与实验事实边界
+
+写 run_id 解决什么问题：
+
+1. 区分不同仿真运行。
+2. 支持恢复。
+3. 支持回放。
+4. 支持实验对比。
+5. 支持训练结果追踪。
+
+## 7.3 桌面前端设计
+
+写 PySide6 前端模块：
+
+1. Market。
+2. Symbol Detail。
+3. Orders。
+4. Account。
+5. Agents。
+6. Arena。
+7. Leaderboard。
+8. Clock。
+9. Evidence Board。
+
+## 7.4 前后端边界
+
+写：
+
+```text
+UI Adapter
+  -> Panel
+  -> Controller
+  -> App Service
+  -> RuntimeGateway
+  -> RuntimeQueryService / RuntimeCommandService
+  -> Runtime Service
+```
+
+强调：该项目不是传统 Web 架构，而是单进程桌面应用中的模块化前后端边界。`RuntimeGateway` 是 app/backend 边界，`RuntimeQueryService` 与 `RuntimeCommandService` 承担后端读写分流。
+
+---
+
+# 13. 第 8 章 Evidence Runner 与模型证据门控机制设计
+
+这是论文最有研究质感的章节，建议单独成章。
+
+## 8.1 为什么需要 Evidence Runner
+
+核心观点：
+
+交易模型不能只看 leaderboard 收益。高收益可能来自：
+
+1. 仿真漏洞。
+2. 费用忽略。
+3. 冲击成本缺失。
+4. 数据泄漏。
+5. 单一世界过拟合。
+6. PBT 选择偏差。
+7. exploit 行为。
+
+## 8.2 Evidence Artifact 设计
+
+写这些 artifact：
+
+1. `world_spec_v1`
+2. `random_seed_ledger_v1`
+3. `calibration_artifact_v1`
+4. `baseline_artifact_v1`
+5. `hidden_eval_artifact_v1`
+6. `exploit_test_artifact_v1`
+7. `paired_sensitivity_artifact_v1`
+8. `parent_gate_artifact_v2`
+9. `research_acceptance_lock_v2`
+10. `series_evidence_aggregate_v1`
+
+## 8.3 Baseline、Hidden Evaluation 与 Exploit Test
+
+Baseline 用来判断候选模型是否真正优于简单规则基线。
+
+Hidden Evaluation 用来判断候选模型是否只适配训练世界。
+
+Exploit Test 用来检查候选模型是否可能利用费用、时钟、成交边界、mark-to-market 或 order boundary 漏洞获利。
+
+## 8.4 Paired Fee/Impact Sensitivity
+
+写 paired sensitivity 的目的：
+
+同一候选模型要在 base、high_fee、high_impact、low_liquidity 等配对世界中比较表现，避免模型只在低费用、低冲击、理想流动性下成立。
+
+## 8.5 Strict Parent Gate 与 Research Acceptance Lock
+
+写：
+
+模型能否成为父代，不由收益单独决定，而由 evidence gate 决定。
+
+研究结论能否成立，需要通过证据锁。不允许把未通过 live evidence 的结果写成研究通过。
+
+## 8.6 Model Route Gate
+
+写：
+
+在 Evidence Runner No-Go 解除前，不升级 Transformer、GTrXL、复杂 MARL、historical replay、hybrid env 或 alpha-claim 路线。
+
+## 8.7 Live Evidence Package 状态语义
+
+这是第二次建议新增的重点。必须写：
+
+> `complete` 和 `no_go` 可以同时成立。`complete` 表示 evidence package 所需槽位已被生成并可被 strict aggregate 聚合；`no_go` 表示其中至少存在未通过的 evidence gate。
+
+论文里可以解释：
+
+> 本文将 `complete / no_go` 视为 Evidence Runner 的有效工作状态，而不是系统失败。它表明证据门控机制能够区分“工程链路可运行”和“研究结论可信”两个层次。
+
+## 8.8 Strict Aggregate 与旧格式 Artifact 拒绝机制
+
+这一节也很有论文价值。
+
+写：
+
+证据失败不再使包本身变成 `incomplete`，缺失或 `not_available` 才表示包不完整。旧格式 artifact 也会被 strict aggregate 拒绝。仅有 `pass_fail=true` 而缺少以下字段时，不能被当作研究证据通过：
+
+1. `source=live_postgresql_runtime`
+2. `pass_gate`
+3. `runner_version`
+4. 可重算的 `artifact_hash`
+5. 明确的 `source_run_ids`
+
+这说明 Evidence Runner 不是只生成报告，而是对证据来源、runner 版本、hash 和 gate 语义进行严格校验。
+
+---
+
+# 14. 第 9 章 系统测试与实验分析
+
+这一章要写得克制、真实。
+
+## 9.1 实验环境
+
+建议结构：
+
+```text
+9.1 实验环境
+9.1.1 软件与硬件环境
+9.1.2 PostgreSQL 与 pg8000 fallback 配置
+9.1.3 实验对象与运行参数
+```
+
+写清楚：
+
+- Python 3.11。
+- PostgreSQL。
+- 本地 Windows runtime。
+- `pg8000` 作为纯 Python PostgreSQL fallback driver。
+- PySide6。
+- SQLAlchemy。
+- PyTorch。
+- pytest。
+
+可以写：
+
+> 更新后系统已解除 Python/runtime 依赖阻塞，并通过 `pg8000` 作为 PostgreSQL 纯 Python fallback driver 支持本地 Windows Python 3.11 runtime。在无显式 `STOCKSIM_DB_URL` 时，默认 PostgreSQL URL 会解析为 `postgresql+pg8000://...`，使 live Arena path 能够在 PostgreSQL-backed 环境下运行。
+
+## 9.2 功能测试
+
+建议结构：
+
+```text
+9.2 功能测试
+9.2.1 标的创建与市场运行测试
+9.2.2 订单提交、撮合、撤单与成交测试
+9.2.3 账户冻结、费用与持仓语义测试
+9.2.4 Agent 启停与状态同步测试
+```
+
+测试：
+
+1. 标的创建。
+2. 订单提交。
+3. 撮合成交。
+4. 撤单。
+5. 费用扣除。
+6. 冻结释放。
+7. T+1。
+8. K 线生成。
+9. agent 启停。
+10. Arena episode。
+
+## 9.3 交易语义一致性测试
+
+建议结构：
+
+```text
+9.3 交易语义一致性测试
+9.3.1 订单生命周期一致性
+9.3.2 成交、账本与账户权益一致性
+9.3.3 run_id 与实验事实边界一致性
+```
+
+重点测：
+
+1. 订单状态是否正确流转。
+2. 账户现金是否正确变化。
+3. 冻结资金是否正确释放。
+4. 成交记录与订单状态是否一致。
+5. K 线是否来自真实成交。
+6. run_id 是否贯穿订单、成交、快照和训练记录。
+
+## 9.4 Retail Calibration 实验
+
+建议结构：
+
+```text
+9.4 Retail Calibration 实验
+9.4.1 Calibration 指标设计
+9.4.2 当前 market-quality 指标采集结果
+9.4.3 snapshots_1s / bars_1m 缺失对 calibration 的影响
+```
+
+展示：
+
+1. 买卖比例。
+2. 成交活跃度。
+3. 持仓周期。
+4. 价格波动。
+5. 盘口深度。
+
+同时要诚实说明：
+
+> 最新 live package 中 `snapshots_1s` 与 `bars_1m` 读回数量仍为 0，因此当前不能声明 market-quality engineering pass。
+
+## 9.5 Arena 训练闭环实验
+
+建议结构：
+
+```text
+9.5 Arena 训练闭环实验
+9.5.1 Arena episode 运行流程
+9.5.2 Model agent transition 记录
+9.5.3 Checkpoint、lineage 与 PBT 记录
+9.5.4 PostgreSQL runtime facts 读回分析
+```
+
+展示：
+
+1. 多个模型 agent 同场训练。
+2. episode 结果。
+3. transition 记录。
+4. reward 曲线。
+5. checkpoint 生成。
+6. lineage 记录。
+7. PBT 继承结果。
+
+## 9.6 基于 Live PostgreSQL Runtime 的 Evidence Runner 阶段性验证
+
+这是必须按第二次建议更新的重点章节。
+
+建议结构：
+
+```text
+9.6 基于 Live PostgreSQL Runtime 的 Evidence Runner 阶段性验证
+9.6.1 验证目标与评价边界
+9.6.2 Task 101 Live Evidence Package 构建
+9.6.3 PostgreSQL Runtime 事实读回结果
+9.6.4 Evidence Artifact 通过情况
+9.6.5 未通过证据项及原因分析
+9.6.6 complete / no_go 状态解释
+9.6.7 阶段性结论
+```
+
+## 9.6.1 验证目标与评价边界
+
+不要写“证明模型有效”。要写：
+
+> 本节实验目标不是证明候选模型已经具备真实市场盈利能力，而是验证 Evidence Runner 能否基于真实 PostgreSQL/runtime 事实生成完整 evidence package，并通过 strict aggregate、Evidence Board、Strict Parent Gate 和 Research Acceptance Lock 对模型研究资格进行约束。
+
+重点放在：
+
+1. runtime/database 链路是否真实运行。
+2. evidence artifact 是否完整生成。
+3. gate 是否正确拒绝不充分证据。
+4. No-Go 是否来自真实指标失败，而不是工程缺失。
+
+## 9.6.2 Task 101 Live Evidence Package 构建
+
+可以写：
+
+> Task 101 live long Arena dry run 已通过真实 `build_app_context()`、`ArenaExperimentRunner.run_generations(...)`、`RuntimeModelAgent`、`TrainingArenaService`、`TrainingEpisodeService` 和 PostgreSQL ORM 生成 database/runtime 证据包。
+
+最新 package：
+
+```text
+output/evidence_artifacts/long_arena_dry_run_package_v1/
+task101-live-rerun-20260508115346-live-evidence-rerun-v2-4cd9d2a77cfd632f.json
+```
+
+状态：
+
+```text
+status = complete
+go_no_go = no_go
+status_counts = {"pass": 2, "fail": 5}
+```
+
+## 9.6.3 PostgreSQL Runtime 事实读回结果
+
+建议放表：
+
+| 数据项 | live package 读回数量 |
+| --- | ---: |
+| `training_episodes` | 3 |
+| `model_episode_results` | 21 |
+| `model_transitions` | 31 |
+| `orders` | 141 |
+| `trades` | 46 |
+| `agent_bindings` | 265 |
+| `account_equity_snapshots` | 92 |
+| `snapshots_1s` | 0 |
+| `bars_1m` | 0 |
+
+说明文字：
+
+> 最新 live Evidence Runner package 已能从 PostgreSQL 中读回真实训练、订单、成交、agent binding 和账户权益快照事实，说明 Arena、模型 agent、订单路径、成交路径和训练记录持久化链路已经进入 live runtime 验证阶段。但 `snapshots_1s` 与 `bars_1m` 仍为 0，说明市场快照与 K 线聚合链路尚未形成可用于 calibration 的完整市场质量证据，因此不能声明 market-quality engineering pass。
+
+## 9.6.4 Evidence Artifact 通过情况
+
+最新状态：
+
+```text
+status = complete / no_go
+status_counts = {"pass": 2, "fail": 5}
+```
+
+表格：
+
+| Evidence 项 | 状态 | 含义 |
+| --- | --- | --- |
+| Baseline Evidence | Pass | 规则基线证据已能以 live strict artifact 形式通过 |
+| Hidden Evaluation | Pass | 隐藏评估证据已能以 live strict artifact 形式通过 |
+| Calibration | Fail | 缺少关键市场质量指标，不能证明世界质量 |
+| Exploit Test | Fail | 部分反作弊 probe metric 仍缺失 |
+| Paired Sensitivity | Fail | 费用、冲击、低流动性场景尚未完整覆盖 |
+| Strict Parent Gate | Fail | 上游证据未全过，父代资格应被阻断 |
+| Research Acceptance Lock | Fail | 上游 blocking sections 未清空，研究结论锁应保持关闭 |
+
+## 9.6.5 未通过证据项及原因分析
+
+原来不能再写“live PostgreSQL/runtime 长 Arena series 未完成”。必须改成：
+
+> 当前 No-Go 并非由于 live package 未完成，而是 strict evidence gate 在真实 runtime/database 证据上发现上游证据仍不满足通过条件。
+
+Calibration fail：
+
+> Calibration 未通过的主要原因是缺少 `spread`、`depth`、`buy_sell_ratio`、`holding_period`、`retail_family_mix` 等 P0 指标，同时 `snapshots_1s` 与 `bars_1m` 读回数量为 0。因此系统虽然已经产生订单、成交、训练和账户权益事实，但还不能证明当前仿真世界的市场质量达到 calibration engineering pass。
+
+Exploit test fail：
+
+> Exploit test 未通过不是因为已经发现模型明确作弊，而是因为 `fee_accounting` 与 `clock_boundary` 等 probe metric 仍缺失。也就是说，runner 尚不能完整证明模型无法通过费用会计、交易时钟边界或相关 runtime 漏洞获得不可交易收益。
+
+Paired sensitivity fail：
+
+> Paired sensitivity 未通过的原因是缺少 `high_fee`、`high_impact`、`low_liquidity` required scenarios，因此尚不能证明候选模型在费用提高、冲击成本增加或流动性下降时保持合理行为。
+
+Strict Parent Gate 与 Research Acceptance Lock fail：
+
+> Strict Parent Gate 与 Research Acceptance Lock 的失败属于正确的派生失败。由于 calibration、exploit test 和 paired sensitivity 等上游证据未通过，系统不应允许候选模型成为父代、自动晋升或形成研究结论。
+
+## 9.6.6 complete / no_go 状态解释
+
+建议直接写：
+
+> 在 Evidence Runner 中，`complete` 表示 evidence package 所需槽位已被生成并可被 strict aggregate 聚合；`no_go` 表示其中至少存在未通过的 evidence gate。因此，`complete / no_go` 并不矛盾。它说明当前系统已经完成 live runtime evidence package 的构建，但研究证据尚不足以放行模型路线、父代继承或研究结论。
+
+再强调：
+
+> 本文将 `complete / no_go` 视为 Evidence Runner 的有效工作状态，而不是系统失败。它表明证据门控机制能够区分“工程链路可运行”和“研究结论可信”两个层次。
+
+## 9.6.7 阶段性结论
+
+可以直接使用这段：
+
+> 综上，更新后的 UTI-STOCKSIM 已经从 headless injected package 阶段推进到 live PostgreSQL/runtime evidence package 阶段。Task 101 已能生成真实 database/runtime 证据包，且 package 状态为 `complete / no_go`。这说明系统运行链路、训练记录、订单成交事实和 evidence aggregate 已具备阶段性工程闭环。然而，由于 calibration、exploit test 和 paired sensitivity 等上游证据仍未通过，Strict Parent Gate 与 Research Acceptance Lock 正确保持阻断。因此，本文不将该阶段结果解释为模型研究有效性通过，而将其解释为 Evidence Runner 已具备真实运行证据生成与证据门控能力。
+
+## 9.7 实验结果分析
+
+建议结构：
+
+```text
+9.7 实验结果分析
+9.7.1 Runtime/database integration 分析
+9.7.2 训练闭环完整性分析
+9.7.3 市场质量证据不足分析
+9.7.4 证据门控有效性分析
+9.7.5 当前结果的研究边界
+```
+
+最重要的是 9.7.5：
+
+> 当前实验能够证明 live runtime evidence package 已经生成，不能证明候选模型具备真实市场盈利能力。
+
+---
+
+# 15. 第 10 章 总结与展望
+
+## 10.1 工作总结
+
+总结本文完成了：
+
+1. 真实交易语义 runtime。
+2. retail 行为生态。
+3. model agent 接入契约。
+4. Arena/PBT 训练闭环。
+5. PostgreSQL 持久化。
+6. PySide6 可观察前端。
+7. Evidence Runner / Evidence Gate 研究证据框架。
+8. live PostgreSQL/runtime evidence package 阶段性验证。
+
+## 10.2 创新点总结
+
+建议写 4 个创新点。
+
+创新点一：真实交易语义驱动的训练环境。
+
+不同于只基于价格序列的回测，本系统把订单、撮合、账户、冻结、费用、T+1 和结算纳入同一 runtime truth。
+
+创新点二：锚定 retail 行为生态的多智能体市场背景。
+
+通过行为家族、性格参数和状态变量构建可调的散户行为生态，为模型训练提供比随机噪声更稳定的市场背景。
+
+创新点三：面向模型训练的 Observation / Action / Reward 契约。
+
+模型不直接访问 GUI 或数据库表，而是通过正式 contract 与 runtime 交互，从而保证训练、推理和审计语义一致。
+
+创新点四：Evidence Runner 证据门控机制。
+
+系统将模型收益从“看起来赚钱”提升为“能否通过 baseline、hidden evaluation、exploit test、paired sensitivity、strict parent gate 和 research acceptance lock 的证据审查”。
+
+## 10.3 不足与局限
+
+原来的“不足”不能再写成：
+
+```text
+live PostgreSQL-backed 长 Arena series 尚未完全跑通。
+```
+
+现在应该写成：
+
+> live PostgreSQL-backed 长 Arena series 已经跑通并生成 complete evidence package，但当前仍为 no_go。主要不足不再是 runtime 链路不可用，而是 calibration、exploit test、paired sensitivity 等上游证据尚未满足通过条件，且 `snapshots_1s` / `bars_1m` 链路仍未形成可用于 market-quality calibration 的完整事实。
+
+其他不足可以写：
+
+1. Market-quality 指标仍不完整。
+2. `snapshots_1s` 与 `bars_1m` 当前 live package 读回为 0。
+3. exploit test 中部分 probe metric 仍缺失。
+4. paired sensitivity required scenarios 尚未完整覆盖。
+5. Evidence artifacts 仍主要以 JSON 文件形式存在，后续可进一步纳入数据库或 artifact registry。
+6. 当前不证明真实市场盈利能力。
+
+## 10.4 后续研究方向
+
+后续工作应写成：
+
+1. 完善 calibration 指标采集，补齐 `snapshots_1s` / `bars_1m` 市场质量事实。
+2. 补齐 exploit test 中 `fee_accounting` 与 `clock_boundary` probe metrics。
+3. 补齐 paired sensitivity 的 `high_fee`、`high_impact`、`low_liquidity` required scenarios。
+4. 在上游 evidence pass 后，重新计算 Strict Parent Gate 与 Research Acceptance Lock。
+5. 将 Evidence Board 从展示状态推进为实际阻断机制。
+6. 引入正式数据库迁移工具。
+7. 加强 retail calibration。
+8. 在 Evidence Runner Go 后，再评估 Transformer、GTrXL、复杂 MARL 和 historical replay。
+9. 引入真实历史订单流或 replay-plus-intervention 模式。
+
+---
+
+# 16. 最重要的写作策略
+
+最高级写法是：
+
+**不要把“模型收益”写成中心，把“可信训练环境”写成中心。**
+
+答辩主线应该是：
+
+```text
+传统回测环境过于简化
+  -> 模型可能学到不可迁移策略
+  -> 因此需要真实交易语义 runtime
+  -> 还需要 retail 行为生态形成市场背景
+  -> 模型通过 O/A/R contract 接入
+  -> Arena + PBT 跑通训练闭环
+  -> PostgreSQL 保存实验事实
+  -> Evidence Runner 防止错误晋升和虚假结论
+  -> 最新 live package 为 complete / no_go，说明链路可运行但证据门控仍健康阻断
+```
+
+这条线一旦立住，项目就不是“做了一个交易软件”，而是：
+
+> 构建了一个面向机器学习交易策略研究的可信仿真实验基础设施。
+
+---
+
+# 17. 最强答辩口径
+
+可以直接背这段：
+
+> 本项目最新状态不是“Evidence Runner 还没跑通”，而是“Evidence Runner 已经跑通 live PostgreSQL/runtime package，但研究证据仍然 No-Go”。这说明系统已经具备真实 runtime evidence 生成能力，同时 Evidence Gate 能够正确阻止证据不足的模型进入父代继承、模型晋升或研究结论。当前 No-Go 是健康的 No-Go，它证明平台不是用 leaderboard 收益包装模型有效性，而是将模型研究资格建立在 calibration、baseline、hidden evaluation、exploit test、paired sensitivity 和 strict parent gate 的独立证据之上。
+
+如果老师问“为什么 No-Go 还算成果”，可以回答：
+
+> 因为本文的目标不是宣称模型已经可用于实盘，而是构建一个可信训练与评估平台。`complete / no_go` 说明系统已经可以生成完整 live evidence package，并且能够拒绝证据不足的候选模型。对于交易模型研究来说，能够阻止不充分证据被误读为成功，本身就是平台可信性的核心体现。
+
+如果老师问“你的创新点是什么”，可以回答：
+
+> 创新点不是某一个模型，而是把真实交易语义 runtime、retail 行为生态、模型训练契约、Arena/PBT 训练闭环和 Evidence Runner 证据门控放到同一个平台中，使模型必须在更接近真实交易约束的环境中行动，并且必须通过独立证据审查才能被晋升或形成研究结论。
+
+---
+
+# 18. 写作禁区
+
+不要这样写：
+
+1. 不要写“本系统训练出了可实盘盈利模型”。
+2. 不要写“Evidence Runner 已经 Go”。
+3. 不要把 `complete / no_go` 写成失败。
+4. 不要把 leaderboard 排名写成模型有效性证明。
+5. 不要把 headless package 当成正式 live research evidence。
+6. 不要忽略 `snapshots_1s` / `bars_1m` 为 0 对 calibration 的影响。
+7. 不要为了好看把 No-Go 原因改轻。
+
+应该这样写：
+
+1. 系统已经具备 live runtime evidence package 生成能力。
+2. 当前 No-Go 是由严格证据门控产生的健康阻断。
+3. runtime/database 链路、训练记录、订单成交事实已经进入 live 验证阶段。
+4. calibration、exploit test、paired sensitivity 仍需补齐。
+5. 本文验证的是可信仿真实验基础设施，而不是实盘盈利模型。
+
+---
+
+# 19. 推荐图表
+
+建议论文中至少放这些图表：
+
+1. 系统总体架构图。
+2. 交易 runtime 主链路图。
+3. 订单生命周期状态图。
+4. 事件、快照、K线生成链路图。
+5. Retail agent 决策流程图。
+6. Observation / Action / Reward 契约图。
+7. Arena episode 生命周期图。
+8. PBT checkpoint 与 lineage 图。
+9. Evidence Runner artifact 流程图。
+10. Evidence Board 状态表。
+11. Task 101 live PostgreSQL runtime facts 读回表。
+12. Evidence artifact pass/fail 表。
+
+其中第 11 和第 12 张表最能体现项目最新状态。
+
+---
+
+# 20. 可直接使用的关键表格
+
+## 表：Task 101 Live PostgreSQL Runtime 事实读回
+
+| 数据项 | live package 读回数量 |
+| --- | ---: |
+| `training_episodes` | 3 |
+| `model_episode_results` | 21 |
+| `model_transitions` | 31 |
+| `orders` | 141 |
+| `trades` | 46 |
+| `agent_bindings` | 265 |
+| `account_equity_snapshots` | 92 |
+| `snapshots_1s` | 0 |
+| `bars_1m` | 0 |
+
+## 表：Evidence Artifact 状态
+
+| Evidence 项 | 状态 | 含义 |
+| --- | --- | --- |
+| Baseline Evidence | Pass | 规则基线证据已能以 live strict artifact 形式通过 |
+| Hidden Evaluation | Pass | 隐藏评估证据已能以 live strict artifact 形式通过 |
+| Calibration | Fail | 缺少关键市场质量指标，不能证明世界质量 |
+| Exploit Test | Fail | 部分反作弊 probe metric 仍缺失 |
+| Paired Sensitivity | Fail | 费用、冲击、低流动性场景尚未完整覆盖 |
+| Strict Parent Gate | Fail | 上游证据未全过，父代资格应被阻断 |
+| Research Acceptance Lock | Fail | 上游 blocking sections 未清空，研究结论锁应保持关闭 |
+
+---
+
+# 21. 最终一句话总结
+
+论文最强总结句：
+
+> UTI-STOCKSIM 的价值不在于宣称某个模型已经盈利，而在于为机器学习交易策略研究提供了一个更接近真实交易约束、可观察、可复现、可审计，并能通过 Evidence Runner 主动拒绝不充分研究结论的仿真实验平台。

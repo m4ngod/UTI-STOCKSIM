@@ -25,6 +25,7 @@ from app.controllers.clock_controller import ClockController
 
 from app.services.leaderboard_service import LeaderboardService
 from app.controllers.leaderboard_controller import LeaderboardController
+from app.services.arena_experiment_runner import ArenaExperimentRunner
 from app.services.training_arena_service import TrainingArenaService
 
 
@@ -53,12 +54,14 @@ class AppContext:
     leaderboard_controller: LeaderboardController
 
     training_arena_service: TrainingArenaService
+    arena_experiment_runner: ArenaExperimentRunner
 
 
 def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppContext:
     settings_store = SettingsStore(path=settings_path, auto_save=False)
     runtime_gateway = RuntimeGateway()
     runtime_gateway.ensure_desktop_run()
+    _start_market_persistence_services()
 
     market_data_service = MarketDataService(
         enable_runtime_holdings=True,
@@ -87,6 +90,12 @@ def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
     leaderboard_service = LeaderboardService(use_runtime=True, runtime_gateway=runtime_gateway)
     leaderboard_controller = LeaderboardController(leaderboard_service)
     training_arena_service = TrainingArenaService(agent_service=agent_service)
+    arena_experiment_runner = ArenaExperimentRunner(
+        arena_service=training_arena_service,
+        clock_service=clock_service,
+        agent_service=agent_service,
+        runtime_gateway=runtime_gateway,
+    )
 
     return AppContext(
         settings_store=settings_store,
@@ -105,6 +114,7 @@ def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
         leaderboard_service=leaderboard_service,
         leaderboard_controller=leaderboard_controller,
         training_arena_service=training_arena_service,
+        arena_experiment_runner=arena_experiment_runner,
     )
 
 
@@ -125,6 +135,17 @@ def reset_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
     with _lock:
         _app_context = build_app_context(settings_path=settings_path)
         return _app_context
+
+
+def _start_market_persistence_services() -> None:
+    try:
+        from stock_sim.services.snapshot_listener import ensure_snapshot_listener_started
+        from stock_sim.services.bar_aggregator import ensure_bar_aggregator_started
+
+        ensure_snapshot_listener_started()
+        ensure_bar_aggregator_started()
+    except Exception:
+        pass
 
 
 __all__ = ["AppContext", "build_app_context", "get_app_context", "reset_app_context"]

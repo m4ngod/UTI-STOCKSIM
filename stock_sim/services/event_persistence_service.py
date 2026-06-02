@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import queue
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -23,6 +27,27 @@ except Exception:  # noqa
     from services.sim_clock import current_sim_day, virtual_datetime  # type: ignore
 
 _ENABLED = False
+_ASYNC_ENABLED = False
+_QUEUE: queue.Queue[tuple[Any, dict[str, Any]]] | None = None
+_STOP_EVT = threading.Event()
+_WORKER: threading.Thread | None = None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
 
 
 def _extract_symbol(payload: dict[str, Any]) -> str | None:
@@ -144,29 +169,108 @@ def _sync_write(evt_type: Any, payload: dict[str, Any]):
             schema_lock.release()
 
 
+def _start_async_worker() -> None:
+    global _QUEUE, _WORKER
+    if _QUEUE is None:
+        _QUEUE = queue.Queue(maxsize=max(1, _env_int("STOCKSIM_EVENT_PERSIST_MAX_QUEUE", 20000)))
+    if _WORKER is not None and _WORKER.is_alive():
+        return
+    _STOP_EVT.clear()
+    _WORKER = threading.Thread(
+        target=_async_worker_loop,
+        name="EventPersistenceWriter",
+        daemon=True,
+    )
+    _WORKER.start()
+    atexit.register(flush_event_persistence)
+
+
+def _async_worker_loop() -> None:
+    q = _QUEUE
+    if q is None:
+        return
+    while not _STOP_EVT.is_set() or not q.empty():
+        try:
+            topic, payload = q.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        try:
+            _sync_write(topic, payload)
+        finally:
+            try:
+                q.task_done()
+            except Exception:
+                pass
+
+
+def _async_write(evt_type: Any, payload: dict[str, Any]) -> None:
+    q = _QUEUE
+    if q is None:
+        _sync_write(evt_type, payload)
+        return
+    try:
+        q.put_nowait((evt_type, dict(payload)))
+    except queue.Full:
+        try:
+            metrics.inc("event_persist_dropped", 1)
+        except Exception:
+            pass
+
+
+def flush_event_persistence(timeout: float = 1.0) -> bool:
+    q = _QUEUE
+    if q is None:
+        return True
+    stop_at = time.monotonic() + max(0.0, float(timeout))
+    while getattr(q, "unfinished_tasks", 0) and time.monotonic() < stop_at:
+        time.sleep(0.01)
+    return not bool(getattr(q, "unfinished_tasks", 0))
+
+
+def _stop_async_worker() -> None:
+    global _WORKER
+    flush_event_persistence(timeout=1.0)
+    _STOP_EVT.set()
+    worker = _WORKER
+    if worker is not None and worker.is_alive():
+        worker.join(timeout=1.0)
+    _WORKER = None
+
+
 def enable_event_persistence(force: bool = False):
-    global _ENABLED
+    global _ASYNC_ENABLED, _ENABLED
     if _ENABLED:
         return True
     if not getattr(settings, 'EVENT_PERSIST_ENABLED', True) and not force:
         return False
+    _ASYNC_ENABLED = (not force) and _env_bool("STOCKSIM_EVENT_PERSIST_ASYNC", True)
+    if _ASYNC_ENABLED:
+        _start_async_worker()
 
     def _hook(topic: str, payload: dict[str, Any]):
         try:
-            _sync_write(topic, payload)
+            if _ASYNC_ENABLED:
+                _async_write(topic, payload)
+            else:
+                _sync_write(topic, payload)
         except Exception:
             pass
 
     event_bus._persist_hook = _hook
+    event_bus._persist_flush = flush_event_persistence
     event_bus._event_persist_enabled = True
     _ENABLED = True
     return True
 
 
 def disable_event_persistence():
-    global _ENABLED
+    global _ASYNC_ENABLED, _ENABLED
     event_bus._persist_hook = None
+    event_bus._persist_flush = None
     event_bus._event_persist_enabled = False
+    if _ASYNC_ENABLED:
+        _stop_async_worker()
+    _ASYNC_ENABLED = False
     _ENABLED = False
     return True
 
@@ -174,4 +278,5 @@ def disable_event_persistence():
 __all__ = [
     "enable_event_persistence",
     "disable_event_persistence",
+    "flush_event_persistence",
 ]

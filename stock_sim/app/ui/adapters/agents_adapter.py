@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, List
 from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
+from app.ui.widgets.mini_charts import AgentInsightsWidget, HeadlessAgentInsightsWidget
 
 # 新增: 事件与节流/线程
 import os
@@ -71,7 +72,7 @@ try:
         QPushButton, QLabel, QListWidget, QListWidgetItem, QTextEdit,
         QDialog, QLineEdit, QComboBox, QAbstractItemView
     )  # type: ignore
-    from PySide6.QtGui import QColor  # type: ignore
+    from PySide6.QtGui import QColor, QBrush  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
     class QWidget:  # type: ignore
         def __init__(self, *_, **__): pass
@@ -100,6 +101,7 @@ except Exception:  # pragma: no cover - headless fallback
         def setText(self,t): self._text=t
         def text(self): return self._text
         def setBackground(self, *_): pass
+        def setForeground(self, *_): pass
     class QPushButton:  # type: ignore
         def __init__(self, text=""): self._text=text; self.clicked=_DummySig()
     class QLabel:  # type: ignore
@@ -126,6 +128,7 @@ except Exception:  # pragma: no cover - headless fallback
         SelectRows = 1
         ExtendedSelection = 2
     QColor = lambda *a, **k: None  # type: ignore
+    QBrush = lambda *a, **k: None  # type: ignore
 
 _ROW_COLOR_STALE = QColor(255, 240, 240) if callable(getattr(QColor, '__call__', None)) else QColor(255, 240, 240)  # type: ignore
 
@@ -133,6 +136,17 @@ _ROW_COLOR_STALE = QColor(255, 240, 240) if callable(getattr(QColor, '__call__',
 _AGENT_PROGRESS_TOPIC = "agent.batch.create.progress"
 _AGENT_COMPLETED_TOPIC = "agent.batch.create.completed"
 _AGENT_STATUS_CHANGED = "agent-status-changed"  # 预留：若后端发布状态事件，将自动接入
+
+def _has_qt_app() -> bool:
+    if not ui_runtime_enabled():
+        return False
+    try:
+        from PySide6.QtWidgets import QApplication  # type: ignore
+
+        return QApplication.instance() is not None
+    except Exception:
+        return False
+
 
 class AgentsPanelAdapter(PanelAdapter):
     COLS = [
@@ -163,6 +177,7 @@ class AgentsPanelAdapter(PanelAdapter):
         self._btn_batch: Optional[Any] = None
         self._progress_label: Optional[Any] = None
         self._log_view: Optional[Any] = None
+        self._insights_widget: Optional[Any] = None
         # 事件/轮询状态
         self._started = False
         self._lock = threading.RLock()
@@ -176,6 +191,9 @@ class AgentsPanelAdapter(PanelAdapter):
         self._refresh_throttle = Throttle(200, self._do_refresh, metrics_prefix="agents_adapter_refresh")
         # 新增: 取消订阅函数集合
         self._cancel_subs: List[callable] = []
+        self._order_events_cache: List[Dict[str, Any]] = []
+        self._order_events_cache_ts = 0.0
+        self._order_events_cache_ttl_s = 2.0
 
     # ---------- PanelAdapter overrides ----------
         # PyTest 环境：直接执行，保证测试无需事件循环即可观察到 UI 状态变化
@@ -230,11 +248,11 @@ class AgentsPanelAdapter(PanelAdapter):
             # 控制区
             ctrl_h = QHBoxLayout()  # type: ignore
             self._btn_start = QPushButton("Start")  # type: ignore
-            self._btn_pause = QPushButton("Pause")  # type: ignore
+            self._btn_pause = None
             self._btn_stop = QPushButton("Stop")  # type: ignore
             # 新增：批量创建按钮
-            self._btn_batch = QPushButton("Batch Create…")  # type: ignore
-            for b, act in ((self._btn_start, 'start'), (self._btn_pause, 'pause'), (self._btn_stop, 'stop')):
+            self._btn_batch = QPushButton("Batch Create")  # type: ignore
+            for b, act in ((self._btn_start, 'start'), (self._btn_stop, 'stop')):
                 if b is not None:
                     def _make_handler(a):
                         def _h():
@@ -257,12 +275,9 @@ class AgentsPanelAdapter(PanelAdapter):
             ctrl_h.addWidget(self._progress_label)  # type: ignore
             main_v.addLayout(ctrl_h)  # type: ignore
             # 日志视图
-            self._log_view = QTextEdit()  # type: ignore
-            try:
-                self._log_view.setReadOnly(True)  # type: ignore
-            except Exception:  # pragma: no cover
-                pass
-            main_v.addWidget(self._log_view)  # type: ignore
+            chart_cls = AgentInsightsWidget if _has_qt_app() else HeadlessAgentInsightsWidget
+            self._insights_widget = chart_cls()  # type: ignore
+            main_v.addWidget(self._insights_widget)  # type: ignore
         except Exception:  # pragma: no cover
             pass
         self._root = root
@@ -307,7 +322,7 @@ class AgentsPanelAdapter(PanelAdapter):
         self._update_progress(batch)
         # Diff 行
         self._sync_rows(items)
-        self._refresh_log_tail()
+        self._refresh_insights(items)
 
     def _on_filter_changed(self):
         logic = self._logic
@@ -455,11 +470,13 @@ class AgentsPanelAdapter(PanelAdapter):
                 item = table.item(row, col_i)  # type: ignore
                 if item is None:
                     continue
-                text_new = str(val)
+                text_new = self._format_cell(col_key, val)
                 try:
                     if getattr(item, 'text', lambda: None)() != text_new:  # type: ignore
                         item.setText(text_new)  # type: ignore
                 except Exception: pass
+                if col_key == "status":
+                    self._apply_status_style(item, val)
             # heartbeat_stale 着色
             self._apply_row_stale(row, it.get('heartbeat_stale'))
         # 若未选中 -> 默认第一行
@@ -489,6 +506,53 @@ class AgentsPanelAdapter(PanelAdapter):
                     bg(_ROW_COLOR_STALE)
             except Exception:  # pragma: no cover
                 pass
+
+    @staticmethod
+    def _format_cell(col_key: str, value: Any) -> str:
+        if col_key == "status":
+            status = str(value or "STOPPED").upper()
+            return f"● {status}"
+        return str(value)
+
+    @staticmethod
+    def _apply_status_style(item: Any, value: Any) -> None:
+        status = str(value or "").upper()
+        color_map = {
+            "RUNNING": (34, 164, 92),
+            "STOPPED": (220, 65, 58),
+            "PAUSED": (220, 65, 58),
+            "INACTIVE": (140, 150, 160),
+        }
+        try:
+            item.setForeground(QBrush(QColor(*color_map.get(status, (140, 150, 160)))))  # type: ignore[misc]
+        except Exception:
+            pass
+
+    def _refresh_insights(self, items: List[Dict[str, Any]]):
+        widget = self._insights_widget
+        if widget is None:
+            return
+        events = self._cached_order_events()
+        try:
+            widget.set_data(items, order_events=events)
+        except Exception:
+            pass
+
+    def _cached_order_events(self) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        with self._lock:
+            if (now - self._order_events_cache_ts) < self._order_events_cache_ttl_s:
+                return list(self._order_events_cache)
+        try:
+            from app.runtime_gateway import RuntimeGateway  # type: ignore
+
+            events = RuntimeGateway().list_order_events(limit=300, include_all_runs=True)
+        except Exception:
+            events = []
+        with self._lock:
+            self._order_events_cache = list(events or [])
+            self._order_events_cache_ts = now
+            return list(self._order_events_cache)
 
     def _reindex(self):
         table = self._table
@@ -556,6 +620,23 @@ class AgentsPanelAdapter(PanelAdapter):
         if not targets and getattr(self, '_selected_agent', None):
             targets = [self._selected_agent]  # type: ignore[attr-defined]
         if not targets:
+            return
+        many_fn = getattr(self._logic, "control_many", None)
+        if callable(many_fn) and len(targets) > 1:
+            def _run_many():
+                try:
+                    many_fn(targets, action)
+                except Exception:
+                    pass
+                self.refresh()
+            if ui_runtime_enabled() and not os.environ.get("PYTEST_CURRENT_TEST"):
+                threading.Thread(
+                    target=_run_many,
+                    name=f"AgentsAdapter-ControlMany-{action}",
+                    daemon=True,
+                ).start()
+            else:
+                _run_many()
             return
         if ui_runtime_enabled() and not os.environ.get("PYTEST_CURRENT_TEST"):
             def _worker():

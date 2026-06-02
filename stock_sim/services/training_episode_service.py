@@ -9,6 +9,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from stock_sim.persistence.models_training import ModelEpisodeResult, ModelTransition, TrainingEpisode
+from stock_sim.rl.reward_builder import execution_notional_metrics
 
 
 def _json_dumps(value: Any) -> str:
@@ -57,17 +58,19 @@ class EpisodeAgentAccumulator:
             if self.peak_equity and self.peak_equity > 0:
                 self.max_drawdown = max(self.max_drawdown, max(0.0, (self.peak_equity - equity) / self.peak_equity))
         self.reward_total += float((reward or {}).get("step_reward") or 0.0)
-        self.turnover += _turnover(execution_result)
+        health = _execution_health(execution_result)
+        self.turnover += float(health["filled_notional"])
         self.fee_total += _fee_total(execution_result)
-        self.trade_count += len((execution_result or {}).get("trades") or [])
+        self.trade_count += int(health["trade_count"])
         self.step_count += 1
         self.last_action = (action or {}).get("action_type") or self.last_action
+        self._accumulate_execution_health(health)
 
     def score(self) -> float:
         equity_return = 0.0
         if self.equity_start and self.equity_start > 0 and self.equity_end is not None:
             equity_return = (self.equity_end - self.equity_start) / self.equity_start
-        return float(equity_return + self.reward_total - self.max_drawdown - (0.02 * self.turnover))
+        return float(equity_return + self.reward_total - self.max_drawdown)
 
     def to_result_kwargs(self, *, episode_id: str, generation: int, rank: int | None = None) -> dict[str, Any]:
         equity_return = None
@@ -93,9 +96,57 @@ class EpisodeAgentAccumulator:
                     **self.extra_metrics,
                     "step_count": self.step_count,
                     "last_action": self.last_action,
+                    "turnover_ratio": self.turnover / max(float(self.equity_start or 0.0), 1.0),
                 }
             ),
         }
+
+    def _accumulate_execution_health(self, health: dict[str, Any]) -> None:
+        int_keys = (
+            "submitted_order_count",
+            "filled_order_count",
+            "open_order_count",
+            "rejected_order_count",
+            "skipped_order_count",
+            "noop_count",
+            "trade_count",
+        )
+        float_keys = (
+            "submitted_notional",
+            "filled_notional",
+            "open_order_notional",
+        )
+        for key in int_keys:
+            self.extra_metrics[key] = int(self.extra_metrics.get(key, 0) or 0) + int(health.get(key, 0) or 0)
+        for key in float_keys:
+            self.extra_metrics[key] = float(self.extra_metrics.get(key, 0.0) or 0.0) + float(health.get(key, 0.0) or 0.0)
+        rejected_reasons = health.get("rejected_reasons")
+        if isinstance(rejected_reasons, dict):
+            merged = self.extra_metrics.get("rejected_reasons")
+            if not isinstance(merged, dict):
+                merged = {}
+            for reason, count in rejected_reasons.items():
+                text = str(reason or "").strip()
+                if not text:
+                    continue
+                merged[text] = int(merged.get(text, 0) or 0) + int(count or 0)
+            self.extra_metrics["rejected_reasons"] = merged
+            self.extra_metrics["rejected_reason_summary"] = _format_reason_summary(merged)
+        last_reason = str(health.get("last_rejected_reason") or "").strip()
+        if last_reason:
+            self.extra_metrics["last_rejected_reason"] = last_reason
+        submitted_orders = int(self.extra_metrics.get("submitted_order_count", 0) or 0)
+        submitted_notional = float(self.extra_metrics.get("submitted_notional", 0.0) or 0.0)
+        self.extra_metrics["fill_ratio"] = (
+            float(self.extra_metrics.get("filled_order_count", 0) or 0) / submitted_orders
+            if submitted_orders > 0
+            else 0.0
+        )
+        self.extra_metrics["notional_fill_ratio"] = (
+            float(self.extra_metrics.get("filled_notional", 0.0) or 0.0) / submitted_notional
+            if submitted_notional > 0
+            else 0.0
+        )
 
 
 class TrainingEpisodeService:
@@ -132,7 +183,8 @@ class TrainingEpisodeService:
             self.s.add(row)
             self.s.flush()
             return row
-        row.status = status
+        if not (row.status == "completed" and status == "running"):
+            row.status = status
         row.updated_at = now
         row.started_at = row.started_at or (now if status == "running" else None)
         return row
@@ -257,13 +309,53 @@ def _equity(account: dict[str, Any] | None) -> float | None:
     return None
 
 
-def _turnover(execution_result: dict[str, Any] | None) -> float:
-    total = 0.0
+def _execution_health(execution_result: dict[str, Any] | None) -> dict[str, Any]:
+    metrics = execution_notional_metrics(execution_result)
+    submitted_order_count = 0
+    filled_order_count = 0
+    open_order_count = 0
+    rejected_order_count = 0
+    skipped_order_count = 0
+    noop_count = 1 if str((execution_result or {}).get("status") or "").upper() == "NOOP" else 0
+    rejected_reasons: dict[str, int] = {}
+    last_rejected_reason: str | None = None
+    trade_count = len((execution_result or {}).get("trades") or [])
     for order in (execution_result or {}).get("orders") or []:
-        total += abs(float(order.get("qty") or order.get("quantity") or 0.0) * float(order.get("price") or 0.0))
-    for trade in (execution_result or {}).get("trades") or []:
-        total += abs(float(trade.get("qty") or trade.get("quantity") or 0.0) * float(trade.get("price") or 0.0))
-    return total
+        result = order.get("result") if isinstance(order.get("result"), dict) else {}
+        status = str(result.get("status") or order.get("status") or "").upper()
+        if status == "SKIPPED":
+            skipped_order_count += 1
+            reason = _order_reject_reason(order, result)
+            if reason:
+                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+                last_rejected_reason = reason
+            continue
+        submitted_order_count += 1
+        ok = bool(result.get("ok", True))
+        if not ok or status == "REJECTED":
+            rejected_order_count += 1
+            reason = _order_reject_reason(order, result)
+            if reason:
+                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+                last_rejected_reason = reason
+        filled_qty = float(result.get("filled") or order.get("filled") or 0.0)
+        nested_trades = result.get("trades") or []
+        if filled_qty > 0 or nested_trades:
+            filled_order_count += 1
+        if ok and status not in {"FILLED", "REJECTED", "CANCELED", "CANCELLED"} and not (filled_qty > 0 or nested_trades):
+            open_order_count += 1
+    return {
+        "submitted_order_count": submitted_order_count,
+        "filled_order_count": filled_order_count,
+        "open_order_count": open_order_count,
+        "rejected_order_count": rejected_order_count,
+        "skipped_order_count": skipped_order_count,
+        "noop_count": noop_count,
+        "trade_count": trade_count,
+        "rejected_reasons": rejected_reasons,
+        "last_rejected_reason": last_rejected_reason,
+        **metrics,
+    }
 
 
 def _fee_total(execution_result: dict[str, Any] | None) -> float:
@@ -271,6 +363,28 @@ def _fee_total(execution_result: dict[str, Any] | None) -> float:
     for trade in (execution_result or {}).get("trades") or []:
         total += float(trade.get("fee") or trade.get("fees") or 0.0)
     return total
+
+
+def _order_reject_reason(order: dict[str, Any], result: dict[str, Any]) -> str | None:
+    for value in (
+        result.get("reason"),
+        result.get("error"),
+        order.get("skip_reason"),
+        order.get("clip_reason"),
+        result.get("status"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _format_reason_summary(reasons: dict[str, Any]) -> str:
+    ranked = sorted(
+        ((str(reason), int(count or 0)) for reason, count in reasons.items()),
+        key=lambda item: (-item[1], item[0]),
+    )
+    return ", ".join(f"{reason} x{count}" for reason, count in ranked[:3] if count > 0)
 
 
 __all__ = ["EpisodeAgentAccumulator", "TrainingEpisodeService"]

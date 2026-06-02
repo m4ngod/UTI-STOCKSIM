@@ -29,6 +29,20 @@ class _FakeRuntimeRetailAgent:
 
 
 class _FakeRuntimeGateway:
+    def __init__(self, bindings=None):
+        self._bindings = list(bindings or [])
+
+    def list_agent_bindings(self, include_all_runs=True):
+        return list(self._bindings)
+
+    def get_current_run_id(self):
+        return "RUN-TEST"
+
+    def update_agent_binding_meta(self, *_args, **_kwargs):
+        return None
+
+
+class _NoBindingRuntimeGateway:
     def list_agent_bindings(self):
         return []
 
@@ -37,7 +51,7 @@ def _build_service():
     return AgentService(
         retail_agent_factory=lambda **kwargs: _FakeRuntimeRetailAgent(**kwargs),
         account_bootstrapper=lambda *_args, **_kwargs: None,
-        runtime_gateway=_FakeRuntimeGateway(),
+        runtime_gateway=_NoBindingRuntimeGateway(),
     )
 
 
@@ -67,6 +81,40 @@ def test_agent_service_assigns_visible_strategy_and_strategy_names_to_retail_age
     agents = svc.list_agents()
     assert [agent.name for agent in agents] == ["mean_revert001", "mean_revert002"]
     assert [agent.strategy for agent in agents] == ["mean_revert", "mean_revert"]
+
+
+def test_agent_service_advances_retail_counters_from_persisted_bindings():
+    svc = AgentService(
+        retail_agent_factory=lambda **kwargs: _FakeRuntimeRetailAgent(**kwargs),
+        account_bootstrapper=lambda *_args, **_kwargs: None,
+        runtime_gateway=_FakeRuntimeGateway(
+            [
+                {
+                    "agent_name": "mean_revert017",
+                    "agent_type": "RETAIL",
+                    "account_id": "mean_revert017",
+                    "run_id": "RUN-TEST",
+                    "meta": {
+                        "name": "mean_revert017",
+                        "type": "Retail",
+                        "strategy": "mean_revert",
+                        "status": "STOPPED",
+                    },
+                }
+            ]
+        ),
+    )
+
+    svc.list_agents()
+    res = svc.batch_create_retail(
+        BatchCreateConfig(
+            count=2,
+            agent_type="Retail",
+            strategies=["mean_revert"],
+        )
+    )
+
+    assert res["success_ids"] == ["mean_revert018", "mean_revert019"]
 
 
 def test_agent_service_respects_explicit_multi_strategy_batch_configuration():

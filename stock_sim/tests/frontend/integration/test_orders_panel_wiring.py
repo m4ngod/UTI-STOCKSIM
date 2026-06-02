@@ -101,3 +101,40 @@ def test_market_adapter_trade_pass_through():
         time.sleep(0.02)
     assert got, "trade not passed through to MarketPanel.detail_view()"
 
+
+class _HistoryGateway:
+    def list_order_events(self, *, limit=500, include_all_runs=True):
+        return [
+            {
+                "ts": 1000,
+                "type": "OrderSubmitted",
+                "order_id": "O-HIST-1",
+                "symbol": "AAA",
+                "side": "buy",
+                "price": 10.0,
+                "qty": 100,
+                "status": "NEW",
+                "account_id": "retail001",
+            },
+            {
+                "ts": 2000,
+                "type": "Trade",
+                "order_id": "O-HIST-1",
+                "symbol": "AAA",
+                "side": "buy",
+                "price": 10.1,
+                "qty": 20,
+                "status": "TRADE",
+                "account_id": "retail001",
+            },
+        ]
+
+
+def test_orders_panel_loads_persisted_history_on_first_view():
+    logic = OrdersPanel(capacity=10, runtime_gateway=_HistoryGateway())
+
+    view = logic.get_view()
+
+    assert [item["type"] for item in view["items"]] == ["OrderSubmitted", "Trade"]
+    assert view["items"][0]["order_id"] == "O-HIST-1"
+

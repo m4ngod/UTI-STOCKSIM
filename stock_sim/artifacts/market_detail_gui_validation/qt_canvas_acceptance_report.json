@@ -1,7 +1,0 @@
-{
-  "symbol_label": "symbol: AAA",
-  "snapshot_label": "last=12.4 | bars=12 | state=ok | snap=available | book=available | series=available | snap_age_ms=12",
-  "debug_label": "detail debug: mode=qt-canvas symbol=AAA bars=12 trades=available indicators=available holdings=placeholder/non-auth history=runtime-trade-cache requested=unknown source=runtime-trade-cache snap_model=snapshot-ts-age book_model=inherit-snapshot-age run=none | holdings_ui=placeholder",
-  "chart_image": "F:\\PythonProjects\\stock_sim\\artifacts\\market_detail_gui_validation\\live_chart_qt_canvas_chart.png",
-  "full_image": "F:\\PythonProjects\\stock_sim\\artifacts\\market_detail_gui_validation\\live_chart_qt_canvas_full.png"
-}

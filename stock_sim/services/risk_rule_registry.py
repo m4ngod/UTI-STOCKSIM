@@ -68,6 +68,11 @@ class TPlusOneSellRestrictionRule:
         context = kwargs.get('context') or {}
         settlement_cycle = int(context.get('settlement_cycle') or 0)
         risk_engine = context.get('risk_engine')
+        if context.get("tplus_applies") is False:
+            return None
+        agent_type = str(context.get("agent_type") or "").strip().upper()
+        if agent_type and agent_type != "RETAIL":
+            return None
 
         if qty <= 0 or settlement_cycle < 1 or risk_engine is None:
             return None

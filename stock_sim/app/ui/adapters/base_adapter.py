@@ -45,6 +45,7 @@ class PanelAdapter:
         if self._widget is None:
             self._widget = self._create_widget()
             self._initialized = True
+            self.refresh()
         return self._widget  # type: ignore
 
     def refresh(self):

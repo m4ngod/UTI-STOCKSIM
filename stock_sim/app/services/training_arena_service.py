@@ -25,6 +25,7 @@ ARENA_STATES = {
     "STOPPED",
     "FAILED",
 }
+DEFAULT_MODEL_INITIAL_CASH = 50_000_000.0
 
 
 @dataclass
@@ -32,7 +33,7 @@ class ArenaModelSpec:
     agent_id: str | None = None
     model_id: str = "hold_model_v1"
     mode: str = "collect_only"
-    initial_cash: float = 100_000.0
+    initial_cash: float = DEFAULT_MODEL_INITIAL_CASH
 
 
 @dataclass
@@ -113,22 +114,14 @@ class TrainingArenaService:
         self._ensure_episode(state)
         self._ensure_model_agents(state)
         self._ensure_retail_agents(state)
-        for agent_id in state.model_agent_ids + state.retail_agent_ids:
-            try:
-                self._agent_service.control(agent_id, "start")
-            except Exception:
-                pass
+        self._control_agents(state.model_agent_ids + state.retail_agent_ids, "start")
         state.status = "RUNNING"
         state.updated_at = datetime.utcnow()
         return state.to_dict()
 
     def stop_arena(self, arena_id: str) -> dict[str, Any]:
         state = self._require_arena(arena_id)
-        for agent_id in state.model_agent_ids + state.retail_agent_ids:
-            try:
-                self._agent_service.control(agent_id, "stop")
-            except Exception:
-                pass
+        self._control_agents(state.model_agent_ids + state.retail_agent_ids, "stop")
         state.status = "STOPPED"
         state.updated_at = datetime.utcnow()
         return state.to_dict()
@@ -137,29 +130,36 @@ class TrainingArenaService:
         state = self._require_arena(arena_id)
         if not state.current_episode_id:
             raise ValueError("arena has no active episode")
+        previous_status = state.status
+        episode_id = state.current_episode_id
         state.status = "EVALUATING"
         state.updated_at = datetime.utcnow()
         if self._session_factory is None or TrainingEpisodeService is None:
-            summary = {"episode": {"episode_id": state.current_episode_id}, "results": []}
+            summary = {"episode": {"episode_id": episode_id}, "results": []}
         else:
             session = self._session_factory()
             try:
                 service = TrainingEpisodeService(session)
-                ranked = service.rank_episode(state.current_episode_id)
+                ranked = service.rank_episode(episode_id)
                 if complete_episode:
                     service.complete_episode(
-                        state.current_episode_id,
+                        episode_id,
                         summary={"result_count": len(ranked), "arena_id": arena_id},
                     )
-                summary = service.get_episode_summary(state.current_episode_id)
+                summary = service.get_episode_summary(episode_id)
                 session.commit()
             except Exception:
                 session.rollback()
                 raise
             finally:
                 session.close()
+        if complete_episode:
+            self._complete_model_episode(state, episode_id=episode_id)
         state.last_summary = summary
-        state.status = "STOPPED" if complete_episode else "READY"
+        if complete_episode:
+            state.status = "RUNNING" if previous_status == "RUNNING" else "STOPPED"
+        else:
+            state.status = "RUNNING" if previous_status == "RUNNING" else "READY"
         state.updated_at = datetime.utcnow()
         return state.to_dict()
 
@@ -209,6 +209,15 @@ class TrainingArenaService:
                     episode_id=state.current_episode_id,
                 )
                 agent_id = meta.agent_id
+            else:
+                binder = getattr(self._agent_service, "bind_model_episode", None)
+                if callable(binder):
+                    binder(
+                        agent_id,
+                        model_id=spec.model_id,
+                        mode=spec.mode,
+                        episode_id=state.current_episode_id,
+                    )
             state.model_agent_ids.append(agent_id)
 
     def _ensure_retail_agents(self, state: TrainingArenaState) -> None:
@@ -228,6 +237,30 @@ class TrainingArenaService:
         if state is None:
             raise KeyError(f"arena not found: {arena_id}")
         return state
+
+    def _control_agents(self, agent_ids: list[str], action: str) -> None:
+        if not agent_ids:
+            return
+        controller = getattr(self._agent_service, "control_many", None)
+        if callable(controller):
+            try:
+                controller(list(agent_ids), action)
+                return
+            except Exception:
+                pass
+        for agent_id in agent_ids:
+            try:
+                self._agent_service.control(agent_id, action)
+            except Exception:
+                pass
+
+    def _complete_model_episode(self, state: TrainingArenaState, *, episode_id: str | None) -> None:
+        marker = getattr(self._agent_service, "complete_model_episode", None)
+        if callable(marker):
+            try:
+                marker(list(state.model_agent_ids), episode_id=episode_id)
+            except Exception:
+                pass
 
 
 def _safe_call(fn: Any) -> Any:
@@ -250,7 +283,7 @@ def _coerce_config(value: TrainingArenaConfig | dict[str, Any]) -> TrainingArena
             agent_id=spec.get("agent_id"),
             model_id=spec.get("model_id", "hold_model_v1"),
             mode=spec.get("mode", "collect_only"),
-            initial_cash=float(spec.get("initial_cash", 100_000.0)),
+            initial_cash=float(spec.get("initial_cash", DEFAULT_MODEL_INITIAL_CASH)),
         )
         for spec in raw_specs
     ]

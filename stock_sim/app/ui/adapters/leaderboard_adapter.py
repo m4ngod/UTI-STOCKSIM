@@ -96,9 +96,10 @@ class _HeadlessComboBox:
 class _HeadlessTableWidget:
     def __init__(self, *_, **__):
         self._rows: List[List[Any]] = []
+        self._cols = 0
 
-    def setColumnCount(self, _n):
-        pass
+    def setColumnCount(self, n):
+        self._cols = int(n)
 
     def setHorizontalHeaderLabels(self, _labels):
         pass
@@ -107,7 +108,7 @@ class _HeadlessTableWidget:
         return len(self._rows)
 
     def insertRow(self, row):
-        self._rows.insert(row, [None] * 6)
+        self._rows.insert(row, [None] * max(self._cols, 1))
 
     def removeRow(self, row):
         self._rows.pop(row)
@@ -155,7 +156,20 @@ class _HeadlessLabel:
 
 
 _SORT_OPTIONS = ["rank", "return_pct", "sharpe", "equity"]
-_COLUMNS = ["rank", "agent_id", "return_pct", "sharpe", "equity", "rank_delta"]
+_COLUMNS = ["rank", "agent_id", "equity", "pnl", "return_pct", "sharpe", "rank_delta"]
+
+
+def _format_cell(key: str, value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        if key in {"equity", "pnl"}:
+            return f"{float(value):,.2f}"
+        if key in {"return_pct", "sharpe"}:
+            return f"{float(value):.4f}"
+    except Exception:
+        pass
+    return str(value)
 
 
 def _has_qt_app() -> bool:
@@ -307,7 +321,7 @@ class LeaderboardPanelAdapter(PanelAdapter):
                     continue
                 for col_index, col_key in enumerate(_COLUMNS):
                     try:
-                        item = self._item_cls(str(row.get(col_key)))
+                        item = self._item_cls(_format_cell(col_key, row.get(col_key)))
                         self._table.setItem(row_index, col_index, item)
                     except Exception:
                         pass

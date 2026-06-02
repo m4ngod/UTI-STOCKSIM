@@ -3,7 +3,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from app.services.model_registry_service import ExternalPolicyAdapter, ModelRegistryService
+from app.services.model_registry_service import ExternalPolicyAdapter, HoldModel, ModelRegistryService
 from app.services.runtime_model_agent import RuntimeModelAgent
 
 
@@ -58,6 +58,25 @@ class _TrainableStub:
 
     def save_checkpoint(self, path):
         return {"ok": True, "path": path, "kind": "stub"}
+
+
+class _OrderPolicy:
+    def act(self, observation):
+        return {
+            "contract_version": "act.v1",
+            "action_type": "order",
+            "target": {"account_id": "MODEL_ORDER", "symbol": "001"},
+            "payload": {
+                "symbol": "001",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "tif": "GFD",
+                "quantity": 10,
+                "price": 10.01,
+            },
+            "constraints": {},
+            "meta": {"policy": "order_stub"},
+        }
 
 
 class _PolicyHandler(BaseHTTPRequestHandler):
@@ -137,6 +156,141 @@ def test_registry_persists_and_loads_static_external_policy(tmp_path):
     assert action["target"]["account_id"] == "MODEL_EXT"
     assert action["meta"]["model_id"] == "external_static_v1"
     assert action["meta"]["policy_type"] == "external"
+
+
+def test_hold_model_randomizes_top_of_book_order_when_liquidity_exists():
+    policy = HoldModel(seed=7)
+
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_HOLD", "symbol_universe": ["001"]},
+            "account": {
+                "cash": 50_000_000.0,
+                "equity": 50_000_000.0,
+                "positions": [{"symbol": "001", "quantity": 1000, "frozen_qty": 0}],
+            },
+            "market": {"order_books": {"001": {"best_bid": 19.99, "best_ask": 20.01}}},
+        }
+    )
+
+    assert action["action_type"] == "order"
+    assert action["payload"]["symbol"] == "001"
+    assert action["payload"]["side"] in {"BUY", "SELL"}
+    if action["payload"]["side"] == "BUY":
+        assert action["payload"]["price"] == 20.01
+    else:
+        assert action["payload"]["price"] == 19.99
+
+
+def test_hold_model_can_choose_bid_side_before_inventory_and_let_executor_clip():
+    policy = HoldModel(seed=0)
+
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_HOLD", "symbol_universe": ["001"]},
+            "account": {"cash": 50_000_000.0, "equity": 50_000_000.0, "positions": []},
+            "market": {"order_books": {"001": {"best_bid": 19.99, "best_ask": 20.01}}},
+        }
+    )
+
+    assert action["action_type"] == "order"
+    assert action["payload"]["side"] == "SELL"
+    assert action["payload"]["price"] == 19.99
+    assert action["constraints"]["clip_to_limits"] is True
+
+
+def test_runtime_model_agent_executes_order_action():
+    gateway = _Gateway()
+    agent = RuntimeModelAgent(
+        agent_id="MODEL_ORDER",
+        model_id="hold_model_v1",
+        runtime_gateway=gateway,
+        policy=_OrderPolicy(),
+        persist_transitions=False,
+    )
+
+    transition = agent.step_once()
+
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_ORDER"
+    assert gateway.orders[0]["side"] == "buy"
+
+
+def test_registry_exposes_target_weight_naive_rebalance_baseline(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+
+    policy = registry.create_policy("target_weight_naive_rebalance_v1")
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_NAIVE", "symbol_universe": ["001", "002", "003"]},
+        }
+    )
+
+    assert "target_weight_naive_rebalance_v1" in {spec.model_id for spec in registry.list_models()}
+    assert action["contract_version"] == "act.v1"
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_NAIVE"
+    assert action["target"]["symbols"] == ["001", "002", "003"]
+    assert round(sum(action["payload"]["weights"].values()), 6) == 0.6
+    assert set(action["payload"]["weights"].values()) == {0.2}
+    assert action["constraints"]["allow_short"] is False
+    assert action["meta"]["baseline_kind"] == "target_weight_naive_rebalance"
+
+
+def test_registry_exposes_twap_and_vwap_execution_baselines(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+
+    twap = registry.create_policy("twap_execution_v1")
+    vwap = registry.create_policy("vwap_execution_v1")
+    observation = {
+        "contract_version": "obs.v1",
+        "context": {"agent_id": "MODEL_EXEC", "symbol_universe": ["001", "002"], "step_index": 4},
+    }
+    twap_action = twap.act(observation)
+    vwap_action = vwap.act(observation)
+
+    assert {"twap_execution_v1", "vwap_execution_v1"}.issubset({spec.model_id for spec in registry.list_models()})
+    assert twap_action["contract_version"] == "act.v1"
+    assert twap_action["action_type"] == "target_weight"
+    assert twap_action["payload"]["rebalance_mode"] == "twap"
+    assert twap_action["payload"]["schedule"]["progress"] == 0.5
+    assert round(sum(twap_action["payload"]["weights"].values()), 6) == 0.3
+    assert twap_action["meta"]["baseline_kind"] == "twap"
+    assert vwap_action["payload"]["rebalance_mode"] == "vwap"
+    assert vwap_action["payload"]["schedule"]["progress"] != twap_action["payload"]["schedule"]["progress"]
+    assert vwap_action["meta"]["baseline_kind"] == "vwap"
+
+
+def test_registry_exposes_ac_lite_execution_baseline(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+
+    policy = registry.create_policy("ac_lite_execution_v1")
+    early = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_AC", "symbol_universe": ["001", "002"], "step_index": 0},
+        }
+    )
+    later = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_AC", "symbol_universe": ["001", "002"], "step_index": 4},
+        }
+    )
+
+    assert "ac_lite_execution_v1" in {spec.model_id for spec in registry.list_models()}
+    assert early["contract_version"] == "act.v1"
+    assert early["action_type"] == "target_weight"
+    assert early["payload"]["rebalance_mode"] == "ac_lite"
+    assert early["meta"]["baseline_kind"] == "ac_lite"
+    assert early["payload"]["schedule"]["sigma"] == 0.02
+    assert early["payload"]["schedule"]["eta"] == 0.01
+    assert early["payload"]["schedule"]["risk_aversion"] == 1.0
+    assert 0.0 < early["payload"]["schedule"]["progress"] < later["payload"]["schedule"]["progress"] < 1.0
+    assert sum(later["payload"]["weights"].values()) > sum(early["payload"]["weights"].values())
 
 
 def test_registry_wraps_injected_trainable_policy(tmp_path):

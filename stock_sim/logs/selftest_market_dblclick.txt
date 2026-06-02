@@ -1,1 +1,0 @@
-PASS: Market dblclick -> detail view updated and series loaded.

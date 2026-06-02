@@ -18,6 +18,8 @@ from stock_sim.persistence.models_trade import TradeORM
 from stock_sim.services.sim_clock import current_sim_day
 from stock_sim.settings import settings
 
+_AGENT_TYPE_CACHE: dict[str, str] = {}
+
 
 class OrderPreTradeService:
     """Own normalize/risk/freeze/reject policy before matching."""
@@ -76,9 +78,15 @@ class OrderPreTradeService:
 
         risk_positions = acc.positions
         settlement_cycle = getattr(params, "settlement_cycle", 0) if params else 0
-        same_day_buy_qty = self._persisted_same_day_buy_qty(
-            account_id=acc.id,
-            symbol=order.symbol,
+        agent_type = self._agent_type_for_account(acc.id)
+        tplus_applies = agent_type == "RETAIL"
+        same_day_buy_qty = (
+            self._persisted_same_day_buy_qty(
+                account_id=acc.id,
+                symbol=order.symbol,
+            )
+            if tplus_applies
+            else 0
         )
         rr = self._risk.validate(
             account=acc,
@@ -92,6 +100,8 @@ class OrderPreTradeService:
                 "tif": order.tif,
                 "engine": engine,
                 "same_day_buy_qty": same_day_buy_qty,
+                "agent_type": agent_type,
+                "tplus_applies": tplus_applies,
             },
             order_type=order.order_type,
         )
@@ -151,6 +161,39 @@ class OrderPreTradeService:
         except Exception:
             return 0
 
+    def _agent_type_for_account(self, account_id: str | None) -> str:
+        normalized = str(account_id or "").strip()
+        if not normalized:
+            return "RETAIL"
+        cached = _AGENT_TYPE_CACHE.get(normalized)
+        if cached:
+            return cached
+        upper = normalized.upper()
+        if "MODEL" in upper:
+            _AGENT_TYPE_CACHE[normalized] = "MODEL"
+            return "MODEL"
+        if "LIQUIDITY" in upper:
+            _AGENT_TYPE_CACHE[normalized] = "LIQUIDITY"
+            return "LIQUIDITY"
+        session = getattr(self._accounts, "s", None)
+        if session is not None:
+            try:
+                from stock_sim.persistence.models_agent_binding import AgentBinding
+
+                row = (
+                    session.query(AgentBinding.agent_type)
+                    .filter(AgentBinding.account_id == normalized)
+                    .one_or_none()
+                )
+                if row is not None:
+                    agent_type = str(row[0] or "RETAIL").strip().upper() or "RETAIL"
+                    _AGENT_TYPE_CACHE[normalized] = agent_type
+                    return agent_type
+            except Exception:
+                pass
+        _AGENT_TYPE_CACHE[normalized] = "RETAIL"
+        return "RETAIL"
+
     def normalize_order(self, order: Order, params) -> tuple[bool, str | None]:
         if not params:
             return True, None
@@ -200,6 +243,10 @@ class OrderPreTradeService:
     ) -> None:
         code = (metric_code or reason).lower()
         order.status = OrderStatus.REJECTED
+        try:
+            order.attach_meta(reject_reason=reason, reject_code=metric_code or reason)
+        except Exception:
+            pass
         self._persist_order(order, "REJECT", reason)
         metrics.inc("orders_rejected")
         metrics.inc(settings.REJECT_METRIC_PREFIX + code)

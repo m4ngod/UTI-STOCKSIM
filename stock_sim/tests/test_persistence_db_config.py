@@ -6,6 +6,7 @@ from stock_sim.persistence.db_config import (
     build_database_config,
     database_dialect,
     normalize_database_url,
+    preferred_postgres_driver,
     resolve_database_url,
 )
 
@@ -21,12 +22,14 @@ def test_stocksim_db_url_overrides_legacy_db_url(monkeypatch):
     monkeypatch.setenv("DB_URL", "sqlite:///legacy.db")
     monkeypatch.setenv("STOCKSIM_DB_URL", "postgresql://u:p@localhost:5432/stock_sim")
 
-    assert resolve_database_url() == "postgresql+psycopg://u:p@localhost:5432/stock_sim"
+    driver = preferred_postgres_driver()
+    assert resolve_database_url() == f"postgresql+{driver}://u:p@localhost:5432/stock_sim"
 
 
 def test_postgres_url_normalization_and_dialect():
-    assert normalize_database_url("postgres://u:p@localhost/db") == "postgresql+psycopg://u:p@localhost/db"
-    assert normalize_database_url("postgresql://u:p@localhost/db") == "postgresql+psycopg://u:p@localhost/db"
+    driver = preferred_postgres_driver()
+    assert normalize_database_url("postgres://u:p@localhost/db") == f"postgresql+{driver}://u:p@localhost/db"
+    assert normalize_database_url("postgresql://u:p@localhost/db") == f"postgresql+{driver}://u:p@localhost/db"
     assert normalize_database_url("postgresql+psycopg2://u:p@localhost/db") == "postgresql+psycopg2://u:p@localhost/db"
     assert database_dialect("postgresql+psycopg://u:p@localhost/db") == "postgresql"
 
@@ -38,8 +41,9 @@ def test_database_config_builds_postgres_pool_options(monkeypatch):
 
     cfg = build_database_config()
 
+    driver = preferred_postgres_driver()
     assert cfg.dialect == "postgresql"
-    assert cfg.url == "postgresql+psycopg://u:p@localhost:5432/stock_sim"
+    assert cfg.url == f"postgresql+{driver}://u:p@localhost:5432/stock_sim"
     assert cfg.engine_kwargs["pool_pre_ping"] is True
     assert cfg.engine_kwargs["pool_size"] == 7
     assert cfg.engine_kwargs["max_overflow"] == 11
@@ -60,7 +64,8 @@ def test_settings_build_db_url_reads_environment_at_call_time(monkeypatch):
 
     monkeypatch.setenv("STOCKSIM_DB_URL", "postgresql://u:p@localhost:5432/stock_sim")
 
-    assert settings.build_db_url() == "postgresql+psycopg://u:p@localhost:5432/stock_sim"
+    driver = preferred_postgres_driver()
+    assert settings.build_db_url() == f"postgresql+{driver}://u:p@localhost:5432/stock_sim"
 
 
 def test_settings_build_db_url_defaults_to_postgres(monkeypatch):

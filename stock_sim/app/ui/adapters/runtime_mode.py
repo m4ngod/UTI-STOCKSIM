@@ -20,6 +20,7 @@ def ui_runtime_enabled() -> bool:
         return True
     try:
         from PySide6.QtWidgets import QApplication  # type: ignore
+
         return QApplication.instance() is not None
     except Exception:
         return False

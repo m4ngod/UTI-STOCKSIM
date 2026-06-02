@@ -16,6 +16,7 @@ try:
     from stock_sim.persistence.models_order import OrderORM  # type: ignore
     from stock_sim.persistence.models_trade import TradeORM  # type: ignore
     from stock_sim.services.account_service import AccountService  # type: ignore
+    from stock_sim.services.sim_clock import ensure_sim_clock_started  # type: ignore
     from stock_sim.core.const import OrderSide, OrderStatus  # type: ignore
 except Exception:  # pragma: no cover
     try:
@@ -28,6 +29,7 @@ except Exception:  # pragma: no cover
         from persistence.models_order import OrderORM  # type: ignore
         from persistence.models_trade import TradeORM  # type: ignore
         from services.account_service import AccountService  # type: ignore
+        from services.sim_clock import ensure_sim_clock_started  # type: ignore
         from core.const import OrderSide, OrderStatus  # type: ignore
     except Exception:  # pragma: no cover
         models_init = None  # type: ignore
@@ -39,6 +41,7 @@ except Exception:  # pragma: no cover
         OrderORM = None  # type: ignore
         TradeORM = None  # type: ignore
         AccountService = None  # type: ignore
+        ensure_sim_clock_started = None  # type: ignore
         OrderSide = None  # type: ignore
         OrderStatus = None  # type: ignore
 
@@ -243,6 +246,22 @@ def _retail_account_ids(session) -> tuple[list[str], str]:
                 .order_by(AgentBinding.updated_at.desc(), AgentBinding.agent_name.asc())
                 .all()
             )
+            current_run_id = _current_run_id()
+            current_run_rows = [
+                row
+                for row in rows
+                if current_run_id and str(getattr(row, "run_id", "") or "").strip() == current_run_id
+            ]
+            runtime_rows = [
+                row for row in rows if _has_runtime_binding_meta(_parse_binding_meta(getattr(row, "meta", None)))
+            ]
+            latest_runtime_rows = _latest_binding_rows(runtime_rows)
+            if latest_runtime_rows:
+                rows = latest_runtime_rows
+            elif current_run_rows:
+                rows = current_run_rows
+            elif runtime_rows:
+                rows = runtime_rows
             active_ids = []
             for row in rows:
                 account_id = str(getattr(row, "account_id", "")).strip()
@@ -281,6 +300,38 @@ def _parse_binding_meta(raw: object) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
+def _has_runtime_binding_meta(meta: dict[str, object]) -> bool:
+    return any(key in meta for key in ("status", "start_time", "last_heartbeat"))
+
+
+def _latest_binding_rows(rows: list[object], *, window_seconds: float = 10.0) -> list[object]:
+    dated_rows = []
+    for row in rows:
+        updated_at = getattr(row, "updated_at", None)
+        try:
+            stamp = updated_at.timestamp()
+        except Exception:
+            continue
+        dated_rows.append((stamp, row))
+    if not dated_rows:
+        return []
+    newest = max(stamp for stamp, _row in dated_rows)
+    cutoff = newest - max(float(window_seconds), 0.0)
+    return [row for stamp, row in dated_rows if stamp >= cutoff]
+
+
+def _current_run_id() -> str | None:
+    if ensure_sim_clock_started is None:
+        return None
+    try:
+        clk = ensure_sim_clock_started()
+        snap = clk.snapshot() if hasattr(clk, "snapshot") else {}
+        value = str((snap or {}).get("run_id") or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
 def _is_recently_active_binding(meta: dict[str, object]) -> bool:
     status = str(meta.get("status") or "").strip().upper()
     if status not in ACTIVE_RETAIL_STATUSES:
@@ -306,13 +357,10 @@ def _coerce_int(value: object) -> int | None:
 
 
 def _existing_positive_qty(session, symbol: str, account_ids: Iterable[str]) -> int:
-    ids = [str(x).strip() for x in account_ids if str(x).strip()]
-    if not ids:
-        return 0
     try:
         rows = (
             session.query(Position)
-            .filter(Position.symbol == symbol, Position.account_id.in_(ids), Position.quantity > 0)
+            .filter(Position.symbol == symbol, Position.quantity > 0)
             .all()
         )
     except Exception:
@@ -321,13 +369,10 @@ def _existing_positive_qty(session, symbol: str, account_ids: Iterable[str]) -> 
 
 
 def _existing_positive_recipient_count(session, symbol: str, account_ids: Iterable[str]) -> int:
-    ids = [str(x).strip() for x in account_ids if str(x).strip()]
-    if not ids:
-        return 0
     try:
         return int(
             session.query(Position)
-            .filter(Position.symbol == symbol, Position.account_id.in_(ids), Position.quantity > 0)
+            .filter(Position.symbol == symbol, Position.quantity > 0)
             .count()
         )
     except Exception:
@@ -375,12 +420,9 @@ def _clear_unselected_distribution_positions(
     account_ids: Iterable[str],
     selected_ids: set[str],
 ) -> None:
-    ids = [str(x).strip() for x in account_ids if str(x).strip()]
-    if not ids:
-        return
     rows = (
         session.query(Position)
-        .filter(Position.symbol == symbol, Position.account_id.in_(ids), Position.quantity > 0)
+        .filter(Position.symbol == symbol, Position.quantity > 0)
         .all()
     )
     for row in rows:

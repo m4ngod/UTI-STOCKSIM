@@ -25,13 +25,15 @@ __all__ = ["OrdersPanel"]
 
 
 class OrdersPanel:
-    def __init__(self, capacity: int = 1000) -> None:
+    def __init__(self, capacity: int = 1000, runtime_gateway: Any | None = None) -> None:
         self._lock = RLock()
         self._capacity = max(1, int(capacity))
         self._lines: deque[Dict[str, Any]] = deque(maxlen=self._capacity)
         self._recent_keys: deque[tuple[Any, ...]] = deque(maxlen=256)
         self._symbol_filter: Optional[str] = None  # lower-case substring
         self._type_filter: Optional[Set[str]] = None  # e.g., {"Trade", "OrderRejected"}
+        self._runtime_gateway = runtime_gateway
+        self._history_loaded = False
         self._account_filter: Optional[str] = None  # 新增: account_id 过滤
 
     # ---------------- Public API ----------------
@@ -100,6 +102,7 @@ class OrdersPanel:
         Items are ordered from oldest -> newest (append order). UI may reverse if desired.
         Applies current filters.
         """
+        self._ensure_history_loaded()
         with self._lock:
             sym_filter = self._symbol_filter
             type_filter = self._type_filter
@@ -121,6 +124,23 @@ class OrdersPanel:
             },
             "total": len(items),
         }
+
+    def _ensure_history_loaded(self) -> None:
+        with self._lock:
+            if self._history_loaded:
+                return
+            self._history_loaded = True
+        gateway = self._runtime_gateway
+        if gateway is None:
+            return
+        try:
+            loader = getattr(gateway, "list_order_events", None)
+            events = loader(limit=self._capacity, include_all_runs=True) if callable(loader) else []
+        except Exception:
+            events = []
+        for event in events or []:
+            if isinstance(event, dict):
+                self.add_line(event)
 
     # ---------------- Internals ----------------
     @staticmethod

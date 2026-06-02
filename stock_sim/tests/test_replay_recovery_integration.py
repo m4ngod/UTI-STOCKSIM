@@ -128,3 +128,41 @@ def test_replay_supports_sim_dt_filter_and_reports_sim_dt_range():
     assert summary["sim_dt_range"] is not None
     assert summary["sim_dt_range"][0] == datetime(1, 1, 4)
     assert summary["sim_dt_range"][1] == datetime(1, 1, 5)
+
+
+def test_replay_accepts_iso_sim_dt_filter_bounds():
+    models_init.init_models()
+    disable_event_persistence()
+    assert enable_event_persistence(force=True)
+
+    run_id = "RUN-SIMDT-ISO-001"
+    event_bus.publish(EventType.ACCOUNT_UPDATED, {"run_id": run_id, "sim_day": 6, "sim_dt": "0001-01-06T09:30:00", "i": 1})
+    event_bus.publish(EventType.ACCOUNT_UPDATED, {"run_id": run_id, "sim_day": 6, "sim_dt": "0001-01-06T10:30:00", "i": 2})
+    time.sleep(0.05)
+
+    loaded = replay_service.load_events(
+        run_id=run_id,
+        start_sim_dt="0001-01-06T10:00:00",
+        end_sim_dt="0001-01-06T11:00:00",
+    )
+
+    assert [ev["payload"]["i"] for ev in loaded] == [2]
+
+
+def test_replay_converts_offset_iso_sim_dt_bounds_to_naive_utc():
+    models_init.init_models()
+    disable_event_persistence()
+    assert enable_event_persistence(force=True)
+
+    run_id = "RUN-SIMDT-OFFSET-001"
+    event_bus.publish(EventType.ACCOUNT_UPDATED, {"run_id": run_id, "sim_day": 6, "sim_dt": "2026-04-28T02:30:00", "i": 1})
+    event_bus.publish(EventType.ACCOUNT_UPDATED, {"run_id": run_id, "sim_day": 6, "sim_dt": "2026-04-28T03:30:00", "i": 2})
+    time.sleep(0.05)
+
+    loaded = replay_service.load_events(
+        run_id=run_id,
+        start_sim_dt="2026-04-28T10:00:00+08:00",
+        end_sim_dt="2026-04-28T11:00:00+08:00",
+    )
+
+    assert [ev["payload"]["i"] for ev in loaded] == [1]

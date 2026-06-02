@@ -9,6 +9,7 @@ class _FakeRuntimeAgent:
     def __init__(self, **_kwargs):
         self.started = False
         self.stopped = False
+        self.completed_episode_ids = []
 
     def start(self):
         self.started = True
@@ -19,6 +20,9 @@ class _FakeRuntimeAgent:
     def stop(self):
         self.stopped = True
         self.started = False
+
+    def complete_episode(self, episode_id=None):
+        self.completed_episode_ids.append(episode_id)
 
 
 def _agent_service():
@@ -63,7 +67,7 @@ def test_training_arena_start_creates_episode_and_model_agents():
         session.close()
 
 
-def test_training_arena_evaluate_ranks_episode_results_and_stops():
+def test_training_arena_evaluate_ranks_episode_results_and_completes_episode():
     models_init.init_models()
     svc = _agent_service()
     arena = TrainingArenaService(agent_service=svc)
@@ -94,7 +98,92 @@ def test_training_arena_evaluate_ranks_episode_results_and_stops():
 
     evaluated = arena.evaluate_arena("arena-eval")
 
-    assert evaluated["status"] == "STOPPED"
+    assert evaluated["status"] == "RUNNING"
     assert evaluated["last_summary"]["episode"]["status"] == "completed"
     assert [row["agent_id"] for row in evaluated["last_summary"]["results"]] == ["MODEL_TOP", "MODEL_LOW"]
     assert [row["rank"] for row in evaluated["last_summary"]["results"]] == [1, 2]
+    assert svc._runtime_agents["MODEL_TOP"].completed_episode_ids == ["episode-eval"]
+    assert svc._runtime_agents["MODEL_LOW"].completed_episode_ids == ["episode-eval"]
+
+
+def test_training_arena_rebinds_existing_model_to_new_episode():
+    models_init.init_models()
+    svc = _agent_service()
+    svc.create_model_agent(
+        agent_id="MODEL_REUSED",
+        model_id="ppo_lstm_v1",
+        mode="online_train",
+        episode_id="episode-old",
+    )
+    arena = TrainingArenaService(agent_service=svc)
+    arena.create_arena(
+        TrainingArenaConfig(
+            arena_id="arena-rebind",
+            model_specs=[
+                ArenaModelSpec(
+                    agent_id="MODEL_REUSED",
+                    model_id="ppo_lstm_v1",
+                    mode="online_train",
+                ),
+            ],
+            generation=1,
+        )
+    )
+
+    started = arena.start_arena("arena-rebind", episode_id="episode-new")
+    reused = svc.get("MODEL_REUSED")
+
+    assert started["model_agent_ids"] == ["MODEL_REUSED"]
+    assert reused is not None
+    assert reused.episode_id == "episode-new"
+    assert reused.model_id == "ppo_lstm_v1"
+    assert reused.mode == "online_train"
+    assert reused.status == "RUNNING"
+
+
+def test_training_arena_uses_batch_lifecycle_when_available():
+    models_init.init_models()
+    svc = _agent_service()
+    calls = []
+    original = svc.control_many
+
+    def _recording_control_many(agent_ids, action):
+        calls.append((list(agent_ids), action))
+        return original(agent_ids, action)
+
+    svc.control_many = _recording_control_many  # type: ignore[method-assign]
+    arena = TrainingArenaService(agent_service=svc)
+    arena.create_arena(
+        TrainingArenaConfig(
+            arena_id="arena-batch-control",
+            model_specs=[
+                ArenaModelSpec(agent_id="MODEL_BATCH_A", model_id="hold_model_v1"),
+                ArenaModelSpec(agent_id="MODEL_BATCH_B", model_id="random_weight_v1"),
+            ],
+            retail_count=0,
+        )
+    )
+
+    arena.start_arena("arena-batch-control", episode_id="episode-batch-control")
+    arena.stop_arena("arena-batch-control")
+
+    assert calls[0] == (["MODEL_BATCH_A", "MODEL_BATCH_B"], "start")
+    assert calls[1] == (["MODEL_BATCH_A", "MODEL_BATCH_B"], "stop")
+
+
+def test_training_episode_create_does_not_downgrade_completed_episode():
+    models_init.init_models()
+    session = SessionLocal()
+    try:
+        service = TrainingEpisodeService(session)
+        service.create_episode(episode_id="episode-no-downgrade", generation=0)
+        service.complete_episode("episode-no-downgrade")
+        session.commit()
+
+        service.create_episode(episode_id="episode-no-downgrade", generation=0)
+        session.commit()
+        summary = service.get_episode_summary("episode-no-downgrade")
+
+        assert summary["episode"]["status"] == "completed"
+    finally:
+        session.close()

@@ -1,11 +1,33 @@
 from __future__ import annotations
 
 import os
+import importlib
 from dataclasses import dataclass
 from typing import Any
 
 
-POSTGRES_DEFAULT_URL = "postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
+POSTGRES_DRIVER_ENV = "STOCKSIM_POSTGRES_DRIVER"
+POSTGRES_DRIVER_MODULES = {
+    "psycopg": "psycopg",
+    "pg8000": "pg8000",
+    "psycopg2": "psycopg2",
+}
+
+
+def preferred_postgres_driver() -> str:
+    raw = str(os.environ.get(POSTGRES_DRIVER_ENV) or "").strip().lower()
+    if raw in POSTGRES_DRIVER_MODULES:
+        return raw
+    for driver, module_name in POSTGRES_DRIVER_MODULES.items():
+        try:
+            importlib.import_module(module_name)
+            return driver
+        except Exception:
+            continue
+    return "psycopg"
+
+
+POSTGRES_DEFAULT_URL = f"postgresql+{preferred_postgres_driver()}://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
 SQLITE_FALLBACK_URL = "sqlite:///stock_sim_test.db"
 
 
@@ -37,9 +59,9 @@ def env_int(name: str, default: int) -> int:
 def normalize_database_url(url: str) -> str:
     candidate = str(url or "").strip()
     if candidate.startswith("postgres://"):
-        return "postgresql+psycopg://" + candidate[len("postgres://") :]
+        return f"postgresql+{preferred_postgres_driver()}://" + candidate[len("postgres://") :]
     if candidate.startswith("postgresql://"):
-        return "postgresql+psycopg://" + candidate[len("postgresql://") :]
+        return f"postgresql+{preferred_postgres_driver()}://" + candidate[len("postgresql://") :]
     return candidate
 
 
@@ -99,5 +121,6 @@ __all__ = [
     "env_bool",
     "env_int",
     "normalize_database_url",
+    "preferred_postgres_driver",
     "resolve_database_url",
 ]

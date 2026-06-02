@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """OrdersPanelAdapter with real-UI and headless-safe modes."""
 
+import time
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from infra.event_bus import event_bus
@@ -213,7 +214,9 @@ class OrdersPanelAdapter(PanelAdapter):
         self._active_types: Optional[Set[str]] = None
         self._cancel_subs: List[callable] = []
         self._items: List[Dict[str, Any]] = []
-        self._refresh_throttle = Throttle(200, self._do_refresh, metrics_prefix="orders_adapter_refresh")
+        self._notice_last_ts: Dict[str, float] = {}
+        self._notice_suppressed: Dict[str, int] = {}
+        self._refresh_throttle = Throttle(750, self._do_refresh, metrics_prefix="orders_adapter_refresh")
         self._setup_subscriptions()
 
     def _post_to_ui(self, cb) -> bool:
@@ -353,7 +356,7 @@ class OrdersPanelAdapter(PanelAdapter):
 
     def _apply_view(self, view: Dict[str, Any]):
         items = view.get("items", []) if isinstance(view, dict) else []
-        self._items = items[-1000:] if len(items) > 1000 else list(items)
+        self._items = items[-300:] if len(items) > 300 else list(items)
 
         tbl = self._table
         if tbl is not None:
@@ -378,19 +381,19 @@ class OrdersPanelAdapter(PanelAdapter):
 
     def _setup_subscriptions(self):
         try:
-            self._cancel_subs.append(on_order_submitted(self._on_submitted, async_mode=False))
+            self._cancel_subs.append(on_order_submitted(self._on_submitted, async_mode=True))
         except Exception:
             pass
         try:
-            self._cancel_subs.append(on_trade_executed(self._on_trade, async_mode=False))
+            self._cancel_subs.append(on_trade_executed(self._on_trade, async_mode=True))
         except Exception:
             pass
         try:
-            self._cancel_subs.append(on_order_rejected(self._on_rejected, async_mode=False))
+            self._cancel_subs.append(on_order_rejected(self._on_rejected, async_mode=True))
         except Exception:
             pass
         try:
-            self._cancel_subs.append(on_order_canceled(self._on_canceled, async_mode=False))
+            self._cancel_subs.append(on_order_canceled(self._on_canceled, async_mode=True))
         except Exception:
             pass
 
@@ -443,7 +446,7 @@ class OrdersPanelAdapter(PanelAdapter):
             order = payload.get("order") or {}
             order_id = order.get("order_id")
             reason = payload.get("reason")
-            notification_center.publish_error("ORDER_REJECTED", f"OrderRejected: {order_id or '-'} reason={reason}")
+            self._publish_notice("error", "ORDER_REJECTED", f"OrderRejected: {order_id or '-'} reason={reason}")
         except Exception:
             pass
         self._on_trade(_topic, payload)
@@ -452,10 +455,27 @@ class OrdersPanelAdapter(PanelAdapter):
         try:
             order_id = payload.get("order_id")
             reason = payload.get("reason")
-            notification_center.publish_warning("ORDER_CANCELED", f"OrderCanceled: {order_id or '-'} reason={reason}")
+            self._publish_notice("warning", "ORDER_CANCELED", f"OrderCanceled: {order_id or '-'} reason={reason}")
         except Exception:
             pass
         self._on_trade(_topic, payload)
+
+    def _publish_notice(self, level: str, code: str, message: str) -> None:
+        now = time.time()
+        last = self._notice_last_ts.get(code, 0.0)
+        if now - last < 3.0:
+            self._notice_suppressed[code] = self._notice_suppressed.get(code, 0) + 1
+            return
+        suppressed = self._notice_suppressed.pop(code, 0)
+        if suppressed:
+            message = f"{message} (+{suppressed} similar)"
+        self._notice_last_ts[code] = now
+        if level == "error":
+            notification_center.publish_error(code, message)
+        elif level == "warning":
+            notification_center.publish_warning(code, message)
+        else:
+            notification_center.publish_info(code, message)
 
     def _do_refresh(self):
         try:

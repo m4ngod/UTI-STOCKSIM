@@ -25,6 +25,7 @@ except Exception:  # noqa
 _READONLY = False
 _SENT_RESUMED = False
 _LAST_REPORT: Dict[str, Any] | None = None
+_ACKED_INCONSISTENT_RUNS: set[str] = set()
 
 
 class RecoveryService:
@@ -167,8 +168,10 @@ class RecoveryService:
     def recover(self) -> Dict[str, Any]:
         global _READONLY, _SENT_RESUMED, _LAST_REPORT
         report = self._build_report()
-        inconsistent = bool(report["checks"].get("inconsistent_runs"))
-        if inconsistent:
+        inconsistent_runs = [str(run_id) for run_id in (report["checks"].get("inconsistent_runs") or [])]
+        new_inconsistent_runs = [run_id for run_id in inconsistent_runs if run_id not in _ACKED_INCONSISTENT_RUNS]
+        if new_inconsistent_runs:
+            _ACKED_INCONSISTENT_RUNS.update(new_inconsistent_runs)
             _READONLY = True
             report["status"] = "degraded"
             report["readonly"] = True

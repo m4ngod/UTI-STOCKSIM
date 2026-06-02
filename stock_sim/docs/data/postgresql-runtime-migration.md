@@ -1,6 +1,6 @@
 # PostgreSQL runtime persistence migration
 
-_Last updated: 2026-04-25_
+_Last updated: 2026-05-07_
 
 ## Status
 
@@ -21,12 +21,26 @@ Runtime database selection now follows this priority:
 
 1. `STOCKSIM_DB_URL`
 2. `DB_URL`
-3. built-in PostgreSQL default: `postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim`
+3. built-in PostgreSQL default: `postgresql+<available-driver>://stock_sim:stock_sim@127.0.0.1:5432/stock_sim`
 
-Recommended PostgreSQL URL:
+The PostgreSQL driver is resolved in this order:
+
+1. explicit `STOCKSIM_POSTGRES_DRIVER`, when set to `psycopg`, `pg8000`, or `psycopg2`
+2. installed and importable `psycopg`
+3. installed and importable `pg8000`
+4. installed and importable `psycopg2`
+5. final unresolved default `psycopg`
+
+Recommended PostgreSQL URL when the `psycopg` runtime has `libpq`, `psycopg_c`, or `psycopg_binary` available:
 
 ```powershell
 $env:STOCKSIM_DB_URL = "postgresql+psycopg://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
+```
+
+Recommended PostgreSQL URL for the current Windows Python 3.11 runtime, where `psycopg-binary` is unavailable and system `libpq` is not installed:
+
+```powershell
+$env:STOCKSIM_DB_URL = "postgresql+pg8000://stock_sim:stock_sim@127.0.0.1:5432/stock_sim"
 ```
 
 SQLite is still available for tests or local diagnostics by setting:
@@ -37,8 +51,9 @@ $env:STOCKSIM_DB_URL = "sqlite:///stock_sim_test.db"
 
 Compatibility shortcuts are normalized:
 
-- `postgres://...` -> `postgresql+psycopg://...`
-- `postgresql://...` -> `postgresql+psycopg://...`
+- `postgres://...` -> `postgresql+<available-driver>://...`
+- `postgresql://...` -> `postgresql+<available-driver>://...`
+- explicit URLs such as `postgresql+psycopg://...`, `postgresql+pg8000://...`, and `postgresql+psycopg2://...` are preserved.
 
 ### Engine behavior
 

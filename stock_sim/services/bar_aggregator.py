@@ -64,16 +64,79 @@ class BarAggregator:
         latest_safe_minute = target_end.replace(second=0, microsecond=0) - timedelta(minutes=1)
         if latest_safe_minute < datetime(1970, 1, 1):
             return
+        touched_days: set[int] = set()
         for minute_start in self._completed_snapshot_minutes(latest_safe_minute):
             if minute_start in self._processed_minutes:
                 continue
-            self._build_minute_bars(minute_start)
+            touched_days.update(self._build_minute_bars(minute_start, refresh_day_bars=False))
             self._processed_minutes.add(minute_start)
             if minute_start.minute == 59:
                 self._build_hour_bar(minute_start.replace(minute=0, second=0, microsecond=0))
+        for sim_day in touched_days:
+            self._build_day_bar_by_sim_day(sim_day)
         if len(self._processed_minutes) > 2000:
             cutoff = latest_safe_minute - timedelta(days=2)
             self._processed_minutes = {m for m in self._processed_minutes if m >= cutoff}
+
+    def flush_all(self, *, run_ids: list[str] | None = None) -> dict[str, int]:
+        """Build bars for every persisted snapshot minute, including the current minute."""
+        run_scope = self._normalize_run_scope(run_ids)
+        sess: Session = SessionLocal()
+        try:
+            query = sess.query(Snapshot1s.ts)
+            if run_scope:
+                query = query.filter(Snapshot1s.run_id.in_(run_scope))
+            rows = query.order_by(Snapshot1s.ts.asc()).all()
+            minutes = sorted(
+                {
+                    row[0].replace(second=0, microsecond=0)
+                    for row in rows
+                    if row and row[0] is not None
+                }
+            )
+            before_count = self._bar_count(sess, run_scope)
+        finally:
+            sess.close()
+
+        touched_days: set[int] = set()
+        for minute_start in minutes:
+            touched_days.update(
+                self._build_minute_bars(
+                    minute_start,
+                    run_ids=run_scope,
+                    refresh_day_bars=False,
+                )
+            )
+            self._processed_minutes.add(minute_start)
+            if minute_start.minute == 59:
+                self._build_hour_bar(
+                    minute_start.replace(minute=0, second=0, microsecond=0),
+                    run_ids=run_scope,
+                )
+        for sim_day in touched_days:
+            self._build_day_bar_by_sim_day(sim_day, run_ids=run_scope)
+
+        sess = SessionLocal()
+        try:
+            after_count = self._bar_count(sess, run_scope)
+        finally:
+            sess.close()
+        return {
+            "processed_minute_count": len(minutes),
+            "bar_1m_count": after_count,
+            "bar_1m_delta": max(after_count - before_count, 0),
+        }
+
+    @staticmethod
+    def _bar_count(sess: Session, run_scope: list[str]) -> int:
+        query = sess.query(Bar1m)
+        if run_scope:
+            query = query.filter(Bar1m.run_id.in_(run_scope))
+        return int(query.count())
+
+    @staticmethod
+    def _normalize_run_scope(run_ids: list[str] | None) -> list[str]:
+        return list(dict.fromkeys(str(item).strip() for item in (run_ids or []) if str(item).strip()))
 
     def _on_sim_day(self, _topic: str, payload: dict):
         try:
@@ -106,18 +169,26 @@ class BarAggregator:
         )
         return minutes[-self.max_backfill_minutes :]
 
-    def _build_minute_bars(self, minute_start: datetime):
+    def _build_minute_bars(
+        self,
+        minute_start: datetime,
+        *,
+        run_ids: list[str] | None = None,
+        refresh_day_bars: bool = True,
+    ) -> set[int]:
         minute_end = minute_start + timedelta(minutes=1)
+        run_scope = self._normalize_run_scope(run_ids)
         sess: Session = SessionLocal()
         try:
-            snaps: List[Snapshot1s] = (
+            query = (
                 sess.query(Snapshot1s)
                 .filter(Snapshot1s.ts >= minute_start, Snapshot1s.ts < minute_end)
-                .order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc())
-                .all()
             )
+            if run_scope:
+                query = query.filter(Snapshot1s.run_id.in_(run_scope))
+            snaps: List[Snapshot1s] = query.order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc()).all()
             if not snaps:
-                return
+                return set()
             grouped: Dict[tuple[str, str | None], List[Snapshot1s]] = defaultdict(list)
             for snap in snaps:
                 if snap.last_price is not None:
@@ -139,23 +210,28 @@ class BarAggregator:
                     sim_dt=sim_dt,
                 )
             sess.commit()
-            for sim_day in touched_days:
-                self._build_day_bar_by_sim_day(sim_day)
+            if refresh_day_bars:
+                for sim_day in touched_days:
+                    self._build_day_bar_by_sim_day(sim_day, run_ids=run_scope)
+            return touched_days
         except Exception:
             sess.rollback()
+            return set()
         finally:
             sess.close()
 
-    def _build_hour_bar(self, hour_start: datetime):
+    def _build_hour_bar(self, hour_start: datetime, *, run_ids: list[str] | None = None):
         hour_end = hour_start + timedelta(hours=1)
+        run_scope = self._normalize_run_scope(run_ids)
         sess: Session = SessionLocal()
         try:
-            bars: List[Bar1m] = (
+            query = (
                 sess.query(Bar1m)
                 .filter(Bar1m.ts >= hour_start, Bar1m.ts < hour_end)
-                .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
-                .all()
             )
+            if run_scope:
+                query = query.filter(Bar1m.run_id.in_(run_scope))
+            bars: List[Bar1m] = query.order_by(Bar1m.symbol.asc(), Bar1m.ts.asc()).all()
             if not bars:
                 return
             grouped: Dict[tuple[str, str | None], List[Bar1m]] = defaultdict(list)
@@ -217,16 +293,15 @@ class BarAggregator:
         finally:
             sess.close()
 
-    def _build_day_bar_by_sim_day(self, sim_day: int):
+    def _build_day_bar_by_sim_day(self, sim_day: int, *, run_ids: list[str] | None = None):
         day = max(0, int(sim_day))
+        run_scope = self._normalize_run_scope(run_ids)
         sess: Session = SessionLocal()
         try:
-            bars: List[Bar1m] = (
-                sess.query(Bar1m)
-                .filter(Bar1m.sim_day == day)
-                .order_by(Bar1m.symbol.asc(), Bar1m.ts.asc())
-                .all()
-            )
+            bars_query = sess.query(Bar1m).filter(Bar1m.sim_day == day)
+            if run_scope:
+                bars_query = bars_query.filter(Bar1m.run_id.in_(run_scope))
+            bars: List[Bar1m] = bars_query.order_by(Bar1m.symbol.asc(), Bar1m.ts.asc()).all()
             if bars:
                 grouped: Dict[tuple[str, str | None], List[Bar1m]] = defaultdict(list)
                 for bar in bars:
@@ -247,12 +322,10 @@ class BarAggregator:
                 sess.commit()
                 return
 
-            snaps: List[Snapshot1s] = (
-                sess.query(Snapshot1s)
-                .filter(Snapshot1s.sim_day == day)
-                .order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc())
-                .all()
-            )
+            snaps_query = sess.query(Snapshot1s).filter(Snapshot1s.sim_day == day)
+            if run_scope:
+                snaps_query = snaps_query.filter(Snapshot1s.run_id.in_(run_scope))
+            snaps: List[Snapshot1s] = snaps_query.order_by(Snapshot1s.symbol.asc(), Snapshot1s.ts.asc()).all()
             if not snaps:
                 return
             grouped_snaps: Dict[tuple[str, str | None], List[Snapshot1s]] = defaultdict(list)
@@ -351,24 +424,33 @@ class BarAggregator:
     def _aggregate_ohlcv(arr: List[Snapshot1s] | List[Bar1m]) -> dict | None:
         if not arr:
             return None
-        open_p = float(getattr(arr[0], "last_price", getattr(arr[0], "open", 0.0)) or 0.0)
-        close_p = float(getattr(arr[-1], "last_price", getattr(arr[-1], "close", 0.0)) or 0.0)
-        prices = [float(getattr(item, "last_price", getattr(item, "close", 0.0)) or 0.0) for item in arr]
-        prices = [p for p in prices if p > 0]
-        if not prices:
+        is_snapshot_series = hasattr(arr[0], "last_price")
+        price_attr = "last_price" if is_snapshot_series else "close"
+        open_attr = "last_price" if is_snapshot_series else "open"
+        close_attr = "last_price" if is_snapshot_series else "close"
+        open_p = float(getattr(arr[0], open_attr, 0.0) or 0.0)
+        close_p = float(getattr(arr[-1], close_attr, 0.0) or 0.0)
+        high_p: float | None = None
+        low_p: float | None = None
+        volume = 0.0
+        turnover = 0.0
+        for item in arr:
+            price = float(getattr(item, price_attr, 0.0) or 0.0)
+            if price > 0:
+                high_p = price if high_p is None else max(high_p, price)
+                low_p = price if low_p is None else min(low_p, price)
+            if not is_snapshot_series:
+                volume += float(getattr(item, "volume", 0.0) or 0.0)
+                turnover += float(getattr(item, "turnover", 0.0) or 0.0)
+        if high_p is None or low_p is None:
             return None
-        high_p = max(prices)
-        low_p = min(prices)
-        first_volume = float(getattr(arr[0], "volume", 0.0) or 0.0)
-        last_volume = float(getattr(arr[-1], "volume", 0.0) or 0.0)
-        first_turnover = float(getattr(arr[0], "turnover", 0.0) or 0.0)
-        last_turnover = float(getattr(arr[-1], "turnover", 0.0) or 0.0)
-        if hasattr(arr[0], "last_price"):
+        if is_snapshot_series:
+            first_volume = float(getattr(arr[0], "volume", 0.0) or 0.0)
+            last_volume = float(getattr(arr[-1], "volume", 0.0) or 0.0)
+            first_turnover = float(getattr(arr[0], "turnover", 0.0) or 0.0)
+            last_turnover = float(getattr(arr[-1], "turnover", 0.0) or 0.0)
             volume = max(last_volume - first_volume, 0.0)
             turnover = max(last_turnover - first_turnover, 0.0)
-        else:
-            volume = sum(float(getattr(item, "volume", 0.0) or 0.0) for item in arr)
-            turnover = sum(float(getattr(item, "turnover", 0.0) or 0.0) for item in arr)
         return {
             "open": open_p,
             "high": high_p,

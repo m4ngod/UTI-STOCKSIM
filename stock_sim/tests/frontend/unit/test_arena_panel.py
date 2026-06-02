@@ -33,6 +33,63 @@ def _agent_service():
     )
 
 
+class _FakeExperimentRunner:
+    def __init__(self):
+        self.configs = []
+
+    def run(self, config):
+        self.configs.append(config)
+        return {
+            "arena_id": config.arena_id or "arena-experiment-ui",
+            "episode_id": config.episode_id or "episode-experiment-ui",
+            "report_path": "output/arena_experiments/episode-experiment-ui.json",
+            "episode": {
+                "transition_count": 12,
+                "results": [
+                    {
+                        "rank": 1,
+                        "agent_id": "MODEL_PPO_LSTM_V1",
+                        "model_id": "ppo_lstm_v1",
+                        "score": 1.5,
+                        "equity_return": 0.02,
+                        "reward_total": 0.1,
+                    }
+                ],
+            },
+            "pbt": {
+                "checkpoints": [{"checkpoint_id": "ckpt-ui"}],
+                "lineage": [{"child_model_id": "ppo_lstm_v1.gen1.MODEL_LOW"}],
+            },
+            "series_evidence_aggregate": {
+                "go_no_go": "no_go",
+                "status_counts": {"pass": 5, "fail": 1, "missing": 1, "not_available": 1},
+                "blocking_candidates": ["MODEL_PPO_LSTM_V1"],
+                "candidate_summaries": [
+                    {
+                        "candidate_id": "MODEL_PPO_LSTM_V1",
+                        "checkpoint_hash": "k" * 64,
+                        "evidence_status": {
+                            "baseline_artifact": "pass",
+                            "calibration_artifact": "pass",
+                            "hidden_eval_artifact": "fail",
+                            "exploit_test_artifact": "missing",
+                            "paired_sensitivity_artifact": "not_available",
+                            "parent_gate_artifact": "fail",
+                            "research_acceptance_lock": "fail",
+                        },
+                        "parent_eligible": False,
+                        "research_claim_eligible": False,
+                        "research_accepted": False,
+                        "overall_status": "fail",
+                        "failed_evidence": ["hidden_eval_artifact", "parent_gate_artifact", "research_acceptance_lock"],
+                        "missing_evidence": ["exploit_test_artifact"],
+                        "not_available_evidence": ["paired_sensitivity_artifact"],
+                    }
+                ],
+            },
+        }
+
+
 def test_builtin_panel_registry_includes_arena():
     reset_registry()
     register_builtin_panels()
@@ -76,7 +133,7 @@ def test_arena_panel_create_start_evaluate_view():
         top.apply_step(
             account={"equity": 102_000.0},
             action={"action_type": "hold"},
-            execution_result={},
+            execution_result={"status": "NOOP", "orders": [], "trades": []},
             reward={"step_reward": 0.03},
         )
         low = EpisodeAgentAccumulator(agent_id="MODEL_PANEL_A", model_id="hold_model_v1")
@@ -95,9 +152,11 @@ def test_arena_panel_create_start_evaluate_view():
     evaluated = panel.evaluate_arena("arena-panel")
     view = panel.get_view()
 
-    assert evaluated["status"] == "STOPPED"
+    assert evaluated["status"] == "RUNNING"
     assert view["leaderboard"][0]["agent_id"] == "MODEL_PANEL_B"
     assert view["leaderboard"][0]["rank"] == 1
+    assert view["leaderboard"][0]["noop"] == 1
+    assert view["leaderboard"][0]["submitted"] == 0
     assert view["summary"]["episode"]["status"] == "completed"
 
 
@@ -112,6 +171,46 @@ def test_arena_adapter_headless_renders_rows_and_controls():
     assert adapter._arena_table.rowCount() == 1
     assert adapter._arena_table.item(0, 0).text() == "arena-adapter"
     assert adapter._start_btn._enabled is True
+    assert adapter._run_exp_btn._enabled is False
+
+
+def test_arena_panel_run_experiment_updates_report_view():
+    runner = _FakeExperimentRunner()
+    panel = ArenaPanel(
+        TrainingArenaService(agent_service=_agent_service(), session_factory=None),
+        experiment_runner=runner,
+    )
+
+    report = panel.run_experiment(duration_seconds=0, retail_count=0, symbols=["001"])
+    view = panel.get_view()
+
+    assert report["episode_id"] == "episode-experiment-ui"
+    assert runner.configs[0].symbols == ["001"]
+    assert runner.configs[0].model_specs[0].model_id == "ppo_lstm_v1"
+    assert view["experiment"]["transition_count"] == 12
+    assert view["experiment"]["pbt_checkpoint_count"] == 1
+    assert view["experiment"]["evidence_board"]["rows"][0]["hidden"] == "fail"
+    assert view["experiment"]["evidence_board"]["rows"][0]["fee_impact_sensitivity"] == "not_available"
+    assert view["controls"]["can_run_experiment"] is True
+
+
+def test_arena_adapter_headless_renders_experiment_summary():
+    runner = _FakeExperimentRunner()
+    panel = ArenaPanel(
+        TrainingArenaService(agent_service=_agent_service(), session_factory=None),
+        experiment_runner=runner,
+    )
+    panel.run_experiment(duration_seconds=0, retail_count=0)
+    adapter = ArenaPanelAdapter().bind(panel)
+
+    adapter.widget()
+    adapter.refresh()
+
+    assert adapter._run_exp_btn._enabled is True
+    assert "transitions=12" in adapter._experiment_label.text()
+    assert adapter._evidence_table.rowCount() == 1
+    assert adapter._evidence_table.item(0, 0).text() == "MODEL_PPO_LSTM_V1"
+    assert adapter._evidence_table.item(0, 3).text() == "fail"
 
 
 def view_agent_ids(agent_service):
