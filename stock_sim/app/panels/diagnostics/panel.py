@@ -23,17 +23,24 @@ class DiagnosticsApplicationPort(Protocol):
         self, selection: HistoricalSegmentSelection
     ) -> _DiagnosticsState: ...
 
+    def recommend_historical_segments(
+        self,
+        intent: str = "",
+        limit: int = 3,
+    ) -> tuple[_DiagnosticsState, ...]: ...
+
 
 class DiagnosticsPanel:
     def __init__(self, application: DiagnosticsApplicationPort) -> None:
         self._application = application
+        self._recommendations: list[dict[str, object]] = []
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
         view = self._application.status().to_dict()
-        view["historical_segment_catalog"] = (
-            self._application.historical_segment_catalog_view()
-        )
+        catalog = dict(self._application.historical_segment_catalog_view())
+        catalog["recommendations"] = list(self._recommendations)
+        view["historical_segment_catalog"] = catalog
         return view
 
     def admit_historical_segment(
@@ -51,6 +58,19 @@ class DiagnosticsPanel:
             )
         )
         return report.to_dict()
+
+    def recommend_historical_segments(
+        self,
+        *,
+        intent: str = "",
+        limit: int = 3,
+    ) -> list[dict[str, object]]:
+        recommendations = self._application.recommend_historical_segments(
+            intent=intent,
+            limit=limit,
+        )
+        self._recommendations = [item.to_dict() for item in recommendations]
+        return list(self._recommendations)
 
 
 __all__ = ["DiagnosticsApplicationPort", "DiagnosticsPanel"]

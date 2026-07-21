@@ -91,6 +91,7 @@ def test_diagnostics_panel_uses_the_headless_application_interface() -> None:
         "segment_count": 0,
         "segments": [],
         "latest_admission": None,
+        "recommendations": [],
     }
 
 
@@ -129,6 +130,50 @@ def test_diagnostics_workspace_admits_and_displays_segment_provenance() -> None:
     assert "storage_path" not in visible_payload
     assert "duckdb" not in visible_payload
     assert "parquet" not in visible_payload
+
+
+def test_diagnostics_workspace_returns_a_bounded_recommendation_shortlist() -> None:
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+
+    recommendations = panel.recommend_historical_segments(
+        intent="visible interval",
+        limit=10,
+    )
+
+    assert len(recommendations) == 1
+    assert recommendations[0]["rank"] == 1
+    assert panel.get_view()["historical_segment_catalog"]["recommendations"] == (
+        recommendations
+    )
+
+
+def test_diagnostics_adapter_can_admit_and_recommend_without_storage_controls() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+
+    admitted_view = adapter.current_view()
+    assert admitted_view["historical_segment_catalog"]["status"] == "admitted"
+
+    adapter._intent_input.setText("visible interval")
+    adapter._recommend_button.click()
+
+    catalog = adapter.current_view()["historical_segment_catalog"]
+    assert len(catalog["recommendations"]) == 1
+    visible_controls = repr(adapter.widget()).lower()
+    assert "storage" not in visible_controls
+    assert "duckdb" not in visible_controls
 
 
 def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(

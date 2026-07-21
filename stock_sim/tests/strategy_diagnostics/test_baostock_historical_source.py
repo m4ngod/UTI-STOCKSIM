@@ -46,6 +46,7 @@ def _build_local_source(
     raw_meta = root / "metadata" / "a_stock_daily_unadjusted"
     front_meta = root / "metadata" / "a_stock_daily_front_adjusted"
     minute_meta = root / "metadata" / "a_stock_5min_front_adjusted"
+    calendar_path = root / "index_data" / "01_composite_index" / "sh_000001.csv"
     daily_fields = (
         "date",
         "code",
@@ -94,6 +95,11 @@ def _build_local_source(
 
     codes = ("sh.600000", "sz.000001")
     _write_csv(
+        calendar_path,
+        ("date", "code", "close"),
+        [{"date": "2024-01-02", "code": "sh.000001", "close": "3000"}],
+    )
+    _write_csv(
         raw_meta / "a_stock_daily_catalog.csv",
         ("code", "code_name", "ipoDate", "outDate", "type", "status"),
         [
@@ -136,8 +142,8 @@ def _build_local_source(
                         "low": "9",
                         "close": "10.5",
                         "preclose": "10",
-                        "volume": "1000",
-                        "amount": "10500",
+                        "volume": "480",
+                        "amount": "5040",
                         "adjustflag": flag,
                         "turn": "1",
                         "tradestatus": "1",
@@ -163,7 +169,7 @@ def _build_local_source(
         connection.executemany(
             "INSERT INTO minute_5_bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (code, "2024-01-02", timestamp, 10, 11, 9, 10.5, 100, 1050, "2")
+                (code, "2024-01-02", timestamp, 10, 11, 9, 10.5, 10, 105, "2")
                 for code in codes
                 for timestamp in _five_minute_times()
             ],
@@ -219,6 +225,12 @@ def test_local_baostock_interval_passes_real_point_in_time_checks(tmp_path: Path
     assert report.bar_count == 96
     assert report.segment is not None
     assert report.source_snapshot is not None
+    assert "instrument-catalog" in {
+        artifact.name for artifact in report.source_snapshot.artifacts
+    }
+    assert "trading-calendar-selection" in {
+        artifact.name for artifact in report.source_snapshot.artifacts
+    }
     assert "baostock" not in report.segment.to_dict()
     assert "storage" not in repr(report.to_dict()).lower()
 
@@ -267,6 +279,12 @@ def test_future_dated_industry_snapshot_fails_closed(tmp_path: Path) -> None:
             "WHERE code = 'sh.600000'",
             "adjustment_consistency",
         ),
+        (
+            "UPDATE minute_5_bars SET high = 99, close = 99 "
+            "WHERE code = 'sh.600000' AND time = "
+            "(SELECT max(time) FROM minute_5_bars WHERE code = 'sh.600000')",
+            "adjustment_consistency",
+        ),
     ),
 )
 def test_local_source_detects_intraday_quality_failures(
@@ -298,3 +316,133 @@ def test_local_source_detects_intraday_quality_failures(
         action in checks[failed_check].summary
         for action in ("repair", "reconcile", "retry")
     )
+
+
+def test_independent_calendar_detects_an_entire_missing_trading_day(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "baostock"
+    source = _build_local_source(root)
+    calendar_path = root / "index_data" / "01_composite_index" / "sh_000001.csv"
+    _write_csv(
+        calendar_path,
+        ("date", "code", "close"),
+        [
+            {"date": "2024-01-02", "code": "sh.000001", "close": "3000"},
+            {"date": "2024-01-03", "code": "sh.000001", "close": "3010"},
+        ],
+    )
+    application = create_diagnostics_application(historical_source=source)
+    application.start()
+
+    report = application.admit_historical_segment(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 3),
+        )
+    )
+
+    checks = {check.code: check for check in report.checks}
+    assert report.status == "rejected"
+    assert checks["bar_continuity"].passed is False
+    assert "trading day" in checks["bar_continuity"].summary
+
+
+def test_independent_calendar_rejects_a_market_day_it_does_not_declare(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "baostock"
+    source = _build_local_source(root)
+    for metadata_name in (
+        "a_stock_daily_unadjusted",
+        "a_stock_daily_front_adjusted",
+    ):
+        summary_path = (
+            root
+            / "metadata"
+            / metadata_name
+            / "a_stock_daily_download_summary.csv"
+        )
+        summaries = csv.DictReader(
+            summary_path.open("r", encoding="utf-8-sig", newline="")
+        )
+        for summary in summaries:
+            daily_path = Path(summary["file"])
+            with daily_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                fieldnames = tuple(reader.fieldnames or ())
+                rows = list(reader)
+            extra_row = dict(rows[0])
+            extra_row["date"] = "2024-01-03"
+            _write_csv(daily_path, fieldnames, [*rows, extra_row])
+    application = create_diagnostics_application(historical_source=source)
+    application.start()
+
+    report = application.admit_historical_segment(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 3),
+        )
+    )
+
+    checks = {check.code: check for check in report.checks}
+    assert report.status == "rejected"
+    assert checks["bar_continuity"].passed is False
+    assert "calendar" in checks["bar_continuity"].summary
+
+
+def test_malformed_delisting_date_rejects_eligible_universe(tmp_path: Path) -> None:
+    root = tmp_path / "baostock"
+    source = _build_local_source(root)
+    catalog = (
+        root
+        / "metadata"
+        / "a_stock_daily_unadjusted"
+        / "a_stock_daily_catalog.csv"
+    )
+    rows = list(csv.DictReader(catalog.open("r", encoding="utf-8-sig", newline="")))
+    rows[0]["outDate"] = "not-a-date"
+    _write_csv(
+        catalog,
+        ("code", "code_name", "ipoDate", "outDate", "type", "status"),
+        rows,
+    )
+    application = create_diagnostics_application(historical_source=source)
+    application.start()
+
+    report = application.admit_historical_segment(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+        )
+    )
+
+    checks = {check.code: check for check in report.checks}
+    assert report.status == "rejected"
+    assert checks["eligible_universe"].passed is False
+    assert "malformed" in checks["eligible_universe"].summary
+
+
+def test_default_layout_discovers_quentx_point_in_time_industry_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quentx_root = tmp_path / "QuentX"
+    snapshot = (
+        quentx_root
+        / "ptrade"
+        / "versions"
+        / "QuentX-test"
+        / "quentx_industry_snapshots_20231231_20240131.csv"
+    )
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("snapshot_date,update_date,code,industry\n", encoding="utf-8")
+    monkeypatch.delenv("STOCK_SIM_INDUSTRY_SNAPSHOTS", raising=False)
+    monkeypatch.setenv("QUENTX_ROOT", str(quentx_root))
+
+    layout = BaoStockSourceLayout.from_environment()
+
+    assert layout.industry_snapshot_paths == (snapshot,)

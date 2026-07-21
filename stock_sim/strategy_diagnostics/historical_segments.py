@@ -427,6 +427,7 @@ class HistoricalSegmentAdmissionService:
             "trading_day_count": inspection.trading_day_count,
             "bar_count": inspection.bar_count,
             "checks": [check.to_dict() for check in checks],
+            "recommendation_tags": list(inspection.recommendation_tags),
         }
         segment_hash = _canonical_hash(segment_payload)
         segment = HistoricalMarketSegment(
