@@ -1,0 +1,906 @@
+"""Production historical-source adapter for local BaoStock A-share assets."""
+
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from datetime import date, datetime, time, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Iterable, Iterator, Mapping, Sequence
+
+from .historical_segments import (
+    AdmissionCheck,
+    HistoricalSegmentSelection,
+    HistoricalSourceInspection,
+    SourceArtifact,
+    SourceProvenance,
+)
+
+
+_REQUIRED_DAILY_FIELDS = frozenset(
+    {
+        "date",
+        "code",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "adjustflag",
+        "tradestatus",
+        "isST",
+    }
+)
+_REQUIRED_MINUTE_FIELDS = frozenset(
+    {
+        "date",
+        "time",
+        "code",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "adjustflag",
+    }
+)
+_QUALITY_CODES = (
+    "bar_continuity",
+    "instrument_coverage",
+    "eligible_universe",
+    "trading_status",
+    "st_status",
+    "suspension_state",
+    "industry_as_of",
+    "adjustment_consistency",
+    "causal_availability",
+    "required_fields",
+    "missing_data",
+    "duplicates",
+    "timestamps",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BaoStockSourceLayout:
+    """Infrastructure configuration kept behind the historical-source port."""
+
+    root: Path
+    industry_snapshot_paths: tuple[Path, ...] = ()
+
+    @classmethod
+    def from_environment(cls) -> "BaoStockSourceLayout":
+        root = Path(os.environ.get("STOCK_SIM_BAOSTOCK_ROOT", r"L:\BaoStock_Data"))
+        configured = os.environ.get("STOCK_SIM_INDUSTRY_SNAPSHOTS", "")
+        paths = tuple(
+            Path(value)
+            for value in configured.split(os.pathsep)
+            if value.strip()
+        )
+        if not paths:
+            snapshot_dir = root / "metadata" / "industry_snapshots"
+            paths = tuple(sorted(snapshot_dir.glob("*.csv")))
+        return cls(root=root, industry_snapshot_paths=paths)
+
+    @property
+    def daily_unadjusted_metadata(self) -> Path:
+        return self.root / "metadata" / "a_stock_daily_unadjusted"
+
+    @property
+    def daily_front_adjusted_metadata(self) -> Path:
+        return self.root / "metadata" / "a_stock_daily_front_adjusted"
+
+    @property
+    def minute_metadata(self) -> Path:
+        return self.root / "metadata" / "a_stock_5min_front_adjusted"
+
+
+@dataclass(frozen=True, slots=True)
+class _Instrument:
+    code: str
+    ipo_date: date
+    out_date: date | None
+
+    def active_on(self, trading_date: date) -> bool:
+        return self.ipo_date <= trading_date and (
+            self.out_date is None or trading_date <= self.out_date
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _DailyRows:
+    rows: Mapping[tuple[str, date], Mapping[str, str]]
+    duplicate_count: int
+    missing_files: tuple[str, ...]
+    header_fields: frozenset[str]
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MinuteSummary:
+    counts: Mapping[tuple[str, date], int]
+    row_count: int
+    duplicate_count: int
+    invalid_timestamp_count: int
+    invalid_value_count: int
+    unexpected_code_count: int
+    adjustment_flags: frozenset[str]
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _IndustrySnapshot:
+    by_snapshot_and_code: Mapping[tuple[date, str], tuple[date, str]]
+    snapshot_dates: tuple[date, ...]
+    row_count: int
+    future_row_count: int
+    content_hash: str
+
+
+class BaoStockHistoricalSource:
+    """Inspect local BaoStock files and emit admission evidence.
+
+    The adapter reads configuration internally and returns only provenance and
+    content identities.  Filesystem paths and DuckDB controls never cross the
+    domain interface or reach the Diagnostics workspace.
+    """
+
+    def __init__(self, layout: BaoStockSourceLayout | None = None) -> None:
+        self._layout = layout or BaoStockSourceLayout.from_environment()
+
+    def inspect(
+        self, selection: HistoricalSegmentSelection
+    ) -> HistoricalSourceInspection | None:
+        if selection.market != "mainland-a-share":
+            return None
+
+        manifests, manifest_errors = self._load_manifests()
+        manifest_artifact = _artifact_from_payload(
+            "source-manifests",
+            manifests,
+            sum(bool(item) for item in manifests.values()),
+        )
+        observed_at = _manifest_observed_at(manifests.values())
+        version = f"baostock-{manifest_artifact.content_hash[:16]}"
+        provenance = SourceProvenance(
+            provider="BaoStock",
+            dataset="local-mainland-a-share-history",
+            version=version,
+            observed_at=observed_at,
+        )
+
+        required_fields_ok = not manifest_errors and self._manifest_fields_ok(manifests)
+        static_failures: dict[str, str] = {}
+        if manifest_errors:
+            static_failures["required_fields"] = "; ".join(manifest_errors)
+        elif not required_fields_ok:
+            static_failures["required_fields"] = (
+                "Source manifests do not declare every required daily and 5-minute "
+                "field; rebuild the local BaoStock datasets."
+            )
+
+        try:
+            instruments = self._load_instruments()
+        except (OSError, ValueError) as exc:
+            instruments = ()
+            static_failures["eligible_universe"] = (
+                f"The A-share instrument catalog is unavailable or invalid: {exc}"
+            )
+        eligible = tuple(
+            instrument
+            for instrument in instruments
+            if instrument.ipo_date <= selection.end_date
+            and (
+                instrument.out_date is None
+                or instrument.out_date >= selection.start_date
+            )
+        )
+        eligible_codes = frozenset(item.code for item in eligible)
+        if not eligible_codes:
+            static_failures.setdefault(
+                "eligible_universe",
+                "No A-share instrument is active inside the selected IPO/delisting boundaries.",
+            )
+
+        raw_rows = self._load_daily_rows(
+            self._layout.daily_unadjusted_metadata
+            / "a_stock_daily_download_summary.csv",
+            eligible_codes,
+            selection,
+        )
+        front_rows = self._load_daily_rows(
+            self._layout.daily_front_adjusted_metadata
+            / "a_stock_daily_download_summary.csv",
+            eligible_codes,
+            selection,
+        )
+        if (
+            not _REQUIRED_DAILY_FIELDS <= raw_rows.header_fields
+            or not _REQUIRED_DAILY_FIELDS <= front_rows.header_fields
+        ):
+            static_failures["required_fields"] = (
+                "Selected daily CSV files do not contain every required raw/adjusted "
+                "field; rebuild the affected source files."
+            )
+        industry = self._load_industry_snapshots()
+        minute, minute_error = self._load_minute_summary(selection, eligible_codes)
+
+        trading_dates = tuple(sorted({item[1] for item in raw_rows.rows}))
+        active_pairs = {
+            (instrument.code, trading_date)
+            for trading_date in trading_dates
+            for instrument in eligible
+            if instrument.active_on(trading_date)
+        }
+        raw_pairs = set(raw_rows.rows)
+        front_pairs = set(front_rows.rows)
+        missing_daily_pairs = active_pairs - raw_pairs
+        missing_front_pairs = active_pairs - front_pairs
+        trading_pairs = {
+            pair
+            for pair, row in raw_rows.rows.items()
+            if pair in active_pairs and row.get("tradestatus", "").strip() == "1"
+        }
+        suspended_pairs = {
+            pair
+            for pair, row in raw_rows.rows.items()
+            if pair in active_pairs and row.get("tradestatus", "").strip() == "0"
+        }
+        minute_counts = minute.counts if minute is not None else {}
+        incomplete_bars = {
+            pair: minute_counts.get(pair, 0)
+            for pair in trading_pairs
+            if minute_counts.get(pair, 0) != 48
+        }
+        suspended_with_bars = {
+            pair for pair in suspended_pairs if minute_counts.get(pair, 0) != 0
+        }
+        unknown_status = {
+            pair
+            for pair, row in raw_rows.rows.items()
+            if pair in active_pairs
+            and row.get("tradestatus", "").strip() not in {"0", "1"}
+        }
+        missing_st = {
+            pair
+            for pair, row in raw_rows.rows.items()
+            if pair in active_pairs and row.get("isST", "").strip() not in {"0", "1"}
+        }
+        industry_missing, industry_future = _industry_quality(
+            industry,
+            active_pairs,
+        )
+        raw_adjustments = {
+            row.get("adjustflag", "").strip() for row in raw_rows.rows.values()
+        }
+        front_adjustments = {
+            row.get("adjustflag", "").strip() for row in front_rows.rows.values()
+        }
+        minute_adjustments = (
+            set(minute.adjustment_flags) if minute is not None else set()
+        )
+        invalid_daily_values = _invalid_daily_value_count(raw_rows.rows.values())
+
+        failures = dict(static_failures)
+        if minute_error:
+            failures["bar_continuity"] = minute_error
+            failures["instrument_coverage"] = minute_error
+            failures["timestamps"] = minute_error
+            failures.setdefault("required_fields", minute_error)
+        elif incomplete_bars:
+            failures["bar_continuity"] = _count_reason(
+                len(incomplete_bars),
+                "trading instrument-day(s) do not contain exactly 48 five-minute bars",
+                "repair or re-download their Parquet partitions",
+            )
+        if raw_rows.missing_files or front_rows.missing_files:
+            failures["instrument_coverage"] = _count_reason(
+                len(raw_rows.missing_files) + len(front_rows.missing_files),
+                "catalogued daily source file(s) are missing",
+                "restore the listed dataset files and retry",
+            )
+        elif missing_daily_pairs or missing_front_pairs:
+            failures["instrument_coverage"] = _count_reason(
+                len(missing_daily_pairs | missing_front_pairs),
+                "active instrument-day(s) lack raw or adjusted daily coverage",
+                "repair the daily datasets and retry",
+            )
+        if missing_daily_pairs or unknown_status:
+            failures["trading_status"] = _count_reason(
+                len(missing_daily_pairs | unknown_status),
+                "active instrument-day(s) lack a valid point-in-time trading status",
+                "repair tradestatus coverage and retry",
+            )
+        if missing_daily_pairs or missing_st:
+            failures["st_status"] = _count_reason(
+                len(missing_daily_pairs | missing_st),
+                "active instrument-day(s) lack a valid point-in-time ST state",
+                "repair isST coverage and retry",
+            )
+        if suspended_with_bars:
+            failures["suspension_state"] = _count_reason(
+                len(suspended_with_bars),
+                "suspended instrument-day(s) unexpectedly contain intraday bars",
+                "reconcile suspension state with the intraday source",
+            )
+        if industry is None:
+            failures["industry_as_of"] = (
+                "No point-in-time industry snapshot is configured; set the internal "
+                "industry snapshot source and retry."
+            )
+        elif industry_missing:
+            failures["industry_as_of"] = _count_reason(
+                len(industry_missing),
+                "active instrument-day(s) lack an industry snapshot available as of that date",
+                "add an earlier BaoStock industry snapshot and retry",
+            )
+        if industry_future or (industry is not None and industry.future_row_count):
+            failures["causal_availability"] = _count_reason(
+                len(industry_future) + (industry.future_row_count if industry else 0),
+                "industry membership row(s) become available after their snapshot/use date",
+                "remove future-dated rows and rebuild the snapshot",
+            )
+        if (
+            raw_adjustments - {"3"}
+            or front_adjustments - {"2"}
+            or minute_adjustments - {"2"}
+        ):
+            failures["adjustment_consistency"] = (
+                "Selected rows do not consistently use daily raw=3, daily front=2, "
+                "and five-minute front=2; reconcile adjustments and retry."
+            )
+        if invalid_daily_values or (minute is not None and minute.invalid_value_count):
+            failures["missing_data"] = _count_reason(
+                invalid_daily_values
+                + (minute.invalid_value_count if minute is not None else 0),
+                "bar row(s) have missing/invalid OHLCV or amount values",
+                "repair the source rows and retry",
+            )
+        duplicate_count = (
+            raw_rows.duplicate_count
+            + front_rows.duplicate_count
+            + (minute.duplicate_count if minute is not None else 0)
+        )
+        if duplicate_count:
+            failures["duplicates"] = _count_reason(
+                duplicate_count,
+                "duplicate bar row(s) were found",
+                "deduplicate by instrument and timestamp and retry",
+            )
+        if minute is not None and minute.invalid_timestamp_count:
+            failures["timestamps"] = _count_reason(
+                minute.invalid_timestamp_count,
+                "five-minute row(s) lie outside the A-share session grid",
+                "repair timestamps and retry",
+            )
+        if minute is not None and minute.unexpected_code_count:
+            failures["eligible_universe"] = _count_reason(
+                minute.unexpected_code_count,
+                "intraday row(s) reference instruments outside the point-in-time catalog",
+                "repair the catalog or remove the rows and retry",
+            )
+        if not trading_dates:
+            failures.setdefault(
+                "bar_continuity",
+                "The selected interval contains no recorded trading day.",
+            )
+
+        summaries = {
+            "bar_continuity": (
+                f"All {len(trading_pairs)} trading instrument-day(s) contain 48 five-minute bars."
+            ),
+            "instrument_coverage": (
+                f"Raw, adjusted, and intraday coverage is complete for {len(active_pairs)} active instrument-day(s)."
+            ),
+            "eligible_universe": (
+                f"Eligible Universe contains {len(eligible_codes)} instrument(s) using IPO and delisting boundaries."
+            ),
+            "trading_status": "Every active instrument-day has point-in-time trading status.",
+            "st_status": "Every active instrument-day has point-in-time ST state.",
+            "suspension_state": (
+                f"{len(suspended_pairs)} suspended instrument-day(s) are consistent with intraday coverage."
+            ),
+            "industry_as_of": "Industry membership is available as of every active trading date.",
+            "adjustment_consistency": (
+                "Daily raw, daily front-adjusted, and five-minute front-adjusted flags are consistent."
+            ),
+            "causal_availability": "No industry or market row uses future-available information.",
+            "required_fields": "All required daily and five-minute source fields are declared.",
+            "missing_data": "Selected OHLCV and amount values are complete and valid.",
+            "duplicates": "No duplicate instrument/timestamp rows were found.",
+            "timestamps": "All intraday timestamps lie on the declared A-share five-minute grid.",
+        }
+        checks = tuple(
+            AdmissionCheck(
+                code=code,
+                passed=code not in failures,
+                summary=failures.get(code, summaries[code]),
+            )
+            for code in _QUALITY_CODES
+        )
+        artifacts = [manifest_artifact]
+        artifacts.extend(
+            (
+                SourceArtifact(
+                    "daily-unadjusted-selection",
+                    raw_rows.content_hash,
+                    len(raw_rows.rows),
+                ),
+                SourceArtifact(
+                    "daily-front-adjusted-selection",
+                    front_rows.content_hash,
+                    len(front_rows.rows),
+                ),
+            )
+        )
+        if minute is not None:
+            artifacts.append(
+                SourceArtifact(
+                    "five-minute-front-adjusted-selection",
+                    minute.content_hash,
+                    minute.row_count,
+                )
+            )
+        if industry is not None:
+            artifacts.append(
+                SourceArtifact(
+                    "industry-as-of-selection",
+                    industry.content_hash,
+                    industry.row_count,
+                )
+            )
+
+        return HistoricalSourceInspection(
+            selection=selection,
+            label=(
+                f"Mainland A-share {selection.start_date.isoformat()} to "
+                f"{selection.end_date.isoformat()}"
+            ),
+            provenance=provenance,
+            artifacts=tuple(artifacts),
+            eligible_instrument_count=len(eligible_codes),
+            trading_day_count=len(trading_dates),
+            bar_count=minute.row_count if minute is not None else 0,
+            checks=checks,
+            recommendation_tags=(
+                "baostock",
+                "mainland-a-share",
+                f"{len(trading_dates)}-trading-day",
+            ),
+        )
+
+    def _load_manifests(
+        self,
+    ) -> tuple[dict[str, Mapping[str, object]], tuple[str, ...]]:
+        paths = {
+            "daily_unadjusted": self._layout.daily_unadjusted_metadata
+            / "manifest.json",
+            "daily_front_adjusted": self._layout.daily_front_adjusted_metadata
+            / "manifest.json",
+            "minute_5_front_adjusted": self._layout.minute_metadata
+            / "manifest.json",
+        }
+        manifests: dict[str, Mapping[str, object]] = {}
+        errors: list[str] = []
+        for name, path in paths.items():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(payload, dict):
+                    raise ValueError("manifest root must be an object")
+                manifests[name] = payload
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                manifests[name] = {}
+                errors.append(f"{name} manifest unavailable or invalid: {exc}")
+        return manifests, tuple(errors)
+
+    @staticmethod
+    def _manifest_fields_ok(manifests: Mapping[str, Mapping[str, object]]) -> bool:
+        raw_fields = _string_set(
+            manifests.get("daily_unadjusted", {}).get("fields", ())
+        )
+        front_fields = _string_set(
+            manifests.get("daily_front_adjusted", {}).get("fields", ())
+        )
+        minute_fields = _string_set(
+            manifests.get("minute_5_front_adjusted", {}).get("fields", ())
+        )
+        return (
+            _REQUIRED_DAILY_FIELDS <= raw_fields
+            and _REQUIRED_DAILY_FIELDS <= front_fields
+            and _REQUIRED_MINUTE_FIELDS <= minute_fields
+        )
+
+    def _load_instruments(self) -> tuple[_Instrument, ...]:
+        path = self._layout.daily_unadjusted_metadata / "a_stock_daily_catalog.csv"
+        instruments = []
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("type", "1").strip() != "1":
+                    continue
+                code = row.get("code", "").strip().lower()
+                ipo_date = _parse_date(row.get("ipoDate", ""))
+                if not code or ipo_date is None:
+                    continue
+                instruments.append(
+                    _Instrument(
+                        code=code,
+                        ipo_date=ipo_date,
+                        out_date=_parse_date(row.get("outDate", "")),
+                    )
+                )
+        return tuple(sorted(instruments, key=lambda item: item.code))
+
+    def _load_daily_rows(
+        self,
+        summary_path: Path,
+        eligible_codes: frozenset[str],
+        selection: HistoricalSegmentSelection,
+    ) -> _DailyRows:
+        files: dict[str, Path] = {}
+        missing_files: list[str] = []
+        try:
+            with summary_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    code = row.get("code", "").strip().lower()
+                    if code in eligible_codes:
+                        file_value = row.get("file", "").strip()
+                        if file_value:
+                            files[code] = Path(file_value)
+        except OSError:
+            return _DailyRows(
+                rows={},
+                duplicate_count=0,
+                missing_files=(summary_path.name,),
+                header_fields=frozenset(),
+                content_hash=hashlib.sha256(b"").hexdigest(),
+            )
+
+        missing_files = [
+            code
+            for code in sorted(eligible_codes)
+            if code not in files or not files[code].is_file()
+        ]
+        rows: dict[tuple[str, date], Mapping[str, str]] = {}
+        duplicate_count = 0
+        header_fields: set[str] = set()
+        digest = hashlib.sha256()
+        for code in sorted(eligible_codes):
+            path = files.get(code)
+            if path is None or not path.is_file():
+                continue
+            fieldnames, selected_rows = _read_csv_date_window(
+                path,
+                selection.start_date,
+                selection.end_date,
+            )
+            header_fields.update(fieldnames)
+            for row in selected_rows:
+                row_date = _parse_date(row.get("date", ""))
+                if row_date is None:
+                    continue
+                normalized_code = row.get("code", code).strip().lower() or code
+                key = (normalized_code, row_date)
+                if key in rows:
+                    duplicate_count += 1
+                rows[key] = dict(row)
+                digest.update(_canonical_row(row))
+        return _DailyRows(
+            rows=rows,
+            duplicate_count=duplicate_count,
+            missing_files=tuple(missing_files),
+            header_fields=frozenset(header_fields),
+            content_hash=digest.hexdigest(),
+        )
+
+    def _load_minute_summary(
+        self,
+        selection: HistoricalSegmentSelection,
+        eligible_codes: frozenset[str],
+    ) -> tuple[_MinuteSummary | None, str | None]:
+        try:
+            import duckdb
+        except ImportError:
+            return None, (
+                "DuckDB is unavailable, so five-minute continuity cannot be proven; "
+                "install the declared duckdb dependency and retry."
+            )
+
+        database = self._layout.minute_metadata / "market_data.duckdb"
+        if not database.is_file():
+            return None, (
+                "The BaoStock five-minute DuckDB catalog is missing; rebuild it and retry."
+            )
+        counts: dict[tuple[str, date], int] = {}
+        row_count = 0
+        duplicate_count = 0
+        invalid_timestamp_count = 0
+        invalid_value_count = 0
+        unexpected_code_count = 0
+        flags: set[str] = set()
+        seen: set[tuple[str, date, str]] = set()
+        digest = hashlib.sha256()
+        try:
+            with duckdb.connect(str(database), read_only=True) as connection:
+                cursor = connection.execute(
+                    "SELECT code, date, time, open, high, low, close, volume, "
+                    "amount, adjustflag FROM minute_5_bars "
+                    "WHERE date >= ? AND date <= ? ORDER BY code, date, time",
+                    [selection.start_date.isoformat(), selection.end_date.isoformat()],
+                )
+                while True:
+                    batch = cursor.fetchmany(10_000)
+                    if not batch:
+                        break
+                    for values in batch:
+                        code = str(values[0]).strip().lower()
+                        row_date = _parse_date(str(values[1]))
+                        timestamp = str(values[2]).strip()
+                        if row_date is None:
+                            invalid_timestamp_count += 1
+                            continue
+                        if code not in eligible_codes:
+                            unexpected_code_count += 1
+                            continue
+                        key = (code, row_date, timestamp)
+                        if key in seen:
+                            duplicate_count += 1
+                        seen.add(key)
+                        pair = (code, row_date)
+                        counts[pair] = counts.get(pair, 0) + 1
+                        if not _valid_five_minute_timestamp(timestamp):
+                            invalid_timestamp_count += 1
+                        if not _valid_ohlcv(values[3:9]):
+                            invalid_value_count += 1
+                        flags.add(str(values[9]).strip())
+                        digest.update(_canonical_row(values))
+                        row_count += 1
+        except Exception as exc:
+            return None, (
+                "The five-minute DuckDB view could not be inspected: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        return (
+            _MinuteSummary(
+                counts=counts,
+                row_count=row_count,
+                duplicate_count=duplicate_count,
+                invalid_timestamp_count=invalid_timestamp_count,
+                invalid_value_count=invalid_value_count,
+                unexpected_code_count=unexpected_code_count,
+                adjustment_flags=frozenset(flags),
+                content_hash=digest.hexdigest(),
+            ),
+            None,
+        )
+
+    def _load_industry_snapshots(self) -> _IndustrySnapshot | None:
+        paths = tuple(path for path in self._layout.industry_snapshot_paths if path.is_file())
+        if not paths:
+            return None
+        rows: dict[tuple[date, str], tuple[date, str]] = {}
+        future_rows = 0
+        digest = hashlib.sha256()
+        row_count = 0
+        for path in sorted(paths):
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    snapshot_date = _parse_date(row.get("snapshot_date", ""))
+                    update_date = _parse_date(row.get("update_date", ""))
+                    code = row.get("code", "").strip().lower()
+                    industry = row.get("industry", "").strip()
+                    if not snapshot_date or not update_date or not code or not industry:
+                        continue
+                    if update_date > snapshot_date:
+                        future_rows += 1
+                    rows[(snapshot_date, code)] = (update_date, industry)
+                    digest.update(_canonical_row(row))
+                    row_count += 1
+        return _IndustrySnapshot(
+            by_snapshot_and_code=rows,
+            snapshot_dates=tuple(sorted({key[0] for key in rows})),
+            row_count=row_count,
+            future_row_count=future_rows,
+            content_hash=digest.hexdigest(),
+        )
+
+
+def _manifest_observed_at(manifests: Iterable[Mapping[str, object]]) -> datetime:
+    observed: list[datetime] = []
+    for manifest in manifests:
+        value = manifest.get("generated_at")
+        if not value:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        observed.append(parsed)
+    return max(observed, default=datetime(1970, 1, 1, tzinfo=timezone.utc))
+
+
+def _parse_date(value: str) -> date | None:
+    value = str(value).strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _canonical_row(row: object) -> bytes:
+    if isinstance(row, Mapping):
+        payload: object = {str(key): row[key] for key in sorted(row)}
+    elif isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
+        payload = [str(value) for value in row]
+    else:
+        payload = str(row)
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _read_csv_date_window(
+    path: Path,
+    start_date: date,
+    end_date: date,
+    *,
+    chunk_size: int = 64 * 1024,
+) -> tuple[tuple[str, ...], tuple[dict[str, str], ...]]:
+    """Read a sorted daily CSV backwards until the requested window is covered."""
+
+    with path.open("rb") as handle:
+        raw_header = handle.readline()
+        fieldnames = tuple(
+            next(csv.reader([raw_header.decode("utf-8-sig").strip()]))
+        )
+        data_start = handle.tell()
+        handle.seek(0, 2)
+        position = handle.tell()
+        carry = b""
+        selected_lines: list[bytes] = []
+        reached_before_window = False
+        while position > data_start and not reached_before_window:
+            read_start = max(data_start, position - chunk_size)
+            handle.seek(read_start)
+            block = handle.read(position - read_start) + carry
+            lines = block.splitlines()
+            if read_start > data_start and lines:
+                carry = lines[0]
+                complete_lines = lines[1:]
+            else:
+                carry = b""
+                complete_lines = lines
+            for raw_line in reversed(complete_lines):
+                if not raw_line:
+                    continue
+                row_date = _parse_date(raw_line[:10].decode("ascii", errors="ignore"))
+                if row_date is None or row_date > end_date:
+                    continue
+                if row_date < start_date:
+                    reached_before_window = True
+                    break
+                selected_lines.append(raw_line)
+            position = read_start
+        selected_lines.reverse()
+    rows = tuple(
+        dict(zip(fieldnames, next(csv.reader([line.decode("utf-8")])), strict=False))
+        for line in selected_lines
+    )
+    return fieldnames, rows
+
+
+def _artifact_from_payload(name: str, payload: object, row_count: int) -> SourceArtifact:
+    digest = hashlib.sha256(_canonical_row(payload)).hexdigest()
+    return SourceArtifact(name=name, content_hash=digest, row_count=row_count)
+
+
+def _string_set(value: object) -> set[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return set()
+    return {str(item) for item in value}
+
+
+def _valid_ohlcv(values: Sequence[object]) -> bool:
+    try:
+        open_price, high, low, close, volume, amount = (
+            float(str(value)) for value in values
+        )
+    except (TypeError, ValueError):
+        return False
+    return (
+        open_price > 0
+        and high >= max(open_price, close, low)
+        and low <= min(open_price, close, high)
+        and low > 0
+        and close > 0
+        and volume >= 0
+        and amount >= 0
+    )
+
+
+def _invalid_daily_value_count(rows: Iterable[Mapping[str, str]]) -> int:
+    return sum(
+        row.get("tradestatus", "").strip() != "0"
+        and not _valid_ohlcv(
+            (
+                row.get("open"),
+                row.get("high"),
+                row.get("low"),
+                row.get("close"),
+                row.get("volume"),
+                row.get("amount"),
+            )
+        )
+        for row in rows
+    )
+
+
+def _valid_five_minute_timestamp(value: str) -> bool:
+    digits = "".join(character for character in value if character.isdigit())
+    if len(digits) >= 17:
+        hhmmss = digits[-9:-3]
+    elif len(digits) >= 6:
+        hhmmss = digits[-6:]
+    else:
+        return False
+    try:
+        parsed = time.fromisoformat(
+            f"{hhmmss[0:2]}:{hhmmss[2:4]}:{hhmmss[4:6]}"
+        )
+    except ValueError:
+        return False
+    minute_of_day = parsed.hour * 60 + parsed.minute
+    morning = 9 * 60 + 35 <= minute_of_day <= 11 * 60 + 30
+    afternoon = 13 * 60 + 5 <= minute_of_day <= 15 * 60
+    return (
+        parsed.second == 0
+        and parsed.microsecond == 0
+        and minute_of_day % 5 == 0
+        and (morning or afternoon)
+    )
+
+
+def _industry_quality(
+    industry: _IndustrySnapshot | None,
+    active_pairs: set[tuple[str, date]],
+) -> tuple[set[tuple[str, date]], set[tuple[str, date]]]:
+    if industry is None:
+        return set(active_pairs), set()
+    missing: set[tuple[str, date]] = set()
+    future: set[tuple[str, date]] = set()
+    for code, trading_date in active_pairs:
+        candidates = tuple(
+            snapshot_date
+            for snapshot_date in industry.snapshot_dates
+            if snapshot_date <= trading_date
+            and (snapshot_date, code) in industry.by_snapshot_and_code
+        )
+        if not candidates:
+            missing.add((code, trading_date))
+            continue
+        snapshot_date = candidates[-1]
+        update_date, _ = industry.by_snapshot_and_code[(snapshot_date, code)]
+        if update_date > snapshot_date or snapshot_date > trading_date:
+            future.add((code, trading_date))
+    return missing, future
+
+
+def _count_reason(count: int, finding: str, action: str) -> str:
+    return f"{count} {finding}; {action}."
+
+
+__all__ = ["BaoStockHistoricalSource", "BaoStockSourceLayout"]
