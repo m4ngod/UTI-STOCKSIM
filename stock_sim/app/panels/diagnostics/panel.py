@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Protocol
+
+from strategy_diagnostics import HistoricalSegmentSelection
 
 
 class _DiagnosticsState(Protocol):
@@ -14,6 +17,12 @@ class DiagnosticsApplicationPort(Protocol):
 
     def status(self) -> _DiagnosticsState: ...
 
+    def historical_segment_catalog_view(self) -> dict[str, object]: ...
+
+    def admit_historical_segment(
+        self, selection: HistoricalSegmentSelection
+    ) -> _DiagnosticsState: ...
+
 
 class DiagnosticsPanel:
     def __init__(self, application: DiagnosticsApplicationPort) -> None:
@@ -21,7 +30,27 @@ class DiagnosticsPanel:
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
-        return self._application.status().to_dict()
+        view = self._application.status().to_dict()
+        view["historical_segment_catalog"] = (
+            self._application.historical_segment_catalog_view()
+        )
+        return view
+
+    def admit_historical_segment(
+        self,
+        *,
+        market: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        report = self._application.admit_historical_segment(
+            HistoricalSegmentSelection(
+                market=market,
+                start_date=date.fromisoformat(start_date),
+                end_date=date.fromisoformat(end_date),
+            )
+        )
+        return report.to_dict()
 
 
 __all__ = ["DiagnosticsApplicationPort", "DiagnosticsPanel"]

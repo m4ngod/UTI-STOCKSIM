@@ -1,13 +1,70 @@
 from __future__ import annotations
 
 import os
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from app.panels.diagnostics.panel import DiagnosticsPanel
 from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
-from strategy_diagnostics import create_diagnostics_application
+from strategy_diagnostics import (
+    AdmissionCheck,
+    HistoricalSegmentSelection,
+    HistoricalSourceInspection,
+    InMemoryHistoricalSource,
+    SourceArtifact,
+    SourceProvenance,
+    create_diagnostics_application,
+)
+
+
+REQUIRED_CHECKS = (
+    "bar_continuity",
+    "instrument_coverage",
+    "eligible_universe",
+    "trading_status",
+    "st_status",
+    "suspension_state",
+    "industry_as_of",
+    "adjustment_consistency",
+    "causal_availability",
+    "required_fields",
+    "missing_data",
+    "duplicates",
+    "timestamps",
+)
+
+
+def _admittable_application() -> object:
+    selection = HistoricalSegmentSelection(
+        market="mainland-a-share",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+    )
+    source = InMemoryHistoricalSource(
+        (
+            HistoricalSourceInspection(
+                selection=selection,
+                label="Visible diagnostic interval",
+                provenance=SourceProvenance(
+                    provider="BaoStock",
+                    dataset="workspace-fixture",
+                    version="v1",
+                    observed_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+                ),
+                artifacts=(SourceArtifact("bars", "f" * 64, 48),),
+                eligible_instrument_count=1,
+                trading_day_count=1,
+                bar_count=48,
+                checks=tuple(
+                    AdmissionCheck(code, True, f"{code} passed")
+                    for code in REQUIRED_CHECKS
+                ),
+            ),
+        )
+    )
+    return create_diagnostics_application(historical_source=source)
 
 
 def _ensure_qapp() -> object | None:
@@ -24,9 +81,17 @@ def test_diagnostics_panel_uses_the_headless_application_interface() -> None:
 
     view = panel.get_view()
 
-    assert view == application.status().to_dict()
+    assert {
+        key: view[key] for key in application.status().to_dict()
+    } == application.status().to_dict()
     assert view["workspace"] == "Diagnostics"
     assert view["status"] == "ready"
+    assert view["historical_segment_catalog"] == {
+        "status": "not_checked",
+        "segment_count": 0,
+        "segments": [],
+        "latest_admission": None,
+    }
 
 
 def test_diagnostics_adapter_renders_the_logic_panel_view() -> None:
@@ -38,6 +103,32 @@ def test_diagnostics_adapter_renders_the_logic_panel_view() -> None:
 
     assert widget is not None
     assert adapter.current_view() == panel.get_view()
+
+
+def test_diagnostics_workspace_admits_and_displays_segment_provenance() -> None:
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+
+    admission = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    view = panel.get_view()
+    catalog = view["historical_segment_catalog"]
+
+    assert admission["status"] == "admitted"
+    assert catalog["status"] == "admitted"
+    assert catalog["segment_count"] == 1
+    assert catalog["segments"][0]["provenance"] == {
+        "provider": "BaoStock",
+        "dataset": "workspace-fixture",
+        "version": "v1",
+        "observed_at": "2026-07-21T00:00:00+00:00",
+    }
+    visible_payload = repr(catalog).lower()
+    assert "storage_path" not in visible_payload
+    assert "duckdb" not in visible_payload
+    assert "parquet" not in visible_payload
 
 
 def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
