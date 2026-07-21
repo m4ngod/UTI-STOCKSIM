@@ -54,9 +54,10 @@ try:
 except Exception:  # pragma: no cover
     _register_mw = None  # type: ignore
 
-DEFAULT_PRELOAD_PANELS = ["account", "diagnostics", "market", "agents", "leaderboard", "clock", "orders"]
+PRIMARY_WORKSPACE_PANELS = ["account", "diagnostics", "market", "agents", "leaderboard", "clock", "orders"]
+DEFAULT_PRELOAD_PANELS = list(PRIMARY_WORKSPACE_PANELS)
 
-__all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS"]
+__all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS", "PRIMARY_WORKSPACE_PANELS"]
 
 class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self):  # noqa: D401
@@ -331,7 +332,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         ]
         if not ordered_names:
             ordered_names = [
-                name for name in ['market', 'account', 'diagnostics', 'agents', 'leaderboard', 'clock', 'orders']
+                name for name in PRIMARY_WORKSPACE_PANELS
                 if name in self._workspace_pages
             ]
         active_page = getattr(self, '_last_non_symbol_page', 'market') or 'market'
@@ -423,7 +424,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._ensure_central_layout()
         try:
             self._panel_widgets[name] = widget
-            primary_panels = {'market', 'account', 'diagnostics', 'agents', 'clock', 'leaderboard', 'orders'} | {n for n in self.list_open() if str(n).startswith('symbol:')}
+            primary_panels = set(PRIMARY_WORKSPACE_PANELS) | {n for n in self.list_open() if str(n).startswith('symbol:')}
             if name in primary_panels or str(name).startswith('symbol:'):
                 try:
                     if self._workspace_stack is not None and hasattr(self._workspace_stack, 'addWidget'):
@@ -434,16 +435,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                         self._workspace_pages[name] = page
                         self._workspace_index_to_name[idx] = name
                         if self._nav_list is not None and hasattr(self._nav_list, 'addItem') and not str(name).startswith('symbol:'):
-                            nav_titles = {
-                                'diagnostics': 'Diagnostics',
-                                'market': 'Market',
-                                'account': 'Account',
-                                'agents': 'Agents',
-                                'clock': 'Clock',
-                                'leaderboard': 'Leaderboard',
-                                'orders': 'Orders',
-                            }
-                            self._nav_list.addItem(nav_titles.get(name, title))  # type: ignore[attr-defined]
+                            self._nav_list.addItem(title)  # type: ignore[attr-defined]
                         self.show_workspace_page(name)
                         try:
                             if hasattr(page, 'update'):

@@ -30,12 +30,12 @@ except Exception:  # pragma: no cover - exercised only without Qt installed
 class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
     def __init__(self) -> None:
         super().__init__()
-        self._current_view: dict[str, str] = {}
+        self._current_view: dict[str, Any] = {}
         self._product_label: Any = None
         self._status_label: Any = None
         self._message_label: Any = None
 
-    def current_view(self) -> dict[str, str]:
+    def current_view(self) -> dict[str, Any]:
         return dict(self._current_view)
 
     def _create_widget(self) -> Any:
@@ -50,15 +50,17 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         return root
 
     def _apply_view(self, view: dict[str, Any]) -> None:
-        self._current_view = {str(key): str(value) for key, value in view.items()}
+        self._current_view = dict(view)
         if self._product_label is not None:
-            self._product_label.setText(self._current_view.get("product", "Diagnostics"))
+            self._product_label.setText(
+                str(self._current_view.get("product", "Diagnostics"))
+            )
         if self._status_label is not None:
             self._status_label.setText(
                 f"Status: {self._current_view.get('status', 'unknown')}"
             )
         if self._message_label is not None:
-            self._message_label.setText(self._current_view.get("message", ""))
+            self._message_label.setText(str(self._current_view.get("message", "")))
 
 
 __all__ = ["DiagnosticsPanelAdapter"]
