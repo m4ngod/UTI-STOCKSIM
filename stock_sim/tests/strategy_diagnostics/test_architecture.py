@@ -9,13 +9,19 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "PySide6",
     "app.panels.arena",
     "app.services.arena_experiment_runner",
+    "app.services.long_arena_dry_run",
+    "app.services.runtime_model_agent",
     "app.services.runtime_retail_agent",
     "app.services.training_arena_service",
     "app.ui",
     "core.matching_engine",
+    "persistence.models_training",
     "services.engine_registry",
+    "services.training_episode_service",
     "stock_sim.core.matching_engine",
+    "stock_sim.persistence.models_training",
     "stock_sim.services.engine_registry",
+    "stock_sim.services.training_episode_service",
 )
 
 
