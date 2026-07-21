@@ -31,6 +31,7 @@ __all__ = [
 
 _PLACEHOLDER_NAMES = [
     "account",
+    "diagnostics",
     "market",
     "agents",
     "leaderboard",
@@ -62,6 +63,21 @@ def register_ui_adapters():
     - 若缺少依赖/GUI 不可用，静默忽略，保留占位面板。
     - 仅在首次启动时调用一次（建议在 run_frontend 预加载前）。
     """
+    # diagnostics
+    from app.panels.diagnostics.panel import DiagnosticsPanel as _DiagnosticsLogic
+    from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
+    from strategy_diagnostics import create_diagnostics_application
+
+    def _diagnostics_factory():
+        logic = _DiagnosticsLogic(create_diagnostics_application())
+        return DiagnosticsPanelAdapter().bind(logic)
+
+    replace_panel(
+        "diagnostics",
+        _diagnostics_factory,
+        title="Diagnostics",
+        meta={"i18n_key": "panel.diagnostics"},
+    )
     # account
     try:
         from app.services.account_service import AccountService

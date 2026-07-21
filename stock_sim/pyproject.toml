@@ -21,13 +21,21 @@ dependencies = [
 
 [project.scripts]
 frontend-trading-ui = "setup_frontend_entry:main"
+strategy-diagnostics = "strategy_diagnostics.__main__:main"
 
 [tool.setuptools]
 # 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?
 
 [tool.setuptools.packages.find]
 where = [""]
-include = ["stock_sim", "stock_sim.*", "app", "app.*"]
+include = [
+  "stock_sim",
+  "stock_sim.*",
+  "app",
+  "app.*",
+  "strategy_diagnostics",
+  "strategy_diagnostics.*",
+]
 exclude = [
   "logs*",
   "Quent*",
