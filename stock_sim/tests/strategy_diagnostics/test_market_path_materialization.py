@@ -10,6 +10,7 @@ import pytest
 from strategy_diagnostics import (
     FiveMinuteBar,
     AdmissionCheck,
+    EligibleUniverseAccessError,
     FutureDataAccessError,
     HistoricalMarketSegment,
     HistoricalSegmentSelection,
@@ -277,6 +278,75 @@ def test_scenario_market_view_refuses_every_kind_of_future_data() -> None:
     assert later_snapshot["industries"]["sh.600000"] == (
         "diversified-bank"
     )
+
+
+def test_scenario_market_view_refuses_direct_reads_before_ipo() -> None:
+    world = replace(
+        _world(),
+        instrument_states=(
+            replace(
+                _world().instrument_states[0],
+                eligible=False,
+                trading_status="inactive",
+                decision_adjustment_factor=None,
+                decision_adjustment_provenance="not-applicable-outside-listing",
+            ),
+            replace(
+                _world().instrument_states[0],
+                effective_at=datetime(2024, 1, 2, 9, 35),
+            ),
+        ),
+    )
+    path = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((world,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize_baseline(_segment(), seed=17)
+    view = ScenarioMarketView(
+        path,
+        initial_cursor=datetime(2024, 1, 2, 9, 34),
+    )
+
+    with pytest.raises(EligibleUniverseAccessError, match="Eligible Universe"):
+        view.history("sh.600000")
+    with pytest.raises(EligibleUniverseAccessError, match="Eligible Universe"):
+        view.node_at("sh.600000", datetime(2024, 1, 2, 9, 31))
+
+    view.advance_to(datetime(2024, 1, 2, 9, 35))
+    assert len(view.history("sh.600000")) == 10
+
+
+def test_scenario_market_view_refuses_direct_reads_after_delisting() -> None:
+    active_state = _world().instrument_states[0]
+    world = replace(
+        _two_bar_world(),
+        instrument_states=(
+            active_state,
+            replace(
+                active_state,
+                effective_at=datetime(2024, 1, 2, 9, 40),
+                eligible=False,
+                trading_status="inactive",
+                decision_adjustment_factor=None,
+                decision_adjustment_provenance="not-applicable-outside-listing",
+            ),
+        ),
+    )
+    path = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((world,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize_baseline(_segment(), seed=17)
+    view = ScenarioMarketView(
+        path,
+        initial_cursor=datetime(2024, 1, 2, 9, 35),
+    )
+    assert len(view.history("sh.600000")) == 10
+
+    view.advance_to(datetime(2024, 1, 2, 9, 40))
+
+    with pytest.raises(EligibleUniverseAccessError, match="Eligible Universe"):
+        view.history("sh.600000")
+    with pytest.raises(EligibleUniverseAccessError, match="Eligible Universe"):
+        view.node_at("sh.600000", datetime(2024, 1, 2, 9, 35))
 
 
 def test_headless_application_materializes_and_previews_an_admitted_segment() -> None:

@@ -20,6 +20,7 @@ from .historical_segments import (
     SourceSnapshot,
 )
 from .market_paths import (
+    EligibleUniverseAccessError,
     FiveMinuteBar,
     FutureDataAccessError,
     HistoricalMarketDataSource,
@@ -52,6 +53,7 @@ __all__ = [
     "SourceArtifact",
     "SourceProvenance",
     "SourceSnapshot",
+    "EligibleUniverseAccessError",
     "FiveMinuteBar",
     "FutureDataAccessError",
     "HistoricalMarketDataSource",

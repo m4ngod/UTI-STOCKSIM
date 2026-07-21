@@ -486,6 +486,10 @@ class FutureDataAccessError(ValueError):
     """Raised when a caller asks beyond the Scenario Market View cursor."""
 
 
+class EligibleUniverseAccessError(ValueError):
+    """Raised when market data is requested outside the current universe."""
+
+
 @dataclass(frozen=True, slots=True)
 class ScenarioMarketSnapshot:
     simulation_time: datetime
@@ -565,6 +569,7 @@ class ScenarioMarketView:
         self._cursor = simulation_time
 
     def history(self, instrument: str) -> tuple[MarketPathNode, ...]:
+        self._require_eligible(instrument)
         return tuple(
             node
             for node in self._path.nodes
@@ -581,6 +586,7 @@ class ScenarioMarketView:
             raise FutureDataAccessError(
                 "Requested market data is later than the current Simulation Time cursor"
             )
+        self._require_eligible(instrument)
         return next(
             (
                 node
@@ -592,10 +598,7 @@ class ScenarioMarketView:
         )
 
     def snapshot(self) -> ScenarioMarketSnapshot:
-        state_by_instrument: dict[str, InstrumentState] = {}
-        for state in self._path.instrument_states:
-            if state.effective_at <= self._cursor:
-                state_by_instrument[state.instrument] = state
+        state_by_instrument = self._state_by_instrument_at_cursor()
         eligible_universe = tuple(
             sorted(
                 instrument
@@ -620,6 +623,21 @@ class ScenarioMarketView:
                 if item in latest_by_instrument
             ),
         )
+
+    def _state_by_instrument_at_cursor(self) -> dict[str, InstrumentState]:
+        state_by_instrument: dict[str, InstrumentState] = {}
+        for state in self._path.instrument_states:
+            if state.effective_at <= self._cursor:
+                state_by_instrument[state.instrument] = state
+        return state_by_instrument
+
+    def _require_eligible(self, instrument: str) -> None:
+        state = self._state_by_instrument_at_cursor().get(instrument)
+        if state is None or not state.eligible:
+            raise EligibleUniverseAccessError(
+                f"{instrument!r} is outside the Eligible Universe at the current "
+                "Simulation Time cursor"
+            )
 
 
 def _expand_bar(bar: FiveMinuteBar, seed: int) -> tuple[MarketPathNode, ...]:
@@ -853,6 +871,7 @@ class ScenarioMaterializer:
 
 
 __all__ = [
+    "EligibleUniverseAccessError",
     "FiveMinuteBar",
     "FutureDataAccessError",
     "HistoricalMarketDataSource",
