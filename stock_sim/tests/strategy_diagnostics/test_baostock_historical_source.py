@@ -5,12 +5,14 @@ from datetime import date, datetime
 from decimal import Decimal
 import json
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 from strategy_diagnostics import (
     BaoStockHistoricalSource,
     BaoStockSourceLayout,
+    HistoricalSourceInspection,
     HistoricalSegmentSelection,
     InMemoryMarketPathArtifactStore,
     create_diagnostics_application,
@@ -206,6 +208,48 @@ def _build_local_source(
             industry_snapshot_paths=(industry_path,),
         )
     )
+
+
+class _MutatingAfterInspectionSource(BaoStockHistoricalSource):
+    def __init__(
+        self,
+        layout: BaoStockSourceLayout,
+        mutation: Callable[[], None],
+    ) -> None:
+        super().__init__(layout)
+        self._inspection_calls = 0
+        self._mutation = mutation
+
+    def inspect(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> HistoricalSourceInspection | None:
+        result = super().inspect(selection)
+        self._inspection_calls += 1
+        if self._inspection_calls == 2:
+            self._mutation()
+        return result
+
+
+def _scale_raw_daily_prices(root: Path, multiplier: Decimal) -> None:
+    summary_path = (
+        root
+        / "metadata"
+        / "a_stock_daily_unadjusted"
+        / "a_stock_daily_download_summary.csv"
+    )
+    with summary_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        summaries = list(csv.DictReader(handle))
+    for summary in summaries:
+        daily_path = Path(summary["file"])
+        with daily_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = tuple(reader.fieldnames or ())
+            rows = list(reader)
+        for row in rows:
+            for field in ("open", "high", "low", "close", "preclose"):
+                row[field] = str(Decimal(row[field]) * multiplier)
+        _write_csv(daily_path, fieldnames, rows)
 
 
 def test_local_baostock_interval_passes_real_point_in_time_checks(tmp_path: Path) -> None:
@@ -453,7 +497,9 @@ def test_default_layout_discovers_quentx_point_in_time_industry_snapshots(
 def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
     tmp_path: Path,
 ) -> None:
-    source = _build_local_source(tmp_path / "baostock")
+    root = tmp_path / "baostock"
+    source = _build_local_source(root)
+    _scale_raw_daily_prices(root, Decimal("2"))
     application = create_diagnostics_application(
         historical_source=source,
         artifact_store=InMemoryMarketPathArtifactStore(),
@@ -479,7 +525,7 @@ def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
 
     assert materialized.source_snapshot_id == admission.segment.source_snapshot_id
     assert len(materialized.nodes) == 960
-    assert materialized.nodes[0].open == Decimal("10")
+    assert materialized.nodes[0].open == Decimal("20")
     assert preview["eligible_universe"] == ["sh.600000", "sz.000001"]
     assert preview["industries"] == {
         "sh.600000": "fixture-industry",
@@ -487,5 +533,38 @@ def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
     }
     assert preview["adjustments"]["sh.600000"] == {
         "factor": "1",
-        "provenance": "daily-raw/front-ratio-v1",
+        "provenance": "canonical-unadjusted-decision-view-v1",
     }
+
+
+def test_materialization_rejects_equal_row_count_source_changes_after_inspection(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "baostock"
+    _build_local_source(root)
+    source = _MutatingAfterInspectionSource(
+        BaoStockSourceLayout(
+            root=root,
+            industry_snapshot_paths=(root / "industry_snapshots.csv",),
+        ),
+        lambda: _scale_raw_daily_prices(root, Decimal("2")),
+    )
+    application = create_diagnostics_application(
+        historical_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+        )
+    )
+    assert admission.segment is not None
+
+    with pytest.raises(ValueError, match="changed after admission"):
+        application.materialize_baseline_reference_path(
+            admission.segment.segment_id,
+            seed=23,
+        )

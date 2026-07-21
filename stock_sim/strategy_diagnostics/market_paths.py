@@ -41,10 +41,10 @@ def _decimal_text(value: Decimal) -> str:
 
 
 def _adjustment_payload(state: "InstrumentState") -> dict[str, str | None]:
-    factor = state.adjustment_factor
+    factor = state.decision_adjustment_factor
     return {
         "factor": _decimal_text(factor) if factor is not None else None,
-        "provenance": state.adjustment_provenance,
+        "provenance": state.decision_adjustment_provenance,
     }
 
 
@@ -98,22 +98,29 @@ class InstrumentState:
     trading_status: str
     is_st: bool
     industry: str
-    adjustment_factor: Decimal | None
-    adjustment_provenance: str
+    decision_adjustment_factor: Decimal | None
+    decision_adjustment_provenance: str
 
     def __post_init__(self) -> None:
         if not self.instrument.strip():
             raise ValueError("instrument must not be empty")
         if self.effective_at.tzinfo is not None:
             raise ValueError("Simulation Time must be timezone-naive market-local time")
-        if self.trading_status not in {"trading", "suspended"}:
-            raise ValueError("trading_status must be trading or suspended")
+        if self.trading_status not in {"trading", "suspended", "inactive"}:
+            raise ValueError(
+                "trading_status must be trading, suspended, or inactive"
+            )
         if not self.industry.strip():
             raise ValueError("industry must not be empty")
-        if self.adjustment_factor is not None and self.adjustment_factor <= 0:
-            raise ValueError("adjustment_factor must be positive when present")
-        if not self.adjustment_provenance.strip():
-            raise ValueError("adjustment_provenance must not be empty")
+        if (
+            self.decision_adjustment_factor is not None
+            and self.decision_adjustment_factor <= 0
+        ):
+            raise ValueError(
+                "decision_adjustment_factor must be positive when present"
+            )
+        if not self.decision_adjustment_provenance.strip():
+            raise ValueError("decision_adjustment_provenance must not be empty")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -123,12 +130,12 @@ class InstrumentState:
             "trading_status": self.trading_status,
             "is_st": self.is_st,
             "industry": self.industry,
-            "adjustment_factor": (
-                _decimal_text(self.adjustment_factor)
-                if self.adjustment_factor is not None
+            "decision_adjustment_factor": (
+                _decimal_text(self.decision_adjustment_factor)
+                if self.decision_adjustment_factor is not None
                 else None
             ),
-            "adjustment_provenance": self.adjustment_provenance,
+            "decision_adjustment_provenance": self.decision_adjustment_provenance,
         }
 
 
@@ -141,12 +148,15 @@ class ScenarioDataWorldInput:
     source_snapshot_id: str
     bars: tuple[FiveMinuteBar, ...]
     instrument_states: tuple[InstrumentState, ...]
+    normalization_provenance: str = "canonical-unadjusted-source"
 
     def __post_init__(self) -> None:
         if not self.bars:
             raise ValueError("Scenario Data World input requires five-minute bars")
         if not self.instrument_states:
             raise ValueError("Scenario Data World input requires instrument states")
+        if not self.normalization_provenance.strip():
+            raise ValueError("normalization_provenance must not be empty")
 
 
 class HistoricalMarketDataSource(Protocol):
@@ -212,6 +222,7 @@ class MaterializedMarketPath:
     runtime_resolution: str
     reconstructed: bool
     numeric_tolerance: str
+    normalization_provenance: str
     nodes: tuple[MarketPathNode, ...]
     instrument_states: tuple[InstrumentState, ...]
 
@@ -226,6 +237,7 @@ class MaterializedMarketPath:
             "runtime_resolution": self.runtime_resolution,
             "reconstructed": self.reconstructed,
             "numeric_tolerance": self.numeric_tolerance,
+            "normalization_provenance": self.normalization_provenance,
             "node_count": len(self.nodes),
             "instrument_count": len(
                 {state.instrument for state in self.instrument_states if state.eligible}
@@ -322,6 +334,7 @@ class ParquetMarketPathArtifactStore:
             runtime_resolution=str(manifest["runtime_resolution"]),
             reconstructed=bool(manifest["reconstructed"]),
             numeric_tolerance=str(manifest["numeric_tolerance"]),
+            normalization_provenance=str(manifest["normalization_provenance"]),
             nodes=nodes,
             instrument_states=states,
         )
@@ -376,8 +389,9 @@ class ParquetMarketPathArtifactStore:
             connection.execute(
                 "CREATE TABLE instrument_states (instrument VARCHAR, "
                 "effective_at VARCHAR, eligible BOOLEAN, trading_status VARCHAR, "
-                "is_st BOOLEAN, industry VARCHAR, adjustment_factor VARCHAR, "
-                "adjustment_provenance VARCHAR)"
+                "is_st BOOLEAN, industry VARCHAR, "
+                "decision_adjustment_factor VARCHAR, "
+                "decision_adjustment_provenance VARCHAR)"
             )
             connection.executemany(
                 "INSERT INTO instrument_states VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -390,11 +404,11 @@ class ParquetMarketPathArtifactStore:
                         state.is_st,
                         state.industry,
                         (
-                            str(state.adjustment_factor)
-                            if state.adjustment_factor is not None
+                            str(state.decision_adjustment_factor)
+                            if state.decision_adjustment_factor is not None
                             else None
                         ),
-                        state.adjustment_provenance,
+                        state.decision_adjustment_provenance,
                     )
                     for state in path.instrument_states
                 ],
@@ -427,7 +441,8 @@ class ParquetMarketPathArtifactStore:
             ).fetchall()
             state_rows = connection.execute(
                 "SELECT instrument, effective_at, eligible, trading_status, is_st, "
-                "industry, adjustment_factor, adjustment_provenance "
+                "industry, decision_adjustment_factor, "
+                "decision_adjustment_provenance "
                 f"FROM read_parquet({_duckdb_string(directory / 'instrument_states.parquet')}) "
                 "ORDER BY effective_at, instrument"
             ).fetchall()
@@ -457,10 +472,10 @@ class ParquetMarketPathArtifactStore:
                 trading_status=str(row[3]),
                 is_st=bool(row[4]),
                 industry=str(row[5]),
-                adjustment_factor=(
+                decision_adjustment_factor=(
                     Decimal(str(row[6])) if row[6] is not None else None
                 ),
-                adjustment_provenance=str(row[7]),
+                decision_adjustment_provenance=str(row[7]),
             )
             for row in state_rows
         )
@@ -730,6 +745,7 @@ def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
         "runtime_resolution": path.runtime_resolution,
         "reconstructed": path.reconstructed,
         "numeric_tolerance": path.numeric_tolerance,
+        "normalization_provenance": path.normalization_provenance,
         "nodes": [node.to_dict() for node in path.nodes],
         "instrument_states": [
             state.to_dict()
@@ -750,6 +766,7 @@ def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
         "runtime_resolution": path.runtime_resolution,
         "reconstructed": path.reconstructed,
         "numeric_tolerance": path.numeric_tolerance,
+        "normalization_provenance": path.normalization_provenance,
         "node_count": len(path.nodes),
         "instrument_state_count": len(path.instrument_states),
     }
@@ -819,6 +836,7 @@ class ScenarioMaterializer:
             runtime_resolution="30s",
             reconstructed=True,
             numeric_tolerance=str(_PRICE_TOLERANCE),
+            normalization_provenance=world.normalization_provenance,
             nodes=nodes,
             instrument_states=tuple(
                 sorted(
