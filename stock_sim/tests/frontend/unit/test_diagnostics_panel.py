@@ -44,6 +44,7 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
     monkeypatch: object,
 ) -> None:
     from app import panels
+    from app.i18n import set_language
     from app.panels import (
         get_panel,
         list_panels,
@@ -61,6 +62,7 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
         "get_app_context",
         lambda: SimpleNamespace(),
     )
+    set_language("zh_CN")
     reset_registry()
     register_builtin_panels()
     register_ui_adapters()
@@ -74,3 +76,39 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
     window = MainWindow()
     assert window.open_panel("diagnostics") is not None
     assert window.serialize_layout()["panels"]["diagnostics"]["open"] is True
+    diagnostics_page = window._workspace_pages["diagnostics"]
+    diagnostics_index = window._workspace_stack.indexOf(diagnostics_page)
+    assert window._nav_list.item(diagnostics_index).text() == "策略诊断"
+
+
+def test_diagnostics_adapter_failure_preserves_the_legacy_shell(
+    monkeypatch: object,
+) -> None:
+    from app import panels
+    from app.panels import list_panels, register_builtin_panels, reset_registry
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        panels,
+        "get_app_context",
+        lambda: SimpleNamespace(),
+    )
+    original_replace_panel = panels.replace_panel
+
+    def fail_diagnostics_registration(name: str, *args: object, **kwargs: object) -> object:
+        if name == "diagnostics":
+            raise RuntimeError("diagnostics adapter unavailable")
+        return original_replace_panel(name, *args, **kwargs)
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        panels,
+        "replace_panel",
+        fail_diagnostics_registration,
+    )
+    reset_registry()
+    register_builtin_panels()
+
+    panels.register_ui_adapters()
+
+    descriptors = {item["name"]: item for item in list_panels()}
+    assert descriptors["diagnostics"]["created"] is False
+    assert "account" in descriptors

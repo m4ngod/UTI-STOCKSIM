@@ -6,7 +6,7 @@ from typing import Protocol
 
 
 class _DiagnosticsState(Protocol):
-    def to_dict(self) -> dict[str, str]: ...
+    def to_dict(self) -> dict[str, object]: ...
 
 
 class DiagnosticsApplicationPort(Protocol):
@@ -20,7 +20,7 @@ class DiagnosticsPanel:
         self._application = application
         self._application.start()
 
-    def get_view(self) -> dict[str, str]:
+    def get_view(self) -> dict[str, object]:
         return self._application.status().to_dict()
 
 

@@ -67,20 +67,23 @@ def register_ui_adapters():
     """
     ctx = get_app_context()
     # diagnostics
-    from app.panels.diagnostics.panel import DiagnosticsPanel as _DiagnosticsLogic
-    from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
-    from strategy_diagnostics import create_diagnostics_application
+    try:
+        from app.panels.diagnostics.panel import DiagnosticsPanel as _DiagnosticsLogic
+        from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
+        from strategy_diagnostics import create_diagnostics_application
 
-    def _diagnostics_factory():
-        logic = _DiagnosticsLogic(create_diagnostics_application())
-        return DiagnosticsPanelAdapter().bind(logic)
+        def _diagnostics_factory():
+            logic = _DiagnosticsLogic(create_diagnostics_application())
+            return DiagnosticsPanelAdapter().bind(logic)
 
-    replace_panel(
-        "diagnostics",
-        _diagnostics_factory,
-        title="Diagnostics",
-        meta={"i18n_key": "panel.diagnostics"},
-    )
+        replace_panel(
+            "diagnostics",
+            _diagnostics_factory,
+            title="Diagnostics",
+            meta={"i18n_key": "panel.diagnostics"},
+        )
+    except Exception:
+        pass
     # account
     try:
         from app.panels.account.panel import AccountPanel as _AccountLogic

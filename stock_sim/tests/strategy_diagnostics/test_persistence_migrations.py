@@ -4,7 +4,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
 
-from strategy_diagnostics.persistence import initialize_diagnostic_persistence
+from strategy_diagnostics import create_diagnostics_application
 
 
 def _column_contract(engine: object, table_name: str) -> list[tuple[object, ...]]:
@@ -37,13 +37,17 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
 
     columns_before = _column_contract(engine, "legacy_accounts")
 
-    first = initialize_diagnostic_persistence(engine)
-    second = initialize_diagnostic_persistence(engine)
+    application = create_diagnostics_application()
+    application.start()
+    first = application.initialize_persistence(engine)
+    second = application.initialize_persistence(engine)
 
     assert first.current_revision == "0001_diagnostics_baseline"
     assert first.applied_revisions == ("0001_diagnostics_baseline",)
     assert second.current_revision == "0001_diagnostics_baseline"
     assert second.applied_revisions == ()
+    assert application.status().persistence_status == "ready"
+    assert application.status().persistence_revision == "0001_diagnostics_baseline"
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
         legacy_row = connection.execute(
