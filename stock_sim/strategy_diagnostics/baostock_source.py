@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
@@ -14,10 +15,17 @@ from typing import Iterable, Iterator, Mapping, Sequence
 
 from .historical_segments import (
     AdmissionCheck,
+    HistoricalMarketSegment,
     HistoricalSegmentSelection,
     HistoricalSourceInspection,
     SourceArtifact,
     SourceProvenance,
+    SourceSnapshot,
+)
+from .market_paths import (
+    FiveMinuteBar,
+    InstrumentState,
+    ScenarioDataWorldInput,
 )
 
 
@@ -569,6 +577,176 @@ class BaoStockHistoricalSource:
             ),
         )
 
+    def load_scenario_data_world(
+        self,
+        segment: HistoricalMarketSegment,
+    ) -> ScenarioDataWorldInput:
+        """Load and normalize the exact admitted source snapshot for materialization."""
+
+        inspection = self.inspect(segment.selection)
+        if inspection is None:
+            raise ValueError("The admitted segment is not available from this source")
+        failed_checks = tuple(check.code for check in inspection.checks if not check.passed)
+        if failed_checks:
+            raise ValueError(
+                "The historical source no longer passes admission checks: "
+                + ", ".join(failed_checks)
+            )
+        snapshot = SourceSnapshot.from_inspection(inspection)
+        if snapshot.snapshot_id != segment.source_snapshot_id:
+            raise ValueError(
+                "The historical source changed after admission; admit a new segment before materialization"
+            )
+
+        catalog = self._load_instruments()
+        eligible = tuple(
+            instrument
+            for instrument in catalog.instruments
+            if instrument.ipo_date <= segment.selection.end_date
+            and (
+                instrument.out_date is None
+                or instrument.out_date >= segment.selection.start_date
+            )
+        )
+        eligible_codes = frozenset(item.code for item in eligible)
+        calendar = self._load_trading_calendar(segment.selection)
+        raw_rows = self._load_daily_rows(
+            self._layout.daily_unadjusted_metadata
+            / "a_stock_daily_download_summary.csv",
+            eligible_codes,
+            segment.selection,
+        )
+        front_rows = self._load_daily_rows(
+            self._layout.daily_front_adjusted_metadata
+            / "a_stock_daily_download_summary.csv",
+            eligible_codes,
+            segment.selection,
+        )
+        industry = self._load_industry_snapshots()
+        if industry is None:
+            raise ValueError("Point-in-time industry data is unavailable")
+
+        factor_by_pair: dict[tuple[str, date], Decimal | None] = {}
+        states: list[InstrumentState] = []
+        for trading_date in calendar.dates:
+            for instrument in eligible:
+                if not instrument.active_on(trading_date):
+                    continue
+                pair = (instrument.code, trading_date)
+                raw = raw_rows.rows.get(pair)
+                front = front_rows.rows.get(pair)
+                if raw is None or front is None:
+                    raise ValueError(
+                        "Admitted daily market data is no longer complete"
+                    )
+                trading_status = raw.get("tradestatus", "").strip()
+                factor = (
+                    _daily_adjustment_factor(raw, front)
+                    if trading_status == "1"
+                    else None
+                )
+                factor_by_pair[pair] = factor
+                industry_name = _industry_as_of_value(
+                    industry,
+                    instrument.code,
+                    trading_date,
+                )
+                if industry_name is None:
+                    raise ValueError(
+                        "Admitted point-in-time industry data is no longer complete"
+                    )
+                states.append(
+                    InstrumentState(
+                        instrument=instrument.code,
+                        effective_at=datetime.combine(trading_date, time(9, 30)),
+                        eligible=True,
+                        trading_status=(
+                            "trading" if trading_status == "1" else "suspended"
+                        ),
+                        is_st=raw.get("isST", "").strip() == "1",
+                        industry=industry_name,
+                        adjustment_factor=factor,
+                        adjustment_provenance=(
+                            "daily-raw/front-ratio-v1"
+                            if factor is not None
+                            else "unavailable-while-suspended"
+                        ),
+                    )
+                )
+
+        bars = self._load_normalized_five_minute_bars(
+            segment.selection,
+            factor_by_pair,
+        )
+        if len(bars) != segment.bar_count:
+            raise ValueError(
+                "The admitted five-minute row count changed before materialization"
+            )
+        return ScenarioDataWorldInput(
+            segment_id=segment.segment_id,
+            segment_content_hash=segment.content_hash,
+            source_snapshot_id=segment.source_snapshot_id,
+            bars=bars,
+            instrument_states=tuple(states),
+        )
+
+    def _load_normalized_five_minute_bars(
+        self,
+        selection: HistoricalSegmentSelection,
+        factor_by_pair: Mapping[tuple[str, date], Decimal | None],
+    ) -> tuple[FiveMinuteBar, ...]:
+        try:
+            import duckdb
+        except ImportError as exc:
+            raise RuntimeError(
+                "DuckDB is required to materialize the admitted five-minute data"
+            ) from exc
+        database = self._layout.minute_metadata / "market_data.duckdb"
+        bars: list[FiveMinuteBar] = []
+        with duckdb.connect(str(database), read_only=True) as connection:
+            cursor = connection.execute(
+                "SELECT code, date, time, open, high, low, close, volume, amount "
+                "FROM minute_5_bars WHERE date >= ? AND date <= ? "
+                "ORDER BY date, time, code",
+                [selection.start_date.isoformat(), selection.end_date.isoformat()],
+            )
+            while True:
+                batch = cursor.fetchmany(10_000)
+                if not batch:
+                    break
+                for values in batch:
+                    instrument = str(values[0]).strip().lower()
+                    trading_date = _parse_date(str(values[1]))
+                    if trading_date is None:
+                        raise ValueError("A five-minute row has an invalid trading date")
+                    factor = factor_by_pair.get((instrument, trading_date))
+                    if factor is None:
+                        raise ValueError(
+                            "A five-minute row lacks a canonical unadjusted factor"
+                        )
+                    end_time = _parse_minute_end_time(str(values[2]))
+                    if end_time is None or end_time.date() != trading_date:
+                        raise ValueError("A five-minute row has an invalid Simulation Time")
+                    prices = tuple(
+                        (Decimal(str(value)) * factor).quantize(
+                            Decimal("0.000001")
+                        )
+                        for value in values[3:7]
+                    )
+                    bars.append(
+                        FiveMinuteBar(
+                            instrument=instrument,
+                            end_time=end_time,
+                            open=prices[0],
+                            high=prices[1],
+                            low=prices[2],
+                            close=prices[3],
+                            volume=int(Decimal(str(values[7]))),
+                            amount=Decimal(str(values[8])),
+                        )
+                    )
+        return tuple(bars)
+
     def _load_manifests(
         self,
     ) -> tuple[dict[str, Mapping[str, object]], tuple[str, ...]]:
@@ -899,6 +1077,49 @@ def _parse_date(value: str) -> date | None:
         return date.fromisoformat(value[:10])
     except ValueError:
         return None
+
+
+def _parse_minute_end_time(value: str) -> datetime | None:
+    digits = "".join(character for character in value if character.isdigit())
+    if len(digits) < 14:
+        return None
+    try:
+        return datetime.strptime(digits[:14], "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def _daily_adjustment_factor(
+    raw: Mapping[str, str],
+    front: Mapping[str, str],
+) -> Decimal:
+    try:
+        raw_close = Decimal(raw["close"])
+        front_close = Decimal(front["close"])
+        if raw_close <= 0 or front_close <= 0:
+            raise ValueError
+        return (raw_close / front_close).quantize(Decimal("0.00000001"))
+    except (KeyError, InvalidOperation, ValueError, ZeroDivisionError) as exc:
+        raise ValueError(
+            "Daily raw/front adjustment values cannot be normalized"
+        ) from exc
+
+
+def _industry_as_of_value(
+    industry: _IndustrySnapshot,
+    instrument: str,
+    trading_date: date,
+) -> str | None:
+    candidates = tuple(
+        snapshot_date
+        for snapshot_date in industry.snapshot_dates
+        if snapshot_date <= trading_date
+        and (snapshot_date, instrument) in industry.by_snapshot_and_code
+    )
+    if not candidates:
+        return None
+    _, industry_name = industry.by_snapshot_and_code[(candidates[-1], instrument)]
+    return industry_name
 
 
 def _canonical_row(row: object) -> bytes:

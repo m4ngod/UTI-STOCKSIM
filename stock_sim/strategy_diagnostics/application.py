@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import cast
 
 from sqlalchemy.engine import Engine
 
@@ -14,6 +16,14 @@ from .historical_segments import (
     HistoricalSegmentSelection,
     HistoricalSource,
     SegmentAdmissionReport,
+)
+from .market_paths import (
+    HistoricalMarketDataSource,
+    MarketPathArtifactStore,
+    MaterializedMarketPath,
+    ParquetMarketPathArtifactStore,
+    ScenarioMarketView,
+    ScenarioMaterializer,
 )
 from .persistence import (
     DIAGNOSTIC_SCHEMA_REVISION,
@@ -50,10 +60,32 @@ class DiagnosticsApplicationState:
 class DiagnosticsApplication:
     """Small product interface shared by headless and presentation adapters."""
 
-    def __init__(self, historical_source: HistoricalSource | None = None) -> None:
+    def __init__(
+        self,
+        historical_source: HistoricalSource | None = None,
+        market_data_source: HistoricalMarketDataSource | None = None,
+        artifact_store: MarketPathArtifactStore | None = None,
+    ) -> None:
         self._state: DiagnosticsApplicationState | None = None
+        source = historical_source or BaoStockHistoricalSource()
         self._historical_segments = HistoricalSegmentAdmissionService(
-            source=historical_source or BaoStockHistoricalSource()
+            source=source
+        )
+        candidate_market_source = market_data_source
+        if candidate_market_source is None and callable(
+            getattr(source, "load_scenario_data_world", None)
+        ):
+            candidate_market_source = cast(HistoricalMarketDataSource, source)
+        self._scenario_materializer = (
+            ScenarioMaterializer(
+                source=candidate_market_source,
+                artifact_store=(
+                    artifact_store
+                    or ParquetMarketPathArtifactStore.from_environment()
+                ),
+            )
+            if candidate_market_source is not None
+            else None
         )
 
     def start(self) -> DiagnosticsApplicationState:
@@ -124,11 +156,73 @@ class DiagnosticsApplication:
             "latest_admission": latest.to_dict() if latest is not None else None,
         }
 
+    def materialize_baseline_reference_path(
+        self,
+        segment_id: str,
+        *,
+        seed: int,
+    ) -> MaterializedMarketPath:
+        self.status()
+        if self._scenario_materializer is None:
+            raise RuntimeError(
+                "The configured historical source cannot materialize market paths"
+            )
+        segment = next(
+            (
+                item
+                for item in self._historical_segments.list_segments()
+                if item.segment_id == segment_id
+            ),
+            None,
+        )
+        if segment is None:
+            raise ValueError("Only an admitted Historical Market Segment can be materialized")
+        return self._scenario_materializer.materialize_baseline(segment, seed=seed)
+
+    def open_scenario_market_view(
+        self,
+        artifact_hash: str,
+        *,
+        at_time: datetime,
+    ) -> ScenarioMarketView:
+        self.status()
+        if self._scenario_materializer is None:
+            raise RuntimeError("No Scenario Materializer is configured")
+        return ScenarioMarketView(
+            self._scenario_materializer.get(artifact_hash),
+            initial_cursor=at_time,
+        )
+
+    def preview_reference_market_path(
+        self,
+        artifact_hash: str,
+        *,
+        at_time: datetime,
+    ) -> dict[str, object]:
+        view = self.open_scenario_market_view(
+            artifact_hash,
+            at_time=at_time,
+        )
+        snapshot = view.snapshot().to_dict()
+        snapshot.update(
+            {
+                "artifact_hash": view.artifact_hash,
+                "reconstructed": True,
+            }
+        )
+        return snapshot
+
 
 def create_diagnostics_application(
     historical_source: HistoricalSource | None = None,
+    market_data_source: HistoricalMarketDataSource | None = None,
+    artifact_store: MarketPathArtifactStore | None = None,
 ) -> DiagnosticsApplication:
-    return DiagnosticsApplication(historical_source=historical_source)
+    return DiagnosticsApplication(
+        historical_source=historical_source,
+        market_data_source=market_data_source,
+        artifact_store=artifact_store,
+    )
 
 
 __all__ = [

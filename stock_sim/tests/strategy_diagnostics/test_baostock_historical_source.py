@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import csv
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from strategy_diagnostics import (
     BaoStockHistoricalSource,
     BaoStockSourceLayout,
     HistoricalSegmentSelection,
+    InMemoryMarketPathArtifactStore,
     create_diagnostics_application,
 )
 
@@ -446,3 +448,44 @@ def test_default_layout_discovers_quentx_point_in_time_industry_snapshots(
     layout = BaoStockSourceLayout.from_environment()
 
     assert layout.industry_snapshot_paths == (snapshot,)
+
+
+def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
+    tmp_path: Path,
+) -> None:
+    source = _build_local_source(tmp_path / "baostock")
+    application = create_diagnostics_application(
+        historical_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+        )
+    )
+    assert admission.segment is not None
+
+    materialized = application.materialize_baseline_reference_path(
+        admission.segment.segment_id,
+        seed=23,
+    )
+    preview = application.preview_reference_market_path(
+        materialized.artifact_hash,
+        at_time=datetime(2024, 1, 2, 9, 35),
+    )
+
+    assert materialized.source_snapshot_id == admission.segment.source_snapshot_id
+    assert len(materialized.nodes) == 960
+    assert materialized.nodes[0].open == Decimal("10")
+    assert preview["eligible_universe"] == ["sh.600000", "sz.000001"]
+    assert preview["industries"] == {
+        "sh.600000": "fixture-industry",
+        "sz.000001": "fixture-industry",
+    }
+    assert preview["adjustments"]["sh.600000"] == {
+        "factor": "1",
+        "provenance": "daily-raw/front-ratio-v1",
+    }

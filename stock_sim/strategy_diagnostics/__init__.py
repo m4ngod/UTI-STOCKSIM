@@ -19,6 +19,22 @@ from .historical_segments import (
     SourceProvenance,
     SourceSnapshot,
 )
+from .market_paths import (
+    FiveMinuteBar,
+    FutureDataAccessError,
+    HistoricalMarketDataSource,
+    InMemoryHistoricalMarketDataSource,
+    InMemoryMarketPathArtifactStore,
+    InstrumentState,
+    MarketPathArtifactStore,
+    MarketPathNode,
+    MaterializedMarketPath,
+    ParquetMarketPathArtifactStore,
+    ScenarioDataWorldInput,
+    ScenarioMarketSnapshot,
+    ScenarioMarketView,
+    ScenarioMaterializer,
+)
 
 __all__ = [
     "DIAGNOSTIC_SCHEMA_REVISION",
@@ -36,5 +52,19 @@ __all__ = [
     "SourceArtifact",
     "SourceProvenance",
     "SourceSnapshot",
+    "FiveMinuteBar",
+    "FutureDataAccessError",
+    "HistoricalMarketDataSource",
+    "InMemoryHistoricalMarketDataSource",
+    "InMemoryMarketPathArtifactStore",
+    "InstrumentState",
+    "MarketPathArtifactStore",
+    "MarketPathNode",
+    "MaterializedMarketPath",
+    "ParquetMarketPathArtifactStore",
+    "ScenarioDataWorldInput",
+    "ScenarioMarketSnapshot",
+    "ScenarioMarketView",
+    "ScenarioMaterializer",
     "create_diagnostics_application",
 ]

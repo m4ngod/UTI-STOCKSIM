@@ -193,6 +193,24 @@ class SourceSnapshot:
     provenance: SourceProvenance
     artifacts: tuple[SourceArtifact, ...]
 
+    @classmethod
+    def from_inspection(
+        cls,
+        inspection: HistoricalSourceInspection,
+    ) -> "SourceSnapshot":
+        artifacts = tuple(sorted(inspection.artifacts, key=lambda item: item.name))
+        payload = {
+            "provenance": inspection.provenance.to_dict(),
+            "artifacts": [artifact.to_dict() for artifact in artifacts],
+        }
+        content_hash = _canonical_hash(payload)
+        return cls(
+            snapshot_id=f"snapshot_{content_hash[:20]}",
+            content_hash=content_hash,
+            provenance=inspection.provenance,
+            artifacts=artifacts,
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "snapshot_id": self.snapshot_id,
@@ -407,18 +425,7 @@ class HistoricalSegmentAdmissionService:
             self._latest_report = report
             return report
 
-        artifacts = tuple(sorted(inspection.artifacts, key=lambda item: item.name))
-        snapshot_payload = {
-            "provenance": inspection.provenance.to_dict(),
-            "artifacts": [artifact.to_dict() for artifact in artifacts],
-        }
-        snapshot_hash = _canonical_hash(snapshot_payload)
-        snapshot = SourceSnapshot(
-            snapshot_id=f"snapshot_{snapshot_hash[:20]}",
-            content_hash=snapshot_hash,
-            provenance=inspection.provenance,
-            artifacts=artifacts,
-        )
+        snapshot = SourceSnapshot.from_inspection(inspection)
         segment_payload = {
             "source_snapshot_hash": snapshot.content_hash,
             "selection": selection.to_dict(),
