@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
@@ -72,6 +73,7 @@ class BaoStockSourceLayout:
 
     root: Path
     industry_snapshot_paths: tuple[Path, ...] = ()
+    trading_calendar_path: Path | None = None
 
     @classmethod
     def from_environment(cls) -> "BaoStockSourceLayout":
@@ -85,7 +87,18 @@ class BaoStockSourceLayout:
         if not paths:
             snapshot_dir = root / "metadata" / "industry_snapshots"
             paths = tuple(sorted(snapshot_dir.glob("*.csv")))
-        return cls(root=root, industry_snapshot_paths=paths)
+        if not paths:
+            quentx_root = Path(os.environ.get("QUENTX_ROOT", r"T:\文档\QuentX"))
+            versions = quentx_root / "ptrade" / "versions"
+            paths = tuple(
+                sorted(versions.glob("*/quentx_industry_snapshots_*.csv"))
+            )
+        calendar_value = os.environ.get("STOCK_SIM_TRADING_CALENDAR", "").strip()
+        return cls(
+            root=root,
+            industry_snapshot_paths=paths,
+            trading_calendar_path=(Path(calendar_value) if calendar_value else None),
+        )
 
     @property
     def daily_unadjusted_metadata(self) -> Path:
@@ -98,6 +111,15 @@ class BaoStockSourceLayout:
     @property
     def minute_metadata(self) -> Path:
         return self.root / "metadata" / "a_stock_5min_front_adjusted"
+
+    @property
+    def resolved_trading_calendar_path(self) -> Path:
+        return self.trading_calendar_path or (
+            self.root
+            / "index_data"
+            / "01_composite_index"
+            / "sh_000001.csv"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,8 +144,21 @@ class _DailyRows:
 
 
 @dataclass(frozen=True, slots=True)
+class _InstrumentCatalog:
+    instruments: tuple[_Instrument, ...]
+    artifact: SourceArtifact
+
+
+@dataclass(frozen=True, slots=True)
+class _TradingCalendar:
+    dates: tuple[date, ...]
+    artifact: SourceArtifact
+
+
+@dataclass(frozen=True, slots=True)
 class _MinuteSummary:
     counts: Mapping[tuple[str, date], int]
+    daily_aggregates: Mapping[tuple[str, date], tuple[float, ...]]
     row_count: int
     duplicate_count: int
     invalid_timestamp_count: int
@@ -184,12 +219,21 @@ class BaoStockHistoricalSource:
                 "field; rebuild the local BaoStock datasets."
             )
 
+        instrument_artifact: SourceArtifact | None = None
         try:
-            instruments = self._load_instruments()
-        except (OSError, ValueError) as exc:
+            instrument_catalog = self._load_instruments()
+            instruments = instrument_catalog.instruments
+            instrument_artifact = instrument_catalog.artifact
+        except OSError as exc:
             instruments = ()
             static_failures["eligible_universe"] = (
-                f"The A-share instrument catalog is unavailable or invalid: {exc}"
+                "The A-share instrument catalog is unavailable "
+                f"({type(exc).__name__}); restore it and retry."
+            )
+        except ValueError as exc:
+            instruments = ()
+            static_failures["eligible_universe"] = (
+                f"The A-share instrument catalog contains malformed data: {exc}"
             )
         eligible = tuple(
             instrument
@@ -205,6 +249,20 @@ class BaoStockHistoricalSource:
             static_failures.setdefault(
                 "eligible_universe",
                 "No A-share instrument is active inside the selected IPO/delisting boundaries.",
+            )
+
+        calendar: _TradingCalendar | None = None
+        calendar_error: str | None = None
+        try:
+            calendar = self._load_trading_calendar(selection)
+        except OSError as exc:
+            calendar_error = (
+                "The independent A-share trading calendar is unavailable "
+                f"({type(exc).__name__}); restore it and retry."
+            )
+        except ValueError as exc:
+            calendar_error = (
+                f"The independent A-share trading calendar is invalid: {exc}"
             )
 
         raw_rows = self._load_daily_rows(
@@ -230,7 +288,12 @@ class BaoStockHistoricalSource:
         industry = self._load_industry_snapshots()
         minute, minute_error = self._load_minute_summary(selection, eligible_codes)
 
-        trading_dates = tuple(sorted({item[1] for item in raw_rows.rows}))
+        raw_dates = {item[1] for item in raw_rows.rows}
+        trading_dates = (
+            calendar.dates if calendar is not None else tuple(sorted(raw_dates))
+        )
+        missing_market_days = set(trading_dates) - raw_dates
+        undeclared_market_days = raw_dates - set(trading_dates)
         active_pairs = {
             (instrument.code, trading_date)
             for trading_date in trading_dates
@@ -284,9 +347,34 @@ class BaoStockHistoricalSource:
         minute_adjustments = (
             set(minute.adjustment_flags) if minute is not None else set()
         )
+        economic_adjustment_issues = (
+            _economic_adjustment_issue_count(
+                raw_rows.rows,
+                front_rows.rows,
+                minute.daily_aggregates,
+                trading_pairs,
+            )
+            if minute is not None
+            else 0
+        )
         invalid_daily_values = _invalid_daily_value_count(raw_rows.rows.values())
 
         failures = dict(static_failures)
+        if calendar_error:
+            failures["bar_continuity"] = calendar_error
+            failures["instrument_coverage"] = calendar_error
+        elif missing_market_days:
+            failures["bar_continuity"] = _count_reason(
+                len(missing_market_days),
+                "expected trading day(s) are entirely absent from the daily market source",
+                "repair the daily datasets using the independent calendar and retry",
+            )
+        elif undeclared_market_days:
+            failures["bar_continuity"] = _count_reason(
+                len(undeclared_market_days),
+                "daily market day(s) are not declared by the independent calendar",
+                "repair the trading calendar and retry",
+            )
         if minute_error:
             failures["bar_continuity"] = minute_error
             failures["instrument_coverage"] = minute_error
@@ -349,10 +437,12 @@ class BaoStockHistoricalSource:
             raw_adjustments - {"3"}
             or front_adjustments - {"2"}
             or minute_adjustments - {"2"}
+            or economic_adjustment_issues
         ):
             failures["adjustment_consistency"] = (
                 "Selected rows do not consistently use daily raw=3, daily front=2, "
-                "and five-minute front=2; reconcile adjustments and retry."
+                "and five-minute front=2, or their OHLCV/amount economics do not "
+                "reconcile; reconcile adjustments and retry."
             )
         if invalid_daily_values or (minute is not None and minute.invalid_value_count):
             failures["missing_data"] = _count_reason(
@@ -379,11 +469,11 @@ class BaoStockHistoricalSource:
                 "repair timestamps and retry",
             )
         if minute is not None and minute.unexpected_code_count:
-            failures["eligible_universe"] = _count_reason(
+            failures.setdefault("eligible_universe", _count_reason(
                 minute.unexpected_code_count,
                 "intraday row(s) reference instruments outside the point-in-time catalog",
                 "repair the catalog or remove the rows and retry",
-            )
+            ))
         if not trading_dates:
             failures.setdefault(
                 "bar_continuity",
@@ -407,7 +497,8 @@ class BaoStockHistoricalSource:
             ),
             "industry_as_of": "Industry membership is available as of every active trading date.",
             "adjustment_consistency": (
-                "Daily raw, daily front-adjusted, and five-minute front-adjusted flags are consistent."
+                "Daily raw/front adjustment ratios and front-adjusted daily/five-minute "
+                "OHLCV and amount economics reconcile."
             ),
             "causal_availability": "No industry or market row uses future-available information.",
             "required_fields": "All required daily and five-minute source fields are declared.",
@@ -424,6 +515,10 @@ class BaoStockHistoricalSource:
             for code in _QUALITY_CODES
         )
         artifacts = [manifest_artifact]
+        if instrument_artifact is not None:
+            artifacts.append(instrument_artifact)
+        if calendar is not None:
+            artifacts.append(calendar.artifact)
         artifacts.extend(
             (
                 SourceArtifact(
@@ -495,7 +590,10 @@ class BaoStockHistoricalSource:
                 manifests[name] = payload
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
                 manifests[name] = {}
-                errors.append(f"{name} manifest unavailable or invalid: {exc}")
+                errors.append(
+                    f"{name} manifest unavailable or invalid ({type(exc).__name__}); "
+                    "restore or rebuild it and retry"
+                )
         return manifests, tuple(errors)
 
     @staticmethod
@@ -515,25 +613,78 @@ class BaoStockHistoricalSource:
             and _REQUIRED_MINUTE_FIELDS <= minute_fields
         )
 
-    def _load_instruments(self) -> tuple[_Instrument, ...]:
+    def _load_instruments(self) -> _InstrumentCatalog:
         path = self._layout.daily_unadjusted_metadata / "a_stock_daily_catalog.csv"
-        instruments = []
+        instruments: list[_Instrument] = []
+        malformed: list[str] = []
+        seen_codes: set[str] = set()
+        row_count = 0
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             for row in csv.DictReader(handle):
                 if row.get("type", "1").strip() != "1":
                     continue
+                row_count += 1
                 code = row.get("code", "").strip().lower()
                 ipo_date = _parse_date(row.get("ipoDate", ""))
+                raw_out_date = row.get("outDate", "").strip()
+                out_date = _parse_date(raw_out_date)
                 if not code or ipo_date is None:
+                    malformed.append(f"row {row_count} has no valid code/IPO date")
                     continue
+                if raw_out_date and out_date is None:
+                    malformed.append(f"row {row_count} has an invalid delisting date")
+                    continue
+                if code in seen_codes:
+                    malformed.append(f"row {row_count} duplicates instrument {code}")
+                    continue
+                seen_codes.add(code)
                 instruments.append(
                     _Instrument(
                         code=code,
                         ipo_date=ipo_date,
-                        out_date=_parse_date(row.get("outDate", "")),
+                        out_date=out_date,
                     )
                 )
-        return tuple(sorted(instruments, key=lambda item: item.code))
+        if malformed:
+            raise ValueError(
+                f"{len(malformed)} malformed catalog row(s); {malformed[0]}; repair the catalog and retry"
+            )
+        return _InstrumentCatalog(
+            instruments=tuple(sorted(instruments, key=lambda item: item.code)),
+            artifact=_artifact_from_file("instrument-catalog", path, row_count),
+        )
+
+    def _load_trading_calendar(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> _TradingCalendar:
+        path = self._layout.resolved_trading_calendar_path
+        _, rows = _read_csv_date_window(
+            path,
+            selection.start_date,
+            selection.end_date,
+        )
+        parsed_dates = tuple(
+            sorted(
+                {
+                    parsed
+                    for row in rows
+                    if (parsed := _parse_date(row.get("date", ""))) is not None
+                }
+            )
+        )
+        if not parsed_dates:
+            raise ValueError(
+                "the selected interval contains no declared trading day; verify the range and calendar"
+            )
+        return _TradingCalendar(
+            dates=parsed_dates,
+            artifact=_artifact_from_payload(
+                "trading-calendar-selection",
+                rows,
+                len(parsed_dates),
+            ),
+        )
 
     def _load_daily_rows(
         self,
@@ -616,6 +767,7 @@ class BaoStockHistoricalSource:
                 "The BaoStock five-minute DuckDB catalog is missing; rebuild it and retry."
             )
         counts: dict[tuple[str, date], int] = {}
+        aggregate_values: dict[tuple[str, date], list[float]] = {}
         row_count = 0
         duplicate_count = 0
         invalid_timestamp_count = 0
@@ -656,17 +808,31 @@ class BaoStockHistoricalSource:
                             invalid_timestamp_count += 1
                         if not _valid_ohlcv(values[3:9]):
                             invalid_value_count += 1
+                        else:
+                            numeric_values = [float(str(value)) for value in values[3:9]]
+                            aggregate = aggregate_values.get(pair)
+                            if aggregate is None:
+                                aggregate_values[pair] = numeric_values
+                            else:
+                                aggregate[1] = max(aggregate[1], numeric_values[1])
+                                aggregate[2] = min(aggregate[2], numeric_values[2])
+                                aggregate[3] = numeric_values[3]
+                                aggregate[4] += numeric_values[4]
+                                aggregate[5] += numeric_values[5]
                         flags.add(str(values[9]).strip())
                         digest.update(_canonical_row(values))
                         row_count += 1
         except Exception as exc:
             return None, (
                 "The five-minute DuckDB view could not be inspected: "
-                f"{type(exc).__name__}: {exc}"
+                f"{type(exc).__name__}; rebuild the local intraday catalog and retry."
             )
         return (
             _MinuteSummary(
                 counts=counts,
+                daily_aggregates={
+                    pair: tuple(values) for pair, values in aggregate_values.items()
+                },
                 row_count=row_count,
                 duplicate_count=duplicate_count,
                 invalid_timestamp_count=invalid_timestamp_count,
@@ -808,6 +974,14 @@ def _artifact_from_payload(name: str, payload: object, row_count: int) -> Source
     return SourceArtifact(name=name, content_hash=digest, row_count=row_count)
 
 
+def _artifact_from_file(name: str, path: Path, row_count: int) -> SourceArtifact:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
+    return SourceArtifact(name=name, content_hash=digest.hexdigest(), row_count=row_count)
+
+
 def _string_set(value: object) -> set[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return set()
@@ -847,6 +1021,57 @@ def _invalid_daily_value_count(rows: Iterable[Mapping[str, str]]) -> int:
         )
         for row in rows
     )
+
+
+def _economic_adjustment_issue_count(
+    raw_rows: Mapping[tuple[str, date], Mapping[str, str]],
+    front_rows: Mapping[tuple[str, date], Mapping[str, str]],
+    minute_aggregates: Mapping[tuple[str, date], tuple[float, ...]],
+    trading_pairs: set[tuple[str, date]],
+) -> int:
+    issue_count = 0
+    for pair in trading_pairs:
+        raw = raw_rows.get(pair)
+        front = front_rows.get(pair)
+        minute = minute_aggregates.get(pair)
+        if raw is None or front is None or minute is None:
+            continue
+        try:
+            raw_values = tuple(
+                float(str(raw[field]))
+                for field in ("open", "high", "low", "close", "volume", "amount")
+            )
+            front_values = tuple(
+                float(str(front[field]))
+                for field in ("open", "high", "low", "close", "volume", "amount")
+            )
+        except (KeyError, TypeError, ValueError):
+            issue_count += 1
+            continue
+        front_matches_intraday = all(
+            math.isclose(daily, intraday, rel_tol=5e-4, abs_tol=1e-6)
+            for daily, intraday in zip(front_values, minute, strict=True)
+        )
+        price_ratios = tuple(
+            raw_value / front_value
+            for raw_value, front_value in zip(raw_values[:4], front_values[:4], strict=True)
+            if front_value > 0
+        )
+        ratio_is_consistent = len(price_ratios) == 4 and all(
+            math.isclose(price_ratios[0], ratio, rel_tol=5e-4, abs_tol=1e-6)
+            for ratio in price_ratios[1:]
+        )
+        volume_and_amount_match = all(
+            math.isclose(raw_value, front_value, rel_tol=5e-4, abs_tol=1e-6)
+            for raw_value, front_value in zip(raw_values[4:], front_values[4:], strict=True)
+        )
+        if not (
+            front_matches_intraday
+            and ratio_is_consistent
+            and volume_and_amount_match
+        ):
+            issue_count += 1
+    return issue_count
 
 
 def _valid_five_minute_timestamp(value: str) -> bool:

@@ -166,11 +166,14 @@ class SqlHistoricalSegmentCatalog:
 
             existing_segment = connection.execute(
                 text(
-                    "SELECT content_hash FROM diagnostic_historical_segments "
+                    "SELECT content_hash, source_snapshot_id, market, start_date, "
+                    "end_date, label, eligible_instrument_count, trading_day_count, "
+                    "bar_count, recommendation_tags_json, admission_report_json "
+                    "FROM diagnostic_historical_segments "
                     "WHERE segment_id = :segment_id"
                 ),
                 {"segment_id": segment.segment_id},
-            ).scalar_one_or_none()
+            ).one_or_none()
             if existing_segment is None:
                 connection.execute(
                     text(
@@ -201,7 +204,19 @@ class SqlHistoricalSegmentCatalog:
                         "created_at_utc": created_at,
                     },
                 )
-            elif existing_segment != segment.content_hash:
+            elif tuple(existing_segment) != (
+                segment.content_hash,
+                segment.source_snapshot_id,
+                segment.selection.market,
+                segment.selection.start_date.isoformat(),
+                segment.selection.end_date.isoformat(),
+                segment.label,
+                segment.eligible_instrument_count,
+                segment.trading_day_count,
+                segment.bar_count,
+                tags_json,
+                report_json,
+            ):
                 raise ValueError("immutable historical segment identity collision")
         return segment
 

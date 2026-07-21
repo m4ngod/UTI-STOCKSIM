@@ -216,3 +216,33 @@ def test_selection_rejects_reverse_date_ranges_before_source_access() -> None:
             start_date=date(2024, 1, 3),
             end_date=date(2024, 1, 2),
         )
+
+
+def test_recommendation_tags_are_part_of_the_immutable_segment_identity() -> None:
+    original = _inspection(date(2024, 1, 2), date(2024, 1, 2))
+    changed = HistoricalSourceInspection(
+        selection=original.selection,
+        label=original.label,
+        provenance=original.provenance,
+        artifacts=original.artifacts,
+        eligible_instrument_count=original.eligible_instrument_count,
+        trading_day_count=original.trading_day_count,
+        bar_count=original.bar_count,
+        checks=original.checks,
+        recommendation_tags=("different-tag",),
+    )
+    first_application = create_diagnostics_application(
+        historical_source=InMemoryHistoricalSource((original,))
+    )
+    second_application = create_diagnostics_application(
+        historical_source=InMemoryHistoricalSource((changed,))
+    )
+    first_application.start()
+    second_application.start()
+
+    first = first_application.admit_historical_segment(original.selection)
+    second = second_application.admit_historical_segment(changed.selection)
+
+    assert first.segment is not None
+    assert second.segment is not None
+    assert first.segment.segment_id != second.segment.segment_id

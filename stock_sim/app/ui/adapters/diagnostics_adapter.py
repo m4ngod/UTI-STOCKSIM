@@ -7,7 +7,7 @@ from typing import Any
 from .base_adapter import PanelAdapter
 
 try:
-    from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+    from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 except Exception:  # pragma: no cover - exercised only without Qt installed
     class QWidget:  # type: ignore[no-redef]
         pass
@@ -18,6 +18,38 @@ except Exception:  # pragma: no cover - exercised only without Qt installed
 
         def setText(self, text: str) -> None:
             self.text = text
+
+    class QLineEdit:  # type: ignore[no-redef]
+        def __init__(self, text: str = "") -> None:
+            self._text = text
+
+        def setText(self, text: str) -> None:
+            self._text = text
+
+        def text(self) -> str:
+            return self._text
+
+        def setPlaceholderText(self, _: str) -> None:
+            return None
+
+    class _Signal:
+        def __init__(self) -> None:
+            self._callback: Any = None
+
+        def connect(self, callback: Any) -> None:
+            self._callback = callback
+
+        def emit(self) -> None:
+            if self._callback is not None:
+                self._callback()
+
+    class QPushButton:  # type: ignore[no-redef]
+        def __init__(self, text: str = "") -> None:
+            self.text = text
+            self.clicked = _Signal()
+
+        def click(self) -> None:
+            self.clicked.emit()
 
     class QVBoxLayout:  # type: ignore[no-redef]
         def __init__(self, *_: object) -> None:
@@ -38,6 +70,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._segment_label: Any = None
         self._provenance_label: Any = None
         self._admission_label: Any = None
+        self._recommendation_label: Any = None
+        self._market_input: Any = None
+        self._start_date_input: Any = None
+        self._end_date_input: Any = None
+        self._intent_input: Any = None
+        self._admit_button: Any = None
+        self._recommend_button: Any = None
+        self._action_error = ""
 
     def current_view(self) -> dict[str, Any]:
         return dict(self._current_view)
@@ -52,6 +92,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._segment_label = QLabel("No admitted historical segment")
         self._provenance_label = QLabel("Source: not available")
         self._admission_label = QLabel("")
+        self._market_input = QLineEdit("mainland-a-share")
+        self._start_date_input = QLineEdit()
+        self._start_date_input.setPlaceholderText("Start date (YYYY-MM-DD)")
+        self._end_date_input = QLineEdit()
+        self._end_date_input.setPlaceholderText("End date (YYYY-MM-DD)")
+        self._admit_button = QPushButton("Inspect and admit segment")
+        self._admit_button.clicked.connect(self._admit_from_inputs)
+        self._intent_input = QLineEdit()
+        self._intent_input.setPlaceholderText("What do you want to test?")
+        self._recommend_button = QPushButton("Recommend admitted segments")
+        self._recommend_button.clicked.connect(self._recommend_from_inputs)
+        self._recommendation_label = QLabel("No recommendations yet")
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -59,7 +111,46 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._segment_label)
         layout.addWidget(self._provenance_label)
         layout.addWidget(self._admission_label)
+        layout.addWidget(self._market_input)
+        layout.addWidget(self._start_date_input)
+        layout.addWidget(self._end_date_input)
+        layout.addWidget(self._admit_button)
+        layout.addWidget(self._intent_input)
+        layout.addWidget(self._recommend_button)
+        layout.addWidget(self._recommendation_label)
         return root
+
+    def _admit_from_inputs(self) -> None:
+        try:
+            self._logic.admit_historical_segment(
+                market=str(self._market_input.text()),
+                start_date=str(self._start_date_input.text()),
+                end_date=str(self._end_date_input.text()),
+            )
+            self._action_error = ""
+        except ValueError:
+            self._action_error = (
+                "Enter a market and valid start/end dates in YYYY-MM-DD format."
+            )
+        except Exception:
+            self._action_error = (
+                "The segment inspection could not be completed. Check the local "
+                "market data and try again."
+            )
+        self.refresh()
+
+    def _recommend_from_inputs(self) -> None:
+        try:
+            self._logic.recommend_historical_segments(
+                intent=str(self._intent_input.text()),
+                limit=3,
+            )
+            self._action_error = ""
+        except Exception:
+            self._action_error = (
+                "Recommendations could not be prepared. Admit a segment and try again."
+            )
+        self.refresh()
 
     def _apply_view(self, view: dict[str, Any]) -> None:
         self._current_view = dict(view)
@@ -113,6 +204,23 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     )
             else:
                 self._admission_label.setText("")
+            if self._action_error:
+                self._admission_label.setText(self._action_error)
+        recommendations = catalog.get("recommendations", [])
+        if self._recommendation_label is not None:
+            if isinstance(recommendations, list) and recommendations:
+                labels = []
+                for item in recommendations[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    segment = item.get("segment", {})
+                    if isinstance(segment, dict):
+                        labels.append(
+                            f"{item.get('rank', '?')}. {segment.get('label', 'Admitted segment')}"
+                        )
+                self._recommendation_label.setText(" | ".join(labels))
+            else:
+                self._recommendation_label.setText("No recommendations yet")
 
 
 __all__ = ["DiagnosticsPanelAdapter"]
