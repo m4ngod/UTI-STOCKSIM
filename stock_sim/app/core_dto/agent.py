@@ -1,7 +1,9 @@
 """Agent meta DTO."""
 from __future__ import annotations
-from pydantic import BaseModel, Field
 from typing import Optional, Literal
+from pydantic import Field
+
+from ._compat import BaseModel
 
 StatusType = Literal["RUNNING", "PAUSED", "STOPPED", "INACTIVE"]
 

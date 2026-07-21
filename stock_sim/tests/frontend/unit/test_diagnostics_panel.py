@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime, timezone
-from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -176,9 +175,7 @@ def test_diagnostics_adapter_can_admit_and_recommend_without_storage_controls() 
     assert "duckdb" not in visible_controls
 
 
-def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
-    monkeypatch: object,
-) -> None:
+def test_desktop_shell_registers_diagnostics_as_a_primary_workspace() -> None:
     from app import panels
     from app.i18n import set_language
     from app.panels import (
@@ -193,11 +190,6 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
         MainWindow,
     )
 
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        panels,
-        "get_app_context",
-        lambda: SimpleNamespace(),
-    )
     set_language("zh_CN")
     reset_registry()
     register_builtin_panels()
@@ -223,11 +215,6 @@ def test_diagnostics_adapter_failure_preserves_the_legacy_shell(
     from app import panels
     from app.panels import list_panels, register_builtin_panels, reset_registry
 
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        panels,
-        "get_app_context",
-        lambda: SimpleNamespace(),
-    )
     original_replace_panel = panels.replace_panel
 
     def fail_diagnostics_registration(name: str, *args: object, **kwargs: object) -> object:
