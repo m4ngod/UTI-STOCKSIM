@@ -3,13 +3,21 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 DIAGNOSTIC_PACKAGE = Path(__file__).resolve().parents[2] / "strategy_diagnostics"
 FORBIDDEN_IMPORT_PREFIXES = (
     "PySide6",
+    "agents.retail_calibration",
+    "agents.retail_calibration_report",
+    "agents.retail_persona",
+    "agents.retail_strategy",
+    "agents.retail_trader",
     "app.panels.arena",
     "app.services.arena_experiment_runner",
     "app.services.long_arena_dry_run",
+    "app.services.model_population_service",
     "app.services.runtime_model_agent",
     "app.services.runtime_retail_agent",
     "app.services.training_arena_service",
@@ -17,10 +25,17 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "core.matching_engine",
     "persistence.models_training",
     "services.engine_registry",
+    "services.ipo_retail_distribution",
     "services.training_episode_service",
+    "stock_sim.agents.retail_calibration",
+    "stock_sim.agents.retail_calibration_report",
+    "stock_sim.agents.retail_persona",
+    "stock_sim.agents.retail_strategy",
+    "stock_sim.agents.retail_trader",
     "stock_sim.core.matching_engine",
     "stock_sim.persistence.models_training",
     "stock_sim.services.engine_registry",
+    "stock_sim.services.ipo_retail_distribution",
     "stock_sim.services.training_episode_service",
 )
 
@@ -50,16 +65,28 @@ def _forbidden_imports(root: Path) -> list[str]:
     return violations
 
 
-def test_architecture_rule_rejects_a_forbidden_import(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("source_text", "forbidden_module"),
+    [
+        ("from app.panels import arena\n", "app.panels.arena"),
+        (
+            "from app.services import model_population_service\n",
+            "app.services.model_population_service",
+        ),
+        ("from agents import retail_trader\n", "agents.retail_trader"),
+        ("from core import matching_engine\n", "core.matching_engine"),
+        ("from PySide6 import QtWidgets\n", "PySide6.QtWidgets"),
+    ],
+)
+def test_architecture_rule_rejects_each_forbidden_family(
+    tmp_path: Path,
+    source_text: str,
+    forbidden_module: str,
+) -> None:
     source = tmp_path / "bad_boundary.py"
-    source.write_text(
-        "from app.services import training_arena_service\n",
-        encoding="utf-8",
-    )
+    source.write_text(source_text, encoding="utf-8")
 
-    assert _forbidden_imports(tmp_path) == [
-        "bad_boundary.py:1:app.services.training_arena_service"
-    ]
+    assert f"bad_boundary.py:1:{forbidden_module}" in _forbidden_imports(tmp_path)
 
 
 def test_diagnostic_domain_is_isolated_from_legacy_runtime_and_qt() -> None:
