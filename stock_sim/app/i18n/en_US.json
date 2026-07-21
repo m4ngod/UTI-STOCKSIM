@@ -8,6 +8,7 @@
   "settings.language": "Language",
   "settings.theme": "Theme",
   "only.english": "Only English",
+  "panel.diagnostics": "Diagnostics",
   "panel.account": "Account",
   "panel.market": "Market",
   "panel.agents": "Agents",
