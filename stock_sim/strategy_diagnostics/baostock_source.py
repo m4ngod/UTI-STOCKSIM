@@ -177,6 +177,12 @@ class _MinuteSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class _LoadedFiveMinuteBars:
+    bars: tuple[FiveMinuteBar, ...]
+    source_artifact: SourceArtifact
+
+
+@dataclass(frozen=True, slots=True)
 class _IndustrySnapshot:
     by_snapshot_and_code: Mapping[tuple[date, str], tuple[date, str]]
     snapshot_dates: tuple[date, ...]
@@ -598,6 +604,16 @@ class BaoStockHistoricalSource:
                 "The historical source changed after admission; admit a new segment before materialization"
             )
 
+        manifests, manifest_errors = self._load_manifests()
+        if manifest_errors:
+            raise ValueError(
+                "The historical source manifests changed after admission"
+            )
+        manifest_artifact = _artifact_from_payload(
+            "source-manifests",
+            manifests,
+            sum(bool(item) for item in manifests.values()),
+        )
         catalog = self._load_instruments()
         eligible = tuple(
             instrument
@@ -631,6 +647,30 @@ class BaoStockHistoricalSource:
         for trading_date in calendar.dates:
             for instrument in eligible:
                 if not instrument.active_on(trading_date):
+                    states.append(
+                        InstrumentState(
+                            instrument=instrument.code,
+                            effective_at=datetime.combine(
+                                trading_date,
+                                time(9, 30),
+                            ),
+                            eligible=False,
+                            trading_status="inactive",
+                            is_st=False,
+                            industry=(
+                                _industry_as_of_value(
+                                    industry,
+                                    instrument.code,
+                                    trading_date,
+                                )
+                                or "not-applicable"
+                            ),
+                            decision_adjustment_factor=None,
+                            decision_adjustment_provenance=(
+                                "not-applicable-outside-listing"
+                            ),
+                        )
+                    )
                     continue
                 pair = (instrument.code, trading_date)
                 raw = raw_rows.rows.get(pair)
@@ -665,36 +705,65 @@ class BaoStockHistoricalSource:
                         ),
                         is_st=raw.get("isST", "").strip() == "1",
                         industry=industry_name,
-                        adjustment_factor=factor,
-                        adjustment_provenance=(
-                            "daily-raw/front-ratio-v1"
-                            if factor is not None
-                            else "unavailable-while-suspended"
+                        decision_adjustment_factor=Decimal("1"),
+                        decision_adjustment_provenance=(
+                            "canonical-unadjusted-decision-view-v1"
                         ),
                     )
                 )
 
-        bars = self._load_normalized_five_minute_bars(
+        loaded_bars = self._load_normalized_five_minute_bars(
             segment.selection,
             factor_by_pair,
         )
-        if len(bars) != segment.bar_count:
+        if len(loaded_bars.bars) != segment.bar_count:
             raise ValueError(
                 "The admitted five-minute row count changed before materialization"
+            )
+        actual_artifacts = tuple(
+            sorted(
+                (
+                    manifest_artifact,
+                    catalog.artifact,
+                    calendar.artifact,
+                    SourceArtifact(
+                        "daily-unadjusted-selection",
+                        raw_rows.content_hash,
+                        len(raw_rows.rows),
+                    ),
+                    SourceArtifact(
+                        "daily-front-adjusted-selection",
+                        front_rows.content_hash,
+                        len(front_rows.rows),
+                    ),
+                    loaded_bars.source_artifact,
+                    SourceArtifact(
+                        "industry-as-of-selection",
+                        industry.content_hash,
+                        industry.row_count,
+                    ),
+                ),
+                key=lambda item: item.name,
+            )
+        )
+        if actual_artifacts != snapshot.artifacts:
+            raise ValueError(
+                "The historical source changed after admission; admit a new segment before materialization"
             )
         return ScenarioDataWorldInput(
             segment_id=segment.segment_id,
             segment_content_hash=segment.content_hash,
             source_snapshot_id=segment.source_snapshot_id,
-            bars=bars,
+            bars=loaded_bars.bars,
             instrument_states=tuple(states),
+            normalization_provenance="front-5m-to-unadjusted-daily-ratio-v1",
         )
 
     def _load_normalized_five_minute_bars(
         self,
         selection: HistoricalSegmentSelection,
         factor_by_pair: Mapping[tuple[str, date], Decimal | None],
-    ) -> tuple[FiveMinuteBar, ...]:
+    ) -> _LoadedFiveMinuteBars:
         try:
             import duckdb
         except ImportError as exc:
@@ -703,11 +772,14 @@ class BaoStockHistoricalSource:
             ) from exc
         database = self._layout.minute_metadata / "market_data.duckdb"
         bars: list[FiveMinuteBar] = []
+        digest = hashlib.sha256()
+        row_count = 0
         with duckdb.connect(str(database), read_only=True) as connection:
             cursor = connection.execute(
-                "SELECT code, date, time, open, high, low, close, volume, amount "
+                "SELECT code, date, time, open, high, low, close, volume, amount, "
+                "adjustflag "
                 "FROM minute_5_bars WHERE date >= ? AND date <= ? "
-                "ORDER BY date, time, code",
+                "ORDER BY code, date, time",
                 [selection.start_date.isoformat(), selection.end_date.isoformat()],
             )
             while True:
@@ -715,6 +787,8 @@ class BaoStockHistoricalSource:
                 if not batch:
                     break
                 for values in batch:
+                    digest.update(_canonical_row(values))
+                    row_count += 1
                     instrument = str(values[0]).strip().lower()
                     trading_date = _parse_date(str(values[1]))
                     if trading_date is None:
@@ -745,7 +819,14 @@ class BaoStockHistoricalSource:
                             amount=Decimal(str(values[8])),
                         )
                     )
-        return tuple(bars)
+        return _LoadedFiveMinuteBars(
+            bars=tuple(bars),
+            source_artifact=SourceArtifact(
+                "five-minute-front-adjusted-selection",
+                digest.hexdigest(),
+                row_count,
+            ),
+        )
 
     def _load_manifests(
         self,

@@ -93,8 +93,8 @@ def _world() -> ScenarioDataWorldInput:
                 trading_status="trading",
                 is_st=False,
                 industry="banking",
-                adjustment_factor=Decimal("1.25"),
-                adjustment_provenance="daily-raw/front-ratio-v1",
+                decision_adjustment_factor=Decimal("1.25"),
+                decision_adjustment_provenance="fixture-as-of-adjustment-v1",
             ),
         ),
     )
@@ -128,8 +128,8 @@ def _two_bar_world() -> ScenarioDataWorldInput:
                 trading_status="suspended",
                 is_st=True,
                 industry="regional-bank",
-                adjustment_factor=None,
-                adjustment_provenance="unavailable-while-suspended",
+                decision_adjustment_factor=None,
+                decision_adjustment_provenance="unavailable-while-suspended",
             ),
             InstrumentState(
                 instrument="sh.600000",
@@ -138,8 +138,18 @@ def _two_bar_world() -> ScenarioDataWorldInput:
                 trading_status="trading",
                 is_st=False,
                 industry="diversified-bank",
-                adjustment_factor=Decimal("1.25"),
-                adjustment_provenance="daily-raw/front-ratio-v1",
+                decision_adjustment_factor=Decimal("1.25"),
+                decision_adjustment_provenance="fixture-as-of-adjustment-v1",
+            ),
+            InstrumentState(
+                instrument="sz.000001",
+                effective_at=datetime(2024, 1, 2, 9, 40),
+                eligible=False,
+                trading_status="inactive",
+                is_st=False,
+                industry="regional-bank",
+                decision_adjustment_factor=None,
+                decision_adjustment_provenance="not-applicable-outside-listing",
             ),
         ),
     )
@@ -247,7 +257,7 @@ def test_scenario_market_view_refuses_every_kind_of_future_data() -> None:
     }
     assert snapshot["adjustments"]["sh.600000"] == {
         "factor": "1.25",
-        "provenance": "daily-raw/front-ratio-v1",
+        "provenance": "fixture-as-of-adjustment-v1",
     }
     assert set(snapshot["features"]["sh.600000"]) == {
         "return_30s",
@@ -262,7 +272,9 @@ def test_scenario_market_view_refuses_every_kind_of_future_data() -> None:
     view.advance_to(datetime(2024, 1, 2, 9, 40))
 
     assert len(view.history("sh.600000")) == 20
-    assert view.snapshot().to_dict()["industries"]["sh.600000"] == (
+    later_snapshot = view.snapshot().to_dict()
+    assert later_snapshot["eligible_universe"] == ["sh.600000"]
+    assert later_snapshot["industries"]["sh.600000"] == (
         "diversified-bank"
     )
 
@@ -340,7 +352,7 @@ def test_artifact_identity_ignores_equivalent_decimal_text_scales() -> None:
         instrument_states=(
             replace(
                 original.instrument_states[0],
-                adjustment_factor=Decimal("1.250000"),
+                decision_adjustment_factor=Decimal("1.250000"),
             ),
         ),
     )
