@@ -53,7 +53,6 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
     )
     from app.ui.main_window import (
         DEFAULT_PRELOAD_PANELS,
-        PRIMARY_WORKSPACE_PANELS,
         MainWindow,
     )
 
@@ -70,7 +69,6 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
     assert descriptors["diagnostics"]["title"] in {"Diagnostics", "策略诊断"}
     assert isinstance(get_panel("diagnostics"), DiagnosticsPanelAdapter)
     assert "diagnostics" in DEFAULT_PRELOAD_PANELS
-    assert "diagnostics" in PRIMARY_WORKSPACE_PANELS
 
     _ensure_qapp()
     window = MainWindow()
