@@ -349,65 +349,21 @@ def _openai_output_schema(
     transformation_catalog: Mapping[str, object],
     admitted_segments: tuple[Mapping[str, object], ...],
 ) -> dict[str, object]:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": [
-            "schema_version",
-            "recipe",
-            "transformation_proposals",
-        ],
-        "properties": {
-            "schema_version": {
-                "type": "string",
-                "enum": ["ai_recipe_draft_output.v1"],
-            },
-            "recipe": _recipe_schema(
-                scenario_recipe_schema,
-                transformation_catalog,
-                admitted_segments,
-            ),
-            "transformation_proposals": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": [
-                        "schema_version",
-                        "capability",
-                        "description",
-                        "rationale",
-                        "status",
-                    ],
-                    "properties": {
-                        "schema_version": {
-                            "type": "string",
-                            "enum": ["transformation_proposal.v1"],
-                        },
-                        "capability": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128,
-                        },
-                        "description": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 1000,
-                        },
-                        "rationale": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 1000,
-                        },
-                        "status": {
-                            "type": "string",
-                            "enum": ["non_executable"],
-                        },
-                    },
-                },
-            },
-        },
-    }
+    output_contract = cast(
+        Mapping[str, object],
+        AIRecipeDraftOutputV1.schema(),
+    )
+    output_schema = _strict_schema_from_contract(output_contract)
+    raw_properties = output_schema.get("properties")
+    if not isinstance(raw_properties, dict):
+        raise ValueError("AI Recipe Draft Output schema has no properties")
+    properties = cast(dict[str, object], raw_properties)
+    properties["recipe"] = _recipe_schema(
+        scenario_recipe_schema,
+        transformation_catalog,
+        admitted_segments,
+    )
+    return output_schema
 
 
 def _recipe_schema(
@@ -425,7 +381,7 @@ def _recipe_schema(
     )
     if not segment_ids:
         raise ValueError("AI Recipe Assistant requires an admitted segment")
-    recipe_schema = _strict_schema_from_recipe_contract(scenario_recipe_schema)
+    recipe_schema = _strict_schema_from_contract(scenario_recipe_schema)
     raw_properties = recipe_schema.get("properties")
     if not isinstance(raw_properties, dict):
         raise ValueError("Scenario Recipe schema has no properties")
@@ -445,21 +401,21 @@ def _recipe_schema(
     return recipe_schema
 
 
-def _strict_schema_from_recipe_contract(
-    scenario_recipe_schema: Mapping[str, object],
+def _strict_schema_from_contract(
+    contract_schema: Mapping[str, object],
 ) -> dict[str, object]:
-    raw_definitions = scenario_recipe_schema.get("definitions")
+    raw_definitions = contract_schema.get("definitions")
     definitions: Mapping[str, object]
     if isinstance(raw_definitions, dict):
         definitions = raw_definitions
     else:
         definitions = {}
     normalized = _normalize_provider_schema(
-        scenario_recipe_schema,
+        contract_schema,
         definitions=definitions,
     )
     if not isinstance(normalized, dict):
-        raise ValueError("Scenario Recipe schema must be an object")
+        raise ValueError("Structured-output contract schema must be an object")
     return normalized
 
 
@@ -474,12 +430,12 @@ def _normalize_provider_schema(
             prefix = "#/definitions/"
             if not reference.startswith(prefix):
                 raise ValueError(
-                    f"Unsupported Scenario Recipe schema reference: {reference}"
+                    f"Unsupported contract schema reference: {reference}"
                 )
             referenced = definitions.get(reference[len(prefix) :])
             if referenced is None:
                 raise ValueError(
-                    f"Unknown Scenario Recipe schema reference: {reference}"
+                    f"Unknown contract schema reference: {reference}"
                 )
             return _normalize_provider_schema(
                 referenced,
@@ -488,7 +444,7 @@ def _normalize_provider_schema(
         normalized: dict[str, object] = {}
         for key, value in node.items():
             if not isinstance(key, str):
-                raise ValueError("Scenario Recipe schema keys must be strings")
+                raise ValueError("Contract schema keys must be strings")
             if key in {"$id", "$schema", "definitions", "default", "title"}:
                 continue
             if key.startswith("x-"):
@@ -500,7 +456,7 @@ def _normalize_provider_schema(
         if normalized.get("type") == "object":
             raw_properties = normalized.get("properties", {})
             if not isinstance(raw_properties, dict):
-                raise ValueError("Scenario Recipe object properties are invalid")
+                raise ValueError("Contract schema object properties are invalid")
             normalized["properties"] = raw_properties
             normalized["additionalProperties"] = False
             normalized["required"] = list(raw_properties)
@@ -512,7 +468,7 @@ def _normalize_provider_schema(
         ]
     if node is None or isinstance(node, (bool, int, float, str)):
         return node
-    raise ValueError("Scenario Recipe schema contains a non-JSON value")
+    raise ValueError("Contract schema contains a non-JSON value")
 
 
 def _transformation_items_schema(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -190,7 +191,9 @@ def test_deterministic_fake_emits_the_model_independent_draft_contract() -> None
     assert response.response_id.startswith("fake_response_")
 
 
-def test_openai_responses_adapter_emits_the_same_draft_contract() -> None:
+def test_openai_responses_adapter_emits_the_same_draft_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     expected = AIRecipeDraftOutputV1(
         recipe=ScenarioRecipeV1(
             name="Bullish trend diagnostic",
@@ -229,6 +232,15 @@ def test_openai_responses_adapter_emits_the_same_draft_contract() -> None:
     )
     scenario_recipe_schema = ScenarioRecipeV1.stable_json_schema()
     scenario_recipe_schema["properties"]["name"]["maxLength"] = 37
+    ai_output_schema = copy.deepcopy(AIRecipeDraftOutputV1.schema())
+    ai_output_schema["definitions"]["TransformationProposalV1"]["properties"][
+        "capability"
+    ]["maxLength"] = 73
+    monkeypatch.setattr(
+        AIRecipeDraftOutputV1,
+        "schema",
+        classmethod(lambda cls: ai_output_schema),
+    )
     request = AIRecipeAssistantRequest(
         intent="Create a bullish trend regime.",
         scenario_recipe_schema=scenario_recipe_schema,
@@ -305,6 +317,10 @@ def test_openai_responses_adapter_emits_the_same_draft_contract() -> None:
         execution_schema["properties"]
     )
     assert "default" not in execution_schema["properties"]["commission_bps"]
+    proposal_schema = text_format["schema"]["properties"][
+        "transformation_proposals"
+    ]["items"]
+    assert proposal_schema["properties"]["capability"]["maxLength"] == 73
     transformation_schema = recipe_schema["properties"]["transformations"]["items"]
     assert transformation_schema["properties"]["transformation_id"]["enum"] == [
         "trend-regime.v1"
