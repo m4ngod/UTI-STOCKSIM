@@ -747,6 +747,188 @@ def _shock_recovery_statistics(
     )
 
 
+def _apply_liquidity_stress(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    volume_multiplier = Decimal(str(parameters["volume_multiplier"]))
+    concentration = Decimal(
+        str(parameters["cross_sectional_concentration"])
+    )
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+
+    transformed_bars: list[FiveMinuteBar] = []
+    declared_scaled_volume = 0
+    for end_time in sorted(bars_by_time):
+        bars = tuple(sorted(bars_by_time[end_time], key=lambda bar: bar.instrument))
+        recipients = tuple(
+            bar
+            for bar in bars
+            if bar.volume > 0
+            and (
+                (state := _state_at(
+                    world.instrument_states,
+                    bar.instrument,
+                    end_time,
+                )).eligible
+                and state.trading_status == "trading"
+            )
+        )
+        if len(recipients) < 2:
+            raise ValueError(
+                "Liquidity transformation requires multiple positive-volume "
+                "eligible instruments at every source bar time"
+            )
+        source_volume = sum(bar.volume for bar in recipients)
+        target_volume = max(
+            1,
+            int(
+                (Decimal(source_volume) * volume_multiplier).to_integral_value(
+                    rounding=ROUND_HALF_UP
+                )
+            ),
+        )
+        recipient_instruments = {bar.instrument for bar in recipients}
+        declared_scaled_volume += target_volume + sum(
+            bar.volume
+            for bar in bars
+            if bar.instrument not in recipient_instruments
+        )
+        allocation = _liquidity_volume_allocation(
+            recipients,
+            target_volume=target_volume,
+            concentration=concentration,
+        )
+        for bar in bars:
+            allocated_volume = allocation.get(bar.instrument)
+            if allocated_volume is None:
+                transformed_bars.append(bar)
+                continue
+            transformed_bars.append(
+                replace(
+                    bar,
+                    volume=allocated_volume,
+                    amount=(
+                        bar.amount
+                        * Decimal(allocated_volume)
+                        / Decimal(bar.volume)
+                    ),
+                )
+            )
+    transformed_world = replace(world, bars=tuple(transformed_bars))
+    return _TransformationApplication(
+        world=transformed_world,
+        statistics=_liquidity_statistics(
+            world,
+            transformed_world,
+            declared_scaled_volume=declared_scaled_volume,
+        ),
+    )
+
+
+def _liquidity_volume_allocation(
+    bars: tuple[FiveMinuteBar, ...],
+    *,
+    target_volume: int,
+    concentration: Decimal,
+) -> dict[str, int]:
+    source_total = sum(bar.volume for bar in bars)
+    ordered_by_volume = tuple(
+        sorted(bars, key=lambda bar: (-bar.volume, bar.instrument))
+    )
+    rank_weight_by_instrument = {
+        bar.instrument: Decimal(len(ordered_by_volume) - rank)
+        for rank, bar in enumerate(ordered_by_volume)
+    }
+    rank_weight_total = sum(
+        rank_weight_by_instrument.values(),
+        Decimal("0"),
+    )
+    raw_allocations = {
+        bar.instrument: Decimal(target_volume)
+        * (
+            (Decimal("1") - concentration)
+            * Decimal(bar.volume)
+            / Decimal(source_total)
+            + concentration
+            * rank_weight_by_instrument[bar.instrument]
+            / rank_weight_total
+        )
+        for bar in bars
+    }
+    allocations = {
+        instrument: int(value)
+        for instrument, value in raw_allocations.items()
+    }
+    remainder = target_volume - sum(allocations.values())
+    remainder_order = tuple(
+        sorted(
+            raw_allocations,
+            key=lambda instrument: (
+                -(raw_allocations[instrument] - allocations[instrument]),
+                instrument,
+            ),
+        )
+    )
+    for instrument in remainder_order[:remainder]:
+        allocations[instrument] += 1
+    if sum(allocations.values()) != target_volume:  # pragma: no cover
+        raise AssertionError("Liquidity volume allocation must conserve target")
+    return allocations
+
+
+def _liquidity_statistics(
+    source_world: ScenarioDataWorldInput,
+    transformed_world: ScenarioDataWorldInput,
+    *,
+    declared_scaled_volume: int,
+) -> tuple[tuple[str, str], ...]:
+    source_volume_total = sum(bar.volume for bar in source_world.bars)
+    transformed_volume_total = sum(bar.volume for bar in transformed_world.bars)
+    transformed_by_key = {
+        (bar.end_time, bar.instrument): bar for bar in transformed_world.bars
+    }
+    affected_count = sum(
+        transformed_by_key[(bar.end_time, bar.instrument)].volume != bar.volume
+        or transformed_by_key[(bar.end_time, bar.instrument)].amount != bar.amount
+        for bar in source_world.bars
+    )
+    final_time = max(bar.end_time for bar in transformed_world.bars)
+    final_bars = tuple(
+        bar for bar in transformed_world.bars if bar.end_time == final_time
+    )
+    final_volume_total = sum(bar.volume for bar in final_bars)
+    top_volume_share = (
+        Decimal(max(bar.volume for bar in final_bars))
+        / Decimal(final_volume_total)
+        if final_volume_total
+        else Decimal("0")
+    )
+    return tuple(
+        sorted(
+            {
+                "affected_source_bar_count": str(affected_count),
+                "effective_top_volume_share": _decimal_text(top_volume_share),
+                "effective_volume_multiplier": _decimal_text(
+                    Decimal(transformed_volume_total)
+                    / Decimal(source_volume_total)
+                ),
+                "scaled_volume_conservation_error": str(
+                    transformed_volume_total - declared_scaled_volume
+                ),
+                "source_bar_count": str(len(source_world.bars)),
+                "source_time_count": str(
+                    len({bar.end_time for bar in source_world.bars})
+                ),
+                "source_volume_total": str(source_volume_total),
+                "transformed_volume_total": str(transformed_volume_total),
+            }.items()
+        )
+    )
+
+
 def _apply_market_structure(
     world: ScenarioDataWorldInput,
     parameters: Mapping[str, object],
@@ -1055,6 +1237,7 @@ _TRANSFORMATION_IMPLEMENTATIONS: Mapping[
         _TransformationApplication,
     ],
 ] = {
+    "liquidity-stress.v1": _apply_liquidity_stress,
     "market-structure.v1": _apply_market_structure,
     "shock-recovery.v1": _apply_shock_recovery,
     "trend-regime.v1": _apply_trend_regime,
@@ -1218,6 +1401,36 @@ def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
     return ScenarioTransformationCatalog(
         catalog_version="scenario-transformation-catalog.v1",
         entries=(
+            TransformationCatalogEntry(
+                transformation_id="liquidity-stress.v1",
+                family="liquidity",
+                implementation_version="liquidity-stress.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="volume_multiplier",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.25"),
+                        maximum=Decimal("2"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="cross_sectional_concentration",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "conserve-declared-scaled-volume-per-source-time",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
             TransformationCatalogEntry(
                 transformation_id="market-structure.v1",
                 family="market-structure",

@@ -905,14 +905,25 @@ def _with_causal_features(
 ) -> tuple[MarketPathNode, ...]:
     previous_by_instrument: dict[str, Decimal] = {}
     session_open: dict[tuple[str, object], Decimal] = {}
+    session_volume: dict[tuple[str, object], int] = {}
+    session_turnover_value: dict[tuple[str, object], Decimal] = {}
     enriched: list[MarketPathNode] = []
     for node in nodes:
         previous = previous_by_instrument.get(node.instrument, node.open)
         session_key = (node.instrument, node.simulation_time.date())
         opening = session_open.setdefault(session_key, node.open)
+        cumulative_volume = session_volume.get(session_key, 0) + node.volume
+        cumulative_turnover = (
+            session_turnover_value.get(session_key, Decimal("0")) + node.amount
+        )
+        session_volume[session_key] = cumulative_volume
+        session_turnover_value[session_key] = cumulative_turnover
         features = (
             ("return_30s", node.close / previous - Decimal(1)),
             ("session_return", node.close / opening - Decimal(1)),
+            ("session_volume", Decimal(cumulative_volume)),
+            ("session_turnover_value", cumulative_turnover),
+            ("capacity_proxy_30s", node.amount),
         )
         enriched.append(replace(node, features=features))
         previous_by_instrument[node.instrument] = node.close
@@ -935,6 +946,10 @@ def _with_causal_features(
             node.instrument: dict(node.features)["session_return"]
             for node, _state in eligible
         }
+        session_volumes = {
+            node.instrument: dict(node.features)["session_volume"]
+            for node, _state in eligible
+        }
         if not session_returns:
             recomputed.extend(nodes_at_time)
             continue
@@ -944,6 +959,18 @@ def _with_causal_features(
         market_breadth = Decimal(
             sum(value > 0 for value in session_returns.values())
         ) / Decimal(len(session_returns))
+        market_session_volume = sum(
+            session_volumes.values(),
+            Decimal("0"),
+        ) / Decimal(len(session_volumes))
+        relative_liquidity = {
+            instrument: (
+                volume / market_session_volume - Decimal("1")
+                if market_session_volume > 0
+                else Decimal("0")
+            )
+            for instrument, volume in session_volumes.items()
+        }
         sector_members: dict[str, list[str]] = {}
         for node, state in eligible:
             sector_members.setdefault(state.industry, []).append(node.instrument)
@@ -954,9 +981,16 @@ def _with_causal_features(
                 sum(values, Decimal("0")) / Decimal(len(values)),
                 Decimal(sum(value > 0 for value in values)) / Decimal(len(values)),
             )
-        scores = {
+        relative_strengths = {
             instrument: value - market_return
             for instrument, value in session_returns.items()
+        }
+        scores = {
+            instrument: (
+                relative_strengths[instrument]
+                + Decimal("0.01") * relative_liquidity[instrument]
+            )
+            for instrument in session_returns
         }
         ranked = tuple(
             sorted(scores, key=lambda instrument: (-scores[instrument], instrument))
@@ -981,7 +1015,14 @@ def _with_causal_features(
                         ("market_breadth", market_breadth),
                         ("sector_return", sector_return),
                         ("sector_breadth", sector_breadth),
-                        ("relative_strength", scores[node.instrument]),
+                        (
+                            "relative_strength",
+                            relative_strengths[node.instrument],
+                        ),
+                        (
+                            "relative_liquidity",
+                            relative_liquidity[node.instrument],
+                        ),
                         ("candidate_score", scores[node.instrument]),
                         ("candidate_rank", rank_by_instrument[node.instrument]),
                     ),

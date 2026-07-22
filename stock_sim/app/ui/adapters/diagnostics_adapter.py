@@ -107,11 +107,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._breadth_target_input: Any = None
         self._dispersion_fraction_input: Any = None
         self._sector_concentration_input: Any = None
+        self._volume_multiplier_input: Any = None
+        self._cross_sectional_concentration_input: Any = None
         self._create_recipe_button: Any = None
         self._create_trend_recipe_button: Any = None
         self._create_volatility_recipe_button: Any = None
         self._create_shock_recovery_recipe_button: Any = None
         self._create_market_structure_recipe_button: Any = None
+        self._create_liquidity_recipe_button: Any = None
         self._validate_recipe_button: Any = None
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
@@ -213,6 +216,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._sector_concentration_input.setPlaceholderText(
             "Sector concentration (0 to 1)"
         )
+        self._volume_multiplier_input = QLineEdit("0.5")
+        self._volume_multiplier_input.setPlaceholderText(
+            "Volume multiplier (0.25 to 2)"
+        )
+        self._cross_sectional_concentration_input = QLineEdit("1")
+        self._cross_sectional_concentration_input.setPlaceholderText(
+            "Cross-sectional liquidity concentration (0 to 1)"
+        )
         self._create_recipe_button = QPushButton("Create manual baseline recipe")
         self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
         self._create_trend_recipe_button = QPushButton(
@@ -238,6 +249,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         )
         self._create_market_structure_recipe_button.clicked.connect(
             self._create_market_structure_recipe_from_inputs
+        )
+        self._create_liquidity_recipe_button = QPushButton(
+            "Create liquidity stress recipe"
+        )
+        self._create_liquidity_recipe_button.clicked.connect(
+            self._create_liquidity_recipe_from_inputs
         )
         self._validate_recipe_button = QPushButton("Validate recipe")
         self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
@@ -293,11 +310,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._breadth_target_input)
         layout.addWidget(self._dispersion_fraction_input)
         layout.addWidget(self._sector_concentration_input)
+        layout.addWidget(self._volume_multiplier_input)
+        layout.addWidget(self._cross_sectional_concentration_input)
         layout.addWidget(self._create_recipe_button)
         layout.addWidget(self._create_trend_recipe_button)
         layout.addWidget(self._create_volatility_recipe_button)
         layout.addWidget(self._create_shock_recovery_recipe_button)
         layout.addWidget(self._create_market_structure_recipe_button)
+        layout.addWidget(self._create_liquidity_recipe_button)
         layout.addWidget(self._validate_recipe_button)
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
@@ -351,6 +371,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
     def _create_market_structure_recipe_from_inputs(self) -> None:
         self._submit_recipe_from_inputs(recipe_kind="market-structure")
 
+    def _create_liquidity_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(recipe_kind="liquidity")
+
     def _submit_recipe_from_inputs(
         self,
         *,
@@ -360,6 +383,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             "volatility",
             "shock-recovery",
             "market-structure",
+            "liquidity",
         ],
     ) -> None:
         try:
@@ -403,6 +427,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                         self._sector_concentration_input.text()
                     ),
                 )
+            elif recipe_kind == "liquidity":
+                self._logic.create_liquidity_recipe(
+                    **recipe_arguments,
+                    volume_multiplier=str(self._volume_multiplier_input.text()),
+                    cross_sectional_concentration=str(
+                        self._cross_sectional_concentration_input.text()
+                    ),
+                )
             else:
                 self._logic.create_baseline_recipe(**recipe_arguments)
             self._recipe_input_signature = self._recipe_authoring_signature(
@@ -422,6 +454,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 "volatility": "volatility",
                 "shock-recovery": "shock and recovery",
                 "market-structure": "market structure",
+                "liquidity": "liquidity stress",
             }
             self._recipe_action_error = (
                 f"The {labels[recipe_kind]} draft could not be created."
@@ -528,6 +561,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             str(self._breadth_target_input.text()).strip(),
             str(self._dispersion_fraction_input.text()).strip(),
             str(self._sector_concentration_input.text()).strip(),
+            str(self._volume_multiplier_input.text()).strip(),
+            str(self._cross_sectional_concentration_input.text()).strip(),
         )
 
     def _assert_recipe_inputs_match_draft(self) -> None:
@@ -728,6 +763,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 phase_labels: list[str] = []
                 effective_peak = ""
                 market_structure_summary = ""
+                liquidity_summary = ""
                 if isinstance(applied, list):
                     for item in applied:
                         if not isinstance(item, dict):
@@ -766,6 +802,23 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                                 " | effective sector winner concentration "
                                 f"{statistics.get('effective_final_sector_winner_concentration', 'unknown')}"
                             )
+                        if (
+                            item.get("transformation_id") == "liquidity-stress.v1"
+                            and isinstance(parameters, dict)
+                            and isinstance(statistics, dict)
+                        ):
+                            liquidity_summary = (
+                                " | liquidity: requested volume multiplier "
+                                f"{parameters.get('volume_multiplier', 'unknown')}"
+                                " | effective volume multiplier "
+                                f"{statistics.get('effective_volume_multiplier', 'unknown')}"
+                                " | requested concentration "
+                                f"{parameters.get('cross_sectional_concentration', 'unknown')}"
+                                " | effective top volume share "
+                                f"{statistics.get('effective_top_volume_share', 'unknown')}"
+                                " | market-path liquidity only; private execution "
+                                "effects are not applied here"
+                            )
                 phase_summary = ""
                 if phase_labels:
                     phase_summary = " | phases: " + " -> ".join(phase_labels)
@@ -796,7 +849,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     f"{baseline_statistics.get('mean_absolute_return_30s', 'unknown')}"
                     " -> "
                     f"{transformed_statistics.get('mean_absolute_return_30s', 'unknown')}"
-                    f"{phase_summary}{market_structure_summary} | provenance: "
+                    f"{phase_summary}{market_structure_summary}{liquidity_summary}"
+                    " | provenance: "
                     f"{reconstruction_notice}"
                 )
             else:

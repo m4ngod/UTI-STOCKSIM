@@ -422,6 +422,89 @@ def _market_structure_request() -> ScenarioTransformationRequestV1:
     )
 
 
+def _liquidity_world() -> ScenarioDataWorldInput:
+    instruments = (
+        ("sh.600000", "banking", "sh-main", 100),
+        ("sh.600001", "banking", "sh-main", 200),
+        ("sz.000001", "technology", "sz-main", 700),
+    )
+    closes_by_time = (
+        (datetime(2024, 1, 2, 9, 35), ("10", "10", "10")),
+        (datetime(2024, 1, 2, 9, 40), ("10.3", "10.2", "10.1")),
+    )
+    previous_closes = {
+        instrument: Decimal("10")
+        for instrument, _industry, _board, _volume in instruments
+    }
+    bars: list[FiveMinuteBar] = []
+    for end_time, closes in closes_by_time:
+        for (instrument, _industry, _board, volume), close_text in zip(
+            instruments,
+            closes,
+            strict=True,
+        ):
+            opening = previous_closes[instrument]
+            close = Decimal(close_text)
+            bars.append(
+                FiveMinuteBar(
+                    instrument=instrument,
+                    end_time=end_time,
+                    open=opening,
+                    high=max(opening, close),
+                    low=min(opening, close),
+                    close=close,
+                    volume=volume,
+                    amount=close * volume,
+                )
+            )
+            previous_closes[instrument] = close
+    return ScenarioDataWorldInput(
+        segment_id="segment_fixture",
+        segment_content_hash="1" * 64,
+        source_snapshot_id="snapshot_fixture",
+        bars=tuple(bars),
+        instrument_states=tuple(
+            InstrumentState(
+                instrument=instrument,
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                eligible=True,
+                trading_status="trading",
+                is_st=False,
+                industry=industry,
+                decision_adjustment_factor=Decimal("1"),
+                decision_adjustment_provenance="fixture-v1",
+            )
+            for instrument, industry, _board, _volume in instruments
+        ),
+        price_limit_references=tuple(
+            SessionPriceLimitReference(
+                instrument=instrument,
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("10"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board=board,
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code=f"fixture.{board}.ordinary.10pct",
+            )
+            for instrument, _industry, board, _volume in instruments
+        ),
+    )
+
+
+def _liquidity_request() -> ScenarioTransformationRequestV1:
+    return ScenarioTransformationRequestV1(
+        transformation_id="liquidity-stress.v1",
+        parameters={
+            "volume_multiplier": "0.5",
+            "cross_sectional_concentration": "1",
+        },
+    )
+
+
 class _AdmittedFixtureSource:
     def __init__(self) -> None:
         self._selection = _segment().selection
@@ -527,15 +610,19 @@ def test_scenario_market_view_refuses_every_kind_of_future_data() -> None:
         "provenance": "fixture-as-of-adjustment-v1",
     }
     assert set(snapshot["features"]["sh.600000"]) == {
+        "capacity_proxy_30s",
         "candidate_rank",
         "candidate_score",
         "market_breadth",
         "market_return",
+        "relative_liquidity",
         "relative_strength",
         "return_30s",
         "sector_breadth",
         "sector_return",
         "session_return",
+        "session_turnover_value",
+        "session_volume",
     }
     assert snapshot["market_context"] == {
         "return": "0.02",
@@ -1362,6 +1449,197 @@ def test_market_structure_identity_survives_artifact_store_restart(
     )
 
 
+def test_liquidity_stress_is_deterministic_and_conserves_scaled_volume() -> None:
+    first_materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_liquidity_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    baseline = first_materializer.materialize_baseline(_segment(), seed=17)
+    first = first_materializer.materialize(
+        _segment(),
+        transformations=(_liquidity_request(),),
+        seed=17,
+    )
+    second = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_liquidity_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(_liquidity_request(),),
+        seed=17,
+    )
+
+    assert first.artifact_hash == second.artifact_hash
+    assert first.to_preview_dict() == second.to_preview_dict()
+    assert first.artifact_hash != baseline.artifact_hash
+    assert first.applied_transformations[0].to_dict() == {
+        "transformation_id": "liquidity-stress.v1",
+        "family": "liquidity",
+        "catalog_version": "scenario-transformation-catalog.v1",
+        "implementation_version": "liquidity-stress.v1",
+        "parameters": {
+            "cross_sectional_concentration": "1",
+            "volume_multiplier": "0.5",
+        },
+        "statistics": {
+            "affected_source_bar_count": "6",
+            "effective_top_volume_share": "0.5",
+            "effective_volume_multiplier": "0.5",
+            "scaled_volume_conservation_error": "0",
+            "source_bar_count": "6",
+            "source_time_count": "2",
+            "source_volume_total": "2000",
+            "transformed_volume_total": "1000",
+        },
+    }
+    assert all(node.volume >= 0 and node.amount >= 0 for node in first.nodes)
+    assert tuple(
+        (node.open, node.high, node.low, node.close) for node in first.nodes
+    ) == tuple(
+        (node.open, node.high, node.low, node.close) for node in baseline.nodes
+    )
+    assert {
+        instrument: sum(
+            node.volume for node in first.nodes if node.instrument == instrument
+        )
+        for instrument in ("sh.600000", "sh.600001", "sz.000001")
+    } == {
+        "sh.600000": 166,
+        "sh.600001": 334,
+        "sz.000001": 500,
+    }
+    for end_time in (datetime(2024, 1, 2, 9, 35), datetime(2024, 1, 2, 9, 40)):
+        start_time = end_time - timedelta(minutes=5)
+        assert sum(
+            node.volume
+            for node in first.nodes
+            if start_time < node.simulation_time <= end_time
+        ) == 500
+
+    baseline_snapshot = ScenarioMarketView(
+        baseline,
+        initial_cursor=datetime(2024, 1, 2, 9, 40),
+    ).snapshot().to_dict()
+    transformed_snapshot = ScenarioMarketView(
+        first,
+        initial_cursor=datetime(2024, 1, 2, 9, 40),
+    ).snapshot().to_dict()
+    assert baseline_snapshot["features"] != transformed_snapshot["features"]
+    assert [item["instrument"] for item in baseline_snapshot["rankings"]] == [
+        "sh.600000",
+        "sz.000001",
+        "sh.600001",
+    ]
+    assert [item["instrument"] for item in transformed_snapshot["rankings"]] == [
+        "sh.600000",
+        "sh.600001",
+        "sz.000001",
+    ]
+    final_features = transformed_snapshot["features"]["sh.600001"]
+    assert {
+        "capacity_proxy_30s",
+        "relative_liquidity",
+        "session_turnover_value",
+        "session_volume",
+    }.issubset(final_features)
+
+
+def test_liquidity_stress_preserves_zero_volume_nonrecipients() -> None:
+    world = _liquidity_world()
+    zero_volume_bars = tuple(
+        FiveMinuteBar(
+            instrument="sh.600002",
+            end_time=end_time,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=0,
+            amount=Decimal("0"),
+        )
+        for end_time in (
+            datetime(2024, 1, 2, 9, 35),
+            datetime(2024, 1, 2, 9, 40),
+        )
+    )
+    extended = replace(
+        world,
+        bars=tuple(sorted(
+            (*world.bars, *zero_volume_bars),
+            key=lambda bar: (bar.end_time, bar.instrument),
+        )),
+        instrument_states=(
+            *world.instrument_states,
+            InstrumentState(
+                instrument="sh.600002",
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                eligible=True,
+                trading_status="trading",
+                is_st=False,
+                industry="utilities",
+                decision_adjustment_factor=Decimal("1"),
+                decision_adjustment_provenance="fixture-v1",
+            ),
+        ),
+        price_limit_references=(
+            *world.price_limit_references,
+            SessionPriceLimitReference(
+                instrument="sh.600002",
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("10"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board="sh-main",
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code="fixture.sh-main.ordinary.10pct",
+            ),
+        ),
+    )
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((extended,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(_liquidity_request(),),
+        seed=17,
+    )
+
+    zero_nodes = tuple(
+        node for node in materialized.nodes if node.instrument == "sh.600002"
+    )
+    assert zero_nodes
+    assert all(node.volume == 0 and node.amount == 0 for node in zero_nodes)
+    assert dict(materialized.applied_transformations[0].statistics)[
+        "scaled_volume_conservation_error"
+    ] == "0"
+
+
+def test_liquidity_stress_identity_survives_artifact_store_restart(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "liquidity-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_liquidity_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(root),
+    ).materialize(
+        _segment(),
+        transformations=(_liquidity_request(),),
+        seed=17,
+    )
+
+    restored = ParquetMarketPathArtifactStore(root).get(
+        materialized.artifact_hash
+    )
+
+    assert restored == materialized
+    assert restored.applied_transformations[0].to_dict() == (
+        materialized.applied_transformations[0].to_dict()
+    )
+
+
 def test_volatility_scaling_fails_closed_without_previous_close_reference() -> None:
     materializer = ScenarioMaterializer(
         source=InMemoryHistoricalMarketDataSource(
@@ -1652,10 +1930,36 @@ def test_transformed_world_recomputes_every_derived_scenario_data_family() -> No
     returns = expected_session_returns(transformed)
     expected_market_return = sum(returns.values(), Decimal("0")) / Decimal("2")
     expected_market_text = format(expected_market_return.normalize(), "f")
+    transformed_nodes = getattr(transformed, "nodes")
+    session_volumes = {
+        instrument: Decimal(
+            sum(
+                node.volume
+                for node in transformed_nodes
+                if node.instrument == instrument
+            )
+        )
+        for instrument in ("sh.600000", "sz.000001")
+    }
+    market_session_volume = sum(
+        session_volumes.values(),
+        Decimal("0"),
+    ) / Decimal("2")
     expected_scores = {
-        instrument: value - expected_market_return
+        instrument: (
+            value
+            - expected_market_return
+            + Decimal("0.01")
+            * (session_volumes[instrument] / market_session_volume - Decimal("1"))
+        )
         for instrument, value in returns.items()
     }
+    expected_ranking = tuple(
+        sorted(
+            expected_scores,
+            key=lambda instrument: (-expected_scores[instrument], instrument),
+        )
+    )
 
     assert transformed_snapshot["market_context"] == {
         "return": expected_market_text,
@@ -1669,29 +1973,29 @@ def test_transformed_world_recomputes_every_derived_scenario_data_family() -> No
             "instrument_count": 2,
         }
     }
-    assert transformed_snapshot["candidates"] == ["sh.600000", "sz.000001"]
+    assert transformed_snapshot["candidates"] == list(expected_ranking)
     assert transformed_snapshot["rankings"] == [
         {
-            "instrument": "sh.600000",
-            "rank": 1,
-            "score": format(expected_scores["sh.600000"].normalize(), "f"),
-        },
-        {
-            "instrument": "sz.000001",
-            "rank": 2,
-            "score": format(expected_scores["sz.000001"].normalize(), "f"),
-        },
+            "instrument": instrument,
+            "rank": rank,
+            "score": format(expected_scores[instrument].normalize(), "f"),
+        }
+        for rank, instrument in enumerate(expected_ranking, start=1)
     ]
     assert set(transformed_snapshot["features"]["sh.600000"]) == {
+        "capacity_proxy_30s",
         "candidate_rank",
         "candidate_score",
         "market_breadth",
         "market_return",
+        "relative_liquidity",
         "relative_strength",
         "return_30s",
         "sector_breadth",
         "sector_return",
         "session_return",
+        "session_turnover_value",
+        "session_volume",
     }
     assert transformed_snapshot["market_context"] != baseline_snapshot[
         "market_context"
@@ -1835,20 +2139,36 @@ def test_headless_application_previews_volatility_and_recomputed_statistics() ->
         }
     }
     assert transformed_preview["candidates"] == ["sh.600000", "sz.000001"]
-    assert transformed_preview["rankings"] == [
-        {"instrument": "sh.600000", "rank": 1, "score": "0.00375"},
-        {"instrument": "sz.000001", "rank": 2, "score": "-0.00375"},
+    expected_sh_score = Decimal("0.00375") + Decimal("0.01") * (
+        Decimal("210") / Decimal("310") - Decimal("1")
+    )
+    expected_sz_score = Decimal("-0.00375") + Decimal("0.01") * (
+        Decimal("410") / Decimal("310") - Decimal("1")
+    )
+    assert [item["instrument"] for item in transformed_preview["rankings"]] == [
+        "sh.600000",
+        "sz.000001",
     ]
+    assert Decimal(str(transformed_preview["rankings"][0]["score"])) == (
+        expected_sh_score
+    )
+    assert Decimal(str(transformed_preview["rankings"][1]["score"])) == (
+        expected_sz_score
+    )
     assert set(transformed_preview["features"]["sh.600000"]) == {
+        "capacity_proxy_30s",
         "candidate_rank",
         "candidate_score",
         "market_breadth",
         "market_return",
+        "relative_liquidity",
         "relative_strength",
         "return_30s",
         "sector_breadth",
         "sector_return",
         "session_return",
+        "session_turnover_value",
+        "session_volume",
     }
     baseline_statistics = comparison["baseline"]["path_statistics"]
     transformed_statistics = transformed_preview["path_statistics"]

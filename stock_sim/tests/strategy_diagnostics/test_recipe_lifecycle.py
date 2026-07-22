@@ -324,6 +324,36 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
         "catalog_version": "scenario-transformation-catalog.v1",
         "transformations": [
             {
+                "transformation_id": "liquidity-stress.v1",
+                "family": "liquidity",
+                "implementation_version": "liquidity-stress.v1",
+                "parameters": [
+                    {
+                        "name": "volume_multiplier",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0.25",
+                        "maximum": "2",
+                    },
+                    {
+                        "name": "cross_sectional_concentration",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0",
+                        "maximum": "1",
+                    },
+                ],
+                "compatibility_rules": [
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "conserve-declared-scaled-volume-per-source-time",
+                ],
+                "causality_constraints": [
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ],
+            },
+            {
                 "transformation_id": "market-structure.v1",
                 "family": "market-structure",
                 "implementation_version": "market-structure.v1",
@@ -529,6 +559,27 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
     assert structure_validation.is_valid is True
     assert structure_validation.issues == ()
 
+    payload["transformations"] = [
+        {
+            "transformation_id": "liquidity-stress.v1",
+            "parameters": {
+                "volume_multiplier": "0.5",
+                "cross_sectional_concentration": "0.75",
+            },
+        }
+    ]
+    liquidity_draft = application.create_manual_recipe_draft(
+        payload,
+        author="researcher",
+    )
+
+    liquidity_validation = application.validate_recipe_draft(
+        liquidity_draft.draft_id
+    )
+
+    assert liquidity_validation.is_valid is True
+    assert liquidity_validation.issues == ()
+
 
 @pytest.mark.parametrize("multiplier", ("0.49", "2.01"))
 def test_volatility_scaling_rejects_values_outside_published_bounds(
@@ -641,6 +692,45 @@ def test_market_structure_rejects_values_outside_published_bounds(
     )
     with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
         application.approve_recipe_draft(draft.draft_id, actor="owner")
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    (
+        ("volume_multiplier", "0.249"),
+        ("volume_multiplier", "2.001"),
+        ("cross_sectional_concentration", "-0.01"),
+        ("cross_sectional_concentration", "1.01"),
+    ),
+)
+def test_liquidity_stress_rejects_values_outside_published_bounds(
+    parameter: str,
+    value: str,
+) -> None:
+    application, segment_id = _application_with_admitted_segment()
+    parameters = {
+        "volume_multiplier": "0.5",
+        "cross_sectional_concentration": "0.75",
+    }
+    parameters[parameter] = value
+    payload = _baseline_payload(segment_id)
+    payload["transformations"] = [
+        {
+            "transformation_id": "liquidity-stress.v1",
+            "parameters": parameters,
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is False
+    assert {issue.rule for issue in validation.issues} == {
+        "transformation.parameter-bounds"
+    }
+    assert validation.issues[0].path == (
+        f"transformations.0.parameters.{parameter}"
+    )
 
 
 @pytest.mark.parametrize(
