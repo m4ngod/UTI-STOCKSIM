@@ -33,13 +33,15 @@ from .recipes import (
 _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
 _SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
 _AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0005_strategy_runs"
+_STRATEGY_RUN_REVISION: Final = "0005_strategy_runs"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0006_a_share_execution_audit"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
     _HISTORICAL_SEGMENT_REVISION,
     _SCENARIO_RECIPE_REVISION,
     _AI_RECIPE_ASSISTANT_REVISION,
+    _STRATEGY_RUN_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -75,8 +77,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_scenario_recipe_lifecycle(connection)
             elif revision == _AI_RECIPE_ASSISTANT_REVISION:
                 _create_ai_recipe_assistant_audit(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _STRATEGY_RUN_REVISION:
                 _create_strategy_run_facts(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _add_a_share_execution_audit(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -269,6 +273,39 @@ def _create_strategy_run_facts(connection: Connection) -> None:
         "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id)"
         ")"
     )
+
+
+def _add_a_share_execution_audit(connection: Connection) -> None:
+    for statement in (
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN accepted_shares INTEGER "
+        "NOT NULL DEFAULT 0",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN reason_code VARCHAR(128) NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN reason_message TEXT NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN execution_price VARCHAR(64) NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN price_limit_lower VARCHAR(64) NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN price_limit_upper VARCHAR(64) NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN cash_change VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN position_change INTEGER "
+        "NOT NULL DEFAULT 0",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN "
+        "sellable_shares_change INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN commission VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN transfer_fee VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN stamp_duty VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN total_fee VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN cash_change VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_positions ADD COLUMN "
+        "t_plus_one_locked_shares INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE diagnostic_run_positions ADD COLUMN "
+        "lock_session_date VARCHAR(10) NULL",
+    ):
+        connection.exec_driver_sql(statement)
 
 
 def _json_dumps(payload: object) -> str:

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
 from strategy_diagnostics import (
     InMemoryMarketPathArtifactStore,
     InstrumentState,
     MarketPathNode,
     MaterializedMarketPath,
+    SessionPriceLimitReference,
     StrategyRunEngine,
     StrategyRunSpecification,
 )
@@ -82,6 +86,27 @@ def _reference_path() -> MaterializedMarketPath:
                 ("sz.000001", "technology"),
             )
         ),
+        price_limit_references=tuple(
+            SessionPriceLimitReference(
+                instrument=instrument,
+                session_date=date(2024, 1, 2),
+                previous_close=previous_close,
+                effective_at=datetime(2024, 1, 2, 9, 25),
+                provenance="strategy-run-hand-calculable-fixture",
+                profile_version="a-share-cash-equity.v1",
+                board=board,
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code=(
+                    f"{board}.ordinary.10pct.effective-2024-01-02"
+                ),
+            )
+            for instrument, previous_close, board in (
+                ("sh.600000", Decimal("10.00"), "sh-main"),
+                ("sz.000001", Decimal("20.00"), "sz-main"),
+            )
+        ),
     )
 
 
@@ -107,7 +132,7 @@ def _spec(
         transformation_catalog_version=path.transformation_catalog_version,
         transformation_implementation_versions=(),
         market_rule_profile_version=path.market_rule_profile_version,
-        execution_policy_version="private-ledger-baseline.v1",
+        execution_policy_version="a-share-cash-equity-execution.v1",
         strategy_id="anchored-ranked-candidate-reference",
         strategy_version="anchored-ranked-candidate-reference.v1",
         decision_cadence_minutes=cadence_minutes,
@@ -136,11 +161,98 @@ def test_half_hour_decisions_use_simulation_time_and_next_node_activation() -> N
     assert order.decision_time == datetime(2024, 1, 2, 10, 0)
     assert order.activation_time == datetime(2024, 1, 2, 10, 0, 30)
     assert order.status == "filled"
+    assert order.accepted_shares == 100
+    assert order.reason_code == "accepted"
+    assert order.cash_change == Decimal("-1005.01")
+    assert order.position_change == 100
     assert completed.fills[0].simulation_time == datetime(2024, 1, 2, 10, 0, 30)
     assert completed.fills[0].instrument == "sh.600000"
+    assert completed.fills[0].fees.total == Decimal("5.01")
+    assert completed.fills[0].cash_change == Decimal("-1005.01")
     assert completed.positions[0].shares == 100
-    assert completed.equity_curve[-1].equity == Decimal("100000.00")
+    assert completed.equity_curve[-1].equity == Decimal("99994.99")
     assert completed.run_artifact_hash is not None
+
+
+def test_cash_check_includes_policy_fees_and_records_rejection_evidence() -> None:
+    path = _reference_path()
+    engine = _engine(path)
+    specification = replace(_spec(path), initial_cash=Decimal("1005.00"))
+
+    completed = engine.run_to_completion(engine.start(specification).run_id)
+
+    assert completed.status == "completed"
+    assert len(completed.orders) == 1
+    assert completed.orders[0].status == "rejected"
+    assert completed.orders[0].accepted_shares == 0
+    assert completed.orders[0].reason_code == "account.insufficient_cash"
+    assert completed.orders[0].cash_change == Decimal("0")
+    assert completed.orders[0].position_change == 0
+    assert completed.fills == ()
+    assert completed.cash == Decimal("1005.00")
+
+
+def test_activation_uses_point_in_time_suspension_state() -> None:
+    original = _reference_path()
+    suspended_state = replace(
+        original.instrument_states[0],
+        effective_at=datetime(2024, 1, 2, 10, 0, 30),
+        trading_status="suspended",
+    )
+    path = replace(
+        original,
+        instrument_states=original.instrument_states + (suspended_state,),
+    )
+    engine = _engine(path)
+
+    completed = engine.run_to_completion(engine.start(_spec(path)).run_id)
+
+    assert completed.orders[0].status == "rejected"
+    assert completed.orders[0].reason_code == "market.suspended"
+    assert completed.fills == ()
+
+
+def test_suspension_rejects_even_when_the_activation_node_has_no_trade() -> None:
+    original = _reference_path()
+    activation_time = datetime(2024, 1, 2, 10, 0, 30)
+    suspended_state = replace(
+        original.instrument_states[0],
+        effective_at=activation_time,
+        trading_status="suspended",
+    )
+    path = replace(
+        original,
+        nodes=tuple(
+            node
+            for node in original.nodes
+            if not (
+                node.instrument == "sh.600000"
+                and node.simulation_time == activation_time
+            )
+        ),
+        instrument_states=original.instrument_states + (suspended_state,),
+    )
+    engine = _engine(path)
+
+    completed = engine.run_to_completion(engine.start(_spec(path)).run_id)
+
+    assert completed.orders[0].status == "rejected"
+    assert completed.orders[0].reason_code == "market.suspended"
+    assert completed.fills == ()
+
+
+def test_activation_fails_closed_without_price_limit_reference() -> None:
+    path = replace(_reference_path(), price_limit_references=())
+    engine = _engine(path)
+
+    completed = engine.run_to_completion(engine.start(_spec(path)).run_id)
+
+    assert completed.orders[0].status == "rejected"
+    assert (
+        completed.orders[0].reason_code
+        == "market.price_limit_reference_missing"
+    )
+    assert completed.fills == ()
 
 
 def test_hourly_decisions_are_independent_of_wall_time_batch_size() -> None:
@@ -294,6 +406,26 @@ def test_paused_run_and_private_facts_survive_repository_restart(tmp_path: Path)
                 "diagnostic_run_equity",
             )
         }
+        order_audit = connection.execute(
+            text(
+                "SELECT accepted_shares, reason_code, execution_price, "
+                "price_limit_lower, price_limit_upper, cash_change, "
+                "position_change, sellable_shares_change "
+                "FROM diagnostic_run_orders"
+            )
+        ).one()
+        fill_audit = connection.execute(
+            text(
+                "SELECT commission, transfer_fee, stamp_duty, total_fee, "
+                "cash_change FROM diagnostic_run_fills"
+            )
+        ).one()
+        position_audit = connection.execute(
+            text(
+                "SELECT t_plus_one_locked_shares, lock_session_date "
+                "FROM diagnostic_run_positions"
+            )
+        ).one()
     assert counts == {
         "diagnostic_strategy_runs": 1,
         "diagnostic_run_orders": 1,
@@ -301,6 +433,18 @@ def test_paused_run_and_private_facts_survive_repository_restart(tmp_path: Path)
         "diagnostic_run_positions": 1,
         "diagnostic_run_equity": completed.total_node_count,
     }
+    assert order_audit == (
+        100,
+        "accepted",
+        "10.00",
+        "9.00",
+        "11.00",
+        "-1005.01",
+        100,
+        0,
+    )
+    assert fill_audit == ("5.00", "0.01", "0.00", "5.01", "-1005.01")
+    assert position_audit == (100, "2024-01-02")
 
 
 def test_failed_run_evidence_survives_repository_restart(tmp_path: Path) -> None:
@@ -333,3 +477,166 @@ def test_failed_run_evidence_survives_repository_restart(tmp_path: Path) -> None
     assert restarted.status == "failed"
     assert restarted.failure_code == "ValueError"
     assert "candidate ranking" in str(restarted.failure_message)
+
+
+def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
+    tmp_path: Path,
+) -> None:
+    path = _reference_path()
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'pre-execution-profile.db'}",
+        future=True,
+    )
+    legacy_specification = replace(
+        _spec(path, replica_id="legacy-0005-run"),
+        execution_policy_version="private-ledger-baseline.v1",
+    )
+    legacy_specification_payload = legacy_specification.to_dict()
+    for name in (
+        "commission_bps",
+        "minimum_commission",
+        "transfer_fee_bps",
+        "sell_stamp_duty_bps",
+    ):
+        legacy_specification_payload.pop(name)
+    legacy_run_id = "strategy-run-" + hashlib.sha256(
+        json.dumps(
+            legacy_specification_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    legacy_state = {
+        "run_id": legacy_run_id,
+        "status": "paused",
+        "specification": legacy_specification_payload,
+        "current_simulation_time": None,
+        "processed_node_count": 0,
+        "decision_times": [],
+        "orders": [],
+        "fills": [],
+        "cash": "100000",
+        "positions": [],
+        "equity_curve": [],
+        "failure_code": None,
+        "failure_message": None,
+        "run_artifact_hash": None,
+    }
+    _create_actual_0005_strategy_run_database(
+        database,
+        run_id=legacy_run_id,
+        state_json=json.dumps(
+            legacy_state,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+    migration = initialize_diagnostic_persistence(database)
+    repository = SqlStrategyRunRepository(database)
+    engine = StrategyRunEngine(store.get, repository=repository)
+
+    restored = engine.get(legacy_run_id)
+    with pytest.raises(ValueError, match="execution policy version"):
+        engine.resume(legacy_run_id)
+
+    assert migration.applied_revisions == ("0006_a_share_execution_audit",)
+    assert restored.run_id == legacy_run_id
+    assert restored.status == "paused"
+    assert engine.get(legacy_run_id).status == "paused"
+    assert restored.specification.execution_economics_pinned is False
+    assert (
+        restored.specification.execution_policy_version
+        == "private-ledger-baseline.v1"
+    )
+
+
+def _create_actual_0005_strategy_run_database(
+    database: Engine,
+    *,
+    run_id: str,
+    state_json: str,
+) -> None:
+    with database.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_schema_migrations ("
+            "revision VARCHAR(128) PRIMARY KEY NOT NULL, "
+            "applied_at_utc VARCHAR(64) NOT NULL)"
+        )
+        for revision in (
+            "0001_diagnostics_baseline",
+            "0002_historical_segment_catalog",
+            "0003_scenario_recipe_lifecycle",
+            "0004_ai_recipe_assistant",
+            "0005_strategy_runs",
+        ):
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_schema_migrations "
+                    "(revision, applied_at_utc) VALUES (:revision, :applied_at_utc)"
+                ),
+                {"revision": revision, "applied_at_utc": "2026-07-21T00:00:00Z"},
+            )
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_strategy_runs ("
+            "run_id VARCHAR(96) PRIMARY KEY NOT NULL, status VARCHAR(32) NOT NULL, "
+            "materialization_hash VARCHAR(64) NOT NULL, "
+            "recipe_version_id VARCHAR(96) NOT NULL, "
+            "strategy_id VARCHAR(128) NOT NULL, "
+            "strategy_version VARCHAR(128) NOT NULL, "
+            "decision_cadence_minutes INTEGER NOT NULL, "
+            "current_simulation_time VARCHAR(64) NULL, "
+            "next_node_index INTEGER NOT NULL, state_json TEXT NOT NULL, "
+            "run_artifact_hash VARCHAR(64) NULL, failure_code VARCHAR(128) NULL, "
+            "failure_message TEXT NULL, updated_at_utc VARCHAR(64) NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_run_orders ("
+            "order_id VARCHAR(160) PRIMARY KEY NOT NULL, run_id VARCHAR(96) NOT NULL, "
+            "instrument VARCHAR(32) NOT NULL, shares INTEGER NOT NULL, "
+            "decision_time VARCHAR(64) NOT NULL, activation_time VARCHAR(64) NOT NULL, "
+            "status VARCHAR(32) NOT NULL, rejection_reason VARCHAR(128) NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_run_fills ("
+            "fill_id VARCHAR(192) PRIMARY KEY NOT NULL, run_id VARCHAR(96) NOT NULL, "
+            "order_id VARCHAR(160) NOT NULL, instrument VARCHAR(32) NOT NULL, "
+            "shares INTEGER NOT NULL, price VARCHAR(64) NOT NULL, "
+            "gross_value VARCHAR(64) NOT NULL, simulation_time VARCHAR(64) NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_run_positions ("
+            "run_id VARCHAR(96) NOT NULL, instrument VARCHAR(32) NOT NULL, "
+            "shares INTEGER NOT NULL, total_cost VARCHAR(64) NOT NULL, "
+            "PRIMARY KEY(run_id, instrument))"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_run_equity ("
+            "run_id VARCHAR(96) NOT NULL, simulation_time VARCHAR(64) NOT NULL, "
+            "cash VARCHAR(64) NOT NULL, positions_value VARCHAR(64) NOT NULL, "
+            "equity VARCHAR(64) NOT NULL, PRIMARY KEY(run_id, simulation_time))"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_strategy_runs ("
+                "run_id, status, materialization_hash, recipe_version_id, "
+                "strategy_id, strategy_version, decision_cadence_minutes, "
+                "current_simulation_time, next_node_index, state_json, "
+                "run_artifact_hash, failure_code, failure_message, updated_at_utc"
+                ") VALUES ("
+                ":run_id, 'paused', :materialization_hash, :recipe_version_id, "
+                ":strategy_id, :strategy_version, 30, NULL, 0, :state_json, "
+                "NULL, NULL, NULL, '2026-07-21T00:00:00Z')"
+            ),
+            {
+                "run_id": run_id,
+                "materialization_hash": "a" * 64,
+                "recipe_version_id": "recipe-version-baseline",
+                "strategy_id": "anchored-ranked-candidate-reference",
+                "strategy_version": "anchored-ranked-candidate-reference.v1",
+                "state_json": state_json,
+            },
+        )

@@ -88,6 +88,12 @@ def resolve_a_share_price_limit_rule(
     )
 
 
+def a_share_board_for_instrument(instrument: str) -> AShareBoard:
+    """Return the supported board identity used by the versioned profile."""
+
+    return _a_share_board(instrument)
+
+
 def _a_share_board(instrument: str) -> AShareBoard:
     normalized = instrument.strip().lower()
     if normalized.startswith("sh.688") or normalized.startswith("sh.689"):
@@ -169,5 +175,6 @@ __all__ = [
     "AShareBoard",
     "ListingStage",
     "ResolvedPriceLimitRule",
+    "a_share_board_for_instrument",
     "resolve_a_share_price_limit_rule",
 ]

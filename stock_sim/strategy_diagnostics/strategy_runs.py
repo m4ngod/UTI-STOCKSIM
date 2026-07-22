@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -12,16 +12,29 @@ from typing import Any, Callable, Final, Literal, Protocol, cast
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
+from .execution import (
+    A_SHARE_CASH_EQUITY_EXECUTION_POLICY_VERSION,
+    AShareCashEquityAccount,
+    AShareCashEquityExecutionPolicy,
+    AShareCashEquityPolicyConfiguration,
+    AShareExecutionRequest,
+    ExecutionFeeBreakdown,
+    TradingStatus,
+)
 from .market_paths import (
+    InstrumentState,
     MarketPathNode,
     MaterializedMarketPath,
     ScenarioMarketSnapshot,
     ScenarioMarketView,
+    SessionPriceLimitReference,
 )
 
 
 STRATEGY_RUN_ENGINE_VERSION: Final = "anchored-strategy-run.v1"
-BASELINE_EXECUTION_POLICY_VERSION: Final = "private-ledger-baseline.v1"
+BASELINE_EXECUTION_POLICY_VERSION: Final = (
+    A_SHARE_CASH_EQUITY_EXECUTION_POLICY_VERSION
+)
 REFERENCE_STRATEGY_ID: Final = "anchored-ranked-candidate-reference"
 REFERENCE_STRATEGY_VERSION: Final = "anchored-ranked-candidate-reference.v1"
 
@@ -69,6 +82,11 @@ class StrategyRunSpecification:
     order_shares: int
     replica_id: str
     code_identity: str
+    commission_bps: Decimal = Decimal("3")
+    minimum_commission: Decimal = Decimal("5")
+    transfer_fee_bps: Decimal = Decimal("0.1")
+    sell_stamp_duty_bps: Decimal = Decimal("5")
+    execution_economics_pinned: bool = True
     engine_version: str = STRATEGY_RUN_ENGINE_VERSION
 
     def __post_init__(self) -> None:
@@ -78,6 +96,16 @@ class StrategyRunSpecification:
             raise ValueError("initial cash must be positive")
         if self.order_shares <= 0:
             raise ValueError("reference strategy order shares must be positive")
+        if any(
+            value < 0
+            for value in (
+                self.commission_bps,
+                self.minimum_commission,
+                self.transfer_fee_bps,
+                self.sell_stamp_duty_bps,
+            )
+        ):
+            raise ValueError("execution-policy economics must not be negative")
         required_text = (
             self.recipe_version_id,
             self.recipe_content_hash,
@@ -100,7 +128,7 @@ class StrategyRunSpecification:
         return f"strategy-run-{_canonical_hash(self.to_dict())[:24]}"
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "recipe_version_id": self.recipe_version_id,
             "recipe_content_hash": self.recipe_content_hash,
             "materialization_hash": self.materialization_hash,
@@ -121,6 +149,18 @@ class StrategyRunSpecification:
             "code_identity": self.code_identity,
             "engine_version": self.engine_version,
         }
+        if self.execution_economics_pinned:
+            payload.update(
+                {
+                    "commission_bps": _decimal_text(self.commission_bps),
+                    "minimum_commission": _decimal_text(self.minimum_commission),
+                    "transfer_fee_bps": _decimal_text(self.transfer_fee_bps),
+                    "sell_stamp_duty_bps": _decimal_text(
+                        self.sell_stamp_duty_bps
+                    ),
+                }
+            )
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +171,15 @@ class StrategyOrder:
     decision_time: datetime
     activation_time: datetime
     status: OrderStatus
+    accepted_shares: int = 0
+    reason_code: str | None = None
+    reason_message: str | None = None
+    execution_price: Decimal | None = None
+    price_limit_lower: Decimal | None = None
+    price_limit_upper: Decimal | None = None
+    cash_change: Decimal = Decimal("0")
+    position_change: int = 0
+    sellable_shares_change: int = 0
     rejection_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -138,9 +187,35 @@ class StrategyOrder:
             "order_id": self.order_id,
             "instrument": self.instrument,
             "shares": self.shares,
+            "requested_shares": self.shares,
+            "accepted_shares": self.accepted_shares,
             "decision_time": self.decision_time.isoformat(),
             "activation_time": self.activation_time.isoformat(),
             "status": self.status,
+            "reason_code": self.reason_code,
+            "reason_message": self.reason_message,
+            "execution_price": (
+                _decimal_text(self.execution_price)
+                if self.execution_price is not None
+                else None
+            ),
+            "price_limits": {
+                "lower": (
+                    _decimal_text(self.price_limit_lower)
+                    if self.price_limit_lower is not None
+                    else None
+                ),
+                "upper": (
+                    _decimal_text(self.price_limit_upper)
+                    if self.price_limit_upper is not None
+                    else None
+                ),
+            },
+            "account_effect": {
+                "cash_change": _decimal_text(self.cash_change),
+                "position_change": self.position_change,
+                "sellable_shares_change": self.sellable_shares_change,
+            },
             "rejection_reason": self.rejection_reason,
         }
 
@@ -154,6 +229,8 @@ class PrivateFill:
     price: Decimal
     gross_value: Decimal
     simulation_time: datetime
+    fees: ExecutionFeeBreakdown
+    cash_change: Decimal
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -164,6 +241,8 @@ class PrivateFill:
             "price": _decimal_text(self.price),
             "gross_value": _decimal_text(self.gross_value),
             "simulation_time": self.simulation_time.isoformat(),
+            "fees": self.fees.to_dict(),
+            "cash_change": _decimal_text(self.cash_change),
         }
 
 
@@ -171,6 +250,7 @@ class PrivateFill:
 class PortfolioPosition:
     instrument: str
     shares: int
+    sellable_shares: int
     average_cost: Decimal
     market_price: Decimal
     market_value: Decimal
@@ -180,6 +260,7 @@ class PortfolioPosition:
         return {
             "instrument": self.instrument,
             "shares": self.shares,
+            "sellable_shares": self.sellable_shares,
             "average_cost": _decimal_text(self.average_cost),
             "market_price": _decimal_text(self.market_price),
             "market_value": _decimal_text(self.market_value),
@@ -263,6 +344,8 @@ class _LedgerPosition:
     instrument: str
     shares: int
     total_cost: Decimal
+    t_plus_one_locked_shares: int = 0
+    lock_session_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,6 +526,7 @@ class StrategyRunEngine:
             )
         path = self._path_loader(state.specification.materialization_hash)
         try:
+            self._validate_specification(state.specification, path)
             simulation_times = _simulation_times(path)
             stop = min(state.next_node_index + node_count, len(simulation_times))
             for node_index in range(state.next_node_index, stop):
@@ -512,6 +596,8 @@ class StrategyRunEngine:
             raise ValueError(
                 f"Only a paused Strategy Run can resume; status={state.status}"
             )
+        path = self._path_loader(state.specification.materialization_hash)
+        self._validate_specification(state.specification, path)
         state = replace(state, status="running")
         self._repository.save(state)
         return self.get(run_id)
@@ -553,6 +639,10 @@ class StrategyRunEngine:
             raise ValueError("A baseline Strategy Run cannot pin applied transformations")
         if specification.execution_policy_version != BASELINE_EXECUTION_POLICY_VERSION:
             raise ValueError("Unsupported baseline execution policy version")
+        if not specification.execution_economics_pinned:
+            raise ValueError(
+                "Strategy Run execution economics are not pinned for this policy version"
+            )
         if (
             specification.strategy_id,
             specification.strategy_version,
@@ -577,7 +667,12 @@ class StrategyRunEngine:
             for node in path.nodes
             if node.simulation_time == simulation_time
         }
-        state = self._activate_orders(state, current_nodes, simulation_time)
+        state = self._activate_orders(
+            state,
+            path,
+            current_nodes,
+            simulation_time,
+        )
         view = ScenarioMarketView(path, initial_cursor=simulation_times[0])
         view.advance_to(simulation_time)
         market_snapshot = view.snapshot()
@@ -605,6 +700,7 @@ class StrategyRunEngine:
     @staticmethod
     def _activate_orders(
         state: _StrategyRunState,
+        path: MaterializedMarketPath,
         current_nodes: dict[str, MarketPathNode],
         simulation_time: datetime,
     ) -> _StrategyRunState:
@@ -612,43 +708,117 @@ class StrategyRunEngine:
         fills = list(state.fills)
         cash = state.cash
         positions = {item.instrument: item for item in state.positions}
+        policy = AShareCashEquityExecutionPolicy(
+            AShareCashEquityPolicyConfiguration(
+                commission_bps=state.specification.commission_bps,
+                minimum_commission=state.specification.minimum_commission,
+                transfer_fee_bps=state.specification.transfer_fee_bps,
+                sell_stamp_duty_bps=state.specification.sell_stamp_duty_bps,
+            )
+        )
         for index, order in enumerate(orders):
             if order.status != "queued" or order.activation_time > simulation_time:
                 continue
-            node = current_nodes.get(order.instrument)
-            if node is None:
-                continue
-            price = node.close
-            gross_value = price * abs(order.shares)
             existing = positions.get(order.instrument)
             existing_shares = existing.shares if existing is not None else 0
-            if order.shares > 0 and gross_value > cash:
-                orders[index] = replace(
-                    order,
-                    status="rejected",
-                    rejection_reason="baseline_insufficient_cash",
+            sellable_shares = _sellable_shares(existing, simulation_time.date())
+            instrument_state = _instrument_state_at(
+                path,
+                order.instrument,
+                simulation_time,
+            )
+            node = current_nodes.get(order.instrument)
+            if node is None:
+                if (
+                    instrument_state is None
+                    or instrument_state.trading_status == "trading"
+                ):
+                    continue
+                node = _latest_node_at_or_before(
+                    path,
+                    order.instrument,
+                    simulation_time,
                 )
-                continue
-            if order.shares < 0 and abs(order.shares) > existing_shares:
-                orders[index] = replace(
-                    order,
-                    status="rejected",
-                    rejection_reason="baseline_insufficient_position",
+                if node is None:
+                    continue
+            reference = _price_limit_reference_at(
+                path,
+                order.instrument,
+                simulation_time,
+            )
+            result = policy.evaluate(
+                AShareExecutionRequest(
+                    instrument=order.instrument,
+                    shares=order.shares,
+                    execution_price=node.close,
+                    simulation_time=simulation_time,
+                    trading_status=cast(
+                        TradingStatus,
+                        (
+                            instrument_state.trading_status
+                            if instrument_state is not None
+                            else "inactive"
+                        ),
+                    ),
+                    account=AShareCashEquityAccount(
+                        cash=cash,
+                        position_shares=existing_shares,
+                        sellable_shares=sellable_shares,
+                    ),
+                    price_limit_reference=reference,
+                    instrument_is_st=(
+                        instrument_state.is_st
+                        if instrument_state is not None
+                        else False
+                    ),
                 )
+            )
+            limits = result.price_limits
+            orders[index] = replace(
+                order,
+                status="filled" if result.status == "accepted" else "rejected",
+                accepted_shares=result.accepted_shares,
+                reason_code=result.reason_code,
+                reason_message=result.reason_message,
+                execution_price=result.execution_price,
+                price_limit_lower=limits.lower if limits is not None else None,
+                price_limit_upper=limits.upper if limits is not None else None,
+                cash_change=result.account_effect.cash_change,
+                position_change=result.account_effect.position_change,
+                sellable_shares_change=(
+                    result.account_effect.sellable_shares_change
+                ),
+                rejection_reason=(
+                    result.reason_code if result.status == "rejected" else None
+                ),
+            )
+            if result.status == "rejected":
                 continue
-            if order.shares > 0:
-                cash -= gross_value
+            cash += result.account_effect.cash_change
+            accepted_shares = result.accepted_shares
+            if accepted_shares > 0:
                 prior_cost = existing.total_cost if existing is not None else Decimal("0")
                 positions[order.instrument] = _LedgerPosition(
                     instrument=order.instrument,
-                    shares=existing_shares + order.shares,
-                    total_cost=prior_cost + gross_value,
+                    shares=existing_shares + accepted_shares,
+                    total_cost=(
+                        prior_cost + result.gross_value + result.fees.total
+                    ),
+                    t_plus_one_locked_shares=(
+                        (
+                            existing.t_plus_one_locked_shares
+                            if existing is not None
+                            and existing.lock_session_date == simulation_time.date()
+                            else 0
+                        )
+                        + accepted_shares
+                    ),
+                    lock_session_date=simulation_time.date(),
                 )
             else:
-                cash += gross_value
                 if existing is None:
                     raise RuntimeError("sell activation lost its private position")
-                remaining_shares = existing.shares + order.shares
+                remaining_shares = existing.shares + accepted_shares
                 if remaining_shares == 0:
                     del positions[order.instrument]
                 else:
@@ -661,16 +831,17 @@ class StrategyRunEngine:
                             / Decimal(existing.shares)
                         ),
                     )
-            orders[index] = replace(order, status="filled")
             fills.append(
                 PrivateFill(
                     fill_id=f"{order.order_id}:fill",
                     order_id=order.order_id,
                     instrument=order.instrument,
-                    shares=order.shares,
-                    price=price,
-                    gross_value=gross_value,
+                    shares=accepted_shares,
+                    price=result.execution_price,
+                    gross_value=result.gross_value,
                     simulation_time=simulation_time,
+                    fees=result.fees,
+                    cash_change=result.account_effect.cash_change,
                 )
             )
         return replace(
@@ -692,12 +863,6 @@ class StrategyRunEngine:
             return state
         candidate = _top_ranked_candidate(market_snapshot)
         if candidate is None:
-            return state
-        current_node = next(
-            node for node in market_snapshot.latest_nodes if node.instrument == candidate
-        )
-        requested_cost = current_node.close * state.specification.order_shares
-        if requested_cost > state.cash:
             return state
         order = StrategyOrder(
             order_id=f"{state.specification.run_id}:order-0001",
@@ -748,6 +913,12 @@ class StrategyRunEngine:
             PortfolioPosition(
                 instrument=position.instrument,
                 shares=position.shares,
+                sellable_shares=_sellable_shares(
+                    position,
+                    state.current_simulation_time.date()
+                    if state.current_simulation_time is not None
+                    else date.min,
+                ),
                 average_cost=position.total_cost / Decimal(position.shares),
                 market_price=market_prices.get(
                     position.instrument,
@@ -788,6 +959,56 @@ class StrategyRunEngine:
             failure_message=state.failure_message,
             run_artifact_hash=state.run_artifact_hash,
         )
+
+
+def _sellable_shares(position: _LedgerPosition | None, session_date: date) -> int:
+    if position is None:
+        return 0
+    if position.lock_session_date == session_date:
+        return position.shares - position.t_plus_one_locked_shares
+    return position.shares
+
+
+def _instrument_state_at(
+    path: MaterializedMarketPath,
+    instrument: str,
+    simulation_time: datetime,
+) -> InstrumentState | None:
+    applicable = tuple(
+        state
+        for state in path.instrument_states
+        if state.instrument == instrument and state.effective_at <= simulation_time
+    )
+    return max(applicable, key=lambda item: item.effective_at, default=None)
+
+
+def _price_limit_reference_at(
+    path: MaterializedMarketPath,
+    instrument: str,
+    simulation_time: datetime,
+) -> SessionPriceLimitReference | None:
+    applicable = tuple(
+        reference
+        for reference in path.price_limit_references
+        if reference.instrument == instrument
+        and reference.session_date == simulation_time.date()
+        and reference.effective_at <= simulation_time
+    )
+    return max(applicable, key=lambda item: item.effective_at, default=None)
+
+
+def _latest_node_at_or_before(
+    path: MaterializedMarketPath,
+    instrument: str,
+    simulation_time: datetime,
+) -> MarketPathNode | None:
+    applicable = tuple(
+        node
+        for node in path.nodes
+        if node.instrument == instrument
+        and node.simulation_time <= simulation_time
+    )
+    return max(applicable, key=lambda item: item.simulation_time, default=None)
 
 
 def _simulation_times(path: MaterializedMarketPath) -> tuple[datetime, ...]:
@@ -843,6 +1064,12 @@ def _run_artifact_payload(state: _StrategyRunState) -> dict[str, object]:
                 "instrument": item.instrument,
                 "shares": item.shares,
                 "total_cost": _decimal_text(item.total_cost),
+                "t_plus_one_locked_shares": item.t_plus_one_locked_shares,
+                "lock_session_date": (
+                    item.lock_session_date.isoformat()
+                    if item.lock_session_date is not None
+                    else None
+                ),
             }
             for item in state.positions
         ],
@@ -890,6 +1117,27 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         order_shares=int(specification_payload["order_shares"]),
         replica_id=str(specification_payload["replica_id"]),
         code_identity=str(specification_payload["code_identity"]),
+        commission_bps=Decimal(
+            str(specification_payload.get("commission_bps", "3"))
+        ),
+        minimum_commission=Decimal(
+            str(specification_payload.get("minimum_commission", "5"))
+        ),
+        transfer_fee_bps=Decimal(
+            str(specification_payload.get("transfer_fee_bps", "0.1"))
+        ),
+        sell_stamp_duty_bps=Decimal(
+            str(specification_payload.get("sell_stamp_duty_bps", "5"))
+        ),
+        execution_economics_pinned=all(
+            name in specification_payload
+            for name in (
+                "commission_bps",
+                "minimum_commission",
+                "transfer_fee_bps",
+                "sell_stamp_duty_bps",
+            )
+        ),
         engine_version=str(specification_payload["engine_version"]),
     )
     orders = tuple(
@@ -900,6 +1148,56 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             decision_time=datetime.fromisoformat(str(item["decision_time"])),
             activation_time=datetime.fromisoformat(str(item["activation_time"])),
             status=_parse_order_status(str(item["status"])),
+            accepted_shares=int(item.get("accepted_shares", 0)),
+            reason_code=(
+                str(item["reason_code"])
+                if item.get("reason_code") is not None
+                else None
+            ),
+            reason_message=(
+                str(item["reason_message"])
+                if item.get("reason_message") is not None
+                else None
+            ),
+            execution_price=(
+                Decimal(str(item["execution_price"]))
+                if item.get("execution_price") is not None
+                else None
+            ),
+            price_limit_lower=(
+                Decimal(str(cast(dict[str, Any], item["price_limits"])["lower"]))
+                if isinstance(item.get("price_limits"), dict)
+                and cast(dict[str, Any], item["price_limits"]).get("lower")
+                is not None
+                else None
+            ),
+            price_limit_upper=(
+                Decimal(str(cast(dict[str, Any], item["price_limits"])["upper"]))
+                if isinstance(item.get("price_limits"), dict)
+                and cast(dict[str, Any], item["price_limits"]).get("upper")
+                is not None
+                else None
+            ),
+            cash_change=Decimal(
+                str(
+                    cast(dict[str, Any], item.get("account_effect", {})).get(
+                        "cash_change",
+                        "0",
+                    )
+                )
+            ),
+            position_change=int(
+                cast(dict[str, Any], item.get("account_effect", {})).get(
+                    "position_change",
+                    0,
+                )
+            ),
+            sellable_shares_change=int(
+                cast(dict[str, Any], item.get("account_effect", {})).get(
+                    "sellable_shares_change",
+                    0,
+                )
+            ),
             rejection_reason=(
                 str(item["rejection_reason"])
                 if item.get("rejection_reason") is not None
@@ -917,6 +1215,18 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             price=Decimal(str(item["price"])),
             gross_value=Decimal(str(item["gross_value"])),
             simulation_time=datetime.fromisoformat(str(item["simulation_time"])),
+            fees=ExecutionFeeBreakdown(
+                commission=Decimal(
+                    str(cast(dict[str, Any], item.get("fees", {})).get("commission", "0"))
+                ),
+                transfer_fee=Decimal(
+                    str(cast(dict[str, Any], item.get("fees", {})).get("transfer_fee", "0"))
+                ),
+                stamp_duty=Decimal(
+                    str(cast(dict[str, Any], item.get("fees", {})).get("stamp_duty", "0"))
+                ),
+            ),
+            cash_change=Decimal(str(item.get("cash_change", "0"))),
         )
         for item in cast(list[dict[str, Any]], payload["fills"])
     )
@@ -925,6 +1235,14 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             instrument=str(item["instrument"]),
             shares=int(item["shares"]),
             total_cost=Decimal(str(item["total_cost"])),
+            t_plus_one_locked_shares=int(
+                item.get("t_plus_one_locked_shares", 0)
+            ),
+            lock_session_date=(
+                date.fromisoformat(str(item["lock_session_date"]))
+                if item.get("lock_session_date") is not None
+                else None
+            ),
         )
         for item in cast(list[dict[str, Any]], payload["positions"])
     )
@@ -1034,10 +1352,16 @@ def _replace_normalized_run_facts(
             text(
                 "INSERT INTO diagnostic_run_orders ("
                 "order_id, run_id, instrument, shares, decision_time, "
-                "activation_time, status, rejection_reason"
+                "activation_time, status, accepted_shares, reason_code, "
+                "reason_message, execution_price, price_limit_lower, "
+                "price_limit_upper, cash_change, position_change, "
+                "sellable_shares_change, rejection_reason"
                 ") VALUES ("
                 ":order_id, :run_id, :instrument, :shares, :decision_time, "
-                ":activation_time, :status, :rejection_reason"
+                ":activation_time, :status, :accepted_shares, :reason_code, "
+                ":reason_message, :execution_price, :price_limit_lower, "
+                ":price_limit_upper, :cash_change, :position_change, "
+                ":sellable_shares_change, :rejection_reason"
                 ")"
             ),
             [
@@ -1049,6 +1373,27 @@ def _replace_normalized_run_facts(
                     "decision_time": item.decision_time.isoformat(),
                     "activation_time": item.activation_time.isoformat(),
                     "status": item.status,
+                    "accepted_shares": item.accepted_shares,
+                    "reason_code": item.reason_code,
+                    "reason_message": item.reason_message,
+                    "execution_price": (
+                        _decimal_text(item.execution_price)
+                        if item.execution_price is not None
+                        else None
+                    ),
+                    "price_limit_lower": (
+                        _decimal_text(item.price_limit_lower)
+                        if item.price_limit_lower is not None
+                        else None
+                    ),
+                    "price_limit_upper": (
+                        _decimal_text(item.price_limit_upper)
+                        if item.price_limit_upper is not None
+                        else None
+                    ),
+                    "cash_change": _decimal_text(item.cash_change),
+                    "position_change": item.position_change,
+                    "sellable_shares_change": item.sellable_shares_change,
                     "rejection_reason": item.rejection_reason,
                 }
                 for item in state.orders
@@ -1059,10 +1404,12 @@ def _replace_normalized_run_facts(
             text(
                 "INSERT INTO diagnostic_run_fills ("
                 "fill_id, run_id, order_id, instrument, shares, price, "
-                "gross_value, simulation_time"
+                "gross_value, simulation_time, commission, transfer_fee, "
+                "stamp_duty, total_fee, cash_change"
                 ") VALUES ("
                 ":fill_id, :run_id, :order_id, :instrument, :shares, :price, "
-                ":gross_value, :simulation_time"
+                ":gross_value, :simulation_time, :commission, :transfer_fee, "
+                ":stamp_duty, :total_fee, :cash_change"
                 ")"
             ),
             [
@@ -1075,6 +1422,11 @@ def _replace_normalized_run_facts(
                     "price": _decimal_text(item.price),
                     "gross_value": _decimal_text(item.gross_value),
                     "simulation_time": item.simulation_time.isoformat(),
+                    "commission": _decimal_text(item.fees.commission),
+                    "transfer_fee": _decimal_text(item.fees.transfer_fee),
+                    "stamp_duty": _decimal_text(item.fees.stamp_duty),
+                    "total_fee": _decimal_text(item.fees.total),
+                    "cash_change": _decimal_text(item.cash_change),
                 }
                 for item in state.fills
             ],
@@ -1083,8 +1435,10 @@ def _replace_normalized_run_facts(
         connection.execute(
             text(
                 "INSERT INTO diagnostic_run_positions ("
-                "run_id, instrument, shares, total_cost"
-                ") VALUES (:run_id, :instrument, :shares, :total_cost)"
+                "run_id, instrument, shares, total_cost, "
+                "t_plus_one_locked_shares, lock_session_date"
+                ") VALUES (:run_id, :instrument, :shares, :total_cost, "
+                ":t_plus_one_locked_shares, :lock_session_date)"
             ),
             [
                 {
@@ -1092,6 +1446,12 @@ def _replace_normalized_run_facts(
                     "instrument": item.instrument,
                     "shares": item.shares,
                     "total_cost": _decimal_text(item.total_cost),
+                    "t_plus_one_locked_shares": item.t_plus_one_locked_shares,
+                    "lock_session_date": (
+                        item.lock_session_date.isoformat()
+                        if item.lock_session_date is not None
+                        else None
+                    ),
                 }
                 for item in state.positions
             ],

@@ -444,6 +444,7 @@ class DiagnosticsApplication:
             order_shares=order_shares,
             replica_id=replica_id,
             code_identity="strategy-diagnostics.v1",
+            commission_bps=approved.recipe.execution_conditions.commission_bps,
         )
         return self._strategy_runs.start(specification)
 

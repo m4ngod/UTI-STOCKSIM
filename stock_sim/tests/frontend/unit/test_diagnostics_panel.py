@@ -14,6 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from app.panels.diagnostics.panel import DiagnosticsPanel
 from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
 from strategy_diagnostics import (
+    A_SHARE_EXECUTION_REASON_CODES,
     AdmissionCheck,
     FiveMinuteBar,
     HistoricalSegmentSelection,
@@ -981,6 +982,60 @@ def test_diagnostics_adapter_controls_and_renders_a_baseline_strategy_run() -> N
     assert str(run["equity_curve"][0]["simulation_time"]) in curve_text
     assert str(run["equity_curve"][-1]["simulation_time"]) in curve_text
     assert len(curve_text.splitlines()) == len(run["equity_curve"]) + 1
+    order_text = adapter._run_order_details_view.toPlainText()
+    assert "Requested | Accepted | Status | Reason code" in order_text
+    assert "Commission | Transfer fee | Stamp duty | Total fee" in order_text
+    assert "No A-share order decisions recorded yet" in order_text
+
+
+def test_diagnostics_adapter_order_audit_renders_every_a_share_reason_code() -> None:
+    _ensure_qapp()
+    adapter = DiagnosticsPanelAdapter()
+    adapter.widget()
+    orders = [
+        {
+            "order_id": f"fixture-{index}",
+            "instrument": "sh.600000",
+            "requested_shares": 100,
+            "accepted_shares": 100 if reason_code == "accepted" else 0,
+            "status": "filled" if reason_code == "accepted" else "rejected",
+            "reason_code": reason_code,
+            "execution_price": "10.00",
+            "price_limits": {"lower": "9.00", "upper": "11.00"},
+            "account_effect": {
+                "cash_change": "-1005.01" if reason_code == "accepted" else "0",
+                "position_change": 100 if reason_code == "accepted" else 0,
+                "sellable_shares_change": 0,
+            },
+        }
+        for index, reason_code in enumerate(A_SHARE_EXECUTION_REASON_CODES)
+    ]
+    adapter._apply_view(
+        {
+            "baseline_strategy_run": {
+                "orders": orders,
+                "fills": [
+                    {
+                        "order_id": "fixture-0",
+                        "fees": {
+                            "commission": "5.00",
+                            "transfer_fee": "0.01",
+                            "stamp_duty": "0.00",
+                            "total": "5.01",
+                        },
+                        "cash_change": "-1005.01",
+                    }
+                ],
+                "portfolio": {"cash": "98994.99"},
+                "equity_curve": [],
+            }
+        }
+    )
+
+    order_text = adapter._run_order_details_view.toPlainText()
+    for reason_code in A_SHARE_EXECUTION_REASON_CODES:
+        assert reason_code in order_text
+    assert "5.00 | 0.01 | 0.00 | 5.01 | -1005.01 | 100 | 0" in order_text
 
 
 def test_diagnostics_adapter_renders_baseline_versus_transformed_preview() -> None:

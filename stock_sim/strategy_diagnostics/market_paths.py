@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Iterable, Mapping, Protocol
+from typing import Iterable, Mapping, Protocol, cast
 
 from .historical_segments import HistoricalMarketSegment
 from .market_rules import (
@@ -193,6 +193,46 @@ class SessionPriceLimitReference:
         if not self.rule_code.strip():
             raise ValueError("price-limit rule_code must not be empty")
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "instrument": self.instrument,
+            "session_date": self.session_date.isoformat(),
+            "previous_close": _decimal_text(self.previous_close),
+            "effective_at": self.effective_at.isoformat(),
+            "provenance": self.provenance,
+            "profile_version": self.profile_version,
+            "board": self.board,
+            "is_st": self.is_st,
+            "listing_stage": self.listing_stage,
+            "limit_fraction": (
+                _decimal_text(self.limit_fraction)
+                if self.limit_fraction is not None
+                else None
+            ),
+            "rule_code": self.rule_code,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "SessionPriceLimitReference":
+        raw_limit_fraction = payload["limit_fraction"]
+        return cls(
+            instrument=str(payload["instrument"]),
+            session_date=date.fromisoformat(str(payload["session_date"])),
+            previous_close=Decimal(str(payload["previous_close"])),
+            effective_at=datetime.fromisoformat(str(payload["effective_at"])),
+            provenance=str(payload["provenance"]),
+            profile_version=str(payload["profile_version"]),
+            board=cast(AShareBoard, str(payload["board"])),
+            is_st=bool(payload["is_st"]),
+            listing_stage=cast(ListingStage, str(payload["listing_stage"])),
+            limit_fraction=(
+                Decimal(str(raw_limit_fraction))
+                if raw_limit_fraction is not None
+                else None
+            ),
+            rule_code=str(payload["rule_code"]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ScenarioDataWorldInput:
@@ -284,6 +324,7 @@ class MaterializedMarketPath:
     applied_transformations: tuple[AppliedTransformation, ...]
     nodes: tuple[MarketPathNode, ...]
     instrument_states: tuple[InstrumentState, ...]
+    price_limit_references: tuple[SessionPriceLimitReference, ...] = ()
 
     @property
     def reconstruction_notice(self) -> str:
@@ -479,6 +520,13 @@ class ParquetMarketPathArtifactStore:
             ),
             nodes=nodes,
             instrument_states=states,
+            price_limit_references=tuple(
+                SessionPriceLimitReference.from_dict(item)
+                for item in cast(
+                    list[Mapping[str, object]],
+                    manifest.get("price_limit_references", []),
+                )
+            ),
         )
         if path.artifact_hash != artifact_hash:
             raise ValueError("artifact manifest identity does not match its address")
@@ -1088,7 +1136,7 @@ def _validate_reaggregation(
 
 
 def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
-    return {
+    content: dict[str, object] = {
         "segment_id": path.segment_id,
         "segment_content_hash": path.segment_content_hash,
         "source_snapshot_id": path.source_snapshot_id,
@@ -1111,6 +1159,12 @@ def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
             for state in path.instrument_states
         ],
     }
+    if path.price_limit_references:
+        content["price_limit_references"] = [
+            reference.to_dict()
+            for reference in path.price_limit_references
+        ]
+    return content
 
 
 def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
@@ -1134,6 +1188,11 @@ def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
         ],
         "node_count": len(path.nodes),
         "instrument_state_count": len(path.instrument_states),
+        "price_limit_references": [
+            reference.to_dict()
+            for reference in path.price_limit_references
+        ],
+        "price_limit_reference_count": len(path.price_limit_references),
     }
 
 
@@ -1230,6 +1289,12 @@ class ScenarioMaterializer:
                 sorted(
                     world.instrument_states,
                     key=lambda item: (item.effective_at, item.instrument),
+                )
+            ),
+            price_limit_references=tuple(
+                sorted(
+                    world.price_limit_references,
+                    key=lambda item: (item.session_date, item.instrument),
                 )
             ),
         )

@@ -7,6 +7,18 @@ from .application import (
     create_diagnostics_application,
 )
 from .baostock_source import BaoStockHistoricalSource, BaoStockSourceLayout
+from .execution import (
+    A_SHARE_CASH_EQUITY_EXECUTION_POLICY_VERSION,
+    A_SHARE_EXECUTION_REASON_CODES,
+    AShareCashEquityAccount,
+    AShareCashEquityExecutionPolicy,
+    AShareCashEquityPolicyConfiguration,
+    AShareExecutionRequest,
+    AShareExecutionResult,
+    ASharePriceLimits,
+    ExecutionAccountEffect,
+    ExecutionFeeBreakdown,
+)
 from .historical_segments import (
     AdmissionCheck,
     HistoricalMarketSegment,
@@ -46,6 +58,7 @@ from .ai_recipe_assistant import (
 from .market_rules import (
     A_SHARE_MARKET_RULE_PROFILE_VERSION,
     ResolvedPriceLimitRule,
+    a_share_board_for_instrument,
     resolve_a_share_price_limit_rule,
 )
 from .recipes import (
@@ -110,6 +123,16 @@ __all__ = [
     "OpenAIResponsesTransport",
     "BaoStockHistoricalSource",
     "BaoStockSourceLayout",
+    "A_SHARE_CASH_EQUITY_EXECUTION_POLICY_VERSION",
+    "A_SHARE_EXECUTION_REASON_CODES",
+    "AShareCashEquityAccount",
+    "AShareCashEquityExecutionPolicy",
+    "AShareCashEquityPolicyConfiguration",
+    "AShareExecutionRequest",
+    "AShareExecutionResult",
+    "ASharePriceLimits",
+    "ExecutionAccountEffect",
+    "ExecutionFeeBreakdown",
     "AdmissionCheck",
     "HistoricalMarketSegment",
     "HistoricalSegmentRecommendation",
@@ -138,6 +161,7 @@ __all__ = [
     "SessionPriceLimitReference",
     "A_SHARE_MARKET_RULE_PROFILE_VERSION",
     "ResolvedPriceLimitRule",
+    "a_share_board_for_instrument",
     "resolve_a_share_price_limit_rule",
     "ApprovedScenarioRecipeVersion",
     "ExecutionConditionsV1",

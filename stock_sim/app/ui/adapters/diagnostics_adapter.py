@@ -142,6 +142,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._run_status_label: Any = None
         self._run_equity_label: Any = None
         self._run_equity_curve_view: Any = None
+        self._run_order_details_view: Any = None
         self._run_initial_cash_input: Any = None
         self._run_order_shares_input: Any = None
         self._run_replica_input: Any = None
@@ -307,6 +308,11 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._run_equity_curve_view.setPlainText(
             "Equity curve: complete a baseline Strategy Run to inspect it."
         )
+        self._run_order_details_view = QPlainTextEdit()
+        self._run_order_details_view.setReadOnly(True)
+        self._run_order_details_view.setPlainText(
+            "A-share order audit: run the reference strategy to inspect rules."
+        )
         self._run_initial_cash_input = QLineEdit("1000000")
         self._run_initial_cash_input.setPlaceholderText("Initial cash")
         self._run_order_shares_input = QLineEdit("100")
@@ -385,6 +391,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._run_status_label)
         layout.addWidget(self._run_equity_label)
         layout.addWidget(self._run_equity_curve_view)
+        layout.addWidget(self._run_order_details_view)
         layout.addWidget(self._run_initial_cash_input)
         layout.addWidget(self._run_order_shares_input)
         layout.addWidget(self._run_replica_input)
@@ -893,6 +900,62 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             if len(curve_lines) == 1:
                 curve_lines.append("No equity points recorded yet")
             self._run_equity_curve_view.setPlainText("\n".join(curve_lines))
+        if self._run_order_details_view is not None:
+            orders = strategy_run.get("orders", [])
+            fills = strategy_run.get("fills", [])
+            fill_by_order = {
+                str(fill.get("order_id")): fill
+                for fill in fills
+                if isinstance(fill, dict)
+            } if isinstance(fills, list) else {}
+            order_lines = [
+                "Instrument | Requested | Accepted | Status | Reason code | "
+                "Execution price | Limits | Commission | Transfer fee | "
+                "Stamp duty | Total fee | Cash change | Position change | "
+                "Sellable change"
+            ]
+            if isinstance(orders, list):
+                for order in orders:
+                    if not isinstance(order, dict):
+                        continue
+                    fill = fill_by_order.get(str(order.get("order_id")), {})
+                    fees = fill.get("fees", {}) if isinstance(fill, dict) else {}
+                    if not isinstance(fees, dict):
+                        fees = {}
+                    limits = order.get("price_limits", {})
+                    if not isinstance(limits, dict):
+                        limits = {}
+                    account_effect = order.get("account_effect", {})
+                    if not isinstance(account_effect, dict):
+                        account_effect = {}
+                    order_lines.append(
+                        " | ".join(
+                            (
+                                str(order.get("instrument", "unknown")),
+                                str(order.get("requested_shares", order.get("shares", 0))),
+                                str(order.get("accepted_shares", 0)),
+                                str(order.get("status", "unknown")),
+                                str(order.get("reason_code", "not evaluated")),
+                                str(order.get("execution_price", "not evaluated")),
+                                f"{limits.get('lower')}..{limits.get('upper')}",
+                                str(fees.get("commission", "0")),
+                                str(fees.get("transfer_fee", "0")),
+                                str(fees.get("stamp_duty", "0")),
+                                str(fees.get("total", "0")),
+                                str(account_effect.get("cash_change", "0")),
+                                str(account_effect.get("position_change", 0)),
+                                str(
+                                    account_effect.get(
+                                        "sellable_shares_change",
+                                        0,
+                                    )
+                                ),
+                            )
+                        )
+                    )
+            if len(order_lines) == 1:
+                order_lines.append("No A-share order decisions recorded yet")
+            self._run_order_details_view.setPlainText("\n".join(order_lines))
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):
             comparison = {}
