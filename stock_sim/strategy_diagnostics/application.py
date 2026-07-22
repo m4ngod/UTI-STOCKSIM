@@ -34,6 +34,9 @@ from .persistence import (
     initialize_diagnostic_persistence,
 )
 from .recipes import (
+    AIRecipeAuditRecord,
+    AIRecipeAssistant,
+    AIRecipeAuthoringResult,
     ApprovedScenarioRecipeVersion,
     RecipeValidationResult,
     RecipeWorkbench,
@@ -74,6 +77,7 @@ class DiagnosticsApplication:
         historical_source: HistoricalSource | None = None,
         market_data_source: HistoricalMarketDataSource | None = None,
         artifact_store: MarketPathArtifactStore | None = None,
+        recipe_assistant: AIRecipeAssistant | None = None,
         recipe_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
@@ -103,6 +107,7 @@ class DiagnosticsApplication:
             clock=recipe_clock,
             transformation_catalog=self._transformation_catalog,
         )
+        self._recipe_assistant = recipe_assistant
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -144,10 +149,7 @@ class DiagnosticsApplication:
 
     def list_historical_segments(self) -> tuple[HistoricalMarketSegment, ...]:
         self.status()
-        return cast(
-            tuple[HistoricalMarketSegment, ...],
-            self._historical_segments.list_segments(),
-        )
+        return self._historical_segments.list_segments()
 
     def recommend_historical_segments(
         self,
@@ -155,10 +157,7 @@ class DiagnosticsApplication:
         limit: int = 3,
     ) -> tuple[HistoricalSegmentRecommendation, ...]:
         self.status()
-        return cast(
-            tuple[HistoricalSegmentRecommendation, ...],
-            self._historical_segments.recommend(intent=intent, limit=limit),
-        )
+        return self._historical_segments.recommend(intent=intent, limit=limit)
 
     def latest_segment_admission(self) -> SegmentAdmissionReport | None:
         self.status()
@@ -202,11 +201,11 @@ class DiagnosticsApplication:
         recipe_version_id: str,
     ) -> MaterializedMarketPath:
         self.status()
+        approved = self._recipe_workbench.get_version(recipe_version_id)
         if self._scenario_materializer is None:
             raise RuntimeError(
                 "The configured historical source cannot materialize market paths"
             )
-        approved = self._recipe_workbench.get_version(recipe_version_id)
         segment = next(
             (
                 item
@@ -231,6 +230,26 @@ class DiagnosticsApplication:
     ) -> ScenarioRecipeDraft:
         self.status()
         return self._recipe_workbench.create_draft(payload, author=author)
+
+    def author_recipe_with_ai(
+        self,
+        intent: str,
+        *,
+        author: str,
+    ) -> AIRecipeAuthoringResult:
+        self.status()
+        if self._recipe_assistant is None:
+            raise RuntimeError("No AI Recipe Assistant is configured")
+        return self._recipe_workbench.author_with_ai(
+            intent,
+            author=author,
+            assistant=self._recipe_assistant,
+            admitted_segments=self._historical_segments.list_segments(),
+        )
+
+    def get_ai_recipe_audit(self, attempt_id: str) -> AIRecipeAuditRecord:
+        self.status()
+        return self._recipe_workbench.get_ai_audit(attempt_id)
 
     def validate_recipe_draft(self, draft_id: str) -> RecipeValidationResult:
         self.status()
@@ -361,12 +380,14 @@ def create_diagnostics_application(
     historical_source: HistoricalSource | None = None,
     market_data_source: HistoricalMarketDataSource | None = None,
     artifact_store: MarketPathArtifactStore | None = None,
+    recipe_assistant: AIRecipeAssistant | None = None,
     recipe_clock: Callable[[], datetime] | None = None,
 ) -> DiagnosticsApplication:
     return DiagnosticsApplication(
         historical_source=historical_source,
         market_data_source=market_data_source,
         artifact_store=artifact_store,
+        recipe_assistant=recipe_assistant,
         recipe_clock=recipe_clock,
     )
 

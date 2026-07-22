@@ -59,7 +59,7 @@ def _canonical_json(payload: object) -> str:
     )
 
 
-class _ImmutableRecipeModel(BaseModel):  # type: ignore[misc]
+class _ImmutableRecipeModel(BaseModel):
     class Config:
         allow_mutation = False
         anystr_strip_whitespace = True
@@ -131,6 +131,192 @@ class ScenarioRecipeV1(_ImmutableRecipeModel):
                 )
             properties[field] = wire_schema
         return cast(dict[str, object], json.loads(_canonical_json(schema)))
+
+
+class TransformationProposalV1(_ImmutableRecipeModel):
+    """A retained idea that has no execution authority."""
+
+    schema_version: Literal["transformation_proposal.v1"] = (
+        "transformation_proposal.v1"
+    )
+    capability: str = Field(min_length=1, max_length=128)
+    description: str = Field(min_length=1, max_length=1000)
+    rationale: str = Field(min_length=1, max_length=1000)
+    status: Literal["non_executable"] = "non_executable"
+
+
+class AIRecipeDraftOutputV1(_ImmutableRecipeModel):
+    """Model-independent output shared by every recipe-assistant adapter."""
+
+    schema_version: Literal["ai_recipe_draft_output.v1"] = (
+        "ai_recipe_draft_output.v1"
+    )
+    recipe: ScenarioRecipeV1
+    transformation_proposals: tuple[TransformationProposalV1, ...] = ()
+
+    def canonical_json(self) -> str:
+        return _canonical_json(self)
+
+    def to_dict(self) -> dict[str, object]:
+        return cast(dict[str, object], json.loads(self.canonical_json()))
+
+
+class AIRecipeAssistantError(RuntimeError):
+    """Expected external-assistant failure safe for authoring audit records."""
+
+    status: Literal["provider_error", "malformed_output"]
+    error_code: str
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        response_id: str | None = None,
+        response_json: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.response_id = response_id
+        self.response_json = response_json
+
+
+class AIRecipeAssistantProviderError(AIRecipeAssistantError):
+    status = "provider_error"
+    error_code = "provider_error"
+
+
+class AIRecipeAssistantMalformedOutputError(AIRecipeAssistantError):
+    status = "malformed_output"
+    error_code = "malformed_output"
+
+
+@dataclass(frozen=True, slots=True)
+class AIRecipeAssistantRequest:
+    """Everything an adapter may use to translate one authoring intent."""
+
+    intent: str
+    scenario_recipe_schema: Mapping[str, object]
+    admitted_segments: tuple[Mapping[str, object], ...]
+    transformation_catalog: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class AIRecipeAssistantResponse:
+    response_id: str
+    response_json: str
+    output: AIRecipeDraftOutputV1
+
+
+class AIRecipeAssistant(Protocol):
+    """True external seam for replaceable recipe-authoring providers."""
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def prompt_template_version(self) -> str: ...
+
+    def draft(
+        self,
+        request: AIRecipeAssistantRequest,
+    ) -> AIRecipeAssistantResponse: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AIRecipeAssistantAttempt:
+    attempt_id: str
+    intent: str
+    author: str
+    provider: str
+    model: str
+    prompt_template_version: str
+    response_id: str | None
+    response_hash: str | None
+    status: Literal[
+        "draft_valid",
+        "draft_invalid",
+        "provider_error",
+        "malformed_output",
+    ]
+    created_at: datetime
+    draft_id: str | None = None
+    transformation_proposals: tuple[TransformationProposalV1, ...] = ()
+    error_code: str | None = None
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "attempt_id": self.attempt_id,
+            "intent": self.intent,
+            "author": self.author,
+            "provider": self.provider,
+            "model": self.model,
+            "prompt_template_version": self.prompt_template_version,
+            "response_id": self.response_id,
+            "response_hash": self.response_hash,
+            "status": self.status,
+            "created_at": self.created_at.isoformat(),
+            "draft_id": self.draft_id,
+            "transformation_proposals": [
+                json.loads(proposal.json())
+                for proposal in self.transformation_proposals
+            ],
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AIRecipeAuthoringResult:
+    attempt: AIRecipeAssistantAttempt
+    draft: ScenarioRecipeDraft | None
+    validation: RecipeValidationResult | None
+
+    @property
+    def status(self) -> str:
+        return self.attempt.status
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "attempt": self.attempt.to_dict(),
+            "draft": self.draft.to_dict() if self.draft is not None else None,
+            "validation": (
+                self.validation.to_dict()
+                if self.validation is not None
+                else None
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AIRecipeAuditRecord:
+    attempt: AIRecipeAssistantAttempt
+    validation: RecipeValidationResult | None
+    approval_actor: str | None = None
+    approved_at: datetime | None = None
+    approved_recipe_hash: str | None = None
+    approved_version_id: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "attempt": self.attempt.to_dict(),
+            "validation": (
+                self.validation.to_dict()
+                if self.validation is not None
+                else None
+            ),
+            "approval_actor": self.approval_actor,
+            "approved_at": (
+                self.approved_at.isoformat()
+                if self.approved_at is not None
+                else None
+            ),
+            "approved_recipe_hash": self.approved_recipe_hash,
+            "approved_version_id": self.approved_version_id,
+        }
 
 
 class UnapprovedScenarioRecipeError(ValueError):
@@ -237,6 +423,16 @@ class ApprovedScenarioRecipeVersion:
 
 
 class ScenarioRecipeRepository(Protocol):
+    def add_ai_attempt(
+        self,
+        attempt: AIRecipeAssistantAttempt,
+    ) -> AIRecipeAssistantAttempt: ...
+
+    def get_ai_attempt(
+        self,
+        attempt_id: str,
+    ) -> AIRecipeAssistantAttempt | None: ...
+
     def add_draft(self, draft: ScenarioRecipeDraft) -> ScenarioRecipeDraft: ...
 
     def get_draft(self, draft_id: str) -> ScenarioRecipeDraft | None: ...
@@ -263,9 +459,26 @@ class ScenarioRecipeRepository(Protocol):
 
 class InMemoryScenarioRecipeRepository:
     def __init__(self) -> None:
+        self._ai_attempts: dict[str, AIRecipeAssistantAttempt] = {}
         self._drafts: dict[str, ScenarioRecipeDraft] = {}
         self._validations: dict[str, RecipeValidationResult] = {}
         self._versions: dict[str, ApprovedScenarioRecipeVersion] = {}
+
+    def add_ai_attempt(
+        self,
+        attempt: AIRecipeAssistantAttempt,
+    ) -> AIRecipeAssistantAttempt:
+        existing = self._ai_attempts.get(attempt.attempt_id)
+        if existing is not None and existing != attempt:
+            raise ValueError("immutable AI Recipe Assistant attempt identity collision")
+        self._ai_attempts[attempt.attempt_id] = attempt
+        return attempt
+
+    def get_ai_attempt(
+        self,
+        attempt_id: str,
+    ) -> AIRecipeAssistantAttempt | None:
+        return self._ai_attempts.get(attempt_id)
 
     def add_draft(self, draft: ScenarioRecipeDraft) -> ScenarioRecipeDraft:
         existing = self._drafts.get(draft.draft_id)
@@ -352,6 +565,90 @@ class RecipeWorkbench:
 
     def replace_repository(self, repository: ScenarioRecipeRepository) -> None:
         self._repository = repository
+
+    def author_with_ai(
+        self,
+        intent: str,
+        *,
+        author: str,
+        assistant: AIRecipeAssistant,
+        admitted_segments: Iterable[HistoricalMarketSegment],
+    ) -> AIRecipeAuthoringResult:
+        normalized_intent = intent.strip()
+        if not normalized_intent:
+            raise ValueError("AI Recipe Assistant intent is required")
+        normalized_author = author.strip()
+        if not normalized_author:
+            raise ValueError("Scenario Recipe Draft author is required")
+        segments = tuple(admitted_segments)
+        request = AIRecipeAssistantRequest(
+            intent=normalized_intent,
+            scenario_recipe_schema=ScenarioRecipeV1.stable_json_schema(),
+            admitted_segments=tuple(segment.to_dict() for segment in segments),
+            transformation_catalog=self._transformation_catalog.to_dict(),
+        )
+        try:
+            response = assistant.draft(request)
+        except AIRecipeAssistantError as error:
+            response_hash = (
+                hashlib.sha256(error.response_json.encode("utf-8")).hexdigest()
+                if error.response_json is not None
+                else None
+            )
+            failed_attempt = AIRecipeAssistantAttempt(
+                attempt_id=f"ai_recipe_attempt_{uuid4().hex}",
+                intent=normalized_intent,
+                author=normalized_author,
+                provider=assistant.provider,
+                model=assistant.model,
+                prompt_template_version=assistant.prompt_template_version,
+                response_id=error.response_id,
+                response_hash=response_hash,
+                status=error.status,
+                created_at=self._now(),
+                error_code=error.error_code,
+                error_message=str(error),
+            )
+            self._repository.add_ai_attempt(failed_attempt)
+            return AIRecipeAuthoringResult(
+                attempt=failed_attempt,
+                draft=None,
+                validation=None,
+            )
+        draft = self.create_draft(
+            json.loads(response.output.recipe.canonical_json()),
+            author=normalized_author,
+        )
+        validation = self.validate_draft(
+            draft.draft_id,
+            admitted_segments=segments,
+        )
+        created_at = self._now()
+        response_hash = hashlib.sha256(
+            response.response_json.encode("utf-8")
+        ).hexdigest()
+        attempt = AIRecipeAssistantAttempt(
+            attempt_id=f"ai_recipe_attempt_{uuid4().hex}",
+            intent=normalized_intent,
+            author=draft.author,
+            provider=assistant.provider,
+            model=assistant.model,
+            prompt_template_version=assistant.prompt_template_version,
+            response_id=response.response_id,
+            response_hash=response_hash,
+            status="draft_valid" if validation.is_valid else "draft_invalid",
+            created_at=created_at,
+            draft_id=draft.draft_id,
+            transformation_proposals=(
+                response.output.transformation_proposals
+            ),
+        )
+        self._repository.add_ai_attempt(attempt)
+        return AIRecipeAuthoringResult(
+            attempt=attempt,
+            draft=draft,
+            validation=validation,
+        )
 
     def create_draft(
         self,
@@ -514,6 +811,36 @@ class RecipeWorkbench:
             raise ValueError(f"Unknown Scenario Recipe Draft: {draft_id}")
         return draft
 
+    def get_ai_audit(self, attempt_id: str) -> AIRecipeAuditRecord:
+        attempt = self._repository.get_ai_attempt(attempt_id)
+        if attempt is None:
+            raise ValueError(f"Unknown AI Recipe Assistant attempt: {attempt_id}")
+        if attempt.draft_id is None:
+            return AIRecipeAuditRecord(attempt=attempt, validation=None)
+        draft = self.get_draft(attempt.draft_id)
+        validation = self._repository.get_validation(attempt.draft_id)
+        approved_versions = tuple(
+            version
+            for version in self._repository.list_versions(draft.recipe_id)
+            if version.validation_result.draft_id == attempt.draft_id
+        )
+        if len(approved_versions) > 1:
+            raise ValueError("AI Recipe Assistant attempt has multiple approvals")
+        if not approved_versions:
+            return AIRecipeAuditRecord(
+                attempt=attempt,
+                validation=validation,
+            )
+        approved = approved_versions[0]
+        return AIRecipeAuditRecord(
+            attempt=attempt,
+            validation=validation,
+            approval_actor=approved.approval_actor,
+            approved_at=approved.approved_at,
+            approved_recipe_hash=approved.content_hash,
+            approved_version_id=approved.version_id,
+        )
+
     def get_version(self, version_id: str) -> ApprovedScenarioRecipeVersion:
         version = self._repository.get_version(version_id)
         if version is None:
@@ -562,6 +889,16 @@ def _schema_validation_issues(error: ValidationError) -> list[RecipeValidationIs
 
 
 __all__ = [
+    "AIRecipeAssistant",
+    "AIRecipeAssistantError",
+    "AIRecipeAssistantMalformedOutputError",
+    "AIRecipeAssistantAttempt",
+    "AIRecipeAssistantProviderError",
+    "AIRecipeAssistantRequest",
+    "AIRecipeAssistantResponse",
+    "AIRecipeAuthoringResult",
+    "AIRecipeAuditRecord",
+    "AIRecipeDraftOutputV1",
     "ApprovedScenarioRecipeVersion",
     "ExecutionConditionsV1",
     "InMemoryScenarioRecipeRepository",
@@ -572,5 +909,6 @@ __all__ = [
     "ScenarioRecipeRepository",
     "ScenarioRecipeV1",
     "ScenarioTransformationRequestV1",
+    "TransformationProposalV1",
     "UnapprovedScenarioRecipeError",
 ]

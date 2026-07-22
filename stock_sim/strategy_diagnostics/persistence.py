@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
-from typing import Final
+from typing import Final, Literal, cast
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
@@ -20,20 +20,24 @@ from .historical_segments import (
     SourceSnapshot,
 )
 from .recipes import (
+    AIRecipeAssistantAttempt,
     ApprovedScenarioRecipeVersion,
     RecipeValidationIssue,
     RecipeValidationResult,
     ScenarioRecipeDraft,
     ScenarioRecipeV1,
+    TransformationProposalV1,
 )
 
 
 _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0003_scenario_recipe_lifecycle"
+_SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0004_ai_recipe_assistant"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
     _HISTORICAL_SEGMENT_REVISION,
+    _SCENARIO_RECIPE_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -65,8 +69,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 continue
             if revision == _HISTORICAL_SEGMENT_REVISION:
                 _create_historical_segment_catalog(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _SCENARIO_RECIPE_REVISION:
                 _create_scenario_recipe_lifecycle(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_ai_recipe_assistant_audit(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -168,6 +174,30 @@ def _create_scenario_recipe_lifecycle(connection: Connection) -> None:
         "REFERENCES diagnostic_recipe_validations(draft_id)"
         ")"
     )
+
+
+def _create_ai_recipe_assistant_audit(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_ai_recipe_attempts ("
+        "attempt_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "intent TEXT NOT NULL, "
+        "author VARCHAR(256) NOT NULL, "
+        "provider VARCHAR(128) NOT NULL, "
+        "model VARCHAR(256) NOT NULL, "
+        "prompt_template_version VARCHAR(128) NOT NULL, "
+        "response_id VARCHAR(256) NULL, "
+        "response_hash VARCHAR(64) NULL, "
+        "status VARCHAR(32) NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "draft_id VARCHAR(96) UNIQUE NULL, "
+        "transformation_proposals_json TEXT NOT NULL, "
+        "error_code VARCHAR(128) NULL, "
+        "error_message TEXT NULL, "
+        "FOREIGN KEY(draft_id) REFERENCES diagnostic_recipe_drafts(draft_id)"
+        ")"
+    )
+
+
 def _json_dumps(payload: object) -> str:
     return json.dumps(
         payload,
@@ -332,6 +362,142 @@ class SqlScenarioRecipeRepository:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+
+    def add_ai_attempt(
+        self,
+        attempt: AIRecipeAssistantAttempt,
+    ) -> AIRecipeAssistantAttempt:
+        proposals_json = _json_dumps(
+            [proposal.dict() for proposal in attempt.transformation_proposals]
+        )
+        values = (
+            attempt.intent,
+            attempt.author,
+            attempt.provider,
+            attempt.model,
+            attempt.prompt_template_version,
+            attempt.response_id,
+            attempt.response_hash,
+            attempt.status,
+            attempt.created_at.isoformat(),
+            attempt.draft_id,
+            proposals_json,
+            attempt.error_code,
+            attempt.error_message,
+        )
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                text(
+                    "SELECT intent, author, provider, model, "
+                    "prompt_template_version, response_id, response_hash, status, "
+                    "created_at_utc, draft_id, transformation_proposals_json, "
+                    "error_code, error_message "
+                    "FROM diagnostic_ai_recipe_attempts "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": attempt.attempt_id},
+            ).one_or_none()
+            if existing is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO diagnostic_ai_recipe_attempts ("
+                        "attempt_id, intent, author, provider, model, "
+                        "prompt_template_version, response_id, response_hash, "
+                        "status, created_at_utc, draft_id, "
+                        "transformation_proposals_json, error_code, error_message) "
+                        "VALUES (:attempt_id, :intent, :author, :provider, :model, "
+                        ":prompt_template_version, :response_id, :response_hash, "
+                        ":status, :created_at_utc, :draft_id, "
+                        ":transformation_proposals_json, :error_code, :error_message)"
+                    ),
+                    {
+                        "attempt_id": attempt.attempt_id,
+                        "intent": attempt.intent,
+                        "author": attempt.author,
+                        "provider": attempt.provider,
+                        "model": attempt.model,
+                        "prompt_template_version": attempt.prompt_template_version,
+                        "response_id": attempt.response_id,
+                        "response_hash": attempt.response_hash,
+                        "status": attempt.status,
+                        "created_at_utc": attempt.created_at.isoformat(),
+                        "draft_id": attempt.draft_id,
+                        "transformation_proposals_json": proposals_json,
+                        "error_code": attempt.error_code,
+                        "error_message": attempt.error_message,
+                    },
+                )
+            elif tuple(existing) != values:
+                raise ValueError(
+                    "immutable AI Recipe Assistant attempt identity collision"
+                )
+        return attempt
+
+    def get_ai_attempt(
+        self,
+        attempt_id: str,
+    ) -> AIRecipeAssistantAttempt | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT attempt_id, intent, author, provider, model, "
+                    "prompt_template_version, response_id, response_hash, status, "
+                    "created_at_utc, draft_id, transformation_proposals_json, "
+                    "error_code, error_message "
+                    "FROM diagnostic_ai_recipe_attempts "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": attempt_id},
+            ).one_or_none()
+        if row is None:
+            return None
+        raw_status = str(row.status)
+        if raw_status not in {
+            "draft_valid",
+            "draft_invalid",
+            "provider_error",
+            "malformed_output",
+        }:
+            raise ValueError("stored AI Recipe Assistant status is invalid")
+        status = cast(
+            Literal[
+                "draft_valid",
+                "draft_invalid",
+                "provider_error",
+                "malformed_output",
+            ],
+            raw_status,
+        )
+        raw_proposals = json.loads(str(row.transformation_proposals_json))
+        if not isinstance(raw_proposals, list):
+            raise ValueError("stored transformation proposals are invalid")
+        return AIRecipeAssistantAttempt(
+            attempt_id=str(row.attempt_id),
+            intent=str(row.intent),
+            author=str(row.author),
+            provider=str(row.provider),
+            model=str(row.model),
+            prompt_template_version=str(row.prompt_template_version),
+            response_id=(
+                str(row.response_id) if row.response_id is not None else None
+            ),
+            response_hash=(
+                str(row.response_hash) if row.response_hash is not None else None
+            ),
+            status=status,
+            created_at=_parse_aware_datetime(str(row.created_at_utc)),
+            draft_id=str(row.draft_id) if row.draft_id is not None else None,
+            transformation_proposals=tuple(
+                TransformationProposalV1.parse_obj(proposal)
+                for proposal in raw_proposals
+            ),
+            error_code=(
+                str(row.error_code) if row.error_code is not None else None
+            ),
+            error_message=(
+                str(row.error_message) if row.error_message is not None else None
+            ),
+        )
 
     def add_draft(self, draft: ScenarioRecipeDraft) -> ScenarioRecipeDraft:
         values = (

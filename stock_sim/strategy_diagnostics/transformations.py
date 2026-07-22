@@ -26,8 +26,11 @@ def _decimal_text(value: Decimal) -> str:
 
 
 class TransformationRequest(Protocol):
-    transformation_id: str
-    parameters: Mapping[str, object]
+    @property
+    def transformation_id(self) -> str: ...
+
+    @property
+    def parameters(self) -> Mapping[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)

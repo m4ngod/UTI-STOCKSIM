@@ -37,12 +37,28 @@ from .market_paths import (
     ScenarioMaterializer,
     SessionPriceLimitReference,
 )
+from .ai_recipe_assistant import (
+    DeterministicFakeAIRecipeAssistant,
+    OpenAIResponsesHTTPTransport,
+    OpenAIResponsesRecipeAssistant,
+    OpenAIResponsesTransport,
+)
 from .market_rules import (
     A_SHARE_MARKET_RULE_PROFILE_VERSION,
     ResolvedPriceLimitRule,
     resolve_a_share_price_limit_rule,
 )
 from .recipes import (
+    AIRecipeAssistant,
+    AIRecipeAssistantError,
+    AIRecipeAssistantMalformedOutputError,
+    AIRecipeAssistantAttempt,
+    AIRecipeAssistantProviderError,
+    AIRecipeAssistantRequest,
+    AIRecipeAssistantResponse,
+    AIRecipeAuthoringResult,
+    AIRecipeAuditRecord,
+    AIRecipeDraftOutputV1,
     ApprovedScenarioRecipeVersion,
     ExecutionConditionsV1,
     RecipeValidationIssue,
@@ -51,6 +67,7 @@ from .recipes import (
     ScenarioRecipeDraft,
     ScenarioRecipeV1,
     ScenarioTransformationRequestV1,
+    TransformationProposalV1,
     UnapprovedScenarioRecipeError,
 )
 from .transformations import (
@@ -61,9 +78,23 @@ from .transformations import (
 )
 
 __all__ = [
+    "AIRecipeAssistant",
+    "AIRecipeAssistantError",
+    "AIRecipeAssistantMalformedOutputError",
+    "AIRecipeAssistantAttempt",
+    "AIRecipeAssistantProviderError",
+    "AIRecipeAssistantRequest",
+    "AIRecipeAssistantResponse",
+    "AIRecipeAuthoringResult",
+    "AIRecipeAuditRecord",
+    "AIRecipeDraftOutputV1",
     "DIAGNOSTIC_SCHEMA_REVISION",
     "DiagnosticsApplication",
     "DiagnosticsApplicationState",
+    "DeterministicFakeAIRecipeAssistant",
+    "OpenAIResponsesHTTPTransport",
+    "OpenAIResponsesRecipeAssistant",
+    "OpenAIResponsesTransport",
     "BaoStockHistoricalSource",
     "BaoStockSourceLayout",
     "AdmissionCheck",
@@ -103,6 +134,7 @@ __all__ = [
     "ScenarioRecipeDraft",
     "ScenarioRecipeV1",
     "ScenarioTransformationRequestV1",
+    "TransformationProposalV1",
     "UnapprovedScenarioRecipeError",
     "ScenarioTransformationCatalog",
     "TransformationCatalogEntry",
