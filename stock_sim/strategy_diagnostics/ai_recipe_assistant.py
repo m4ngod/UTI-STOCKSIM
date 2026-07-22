@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Mapping, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -546,6 +547,24 @@ def _parameter_schema(parameter: Mapping[str, object]) -> dict[str, object]:
         return {"type": "string", "enum": choices}
     if value_type == "decimal":
         return {"type": "string", "pattern": _DECIMAL_PATTERN}
+    if value_type == "integer":
+        schema: dict[str, object] = {"type": "integer"}
+        for bound_name in ("minimum", "maximum"):
+            raw_bound = parameter.get(bound_name)
+            if raw_bound is None:
+                continue
+            try:
+                bound = Decimal(str(raw_bound))
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError(
+                    f"Integer transformation parameter has invalid {bound_name}"
+                ) from exc
+            if not bound.is_finite() or bound != bound.to_integral_value():
+                raise ValueError(
+                    f"Integer transformation parameter has invalid {bound_name}"
+                )
+            schema[bound_name] = int(bound)
+        return schema
     raise ValueError(f"Unsupported transformation parameter type: {value_type!r}")
 
 

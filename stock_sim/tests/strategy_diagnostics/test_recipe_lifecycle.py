@@ -324,6 +324,63 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
         "catalog_version": "scenario-transformation-catalog.v1",
         "transformations": [
             {
+                "transformation_id": "shock-recovery.v1",
+                "family": "shock-recovery",
+                "implementation_version": "shock-recovery.v1",
+                "parameters": [
+                    {
+                        "name": "direction",
+                        "value_type": "enum",
+                        "required": True,
+                        "choices": ["bearish", "bullish"],
+                    },
+                    {
+                        "name": "gap_fraction",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0",
+                        "maximum": "0.1",
+                    },
+                    {
+                        "name": "shock_fraction",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0.01",
+                        "maximum": "0.2",
+                    },
+                    {
+                        "name": "shock_duration_bars",
+                        "value_type": "integer",
+                        "required": True,
+                        "minimum": "1",
+                        "maximum": "12",
+                    },
+                    {
+                        "name": "persistence_duration_bars",
+                        "value_type": "integer",
+                        "required": True,
+                        "minimum": "0",
+                        "maximum": "24",
+                    },
+                    {
+                        "name": "recovery_duration_bars",
+                        "value_type": "integer",
+                        "required": True,
+                        "minimum": "1",
+                        "maximum": "24",
+                    },
+                ],
+                "compatibility_rules": [
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "ordered-gap-shock-persistence-recovery",
+                ],
+                "causality_constraints": [
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ],
+            },
+            {
                 "transformation_id": "trend-regime.v1",
                 "family": "trend-regime",
                 "implementation_version": "trend-regime.v1",
@@ -390,6 +447,29 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
     assert validation.is_valid is True
     assert validation.issues == ()
 
+    payload["transformations"] = [
+        {
+            "transformation_id": "shock-recovery.v1",
+            "parameters": {
+                "direction": "bearish",
+                "gap_fraction": "0.01",
+                "shock_fraction": "0.03",
+                "shock_duration_bars": 2,
+                "persistence_duration_bars": 1,
+                "recovery_duration_bars": 2,
+            },
+        }
+    ]
+    shock_draft = application.create_manual_recipe_draft(
+        payload,
+        author="researcher",
+    )
+
+    shock_validation = application.validate_recipe_draft(shock_draft.draft_id)
+
+    assert shock_validation.is_valid is True
+    assert shock_validation.issues == ()
+
 
 @pytest.mark.parametrize("multiplier", ("0.49", "2.01"))
 def test_volatility_scaling_rejects_values_outside_published_bounds(
@@ -413,6 +493,49 @@ def test_volatility_scaling_rejects_values_outside_published_bounds(
     }
     assert validation.issues[0].path == "transformations.0.parameters.multiplier"
     assert validation.issues[0].correction == "Choose a value from 0.5 through 2."
+    with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
+        application.approve_recipe_draft(draft.draft_id, actor="owner")
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value", "expected_rule"),
+    (
+        ("gap_fraction", "0.11", "transformation.parameter-bounds"),
+        ("shock_fraction", "0.201", "transformation.parameter-bounds"),
+        ("shock_duration_bars", "1.5", "transformation.parameter-type"),
+        ("persistence_duration_bars", "25", "transformation.parameter-bounds"),
+        ("recovery_duration_bars", "0", "transformation.parameter-bounds"),
+    ),
+)
+def test_shock_recovery_rejects_invalid_phase_parameters(
+    parameter: str,
+    value: str,
+    expected_rule: str,
+) -> None:
+    application, segment_id = _application_with_admitted_segment()
+    parameters = {
+        "direction": "bearish",
+        "gap_fraction": "0.01",
+        "shock_fraction": "0.03",
+        "shock_duration_bars": "2",
+        "persistence_duration_bars": "1",
+        "recovery_duration_bars": "2",
+    }
+    parameters[parameter] = value
+    payload = _baseline_payload(segment_id)
+    payload["transformations"] = [
+        {
+            "transformation_id": "shock-recovery.v1",
+            "parameters": parameters,
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is False
+    assert {issue.rule for issue in validation.issues} == {expected_rule}
+    assert validation.issues[0].path == f"transformations.0.parameters.{parameter}"
     with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
         application.approve_recipe_draft(draft.draft_id, actor="owner")
 

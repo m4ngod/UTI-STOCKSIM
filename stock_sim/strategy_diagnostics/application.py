@@ -317,7 +317,11 @@ class DiagnosticsApplication:
         snapshot.update(
             {
                 "artifact_hash": view.artifact_hash,
-                "reconstructed": True,
+                "reconstructed": path.reconstructed,
+                "source_resolution": path.source_resolution,
+                "runtime_resolution": path.runtime_resolution,
+                "expander_version": path.expander_version,
+                "reconstruction_notice": path.reconstruction_notice,
                 "applied_transformations": [
                     transformation.to_dict()
                     for transformation in path.applied_transformations

@@ -237,6 +237,52 @@ class DiagnosticsPanel:
             allow_partial_fills=allow_partial_fills,
         )
 
+    def create_shock_recovery_recipe(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        author: str,
+        cadence_minutes: int,
+        seed: int,
+        direction: str,
+        gap_fraction: str,
+        shock_fraction: str,
+        shock_duration_bars: int,
+        persistence_duration_bars: int,
+        recovery_duration_bars: int,
+        commission_bps: str = "3",
+        slippage_bps: str = "0",
+        max_fill_fraction: str = "1",
+        latency_nodes: int = 0,
+        allow_partial_fills: bool = True,
+    ) -> dict[str, object]:
+        return self._create_recipe(
+            name=name,
+            segment_id=segment_id,
+            author=author,
+            cadence_minutes=cadence_minutes,
+            seed=seed,
+            transformations=(
+                {
+                    "transformation_id": "shock-recovery.v1",
+                    "parameters": {
+                        "direction": direction,
+                        "gap_fraction": gap_fraction,
+                        "shock_fraction": shock_fraction,
+                        "shock_duration_bars": shock_duration_bars,
+                        "persistence_duration_bars": persistence_duration_bars,
+                        "recovery_duration_bars": recovery_duration_bars,
+                    },
+                },
+            ),
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+            max_fill_fraction=max_fill_fraction,
+            latency_nodes=latency_nodes,
+            allow_partial_fills=allow_partial_fills,
+        )
+
     def _create_recipe(
         self,
         *,

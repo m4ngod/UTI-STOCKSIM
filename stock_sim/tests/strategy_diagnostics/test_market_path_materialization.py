@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -297,6 +297,44 @@ def _cross_section_world() -> ScenarioDataWorldInput:
                 rule_code="fixture.sz-main.risk-warning.5pct",
             ),
         ),
+    )
+
+
+def _shock_world() -> ScenarioDataWorldInput:
+    reference = _cross_section_world()
+    bars: list[FiveMinuteBar] = []
+    for index in range(7):
+        end_time = datetime(2024, 1, 2, 9, 35) + timedelta(minutes=5 * index)
+        for instrument, price, volume in (
+            ("sh.600000", Decimal("10"), 100 + index),
+            ("sz.000001", Decimal("20"), 200 + index),
+        ):
+            bars.append(
+                FiveMinuteBar(
+                    instrument=instrument,
+                    end_time=end_time,
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=volume,
+                    amount=price * volume,
+                )
+            )
+    return replace(reference, bars=tuple(bars))
+
+
+def _shock_request() -> ScenarioTransformationRequestV1:
+    return ScenarioTransformationRequestV1(
+        transformation_id="shock-recovery.v1",
+        parameters={
+            "direction": "bearish",
+            "gap_fraction": "0.01",
+            "shock_fraction": "0.03",
+            "shock_duration_bars": 2,
+            "persistence_duration_bars": 1,
+            "recovery_duration_bars": 2,
+        },
     )
 
 
@@ -706,6 +744,26 @@ class _AdmittedCrossSectionFixtureSource(_AdmittedFixtureSource):
         )
 
 
+class _AdmittedShockFixtureSource(_AdmittedCrossSectionFixtureSource):
+    def inspect(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> HistoricalSourceInspection | None:
+        inspection = super().inspect(selection)
+        return replace(inspection, bar_count=14) if inspection is not None else None
+
+    def load_scenario_data_world(
+        self,
+        segment: HistoricalMarketSegment,
+    ) -> ScenarioDataWorldInput:
+        return replace(
+            _shock_world(),
+            segment_id=segment.segment_id,
+            segment_content_hash=segment.content_hash,
+            source_snapshot_id=segment.source_snapshot_id,
+        )
+
+
 def test_volatility_scaling_is_deterministic_and_preserves_path_invariants() -> None:
     materializer = ScenarioMaterializer(
         source=InMemoryHistoricalMarketDataSource((_cross_section_world(),)),
@@ -782,6 +840,210 @@ def test_volatility_scaling_is_deterministic_and_preserves_path_invariants() -> 
         return sum(values, Decimal("0")) / Decimal(len(values))
 
     assert mean_absolute_return(first) > mean_absolute_return(baseline)
+
+
+def test_shock_recovery_is_deterministic_and_persists_phase_identity() -> None:
+    first = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_shock_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(_shock_request(),),
+        seed=17,
+    )
+    second = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_shock_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(_shock_request(),),
+        seed=17,
+    )
+
+    assert first == second
+    assert first.artifact_hash == second.artifact_hash
+    assert [item.to_dict() for item in first.applied_transformations] == [
+        {
+            "transformation_id": "shock-recovery.v1",
+            "family": "shock-recovery",
+            "catalog_version": "scenario-transformation-catalog.v1",
+            "implementation_version": "shock-recovery.v1",
+            "parameters": {
+                "direction": "bearish",
+                "gap_fraction": "0.01",
+                "persistence_duration_bars": "1",
+                "recovery_duration_bars": "2",
+                "shock_duration_bars": "2",
+                "shock_fraction": "0.03",
+            },
+            "phase_markers": [
+                {
+                    "phase": "gap",
+                    "start_source_bar_end_time": "2024-01-02T09:35:00",
+                    "end_source_bar_end_time": "2024-01-02T09:35:00",
+                    "source_time_count": 1,
+                },
+                {
+                    "phase": "shock",
+                    "start_source_bar_end_time": "2024-01-02T09:40:00",
+                    "end_source_bar_end_time": "2024-01-02T09:45:00",
+                    "source_time_count": 2,
+                },
+                {
+                    "phase": "persistence",
+                    "start_source_bar_end_time": "2024-01-02T09:50:00",
+                    "end_source_bar_end_time": "2024-01-02T09:50:00",
+                    "source_time_count": 1,
+                },
+                {
+                    "phase": "recovery",
+                    "start_source_bar_end_time": "2024-01-02T09:55:00",
+                    "end_source_bar_end_time": "2024-01-02T10:00:00",
+                    "source_time_count": 2,
+                },
+            ],
+            "statistics": {
+                "affected_source_bar_count": "10",
+                "effective_peak_displacement_fraction": "0.04",
+                "requested_peak_displacement_fraction": "0.04",
+                "source_bar_count": "14",
+                "source_time_count": "7",
+            },
+        }
+    ]
+
+    closes_by_time = {
+        end_time: next(
+            node.close
+            for node in first.nodes
+            if node.instrument == "sh.600000"
+            and node.simulation_time == end_time
+        )
+        for end_time in (
+            datetime(2024, 1, 2, 9, 35) + timedelta(minutes=5 * index)
+            for index in range(7)
+        )
+    }
+    assert tuple(closes_by_time.values()) == (
+        Decimal("9.9"),
+        Decimal("9.75"),
+        Decimal("9.6"),
+        Decimal("9.6"),
+        Decimal("9.8"),
+        Decimal("10"),
+        Decimal("10"),
+    )
+    for node in first.nodes:
+        assert node.low <= min(node.open, node.close)
+        assert node.high >= max(node.open, node.close)
+        assert node.volume >= 0
+        previous_close = (
+            Decimal("20")
+            if node.instrument == "sz.000001"
+            else Decimal("10")
+        )
+        price_limit = (
+            Decimal("0.05")
+            if node.instrument == "sz.000001"
+            else Decimal("0.10")
+        )
+        assert node.low >= previous_close * (Decimal("1") - price_limit)
+        assert node.high <= previous_close * (Decimal("1") + price_limit)
+        second_of_day = (
+            node.simulation_time.hour * 3600
+            + node.simulation_time.minute * 60
+            + node.simulation_time.second
+        )
+        assert 9 * 3600 + 30 * 60 < second_of_day <= 11 * 3600 + 30 * 60
+
+
+def test_shock_recovery_uses_the_tightest_cross_sectional_price_limit() -> None:
+    request = ScenarioTransformationRequestV1(
+        transformation_id="shock-recovery.v1",
+        parameters={
+            **_shock_request().parameters,
+            "direction": "bullish",
+            "gap_fraction": "0.04",
+            "shock_fraction": "0.03",
+        },
+    )
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_shock_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+
+    for simulation_time in sorted(
+        {node.simulation_time for node in materialized.nodes}
+    ):
+        nodes = tuple(
+            node
+            for node in materialized.nodes
+            if node.simulation_time == simulation_time
+        )
+        factors = {
+            node.close
+            / (Decimal("20") if node.instrument == "sz.000001" else Decimal("10"))
+            for node in nodes
+        }
+        assert len(factors) == 1
+    assert max(
+        node.high
+        for node in materialized.nodes
+        if node.instrument == "sz.000001"
+    ) == Decimal("21")
+    assert max(
+        node.high
+        for node in materialized.nodes
+        if node.instrument == "sh.600000"
+    ) == Decimal("10.5")
+    assert dict(materialized.applied_transformations[0].statistics) == {
+        "affected_source_bar_count": "10",
+        "effective_peak_displacement_fraction": "0.05",
+        "requested_peak_displacement_fraction": "0.07",
+        "source_bar_count": "14",
+        "source_time_count": "7",
+    }
+
+
+def test_shock_recovery_rejects_incompatible_phase_duration() -> None:
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_cross_section_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="requires at least 6 distinct source bar times"):
+        materializer.materialize(
+            _segment(),
+            transformations=(_shock_request(),),
+            seed=17,
+        )
+
+
+def test_shock_recovery_phase_identity_survives_artifact_store_restart(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "shock-market-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_shock_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(root),
+    ).materialize(
+        _segment(),
+        transformations=(_shock_request(),),
+        seed=17,
+    )
+
+    restored = ParquetMarketPathArtifactStore(root).get(
+        materialized.artifact_hash
+    )
+
+    assert restored == materialized
+    assert restored.applied_transformations[0].to_dict() == materialized.applied_transformations[
+        0
+    ].to_dict()
 
 
 def test_volatility_scaling_fails_closed_without_previous_close_reference() -> None:
@@ -1281,3 +1543,87 @@ def test_headless_application_previews_volatility_and_recomputed_statistics() ->
     assert Decimal(
         str(transformed_statistics["mean_range_fraction_30s"])
     ) > Decimal(str(baseline_statistics["mean_range_fraction_30s"]))
+
+
+def test_headless_application_previews_shock_phases_and_recomputed_statistics() -> None:
+    source = _AdmittedShockFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(_segment().selection)
+    assert admission.segment is not None
+    baseline_version_id = _approve_baseline_recipe(
+        application,
+        admission.segment.segment_id,
+        seed=17,
+    )
+    shock_payload = {
+        "schema_version": "scenario_recipe.v1",
+        "name": "Bearish shock and recovery",
+        "historical_segment_id": admission.segment.segment_id,
+        "transformations": [
+            {
+                "transformation_id": "shock-recovery.v1",
+                "parameters": _shock_request().parameters,
+            }
+        ],
+        "execution_conditions": {},
+        "decision_cadence_minutes": 30,
+        "materialization_seed": 17,
+        "data_policy": "point-in-time",
+        "market_rule_profile": "a-share-cash-equity.v1",
+    }
+    shock_draft = application.create_manual_recipe_draft(
+        shock_payload,
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(shock_draft.draft_id).is_valid
+    shock_version_id = application.approve_recipe_draft(
+        shock_draft.draft_id,
+        actor="owner",
+    ).version_id
+    baseline = application.materialize_reference_path(baseline_version_id)
+    transformed = application.materialize_reference_path(shock_version_id)
+
+    comparison = application.compare_reference_market_paths(
+        baseline.artifact_hash,
+        transformed.artifact_hash,
+        at_time=datetime(2024, 1, 2, 10, 5),
+    )
+
+    baseline_preview = comparison["baseline"]
+    transformed_preview = comparison["transformed"]
+    assert transformed_preview["reconstructed"] is True
+    assert transformed_preview["source_resolution"] == "5m"
+    assert transformed_preview["runtime_resolution"] == "30s"
+    assert transformed_preview["reconstruction_notice"] == (
+        "Reconstructed 30-second path from admitted 5-minute bars; "
+        "not recorded microstructure."
+    )
+    applied = transformed_preview["applied_transformations"][0]
+    assert [marker["phase"] for marker in applied["phase_markers"]] == [
+        "gap",
+        "shock",
+        "persistence",
+        "recovery",
+    ]
+    assert applied["statistics"] == {
+        "affected_source_bar_count": "10",
+        "effective_peak_displacement_fraction": "0.04",
+        "requested_peak_displacement_fraction": "0.04",
+        "source_bar_count": "14",
+        "source_time_count": "7",
+    }
+    assert Decimal(str(comparison["market_return_delta"])) != 0
+    assert baseline_preview["market_context"] != transformed_preview["market_context"]
+    assert baseline_preview["sector_context"] != transformed_preview["sector_context"]
+    assert baseline_preview["features"] != transformed_preview["features"]
+    assert baseline_preview["rankings"] == transformed_preview["rankings"]
+    assert Decimal(
+        str(transformed_preview["path_statistics"]["mean_absolute_return_30s"])
+    ) > Decimal(
+        str(baseline_preview["path_statistics"]["mean_absolute_return_30s"])
+    )

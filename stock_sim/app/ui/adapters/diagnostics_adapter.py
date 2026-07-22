@@ -98,9 +98,16 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._trend_direction_input: Any = None
         self._trend_strength_input: Any = None
         self._volatility_multiplier_input: Any = None
+        self._shock_direction_input: Any = None
+        self._gap_fraction_input: Any = None
+        self._shock_fraction_input: Any = None
+        self._shock_duration_input: Any = None
+        self._persistence_duration_input: Any = None
+        self._recovery_duration_input: Any = None
         self._create_recipe_button: Any = None
         self._create_trend_recipe_button: Any = None
         self._create_volatility_recipe_button: Any = None
+        self._create_shock_recovery_recipe_button: Any = None
         self._validate_recipe_button: Any = None
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
@@ -166,6 +173,30 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._volatility_multiplier_input.setPlaceholderText(
             "Volatility multiplier (0.5 to 2)"
         )
+        self._shock_direction_input = QLineEdit("bearish")
+        self._shock_direction_input.setPlaceholderText(
+            "Shock direction (bearish or bullish)"
+        )
+        self._gap_fraction_input = QLineEdit("0.01")
+        self._gap_fraction_input.setPlaceholderText(
+            "Opening gap fraction (0 to 0.1)"
+        )
+        self._shock_fraction_input = QLineEdit("0.03")
+        self._shock_fraction_input.setPlaceholderText(
+            "Added shock fraction (0.01 to 0.2)"
+        )
+        self._shock_duration_input = QLineEdit("2")
+        self._shock_duration_input.setPlaceholderText(
+            "Shock duration in 5-minute bars"
+        )
+        self._persistence_duration_input = QLineEdit("1")
+        self._persistence_duration_input.setPlaceholderText(
+            "Persistence duration in 5-minute bars"
+        )
+        self._recovery_duration_input = QLineEdit("2")
+        self._recovery_duration_input.setPlaceholderText(
+            "Recovery duration in 5-minute bars"
+        )
         self._create_recipe_button = QPushButton("Create manual baseline recipe")
         self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
         self._create_trend_recipe_button = QPushButton(
@@ -179,6 +210,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         )
         self._create_volatility_recipe_button.clicked.connect(
             self._create_volatility_recipe_from_inputs
+        )
+        self._create_shock_recovery_recipe_button = QPushButton(
+            "Create shock and recovery recipe"
+        )
+        self._create_shock_recovery_recipe_button.clicked.connect(
+            self._create_shock_recovery_recipe_from_inputs
         )
         self._validate_recipe_button = QPushButton("Validate recipe")
         self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
@@ -225,9 +262,16 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._trend_direction_input)
         layout.addWidget(self._trend_strength_input)
         layout.addWidget(self._volatility_multiplier_input)
+        layout.addWidget(self._shock_direction_input)
+        layout.addWidget(self._gap_fraction_input)
+        layout.addWidget(self._shock_fraction_input)
+        layout.addWidget(self._shock_duration_input)
+        layout.addWidget(self._persistence_duration_input)
+        layout.addWidget(self._recovery_duration_input)
         layout.addWidget(self._create_recipe_button)
         layout.addWidget(self._create_trend_recipe_button)
         layout.addWidget(self._create_volatility_recipe_button)
+        layout.addWidget(self._create_shock_recovery_recipe_button)
         layout.addWidget(self._validate_recipe_button)
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
@@ -275,10 +319,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
     def _create_volatility_recipe_from_inputs(self) -> None:
         self._submit_recipe_from_inputs(recipe_kind="volatility")
 
+    def _create_shock_recovery_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(recipe_kind="shock-recovery")
+
     def _submit_recipe_from_inputs(
         self,
         *,
-        recipe_kind: Literal["baseline", "trend", "volatility"],
+        recipe_kind: Literal[
+            "baseline",
+            "trend",
+            "volatility",
+            "shock-recovery",
+        ],
     ) -> None:
         try:
             segment_id = self._selected_recipe_segment_id()
@@ -293,6 +345,22 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 self._logic.create_volatility_recipe(
                     **recipe_arguments,
                     multiplier=str(self._volatility_multiplier_input.text()),
+                )
+            elif recipe_kind == "shock-recovery":
+                self._logic.create_shock_recovery_recipe(
+                    **recipe_arguments,
+                    direction=str(self._shock_direction_input.text()),
+                    gap_fraction=str(self._gap_fraction_input.text()),
+                    shock_fraction=str(self._shock_fraction_input.text()),
+                    shock_duration_bars=int(
+                        str(self._shock_duration_input.text())
+                    ),
+                    persistence_duration_bars=int(
+                        str(self._persistence_duration_input.text())
+                    ),
+                    recovery_duration_bars=int(
+                        str(self._recovery_duration_input.text())
+                    ),
                 )
             else:
                 self._logic.create_baseline_recipe(**recipe_arguments)
@@ -311,6 +379,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 "baseline": "recipe",
                 "trend": "trend/regime",
                 "volatility": "volatility",
+                "shock-recovery": "shock and recovery",
             }
             self._recipe_action_error = (
                 f"The {labels[recipe_kind]} draft could not be created."
@@ -408,6 +477,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             str(self._trend_direction_input.text()).strip().lower(),
             str(self._trend_strength_input.text()).strip(),
             str(self._volatility_multiplier_input.text()).strip(),
+            str(self._shock_direction_input.text()).strip().lower(),
+            str(self._gap_fraction_input.text()).strip(),
+            str(self._shock_fraction_input.text()).strip(),
+            str(self._shock_duration_input.text()).strip(),
+            str(self._persistence_duration_input.text()).strip(),
+            str(self._recovery_duration_input.text()).strip(),
         )
 
     def _assert_recipe_inputs_match_draft(self) -> None:
@@ -605,6 +680,31 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     if isinstance(item, dict)
                     and isinstance((parameters := item.get("parameters")), dict)
                 ) if isinstance(applied, list) else ""
+                phase_labels: list[str] = []
+                effective_peak = ""
+                if isinstance(applied, list):
+                    for item in applied:
+                        if not isinstance(item, dict):
+                            continue
+                        markers = item.get("phase_markers", [])
+                        if isinstance(markers, list):
+                            phase_labels.extend(
+                                str(marker.get("phase", "unknown"))
+                                for marker in markers
+                                if isinstance(marker, dict)
+                            )
+                        statistics = item.get("statistics", {})
+                        if isinstance(statistics, dict) and statistics.get(
+                            "effective_peak_displacement_fraction"
+                        ) is not None:
+                            effective_peak = str(
+                                statistics["effective_peak_displacement_fraction"]
+                            )
+                phase_summary = ""
+                if phase_labels:
+                    phase_summary = " | phases: " + " -> ".join(phase_labels)
+                    if effective_peak:
+                        phase_summary += f" | effective peak {effective_peak}"
                 baseline_statistics = baseline_preview.get("path_statistics", {})
                 transformed_statistics = transformed_preview.get(
                     "path_statistics", {}
@@ -613,6 +713,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     baseline_statistics = {}
                 if not isinstance(transformed_statistics, dict):
                     transformed_statistics = {}
+                reconstruction_notice = str(
+                    transformed_preview.get(
+                        "reconstruction_notice",
+                        "Reconstructed path; not recorded microstructure.",
+                    )
+                )
                 self._scenario_preview_label.setText(
                     "Baseline vs transformed | market return: "
                     f"{baseline_market.get('return', 'unknown')} -> "
@@ -624,6 +730,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     f"{baseline_statistics.get('mean_absolute_return_30s', 'unknown')}"
                     " -> "
                     f"{transformed_statistics.get('mean_absolute_return_30s', 'unknown')}"
+                    f"{phase_summary} | provenance: {reconstruction_notice}"
                 )
             else:
                 self._scenario_preview_label.setText(

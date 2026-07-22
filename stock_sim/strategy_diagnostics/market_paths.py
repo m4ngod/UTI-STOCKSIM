@@ -22,6 +22,7 @@ from .market_rules import (
 from .transformations import (
     AppliedTransformation,
     ScenarioTransformationCatalog,
+    TransformationPhaseMarker,
     TransformationRequest,
     apply_registered_transformations,
     create_initial_transformation_catalog,
@@ -284,6 +285,15 @@ class MaterializedMarketPath:
     nodes: tuple[MarketPathNode, ...]
     instrument_states: tuple[InstrumentState, ...]
 
+    @property
+    def reconstruction_notice(self) -> str:
+        if self.reconstructed:
+            return (
+                "Reconstructed 30-second path from admitted 5-minute bars; "
+                "not recorded microstructure."
+            )
+        return "Path is not reconstructed."
+
     def path_statistics(
         self,
         *,
@@ -326,6 +336,7 @@ class MaterializedMarketPath:
             "source_resolution": self.source_resolution,
             "runtime_resolution": self.runtime_resolution,
             "reconstructed": self.reconstructed,
+            "reconstruction_notice": self.reconstruction_notice,
             "numeric_tolerance": self.numeric_tolerance,
             "normalization_provenance": self.normalization_provenance,
             "market_rule_profile_version": self.market_rule_profile_version,
@@ -451,6 +462,16 @@ class ParquetMarketPathArtifactStore:
                                 str(value),
                             )
                             for name, value in item["parameters"].items()
+                        )
+                    ),
+                    phase_markers=tuple(
+                        TransformationPhaseMarker.from_dict(marker)
+                        for marker in item.get("phase_markers", ())
+                    ),
+                    statistics=tuple(
+                        sorted(
+                            (str(name), str(value))
+                            for name, value in item.get("statistics", {}).items()
                         )
                     ),
                 )

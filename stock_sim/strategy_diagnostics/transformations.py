@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     )
 
 
-ParameterValueType = Literal["decimal", "enum"]
+ParameterValueType = Literal["decimal", "enum", "integer"]
+TransformationPhase = Literal["gap", "shock", "persistence", "recovery"]
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -86,21 +87,91 @@ class TransformationCatalogIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class TransformationPhaseMarker:
+    phase: TransformationPhase
+    start_source_bar_end_time: datetime
+    end_source_bar_end_time: datetime
+    source_time_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.start_source_bar_end_time.tzinfo is not None
+            or self.end_source_bar_end_time.tzinfo is not None
+        ):
+            raise ValueError("Transformation phase times must be market-local")
+        if self.end_source_bar_end_time < self.start_source_bar_end_time:
+            raise ValueError("Transformation phase end cannot precede its start")
+        if self.source_time_count <= 0:
+            raise ValueError("Transformation phases require source times")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "phase": self.phase,
+            "start_source_bar_end_time": (
+                self.start_source_bar_end_time.isoformat()
+            ),
+            "end_source_bar_end_time": self.end_source_bar_end_time.isoformat(),
+            "source_time_count": self.source_time_count,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, object],
+    ) -> TransformationPhaseMarker:
+        phase = payload.get("phase")
+        if phase not in ("gap", "shock", "persistence", "recovery"):
+            raise ValueError("Stored transformation phase is invalid")
+        try:
+            start_time = datetime.fromisoformat(
+                str(payload["start_source_bar_end_time"])
+            )
+            end_time = datetime.fromisoformat(
+                str(payload["end_source_bar_end_time"])
+            )
+            source_time_count = int(str(payload["source_time_count"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Stored transformation phase marker is invalid") from exc
+        return cls(
+            phase=phase,
+            start_source_bar_end_time=start_time,
+            end_source_bar_end_time=end_time,
+            source_time_count=source_time_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AppliedTransformation:
     transformation_id: str
     family: str
     catalog_version: str
     implementation_version: str
     parameters: tuple[tuple[str, str], ...]
+    phase_markers: tuple[TransformationPhaseMarker, ...] = ()
+    statistics: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        view: dict[str, object] = {
             "transformation_id": self.transformation_id,
             "family": self.family,
             "catalog_version": self.catalog_version,
             "implementation_version": self.implementation_version,
             "parameters": dict(self.parameters),
         }
+        if self.phase_markers:
+            view["phase_markers"] = [
+                marker.to_dict() for marker in self.phase_markers
+            ]
+        if self.statistics:
+            view["statistics"] = dict(self.statistics)
+        return view
+
+
+@dataclass(frozen=True, slots=True)
+class _TransformationApplication:
+    world: ScenarioDataWorldInput
+    phase_markers: tuple[TransformationPhaseMarker, ...] = ()
+    statistics: tuple[tuple[str, str], ...] = ()
 
 
 class ScenarioTransformationCatalog:
@@ -254,13 +325,28 @@ class ScenarioTransformationCatalog:
                 decimal_value = Decimal(str(value))
                 if not decimal_value.is_finite():
                     raise InvalidOperation
+                if (
+                    definition.value_type == "integer"
+                    and decimal_value != decimal_value.to_integral_value()
+                ):
+                    raise InvalidOperation
             except (InvalidOperation, ValueError):
+                expected_type = (
+                    "an integer value"
+                    if definition.value_type == "integer"
+                    else "a decimal value"
+                )
+                correction = (
+                    "Provide an integer string or number."
+                    if definition.value_type == "integer"
+                    else "Provide a decimal string or number."
+                )
                 issues.append(
                     TransformationCatalogIssue(
                         path=path,
                         rule="transformation.parameter-type",
-                        message=f"Parameter {name!r} must be a decimal value.",
-                        correction="Provide a decimal string or number.",
+                        message=f"Parameter {name!r} must be {expected_type}.",
+                        correction=correction,
                     )
                 )
                 continue
@@ -354,7 +440,8 @@ def apply_registered_transformations(
             raise ValueError(
                 f"No implementation exists for {entry.transformation_id!r}"
             )
-        transformed = implementation(transformed, request.parameters)
+        outcome = implementation(transformed, request.parameters)
+        transformed = outcome.world
         applied.append(
             AppliedTransformation(
                 transformation_id=entry.transformation_id,
@@ -362,6 +449,8 @@ def apply_registered_transformations(
                 catalog_version=catalog.catalog_version,
                 implementation_version=entry.implementation_version,
                 parameters=_canonical_parameters(entry, request.parameters),
+                phase_markers=outcome.phase_markers,
+                statistics=outcome.statistics,
             )
         )
     return transformed, tuple(applied)
@@ -378,6 +467,8 @@ def _canonical_parameters(
         value = values[name]
         if definition.value_type == "decimal":
             canonical.append((name, _decimal_text(Decimal(str(value)))))
+        elif definition.value_type == "integer":
+            canonical.append((name, str(int(Decimal(str(value))))))
         else:
             canonical.append((name, str(value)))
     return tuple(canonical)
@@ -386,7 +477,7 @@ def _canonical_parameters(
 def _apply_trend_regime(
     world: ScenarioDataWorldInput,
     parameters: Mapping[str, object],
-) -> ScenarioDataWorldInput:
+) -> _TransformationApplication:
     direction = str(parameters["direction"])
     strength = Decimal(str(parameters["strength"]))
     sign = Decimal("1") if direction == "bullish" else Decimal("-1")
@@ -407,61 +498,34 @@ def _apply_trend_regime(
             world,
             bullish=direction == "bullish",
         )
-        transformed_bars.extend(
-            replace(
-                bar,
-                open=bar.open * factor,
-                high=bar.high * factor,
-                low=bar.low * factor,
-                close=bar.close * factor,
-                amount=bar.amount * factor,
-            )
-            for bar in bars
+        transformed_bars.extend(_scale_bar(bar, factor) for bar in bars)
+    return _TransformationApplication(
+        world=replace(
+            world,
+            bars=tuple(
+                sorted(
+                    transformed_bars,
+                    key=lambda item: (item.end_time, item.instrument),
+                )
+            ),
         )
-    return replace(
-        world,
-        bars=tuple(
-            sorted(
-                transformed_bars,
-                key=lambda item: (item.end_time, item.instrument),
-            )
-        ),
     )
 
 
 def _apply_volatility_scaling(
     world: ScenarioDataWorldInput,
     parameters: Mapping[str, object],
-) -> ScenarioDataWorldInput:
+) -> _TransformationApplication:
     multiplier = Decimal(str(parameters["multiplier"]))
     transformed_bars: list[FiveMinuteBar] = []
     for bar in sorted(
         world.bars,
         key=lambda item: (item.end_time, item.instrument),
     ):
-        reference = _validated_price_limit_reference_at(
+        reference, lower_bound, upper_bound = _validated_bar_price_limit_bounds(
             world,
-            bar.instrument,
-            bar.end_time,
+            bar,
         )
-        lower_bound: Decimal | None = None
-        upper_bound: Decimal | None = None
-        if reference.limit_fraction is not None:
-            lower_bound = _daily_price_limit_bound(
-                reference.previous_close,
-                reference.limit_fraction,
-                bullish=False,
-            )
-            upper_bound = _daily_price_limit_bound(
-                reference.previous_close,
-                reference.limit_fraction,
-                bullish=True,
-            )
-            if bar.low < lower_bound or bar.high > upper_bound:
-                raise ValueError(
-                    "Admitted source data already exceeds its point-in-time "
-                    "price limits"
-                )
 
         def scale(price: Decimal) -> Decimal:
             scaled = reference.previous_close + multiplier * (
@@ -491,16 +555,152 @@ def _apply_volatility_scaling(
                 amount=bar.amount * transformed_close / bar.close,
             )
         )
-    return replace(world, bars=tuple(transformed_bars))
+    return _TransformationApplication(
+        world=replace(world, bars=tuple(transformed_bars))
+    )
+
+
+def _apply_shock_recovery(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    direction = str(parameters["direction"])
+    sign = Decimal("1") if direction == "bullish" else Decimal("-1")
+    gap_fraction = Decimal(str(parameters["gap_fraction"]))
+    shock_fraction = Decimal(str(parameters["shock_fraction"]))
+    shock_duration = int(Decimal(str(parameters["shock_duration_bars"])))
+    persistence_duration = int(
+        Decimal(str(parameters["persistence_duration_bars"]))
+    )
+    recovery_duration = int(Decimal(str(parameters["recovery_duration_bars"])))
+
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+    source_times = tuple(sorted(bars_by_time))
+    required_source_times = (
+        1 + shock_duration + persistence_duration + recovery_duration
+    )
+    if len(source_times) < required_source_times:
+        raise ValueError(
+            "Shock/recovery phase composition requires at least "
+            f"{required_source_times} distinct source bar times"
+        )
+
+    phase_windows: list[tuple[TransformationPhase, tuple[datetime, ...]]] = []
+    displacement_by_time = dict.fromkeys(source_times, Decimal("0"))
+    cursor = 0
+
+    gap_times = source_times[cursor : cursor + 1]
+    phase_windows.append(("gap", gap_times))
+    displacement_by_time[gap_times[0]] = gap_fraction
+    cursor += 1
+
+    shock_times = source_times[cursor : cursor + shock_duration]
+    phase_windows.append(("shock", shock_times))
+    for step, end_time in enumerate(shock_times, start=1):
+        displacement_by_time[end_time] = gap_fraction + (
+            shock_fraction * Decimal(step) / Decimal(shock_duration)
+        )
+    cursor += shock_duration
+
+    peak_displacement = gap_fraction + shock_fraction
+    if persistence_duration:
+        persistence_times = source_times[cursor : cursor + persistence_duration]
+        phase_windows.append(("persistence", persistence_times))
+        for end_time in persistence_times:
+            displacement_by_time[end_time] = peak_displacement
+        cursor += persistence_duration
+
+    recovery_times = source_times[cursor : cursor + recovery_duration]
+    phase_windows.append(("recovery", recovery_times))
+    for step, end_time in enumerate(recovery_times, start=1):
+        displacement_by_time[end_time] = peak_displacement * (
+            Decimal("1") - Decimal(step) / Decimal(recovery_duration)
+        )
+
+    transformed_bars: list[FiveMinuteBar] = []
+    effective_displacements: dict[datetime, Decimal] = {}
+    for end_time in source_times:
+        bars = bars_by_time[end_time]
+        desired_factor = Decimal("1") + sign * displacement_by_time[end_time]
+        effective_factor = _price_limit_safe_factor(
+            desired_factor,
+            bars,
+            world,
+            bullish=direction == "bullish",
+        )
+        effective_displacements[end_time] = abs(
+            effective_factor - Decimal("1")
+        )
+        transformed_bars.extend(
+            _scale_bar(bar, effective_factor) for bar in bars
+        )
+
+    phase_markers = tuple(
+        TransformationPhaseMarker(
+            phase=phase,
+            start_source_bar_end_time=times[0],
+            end_source_bar_end_time=times[-1],
+            source_time_count=len(times),
+        )
+        for phase, times in phase_windows
+    )
+    statistics = tuple(
+        sorted(
+            {
+                "affected_source_bar_count": str(
+                    sum(
+                        len(bars_by_time[end_time])
+                        for end_time, displacement in effective_displacements.items()
+                        if displacement != 0
+                    )
+                ),
+                "effective_peak_displacement_fraction": _decimal_text(
+                    max(effective_displacements.values())
+                ),
+                "requested_peak_displacement_fraction": _decimal_text(
+                    peak_displacement
+                ),
+                "source_bar_count": str(len(world.bars)),
+                "source_time_count": str(len(source_times)),
+            }.items()
+        )
+    )
+    return _TransformationApplication(
+        world=replace(
+            world,
+            bars=tuple(
+                sorted(
+                    transformed_bars,
+                    key=lambda item: (item.end_time, item.instrument),
+                )
+            ),
+        ),
+        phase_markers=phase_markers,
+        statistics=statistics,
+    )
+
+
+def _scale_bar(bar: FiveMinuteBar, factor: Decimal) -> FiveMinuteBar:
+    return replace(
+        bar,
+        open=bar.open * factor,
+        high=bar.high * factor,
+        low=bar.low * factor,
+        close=bar.close * factor,
+        amount=bar.amount * factor,
+    )
 
 
 _TRANSFORMATION_IMPLEMENTATIONS: Mapping[
     str,
     Callable[
         ["ScenarioDataWorldInput", Mapping[str, object]],
-        "ScenarioDataWorldInput",
+        _TransformationApplication,
     ],
 ] = {
+    "shock-recovery.v1": _apply_shock_recovery,
     "trend-regime.v1": _apply_trend_regime,
     "volatility-scaling.v1": _apply_volatility_scaling,
 }
@@ -525,19 +725,16 @@ def _price_limit_safe_factor(
 ) -> Decimal:
     safe_factors: list[Decimal] = []
     for bar in bars:
-        reference = _validated_price_limit_reference_at(
+        reference, lower_bound, upper_bound = _validated_bar_price_limit_bounds(
             world,
-            bar.instrument,
-            bar.end_time,
+            bar,
         )
         if reference.limit_fraction is None:
             continue
+        if lower_bound is None or upper_bound is None:  # pragma: no cover
+            raise AssertionError("bounded price-limit reference requires bounds")
         safe_factors.append(
-            _daily_price_limit_bound(
-                reference.previous_close,
-                reference.limit_fraction,
-                bullish=bullish,
-            )
+            (upper_bound if bullish else lower_bound)
             / (bar.high if bullish else bar.low)
         )
     if not safe_factors:
@@ -598,6 +795,38 @@ def _validated_price_limit_reference_at(
     return reference
 
 
+def _validated_bar_price_limit_bounds(
+    world: ScenarioDataWorldInput,
+    bar: FiveMinuteBar,
+) -> tuple[
+    SessionPriceLimitReference,
+    Decimal | None,
+    Decimal | None,
+]:
+    reference = _validated_price_limit_reference_at(
+        world,
+        bar.instrument,
+        bar.end_time,
+    )
+    if reference.limit_fraction is None:
+        return reference, None, None
+    lower_bound = _daily_price_limit_bound(
+        reference.previous_close,
+        reference.limit_fraction,
+        bullish=False,
+    )
+    upper_bound = _daily_price_limit_bound(
+        reference.previous_close,
+        reference.limit_fraction,
+        bullish=True,
+    )
+    if bar.low < lower_bound or bar.high > upper_bound:
+        raise ValueError(
+            "Admitted source data already exceeds its point-in-time price limits"
+        )
+    return reference, lower_bound, upper_bound
+
+
 def _daily_price_limit_bound(
     previous_close: Decimal,
     limit: Decimal,
@@ -633,6 +862,63 @@ def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
     return ScenarioTransformationCatalog(
         catalog_version="scenario-transformation-catalog.v1",
         entries=(
+            TransformationCatalogEntry(
+                transformation_id="shock-recovery.v1",
+                family="shock-recovery",
+                implementation_version="shock-recovery.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="direction",
+                        value_type="enum",
+                        required=True,
+                        choices=("bearish", "bullish"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="gap_fraction",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("0.1"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="shock_fraction",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.01"),
+                        maximum=Decimal("0.2"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="shock_duration_bars",
+                        value_type="integer",
+                        required=True,
+                        minimum=Decimal("1"),
+                        maximum=Decimal("12"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="persistence_duration_bars",
+                        value_type="integer",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("24"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="recovery_duration_bars",
+                        value_type="integer",
+                        required=True,
+                        minimum=Decimal("1"),
+                        maximum=Decimal("24"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "ordered-gap-shock-persistence-recovery",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
             TransformationCatalogEntry(
                 transformation_id="volatility-scaling.v1",
                 family="volatility",
@@ -693,6 +979,7 @@ __all__ = [
     "TransformationCatalogEntry",
     "TransformationCatalogIssue",
     "TransformationParameterDefinition",
+    "TransformationPhaseMarker",
     "apply_registered_transformations",
     "create_initial_transformation_catalog",
 ]

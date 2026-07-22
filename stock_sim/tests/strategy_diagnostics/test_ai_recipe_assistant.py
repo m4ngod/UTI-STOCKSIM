@@ -280,7 +280,29 @@ def test_openai_responses_adapter_emits_the_same_draft_contract(
                         "point-in-time-inputs-only",
                         "deterministic-no-future-reads",
                     ],
-                }
+                },
+                {
+                    "transformation_id": "shock-recovery.v1",
+                    "family": "shock-recovery",
+                    "implementation_version": "shock-recovery.v1",
+                    "parameters": [
+                        {
+                            "name": "shock_duration_bars",
+                            "value_type": "integer",
+                            "required": True,
+                            "minimum": "1",
+                            "maximum": "12",
+                        }
+                    ],
+                    "compatibility_rules": [
+                        "a-share-cash-equity.v1",
+                        "one-transform-per-family",
+                    ],
+                    "causality_constraints": [
+                        "point-in-time-inputs-only",
+                        "deterministic-no-future-reads",
+                    ],
+                },
             ],
         },
     )
@@ -322,9 +344,20 @@ def test_openai_responses_adapter_emits_the_same_draft_contract(
     ]["items"]
     assert proposal_schema["properties"]["capability"]["maxLength"] == 73
     transformation_schema = recipe_schema["properties"]["transformations"]["items"]
-    assert transformation_schema["properties"]["transformation_id"]["enum"] == [
-        "trend-regime.v1"
+    variants = transformation_schema["anyOf"]
+    variants_by_id = {
+        variant["properties"]["transformation_id"]["enum"][0]: variant
+        for variant in variants
+    }
+    assert set(variants_by_id) == {"shock-recovery.v1", "trend-regime.v1"}
+    shock_parameters = variants_by_id["shock-recovery.v1"]["properties"][
+        "parameters"
     ]
+    assert shock_parameters["properties"]["shock_duration_bars"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 12,
+    }
 
 
 def test_openai_production_adapter_uses_environment_configuration(

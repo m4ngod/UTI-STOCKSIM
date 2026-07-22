@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -139,6 +140,39 @@ class _WorkspaceSource:
         )
 
 
+class _ShockWorkspaceSource(_WorkspaceSource):
+    def inspect(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> HistoricalSourceInspection | None:
+        inspection = super().inspect(selection)
+        if inspection is None:
+            return None
+        return replace(
+            inspection,
+            artifacts=(SourceArtifact("shock-bars", "e" * 64, 7),),
+            bar_count=7,
+        )
+
+    def load_scenario_data_world(self, segment: object) -> ScenarioDataWorldInput:
+        bars = tuple(
+            FiveMinuteBar(
+                instrument="sh.600000",
+                end_time=datetime(2024, 1, 2, 9, 35)
+                + timedelta(minutes=5 * index),
+                open=Decimal("10"),
+                high=Decimal("10"),
+                low=Decimal("10"),
+                close=Decimal("10"),
+                volume=100 + index,
+                amount=Decimal("10") * (100 + index),
+            )
+            for index in range(7)
+        )
+        base = super().load_scenario_data_world(segment)
+        return replace(base, bars=bars)
+
+
 def _admittable_application() -> object:
     selection = HistoricalSegmentSelection(
         market="mainland-a-share",
@@ -146,6 +180,16 @@ def _admittable_application() -> object:
         end_date=date(2024, 1, 2),
     )
     source = _WorkspaceSource()
+    return create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+
+def _shock_admittable_application() -> object:
+    source = _ShockWorkspaceSource()
     return create_diagnostics_application(
         historical_source=source,
         market_data_source=source,
@@ -386,6 +430,67 @@ def test_diagnostics_workspace_shows_volatility_request_and_path_statistics() ->
     ) > Decimal(str(baseline_statistics["mean_range_fraction_30s"]))
 
 
+def test_diagnostics_workspace_shows_shock_recovery_phases_and_statistics() -> None:
+    panel = DiagnosticsPanel(_shock_admittable_application())  # type: ignore[arg-type]
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = panel.get_view()["historical_segment_catalog"]["segments"][0][
+        "segment_id"
+    ]
+    panel.create_baseline_recipe(
+        name="Baseline control",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+
+    panel.create_shock_recovery_recipe(
+        name="Bearish shock and recovery",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        direction="bearish",
+        gap_fraction="0.01",
+        shock_fraction="0.03",
+        shock_duration_bars=2,
+        persistence_duration_bars=1,
+        recovery_duration_bars=2,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    transformed = panel.materialize_current_recipe()
+    preview = panel.get_view()["scenario_comparison_preview"]
+
+    applied = transformed["applied_transformations"][0]
+    assert applied["transformation_id"] == "shock-recovery.v1"
+    assert [marker["phase"] for marker in applied["phase_markers"]] == [
+        "gap",
+        "shock",
+        "persistence",
+        "recovery",
+    ]
+    assert applied["statistics"]["effective_peak_displacement_fraction"] == "0.04"
+    assert transformed["reconstruction_notice"].endswith(
+        "not recorded microstructure."
+    )
+    assert preview["transformed"]["reconstruction_notice"].endswith(
+        "not recorded microstructure."
+    )
+    assert Decimal(
+        str(preview["transformed"]["path_statistics"]["mean_absolute_return_30s"])
+    ) > Decimal(
+        str(preview["baseline"]["path_statistics"]["mean_absolute_return_30s"])
+    )
+
+
 def test_diagnostics_workspace_shows_actionable_recipe_validation_feedback() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -520,6 +625,50 @@ def test_diagnostics_adapter_authors_volatility_and_renders_path_statistics() ->
         transformed["path_statistics"]["mean_absolute_return_30s"]
     ) in preview_text
     assert "volatility-scaling.v1" in adapter._transformation_catalog_label.text()
+
+
+def test_diagnostics_adapter_previews_shock_phases_without_microstructure_claim() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_shock_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._seed_input.setText("17")
+    adapter._recipe_name_input.setText("Baseline control")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    adapter._recipe_name_input.setText("Bearish shock and recovery")
+    adapter._shock_direction_input.setText("bearish")
+    adapter._gap_fraction_input.setText("0.01")
+    adapter._shock_fraction_input.setText("0.03")
+    adapter._shock_duration_input.setText("2")
+    adapter._persistence_duration_input.setText("1")
+    adapter._recovery_duration_input.setText("2")
+    adapter._create_shock_recovery_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    preview = adapter.current_view()["scenario_comparison_preview"]
+    preview_text = adapter._scenario_preview_label.text()
+    applied = preview["transformed"]["applied_transformations"][0]
+    assert applied["transformation_id"] == "shock-recovery.v1"
+    assert "shock-recovery.v1" in preview_text
+    assert "gap" in preview_text
+    assert "shock" in preview_text
+    assert "persistence" in preview_text
+    assert "recovery" in preview_text
+    assert "effective peak 0.04" in preview_text
+    assert "not recorded microstructure" in preview_text
+    assert "shock-recovery.v1" in adapter._transformation_catalog_label.text()
 
 
 def test_diagnostics_adapter_refuses_to_approve_stale_visible_inputs() -> None:
