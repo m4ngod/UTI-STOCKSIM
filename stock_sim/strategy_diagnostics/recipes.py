@@ -16,6 +16,13 @@ from .historical_segments import HistoricalMarketSegment
 
 
 _SCHEMA_ID = "https://uti-stocksim.local/schema/scenario-recipe-v1.json"
+_JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+_DECIMAL_WIRE_PATTERN = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
+_DECIMAL_WIRE_BOUNDS: dict[str, tuple[str, str, bool]] = {
+    "commission_bps": ("0", "100", False),
+    "slippage_bps": ("0", "1000", False),
+    "max_fill_fraction": ("0", "1", True),
+}
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -94,6 +101,31 @@ class ScenarioRecipeV1(_ImmutableRecipeModel):
     def stable_json_schema(cls) -> dict[str, object]:
         schema = cls.schema()
         schema["$id"] = _SCHEMA_ID
+        schema["$schema"] = _JSON_SCHEMA_DIALECT
+        definitions = cast(dict[str, object], schema["definitions"])
+        execution = cast(
+            dict[str, object],
+            definitions["ExecutionConditionsV1"],
+        )
+        properties = cast(dict[str, dict[str, object]], execution["properties"])
+        for field, (minimum, maximum, exclusive_minimum) in (
+            _DECIMAL_WIRE_BOUNDS.items()
+        ):
+            original = properties[field]
+            wire_schema: dict[str, object] = {
+                "title": original["title"],
+                "type": "string",
+                "pattern": _DECIMAL_WIRE_PATTERN,
+                "x-decimal-minimum": minimum,
+                "x-decimal-maximum": maximum,
+            }
+            if exclusive_minimum:
+                wire_schema["x-decimal-exclusive-minimum"] = True
+            if "default" in original:
+                wire_schema["default"] = _decimal_text(
+                    Decimal(str(original["default"]))
+                )
+            properties[field] = wire_schema
         return cast(dict[str, object], json.loads(_canonical_json(schema)))
 
 
@@ -245,6 +277,13 @@ class InMemoryScenarioRecipeRepository:
         self,
         validation: RecipeValidationResult,
     ) -> RecipeValidationResult:
+        if any(
+            version.validation_result.draft_id == validation.draft_id
+            for version in self._versions.values()
+        ):
+            raise ValueError(
+                "Validation belongs to an approved immutable Scenario Recipe Version"
+            )
         self._validations[validation.draft_id] = validation
         return validation
 
@@ -255,6 +294,14 @@ class InMemoryScenarioRecipeRepository:
         self,
         version: ApprovedScenarioRecipeVersion,
     ) -> ApprovedScenarioRecipeVersion:
+        if any(
+            existing.validation_result.draft_id
+            == version.validation_result.draft_id
+            for existing in self._versions.values()
+        ):
+            raise ValueError(
+                "Scenario Recipe Draft already belongs to an approved immutable version"
+            )
         existing = self._versions.get(version.version_id)
         if existing is not None and existing != version:
             raise ValueError("immutable Scenario Recipe Version identity collision")
@@ -401,10 +448,18 @@ class RecipeWorkbench:
             raise UnapprovedScenarioRecipeError(
                 "A Scenario Recipe Draft must pass validation before it can be approved"
             )
+        existing_versions = self._repository.list_versions(draft.recipe_id)
+        if any(
+            version.validation_result.draft_id == draft_id
+            for version in existing_versions
+        ):
+            raise ValueError(
+                "Scenario Recipe Draft already belongs to an approved immutable version"
+            )
         version_number = 1 + max(
             (
                 version.version_number
-                for version in self._repository.list_versions(draft.recipe_id)
+                for version in existing_versions
             ),
             default=0,
         )

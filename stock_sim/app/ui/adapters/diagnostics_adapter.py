@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .base_adapter import PanelAdapter
@@ -78,6 +79,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._admit_button: Any = None
         self._recommend_button: Any = None
         self._recipe_status_label: Any = None
+        self._recipe_draft_label: Any = None
         self._recipe_feedback_label: Any = None
         self._recipe_approval_label: Any = None
         self._recipe_materialization_label: Any = None
@@ -98,6 +100,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._materialize_recipe_button: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
+        self._recipe_input_signature: tuple[str, ...] | None = None
 
     def current_view(self) -> dict[str, Any]:
         return dict(self._current_view)
@@ -125,6 +128,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._recommend_button.clicked.connect(self._recommend_from_inputs)
         self._recommendation_label = QLabel("No recommendations yet")
         self._recipe_status_label = QLabel("Scenario recipe: not started")
+        self._recipe_draft_label = QLabel("No reviewed draft")
         self._recipe_feedback_label = QLabel("No validation feedback yet")
         self._recipe_approval_label = QLabel("Not approved")
         self._recipe_materialization_label = QLabel("Not materialized")
@@ -169,6 +173,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._recommend_button)
         layout.addWidget(self._recommendation_label)
         layout.addWidget(self._recipe_status_label)
+        layout.addWidget(self._recipe_draft_label)
         layout.addWidget(self._recipe_feedback_label)
         layout.addWidget(self._recipe_approval_label)
         layout.addWidget(self._recipe_materialization_label)
@@ -223,14 +228,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
 
     def _create_recipe_from_inputs(self) -> None:
         try:
-            segment_id = str(self._recipe_segment_input.text()).strip()
-            if not segment_id:
-                catalog = self._current_view.get("historical_segment_catalog", {})
-                segments = catalog.get("segments", []) if isinstance(catalog, dict) else []
-                latest = segments[-1] if isinstance(segments, list) and segments else {}
-                if not isinstance(latest, dict) or not latest.get("segment_id"):
-                    raise ValueError("Admit a Historical Market Segment first")
-                segment_id = str(latest["segment_id"])
+            segment_id = self._selected_recipe_segment_id()
             partial_fills = str(self._partial_fills_input.text()).strip().lower()
             if partial_fills not in {"true", "false"}:
                 raise ValueError("Partial fills must be true or false")
@@ -246,6 +244,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 latency_nodes=int(str(self._latency_input.text())),
                 allow_partial_fills=partial_fills == "true",
             )
+            self._recipe_input_signature = self._recipe_authoring_signature(
+                segment_id=segment_id
+            )
             self._recipe_action_error = ""
         except (TypeError, ValueError):
             self._recipe_action_error = (
@@ -257,26 +258,39 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
 
     def _validate_current_recipe(self) -> None:
         try:
+            self._assert_recipe_inputs_match_draft()
             self._logic.validate_current_recipe()
             self._recipe_action_error = ""
+        except ValueError as error:
+            self._recipe_action_error = self._recipe_input_error(
+                error,
+                fallback="Create a recipe draft before validation.",
+            )
         except Exception:
-            self._recipe_action_error = "Create a recipe draft before validation."
+            self._recipe_action_error = "Recipe validation could not be completed."
         self.refresh()
 
     def _approve_current_recipe(self) -> None:
         try:
+            self._assert_recipe_inputs_match_draft()
             self._logic.approve_current_recipe(
                 actor=str(self._recipe_actor_input.text())
             )
             self._recipe_action_error = ""
-        except Exception:
-            self._recipe_action_error = (
-                "Approval requires a valid recipe and a named approval actor."
+        except ValueError as error:
+            self._recipe_action_error = self._recipe_input_error(
+                error,
+                fallback=(
+                    "Approval requires a valid recipe and a named approval actor."
+                ),
             )
+        except Exception:
+            self._recipe_action_error = "Recipe approval could not be completed."
         self.refresh()
 
     def _materialize_current_recipe(self) -> None:
         try:
+            self._assert_recipe_inputs_match_draft()
             self._logic.materialize_current_recipe()
             self._recipe_action_error = ""
         except Exception:
@@ -284,6 +298,52 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 "Only an approved recipe version can be materialized."
             )
         self.refresh()
+
+    def _selected_recipe_segment_id(self) -> str:
+        segment_id = str(self._recipe_segment_input.text()).strip()
+        if segment_id:
+            return segment_id
+        catalog = self._current_view.get("historical_segment_catalog", {})
+        segments = catalog.get("segments", []) if isinstance(catalog, dict) else []
+        latest = segments[-1] if isinstance(segments, list) and segments else {}
+        if not isinstance(latest, dict) or not latest.get("segment_id"):
+            raise ValueError("Admit a Historical Market Segment first")
+        return str(latest["segment_id"])
+
+    def _recipe_authoring_signature(
+        self,
+        *,
+        segment_id: str | None = None,
+    ) -> tuple[str, ...]:
+        selected_segment = segment_id or self._selected_recipe_segment_id()
+        return (
+            str(self._recipe_name_input.text()),
+            selected_segment,
+            str(self._recipe_author_input.text()),
+            str(self._cadence_input.text()),
+            str(self._seed_input.text()),
+            str(self._commission_input.text()),
+            str(self._slippage_input.text()),
+            str(self._fill_fraction_input.text()),
+            str(self._latency_input.text()),
+            str(self._partial_fills_input.text()).strip().lower(),
+        )
+
+    def _assert_recipe_inputs_match_draft(self) -> None:
+        if (
+            self._recipe_input_signature is None
+            or self._recipe_authoring_signature() != self._recipe_input_signature
+        ):
+            raise ValueError(
+                "Visible recipe fields changed; create a new draft before continuing."
+            )
+
+    @staticmethod
+    def _recipe_input_error(error: ValueError, *, fallback: str) -> str:
+        message = str(error)
+        if "changed" in message:
+            return message
+        return fallback
 
     def _apply_view(self, view: dict[str, Any]) -> None:
         self._current_view = dict(view)
@@ -361,6 +421,22 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             self._recipe_status_label.setText(
                 f"Scenario recipe: {workbench.get('status', 'not started')}"
             )
+        draft = workbench.get("draft")
+        if self._recipe_draft_label is not None:
+            if isinstance(draft, dict):
+                payload = draft.get("payload", {})
+                canonical = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                self._recipe_draft_label.setText(
+                    f"Draft hash: {draft.get('payload_hash', 'unknown')} | "
+                    f"Reviewed payload: {canonical}"
+                )
+            else:
+                self._recipe_draft_label.setText("No reviewed draft")
         validation = workbench.get("validation")
         if self._recipe_feedback_label is not None:
             feedback = "No validation feedback yet"

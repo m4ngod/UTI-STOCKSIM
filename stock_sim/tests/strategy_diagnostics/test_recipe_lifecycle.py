@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+import json
 from pathlib import Path
+import re
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from strategy_diagnostics import (
     AdmissionCheck,
@@ -21,6 +25,7 @@ from strategy_diagnostics import (
     UnapprovedScenarioRecipeError,
     create_diagnostics_application,
 )
+from strategy_diagnostics.persistence import SqlScenarioRecipeRepository
 
 
 _REQUIRED_CHECKS = (
@@ -173,6 +178,25 @@ def test_scenario_recipe_v1_has_stable_schema_canonical_json_and_hash() -> None:
     assert schema["$id"] == "https://uti-stocksim.local/schema/scenario-recipe-v1.json"
     assert schema["additionalProperties"] is False
     assert schema["properties"]["decision_cadence_minutes"]["enum"] == [30, 60]
+    canonical_payload = json.loads(recipe.canonical_json())
+    execution_schema = schema["definitions"]["ExecutionConditionsV1"][
+        "properties"
+    ]
+    for field in ("commission_bps", "slippage_bps", "max_fill_fraction"):
+        wire_value = canonical_payload["execution_conditions"][field]
+        field_schema = execution_schema[field]
+        assert field_schema["type"] == "string"
+        assert isinstance(wire_value, str)
+        assert re.fullmatch(field_schema["pattern"], wire_value)
+    schema_json = json.dumps(
+        schema,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    assert hashlib.sha256(schema_json.encode("utf-8")).hexdigest() == (
+        "d0a87785563d7bef98a90ed77fc307e6b3e0268f0955454034b265ee485b9928"
+    )
 
 
 def test_manual_recipe_requires_validation_and_approval_before_materialization() -> None:
@@ -344,3 +368,84 @@ def test_approved_recipe_version_survives_application_restart(tmp_path: Path) ->
         "diagnostic_recipe_validations",
         "diagnostic_recipe_versions",
     }.issubset(set(inspect(engine).get_table_names()))
+
+
+@pytest.mark.parametrize("persistent", (False, True))
+def test_same_draft_cannot_be_approved_twice(
+    tmp_path: Path,
+    persistent: bool,
+) -> None:
+    source = _RecipeFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 7, 22, 5, 0, tzinfo=timezone.utc),
+    )
+    application.start()
+    if persistent:
+        engine = create_engine(
+            f"sqlite:///{tmp_path / 'duplicate-approval.db'}",
+            future=True,
+        )
+        application.initialize_persistence(engine)
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    draft = application.create_manual_recipe_draft(
+        _baseline_payload(admission.segment.segment_id),
+        author="researcher",
+    )
+    application.validate_recipe_draft(draft.draft_id)
+    application.approve_recipe_draft(draft.draft_id, actor="owner")
+
+    with pytest.raises(ValueError, match="already belongs to an approved immutable"):
+        application.approve_recipe_draft(draft.draft_id, actor="owner")
+
+
+def test_approved_version_keeps_its_validation_snapshot(tmp_path: Path) -> None:
+    database_path = tmp_path / "diagnostics.db"
+    engine = create_engine(f"sqlite:///{database_path}", future=True)
+    source = _RecipeFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 7, 22, 5, 0, tzinfo=timezone.utc),
+    )
+    application.start()
+    application.initialize_persistence(engine)
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    draft = application.create_manual_recipe_draft(
+        _baseline_payload(admission.segment.segment_id),
+        author="researcher",
+    )
+    application.validate_recipe_draft(draft.draft_id)
+    approved = application.approve_recipe_draft(draft.draft_id, actor="owner")
+    repository = SqlScenarioRecipeRepository(engine)
+
+    with pytest.raises(ValueError, match="approved immutable"):
+        repository.add_validation(
+            replace(
+                approved.validation_result,
+                validated_at=(
+                    approved.validation_result.validated_at + timedelta(seconds=1)
+                ),
+            )
+        )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE diagnostic_recipe_validations "
+                "SET validated_at_utc = :changed_at WHERE draft_id = :draft_id"
+            ),
+            {
+                "changed_at": "2030-01-01T00:00:00+00:00",
+                "draft_id": draft.draft_id,
+            },
+        )
+
+    restored = repository.get_version(approved.version_id)
+    assert restored is not None
+    assert restored.to_dict() == approved.to_dict()

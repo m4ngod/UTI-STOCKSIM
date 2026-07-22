@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -301,6 +303,31 @@ def test_diagnostics_adapter_drives_recipe_review_approval_and_materialization()
     assert workbench["approved_version"]["approval_actor"] == "owner"
 
 
+def test_diagnostics_adapter_refuses_to_approve_stale_visible_inputs() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("Reviewed baseline")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+
+    adapter._commission_input.setText("50")
+    adapter._approve_recipe_button.click()
+
+    workbench = adapter.current_view()["scenario_recipe_workbench"]
+    assert workbench["status"] == "validated"
+    assert workbench["approved_version"] is None
+    assert "changed" in adapter._recipe_feedback_label.text().lower()
+    assert workbench["draft"]["payload_hash"] in adapter._recipe_draft_label.text()
+
+
 def test_diagnostics_adapter_can_admit_and_recommend_without_storage_controls() -> None:
     _ensure_qapp()
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
@@ -357,6 +384,58 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace() -> None:
     diagnostics_page = window._workspace_pages["diagnostics"]
     diagnostics_index = window._workspace_stack.indexOf(diagnostics_page)
     assert window._nav_list.item(diagnostics_index).text() == "策略诊断"
+
+
+def test_desktop_diagnostics_composition_restores_approved_recipe(
+    tmp_path: Path,
+) -> None:
+    from app.panels import (
+        get_panel,
+        register_builtin_panels,
+        register_ui_adapters,
+        reset_registry,
+    )
+
+    database_path = tmp_path / "desktop-diagnostics.db"
+    engine = create_engine(f"sqlite:///{database_path}", future=True)
+    reset_registry()
+    register_builtin_panels()
+    register_ui_adapters(
+        diagnostics_engine=engine,
+        diagnostics_application_factory=_admittable_application,
+    )
+    first_adapter = get_panel("diagnostics")
+    first_panel = first_adapter._logic
+    first_panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = first_panel.get_view()["historical_segment_catalog"]["segments"][
+        0
+    ]["segment_id"]
+    first_panel.create_baseline_recipe(
+        name="Persistent desktop recipe",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+    )
+    first_panel.validate_current_recipe()
+    approved = first_panel.approve_current_recipe(actor="owner")
+
+    reset_registry()
+    register_builtin_panels()
+    register_ui_adapters(
+        diagnostics_engine=engine,
+        diagnostics_application_factory=_admittable_application,
+    )
+    restarted_adapter = get_panel("diagnostics")
+    restored = restarted_adapter._logic._application.get_recipe_version(
+        approved["version_id"]
+    )
+
+    assert restored.to_dict() == approved
 
 
 def test_diagnostics_adapter_failure_preserves_the_legacy_shell(

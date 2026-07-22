@@ -49,6 +49,14 @@ class DiagnosticsApplicationPort(Protocol):
         actor: str,
     ) -> _DiagnosticsState: ...
 
+    def revise_recipe_version(
+        self,
+        version_id: str,
+        payload: Mapping[str, object],
+        *,
+        author: str,
+    ) -> _DiagnosticsState: ...
+
     def materialize_baseline_reference_path(
         self,
         recipe_version_id: str,
@@ -119,26 +127,35 @@ class DiagnosticsPanel:
         latency_nodes: int = 0,
         allow_partial_fills: bool = True,
     ) -> dict[str, object]:
-        draft = self._application.create_manual_recipe_draft(
-            {
-                "schema_version": "scenario_recipe.v1",
-                "name": name,
-                "historical_segment_id": segment_id,
-                "transformations": [],
-                "execution_conditions": {
-                    "commission_bps": commission_bps,
-                    "slippage_bps": slippage_bps,
-                    "max_fill_fraction": max_fill_fraction,
-                    "latency_nodes": latency_nodes,
-                    "allow_partial_fills": allow_partial_fills,
-                },
-                "decision_cadence_minutes": cadence_minutes,
-                "materialization_seed": seed,
-                "data_policy": "point-in-time",
-                "market_rule_profile": "a-share-cash-equity.v1",
+        payload: dict[str, object] = {
+            "schema_version": "scenario_recipe.v1",
+            "name": name,
+            "historical_segment_id": segment_id,
+            "transformations": [],
+            "execution_conditions": {
+                "commission_bps": commission_bps,
+                "slippage_bps": slippage_bps,
+                "max_fill_fraction": max_fill_fraction,
+                "latency_nodes": latency_nodes,
+                "allow_partial_fills": allow_partial_fills,
             },
-            author=author,
-        )
+            "decision_cadence_minutes": cadence_minutes,
+            "materialization_seed": seed,
+            "data_policy": "point-in-time",
+            "market_rule_profile": "a-share-cash-equity.v1",
+        }
+        approved = self._recipe_workbench.get("approved_version")
+        if isinstance(approved, dict):
+            draft = self._application.revise_recipe_version(
+                str(approved["version_id"]),
+                payload,
+                author=author,
+            )
+        else:
+            draft = self._application.create_manual_recipe_draft(
+                payload,
+                author=author,
+            )
         draft_view = draft.to_dict()
         self._recipe_workbench = {
             "status": "draft",

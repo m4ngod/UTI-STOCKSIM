@@ -10,6 +10,7 @@ from typing import Final
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
 from .historical_segments import (
     HistoricalMarketSegment,
@@ -159,6 +160,7 @@ def _create_scenario_recipe_lifecycle(connection: Connection) -> None:
         "author VARCHAR(256) NOT NULL, "
         "approval_id VARCHAR(96) UNIQUE NOT NULL, "
         "validation_draft_id VARCHAR(96) NOT NULL, "
+        "validation_json TEXT NOT NULL, "
         "based_on_version_id VARCHAR(96) NULL, "
         "UNIQUE(recipe_id, version_number), "
         "FOREIGN KEY(approval_id) REFERENCES diagnostic_recipe_approvals(approval_id), "
@@ -422,6 +424,18 @@ class SqlScenarioRecipeRepository:
             "validated_recipe_json": recipe_json,
         }
         with self._engine.begin() as connection:
+            approved = connection.execute(
+                text(
+                    "SELECT approval_id FROM diagnostic_recipe_approvals "
+                    "WHERE draft_id = :draft_id"
+                ),
+                {"draft_id": validation.draft_id},
+            ).one_or_none()
+            if approved is not None:
+                raise ValueError(
+                    "Validation belongs to an approved immutable "
+                    "Scenario Recipe Version"
+                )
             existing = connection.execute(
                 text(
                     "SELECT draft_id FROM diagnostic_recipe_validations "
@@ -500,11 +514,6 @@ class SqlScenarioRecipeRepository:
         self,
         version: ApprovedScenarioRecipeVersion,
     ) -> ApprovedScenarioRecipeVersion:
-        existing = self.get_version(version.version_id)
-        if existing is not None:
-            if existing != version:
-                raise ValueError("immutable Scenario Recipe Version identity collision")
-            return existing
         approval_identity = (
             f"{version.version_id}|{version.approval_actor}|"
             f"{version.approved_at.isoformat()}"
@@ -512,45 +521,66 @@ class SqlScenarioRecipeRepository:
         approval_id = "recipe_approval_" + hashlib.sha256(
             approval_identity.encode("utf-8")
         ).hexdigest()
-        with self._engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO diagnostic_recipe_approvals ("
-                    "approval_id, draft_id, actor, approved_at_utc, "
-                    "recipe_content_hash) VALUES ("
-                    ":approval_id, :draft_id, :actor, :approved_at_utc, "
-                    ":recipe_content_hash)"
-                ),
-                {
-                    "approval_id": approval_id,
-                    "draft_id": version.validation_result.draft_id,
-                    "actor": version.approval_actor,
-                    "approved_at_utc": version.approved_at.isoformat(),
-                    "recipe_content_hash": version.content_hash,
-                },
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO diagnostic_recipe_versions ("
-                    "version_id, recipe_id, version_number, recipe_json, "
-                    "content_hash, author, approval_id, validation_draft_id, "
-                    "based_on_version_id) VALUES ("
-                    ":version_id, :recipe_id, :version_number, :recipe_json, "
-                    ":content_hash, :author, :approval_id, "
-                    ":validation_draft_id, :based_on_version_id)"
-                ),
-                {
-                    "version_id": version.version_id,
-                    "recipe_id": version.recipe_id,
-                    "version_number": version.version_number,
-                    "recipe_json": version.recipe.canonical_json(),
-                    "content_hash": version.content_hash,
-                    "author": version.author,
-                    "approval_id": approval_id,
-                    "validation_draft_id": version.validation_result.draft_id,
-                    "based_on_version_id": version.based_on_version_id,
-                },
-            )
+        try:
+            with self._engine.begin() as connection:
+                approved = connection.execute(
+                    text(
+                        "SELECT approval_id FROM diagnostic_recipe_approvals "
+                        "WHERE draft_id = :draft_id"
+                    ),
+                    {"draft_id": version.validation_result.draft_id},
+                ).one_or_none()
+                if approved is not None:
+                    raise ValueError(
+                        "Scenario Recipe Draft already belongs to an "
+                        "approved immutable version"
+                    )
+                connection.execute(
+                    text(
+                        "INSERT INTO diagnostic_recipe_approvals ("
+                        "approval_id, draft_id, actor, approved_at_utc, "
+                        "recipe_content_hash) VALUES ("
+                        ":approval_id, :draft_id, :actor, :approved_at_utc, "
+                        ":recipe_content_hash)"
+                    ),
+                    {
+                        "approval_id": approval_id,
+                        "draft_id": version.validation_result.draft_id,
+                        "actor": version.approval_actor,
+                        "approved_at_utc": version.approved_at.isoformat(),
+                        "recipe_content_hash": version.content_hash,
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO diagnostic_recipe_versions ("
+                        "version_id, recipe_id, version_number, recipe_json, "
+                        "content_hash, author, approval_id, validation_draft_id, "
+                        "validation_json, based_on_version_id) VALUES ("
+                        ":version_id, :recipe_id, :version_number, :recipe_json, "
+                        ":content_hash, :author, :approval_id, "
+                        ":validation_draft_id, :validation_json, "
+                        ":based_on_version_id)"
+                    ),
+                    {
+                        "version_id": version.version_id,
+                        "recipe_id": version.recipe_id,
+                        "version_number": version.version_number,
+                        "recipe_json": version.recipe.canonical_json(),
+                        "content_hash": version.content_hash,
+                        "author": version.author,
+                        "approval_id": approval_id,
+                        "validation_draft_id": version.validation_result.draft_id,
+                        "validation_json": _validation_snapshot_json(
+                            version.validation_result
+                        ),
+                        "based_on_version_id": version.based_on_version_id,
+                    },
+                )
+        except IntegrityError as error:
+            raise ValueError(
+                "Scenario Recipe approval or version identity collision"
+            ) from error
         return version
 
     def get_version(
@@ -562,8 +592,9 @@ class SqlScenarioRecipeRepository:
                 text(
                     "SELECT v.version_id, v.recipe_id, v.version_number, "
                     "v.recipe_json, v.content_hash, v.author, "
-                    "v.validation_draft_id, v.based_on_version_id, "
-                    "a.actor, a.approved_at_utc "
+                    "v.validation_draft_id, v.validation_json, "
+                    "v.based_on_version_id, a.actor, a.approved_at_utc, "
+                    "a.recipe_content_hash AS approval_content_hash "
                     "FROM diagnostic_recipe_versions AS v "
                     "JOIN diagnostic_recipe_approvals AS a "
                     "ON a.approval_id = v.approval_id "
@@ -573,12 +604,18 @@ class SqlScenarioRecipeRepository:
             ).one_or_none()
         if row is None:
             return None
-        validation = self.get_validation(str(row.validation_draft_id))
-        if validation is None:
-            raise ValueError("Approved Scenario Recipe Version has no validation record")
+        validation = _validation_snapshot_from_json(str(row.validation_json))
+        if validation.draft_id != str(row.validation_draft_id):
+            raise ValueError("stored Scenario Recipe validation identity mismatch")
         recipe = ScenarioRecipeV1.parse_raw(str(row.recipe_json))
         if recipe.content_hash != str(row.content_hash):
             raise ValueError("stored Scenario Recipe Version hash mismatch")
+        if (
+            not validation.is_valid
+            or validation.recipe_content_hash != str(row.content_hash)
+            or str(row.approval_content_hash) != str(row.content_hash)
+        ):
+            raise ValueError("stored Scenario Recipe approval evidence mismatch")
         return ApprovedScenarioRecipeVersion(
             version_id=str(row.version_id),
             recipe_id=str(row.recipe_id),
@@ -632,6 +669,54 @@ def _parse_aware_datetime(payload: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         value = value.replace(tzinfo=timezone.utc)
     return value
+
+
+def _validation_snapshot_json(validation: RecipeValidationResult) -> str:
+    return _json_dumps(
+        {
+            "draft_id": validation.draft_id,
+            "payload_hash": validation.payload_hash,
+            "is_valid": validation.is_valid,
+            "issues": [issue.to_dict() for issue in validation.issues],
+            "recipe_content_hash": validation.recipe_content_hash,
+            "validated_at": validation.validated_at.isoformat(),
+            "validated_recipe": (
+                json.loads(validation.validated_recipe.canonical_json())
+                if validation.validated_recipe is not None
+                else None
+            ),
+        }
+    )
+
+
+def _validation_snapshot_from_json(payload: str) -> RecipeValidationResult:
+    values = json.loads(payload)
+    recipe_payload = values.get("validated_recipe")
+    return RecipeValidationResult(
+        draft_id=str(values["draft_id"]),
+        payload_hash=str(values["payload_hash"]),
+        is_valid=bool(values["is_valid"]),
+        issues=tuple(
+            RecipeValidationIssue(
+                path=str(item["path"]),
+                rule=str(item["rule"]),
+                message=str(item["message"]),
+                correction=str(item["correction"]),
+            )
+            for item in values["issues"]
+        ),
+        recipe_content_hash=(
+            str(values["recipe_content_hash"])
+            if values.get("recipe_content_hash") is not None
+            else None
+        ),
+        validated_at=_parse_aware_datetime(str(values["validated_at"])),
+        validated_recipe=(
+            ScenarioRecipeV1.parse_obj(recipe_payload)
+            if recipe_payload is not None
+            else None
+        ),
+    )
 
 
 __all__ = [
