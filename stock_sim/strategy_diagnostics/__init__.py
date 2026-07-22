@@ -47,6 +47,12 @@ from .recipes import (
     ScenarioTransformationRequestV1,
     UnapprovedScenarioRecipeError,
 )
+from .transformations import (
+    ScenarioTransformationCatalog,
+    TransformationCatalogEntry,
+    TransformationParameterDefinition,
+    create_initial_transformation_catalog,
+)
 
 __all__ = [
     "DIAGNOSTIC_SCHEMA_REVISION",
@@ -88,5 +94,9 @@ __all__ = [
     "ScenarioRecipeV1",
     "ScenarioTransformationRequestV1",
     "UnapprovedScenarioRecipeError",
+    "ScenarioTransformationCatalog",
+    "TransformationCatalogEntry",
+    "TransformationParameterDefinition",
+    "create_initial_transformation_catalog",
     "create_diagnostics_application",
 ]

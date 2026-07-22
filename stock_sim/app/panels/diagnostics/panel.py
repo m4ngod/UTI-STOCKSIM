@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Mapping, Protocol
 
 from strategy_diagnostics import HistoricalSegmentSelection
@@ -22,6 +22,8 @@ class DiagnosticsApplicationPort(Protocol):
     def status(self) -> _DiagnosticsState: ...
 
     def historical_segment_catalog_view(self) -> dict[str, object]: ...
+
+    def transformation_catalog_view(self) -> dict[str, object]: ...
 
     def admit_historical_segment(
         self, selection: HistoricalSegmentSelection
@@ -57,10 +59,18 @@ class DiagnosticsApplicationPort(Protocol):
         author: str,
     ) -> _DiagnosticsState: ...
 
-    def materialize_baseline_reference_path(
+    def materialize_reference_path(
         self,
         recipe_version_id: str,
     ) -> _MaterializedMarketPath: ...
+
+    def compare_reference_market_paths(
+        self,
+        baseline_artifact_hash: str,
+        transformed_artifact_hash: str,
+        *,
+        at_time: datetime,
+    ) -> dict[str, object]: ...
 
 
 class DiagnosticsPanel:
@@ -74,6 +84,14 @@ class DiagnosticsPanel:
             "approved_version": None,
             "materialization": None,
         }
+        self._materializations: dict[str, dict[str, object] | None] = {
+            "baseline": None,
+            "transformed": None,
+        }
+        self._scenario_comparison_preview: dict[str, object] = {
+            "status": "not_ready",
+            "message": "Materialize a baseline and transformed recipe to compare them.",
+        }
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
@@ -81,7 +99,13 @@ class DiagnosticsPanel:
         catalog = dict(self._application.historical_segment_catalog_view())
         catalog["recommendations"] = list(self._recommendations)
         view["historical_segment_catalog"] = catalog
+        view["transformation_catalog"] = dict(
+            self._application.transformation_catalog_view()
+        )
         view["scenario_recipe_workbench"] = dict(self._recipe_workbench)
+        view["scenario_comparison_preview"] = dict(
+            self._scenario_comparison_preview
+        )
         return view
 
     def admit_historical_segment(
@@ -127,11 +151,78 @@ class DiagnosticsPanel:
         latency_nodes: int = 0,
         allow_partial_fills: bool = True,
     ) -> dict[str, object]:
+        return self._create_recipe(
+            name=name,
+            segment_id=segment_id,
+            author=author,
+            cadence_minutes=cadence_minutes,
+            seed=seed,
+            transformations=(),
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+            max_fill_fraction=max_fill_fraction,
+            latency_nodes=latency_nodes,
+            allow_partial_fills=allow_partial_fills,
+        )
+
+    def create_trend_regime_recipe(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        author: str,
+        cadence_minutes: int,
+        seed: int,
+        direction: str,
+        strength: str,
+        commission_bps: str = "3",
+        slippage_bps: str = "0",
+        max_fill_fraction: str = "1",
+        latency_nodes: int = 0,
+        allow_partial_fills: bool = True,
+    ) -> dict[str, object]:
+        return self._create_recipe(
+            name=name,
+            segment_id=segment_id,
+            author=author,
+            cadence_minutes=cadence_minutes,
+            seed=seed,
+            transformations=(
+                {
+                    "transformation_id": "trend-regime.v1",
+                    "parameters": {
+                        "direction": direction,
+                        "strength": strength,
+                    },
+                },
+            ),
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+            max_fill_fraction=max_fill_fraction,
+            latency_nodes=latency_nodes,
+            allow_partial_fills=allow_partial_fills,
+        )
+
+    def _create_recipe(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        author: str,
+        cadence_minutes: int,
+        seed: int,
+        transformations: tuple[dict[str, object], ...],
+        commission_bps: str,
+        slippage_bps: str,
+        max_fill_fraction: str,
+        latency_nodes: int,
+        allow_partial_fills: bool,
+    ) -> dict[str, object]:
         payload: dict[str, object] = {
             "schema_version": "scenario_recipe.v1",
             "name": name,
             "historical_segment_id": segment_id,
-            "transformations": [],
+            "transformations": list(transformations),
             "execution_conditions": {
                 "commission_bps": commission_bps,
                 "slippage_bps": slippage_bps,
@@ -190,10 +281,26 @@ class DiagnosticsPanel:
 
     def materialize_current_recipe(self) -> dict[str, object]:
         approved = self._require_workbench_item("approved_version")
-        path = self._application.materialize_baseline_reference_path(
+        path = self._application.materialize_reference_path(
             str(approved["version_id"])
         )
         materialized_view = path.to_preview_dict()
+        applied = materialized_view.get("applied_transformations", [])
+        materialization_kind = "transformed" if applied else "baseline"
+        self._materializations[materialization_kind] = materialized_view
+        baseline = self._materializations["baseline"]
+        transformed = self._materializations["transformed"]
+        if baseline is not None and transformed is not None:
+            preview_time = datetime.fromisoformat(
+                min(str(baseline["end_time"]), str(transformed["end_time"]))
+            )
+            self._scenario_comparison_preview = (
+                self._application.compare_reference_market_paths(
+                    str(baseline["artifact_hash"]),
+                    str(transformed["artifact_hash"]),
+                    at_time=preview_time,
+                )
+            )
         self._recipe_workbench["status"] = "materialized"
         self._recipe_workbench["materialization"] = materialized_view
         return materialized_view

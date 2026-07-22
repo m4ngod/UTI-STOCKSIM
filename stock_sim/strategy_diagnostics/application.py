@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from typing import Callable, Mapping, cast
 
 from sqlalchemy.engine import Engine
@@ -38,6 +39,7 @@ from .recipes import (
     RecipeWorkbench,
     ScenarioRecipeDraft,
 )
+from .transformations import create_initial_transformation_catalog
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +78,7 @@ class DiagnosticsApplication:
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
         source = historical_source or BaoStockHistoricalSource()
+        self._transformation_catalog = create_initial_transformation_catalog()
         self._historical_segments = HistoricalSegmentAdmissionService(
             source=source
         )
@@ -91,11 +94,15 @@ class DiagnosticsApplication:
                     artifact_store
                     or ParquetMarketPathArtifactStore.from_environment()
                 ),
+                transformation_catalog=self._transformation_catalog,
             )
             if candidate_market_source is not None
             else None
         )
-        self._recipe_workbench = RecipeWorkbench(clock=recipe_clock)
+        self._recipe_workbench = RecipeWorkbench(
+            clock=recipe_clock,
+            transformation_catalog=self._transformation_catalog,
+        )
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -174,7 +181,23 @@ class DiagnosticsApplication:
             "latest_admission": latest.to_dict() if latest is not None else None,
         }
 
+    def transformation_catalog_view(self) -> dict[str, object]:
+        self.status()
+        return self._transformation_catalog.to_dict()
+
     def materialize_baseline_reference_path(
+        self,
+        recipe_version_id: str,
+    ) -> MaterializedMarketPath:
+        self.status()
+        approved = self._recipe_workbench.get_version(recipe_version_id)
+        if approved.recipe.transformations:
+            raise ValueError(
+                "baseline materialization requires a recipe without transformations"
+            )
+        return self.materialize_reference_path(recipe_version_id)
+
+    def materialize_reference_path(
         self,
         recipe_version_id: str,
     ) -> MaterializedMarketPath:
@@ -194,8 +217,9 @@ class DiagnosticsApplication:
         )
         if segment is None:
             raise ValueError("Only an admitted Historical Market Segment can be materialized")
-        return self._scenario_materializer.materialize_baseline(
+        return self._scenario_materializer.materialize(
             segment,
+            transformations=approved.recipe.transformations,
             seed=approved.recipe.materialization_seed,
         )
 
@@ -276,7 +300,61 @@ class DiagnosticsApplication:
                 "reconstructed": True,
             }
         )
-        return cast(dict[str, object], snapshot)
+        return snapshot
+
+    def compare_reference_market_paths(
+        self,
+        baseline_artifact_hash: str,
+        transformed_artifact_hash: str,
+        *,
+        at_time: datetime,
+    ) -> dict[str, object]:
+        self.status()
+        if self._scenario_materializer is None:
+            raise RuntimeError("No Scenario Materializer is configured")
+        baseline_path = self._scenario_materializer.get(baseline_artifact_hash)
+        transformed_path = self._scenario_materializer.get(
+            transformed_artifact_hash
+        )
+        if baseline_path.applied_transformations:
+            raise ValueError("The baseline preview must use an untransformed path")
+        if not transformed_path.applied_transformations:
+            raise ValueError("The transformed preview must use a transformed path")
+        comparable_identity = (
+            baseline_path.segment_id,
+            baseline_path.segment_content_hash,
+            baseline_path.source_snapshot_id,
+            baseline_path.seed,
+        )
+        if comparable_identity != (
+            transformed_path.segment_id,
+            transformed_path.segment_content_hash,
+            transformed_path.source_snapshot_id,
+            transformed_path.seed,
+        ):
+            raise ValueError(
+                "Baseline and transformed previews require the same source and seed"
+            )
+        baseline = self.preview_reference_market_path(
+            baseline_artifact_hash,
+            at_time=at_time,
+        )
+        transformed = self.preview_reference_market_path(
+            transformed_artifact_hash,
+            at_time=at_time,
+        )
+        baseline_market = cast(dict[str, object], baseline["market_context"])
+        transformed_market = cast(dict[str, object], transformed["market_context"])
+        market_return_delta = Decimal(str(transformed_market["return"])) - Decimal(
+            str(baseline_market["return"])
+        )
+        return {
+            "status": "ready",
+            "simulation_time": at_time.isoformat(),
+            "baseline": baseline,
+            "transformed": transformed,
+            "market_return_delta": format(market_return_delta.normalize(), "f"),
+        }
 
 
 def create_diagnostics_application(

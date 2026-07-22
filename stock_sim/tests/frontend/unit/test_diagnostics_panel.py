@@ -97,6 +97,16 @@ class _WorkspaceSource:
                     volume=100,
                     amount=Decimal("1005"),
                 ),
+                FiveMinuteBar(
+                    instrument="sh.600000",
+                    end_time=datetime(2024, 1, 2, 9, 40),
+                    open=Decimal("10.1"),
+                    high=Decimal("10.4"),
+                    low=Decimal("10.0"),
+                    close=Decimal("10.3"),
+                    volume=120,
+                    amount=Decimal("1225"),
+                ),
             ),
             instrument_states=(
                 InstrumentState(
@@ -250,6 +260,60 @@ def test_diagnostics_workspace_completes_the_manual_recipe_lifecycle() -> None:
     assert workbench["materialization"]["artifact_hash"]
 
 
+def test_diagnostics_workspace_previews_baseline_versus_trend_regime() -> None:
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = panel.get_view()["historical_segment_catalog"]["segments"][0][
+        "segment_id"
+    ]
+    panel.create_baseline_recipe(
+        name="Baseline control",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    baseline = panel.materialize_current_recipe()
+
+    panel.create_trend_regime_recipe(
+        name="Bullish trend",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        direction="bullish",
+        strength="0.75",
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    transformed = panel.materialize_current_recipe()
+    view = panel.get_view()
+    preview = view["scenario_comparison_preview"]
+
+    assert view["transformation_catalog"]["catalog_version"] == (
+        "scenario-transformation-catalog.v1"
+    )
+    assert baseline["applied_transformations"] == []
+    assert transformed["applied_transformations"][0]["transformation_id"] == (
+        "trend-regime.v1"
+    )
+    assert preview["status"] == "ready"
+    assert preview["baseline"]["market_context"] != preview["transformed"][
+        "market_context"
+    ]
+    assert Decimal(str(preview["market_return_delta"])) > 0
+    assert preview["transformed"]["candidates"] == ["sh.600000"]
+    assert preview["transformed"]["rankings"] == [
+        {"instrument": "sh.600000", "rank": 1, "score": "0"}
+    ]
+
+
 def test_diagnostics_workspace_shows_actionable_recipe_validation_feedback() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -301,6 +365,43 @@ def test_diagnostics_adapter_drives_recipe_review_approval_and_materialization()
     assert workbench["status"] == "materialized"
     assert workbench["validation"]["is_valid"] is True
     assert workbench["approved_version"]["approval_actor"] == "owner"
+
+
+def test_diagnostics_adapter_renders_baseline_versus_transformed_preview() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("Baseline control")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._seed_input.setText("17")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    adapter._recipe_name_input.setText("Bullish trend")
+    adapter._trend_direction_input.setText("bullish")
+    adapter._trend_strength_input.setText("0.75")
+    adapter._create_trend_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    preview = adapter.current_view()["scenario_comparison_preview"]
+    preview_text = adapter._scenario_preview_label.text()
+    assert preview["status"] == "ready"
+    assert "Baseline vs transformed" in preview_text
+    assert str(preview["baseline"]["market_context"]["return"]) in preview_text
+    assert str(preview["transformed"]["market_context"]["return"]) in preview_text
+    assert str(preview["market_return_delta"]) in preview_text
+    assert "1. sh.600000" in preview_text
+    assert "trend-regime.v1" in adapter._transformation_catalog_label.text()
 
 
 def test_diagnostics_adapter_refuses_to_approve_stale_visible_inputs() -> None:

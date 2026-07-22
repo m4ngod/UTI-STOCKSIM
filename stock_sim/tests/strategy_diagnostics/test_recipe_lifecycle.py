@@ -264,10 +264,36 @@ def test_manual_recipe_requires_validation_and_approval_before_materialization()
         (
             {
                 "transformations": [
-                    {"transformation_id": "trend-regime.v1", "parameters": {}}
+                    {"transformation_id": "missing-transform.v1", "parameters": {}}
                 ]
             },
             "transformation.not-registered",
+        ),
+        (
+            {
+                "transformations": [
+                    {
+                        "transformation_id": "trend-regime.v1",
+                        "parameters": {"direction": "bullish", "strength": "1.1"},
+                    }
+                ]
+            },
+            "transformation.parameter-bounds",
+        ),
+        (
+            {
+                "transformations": [
+                    {
+                        "transformation_id": "trend-regime.v1",
+                        "parameters": {"direction": "bullish", "strength": "0.2"},
+                    },
+                    {
+                        "transformation_id": "trend-regime.v1",
+                        "parameters": {"direction": "bearish", "strength": "0.2"},
+                    },
+                ]
+            },
+            "transformation.incompatible-combination",
         ),
     ),
 )
@@ -287,6 +313,121 @@ def test_recipe_validation_fails_closed_with_actionable_rules(
     assert all(issue.path and issue.correction for issue in result.issues)
     with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
         application.approve_recipe_draft(draft.draft_id, actor="owner")
+
+
+def test_headless_catalog_registers_and_validates_the_trend_regime_transform() -> None:
+    application, segment_id = _application_with_admitted_segment()
+
+    catalog = application.transformation_catalog_view()
+
+    assert catalog == {
+        "catalog_version": "scenario-transformation-catalog.v1",
+        "transformations": [
+            {
+                "transformation_id": "trend-regime.v1",
+                "family": "trend-regime",
+                "implementation_version": "trend-regime.v1",
+                "parameters": [
+                    {
+                        "name": "direction",
+                        "value_type": "enum",
+                        "required": True,
+                        "choices": ["bearish", "bullish"],
+                    },
+                    {
+                        "name": "strength",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0",
+                        "maximum": "1",
+                    },
+                ],
+                "compatibility_rules": [
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                ],
+                "causality_constraints": [
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ],
+            }
+        ],
+    }
+
+    payload = _baseline_payload(segment_id)
+    payload["transformations"] = [
+        {
+            "transformation_id": "trend-regime.v1",
+            "parameters": {"direction": "bullish", "strength": "0.5"},
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is True
+    assert validation.issues == ()
+
+
+@pytest.mark.parametrize(
+    ("forbidden_parameter", "expected_rule"),
+    (
+        ({"python_code": "prices *= 2"}, "transformation.executable-code-forbidden"),
+        ({"expression": "close * 1.1"}, "transformation.expression-forbidden"),
+        ({"source_path": "C:\\market\\prices.csv"}, "transformation.path-forbidden"),
+        ({"final_prices": {"sh.600000": "99"}}, "transformation.final-price-edit-forbidden"),
+    ),
+)
+def test_recipe_rejects_non_declarative_transformation_payloads(
+    forbidden_parameter: dict[str, object],
+    expected_rule: str,
+) -> None:
+    application, segment_id = _application_with_admitted_segment()
+    payload = _baseline_payload(segment_id)
+    parameters: dict[str, object] = {
+        "direction": "bullish",
+        "strength": "0.5",
+    }
+    parameters.update(forbidden_parameter)
+    payload["transformations"] = [
+        {
+            "transformation_id": "trend-regime.v1",
+            "parameters": parameters,
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is False
+    assert expected_rule in {issue.rule for issue in validation.issues}
+    assert all(issue.path and issue.correction for issue in validation.issues)
+
+
+@pytest.mark.parametrize("strength", ("NaN", "Infinity", "-Infinity"))
+def test_catalog_rejects_non_finite_decimal_parameters(strength: str) -> None:
+    application, segment_id = _application_with_admitted_segment()
+    payload = _baseline_payload(segment_id)
+    payload["transformations"] = [
+        {
+            "transformation_id": "trend-regime.v1",
+            "parameters": {"direction": "bullish", "strength": strength},
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is False
+    assert {
+        (issue.path, issue.rule)
+        for issue in validation.issues
+    } == {
+        (
+            "transformations.0.parameters.strength",
+            "transformation.parameter-type",
+        )
+    }
 
 
 def test_editing_an_approved_recipe_creates_a_new_immutable_version() -> None:

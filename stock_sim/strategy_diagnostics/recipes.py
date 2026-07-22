@@ -13,6 +13,10 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, ValidationError
 
 from .historical_segments import HistoricalMarketSegment
+from .transformations import (
+    ScenarioTransformationCatalog,
+    create_initial_transformation_catalog,
+)
 
 
 _SCHEMA_ID = "https://uti-stocksim.local/schema/scenario-recipe-v1.json"
@@ -338,9 +342,13 @@ class RecipeWorkbench:
         *,
         clock: Callable[[], datetime] | None = None,
         repository: ScenarioRecipeRepository | None = None,
+        transformation_catalog: ScenarioTransformationCatalog | None = None,
     ) -> None:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._repository = repository or InMemoryScenarioRecipeRepository()
+        self._transformation_catalog = (
+            transformation_catalog or create_initial_transformation_catalog()
+        )
 
     def replace_repository(self, repository: ScenarioRecipeRepository) -> None:
         self._repository = repository
@@ -399,19 +407,17 @@ class RecipeWorkbench:
                         correction="Select a segment from the admitted catalog.",
                     )
                 )
-            for index, transformation in enumerate(recipe.transformations):
+            for issue in self._transformation_catalog.validate_requests(
+                recipe.transformations,
+                market_rule_profile=recipe.market_rule_profile,
+                data_policy=recipe.data_policy,
+            ):
                 issues.append(
                     RecipeValidationIssue(
-                        path=f"transformations.{index}.transformation_id",
-                        rule="transformation.not-registered",
-                        message=(
-                            f"Transformation {transformation.transformation_id!r} "
-                            "is not registered."
-                        ),
-                        correction=(
-                            "Remove it and use the baseline recipe until the "
-                            "Transformation Catalog registers this capability."
-                        ),
+                        path=issue.path,
+                        rule=issue.rule,
+                        message=issue.message,
+                        correction=issue.correction,
                     )
                 )
 

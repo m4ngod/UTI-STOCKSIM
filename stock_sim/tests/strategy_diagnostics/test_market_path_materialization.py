@@ -22,6 +22,7 @@ from strategy_diagnostics import (
     ScenarioDataWorldInput,
     ScenarioMaterializer,
     ScenarioMarketView,
+    ScenarioTransformationRequestV1,
     SourceArtifact,
     SourceProvenance,
     create_diagnostics_application,
@@ -182,6 +183,78 @@ def _two_bar_world() -> ScenarioDataWorldInput:
     )
 
 
+def _cross_section_world() -> ScenarioDataWorldInput:
+    return ScenarioDataWorldInput(
+        segment_id="segment_fixture",
+        segment_content_hash="1" * 64,
+        source_snapshot_id="snapshot_fixture",
+        bars=(
+            FiveMinuteBar(
+                instrument="sh.600000",
+                end_time=datetime(2024, 1, 2, 9, 35),
+                open=Decimal("10.00"),
+                high=Decimal("10.30"),
+                low=Decimal("9.90"),
+                close=Decimal("10.20"),
+                volume=100,
+                amount=Decimal("1010"),
+            ),
+            FiveMinuteBar(
+                instrument="sz.000001",
+                end_time=datetime(2024, 1, 2, 9, 35),
+                open=Decimal("20.00"),
+                high=Decimal("20.60"),
+                low=Decimal("19.80"),
+                close=Decimal("20.40"),
+                volume=200,
+                amount=Decimal("4040"),
+            ),
+            FiveMinuteBar(
+                instrument="sh.600000",
+                end_time=datetime(2024, 1, 2, 9, 40),
+                open=Decimal("10.20"),
+                high=Decimal("10.40"),
+                low=Decimal("10.10"),
+                close=Decimal("10.35"),
+                volume=110,
+                amount=Decimal("1130"),
+            ),
+            FiveMinuteBar(
+                instrument="sz.000001",
+                end_time=datetime(2024, 1, 2, 9, 40),
+                open=Decimal("20.40"),
+                high=Decimal("20.80"),
+                low=Decimal("20.20"),
+                close=Decimal("20.60"),
+                volume=210,
+                amount=Decimal("4300"),
+            ),
+        ),
+        instrument_states=(
+            InstrumentState(
+                instrument="sh.600000",
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                eligible=True,
+                trading_status="trading",
+                is_st=False,
+                industry="banking",
+                decision_adjustment_factor=Decimal("1"),
+                decision_adjustment_provenance="fixture-v1",
+            ),
+            InstrumentState(
+                instrument="sz.000001",
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                eligible=True,
+                trading_status="trading",
+                is_st=True,
+                industry="banking",
+                decision_adjustment_factor=Decimal("1"),
+                decision_adjustment_provenance="fixture-v1",
+            ),
+        ),
+    )
+
+
 class _AdmittedFixtureSource:
     def __init__(self) -> None:
         self._selection = _segment().selection
@@ -287,9 +360,25 @@ def test_scenario_market_view_refuses_every_kind_of_future_data() -> None:
         "provenance": "fixture-as-of-adjustment-v1",
     }
     assert set(snapshot["features"]["sh.600000"]) == {
+        "candidate_rank",
+        "candidate_score",
+        "market_breadth",
+        "market_return",
+        "relative_strength",
         "return_30s",
+        "sector_breadth",
+        "sector_return",
         "session_return",
     }
+    assert snapshot["market_context"] == {
+        "return": "0.02",
+        "breadth": "1",
+        "instrument_count": 1,
+    }
+    assert snapshot["candidates"] == ["sh.600000"]
+    assert snapshot["rankings"] == [
+        {"instrument": "sh.600000", "rank": 1, "score": "0"}
+    ]
     assert "sz.000001" not in snapshot["features"]
     assert len(view.history("sh.600000")) == 10
 
@@ -467,3 +556,244 @@ def test_artifact_identity_ignores_equivalent_decimal_text_scales() -> None:
 
     assert first.artifact_hash == second.artifact_hash
     assert first.to_preview_dict() == second.to_preview_dict()
+
+
+def test_trend_regime_transform_is_deterministic_and_preserves_path_invariants() -> None:
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_cross_section_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    request = ScenarioTransformationRequestV1(
+        transformation_id="trend-regime.v1",
+        parameters={"direction": "bullish", "strength": "0.75"},
+    )
+
+    baseline = materializer.materialize_baseline(_segment(), seed=17)
+    first = materializer.materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+    second = materializer.materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+
+    assert first == second
+    assert first.artifact_hash == second.artifact_hash
+    assert first.artifact_hash != baseline.artifact_hash
+    assert first.transformation_catalog_version == (
+        "scenario-transformation-catalog.v1"
+    )
+    assert [item.to_dict() for item in first.applied_transformations] == [
+        {
+            "transformation_id": "trend-regime.v1",
+            "family": "trend-regime",
+            "catalog_version": "scenario-transformation-catalog.v1",
+            "implementation_version": "trend-regime.v1",
+            "parameters": {"direction": "bullish", "strength": "0.75"},
+        }
+    ]
+
+    assert [
+        (node.instrument, node.simulation_time, node.volume)
+        for node in first.nodes
+    ] == [
+        (node.instrument, node.simulation_time, node.volume)
+        for node in baseline.nodes
+    ]
+    assert any(
+        transformed.close != original.close
+        for transformed, original in zip(first.nodes, baseline.nodes, strict=True)
+    )
+    for simulation_time in sorted({node.simulation_time for node in first.nodes}):
+        transformed_at_time = {
+            node.instrument: node
+            for node in first.nodes
+            if node.simulation_time == simulation_time
+        }
+        baseline_at_time = {
+            node.instrument: node
+            for node in baseline.nodes
+            if node.simulation_time == simulation_time
+        }
+        factors = {
+            transformed_at_time[instrument].close
+            / baseline_at_time[instrument].close
+            for instrument in transformed_at_time
+        }
+        assert len(factors) == 1
+        for node in transformed_at_time.values():
+            assert node.low <= min(node.open, node.close)
+            assert node.high >= max(node.open, node.close)
+
+    opening_prices = {
+        instrument: next(
+            node.open for node in first.nodes if node.instrument == instrument
+        )
+        for instrument in ("sh.600000", "sz.000001")
+    }
+    for node in first.nodes:
+        price_limit = (
+            Decimal("0.05")
+            if node.instrument == "sz.000001"
+            else Decimal("0.10")
+        )
+        opening = opening_prices[node.instrument]
+        assert node.low >= opening * (Decimal("1") - price_limit)
+        assert node.high <= opening * (Decimal("1") + price_limit)
+
+
+def test_transformed_world_recomputes_every_derived_scenario_data_family() -> None:
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_cross_section_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    request = ScenarioTransformationRequestV1(
+        transformation_id="trend-regime.v1",
+        parameters={"direction": "bullish", "strength": "0.75"},
+    )
+    baseline = materializer.materialize_baseline(_segment(), seed=17)
+    transformed = materializer.materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+
+    def snapshot(path: object) -> dict[str, object]:
+        return ScenarioMarketView(
+            path,
+            initial_cursor=datetime(2024, 1, 2, 9, 40),
+        ).snapshot().to_dict()
+
+    baseline_snapshot = snapshot(baseline)
+    transformed_snapshot = snapshot(transformed)
+
+    def expected_session_returns(path: object) -> dict[str, Decimal]:
+        nodes = getattr(path, "nodes")
+        return {
+            instrument: (
+                next(
+                    node.close
+                    for node in reversed(nodes)
+                    if node.instrument == instrument
+                )
+                / next(node.open for node in nodes if node.instrument == instrument)
+                - Decimal("1")
+            )
+            for instrument in ("sh.600000", "sz.000001")
+        }
+
+    returns = expected_session_returns(transformed)
+    expected_market_return = sum(returns.values(), Decimal("0")) / Decimal("2")
+    expected_market_text = format(expected_market_return.normalize(), "f")
+    expected_scores = {
+        instrument: value - expected_market_return
+        for instrument, value in returns.items()
+    }
+
+    assert transformed_snapshot["market_context"] == {
+        "return": expected_market_text,
+        "breadth": "1",
+        "instrument_count": 2,
+    }
+    assert transformed_snapshot["sector_context"] == {
+        "banking": {
+            "return": expected_market_text,
+            "breadth": "1",
+            "instrument_count": 2,
+        }
+    }
+    assert transformed_snapshot["candidates"] == ["sh.600000", "sz.000001"]
+    assert transformed_snapshot["rankings"] == [
+        {
+            "instrument": "sh.600000",
+            "rank": 1,
+            "score": format(expected_scores["sh.600000"].normalize(), "f"),
+        },
+        {
+            "instrument": "sz.000001",
+            "rank": 2,
+            "score": format(expected_scores["sz.000001"].normalize(), "f"),
+        },
+    ]
+    assert set(transformed_snapshot["features"]["sh.600000"]) == {
+        "candidate_rank",
+        "candidate_score",
+        "market_breadth",
+        "market_return",
+        "relative_strength",
+        "return_30s",
+        "sector_breadth",
+        "sector_return",
+        "session_return",
+    }
+    assert transformed_snapshot["market_context"] != baseline_snapshot[
+        "market_context"
+    ]
+    assert transformed_snapshot["rankings"] != baseline_snapshot["rankings"]
+
+
+def test_headless_application_previews_baseline_versus_transformed_results() -> None:
+    source = _AdmittedFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(_segment().selection)
+    assert admission.segment is not None
+    baseline_version_id = _approve_baseline_recipe(
+        application,
+        admission.segment.segment_id,
+        seed=17,
+    )
+    transformed_payload = {
+        "schema_version": "scenario_recipe.v1",
+        "name": "Bullish trend",
+        "historical_segment_id": admission.segment.segment_id,
+        "transformations": [
+            {
+                "transformation_id": "trend-regime.v1",
+                "parameters": {"direction": "bullish", "strength": "0.75"},
+            }
+        ],
+        "execution_conditions": {},
+        "decision_cadence_minutes": 30,
+        "materialization_seed": 17,
+        "data_policy": "point-in-time",
+        "market_rule_profile": "a-share-cash-equity.v1",
+    }
+    transformed_draft = application.create_manual_recipe_draft(
+        transformed_payload,
+        author="test",
+    )
+    assert application.validate_recipe_draft(transformed_draft.draft_id).is_valid
+    transformed_version_id = application.approve_recipe_draft(
+        transformed_draft.draft_id,
+        actor="test-owner",
+    ).version_id
+
+    with pytest.raises(ValueError, match="baseline"):
+        application.materialize_baseline_reference_path(transformed_version_id)
+    baseline = application.materialize_reference_path(baseline_version_id)
+    transformed = application.materialize_reference_path(transformed_version_id)
+    comparison = application.compare_reference_market_paths(
+        baseline.artifact_hash,
+        transformed.artifact_hash,
+        at_time=datetime(2024, 1, 2, 9, 40),
+    )
+
+    assert comparison["status"] == "ready"
+    assert comparison["simulation_time"] == "2024-01-02T09:40:00"
+    assert comparison["baseline"]["artifact_hash"] == baseline.artifact_hash
+    assert comparison["transformed"]["artifact_hash"] == transformed.artifact_hash
+    assert comparison["baseline"]["market_context"] != comparison["transformed"][
+        "market_context"
+    ]
+    assert comparison["baseline"]["candidates"] == comparison["transformed"][
+        "candidates"
+    ]
+    assert Decimal(str(comparison["market_return_delta"])) > 0

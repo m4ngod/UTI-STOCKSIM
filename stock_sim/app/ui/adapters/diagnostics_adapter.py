@@ -68,6 +68,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._status_label: Any = None
         self._message_label: Any = None
         self._catalog_status_label: Any = None
+        self._transformation_catalog_label: Any = None
         self._segment_label: Any = None
         self._provenance_label: Any = None
         self._admission_label: Any = None
@@ -94,10 +95,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._fill_fraction_input: Any = None
         self._latency_input: Any = None
         self._partial_fills_input: Any = None
+        self._trend_direction_input: Any = None
+        self._trend_strength_input: Any = None
         self._create_recipe_button: Any = None
+        self._create_trend_recipe_button: Any = None
         self._validate_recipe_button: Any = None
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
+        self._scenario_preview_label: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._recipe_input_signature: tuple[str, ...] | None = None
@@ -112,6 +117,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._status_label = QLabel("Status: starting")
         self._message_label = QLabel("")
         self._catalog_status_label = QLabel("Historical segment: not checked")
+        self._transformation_catalog_label = QLabel(
+            "Transformation catalog: not loaded"
+        )
         self._segment_label = QLabel("No admitted historical segment")
         self._provenance_label = QLabel("Source: not available")
         self._admission_label = QLabel("")
@@ -148,20 +156,34 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._fill_fraction_input = QLineEdit("1")
         self._latency_input = QLineEdit("0")
         self._partial_fills_input = QLineEdit("true")
+        self._trend_direction_input = QLineEdit("bullish")
+        self._trend_direction_input.setPlaceholderText("Trend direction")
+        self._trend_strength_input = QLineEdit("0.5")
+        self._trend_strength_input.setPlaceholderText("Trend strength (0 to 1)")
         self._create_recipe_button = QPushButton("Create manual baseline recipe")
         self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
+        self._create_trend_recipe_button = QPushButton(
+            "Create trend/regime recipe"
+        )
+        self._create_trend_recipe_button.clicked.connect(
+            self._create_trend_recipe_from_inputs
+        )
         self._validate_recipe_button = QPushButton("Validate recipe")
         self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
         self._approve_recipe_button = QPushButton("Approve recipe explicitly")
         self._approve_recipe_button.clicked.connect(self._approve_current_recipe)
-        self._materialize_recipe_button = QPushButton("Materialize baseline")
+        self._materialize_recipe_button = QPushButton("Materialize recipe")
         self._materialize_recipe_button.clicked.connect(
             self._materialize_current_recipe
+        )
+        self._scenario_preview_label = QLabel(
+            "Baseline vs transformed: materialize both recipes to compare"
         )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
         layout.addWidget(self._catalog_status_label)
+        layout.addWidget(self._transformation_catalog_label)
         layout.addWidget(self._segment_label)
         layout.addWidget(self._provenance_label)
         layout.addWidget(self._admission_label)
@@ -188,10 +210,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._fill_fraction_input)
         layout.addWidget(self._latency_input)
         layout.addWidget(self._partial_fills_input)
+        layout.addWidget(self._trend_direction_input)
+        layout.addWidget(self._trend_strength_input)
         layout.addWidget(self._create_recipe_button)
+        layout.addWidget(self._create_trend_recipe_button)
         layout.addWidget(self._validate_recipe_button)
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
+        layout.addWidget(self._scenario_preview_label)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -254,6 +280,38 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             )
         except Exception:
             self._recipe_action_error = "The recipe draft could not be created."
+        self.refresh()
+
+    def _create_trend_recipe_from_inputs(self) -> None:
+        try:
+            segment_id = self._selected_recipe_segment_id()
+            partial_fills = str(self._partial_fills_input.text()).strip().lower()
+            if partial_fills not in {"true", "false"}:
+                raise ValueError("Partial fills must be true or false")
+            self._logic.create_trend_regime_recipe(
+                name=str(self._recipe_name_input.text()),
+                segment_id=segment_id,
+                author=str(self._recipe_author_input.text()),
+                cadence_minutes=int(str(self._cadence_input.text())),
+                seed=int(str(self._seed_input.text())),
+                direction=str(self._trend_direction_input.text()),
+                strength=str(self._trend_strength_input.text()),
+                commission_bps=str(self._commission_input.text()),
+                slippage_bps=str(self._slippage_input.text()),
+                max_fill_fraction=str(self._fill_fraction_input.text()),
+                latency_nodes=int(str(self._latency_input.text())),
+                allow_partial_fills=partial_fills == "true",
+            )
+            self._recipe_input_signature = self._recipe_authoring_signature(
+                segment_id=segment_id
+            )
+            self._recipe_action_error = ""
+        except (TypeError, ValueError):
+            self._recipe_action_error = (
+                "Check the recipe fields, trend parameters, and admitted segment."
+            )
+        except Exception:
+            self._recipe_action_error = "The trend/regime draft could not be created."
         self.refresh()
 
     def _validate_current_recipe(self) -> None:
@@ -327,6 +385,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             str(self._fill_fraction_input.text()),
             str(self._latency_input.text()),
             str(self._partial_fills_input.text()).strip().lower(),
+            str(self._trend_direction_input.text()).strip().lower(),
+            str(self._trend_strength_input.text()).strip(),
         )
 
     def _assert_recipe_inputs_match_draft(self) -> None:
@@ -360,6 +420,22 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         catalog = self._current_view.get("historical_segment_catalog", {})
         if not isinstance(catalog, dict):
             catalog = {}
+        transformation_catalog = self._current_view.get(
+            "transformation_catalog", {}
+        )
+        if not isinstance(transformation_catalog, dict):
+            transformation_catalog = {}
+        if self._transformation_catalog_label is not None:
+            entries = transformation_catalog.get("transformations", [])
+            identifiers = [
+                str(item.get("transformation_id"))
+                for item in entries
+                if isinstance(item, dict) and item.get("transformation_id")
+            ] if isinstance(entries, list) else []
+            self._transformation_catalog_label.setText(
+                "Transformation catalog: "
+                + (", ".join(identifiers) if identifiers else "not loaded")
+            )
         if self._catalog_status_label is not None:
             self._catalog_status_label.setText(
                 f"Historical segment: {catalog.get('status', 'not checked')}"
@@ -471,6 +547,40 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 )
             else:
                 self._recipe_materialization_label.setText("Not materialized")
+        comparison = self._current_view.get("scenario_comparison_preview", {})
+        if not isinstance(comparison, dict):
+            comparison = {}
+        if self._scenario_preview_label is not None:
+            if comparison.get("status") == "ready":
+                baseline_preview = comparison.get("baseline", {})
+                transformed_preview = comparison.get("transformed", {})
+                if not isinstance(baseline_preview, dict):
+                    baseline_preview = {}
+                if not isinstance(transformed_preview, dict):
+                    transformed_preview = {}
+                baseline_market = baseline_preview.get("market_context", {})
+                transformed_market = transformed_preview.get("market_context", {})
+                if not isinstance(baseline_market, dict):
+                    baseline_market = {}
+                if not isinstance(transformed_market, dict):
+                    transformed_market = {}
+                rankings = transformed_preview.get("rankings", [])
+                ranking_summary = ", ".join(
+                    f"{item.get('rank', '?')}. {item.get('instrument', 'unknown')}"
+                    for item in rankings
+                    if isinstance(item, dict)
+                ) if isinstance(rankings, list) else ""
+                self._scenario_preview_label.setText(
+                    "Baseline vs transformed | market return: "
+                    f"{baseline_market.get('return', 'unknown')} -> "
+                    f"{transformed_market.get('return', 'unknown')} | delta: "
+                    f"{comparison.get('market_return_delta', 'unknown')} | ranking: "
+                    f"{ranking_summary or 'not available'}"
+                )
+            else:
+                self._scenario_preview_label.setText(
+                    "Baseline vs transformed: materialize both recipes to compare"
+                )
 
 
 __all__ = ["DiagnosticsPanelAdapter"]
