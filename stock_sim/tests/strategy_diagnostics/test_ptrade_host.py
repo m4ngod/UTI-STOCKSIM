@@ -16,6 +16,7 @@ import pytest
 from strategy_diagnostics import InstrumentState, MarketPathNode, ScenarioMarketSnapshot
 import strategy_diagnostics.ptrade_host as ptrade_host_module
 from strategy_diagnostics.ptrade_host import (
+    LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST,
     PTRADE_SUBPROCESS_HOST_VERSION,
     PTRADE_SURFACE_VERSION,
     InProcessPTradeStrategyHost,
@@ -169,6 +170,7 @@ def test_ptrade_surface_manifest_is_versioned_and_fails_unknown_calls() -> None:
     assert len(manifest.content_hash) == 64
     assert manifest.history_units == ("30s",)
     assert QUENTX_SCENARIO_NATIVE_MANIFEST.history_units == ("1m", "1d")
+    assert LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST.history_units == ("1m",)
     manifest.require_call("get_history")
 
     with pytest.raises(

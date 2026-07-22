@@ -35,6 +35,12 @@ QUENTX_SCENARIO_NATIVE_STRATEGY_ID: Final = "quentx-5.2.3-scenario-native"
 QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION: Final = (
     "quentx-5.2.3-scenario-native.v1"
 )
+LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID: Final = (
+    "quentx-live-minute-scenario-native"
+)
+LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION: Final = (
+    "quentx-live-minute-scenario-native.v1"
+)
 
 ConfigurationCall = Literal["set_slippage", "set_commission"]
 LogLevel = Literal["info", "warning", "error"]
@@ -225,6 +231,40 @@ QUENTX_SCENARIO_NATIVE_MANIFEST: Final = PTradeCompatibilityManifest(
 )
 
 
+LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST: Final = PTradeCompatibilityManifest(
+    surface_version=PTRADE_SURFACE_VERSION,
+    strategy_id=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    strategy_version=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+    strategy_module=(
+        "strategy_diagnostics.live_minute_scenario_native_strategy"
+    ),
+    lifecycle_callbacks=("initialize", "handle_data"),
+    scheduled_callbacks=("scheduled_scan",),
+    scheduling_calls=("run_daily",),
+    context_fields=(
+        "current_dt",
+        "portfolio",
+        "state",
+        "eligible_universe",
+        "decision_cadence_minutes",
+        "order_shares",
+    ),
+    portfolio_fields=("available_cash", "total_value", "positions"),
+    market_data_calls=("set_universe", "get_history", "get_current_data"),
+    history_units=("1m",),
+    configuration_calls=("set_slippage", "set_commission"),
+    trading_calls=("order",),
+    logging_calls=("log.info", "log.warning", "log.error"),
+    strategy_lineage=(
+        "QuentX live-minute strategy",
+        "ptrade/live_minute_strategy.py",
+        "quant/live candidate-provider+risk-plan",
+        "scenario-native-adaptation.v1",
+    ),
+    candidate_data_policy="active-scenario-point-in-time-only",
+)
+
+
 PTRADE_COMPATIBILITY_MANIFESTS: Final[
     Mapping[tuple[str, str], PTradeCompatibilityManifest]
 ] = MappingProxyType(
@@ -237,6 +277,10 @@ PTRADE_COMPATIBILITY_MANIFESTS: Final[
             QUENTX_SCENARIO_NATIVE_MANIFEST.strategy_id,
             QUENTX_SCENARIO_NATIVE_MANIFEST.strategy_version,
         ): QUENTX_SCENARIO_NATIVE_MANIFEST,
+        (
+            LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST.strategy_id,
+            LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST.strategy_version,
+        ): LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST,
     }
 )
 
@@ -1879,6 +1923,9 @@ __all__ = [
     "PTRADE_SUBPROCESS_HOST_VERSION",
     "PTRADE_SURFACE_VERSION",
     "PTRADE_COMPATIBILITY_MANIFESTS",
+    "LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST",
+    "LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID",
+    "LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION",
     "QUENTX_SCENARIO_NATIVE_MANIFEST",
     "QUENTX_SCENARIO_NATIVE_STRATEGY_ID",
     "QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION",

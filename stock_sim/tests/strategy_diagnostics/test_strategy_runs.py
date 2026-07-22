@@ -26,6 +26,9 @@ from strategy_diagnostics.execution_conditions import (
 )
 from strategy_diagnostics.persistence import initialize_diagnostic_persistence
 from strategy_diagnostics.ptrade_host import (
+    LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST,
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
     QUENTX_SCENARIO_NATIVE_MANIFEST,
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
@@ -322,6 +325,65 @@ def _quentx_spec(
     )
 
 
+def _live_minute_path() -> MaterializedMarketPath:
+    path = _reference_path()
+    decline_start = datetime(2024, 1, 2, 10, 20)
+    rebound_start = datetime(2024, 1, 2, 10, 27)
+    rebound_end = datetime(2024, 1, 2, 10, 30)
+
+    def live_minute_node(node: MarketPathNode) -> MarketPathNode:
+        if node.instrument != "sh.600000":
+            return node
+        if node.simulation_time < decline_start:
+            price = Decimal("10")
+        elif node.simulation_time < rebound_start:
+            progress = Decimal(
+                str((node.simulation_time - decline_start).total_seconds())
+            ) / Decimal("420")
+            price = Decimal("10") - Decimal("0.25") * progress
+        elif node.simulation_time <= rebound_end:
+            progress = Decimal(
+                str((node.simulation_time - rebound_start).total_seconds())
+            ) / Decimal("180")
+            price = Decimal("9.75") + Decimal("0.07") * progress
+        else:
+            price = Decimal("9.82")
+        return replace(
+            node,
+            open=price,
+            high=price * Decimal("1.002"),
+            low=price * Decimal("0.998"),
+            close=price,
+            amount=price * node.volume,
+            features=(),
+        )
+
+    return replace(
+        path,
+        artifact_hash="d" * 64,
+        nodes=tuple(live_minute_node(node) for node in path.nodes),
+    )
+
+
+def _live_minute_spec(
+    path: MaterializedMarketPath,
+    *,
+    replica_id: str = "live-minute-baseline-replica",
+) -> StrategyRunSpecification:
+    specification = _spec(
+        path,
+        order_shares=1000,
+        replica_id=replica_id,
+    )
+    return replace(
+        specification,
+        strategy_id=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+        strategy_version=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+        ptrade_surface_version=LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST.surface_version,
+        ptrade_manifest_hash=LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST.content_hash,
+    )
+
+
 def _execution_stress_path(
     path: MaterializedMarketPath,
     **overrides: object,
@@ -423,6 +485,136 @@ def test_quentx_scenario_native_run_is_deterministic_and_auditable(
     assert any(
         "scenario-native candidate generation" in record.message
         for record in first.ptrade_audit.log_records
+    )
+
+
+def test_live_minute_scenario_native_run_is_deterministic_and_auditable(
+    tmp_path: Path,
+) -> None:
+    path = _live_minute_path()
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'live-minute-scenario-native.db'}",
+        future=True,
+    )
+    initialize_diagnostic_persistence(database)
+    first_engine = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    )
+    first_started = first_engine.start(_live_minute_spec(path))
+    first = first_engine.run_to_completion(first_started.run_id)
+
+    second_engine = _engine(path)
+    second_started = second_engine.start(_live_minute_spec(path))
+    second = second_engine.run_to_completion(second_started.run_id)
+    restarted = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    ).get(first.run_id)
+
+    assert first.status == "completed"
+    assert first.run_artifact_hash == second.run_artifact_hash
+    assert first.orders == second.orders
+    assert first.fills == second.fills
+    assert first.positions == second.positions
+    assert first.equity_curve == second.equity_curve
+    assert restarted.to_dict() == first.to_dict()
+    assert tuple((item.instrument, item.shares) for item in first.orders) == (
+        ("sh.600000", 1000),
+    )
+    assert first.fills
+    assert tuple(item.instrument for item in first.positions) == ("sh.600000",)
+    assert first.ptrade_audit is not None
+    assert first.ptrade_audit.manifest_hash == (
+        LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST.content_hash
+    )
+    assert first.ptrade_audit.to_dict()["strategy_identity"] == {
+        "strategy_id": LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+        "strategy_version": LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+        "strategy_lineage": [
+            "QuentX live-minute strategy",
+            "ptrade/live_minute_strategy.py",
+            "quant/live candidate-provider+risk-plan",
+            "scenario-native-adaptation.v1",
+        ],
+        "candidate_data_policy": "active-scenario-point-in-time-only",
+    }
+    assert first.ptrade_audit.configuration_requests == (
+        PTradeConfigurationRequest("set_slippage", Decimal("0")),
+        PTradeConfigurationRequest("set_commission", Decimal("3")),
+    )
+    assert any(
+        "live-minute scenario-native entry" in record.message
+        for record in first.ptrade_audit.log_records
+    )
+
+
+@pytest.mark.parametrize("ledger_mutation", ("missing", "corrupt"))
+def test_live_minute_sql_restart_fails_closed_on_an_invalid_daily_ledger(
+    tmp_path: Path,
+    ledger_mutation: str,
+) -> None:
+    path = _live_minute_path()
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'live-minute-corrupt-ledger.db'}",
+        future=True,
+    )
+    initialize_diagnostic_persistence(database)
+    engine = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    )
+    started = engine.start(_live_minute_spec(path))
+    initialized = engine.advance(started.run_id, node_count=1)
+    assert initialized.status == "running"
+    assert initialized.orders == ()
+
+    with database.begin() as connection:
+        state_json = connection.execute(
+            text(
+                "SELECT state_json FROM diagnostic_strategy_runs "
+                "WHERE run_id = :run_id"
+            ),
+            {"run_id": started.run_id},
+        ).scalar_one()
+        payload = json.loads(str(state_json))
+        strategy_state = payload["ptrade_runtime_state"]["strategy_state"]
+        if ledger_mutation == "missing":
+            strategy_state.pop("live_minute.daily_ledger")
+        else:
+            strategy_state["live_minute.daily_ledger"] = "{not-json"
+        connection.execute(
+            text(
+                "UPDATE diagnostic_strategy_runs SET state_json = :state_json "
+                "WHERE run_id = :run_id"
+            ),
+            {
+                "run_id": started.run_id,
+                "state_json": json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            },
+        )
+
+    restarted = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    )
+    failed = restarted.advance(started.run_id, node_count=1)
+
+    assert failed.status == "failed"
+    assert failed.orders == ()
+    assert failed.failure_code == "ValueError"
+    assert failed.failure_message is not None
+    assert f"daily risk ledger is {ledger_mutation}; refusing to trade" in (
+        failed.failure_message
     )
 
 
