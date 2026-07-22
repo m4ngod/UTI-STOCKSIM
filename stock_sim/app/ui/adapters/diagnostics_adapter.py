@@ -8,7 +8,14 @@ from typing import Any, Literal
 from .base_adapter import PanelAdapter
 
 try:
-    from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+    from PySide6.QtWidgets import (
+        QLabel,
+        QLineEdit,
+        QPlainTextEdit,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
+    )
 except Exception:  # pragma: no cover - exercised only without Qt installed
     class QWidget:  # type: ignore[no-redef]
         pass
@@ -32,6 +39,19 @@ except Exception:  # pragma: no cover - exercised only without Qt installed
 
         def setPlaceholderText(self, _: str) -> None:
             return None
+
+    class QPlainTextEdit:  # type: ignore[no-redef]
+        def __init__(self) -> None:
+            self._text = ""
+
+        def setReadOnly(self, _: bool) -> None:
+            return None
+
+        def setPlainText(self, text: str) -> None:
+            self._text = text
+
+        def toPlainText(self) -> str:
+            return self._text
 
     class _Signal:
         def __init__(self) -> None:
@@ -119,8 +139,21 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
         self._scenario_preview_label: Any = None
+        self._run_status_label: Any = None
+        self._run_equity_label: Any = None
+        self._run_equity_curve_view: Any = None
+        self._run_initial_cash_input: Any = None
+        self._run_order_shares_input: Any = None
+        self._run_replica_input: Any = None
+        self._start_run_button: Any = None
+        self._advance_run_button: Any = None
+        self._pause_run_button: Any = None
+        self._resume_run_button: Any = None
+        self._complete_run_button: Any = None
+        self._cancel_run_button: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
+        self._run_action_error = ""
         self._recipe_input_signature: tuple[str, ...] | None = None
 
     def current_view(self) -> dict[str, Any]:
@@ -267,6 +300,33 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._scenario_preview_label = QLabel(
             "Baseline vs transformed: materialize both recipes to compare"
         )
+        self._run_status_label = QLabel("Baseline Strategy Run: not started")
+        self._run_equity_label = QLabel("No private Portfolio Ledger yet")
+        self._run_equity_curve_view = QPlainTextEdit()
+        self._run_equity_curve_view.setReadOnly(True)
+        self._run_equity_curve_view.setPlainText(
+            "Equity curve: complete a baseline Strategy Run to inspect it."
+        )
+        self._run_initial_cash_input = QLineEdit("1000000")
+        self._run_initial_cash_input.setPlaceholderText("Initial cash")
+        self._run_order_shares_input = QLineEdit("100")
+        self._run_order_shares_input.setPlaceholderText(
+            "Reference strategy order shares"
+        )
+        self._run_replica_input = QLineEdit("baseline-replica-1")
+        self._run_replica_input.setPlaceholderText("Scenario replica identity")
+        self._start_run_button = QPushButton("Start baseline Strategy Run")
+        self._start_run_button.clicked.connect(self._start_baseline_run_from_inputs)
+        self._advance_run_button = QPushButton("Advance one Simulation Time node")
+        self._advance_run_button.clicked.connect(self._advance_baseline_run)
+        self._pause_run_button = QPushButton("Pause at node boundary")
+        self._pause_run_button.clicked.connect(self._pause_baseline_run)
+        self._resume_run_button = QPushButton("Resume baseline Strategy Run")
+        self._resume_run_button.clicked.connect(self._resume_baseline_run)
+        self._complete_run_button = QPushButton("Complete baseline Strategy Run")
+        self._complete_run_button.clicked.connect(self._complete_baseline_run)
+        self._cancel_run_button = QPushButton("Cancel at node boundary")
+        self._cancel_run_button.clicked.connect(self._cancel_baseline_run)
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -322,6 +382,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
         layout.addWidget(self._scenario_preview_label)
+        layout.addWidget(self._run_status_label)
+        layout.addWidget(self._run_equity_label)
+        layout.addWidget(self._run_equity_curve_view)
+        layout.addWidget(self._run_initial_cash_input)
+        layout.addWidget(self._run_order_shares_input)
+        layout.addWidget(self._run_replica_input)
+        layout.addWidget(self._start_run_button)
+        layout.addWidget(self._advance_run_button)
+        layout.addWidget(self._pause_run_button)
+        layout.addWidget(self._resume_run_button)
+        layout.addWidget(self._complete_run_button)
+        layout.addWidget(self._cancel_run_button)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -519,6 +591,41 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             self._recipe_action_error = (
                 "Only an approved recipe version can be materialized."
             )
+        self.refresh()
+
+    def _start_baseline_run_from_inputs(self) -> None:
+        try:
+            self._logic.start_baseline_run(
+                initial_cash=str(self._run_initial_cash_input.text()).strip(),
+                order_shares=int(str(self._run_order_shares_input.text()).strip()),
+                replica_id=str(self._run_replica_input.text()).strip(),
+            )
+            self._run_action_error = ""
+        except Exception as error:
+            self._run_action_error = str(error) or "Unable to start baseline run."
+        self.refresh()
+
+    def _advance_baseline_run(self) -> None:
+        self._apply_run_action(lambda: self._logic.advance_baseline_run(node_count=1))
+
+    def _pause_baseline_run(self) -> None:
+        self._apply_run_action(self._logic.pause_baseline_run)
+
+    def _resume_baseline_run(self) -> None:
+        self._apply_run_action(self._logic.resume_baseline_run)
+
+    def _complete_baseline_run(self) -> None:
+        self._apply_run_action(self._logic.complete_baseline_run)
+
+    def _cancel_baseline_run(self) -> None:
+        self._apply_run_action(self._logic.cancel_baseline_run)
+
+    def _apply_run_action(self, action: Any) -> None:
+        try:
+            action()
+            self._run_action_error = ""
+        except Exception as error:
+            self._run_action_error = str(error) or "Unable to control baseline run."
         self.refresh()
 
     def _selected_recipe_segment_id(self) -> str:
@@ -723,6 +830,69 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 )
             else:
                 self._recipe_materialization_label.setText("Not materialized")
+        strategy_run = self._current_view.get("baseline_strategy_run", {})
+        if not isinstance(strategy_run, dict):
+            strategy_run = {}
+        if self._run_status_label is not None:
+            run_status = str(strategy_run.get("status", "not_started"))
+            current_time = strategy_run.get("current_simulation_time")
+            progress = ""
+            if strategy_run.get("total_node_count") is not None:
+                progress = (
+                    f" | nodes {strategy_run.get('processed_node_count', 0)}/"
+                    f"{strategy_run.get('total_node_count', 0)}"
+                )
+            details = (
+                f"Baseline Strategy Run: {run_status}{progress}"
+                + (f" | Simulation Time {current_time}" if current_time else "")
+            )
+            failure = strategy_run.get("failure")
+            if isinstance(failure, dict) and failure.get("message"):
+                details += f" | failure: {failure['message']}"
+            if self._run_action_error:
+                details += f" | {self._run_action_error}"
+            self._run_status_label.setText(details)
+        if self._run_equity_label is not None:
+            portfolio = strategy_run.get("portfolio", {})
+            if not isinstance(portfolio, dict):
+                portfolio = {}
+            equity_curve = strategy_run.get("equity_curve", [])
+            last_equity = (
+                equity_curve[-1].get("equity", "not available")
+                if isinstance(equity_curve, list)
+                and equity_curve
+                and isinstance(equity_curve[-1], dict)
+                else "not available"
+            )
+            orders = strategy_run.get("orders", [])
+            fills = strategy_run.get("fills", [])
+            order_count = len(orders) if isinstance(orders, list) else 0
+            fill_count = len(fills) if isinstance(fills, list) else 0
+            self._run_equity_label.setText(
+                "Private Portfolio Ledger | cash "
+                f"{portfolio.get('cash', 'not available')} | equity {last_equity} | "
+                f"orders {order_count} | fills {fill_count} | "
+                "Reference Market Path prices and volumes remain immutable"
+            )
+        if self._run_equity_curve_view is not None:
+            equity_curve = strategy_run.get("equity_curve", [])
+            curve_lines = ["Simulation Time | Equity | Cash | Positions Value"]
+            if isinstance(equity_curve, list):
+                curve_lines.extend(
+                    " | ".join(
+                        (
+                            str(point.get("simulation_time", "unknown")),
+                            str(point.get("equity", "unknown")),
+                            str(point.get("cash", "unknown")),
+                            str(point.get("positions_value", "unknown")),
+                        )
+                    )
+                    for point in equity_curve
+                    if isinstance(point, dict)
+                )
+            if len(curve_lines) == 1:
+                curve_lines.append("No equity points recorded yet")
+            self._run_equity_curve_view.setPlainText("\n".join(curve_lines))
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):
             comparison = {}

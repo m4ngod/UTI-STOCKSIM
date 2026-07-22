@@ -76,6 +76,19 @@ from .transformations import (
     TransformationParameterDefinition,
     create_initial_transformation_catalog,
 )
+from .strategy_runs import (
+    BASELINE_EXECUTION_POLICY_VERSION,
+    EquityPoint,
+    PortfolioPosition,
+    PrivateFill,
+    REFERENCE_STRATEGY_ID,
+    REFERENCE_STRATEGY_VERSION,
+    STRATEGY_RUN_ENGINE_VERSION,
+    StrategyOrder,
+    StrategyRunEngine,
+    StrategyRunSnapshot,
+    StrategyRunSpecification,
+)
 
 __all__ = [
     "AIRecipeAssistant",
@@ -140,5 +153,16 @@ __all__ = [
     "TransformationCatalogEntry",
     "TransformationParameterDefinition",
     "create_initial_transformation_catalog",
+    "BASELINE_EXECUTION_POLICY_VERSION",
+    "EquityPoint",
+    "PortfolioPosition",
+    "PrivateFill",
+    "REFERENCE_STRATEGY_ID",
+    "REFERENCE_STRATEGY_VERSION",
+    "STRATEGY_RUN_ENGINE_VERSION",
+    "StrategyOrder",
+    "StrategyRunEngine",
+    "StrategyRunSnapshot",
+    "StrategyRunSpecification",
     "create_diagnostics_application",
 ]

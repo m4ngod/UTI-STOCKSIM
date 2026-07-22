@@ -32,12 +32,14 @@ from .recipes import (
 
 _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
 _SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0004_ai_recipe_assistant"
+_AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0005_strategy_runs"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
     _HISTORICAL_SEGMENT_REVISION,
     _SCENARIO_RECIPE_REVISION,
+    _AI_RECIPE_ASSISTANT_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -71,8 +73,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_historical_segment_catalog(connection)
             elif revision == _SCENARIO_RECIPE_REVISION:
                 _create_scenario_recipe_lifecycle(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _AI_RECIPE_ASSISTANT_REVISION:
                 _create_ai_recipe_assistant_audit(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_strategy_run_facts(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -194,6 +198,75 @@ def _create_ai_recipe_assistant_audit(connection: Connection) -> None:
         "error_code VARCHAR(128) NULL, "
         "error_message TEXT NULL, "
         "FOREIGN KEY(draft_id) REFERENCES diagnostic_recipe_drafts(draft_id)"
+        ")"
+    )
+
+
+def _create_strategy_run_facts(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_strategy_runs ("
+        "run_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "status VARCHAR(32) NOT NULL, "
+        "materialization_hash VARCHAR(64) NOT NULL, "
+        "recipe_version_id VARCHAR(96) NOT NULL, "
+        "strategy_id VARCHAR(128) NOT NULL, "
+        "strategy_version VARCHAR(128) NOT NULL, "
+        "decision_cadence_minutes INTEGER NOT NULL, "
+        "current_simulation_time VARCHAR(64) NULL, "
+        "next_node_index INTEGER NOT NULL, "
+        "state_json TEXT NOT NULL, "
+        "run_artifact_hash VARCHAR(64) NULL, "
+        "failure_code VARCHAR(128) NULL, "
+        "failure_message TEXT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_run_orders ("
+        "order_id VARCHAR(160) PRIMARY KEY NOT NULL, "
+        "run_id VARCHAR(96) NOT NULL, "
+        "instrument VARCHAR(32) NOT NULL, "
+        "shares INTEGER NOT NULL, "
+        "decision_time VARCHAR(64) NOT NULL, "
+        "activation_time VARCHAR(64) NOT NULL, "
+        "status VARCHAR(32) NOT NULL, "
+        "rejection_reason VARCHAR(128) NULL, "
+        "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_run_fills ("
+        "fill_id VARCHAR(192) PRIMARY KEY NOT NULL, "
+        "run_id VARCHAR(96) NOT NULL, "
+        "order_id VARCHAR(160) NOT NULL, "
+        "instrument VARCHAR(32) NOT NULL, "
+        "shares INTEGER NOT NULL, "
+        "price VARCHAR(64) NOT NULL, "
+        "gross_value VARCHAR(64) NOT NULL, "
+        "simulation_time VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id), "
+        "FOREIGN KEY(order_id) REFERENCES diagnostic_run_orders(order_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_run_positions ("
+        "run_id VARCHAR(96) NOT NULL, "
+        "instrument VARCHAR(32) NOT NULL, "
+        "shares INTEGER NOT NULL, "
+        "total_cost VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(run_id, instrument), "
+        "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_run_equity ("
+        "run_id VARCHAR(96) NOT NULL, "
+        "simulation_time VARCHAR(64) NOT NULL, "
+        "cash VARCHAR(64) NOT NULL, "
+        "positions_value VARCHAR(64) NOT NULL, "
+        "equity VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(run_id, simulation_time), "
+        "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id)"
         ")"
     )
 

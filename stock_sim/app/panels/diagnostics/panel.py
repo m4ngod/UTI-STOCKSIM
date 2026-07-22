@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Mapping, Protocol
 
 from strategy_diagnostics import HistoricalSegmentSelection
@@ -14,6 +15,10 @@ class _DiagnosticsState(Protocol):
 
 class _MaterializedMarketPath(Protocol):
     def to_preview_dict(self) -> dict[str, object]: ...
+
+
+class _StrategyRunSnapshot(Protocol):
+    def to_dict(self) -> dict[str, object]: ...
 
 
 class DiagnosticsApplicationPort(Protocol):
@@ -72,6 +77,38 @@ class DiagnosticsApplicationPort(Protocol):
         at_time: datetime,
     ) -> dict[str, object]: ...
 
+    def start_baseline_strategy_run(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        replica_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def strategy_run_status(self, run_id: str) -> _StrategyRunSnapshot: ...
+
+    def advance_strategy_run(
+        self,
+        run_id: str,
+        *,
+        node_count: int = 1,
+    ) -> _StrategyRunSnapshot: ...
+
+    def complete_strategy_run(
+        self,
+        run_id: str,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
+    def pause_strategy_run(self, run_id: str) -> _StrategyRunSnapshot: ...
+
+    def resume_strategy_run(self, run_id: str) -> _StrategyRunSnapshot: ...
+
+    def cancel_strategy_run(self, run_id: str) -> _StrategyRunSnapshot: ...
+
 
 class DiagnosticsPanel:
     def __init__(self, application: DiagnosticsApplicationPort) -> None:
@@ -92,6 +129,10 @@ class DiagnosticsPanel:
             "status": "not_ready",
             "message": "Materialize a baseline and transformed recipe to compare them.",
         }
+        self._baseline_strategy_run: dict[str, object] = {
+            "status": "not_started",
+            "message": "Materialize an approved baseline recipe to start a run.",
+        }
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
@@ -106,6 +147,7 @@ class DiagnosticsPanel:
         view["scenario_comparison_preview"] = dict(
             self._scenario_comparison_preview
         )
+        view["baseline_strategy_run"] = dict(self._baseline_strategy_run)
         return view
 
     def admit_historical_segment(
@@ -445,6 +487,8 @@ class DiagnosticsPanel:
             str(approved["version_id"])
         )
         materialized_view = path.to_preview_dict()
+        materialized_view["recipe_version_id"] = approved["version_id"]
+        materialized_view["recipe_content_hash"] = approved["content_hash"]
         applied = materialized_view.get("applied_transformations", [])
         materialization_kind = "transformed" if applied else "baseline"
         self._materializations[materialization_kind] = materialized_view
@@ -464,6 +508,68 @@ class DiagnosticsPanel:
         self._recipe_workbench["status"] = "materialized"
         self._recipe_workbench["materialization"] = materialized_view
         return materialized_view
+
+    def start_baseline_run(
+        self,
+        *,
+        initial_cash: str,
+        order_shares: int,
+        replica_id: str,
+    ) -> dict[str, object]:
+        baseline = self._materializations.get("baseline")
+        if not isinstance(baseline, dict):
+            raise ValueError("Materialize an approved baseline recipe before running it")
+        snapshot = self._application.start_baseline_strategy_run(
+            str(baseline["recipe_version_id"]),
+            str(baseline["artifact_hash"]),
+            initial_cash=Decimal(initial_cash),
+            order_shares=order_shares,
+            replica_id=replica_id,
+        )
+        return self._record_baseline_run(snapshot)
+
+    def advance_baseline_run(self, *, node_count: int = 1) -> dict[str, object]:
+        snapshot = self._application.advance_strategy_run(
+            self._baseline_run_id(),
+            node_count=node_count,
+        )
+        return self._record_baseline_run(snapshot)
+
+    def complete_baseline_run(
+        self,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.complete_strategy_run(
+            self._baseline_run_id(),
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_baseline_run(snapshot)
+
+    def pause_baseline_run(self) -> dict[str, object]:
+        snapshot = self._application.pause_strategy_run(self._baseline_run_id())
+        return self._record_baseline_run(snapshot)
+
+    def resume_baseline_run(self) -> dict[str, object]:
+        snapshot = self._application.resume_strategy_run(self._baseline_run_id())
+        return self._record_baseline_run(snapshot)
+
+    def cancel_baseline_run(self) -> dict[str, object]:
+        snapshot = self._application.cancel_strategy_run(self._baseline_run_id())
+        return self._record_baseline_run(snapshot)
+
+    def _baseline_run_id(self) -> str:
+        run_id = self._baseline_strategy_run.get("run_id")
+        if not isinstance(run_id, str):
+            raise ValueError("No baseline Strategy Run has been started")
+        return run_id
+
+    def _record_baseline_run(
+        self,
+        snapshot: _StrategyRunSnapshot,
+    ) -> dict[str, object]:
+        self._baseline_strategy_run = snapshot.to_dict()
+        return dict(self._baseline_strategy_run)
 
     def _require_workbench_item(self, key: str) -> dict[str, object]:
         item = self._recipe_workbench.get(key)

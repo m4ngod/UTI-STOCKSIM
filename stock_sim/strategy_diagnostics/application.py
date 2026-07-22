@@ -43,6 +43,15 @@ from .recipes import (
     ScenarioRecipeDraft,
 )
 from .transformations import create_initial_transformation_catalog
+from .strategy_runs import (
+    BASELINE_EXECUTION_POLICY_VERSION,
+    REFERENCE_STRATEGY_ID,
+    REFERENCE_STRATEGY_VERSION,
+    SqlStrategyRunRepository,
+    StrategyRunEngine,
+    StrategyRunSnapshot,
+    StrategyRunSpecification,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +117,7 @@ class DiagnosticsApplication:
             transformation_catalog=self._transformation_catalog,
         )
         self._recipe_assistant = recipe_assistant
+        self._strategy_runs = StrategyRunEngine(self._load_reference_path)
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -128,6 +138,7 @@ class DiagnosticsApplication:
         self._recipe_workbench.replace_repository(
             SqlScenarioRecipeRepository(engine)
         )
+        self._strategy_runs.replace_repository(SqlStrategyRunRepository(engine))
         state = self.start()
         self._state = replace(
             state,
@@ -384,6 +395,99 @@ class DiagnosticsApplication:
             "transformed": transformed,
             "market_return_delta": format(market_return_delta.normalize(), "f"),
         }
+
+    def start_baseline_strategy_run(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        replica_id: str,
+    ) -> StrategyRunSnapshot:
+        """Start the versioned reference strategy on an approved baseline path."""
+
+        self.status()
+        approved = self._recipe_workbench.get_version(recipe_version_id)
+        if approved.recipe.transformations:
+            raise ValueError("An anchored baseline run requires a baseline recipe")
+        path = self._load_reference_path(materialization_hash)
+        if (
+            approved.recipe.historical_segment_id,
+            approved.recipe.materialization_seed,
+            approved.recipe.market_rule_profile,
+        ) != (
+            path.segment_id,
+            path.seed,
+            path.market_rule_profile_version,
+        ):
+            raise ValueError(
+                "Approved baseline recipe does not match the materialized market path"
+            )
+        specification = StrategyRunSpecification(
+            recipe_version_id=approved.version_id,
+            recipe_content_hash=approved.content_hash,
+            materialization_hash=path.artifact_hash,
+            source_snapshot_id=path.source_snapshot_id,
+            materialization_seed=path.seed,
+            transformation_catalog_version=path.transformation_catalog_version,
+            transformation_implementation_versions=tuple(
+                f"{item.transformation_id}@{item.implementation_version}"
+                for item in path.applied_transformations
+            ),
+            market_rule_profile_version=path.market_rule_profile_version,
+            execution_policy_version=BASELINE_EXECUTION_POLICY_VERSION,
+            strategy_id=REFERENCE_STRATEGY_ID,
+            strategy_version=REFERENCE_STRATEGY_VERSION,
+            decision_cadence_minutes=approved.recipe.decision_cadence_minutes,
+            initial_cash=initial_cash,
+            order_shares=order_shares,
+            replica_id=replica_id,
+            code_identity="strategy-diagnostics.v1",
+        )
+        return self._strategy_runs.start(specification)
+
+    def strategy_run_status(self, run_id: str) -> StrategyRunSnapshot:
+        self.status()
+        return self._strategy_runs.get(run_id)
+
+    def advance_strategy_run(
+        self,
+        run_id: str,
+        *,
+        node_count: int = 1,
+    ) -> StrategyRunSnapshot:
+        self.status()
+        return self._strategy_runs.advance(run_id, node_count=node_count)
+
+    def complete_strategy_run(
+        self,
+        run_id: str,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> StrategyRunSnapshot:
+        self.status()
+        return self._strategy_runs.run_to_completion(
+            run_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def pause_strategy_run(self, run_id: str) -> StrategyRunSnapshot:
+        self.status()
+        return self._strategy_runs.pause(run_id)
+
+    def resume_strategy_run(self, run_id: str) -> StrategyRunSnapshot:
+        self.status()
+        return self._strategy_runs.resume(run_id)
+
+    def cancel_strategy_run(self, run_id: str) -> StrategyRunSnapshot:
+        self.status()
+        return self._strategy_runs.cancel(run_id)
+
+    def _load_reference_path(self, artifact_hash: str) -> MaterializedMarketPath:
+        if self._scenario_materializer is None:
+            raise RuntimeError("No Scenario Materializer is configured")
+        return self._scenario_materializer.get(artifact_hash)
 
 
 def create_diagnostics_application(

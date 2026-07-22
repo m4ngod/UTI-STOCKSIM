@@ -753,6 +753,80 @@ def test_diagnostics_workspace_shows_requested_and_effective_market_structure() 
     ]
 
 
+def test_diagnostics_panel_controls_and_inspects_an_anchored_baseline_run() -> None:
+    application = _admittable_application()
+    panel = DiagnosticsPanel(application)
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = str(admitted["segment"]["segment_id"])
+    panel.create_baseline_recipe(
+        name="Anchored baseline",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    materialized = panel.materialize_current_recipe()
+
+    started = panel.start_baseline_run(
+        initial_cash="100000",
+        order_shares=100,
+        replica_id="workspace-baseline-1",
+    )
+    paused = panel.pause_baseline_run()
+    resumed = panel.resume_baseline_run()
+    completed = panel.complete_baseline_run(nodes_per_batch=3)
+    view = panel.get_view()["baseline_strategy_run"]
+
+    assert started["status"] == "running"
+    assert paused["status"] == "paused"
+    assert resumed["status"] == "running"
+    assert completed["status"] == "completed"
+    assert completed["materialization_hash"] == materialized["artifact_hash"]
+    assert completed["processed_node_count"] == completed["total_node_count"]
+    assert completed["equity_curve"]
+    assert completed["portfolio"] == {"cash": "100000", "positions": []}
+    assert completed["run_artifact_hash"]
+    assert view == completed
+
+
+def test_diagnostics_panel_cancels_a_baseline_run_at_a_node_boundary() -> None:
+    application = _admittable_application()
+    panel = DiagnosticsPanel(application)
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    panel.create_baseline_recipe(
+        name="Cancellable baseline",
+        segment_id=str(admitted["segment"]["segment_id"]),
+        author="researcher",
+        cadence_minutes=60,
+        seed=18,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+    started = panel.start_baseline_run(
+        initial_cash="100000",
+        order_shares=100,
+        replica_id="workspace-cancel-1",
+    )
+    advanced = panel.advance_baseline_run(node_count=1)
+
+    cancelled = panel.cancel_baseline_run()
+
+    assert cancelled["run_id"] == started["run_id"]
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["processed_node_count"] == advanced["processed_node_count"] == 1
+
+
 def test_diagnostics_workspace_shows_requested_and_effective_liquidity() -> None:
     panel = DiagnosticsPanel(  # type: ignore[arg-type]
         _liquidity_admittable_application()
@@ -866,6 +940,47 @@ def test_diagnostics_adapter_drives_recipe_review_approval_and_materialization()
     assert workbench["status"] == "materialized"
     assert workbench["validation"]["is_valid"] is True
     assert workbench["approved_version"]["approval_actor"] == "owner"
+
+
+def test_diagnostics_adapter_controls_and_renders_a_baseline_strategy_run() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("UI anchored baseline")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._cadence_input.setText("30")
+    adapter._seed_input.setText("17")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+    adapter._run_initial_cash_input.setText("100000")
+    adapter._run_order_shares_input.setText("100")
+    adapter._run_replica_input.setText("ui-baseline-1")
+
+    adapter._start_run_button.click()
+    assert adapter.current_view()["baseline_strategy_run"]["status"] == "running"
+    adapter._pause_run_button.click()
+    assert adapter.current_view()["baseline_strategy_run"]["status"] == "paused"
+    adapter._resume_run_button.click()
+    adapter._complete_run_button.click()
+
+    run = adapter.current_view()["baseline_strategy_run"]
+    assert run["status"] == "completed"
+    assert run["equity_curve"]
+    assert "completed" in adapter._run_status_label.text()
+    assert "Private Portfolio Ledger" in adapter._run_equity_label.text()
+    assert "remain immutable" in adapter._run_equity_label.text()
+    curve_text = adapter._run_equity_curve_view.toPlainText()
+    assert str(run["equity_curve"][0]["simulation_time"]) in curve_text
+    assert str(run["equity_curve"][-1]["simulation_time"]) in curve_text
+    assert len(curve_text.splitlines()) == len(run["equity_curve"]) + 1
 
 
 def test_diagnostics_adapter_renders_baseline_versus_transformed_preview() -> None:
