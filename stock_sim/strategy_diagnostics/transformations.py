@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Protocol
+from typing import TYPE_CHECKING, Callable, Final, Iterable, Literal, Mapping, Protocol
 
 if TYPE_CHECKING:
     from .market_paths import (
@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 ParameterValueType = Literal["decimal", "enum", "integer"]
 TransformationPhase = Literal["gap", "shock", "persistence", "recovery"]
+SCENARIO_TRANSFORMATION_CATALOG_VERSION: Final = (
+    "scenario-transformation-catalog.v1"
+)
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -1230,6 +1233,20 @@ def _scale_bar(bar: FiveMinuteBar, factor: Decimal) -> FiveMinuteBar:
     )
 
 
+def _apply_execution_stress(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    if not parameters:
+        raise ValueError(
+            "execution-stress.v1 requires at least one scenario override"
+        )
+    return _TransformationApplication(
+        world=world,
+        statistics=(("reference_market_path_changed", "false"),),
+    )
+
+
 _TRANSFORMATION_IMPLEMENTATIONS: Mapping[
     str,
     Callable[
@@ -1237,6 +1254,7 @@ _TRANSFORMATION_IMPLEMENTATIONS: Mapping[
         _TransformationApplication,
     ],
 ] = {
+    "execution-stress.v1": _apply_execution_stress,
     "liquidity-stress.v1": _apply_liquidity_stress,
     "market-structure.v1": _apply_market_structure,
     "shock-recovery.v1": _apply_shock_recovery,
@@ -1399,8 +1417,65 @@ def _state_at(
 
 def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
     return ScenarioTransformationCatalog(
-        catalog_version="scenario-transformation-catalog.v1",
+        catalog_version=SCENARIO_TRANSFORMATION_CATALOG_VERSION,
         entries=(
+            TransformationCatalogEntry(
+                transformation_id="execution-stress.v1",
+                family="execution-stress",
+                implementation_version="execution-stress.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="commission_bps",
+                        value_type="decimal",
+                        required=False,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("100"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="slippage_bps",
+                        value_type="decimal",
+                        required=False,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1000"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="latency_nodes",
+                        value_type="integer",
+                        required=False,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("120"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="max_fill_fraction",
+                        value_type="decimal",
+                        required=False,
+                        minimum=Decimal("0.01"),
+                        maximum=Decimal("1"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="allow_partial_fills",
+                        value_type="enum",
+                        required=False,
+                        choices=("false", "true"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="rejection_mode",
+                        value_type="enum",
+                        required=False,
+                        choices=("none", "reject-all"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "execution-only-reference-path-identity",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                    "private-portfolio-effects-only",
+                ),
+            ),
             TransformationCatalogEntry(
                 transformation_id="liquidity-stress.v1",
                 family="liquidity",
@@ -1581,6 +1656,7 @@ def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
 
 __all__ = [
     "AppliedTransformation",
+    "SCENARIO_TRANSFORMATION_CATALOG_VERSION",
     "ScenarioTransformationCatalog",
     "TransformationCatalogEntry",
     "TransformationCatalogIssue",

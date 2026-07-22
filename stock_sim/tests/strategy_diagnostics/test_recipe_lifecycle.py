@@ -324,6 +324,63 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
         "catalog_version": "scenario-transformation-catalog.v1",
         "transformations": [
             {
+                "transformation_id": "execution-stress.v1",
+                "family": "execution-stress",
+                "implementation_version": "execution-stress.v1",
+                "parameters": [
+                    {
+                        "name": "commission_bps",
+                        "value_type": "decimal",
+                        "required": False,
+                        "minimum": "0",
+                        "maximum": "100",
+                    },
+                    {
+                        "name": "slippage_bps",
+                        "value_type": "decimal",
+                        "required": False,
+                        "minimum": "0",
+                        "maximum": "1000",
+                    },
+                    {
+                        "name": "latency_nodes",
+                        "value_type": "integer",
+                        "required": False,
+                        "minimum": "0",
+                        "maximum": "120",
+                    },
+                    {
+                        "name": "max_fill_fraction",
+                        "value_type": "decimal",
+                        "required": False,
+                        "minimum": "0.01",
+                        "maximum": "1",
+                    },
+                    {
+                        "name": "allow_partial_fills",
+                        "value_type": "enum",
+                        "required": False,
+                        "choices": ["false", "true"],
+                    },
+                    {
+                        "name": "rejection_mode",
+                        "value_type": "enum",
+                        "required": False,
+                        "choices": ["none", "reject-all"],
+                    },
+                ],
+                "compatibility_rules": [
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "execution-only-reference-path-identity",
+                ],
+                "causality_constraints": [
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                    "private-portfolio-effects-only",
+                ],
+            },
+            {
                 "transformation_id": "liquidity-stress.v1",
                 "family": "liquidity",
                 "implementation_version": "liquidity-stress.v1",
@@ -866,7 +923,7 @@ def test_approved_recipe_version_survives_application_restart(tmp_path: Path) ->
     restarted.initialize_persistence(engine)
     restored = restarted.get_recipe_version(approved.version_id)
 
-    assert migration.current_revision == "0006_a_share_execution_audit"
+    assert migration.current_revision == "0007_execution_stress_audit"
     assert restored.to_dict() == approved.to_dict()
     assert {
         "diagnostic_recipe_drafts",

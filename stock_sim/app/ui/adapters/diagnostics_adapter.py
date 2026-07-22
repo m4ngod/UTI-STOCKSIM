@@ -129,12 +129,19 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._sector_concentration_input: Any = None
         self._volume_multiplier_input: Any = None
         self._cross_sectional_concentration_input: Any = None
+        self._execution_override_commission_input: Any = None
+        self._execution_override_slippage_input: Any = None
+        self._execution_override_fill_fraction_input: Any = None
+        self._execution_override_latency_input: Any = None
+        self._execution_override_partial_input: Any = None
+        self._execution_rejection_mode_input: Any = None
         self._create_recipe_button: Any = None
         self._create_trend_recipe_button: Any = None
         self._create_volatility_recipe_button: Any = None
         self._create_shock_recovery_recipe_button: Any = None
         self._create_market_structure_recipe_button: Any = None
         self._create_liquidity_recipe_button: Any = None
+        self._create_execution_stress_recipe_button: Any = None
         self._validate_recipe_button: Any = None
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
@@ -143,6 +150,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._run_equity_label: Any = None
         self._run_equity_curve_view: Any = None
         self._run_order_details_view: Any = None
+        self._run_execution_conditions_view: Any = None
         self._run_initial_cash_input: Any = None
         self._run_order_shares_input: Any = None
         self._run_replica_input: Any = None
@@ -258,6 +266,30 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._cross_sectional_concentration_input.setPlaceholderText(
             "Cross-sectional liquidity concentration (0 to 1)"
         )
+        self._execution_override_commission_input = QLineEdit("8")
+        self._execution_override_commission_input.setPlaceholderText(
+            "Scenario commission override (bps)"
+        )
+        self._execution_override_slippage_input = QLineEdit("100")
+        self._execution_override_slippage_input.setPlaceholderText(
+            "Scenario slippage override (bps)"
+        )
+        self._execution_override_fill_fraction_input = QLineEdit("0.01")
+        self._execution_override_fill_fraction_input.setPlaceholderText(
+            "Scenario maximum fill fraction"
+        )
+        self._execution_override_latency_input = QLineEdit("2")
+        self._execution_override_latency_input.setPlaceholderText(
+            "Scenario latency in market-path nodes"
+        )
+        self._execution_override_partial_input = QLineEdit("true")
+        self._execution_override_partial_input.setPlaceholderText(
+            "Scenario partial fills (true or false)"
+        )
+        self._execution_rejection_mode_input = QLineEdit("none")
+        self._execution_rejection_mode_input.setPlaceholderText(
+            "Scenario rejection mode (none or reject-all)"
+        )
         self._create_recipe_button = QPushButton("Create manual baseline recipe")
         self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
         self._create_trend_recipe_button = QPushButton(
@@ -290,6 +322,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._create_liquidity_recipe_button.clicked.connect(
             self._create_liquidity_recipe_from_inputs
         )
+        self._create_execution_stress_recipe_button = QPushButton(
+            "Create execution stress recipe"
+        )
+        self._create_execution_stress_recipe_button.clicked.connect(
+            self._create_execution_stress_recipe_from_inputs
+        )
         self._validate_recipe_button = QPushButton("Validate recipe")
         self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
         self._approve_recipe_button = QPushButton("Approve recipe explicitly")
@@ -301,7 +339,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._scenario_preview_label = QLabel(
             "Baseline vs transformed: materialize both recipes to compare"
         )
-        self._run_status_label = QLabel("Baseline Strategy Run: not started")
+        self._run_status_label = QLabel("Anchored Strategy Run: not started")
         self._run_equity_label = QLabel("No private Portfolio Ledger yet")
         self._run_equity_curve_view = QPlainTextEdit()
         self._run_equity_curve_view.setReadOnly(True)
@@ -312,6 +350,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._run_order_details_view.setReadOnly(True)
         self._run_order_details_view.setPlainText(
             "A-share order audit: run the reference strategy to inspect rules."
+        )
+        self._run_execution_conditions_view = QPlainTextEdit()
+        self._run_execution_conditions_view.setReadOnly(True)
+        self._run_execution_conditions_view.setPlainText(
+            "Execution conditions: run an anchored recipe to compare requested "
+            "assumptions with effective scenario conditions."
         )
         self._run_initial_cash_input = QLineEdit("1000000")
         self._run_initial_cash_input.setPlaceholderText("Initial cash")
@@ -378,12 +422,19 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._sector_concentration_input)
         layout.addWidget(self._volume_multiplier_input)
         layout.addWidget(self._cross_sectional_concentration_input)
+        layout.addWidget(self._execution_override_commission_input)
+        layout.addWidget(self._execution_override_slippage_input)
+        layout.addWidget(self._execution_override_fill_fraction_input)
+        layout.addWidget(self._execution_override_latency_input)
+        layout.addWidget(self._execution_override_partial_input)
+        layout.addWidget(self._execution_rejection_mode_input)
         layout.addWidget(self._create_recipe_button)
         layout.addWidget(self._create_trend_recipe_button)
         layout.addWidget(self._create_volatility_recipe_button)
         layout.addWidget(self._create_shock_recovery_recipe_button)
         layout.addWidget(self._create_market_structure_recipe_button)
         layout.addWidget(self._create_liquidity_recipe_button)
+        layout.addWidget(self._create_execution_stress_recipe_button)
         layout.addWidget(self._validate_recipe_button)
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
@@ -392,6 +443,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._run_equity_label)
         layout.addWidget(self._run_equity_curve_view)
         layout.addWidget(self._run_order_details_view)
+        layout.addWidget(self._run_execution_conditions_view)
         layout.addWidget(self._run_initial_cash_input)
         layout.addWidget(self._run_order_shares_input)
         layout.addWidget(self._run_replica_input)
@@ -453,6 +505,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
     def _create_liquidity_recipe_from_inputs(self) -> None:
         self._submit_recipe_from_inputs(recipe_kind="liquidity")
 
+    def _create_execution_stress_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(recipe_kind="execution-stress")
+
     def _submit_recipe_from_inputs(
         self,
         *,
@@ -463,6 +518,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             "shock-recovery",
             "market-structure",
             "liquidity",
+            "execution-stress",
         ],
     ) -> None:
         try:
@@ -514,6 +570,38 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                         self._cross_sectional_concentration_input.text()
                     ),
                 )
+            elif recipe_kind == "execution-stress":
+                override_partial = str(
+                    self._execution_override_partial_input.text()
+                ).strip().lower()
+                if override_partial not in {"", "true", "false"}:
+                    raise ValueError(
+                        "Scenario partial fills must be true or false"
+                    )
+                override_latency = str(
+                    self._execution_override_latency_input.text()
+                ).strip()
+                self._logic.create_execution_stress_recipe(
+                    **recipe_arguments,
+                    override_commission_bps=str(
+                        self._execution_override_commission_input.text()
+                    ).strip() or None,
+                    override_slippage_bps=str(
+                        self._execution_override_slippage_input.text()
+                    ).strip() or None,
+                    override_max_fill_fraction=str(
+                        self._execution_override_fill_fraction_input.text()
+                    ).strip() or None,
+                    override_latency_nodes=(
+                        int(override_latency) if override_latency else None
+                    ),
+                    override_allow_partial_fills=(
+                        override_partial == "true" if override_partial else None
+                    ),
+                    rejection_mode=str(
+                        self._execution_rejection_mode_input.text()
+                    ).strip().lower() or None,
+                )
             else:
                 self._logic.create_baseline_recipe(**recipe_arguments)
             self._recipe_input_signature = self._recipe_authoring_signature(
@@ -534,6 +622,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 "shock-recovery": "shock and recovery",
                 "market-structure": "market structure",
                 "liquidity": "liquidity stress",
+                "execution-stress": "execution stress",
             }
             self._recipe_action_error = (
                 f"The {labels[recipe_kind]} draft could not be created."
@@ -677,6 +766,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             str(self._sector_concentration_input.text()).strip(),
             str(self._volume_multiplier_input.text()).strip(),
             str(self._cross_sectional_concentration_input.text()).strip(),
+            str(self._execution_override_commission_input.text()).strip(),
+            str(self._execution_override_slippage_input.text()).strip(),
+            str(self._execution_override_fill_fraction_input.text()).strip(),
+            str(self._execution_override_latency_input.text()).strip(),
+            str(self._execution_override_partial_input.text()).strip().lower(),
+            str(self._execution_rejection_mode_input.text()).strip().lower(),
         )
 
     def _assert_recipe_inputs_match_draft(self) -> None:
@@ -850,7 +945,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     f"{strategy_run.get('total_node_count', 0)}"
                 )
             details = (
-                f"Baseline Strategy Run: {run_status}{progress}"
+                f"Anchored Strategy Run: {run_status}{progress}"
                 + (f" | Simulation Time {current_time}" if current_time else "")
             )
             failure = strategy_run.get("failure")
@@ -909,10 +1004,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 if isinstance(fill, dict)
             } if isinstance(fills, list) else {}
             order_lines = [
-                "Instrument | Requested | Accepted | Status | Reason code | "
-                "Execution price | Limits | Commission | Transfer fee | "
-                "Stamp duty | Total fee | Cash change | Position change | "
-                "Sellable change"
+                "Instrument | Requested | Accepted | Unfilled | Status | "
+                "Reason code | Reference price | Execution price | Slippage bps | "
+                "Limits | Commission | Transfer fee | Stamp duty | Total fee | "
+                "Execution erosion | Cash change | Position change | Sellable change"
             ]
             if isinstance(orders, list):
                 for order in orders:
@@ -934,14 +1029,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                                 str(order.get("instrument", "unknown")),
                                 str(order.get("requested_shares", order.get("shares", 0))),
                                 str(order.get("accepted_shares", 0)),
+                                str(order.get("unfilled_shares", 0)),
                                 str(order.get("status", "unknown")),
                                 str(order.get("reason_code", "not evaluated")),
+                                str(order.get("reference_price", "not evaluated")),
                                 str(order.get("execution_price", "not evaluated")),
+                                str(order.get("slippage_bps", "0")),
                                 f"{limits.get('lower')}..{limits.get('upper')}",
                                 str(fees.get("commission", "0")),
                                 str(fees.get("transfer_fee", "0")),
                                 str(fees.get("stamp_duty", "0")),
                                 str(fees.get("total", "0")),
+                                str(fill.get("execution_erosion", "0")),
                                 str(account_effect.get("cash_change", "0")),
                                 str(account_effect.get("position_change", 0)),
                                 str(
@@ -956,6 +1055,45 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             if len(order_lines) == 1:
                 order_lines.append("No A-share order decisions recorded yet")
             self._run_order_details_view.setPlainText("\n".join(order_lines))
+        if self._run_execution_conditions_view is not None:
+            specification = strategy_run.get("specification", {})
+            if not isinstance(specification, dict):
+                specification = {}
+            conditions = specification.get("execution_conditions", {})
+            if not isinstance(conditions, dict):
+                conditions = {}
+            resolutions = conditions.get("resolutions", [])
+            condition_lines = [
+                "Condition | Requested | Effective | Override reason"
+            ]
+            if isinstance(resolutions, list):
+                condition_lines.extend(
+                    " | ".join(
+                        (
+                            str(item.get("name", "unknown")),
+                            str(item.get("requested_value", "unknown")),
+                            str(item.get("effective_value", "unknown")),
+                            str(item.get("override_reason") or "request retained"),
+                        )
+                    )
+                    for item in resolutions
+                    if isinstance(item, dict)
+                )
+            if len(condition_lines) == 1:
+                condition_lines.append("No resolved execution conditions yet")
+            execution_summary = strategy_run.get("execution_summary", {})
+            if not isinstance(execution_summary, dict):
+                execution_summary = {}
+            total_erosion = execution_summary.get(
+                "total_execution_erosion",
+                "0",
+            )
+            condition_lines.append(
+                f"Total private execution erosion | {total_erosion}"
+            )
+            self._run_execution_conditions_view.setPlainText(
+                "\n".join(condition_lines)
+            )
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):
             comparison = {}

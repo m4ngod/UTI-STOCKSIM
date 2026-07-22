@@ -3,11 +3,40 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_importing_root_package_keeps_persistence_lazy(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(REPOSITORY_ROOT.parent)
+
+    imported = subprocess.run(
+        [sys.executable, "-c", "import stock_sim; print(stock_sim.__version__)"],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert imported.stdout.splitlines()[-1] == "0.0.1"
+    assert not (tmp_path / "stock_sim_test.db").exists()
+
+    resolved = subprocess.run(
+        [sys.executable, "-c", "from stock_sim import Account; print(Account.__name__)"],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert resolved.stdout.splitlines()[-1] == "Account"
 
 
 def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
@@ -16,6 +45,19 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
     install_root = tmp_path / "installed"
     caller_root = tmp_path / "caller"
     caller_root.mkdir()
+    source_root = tmp_path / "source"
+    shutil.copytree(
+        REPOSITORY_ROOT,
+        source_root,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".pytest_cache",
+            "__pycache__",
+            "build",
+            "*.egg-info",
+            "stock_sim_test.db*",
+        ),
+    )
 
     subprocess.run(
         [
@@ -27,7 +69,7 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
             "--no-build-isolation",
             "--target",
             str(install_root),
-            str(REPOSITORY_ROOT),
+            str(source_root),
         ],
         cwd=tmp_path,
         check=True,
@@ -52,6 +94,6 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
         "persistence_status": "not_initialized",
         "product": "Strategy Diagnostics Laboratory",
         "status": "ready",
-        "supported_persistence_revision": "0006_a_share_execution_audit",
+        "supported_persistence_revision": "0007_execution_stress_audit",
         "workspace": "Diagnostics",
     }

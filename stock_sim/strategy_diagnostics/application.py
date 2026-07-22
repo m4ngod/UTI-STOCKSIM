@@ -33,6 +33,10 @@ from .persistence import (
     SqlScenarioRecipeRepository,
     initialize_diagnostic_persistence,
 )
+from .execution_conditions import (
+    RequestedExecutionAssumptions,
+    resolve_execution_conditions,
+)
 from .recipes import (
     AIRecipeAuditRecord,
     AIRecipeAssistant,
@@ -409,8 +413,13 @@ class DiagnosticsApplication:
 
         self.status()
         approved = self._recipe_workbench.get_version(recipe_version_id)
-        if approved.recipe.transformations:
-            raise ValueError("An anchored baseline run requires a baseline recipe")
+        if any(
+            item.transformation_id != "execution-stress.v1"
+            for item in approved.recipe.transformations
+        ):
+            raise ValueError(
+                "This anchored run supports a baseline or execution-stress recipe"
+            )
         path = self._load_reference_path(materialization_hash)
         if (
             approved.recipe.historical_segment_id,
@@ -423,6 +432,48 @@ class DiagnosticsApplication:
         ):
             raise ValueError(
                 "Approved baseline recipe does not match the materialized market path"
+            )
+        requested_conditions = RequestedExecutionAssumptions(
+            commission_bps=approved.recipe.execution_conditions.commission_bps,
+            slippage_bps=approved.recipe.execution_conditions.slippage_bps,
+            max_fill_fraction=(
+                approved.recipe.execution_conditions.max_fill_fraction
+            ),
+            latency_nodes=approved.recipe.execution_conditions.latency_nodes,
+            allow_partial_fills=(
+                approved.recipe.execution_conditions.allow_partial_fills
+            ),
+        )
+        scenario_overrides = dict(
+            next(
+                (
+                    item.parameters
+                    for item in path.applied_transformations
+                    if item.family == "execution-stress"
+                ),
+                (),
+            )
+        )
+        resolved_conditions = resolve_execution_conditions(
+            requested_conditions,
+            scenario_overrides,
+        )
+        approved_overrides = dict(
+            next(
+                (
+                    item.parameters
+                    for item in approved.recipe.transformations
+                    if item.transformation_id == "execution-stress.v1"
+                ),
+                {},
+            )
+        )
+        if resolved_conditions != resolve_execution_conditions(
+            requested_conditions,
+            approved_overrides,
+        ):
+            raise ValueError(
+                "Materialized execution conditions do not match the approved recipe"
             )
         specification = StrategyRunSpecification(
             recipe_version_id=approved.version_id,
@@ -444,7 +495,8 @@ class DiagnosticsApplication:
             order_shares=order_shares,
             replica_id=replica_id,
             code_identity="strategy-diagnostics.v1",
-            commission_bps=approved.recipe.execution_conditions.commission_bps,
+            commission_bps=resolved_conditions.effective.commission_bps,
+            resolved_execution_conditions=resolved_conditions,
         )
         return self._strategy_runs.start(specification)
 

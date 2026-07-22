@@ -20,8 +20,13 @@ from strategy_diagnostics import (
     StrategyRunEngine,
     StrategyRunSpecification,
 )
+from strategy_diagnostics.execution_conditions import (
+    RequestedExecutionAssumptions,
+    resolve_execution_conditions,
+)
 from strategy_diagnostics.persistence import initialize_diagnostic_persistence
 from strategy_diagnostics.strategy_runs import SqlStrategyRunRepository
+from strategy_diagnostics.transformations import AppliedTransformation
 
 
 def _reference_path() -> MaterializedMarketPath:
@@ -67,7 +72,7 @@ def _reference_path() -> MaterializedMarketPath:
         numeric_tolerance="0.0001",
         normalization_provenance="fixture-unadjusted-v1",
         market_rule_profile_version="a-share-cash-equity.v1",
-        transformation_catalog_version="initial-transformation-profile.v1",
+        transformation_catalog_version="scenario-transformation-catalog.v1",
         applied_transformations=(),
         nodes=nodes,
         instrument_states=tuple(
@@ -122,7 +127,29 @@ def _spec(
     cadence_minutes: int = 30,
     order_shares: int = 100,
     replica_id: str = "baseline-replica-1",
+    requested: RequestedExecutionAssumptions | None = None,
 ) -> StrategyRunSpecification:
+    requested_assumptions = requested or RequestedExecutionAssumptions(
+        commission_bps=Decimal("3"),
+        slippage_bps=Decimal("0"),
+        max_fill_fraction=Decimal("1"),
+        latency_nodes=0,
+        allow_partial_fills=True,
+    )
+    execution_overrides = dict(
+        next(
+            (
+                transformation.parameters
+                for transformation in path.applied_transformations
+                if transformation.family == "execution-stress"
+            ),
+            (),
+        )
+    )
+    resolved_conditions = resolve_execution_conditions(
+        requested_assumptions,
+        execution_overrides,
+    )
     return StrategyRunSpecification(
         recipe_version_id="recipe-version-baseline",
         recipe_content_hash="c" * 64,
@@ -130,9 +157,12 @@ def _spec(
         source_snapshot_id=path.source_snapshot_id,
         materialization_seed=path.seed,
         transformation_catalog_version=path.transformation_catalog_version,
-        transformation_implementation_versions=(),
+        transformation_implementation_versions=tuple(
+            f"{item.transformation_id}@{item.implementation_version}"
+            for item in path.applied_transformations
+        ),
         market_rule_profile_version=path.market_rule_profile_version,
-        execution_policy_version="a-share-cash-equity-execution.v1",
+        execution_policy_version="anchored-standard-execution.v2",
         strategy_id="anchored-ranked-candidate-reference",
         strategy_version="anchored-ranked-candidate-reference.v1",
         decision_cadence_minutes=cadence_minutes,
@@ -140,6 +170,31 @@ def _spec(
         order_shares=order_shares,
         replica_id=replica_id,
         code_identity="strategy-diagnostics.v1",
+        commission_bps=resolved_conditions.effective.commission_bps,
+        resolved_execution_conditions=resolved_conditions,
+    )
+
+
+def _execution_stress_path(
+    path: MaterializedMarketPath,
+    **overrides: object,
+) -> MaterializedMarketPath:
+    return replace(
+        path,
+        artifact_hash="f" * 64,
+        transformation_catalog_version="scenario-transformation-catalog.v1",
+        applied_transformations=(
+            AppliedTransformation(
+                transformation_id="execution-stress.v1",
+                family="execution-stress",
+                catalog_version="scenario-transformation-catalog.v1",
+                implementation_version="execution-stress.v1",
+                parameters=tuple(
+                    sorted((name, str(value).lower()) for name, value in overrides.items())
+                ),
+                statistics=(("reference_market_path_changed", "false"),),
+            ),
+        ),
     )
 
 
@@ -253,6 +308,223 @@ def test_activation_fails_closed_without_price_limit_reference() -> None:
         == "market.price_limit_reference_missing"
     )
     assert completed.fills == ()
+
+
+def test_execution_stress_applies_latency_slippage_and_private_partial_fill(
+    tmp_path: Path,
+) -> None:
+    original = _reference_path()
+    path = _execution_stress_path(
+        original,
+        slippage_bps="100",
+        latency_nodes=2,
+        max_fill_fraction="0.01",
+        allow_partial_fills="true",
+    )
+    nodes_before = path.nodes
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'execution-stress.db'}",
+        future=True,
+    )
+    initialize_diagnostic_persistence(database)
+    engine = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    )
+    specification = _spec(path, order_shares=200, replica_id="stressed-partial")
+
+    completed = engine.run_to_completion(engine.start(specification).run_id)
+
+    assert completed.status == "completed"
+    assert completed.orders[0].activation_time == datetime(2024, 1, 2, 10, 1, 30)
+    assert completed.orders[0].status == "partially_filled"
+    assert completed.orders[0].shares == 200
+    assert completed.orders[0].accepted_shares == 100
+    assert completed.orders[0].unfilled_shares == 100
+    assert completed.orders[0].reason_code == "execution.partial_fill"
+    assert completed.fills[0].reference_price == Decimal("10.00")
+    assert completed.fills[0].price == Decimal("10.10")
+    assert completed.fills[0].slippage_bps == Decimal("100")
+    assert completed.fills[0].execution_erosion == Decimal("15.01")
+    assert completed.cash == Decimal("98984.99")
+    assert path.nodes == nodes_before
+    assert completed.specification.resolved_execution_conditions is not None
+    condition_view = (
+        completed.specification.resolved_execution_conditions.to_dict()
+    )
+    assert condition_view["requested"] != condition_view["effective"]
+    assert any(
+        item["override_reason"] == "scenario execution-stress.v1 override"
+        for item in condition_view["resolutions"]
+    )
+    restarted = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    ).get(completed.run_id)
+    assert restarted.to_dict() == completed.to_dict()
+    with database.connect() as connection:
+        condition_audit = connection.execute(
+            text(
+                "SELECT requested_execution_json, effective_execution_json, "
+                "execution_overrides_json FROM diagnostic_strategy_runs"
+            )
+        ).one()
+        order_audit = connection.execute(
+            text(
+                "SELECT unfilled_shares, reference_price, slippage_bps "
+                "FROM diagnostic_run_orders"
+            )
+        ).one()
+        fill_audit = connection.execute(
+            text(
+                "SELECT reference_price, slippage_bps, execution_erosion "
+                "FROM diagnostic_run_fills"
+            )
+        ).one()
+    requested_audit = json.loads(condition_audit.requested_execution_json)
+    effective_audit = json.loads(condition_audit.effective_execution_json)
+    override_audit = json.loads(condition_audit.execution_overrides_json)
+    assert requested_audit["slippage_bps"] == "0"
+    assert effective_audit["slippage_bps"] == "100"
+    assert effective_audit["latency_nodes"] == 2
+    assert any(
+        item["name"] == "slippage_bps"
+        and item["requested_value"] == "0"
+        and item["effective_value"] == "100"
+        and item["override_reason"] == "scenario execution-stress.v1 override"
+        for item in override_audit
+    )
+    assert order_audit == (100, "10.00", "100")
+    assert fill_audit == ("10.00", "100", "15.01")
+
+
+def test_fill_cap_rejects_when_partial_fills_are_disabled() -> None:
+    path = _execution_stress_path(
+        _reference_path(),
+        max_fill_fraction="0.01",
+        allow_partial_fills="false",
+    )
+    engine = _engine(path)
+
+    completed = engine.run_to_completion(
+        engine.start(_spec(path, order_shares=200, replica_id="no-partial")).run_id
+    )
+
+    assert completed.orders[0].status == "rejected"
+    assert completed.orders[0].reason_code == "execution.fill_cap"
+    assert completed.orders[0].accepted_shares == 0
+    assert completed.orders[0].unfilled_shares == 200
+    assert completed.fills == ()
+    assert completed.cash == Decimal("100000")
+
+
+def test_fill_cap_cannot_repair_an_invalid_buy_board_lot() -> None:
+    path = _execution_stress_path(
+        _reference_path(),
+        max_fill_fraction="0.01",
+        allow_partial_fills="true",
+    )
+    engine = _engine(path)
+
+    completed = engine.run_to_completion(
+        engine.start(
+            _spec(path, order_shares=150, replica_id="invalid-buy-lot")
+        ).run_id
+    )
+
+    assert completed.orders[0].status == "rejected"
+    assert completed.orders[0].reason_code == "quantity.buy_board_lot"
+    assert completed.orders[0].accepted_shares == 0
+    assert completed.orders[0].unfilled_shares == 150
+    assert completed.fills == ()
+
+
+def test_latency_beyond_reference_path_fails_with_auditable_reason() -> None:
+    original = _reference_path()
+    truncated = replace(
+        original,
+        nodes=tuple(
+            node
+            for node in original.nodes
+            if node.simulation_time <= datetime(2024, 1, 2, 10, 0, 30)
+        ),
+    )
+    path = _execution_stress_path(truncated, latency_nodes="2")
+    engine = _engine(path)
+
+    failed = engine.run_to_completion(
+        engine.start(_spec(path, replica_id="latency-outside-path")).run_id
+    )
+
+    assert failed.status == "failed"
+    assert failed.failure_code == "ValueError"
+    assert "latency extends beyond" in str(failed.failure_message)
+    assert failed.orders == ()
+    assert failed.fills == ()
+
+
+def test_scenario_rejection_is_deterministic_and_private() -> None:
+    path = _execution_stress_path(
+        _reference_path(),
+        rejection_mode="reject-all",
+    )
+    nodes_before = path.nodes
+    engine = _engine(path)
+
+    completed = engine.run_to_completion(
+        engine.start(_spec(path, replica_id="forced-rejection")).run_id
+    )
+
+    assert completed.orders[0].status == "rejected"
+    assert completed.orders[0].reason_code == "execution.scenario_rejection"
+    assert completed.fills == ()
+    assert completed.positions == ()
+    assert completed.cash == Decimal("100000")
+    assert path.nodes == nodes_before
+
+
+def test_execution_stress_path_identity_fails_closed() -> None:
+    valid = _execution_stress_path(
+        _reference_path(),
+        slippage_bps="25",
+    )
+    duplicate = replace(
+        valid,
+        applied_transformations=(
+            valid.applied_transformations[0],
+            valid.applied_transformations[0],
+        ),
+    )
+    forged = replace(
+        valid,
+        applied_transformations=(
+            replace(
+                valid.applied_transformations[0],
+                transformation_id="forged-execution-stress.v1",
+            ),
+        ),
+    )
+    forged_catalog = replace(
+        valid,
+        transformation_catalog_version="forged-transformation-catalog.v9",
+        applied_transformations=(
+            replace(
+                valid.applied_transformations[0],
+                catalog_version="forged-transformation-catalog.v9",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="at most one"):
+        _engine(duplicate).start(_spec(duplicate, replica_id="duplicate-stress"))
+    with pytest.raises(ValueError, match="supports only execution-stress"):
+        _engine(forged).start(_spec(forged, replica_id="forged-stress"))
+    with pytest.raises(ValueError, match="Catalog version"):
+        _engine(forged_catalog).start(
+            _spec(forged_catalog, replica_id="forged-catalog")
+        )
 
 
 def test_hourly_decisions_are_independent_of_wall_time_batch_size() -> None:
@@ -499,6 +771,7 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "minimum_commission",
         "transfer_fee_bps",
         "sell_stamp_duty_bps",
+        "execution_conditions",
     ):
         legacy_specification_payload.pop(name)
     legacy_run_id = "strategy-run-" + hashlib.sha256(
@@ -543,7 +816,10 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
     with pytest.raises(ValueError, match="execution policy version"):
         engine.resume(legacy_run_id)
 
-    assert migration.applied_revisions == ("0006_a_share_execution_audit",)
+    assert migration.applied_revisions == (
+        "0006_a_share_execution_audit",
+        "0007_execution_stress_audit",
+    )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"
     assert engine.get(legacy_run_id).status == "paused"

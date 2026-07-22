@@ -131,7 +131,7 @@ class DiagnosticsPanel:
         }
         self._baseline_strategy_run: dict[str, object] = {
             "status": "not_started",
-            "message": "Materialize an approved baseline recipe to start a run.",
+            "message": "Materialize an approved anchored recipe to start a run.",
         }
         self._application.start()
 
@@ -405,6 +405,64 @@ class DiagnosticsPanel:
             allow_partial_fills=allow_partial_fills,
         )
 
+    def create_execution_stress_recipe(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        author: str,
+        cadence_minutes: int,
+        seed: int,
+        override_commission_bps: str | None,
+        override_slippage_bps: str | None,
+        override_max_fill_fraction: str | None,
+        override_latency_nodes: int | None,
+        override_allow_partial_fills: bool | None,
+        rejection_mode: str | None,
+        commission_bps: str = "3",
+        slippage_bps: str = "0",
+        max_fill_fraction: str = "1",
+        latency_nodes: int = 0,
+        allow_partial_fills: bool = True,
+    ) -> dict[str, object]:
+        override_parameters: dict[str, object] = {}
+        for parameter_name, value in (
+            ("commission_bps", override_commission_bps),
+            ("slippage_bps", override_slippage_bps),
+            ("max_fill_fraction", override_max_fill_fraction),
+            ("rejection_mode", rejection_mode),
+        ):
+            if value is not None and value.strip():
+                override_parameters[parameter_name] = value.strip()
+        if override_latency_nodes is not None:
+            override_parameters["latency_nodes"] = override_latency_nodes
+        if override_allow_partial_fills is not None:
+            override_parameters["allow_partial_fills"] = (
+                "true" if override_allow_partial_fills else "false"
+            )
+        if not override_parameters:
+            raise ValueError(
+                "Execution stress requires at least one explicit scenario override"
+            )
+        return self._create_recipe(
+            name=name,
+            segment_id=segment_id,
+            author=author,
+            cadence_minutes=cadence_minutes,
+            seed=seed,
+            transformations=(
+                {
+                    "transformation_id": "execution-stress.v1",
+                    "parameters": override_parameters,
+                },
+            ),
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+            max_fill_fraction=max_fill_fraction,
+            latency_nodes=latency_nodes,
+            allow_partial_fills=allow_partial_fills,
+        )
+
     def _create_recipe(
         self,
         *,
@@ -516,12 +574,12 @@ class DiagnosticsPanel:
         order_shares: int,
         replica_id: str,
     ) -> dict[str, object]:
-        baseline = self._materializations.get("baseline")
-        if not isinstance(baseline, dict):
-            raise ValueError("Materialize an approved baseline recipe before running it")
+        materialization = self._recipe_workbench.get("materialization")
+        if not isinstance(materialization, dict):
+            raise ValueError("Materialize an approved anchored recipe before running it")
         snapshot = self._application.start_baseline_strategy_run(
-            str(baseline["recipe_version_id"]),
-            str(baseline["artifact_hash"]),
+            str(materialization["recipe_version_id"]),
+            str(materialization["artifact_hash"]),
             initial_cash=Decimal(initial_cash),
             order_shares=order_shares,
             replica_id=replica_id,

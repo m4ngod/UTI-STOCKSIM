@@ -34,7 +34,8 @@ _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
 _SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
 _AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
 _STRATEGY_RUN_REVISION: Final = "0005_strategy_runs"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0006_a_share_execution_audit"
+_A_SHARE_EXECUTION_REVISION: Final = "0006_a_share_execution_audit"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0007_execution_stress_audit"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -42,6 +43,7 @@ _MIGRATION_REVISIONS: Final = (
     _SCENARIO_RECIPE_REVISION,
     _AI_RECIPE_ASSISTANT_REVISION,
     _STRATEGY_RUN_REVISION,
+    _A_SHARE_EXECUTION_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -79,8 +81,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_ai_recipe_assistant_audit(connection)
             elif revision == _STRATEGY_RUN_REVISION:
                 _create_strategy_run_facts(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _A_SHARE_EXECUTION_REVISION:
                 _add_a_share_execution_audit(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _add_execution_stress_audit(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -304,6 +308,28 @@ def _add_a_share_execution_audit(connection: Connection) -> None:
         "t_plus_one_locked_shares INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE diagnostic_run_positions ADD COLUMN "
         "lock_session_date VARCHAR(10) NULL",
+    ):
+        connection.exec_driver_sql(statement)
+
+
+def _add_execution_stress_audit(connection: Connection) -> None:
+    for statement in (
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "requested_execution_json TEXT NULL",
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "effective_execution_json TEXT NULL",
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "execution_overrides_json TEXT NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN unfilled_shares INTEGER "
+        "NOT NULL DEFAULT 0",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN reference_price VARCHAR(64) NULL",
+        "ALTER TABLE diagnostic_run_orders ADD COLUMN slippage_bps VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN reference_price VARCHAR(64) NULL",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN slippage_bps VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
+        "ALTER TABLE diagnostic_run_fills ADD COLUMN execution_erosion VARCHAR(64) "
+        "NOT NULL DEFAULT '0'",
     ):
         connection.exec_driver_sql(statement)
 

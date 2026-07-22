@@ -135,7 +135,59 @@ class _WorkspaceSource:
                     is_st=False,
                     listing_stage="continuous",
                     limit_fraction=Decimal("0.10"),
-                    rule_code="fixture.sh-main.ordinary.10pct",
+                    rule_code="sh-main.ordinary.10pct.effective-2024-01-02",
+                ),
+            ),
+        )
+
+
+class _ExecutionWorkspaceSource(_WorkspaceSource):
+    def load_scenario_data_world(self, segment: object) -> ScenarioDataWorldInput:
+        return ScenarioDataWorldInput(
+            segment_id=str(getattr(segment, "segment_id")),
+            segment_content_hash=str(getattr(segment, "content_hash")),
+            source_snapshot_id=str(getattr(segment, "source_snapshot_id")),
+            bars=tuple(
+                FiveMinuteBar(
+                    instrument="sh.600000",
+                    end_time=end_time,
+                    open=Decimal("10"),
+                    high=Decimal("10"),
+                    low=Decimal("10"),
+                    close=Decimal("10"),
+                    volume=100_000,
+                    amount=Decimal("1000000"),
+                )
+                for end_time in (
+                    datetime(2024, 1, 2, 10, 0),
+                    datetime(2024, 1, 2, 10, 5),
+                )
+            ),
+            instrument_states=(
+                InstrumentState(
+                    instrument="sh.600000",
+                    effective_at=datetime(2024, 1, 2, 9, 30),
+                    eligible=True,
+                    trading_status="trading",
+                    is_st=False,
+                    industry="banking",
+                    decision_adjustment_factor=Decimal("1"),
+                    decision_adjustment_provenance="fixture-v1",
+                ),
+            ),
+            price_limit_references=(
+                SessionPriceLimitReference(
+                    instrument="sh.600000",
+                    session_date=date(2024, 1, 2),
+                    previous_close=Decimal("10"),
+                    effective_at=datetime(2024, 1, 2, 9, 30),
+                    provenance="fixture-preclose-v1",
+                    profile_version="a-share-cash-equity.v1",
+                    board="sh-main",
+                    is_st=False,
+                    listing_stage="continuous",
+                    limit_fraction=Decimal("0.10"),
+                    rule_code="sh-main.ordinary.10pct.effective-2024-01-02",
                 ),
             ),
         )
@@ -358,6 +410,16 @@ def _admittable_application() -> object:
         end_date=date(2024, 1, 2),
     )
     source = _WorkspaceSource()
+    return create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+
+def _execution_admittable_application() -> object:
+    source = _ExecutionWorkspaceSource()
     return create_diagnostics_application(
         historical_source=source,
         market_data_source=source,
@@ -983,9 +1045,129 @@ def test_diagnostics_adapter_controls_and_renders_a_baseline_strategy_run() -> N
     assert str(run["equity_curve"][-1]["simulation_time"]) in curve_text
     assert len(curve_text.splitlines()) == len(run["equity_curve"]) + 1
     order_text = adapter._run_order_details_view.toPlainText()
-    assert "Requested | Accepted | Status | Reason code" in order_text
-    assert "Commission | Transfer fee | Stamp duty | Total fee" in order_text
+    assert "Requested | Accepted | Unfilled | Status | Reason code" in order_text
+    assert (
+        "Commission | Transfer fee | Stamp duty | Total fee | Execution erosion"
+        in order_text
+    )
     assert "No A-share order decisions recorded yet" in order_text
+
+
+def test_diagnostics_adapter_compares_execution_overrides_and_erosion() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _execution_admittable_application()
+    )
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("Private execution stress")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._cadence_input.setText("30")
+    adapter._seed_input.setText("17")
+    adapter._commission_input.setText("3")
+    adapter._slippage_input.setText("0")
+    adapter._fill_fraction_input.setText("1")
+    adapter._latency_input.setText("0")
+    adapter._partial_fills_input.setText("true")
+    adapter._execution_override_commission_input.setText("")
+    adapter._execution_override_slippage_input.setText("100")
+    adapter._execution_override_fill_fraction_input.setText("0.01")
+    adapter._execution_override_latency_input.setText("2")
+    adapter._execution_override_partial_input.setText("")
+    adapter._execution_rejection_mode_input.setText("")
+    adapter._create_execution_stress_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+    adapter._run_initial_cash_input.setText("100000")
+    adapter._run_order_shares_input.setText("200")
+    adapter._run_replica_input.setText("ui-execution-stress-1")
+
+    adapter._start_run_button.click()
+    adapter._complete_run_button.click()
+
+    run = adapter.current_view()["baseline_strategy_run"]
+    applied = adapter.current_view()["scenario_recipe_workbench"][
+        "materialization"
+    ]["applied_transformations"][0]
+    assert run["status"] == "completed"
+    assert applied["transformation_id"] == "execution-stress.v1"
+    assert applied["statistics"]["reference_market_path_changed"] == "false"
+    assert applied["parameters"] == {
+        "latency_nodes": "2",
+        "max_fill_fraction": "0.01",
+        "slippage_bps": "100",
+    }
+    assert run["orders"][0]["reason_code"] == "execution.partial_fill"
+    assert run["orders"][0]["status"] == "partially_filled"
+    assert run["orders"][0]["accepted_shares"] == 100
+    assert run["orders"][0]["unfilled_shares"] == 100
+    assert run["fills"][0]["reference_price"] == "10"
+    assert run["fills"][0]["price"] == "10.10"
+    assert run["fills"][0]["execution_erosion"] == "15.01"
+    condition_text = adapter._run_execution_conditions_view.toPlainText()
+    assert "commission_bps | 3 | 3 | request retained" in condition_text
+    assert "slippage_bps | 0 | 100 | scenario execution-stress.v1 override" in condition_text
+    assert "latency_nodes | 0 | 2 | scenario execution-stress.v1 override" in condition_text
+    assert "allow_partial_fills | true | true | request retained" in condition_text
+    assert "rejection_mode | none | none | request retained" in condition_text
+    assert "Total private execution erosion | 15.01" in condition_text
+    order_text = adapter._run_order_details_view.toPlainText()
+    assert "execution.partial_fill" in order_text
+    assert "10 | 10.10 | 100" in order_text
+
+
+def test_approved_execution_recipe_cannot_run_another_materialization() -> None:
+    application = _execution_admittable_application()
+    panel = DiagnosticsPanel(application)  # type: ignore[arg-type]
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = panel.get_view()["historical_segment_catalog"]["segments"][0][
+        "segment_id"
+    ]
+    common = {
+        "segment_id": segment_id,
+        "author": "researcher",
+        "cadence_minutes": 30,
+        "seed": 17,
+        "override_commission_bps": "8",
+        "override_max_fill_fraction": "1",
+        "override_latency_nodes": 0,
+        "override_allow_partial_fills": True,
+        "rejection_mode": "none",
+    }
+    panel.create_execution_stress_recipe(
+        name="First stress",
+        override_slippage_bps="25",
+        **common,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    first_materialization = panel.materialize_current_recipe()
+    panel.create_execution_stress_recipe(
+        name="Revised stress",
+        override_slippage_bps="100",
+        **common,
+    )
+    panel.validate_current_recipe()
+    approved = panel.approve_current_recipe(actor="owner")
+
+    with pytest.raises(ValueError, match="do not match the approved recipe"):
+        getattr(application, "start_baseline_strategy_run")(
+            str(approved["version_id"]),
+            str(first_materialization["artifact_hash"]),
+            initial_cash=Decimal("100000"),
+            order_shares=100,
+            replica_id="mismatched-materialization",
+        )
 
 
 def test_diagnostics_adapter_order_audit_renders_every_a_share_reason_code() -> None:
@@ -996,11 +1178,14 @@ def test_diagnostics_adapter_order_audit_renders_every_a_share_reason_code() -> 
         {
             "order_id": f"fixture-{index}",
             "instrument": "sh.600000",
-            "requested_shares": 100,
-            "accepted_shares": 100 if reason_code == "accepted" else 0,
-            "status": "filled" if reason_code == "accepted" else "rejected",
-            "reason_code": reason_code,
-            "execution_price": "10.00",
+                "requested_shares": 100,
+                "accepted_shares": 100 if reason_code == "accepted" else 0,
+                "unfilled_shares": 0 if reason_code == "accepted" else 100,
+                "status": "filled" if reason_code == "accepted" else "rejected",
+                "reason_code": reason_code,
+                "reference_price": "10.00",
+                "execution_price": "10.00",
+                "slippage_bps": "0",
             "price_limits": {"lower": "9.00", "upper": "11.00"},
             "account_effect": {
                 "cash_change": "-1005.01" if reason_code == "accepted" else "0",
@@ -1024,6 +1209,7 @@ def test_diagnostics_adapter_order_audit_renders_every_a_share_reason_code() -> 
                             "total": "5.01",
                         },
                         "cash_change": "-1005.01",
+                        "execution_erosion": "5.01",
                     }
                 ],
                 "portfolio": {"cash": "98994.99"},
@@ -1035,7 +1221,10 @@ def test_diagnostics_adapter_order_audit_renders_every_a_share_reason_code() -> 
     order_text = adapter._run_order_details_view.toPlainText()
     for reason_code in A_SHARE_EXECUTION_REASON_CODES:
         assert reason_code in order_text
-    assert "5.00 | 0.01 | 0.00 | 5.01 | -1005.01 | 100 | 0" in order_text
+    assert (
+        "5.00 | 0.01 | 0.00 | 5.01 | 5.01 | -1005.01 | 100 | 0"
+        in order_text
+    )
 
 
 def test_diagnostics_adapter_renders_baseline_versus_transformed_preview() -> None:
@@ -1298,7 +1487,10 @@ def test_diagnostics_adapter_can_admit_and_recommend_without_storage_controls() 
     assert "duckdb" not in visible_controls
 
 
-def test_desktop_shell_registers_diagnostics_as_a_primary_workspace() -> None:
+def test_desktop_shell_registers_diagnostics_as_a_primary_workspace(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
     from app import panels
     from app.i18n import set_language
     from app.panels import (
@@ -1313,10 +1505,15 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace() -> None:
         MainWindow,
     )
 
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
     set_language("zh_CN")
     reset_registry()
     register_builtin_panels()
-    register_ui_adapters()
+    diagnostics_engine = create_engine(
+        f"sqlite:///{tmp_path / 'primary-workspace.db'}",
+        future=True,
+    )
+    register_ui_adapters(diagnostics_engine=diagnostics_engine)
 
     descriptors = {item["name"]: item for item in list_panels()}
     assert descriptors["diagnostics"]["title"] in {"Diagnostics", "策略诊断"}
@@ -1334,6 +1531,7 @@ def test_desktop_shell_registers_diagnostics_as_a_primary_workspace() -> None:
 
 def test_desktop_diagnostics_composition_restores_approved_recipe(
     tmp_path: Path,
+    monkeypatch: object,
 ) -> None:
     from app.panels import (
         get_panel,
@@ -1342,6 +1540,7 @@ def test_desktop_diagnostics_composition_restores_approved_recipe(
         reset_registry,
     )
 
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
     database_path = tmp_path / "desktop-diagnostics.db"
     engine = create_engine(f"sqlite:///{database_path}", future=True)
     reset_registry()
@@ -1386,10 +1585,12 @@ def test_desktop_diagnostics_composition_restores_approved_recipe(
 
 def test_diagnostics_adapter_failure_preserves_the_legacy_shell(
     monkeypatch: object,
+    tmp_path: Path,
 ) -> None:
     from app import panels
     from app.panels import list_panels, register_builtin_panels, reset_registry
 
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
     original_replace_panel = panels.replace_panel
 
     def fail_diagnostics_registration(name: str, *args: object, **kwargs: object) -> object:
@@ -1405,7 +1606,11 @@ def test_diagnostics_adapter_failure_preserves_the_legacy_shell(
     reset_registry()
     register_builtin_panels()
 
-    panels.register_ui_adapters()
+    diagnostics_engine = create_engine(
+        f"sqlite:///{tmp_path / 'failed-adapter.db'}",
+        future=True,
+    )
+    panels.register_ui_adapters(diagnostics_engine=diagnostics_engine)
 
     descriptors = {item["name"]: item for item in list_panels()}
     assert descriptors["diagnostics"]["created"] is False
