@@ -85,6 +85,8 @@ class DiagnosticsApplicationPort(Protocol):
         initial_cash: Decimal,
         order_shares: int,
         replica_id: str,
+        strategy_id: str = "anchored-ranked-candidate-reference",
+        strategy_version: str = "anchored-ranked-candidate-reference.v1",
     ) -> _StrategyRunSnapshot: ...
 
     def strategy_run_status(self, run_id: str) -> _StrategyRunSnapshot: ...

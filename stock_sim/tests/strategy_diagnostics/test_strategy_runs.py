@@ -26,7 +26,11 @@ from strategy_diagnostics.execution_conditions import (
 )
 from strategy_diagnostics.persistence import initialize_diagnostic_persistence
 from strategy_diagnostics.ptrade_host import (
+    QUENTX_SCENARIO_NATIVE_MANIFEST,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
     InProcessPTradeStrategyHost,
+    PTradeConfigurationRequest,
     PTradeHostInvocation,
     PTradeHostResult,
     PTradeOrderRequest,
@@ -185,6 +189,139 @@ def _spec(
     )
 
 
+def _quentx_path() -> MaterializedMarketPath:
+    path = _reference_path()
+    start = datetime(2024, 1, 2, 9, 15)
+    end = datetime(2024, 1, 2, 11, 1)
+    daily_times = tuple(
+        (start - timedelta(days=65 - index)).replace(
+            hour=15,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        for index in range(65)
+    )
+    daily_index = {value: index for index, value in enumerate(daily_times)}
+    templates = {
+        instrument: next(
+            node for node in path.nodes if node.instrument == instrument
+        )
+        for instrument in ("sh.600000", "sz.000001")
+    }
+
+    def scenario_native_node(node: MarketPathNode) -> MarketPathNode:
+        prior_index = daily_index.get(node.simulation_time)
+        if prior_index is not None:
+            progress = Decimal(prior_index) / Decimal("64")
+            if node.instrument == "sh.600000":
+                price = Decimal("6.50") + Decimal("2.80") * progress
+                candidate_score = Decimal("0.10")
+                relative_strength = Decimal("0.05")
+                sector_breadth = Decimal("0.8")
+            else:
+                price = Decimal("21.20") - Decimal("0.60") * progress
+                candidate_score = Decimal("-0.04")
+                relative_strength = Decimal("-0.04")
+                sector_breadth = Decimal("0.3")
+            volume = 48_000 if prior_index % 4 == 1 else 24_000
+        else:
+            step = int((node.simulation_time - start).total_seconds() / 30)
+            if node.instrument == "sh.600000":
+                price = Decimal("9.35") + Decimal(step) * Decimal("0.0015")
+                candidate_score = Decimal("0.10")
+                relative_strength = Decimal("0.05")
+                sector_breadth = Decimal("0.8")
+            else:
+                price = Decimal("20.60") - Decimal(step) * Decimal("0.0010")
+                candidate_score = Decimal("-0.04")
+                relative_strength = Decimal("-0.04")
+                sector_breadth = Decimal("0.3")
+            legacy_group = step // 10
+            volume = 16_000 if legacy_group % 3 == 0 else 8_000
+            if node.instrument == "sh.600000":
+                volume *= 3
+        return replace(
+            node,
+            open=price * Decimal("0.998"),
+            high=price * Decimal("1.01"),
+            low=price * Decimal("0.99"),
+            close=price,
+            volume=volume,
+            amount=price * volume,
+            features=(
+                (
+                    "candidate_rank",
+                    Decimal("1")
+                    if node.instrument == "sh.600000"
+                    else Decimal("2"),
+                ),
+                ("candidate_score", candidate_score),
+                ("relative_strength", relative_strength),
+                ("relative_liquidity", Decimal("0.2")),
+                ("sector_return", Decimal("0.03")),
+                ("sector_breadth", sector_breadth),
+                ("market_breadth", Decimal("0.7")),
+            ),
+        )
+
+    intraday_times: list[datetime] = []
+    cursor = start
+    while cursor <= end:
+        intraday_times.append(cursor)
+        cursor += timedelta(seconds=30)
+    simulation_times = (*daily_times, *intraday_times)
+    nodes = tuple(
+        scenario_native_node(
+            replace(templates[instrument], simulation_time=simulation_time)
+        )
+        for simulation_time in simulation_times
+        for instrument in ("sh.600000", "sz.000001")
+    )
+    return replace(
+        path,
+        artifact_hash="b" * 64,
+        nodes=nodes,
+        instrument_states=tuple(
+            replace(state, effective_at=daily_times[0])
+            for state in path.instrument_states
+        ),
+        price_limit_references=tuple(
+            replace(
+                reference,
+                effective_at=start - timedelta(minutes=5),
+            )
+            for reference in path.price_limit_references
+        ),
+    )
+
+
+def _quentx_spec(
+    path: MaterializedMarketPath,
+    *,
+    replica_id: str = "quentx-baseline-replica",
+) -> StrategyRunSpecification:
+    specification = _spec(
+        path,
+        order_shares=1000,
+        replica_id=replica_id,
+        requested=RequestedExecutionAssumptions(
+            commission_bps=Decimal("3"),
+            slippage_bps=Decimal("5"),
+            max_fill_fraction=Decimal("1"),
+            latency_nodes=0,
+            allow_partial_fills=True,
+        ),
+    )
+    return replace(
+        specification,
+        strategy_id=QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+        strategy_version=QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+        ptrade_surface_version=QUENTX_SCENARIO_NATIVE_MANIFEST.surface_version,
+        ptrade_manifest_hash=QUENTX_SCENARIO_NATIVE_MANIFEST.content_hash,
+    )
+
+
 def _execution_stress_path(
     path: MaterializedMarketPath,
     **overrides: object,
@@ -225,6 +362,68 @@ class _OutOfUniverseHost:
             result,
             order_requests=(PTradeOrderRequest("sh.688888", 100),),
         )
+
+
+def test_quentx_scenario_native_run_is_deterministic_and_auditable(
+    tmp_path: Path,
+) -> None:
+    path = _quentx_path()
+
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'quentx-scenario-native.db'}",
+        future=True,
+    )
+    initialize_diagnostic_persistence(database)
+    first_engine = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    )
+    first_started = first_engine.start(_quentx_spec(path))
+    first = first_engine.run_to_completion(first_started.run_id)
+
+    second_engine = _engine(path)
+    second_started = second_engine.start(_quentx_spec(path))
+    second = second_engine.run_to_completion(second_started.run_id)
+    restarted = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    ).get(first.run_id)
+
+    assert first.status == "completed"
+    assert first.run_artifact_hash == second.run_artifact_hash
+    assert first.orders == second.orders
+    assert first.fills == second.fills
+    assert first.positions == second.positions
+    assert first.equity_curve == second.equity_curve
+    assert restarted.to_dict() == first.to_dict()
+    assert first.orders[0].instrument == "sh.600000"
+    assert first.orders[0].shares == 1000
+    assert first.fills
+    assert first.positions[0].instrument == "sh.600000"
+    assert first.ptrade_audit is not None
+    assert first.ptrade_audit.manifest_hash == (
+        QUENTX_SCENARIO_NATIVE_MANIFEST.content_hash
+    )
+    assert first.ptrade_audit.to_dict()["strategy_identity"] == {
+        "strategy_id": QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+        "strategy_version": QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+        "strategy_lineage": [
+            "QuentX 5.2.3",
+            "QuentX5_2_3_retest_soft_promoted_v20260721",
+            "scenario-native-adaptation.v1",
+        ],
+        "candidate_data_policy": "active-scenario-point-in-time-only",
+    }
+    assert first.ptrade_audit.configuration_requests == (
+        PTradeConfigurationRequest("set_slippage", Decimal("5")),
+        PTradeConfigurationRequest("set_commission", Decimal("3")),
+    )
+    assert any(
+        "scenario-native candidate generation" in record.message
+        for record in first.ptrade_audit.log_records
+    )
 
 
 def test_half_hour_decisions_use_simulation_time_and_next_node_activation() -> None:

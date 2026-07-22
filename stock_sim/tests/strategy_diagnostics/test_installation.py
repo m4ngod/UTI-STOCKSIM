@@ -98,6 +98,31 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
         "workspace": "Diagnostics",
     }
 
+    quentx_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib; "
+                "from strategy_diagnostics.ptrade_host import "
+                "QUENTX_SCENARIO_NATIVE_STRATEGY_ID as i, "
+                "QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION as v, "
+                "ptrade_manifest_for; "
+                "m=ptrade_manifest_for(i,v); "
+                "s=importlib.import_module(m.strategy_module); "
+                "print(s.STRATEGY_LINEAGE)"
+            ),
+        ],
+        cwd=caller_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert quentx_probe.stdout.strip() == (
+        "QuentX5_2_3_retest_soft_promoted_v20260721"
+    )
+
     worker = subprocess.run(
         [sys.executable, "-m", "strategy_diagnostics.ptrade_host_worker"],
         input=json.dumps({"protocol_version": "unsupported"}),

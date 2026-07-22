@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
+import importlib.util
 import json
 import os
+from pathlib import Path
 import random
 import sys
 from types import ModuleType
@@ -22,6 +24,7 @@ from strategy_diagnostics.ptrade_host import (
     PTradeHostProcessError,
     PTradePortfolioSnapshot,
     PTradePositionSnapshot,
+    QUENTX_SCENARIO_NATIVE_MANIFEST,
     REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
     SubprocessPTradeStrategyHost,
 )
@@ -164,6 +167,8 @@ def test_ptrade_surface_manifest_is_versioned_and_fails_unknown_calls() -> None:
         "positions",
     } <= set(manifest.portfolio_fields)
     assert len(manifest.content_hash) == 64
+    assert manifest.history_units == ("30s",)
+    assert QUENTX_SCENARIO_NATIVE_MANIFEST.history_units == ("1m", "1d")
     manifest.require_call("get_history")
 
     with pytest.raises(
@@ -171,6 +176,90 @@ def test_ptrade_surface_manifest_is_versioned_and_fails_unknown_calls() -> None:
         match=r"ptrade_surface\.v1.*get_fundamentals",
     ):
         manifest.require_call("get_fundamentals")
+
+
+def test_reference_manifest_hides_undeclared_context_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy_module = ModuleType("reference_context_capability_probe")
+
+    def initialize(context: object) -> None:
+        getattr(context, "instrument_states")
+
+    setattr(strategy_module, "initialize", initialize)
+    monkeypatch.setattr(
+        ptrade_host_module,
+        "_load_strategy_module",
+        lambda _manifest: strategy_module,
+    )
+
+    with pytest.raises(
+        PTradeCompatibilityError,
+        match=r"ptrade_surface\.v1.*context\.instrument_states",
+    ):
+        InProcessPTradeStrategyHost().invoke(_invocation())
+
+
+def test_real_loader_context_reflection_cannot_recover_undeclared_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "strategy_diagnostics.reference_context_reflection_probe"
+    source_path = tmp_path / "reference_context_reflection_probe.py"
+    source_path.write_text(
+        "def initialize(context):\n"
+        "    object.__getattribute__(context, 'instrument_states')\n",
+        encoding="utf-8",
+    )
+    specification = importlib.util.spec_from_file_location(
+        module_name,
+        source_path,
+    )
+    assert specification is not None
+    probe_manifest = replace(
+        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
+        strategy_module=module_name,
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda _name: specification,
+    )
+    monkeypatch.setattr(
+        ptrade_host_module,
+        "ptrade_manifest_for",
+        lambda _strategy_id, _strategy_version: probe_manifest,
+    )
+    invocation = replace(
+        _invocation(),
+        compatibility_manifest_hash=probe_manifest.content_hash,
+    )
+
+    with pytest.raises(AttributeError, match="instrument_states"):
+        InProcessPTradeStrategyHost().invoke(invocation)
+
+
+def test_reference_manifest_rejects_undeclared_history_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy_module = ModuleType("reference_history_capability_probe")
+
+    def initialize(_context: object) -> None:
+        history_reader = getattr(strategy_module, "get_history")
+        history_reader(count=1, unit="1m", fields=("close",))
+
+    setattr(strategy_module, "initialize", initialize)
+    monkeypatch.setattr(
+        ptrade_host_module,
+        "_load_strategy_module",
+        lambda _manifest: strategy_module,
+    )
+
+    with pytest.raises(
+        PTradeCompatibilityError,
+        match=r"ptrade_surface\.v1.*get_history.*declared units are 30s",
+    ):
+        InProcessPTradeStrategyHost().invoke(_invocation())
 
 
 def test_in_process_host_runs_reference_lifecycle_and_signed_share_order() -> None:
@@ -424,8 +513,8 @@ def test_unknown_log_facade_call_is_a_versioned_compatibility_error(
     strategy_module.initialize = initialize
     monkeypatch.setattr(
         ptrade_host_module,
-        "_load_reference_strategy_module",
-        lambda: strategy_module,
+        "_load_strategy_module",
+        lambda _manifest: strategy_module,
     )
 
     with pytest.raises(

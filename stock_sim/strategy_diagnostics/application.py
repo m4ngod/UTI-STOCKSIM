@@ -46,7 +46,11 @@ from .recipes import (
     RecipeWorkbench,
     ScenarioRecipeDraft,
 )
-from .ptrade_host import PTradeStrategyHost, SubprocessPTradeStrategyHost
+from .ptrade_host import (
+    PTradeStrategyHost,
+    SubprocessPTradeStrategyHost,
+    ptrade_manifest_for,
+)
 from .transformations import create_initial_transformation_catalog
 from .strategy_runs import (
     BASELINE_EXECUTION_POLICY_VERSION,
@@ -413,8 +417,10 @@ class DiagnosticsApplication:
         initial_cash: Decimal,
         order_shares: int,
         replica_id: str,
+        strategy_id: str = REFERENCE_STRATEGY_ID,
+        strategy_version: str = REFERENCE_STRATEGY_VERSION,
     ) -> StrategyRunSnapshot:
-        """Start the versioned reference strategy on an approved baseline path."""
+        """Start one registered strategy on an approved anchored path."""
 
         self.status()
         approved = self._recipe_workbench.get_version(recipe_version_id)
@@ -480,6 +486,7 @@ class DiagnosticsApplication:
             raise ValueError(
                 "Materialized execution conditions do not match the approved recipe"
             )
+        manifest = ptrade_manifest_for(strategy_id, strategy_version)
         specification = StrategyRunSpecification(
             recipe_version_id=approved.version_id,
             recipe_content_hash=approved.content_hash,
@@ -493,13 +500,15 @@ class DiagnosticsApplication:
             ),
             market_rule_profile_version=path.market_rule_profile_version,
             execution_policy_version=BASELINE_EXECUTION_POLICY_VERSION,
-            strategy_id=REFERENCE_STRATEGY_ID,
-            strategy_version=REFERENCE_STRATEGY_VERSION,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
             decision_cadence_minutes=approved.recipe.decision_cadence_minutes,
             initial_cash=initial_cash,
             order_shares=order_shares,
             replica_id=replica_id,
             code_identity="strategy-diagnostics.v1",
+            ptrade_surface_version=manifest.surface_version,
+            ptrade_manifest_hash=manifest.content_hash,
             ptrade_host_adapter_version=(
                 self._strategy_runs.ptrade_host_adapter_version
             ),

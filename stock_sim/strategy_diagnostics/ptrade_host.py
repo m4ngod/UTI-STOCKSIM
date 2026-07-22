@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import builtins
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 import hashlib
 import importlib.util
@@ -14,7 +16,7 @@ import random
 import subprocess
 import sys
 import tempfile
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import Callable, Final, Literal, Mapping, Protocol, Sequence, cast
 
 from .execution_conditions import ResolvedExecutionConditions
@@ -28,6 +30,10 @@ PTRADE_SUBPROCESS_PROTOCOL_VERSION: Final = "ptrade-subprocess-json.v1"
 REFERENCE_PTRADE_STRATEGY_ID: Final = "anchored-ranked-candidate-reference"
 REFERENCE_PTRADE_STRATEGY_VERSION: Final = (
     "anchored-ranked-candidate-reference.v1"
+)
+QUENTX_SCENARIO_NATIVE_STRATEGY_ID: Final = "quentx-5.2.3-scenario-native"
+QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION: Final = (
+    "quentx-5.2.3-scenario-native.v1"
 )
 
 ConfigurationCall = Literal["set_slippage", "set_commission"]
@@ -89,9 +95,12 @@ class PTradeCompatibilityManifest:
     context_fields: tuple[str, ...]
     portfolio_fields: tuple[str, ...]
     market_data_calls: tuple[str, ...]
+    history_units: tuple[str, ...]
     configuration_calls: tuple[str, ...]
     trading_calls: tuple[str, ...]
     logging_calls: tuple[str, ...]
+    strategy_lineage: tuple[str, ...] = ()
+    candidate_data_policy: str = ""
 
     def __post_init__(self) -> None:
         if self.surface_version != PTRADE_SURFACE_VERSION:
@@ -104,6 +113,18 @@ class PTradeCompatibilityManifest:
             raise ValueError("PTrade strategy identity must not be empty")
         if len(self.supported_calls) != len(set(self.supported_calls)):
             raise ValueError("PTrade compatibility calls must be unique")
+        if not self.history_units or any(
+            unit not in {"30s", "1m", "1d"} for unit in self.history_units
+        ):
+            raise ValueError("PTrade history units must be explicit and supported")
+        if len(self.history_units) != len(set(self.history_units)):
+            raise ValueError("PTrade history units must be unique")
+        if self.strategy_lineage and any(
+            not item.strip() for item in self.strategy_lineage
+        ):
+            raise ValueError("PTrade strategy lineage entries must not be empty")
+        if self.candidate_data_policy and not self.candidate_data_policy.strip():
+            raise ValueError("PTrade candidate data policy must not be blank")
 
     @property
     def supported_calls(self) -> tuple[str, ...]:
@@ -124,7 +145,7 @@ class PTradeCompatibilityManifest:
             raise PTradeCompatibilityError(call)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "surface_version": self.surface_version,
             "strategy_id": self.strategy_id,
             "strategy_version": self.strategy_version,
@@ -135,10 +156,16 @@ class PTradeCompatibilityManifest:
             "context_fields": list(self.context_fields),
             "portfolio_fields": list(self.portfolio_fields),
             "market_data_calls": list(self.market_data_calls),
+            "history_units": list(self.history_units),
             "configuration_calls": list(self.configuration_calls),
             "trading_calls": list(self.trading_calls),
             "logging_calls": list(self.logging_calls),
         }
+        if self.strategy_lineage:
+            payload["strategy_lineage"] = list(self.strategy_lineage)
+        if self.candidate_data_policy:
+            payload["candidate_data_policy"] = self.candidate_data_policy
+        return payload
 
 
 REFERENCE_PTRADE_COMPATIBILITY_MANIFEST: Final = PTradeCompatibilityManifest(
@@ -159,10 +186,71 @@ REFERENCE_PTRADE_COMPATIBILITY_MANIFEST: Final = PTradeCompatibilityManifest(
     ),
     portfolio_fields=("available_cash", "total_value", "positions"),
     market_data_calls=("set_universe", "get_history", "get_current_data"),
+    history_units=("30s",),
     configuration_calls=("set_slippage", "set_commission"),
     trading_calls=("order",),
     logging_calls=("log.info", "log.warning", "log.error"),
 )
+
+
+QUENTX_SCENARIO_NATIVE_MANIFEST: Final = PTradeCompatibilityManifest(
+    surface_version=PTRADE_SURFACE_VERSION,
+    strategy_id=QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+    strategy_version=QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+    strategy_module="strategy_diagnostics.quentx_scenario_native_strategy",
+    lifecycle_callbacks=("initialize", "handle_data"),
+    scheduled_callbacks=("scheduled_scan",),
+    scheduling_calls=("run_daily",),
+    context_fields=(
+        "current_dt",
+        "portfolio",
+        "state",
+        "eligible_universe",
+        "instrument_states",
+        "decision_cadence_minutes",
+        "order_shares",
+    ),
+    portfolio_fields=("available_cash", "total_value", "positions"),
+    market_data_calls=("set_universe", "get_history", "get_current_data"),
+    history_units=("1m", "1d"),
+    configuration_calls=("set_slippage", "set_commission"),
+    trading_calls=("order",),
+    logging_calls=("log.info", "log.warning", "log.error"),
+    strategy_lineage=(
+        "QuentX 5.2.3",
+        "QuentX5_2_3_retest_soft_promoted_v20260721",
+        "scenario-native-adaptation.v1",
+    ),
+    candidate_data_policy="active-scenario-point-in-time-only",
+)
+
+
+PTRADE_COMPATIBILITY_MANIFESTS: Final[
+    Mapping[tuple[str, str], PTradeCompatibilityManifest]
+] = MappingProxyType(
+    {
+        (
+            REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.strategy_id,
+            REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.strategy_version,
+        ): REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
+        (
+            QUENTX_SCENARIO_NATIVE_MANIFEST.strategy_id,
+            QUENTX_SCENARIO_NATIVE_MANIFEST.strategy_version,
+        ): QUENTX_SCENARIO_NATIVE_MANIFEST,
+    }
+)
+
+
+def ptrade_manifest_for(
+    strategy_id: str,
+    strategy_version: str,
+) -> PTradeCompatibilityManifest:
+    try:
+        return PTRADE_COMPATIBILITY_MANIFESTS[(strategy_id, strategy_version)]
+    except KeyError as error:
+        raise PTradeCompatibilityError(
+            f"strategy:{strategy_id}@{strategy_version}"
+        ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +341,13 @@ class PTradeContext:
 
     def __getattr__(self, name: str) -> object:
         raise PTradeCompatibilityError(f"context.{name}")
+
+
+@dataclass(slots=True)
+class PTradeInstrumentStateContext(PTradeContext):
+    """QuentX context view whose extra field is physically present."""
+
+    instrument_states: tuple[InstrumentState, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,6 +851,10 @@ class PTradeRunAudit:
     surface_version: str
     manifest_hash: str
     execution_resolution: ResolvedExecutionConditions
+    strategy_id: str = ""
+    strategy_version: str = ""
+    strategy_lineage: tuple[str, ...] = ()
+    candidate_data_policy: str = ""
     host_adapter_versions: tuple[str, ...] = ()
     lifecycle_events: tuple[str, ...] = ()
     configuration_requests: tuple[PTradeConfigurationRequest, ...] = ()
@@ -782,6 +881,10 @@ class PTradeRunAudit:
             surface_version=self.surface_version,
             manifest_hash=self.manifest_hash,
             execution_resolution=self.execution_resolution,
+            strategy_id=self.strategy_id,
+            strategy_version=self.strategy_version,
+            strategy_lineage=self.strategy_lineage,
+            candidate_data_policy=self.candidate_data_policy,
             host_adapter_versions=self.host_adapter_versions,
             lifecycle_events=self.lifecycle_events + result.lifecycle_events,
             configuration_requests=(
@@ -801,7 +904,7 @@ class PTradeRunAudit:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "surface_version": self.surface_version,
             "manifest_hash": self.manifest_hash,
             "host_adapter_versions": list(self.host_adapter_versions),
@@ -814,6 +917,14 @@ class PTradeRunAudit:
             "market_data_calls": list(self.market_data_calls),
             "log_records": [item.to_dict() for item in self.log_records],
         }
+        if self.strategy_id:
+            payload["strategy_identity"] = {
+                "strategy_id": self.strategy_id,
+                "strategy_version": self.strategy_version,
+                "strategy_lineage": list(self.strategy_lineage),
+                "candidate_data_policy": self.candidate_data_policy,
+            }
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "PTradeRunAudit":
@@ -826,11 +937,27 @@ class PTradeRunAudit:
             payload.get("order_requests", ()),
         )
         logs = cast(Sequence[Mapping[str, object]], payload.get("log_records", ()))
+        identity = cast(
+            Mapping[str, object],
+            payload.get("strategy_identity", {}),
+        )
         return cls(
             surface_version=str(payload["surface_version"]),
             manifest_hash=str(payload["manifest_hash"]),
             execution_resolution=ResolvedExecutionConditions.from_dict(
                 cast(Mapping[str, object], payload["execution_resolution"])
+            ),
+            strategy_id=str(identity.get("strategy_id", "")),
+            strategy_version=str(identity.get("strategy_version", "")),
+            strategy_lineage=tuple(
+                str(item)
+                for item in cast(
+                    Sequence[object],
+                    identity.get("strategy_lineage", ()),
+                )
+            ),
+            candidate_data_policy=str(
+                identity.get("candidate_data_policy", "")
             ),
             host_adapter_versions=tuple(
                 str(item)
@@ -886,7 +1013,7 @@ class InProcessPTradeStrategyHost:
         return PTRADE_IN_PROCESS_HOST_VERSION
 
     def invoke(self, invocation: PTradeHostInvocation) -> PTradeHostResult:
-        return _execute_reference_invocation(
+        return _execute_strategy_invocation(
             invocation,
             host_adapter_version=PTRADE_IN_PROCESS_HOST_VERSION,
         )
@@ -922,7 +1049,7 @@ class SubprocessPTradeStrategyHost:
             python_executable=self._python_executable,
             timeout_seconds=self._timeout_seconds,
         )
-        return _decode_subprocess_response(response_text)
+        return _decode_subprocess_response(response_text, invocation)
 
 
 class _IsolatedSubprocessPTradeWorkerTransport:
@@ -976,7 +1103,10 @@ class _IsolatedSubprocessPTradeWorkerTransport:
         return completed.stdout
 
 
-def _decode_subprocess_response(response_text: str) -> PTradeHostResult:
+def _decode_subprocess_response(
+    response_text: str,
+    invocation: PTradeHostInvocation,
+) -> PTradeHostResult:
     try:
         raw_envelope = json.loads(response_text)
     except (json.JSONDecodeError, TypeError) as error:
@@ -1030,9 +1160,13 @@ def _decode_subprocess_response(response_text: str) -> PTradeHostResult:
         raise PTradeHostProcessError(
             "PTrade subprocess result does not match the host contract"
         ) from error
+    manifest = ptrade_manifest_for(
+        invocation.strategy_id,
+        invocation.strategy_version,
+    )
     expected_identity = (
-        PTRADE_SURFACE_VERSION,
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.content_hash,
+        manifest.surface_version,
+        manifest.content_hash,
         PTRADE_SUBPROCESS_HOST_VERSION,
     )
     actual_identity = (
@@ -1052,8 +1186,10 @@ class _PTradeRuntime:
         self,
         invocation: PTradeHostInvocation,
         state: PTradeRuntimeState,
+        manifest: PTradeCompatibilityManifest,
     ) -> None:
         self.invocation = invocation
+        self.manifest = manifest
         self.universe = list(invocation.market_snapshot.eligible_universe)
         self.schedules = list(state.scheduled_callbacks)
         self.strategy_state = dict(state.strategy_state)
@@ -1066,6 +1202,16 @@ class _PTradeRuntime:
 
     @property
     def context(self) -> PTradeContext:
+        if "instrument_states" in self.manifest.context_fields:
+            return PTradeInstrumentStateContext(
+                current_dt=self.invocation.simulation_time,
+                portfolio=self.invocation.portfolio,
+                state=self.strategy_state,
+                eligible_universe=self.invocation.market_snapshot.eligible_universe,
+                decision_cadence_minutes=self.invocation.decision_cadence_minutes,
+                order_shares=self.invocation.order_shares,
+                instrument_states=self.invocation.market_snapshot.states,
+            )
         return PTradeContext(
             current_dt=self.invocation.simulation_time,
             portfolio=self.invocation.portfolio,
@@ -1081,11 +1227,9 @@ class _PTradeRuntime:
         *,
         cadence_minutes: int,
     ) -> None:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("run_daily")
+        self.manifest.require_call("run_daily")
         callback_name = getattr(callback, "__name__", "")
-        if callback_name not in (
-            REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.scheduled_callbacks
-        ):
+        if callback_name not in self.manifest.scheduled_callbacks:
             raise PTradeCompatibilityError(f"run_daily:{callback_name or '<anonymous>'}")
         if cadence_minutes != self.invocation.decision_cadence_minutes:
             raise PTradeCompatibilityError(
@@ -1097,7 +1241,7 @@ class _PTradeRuntime:
             self.schedules.append(schedule)
 
     def set_universe(self, instruments: Sequence[str]) -> None:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("set_universe")
+        self.manifest.require_call("set_universe")
         normalized = tuple(dict.fromkeys(str(item) for item in instruments))
         eligible = self.invocation.market_snapshot.eligible_universe
         if set(normalized) != set(eligible):
@@ -1108,13 +1252,13 @@ class _PTradeRuntime:
         self.universe = list(normalized)
 
     def set_slippage(self, value: Decimal) -> None:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("set_slippage")
+        self.manifest.require_call("set_slippage")
         self.configuration_requests.append(
             PTradeConfigurationRequest(call="set_slippage", value=value)
         )
 
     def set_commission(self, value: Decimal) -> None:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("set_commission")
+        self.manifest.require_call("set_commission")
         self.configuration_requests.append(
             PTradeConfigurationRequest(call="set_commission", value=value)
         )
@@ -1126,11 +1270,14 @@ class _PTradeRuntime:
         unit: str,
         fields: tuple[str, ...],
     ) -> dict[str, tuple[dict[str, object], ...]]:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("get_history")
-        if count <= 0 or unit != "30s":
+        self.manifest.require_call("get_history")
+        if count <= 0 or unit not in self.manifest.history_units:
             raise PTradeCompatibilityError(
                 "get_history",
-                detail="ptrade_surface.v1 reference strategy accepts positive 30s reads",
+                detail=(
+                    "the requested unit is outside this strategy manifest; "
+                    f"declared units are {','.join(self.manifest.history_units)}"
+                ),
             )
         allowed_fields = {"open", "high", "low", "close", "volume", "amount"}
         if not fields or any(field not in allowed_fields for field in fields):
@@ -1148,18 +1295,95 @@ class _PTradeRuntime:
                 for node in self.invocation.market_history
                 if node.instrument == instrument
                 and node.simulation_time <= self.invocation.simulation_time
-            ][-count:]
-            result[instrument] = tuple(
-                {
-                    "simulation_time": node.simulation_time,
-                    **{field: getattr(node, field) for field in fields},
-                }
-                for node in nodes
+            ]
+            if unit == "30s":
+                result[instrument] = tuple(
+                    {
+                        "simulation_time": node.simulation_time,
+                        **{field: getattr(node, field) for field in fields},
+                    }
+                    for node in nodes[-count:]
+                )
+                continue
+            if unit == "1d":
+                completed_nodes = tuple(
+                    node
+                    for node in nodes
+                    if node.simulation_time.date()
+                    < self.invocation.simulation_time.date()
+                )
+                day_groups: list[list[MarketPathNode]] = []
+                day_keys: list[date] = []
+                for node in completed_nodes:
+                    day = node.simulation_time.date()
+                    if not day_keys or day_keys[-1] != day:
+                        day_keys.append(day)
+                        day_groups.append([])
+                    day_groups[-1].append(node)
+                day_rows: list[dict[str, object]] = []
+                for group in day_groups:
+                    day_row: dict[str, object] = {
+                        "simulation_time": group[-1].simulation_time
+                    }
+                    for field in fields:
+                        if field == "open":
+                            day_row[field] = group[0].open
+                        elif field == "high":
+                            day_row[field] = max(item.high for item in group)
+                        elif field == "low":
+                            day_row[field] = min(item.low for item in group)
+                        elif field == "close":
+                            day_row[field] = group[-1].close
+                        elif field == "volume":
+                            day_row[field] = sum(item.volume for item in group)
+                        else:
+                            day_row[field] = sum(
+                                (item.amount for item in group),
+                                Decimal("0"),
+                            )
+                    day_rows.append(day_row)
+                result[instrument] = tuple(day_rows[-count:])
+                continue
+            current_minute = self.invocation.simulation_time.replace(
+                second=0,
+                microsecond=0,
             )
+            completed_nodes = tuple(
+                node for node in nodes if node.simulation_time < current_minute
+            )
+            minute_groups: list[list[MarketPathNode]] = []
+            minute_keys: list[datetime] = []
+            for node in completed_nodes:
+                minute = node.simulation_time.replace(second=0, microsecond=0)
+                if not minute_keys or minute_keys[-1] != minute:
+                    minute_keys.append(minute)
+                    minute_groups.append([])
+                minute_groups[-1].append(node)
+            minute_rows: list[dict[str, object]] = []
+            for minute, group in zip(minute_keys, minute_groups, strict=True):
+                minute_row: dict[str, object] = {"simulation_time": minute}
+                for field in fields:
+                    if field == "open":
+                        minute_row[field] = group[0].open
+                    elif field == "high":
+                        minute_row[field] = max(item.high for item in group)
+                    elif field == "low":
+                        minute_row[field] = min(item.low for item in group)
+                    elif field == "close":
+                        minute_row[field] = group[-1].close
+                    elif field == "volume":
+                        minute_row[field] = sum(item.volume for item in group)
+                    else:
+                        minute_row[field] = sum(
+                            (item.amount for item in group),
+                            Decimal("0"),
+                        )
+                minute_rows.append(minute_row)
+            result[instrument] = tuple(minute_rows[-count:])
         return result
 
     def get_current_data(self) -> dict[str, MarketPathNode]:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("get_current_data")
+        self.manifest.require_call("get_current_data")
         self.market_data_calls.append("get_current_data")
         visible = {
             node.instrument: node
@@ -1174,7 +1398,7 @@ class _PTradeRuntime:
         return visible
 
     def order(self, instrument: str, amount: int) -> None:
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call("order")
+        self.manifest.require_call("order")
         if instrument not in self.universe:
             raise PTradeCompatibilityError(
                 "order",
@@ -1186,7 +1410,7 @@ class _PTradeRuntime:
 
     def log(self, level: LogLevel, message: str) -> None:
         call = f"log.{level}"
-        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.require_call(call)
+        self.manifest.require_call(call)
         self.log_records.append(PTradeLogRecord(level=level, message=message))
 
     def snapshot_state(self) -> PTradeRuntimeState:
@@ -1215,20 +1439,230 @@ class _PTradeLogFacade:
         raise PTradeCompatibilityError(f"log.{name}")
 
 
-def _load_reference_strategy_module() -> ModuleType:
-    manifest = REFERENCE_PTRADE_COMPATIBILITY_MANIFEST
+_FORMAL_ALLOWED_IMPORT_ROOTS = frozenset(
+    {
+        "__future__",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "json",
+        "math",
+        "statistics",
+        "typing",
+    }
+)
+_FORMAL_MARKET_MODEL_TYPES = frozenset(
+    {"InstrumentState", "MarketPathNode"}
+)
+
+
+def _formal_strategy_builtins() -> dict[str, object]:
+    safe_builtins: dict[str, object] = dict(vars(builtins))
+    for name in ("compile", "eval", "exec", "open"):
+        safe_builtins[name] = _blocked_formal_data_access(
+            "external_market_path"
+        )
+
+    def guarded_import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        del locals
+        package = str((globals or {}).get("__package__", ""))
+        root = name.split(".", 1)[0]
+        relative_market_model = (
+            level > 0
+            and package == "strategy_diagnostics"
+            and name == "market_paths"
+            and all(item in _FORMAL_MARKET_MODEL_TYPES for item in fromlist)
+        )
+        absolute_market_model = (
+            level == 0
+            and name == "strategy_diagnostics.market_paths"
+            and all(item in _FORMAL_MARKET_MODEL_TYPES for item in fromlist)
+        )
+        if not (
+            relative_market_model
+            or absolute_market_model
+            or (level == 0 and root in _FORMAL_ALLOWED_IMPORT_ROOTS)
+        ):
+            raise PTradeCompatibilityError(
+                "external_market_path",
+                detail=(
+                    "formal strategies must consume the active formal Scenario "
+                    "Data World instead of external paths or a Legacy Candidate "
+                    "Cache"
+                ),
+            )
+        return builtins.__import__(
+            name,
+            globals,
+            None,
+            fromlist,
+            level,
+        )
+
+    safe_builtins["__import__"] = guarded_import
+    return safe_builtins
+
+
+def _load_strategy_module(
+    manifest: PTradeCompatibilityManifest,
+) -> ModuleType:
     specification = importlib.util.find_spec(manifest.strategy_module)
     if specification is None or specification.loader is None:
         raise PTradeCompatibilityError(
             f"strategy_module:{manifest.strategy_module}",
             detail="registered strategy module cannot be loaded",
         )
+    if specification.origin is None:
+        raise PTradeCompatibilityError(
+            f"strategy_module:{manifest.strategy_module}",
+            detail="registered formal strategy must have auditable source",
+        )
+    try:
+        source = Path(specification.origin).read_text(encoding="utf-8")
+    except OSError as error:
+        raise PTradeCompatibilityError(
+            f"strategy_module:{manifest.strategy_module}",
+            detail="registered formal strategy source cannot be audited",
+        ) from error
+    _audit_formal_strategy_source(source, module_name=manifest.strategy_module)
     module = importlib.util.module_from_spec(specification)
-    specification.loader.exec_module(module)
+    # Install the restricted builtins before executing module-level code.  This
+    # prevents aliases such as ``reader = open`` from capturing the real file
+    # API before the PTrade surface is injected.
+    setattr(module, "__builtins__", _formal_strategy_builtins())
+    previous = sys.modules.get(manifest.strategy_module)
+    sys.modules[manifest.strategy_module] = module
+    try:
+        specification.loader.exec_module(module)
+    finally:
+        if previous is None:
+            sys.modules.pop(manifest.strategy_module, None)
+        else:
+            sys.modules[manifest.strategy_module] = previous
     return module
 
 
+def _audit_formal_strategy_source(source: str, *, module_name: str) -> None:
+    try:
+        tree = ast.parse(source, filename=module_name)
+    except SyntaxError as error:
+        raise PTradeCompatibilityError(
+            f"strategy_module:{module_name}",
+            detail="registered formal strategy source is not valid Python",
+        ) from error
+    forbidden_calls = {
+        "__import__": "external_market_path",
+        "compile": "external_market_path",
+        "eval": "external_market_path",
+        "exec": "external_market_path",
+        "load_external_market_path": "external_market_path",
+        "load_legacy_candidate_cache": "legacy_candidate_cache",
+        "open": "external_market_path",
+    }
+    forbidden_attributes = {
+        "connect",
+        "open",
+        "read_bytes",
+        "read_csv",
+        "read_parquet",
+        "read_text",
+        "urlopen",
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = (
+                tuple(alias.name for alias in node.names)
+                if isinstance(node, ast.Import)
+                else ((node.module or ""),)
+            )
+            for name in names:
+                root = name.split(".", 1)[0]
+                relative_market_model = (
+                    isinstance(node, ast.ImportFrom)
+                    and node.level > 0
+                    and node.module == "market_paths"
+                )
+                absolute_market_model = (
+                    isinstance(node, ast.ImportFrom)
+                    and name == "strategy_diagnostics.market_paths"
+                )
+                if (
+                    (relative_market_model or absolute_market_model)
+                    and isinstance(node, ast.ImportFrom)
+                    and any(
+                        alias.name not in _FORMAL_MARKET_MODEL_TYPES
+                        for alias in node.names
+                    )
+                ):
+                    raise PTradeCompatibilityError(
+                        "external_market_path",
+                        detail=(
+                            "formal strategies may import only point-in-time market "
+                            "value types from the scenario market model"
+                        ),
+                    )
+                if not (
+                    relative_market_model
+                    or absolute_market_model
+                    or (
+                        (not isinstance(node, ast.ImportFrom) or node.level == 0)
+                        and root in _FORMAL_ALLOWED_IMPORT_ROOTS
+                    )
+                ):
+                    raise PTradeCompatibilityError(
+                        "external_market_path",
+                        detail=(
+                            "formal strategy imports are limited to deterministic "
+                            "calculation modules inside the active Scenario Data World"
+                        ),
+                    )
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id in forbidden_calls:
+            raise PTradeCompatibilityError(
+                forbidden_calls[node.func.id],
+                detail=(
+                    "formal strategy source cannot load an external path or a "
+                    "Legacy Candidate Cache"
+                ),
+            )
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in forbidden_attributes
+        ):
+            raise PTradeCompatibilityError(
+                "external_market_path",
+                detail=(
+                    "formal strategy source cannot call file, database, or network "
+                    "read APIs"
+                ),
+            )
+
+
 def _inject_ptrade_surface(module: ModuleType, runtime: _PTradeRuntime) -> None:
+    safe_builtins = _formal_strategy_builtins()
+    for name in ("compile", "eval", "exec", "open"):
+        safe_builtins[name] = _blocked_formal_data_access(
+            "external_market_path"
+        )
+        setattr(
+            module,
+            name,
+            _blocked_formal_data_access("external_market_path"),
+        )
+    setattr(
+        module,
+        "__import__",
+        _blocked_formal_data_access("external_market_path"),
+    )
+    setattr(module, "__builtins__", safe_builtins)
     setattr(module, "set_universe", runtime.set_universe)
     setattr(module, "set_slippage", runtime.set_slippage)
     setattr(module, "set_commission", runtime.set_commission)
@@ -1237,6 +1671,29 @@ def _inject_ptrade_surface(module: ModuleType, runtime: _PTradeRuntime) -> None:
     setattr(module, "get_current_data", runtime.get_current_data)
     setattr(module, "order", runtime.order)
     setattr(module, "log", _PTradeLogFacade(runtime))
+    setattr(
+        module,
+        "load_external_market_path",
+        _blocked_formal_data_access("external_market_path"),
+    )
+    setattr(
+        module,
+        "load_legacy_candidate_cache",
+        _blocked_formal_data_access("legacy_candidate_cache"),
+    )
+
+
+def _blocked_formal_data_access(call: str) -> Callable[..., object]:
+    def blocked(*_args: object, **_kwargs: object) -> object:
+        raise PTradeCompatibilityError(
+            call,
+            detail=(
+                "formal strategies must consume the active formal Scenario Data "
+                "World instead of external paths or a Legacy Candidate Cache"
+            ),
+        )
+
+    return blocked
 
 
 def _require_strategy_callback(
@@ -1266,29 +1723,26 @@ def _invoke_strategy_callback(
         ) from error
 
 
-def _execute_reference_invocation(
+def _execute_strategy_invocation(
     invocation: PTradeHostInvocation,
     *,
     host_adapter_version: str,
 ) -> PTradeHostResult:
-    manifest = REFERENCE_PTRADE_COMPATIBILITY_MANIFEST
+    manifest = ptrade_manifest_for(
+        invocation.strategy_id,
+        invocation.strategy_version,
+    )
     if invocation.compatibility_manifest_hash != manifest.content_hash:
         raise PTradeCompatibilityError(
             "compatibility_manifest",
             detail="manifest hash differs from the registered reference strategy",
         )
-    if (invocation.strategy_id, invocation.strategy_version) != (
-        manifest.strategy_id,
-        manifest.strategy_version,
-    ):
-        raise PTradeCompatibilityError(
-            f"strategy:{invocation.strategy_id}@{invocation.strategy_version}"
-        )
     runtime = _PTradeRuntime(
         invocation,
         invocation.runtime_state or PTradeRuntimeState.empty(),
+        manifest,
     )
-    module = _load_reference_strategy_module()
+    module = _load_strategy_module(manifest)
     _inject_ptrade_surface(module, runtime)
     context = runtime.context
     if invocation.event == "initialize" and runtime.initialized:
@@ -1350,7 +1804,7 @@ def subprocess_worker_response(request_text: str) -> str:
         invocation = PTradeHostInvocation.from_dict(
             cast(Mapping[str, object], request["invocation"])
         )
-        result = _execute_reference_invocation(
+        result = _execute_strategy_invocation(
             invocation,
             host_adapter_version=PTRADE_SUBPROCESS_HOST_VERSION,
         )
@@ -1424,6 +1878,10 @@ __all__ = [
     "PTRADE_IN_PROCESS_HOST_VERSION",
     "PTRADE_SUBPROCESS_HOST_VERSION",
     "PTRADE_SURFACE_VERSION",
+    "PTRADE_COMPATIBILITY_MANIFESTS",
+    "QUENTX_SCENARIO_NATIVE_MANIFEST",
+    "QUENTX_SCENARIO_NATIVE_STRATEGY_ID",
+    "QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION",
     "PTradeAuditOrderRequest",
     "PTradeCompatibilityError",
     "PTradeCompatibilityManifest",
@@ -1445,4 +1903,5 @@ __all__ = [
     "REFERENCE_PTRADE_STRATEGY_ID",
     "REFERENCE_PTRADE_STRATEGY_VERSION",
     "SubprocessPTradeStrategyHost",
+    "ptrade_manifest_for",
 ]

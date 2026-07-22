@@ -97,6 +97,7 @@ from .recipes import (
 )
 from .ptrade_host import (
     PTRADE_IN_PROCESS_HOST_VERSION,
+    PTRADE_COMPATIBILITY_MANIFESTS,
     PTRADE_SUBPROCESS_HOST_VERSION,
     PTRADE_SURFACE_VERSION,
     InProcessPTradeStrategyHost,
@@ -117,8 +118,12 @@ from .ptrade_host import (
     PTradeRuntimeState,
     PTradeStrategyHost,
     PTradeWorkerTransport,
+    QUENTX_SCENARIO_NATIVE_MANIFEST,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
     REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
     SubprocessPTradeStrategyHost,
+    ptrade_manifest_for,
 )
 from .transformations import (
     SCENARIO_TRANSFORMATION_CATALOG_VERSION,
@@ -222,6 +227,7 @@ __all__ = [
     "TransformationProposalV1",
     "UnapprovedScenarioRecipeError",
     "PTRADE_IN_PROCESS_HOST_VERSION",
+    "PTRADE_COMPATIBILITY_MANIFESTS",
     "PTRADE_SUBPROCESS_HOST_VERSION",
     "PTRADE_SURFACE_VERSION",
     "InProcessPTradeStrategyHost",
@@ -242,8 +248,12 @@ __all__ = [
     "PTradeRuntimeState",
     "PTradeStrategyHost",
     "PTradeWorkerTransport",
+    "QUENTX_SCENARIO_NATIVE_MANIFEST",
+    "QUENTX_SCENARIO_NATIVE_STRATEGY_ID",
+    "QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION",
     "REFERENCE_PTRADE_COMPATIBILITY_MANIFEST",
     "SubprocessPTradeStrategyHost",
+    "ptrade_manifest_for",
     "ScenarioTransformationCatalog",
     "SCENARIO_TRANSFORMATION_CATALOG_VERSION",
     "TransformationCatalogEntry",

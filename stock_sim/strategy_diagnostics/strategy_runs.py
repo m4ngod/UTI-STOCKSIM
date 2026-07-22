@@ -51,6 +51,7 @@ from .ptrade_host import (
     REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
     REFERENCE_PTRADE_STRATEGY_ID,
     REFERENCE_PTRADE_STRATEGY_VERSION,
+    ptrade_manifest_for,
 )
 from .transformations import SCENARIO_TRANSFORMATION_CATALOG_VERSION
 
@@ -607,6 +608,10 @@ class StrategyRunEngine:
         resolved_conditions = specification.resolved_execution_conditions
         if resolved_conditions is None:
             raise ValueError("Strategy Run effective execution conditions are not pinned")
+        manifest = ptrade_manifest_for(
+            specification.strategy_id,
+            specification.strategy_version,
+        )
         state = _StrategyRunState(
             specification=specification,
             status="running",
@@ -622,6 +627,10 @@ class StrategyRunEngine:
                 surface_version=specification.ptrade_surface_version,
                 manifest_hash=specification.ptrade_manifest_hash,
                 execution_resolution=resolved_conditions,
+                strategy_id=manifest.strategy_id,
+                strategy_version=manifest.strategy_version,
+                strategy_lineage=manifest.strategy_lineage,
+                candidate_data_policy=manifest.candidate_data_policy,
                 host_adapter_versions=(
                     specification.ptrade_host_adapter_version,
                 ),
@@ -817,18 +826,20 @@ class StrategyRunEngine:
             raise ValueError(
                 "Pinned execution conditions do not match scenario overrides"
             )
-        if (
-            specification.strategy_id,
-            specification.strategy_version,
-        ) != (REFERENCE_STRATEGY_ID, REFERENCE_STRATEGY_VERSION):
-            raise ValueError("Unsupported reference Strategy Under Test version")
-        if specification.ptrade_surface_version != PTRADE_SURFACE_VERSION:
+        try:
+            manifest = ptrade_manifest_for(
+                specification.strategy_id,
+                specification.strategy_version,
+            )
+        except PTradeCompatibilityError as error:
+            raise ValueError("Unsupported Strategy Under Test version") from error
+        if specification.ptrade_surface_version != manifest.surface_version:
             raise ValueError("Unsupported PTrade Compatibility Surface version")
         if not specification.ptrade_identity_pinned:
             raise ValueError("Strategy Run PTrade identity is not pinned")
         if (
             specification.ptrade_manifest_hash
-            != REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.content_hash
+            != manifest.content_hash
         ):
             raise ValueError("Unsupported PTrade compatibility manifest hash")
         if (
@@ -1260,8 +1271,13 @@ class StrategyRunEngine:
                 "order",
                 detail="host returned an order outside the current Eligible Universe",
             )
-        expected_schedule = (
-            ("rebalance", state.specification.decision_cadence_minutes),
+        manifest = ptrade_manifest_for(
+            state.specification.strategy_id,
+            state.specification.strategy_version,
+        )
+        expected_schedule = tuple(
+            (callback, state.specification.decision_cadence_minutes)
+            for callback in manifest.scheduled_callbacks
         )
         if result.scheduled_callbacks != expected_schedule:
             raise PTradeCompatibilityError(

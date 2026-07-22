@@ -22,6 +22,9 @@ from strategy_diagnostics import (
     InMemoryMarketPathArtifactStore,
     InMemoryHistoricalSource,
     InstrumentState,
+    QUENTX_SCENARIO_NATIVE_MANIFEST,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
     ScenarioDataWorldInput,
     SessionPriceLimitReference,
     SourceArtifact,
@@ -578,6 +581,57 @@ def test_diagnostics_workspace_completes_the_manual_recipe_lifecycle() -> None:
     assert workbench["status"] == "materialized"
     assert workbench["approved_version"]["version_id"] == approved["version_id"]
     assert workbench["materialization"]["artifact_hash"]
+
+
+def test_headless_application_selects_the_registered_quentx_strategy() -> None:
+    application = _execution_admittable_application()
+    panel = DiagnosticsPanel(application)  # type: ignore[arg-type]
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = panel.get_view()["historical_segment_catalog"]["segments"][0][
+        "segment_id"
+    ]
+    panel.create_baseline_recipe(
+        name="QuentX scenario-native baseline",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        commission_bps="3",
+        slippage_bps="5",
+    )
+    panel.validate_current_recipe()
+    approved = panel.approve_current_recipe(actor="owner")
+    materialized = panel.materialize_current_recipe()
+
+    started = getattr(application, "start_baseline_strategy_run")(
+        str(approved["version_id"]),
+        str(materialized["artifact_hash"]),
+        initial_cash=Decimal("100000"),
+        order_shares=1000,
+        replica_id="quentx-headless-baseline",
+        strategy_id=QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+        strategy_version=QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+    )
+    completed = getattr(application, "complete_strategy_run")(started.run_id)
+
+    assert completed.status == "completed"
+    assert completed.specification.strategy_id == (
+        QUENTX_SCENARIO_NATIVE_STRATEGY_ID
+    )
+    assert completed.specification.ptrade_manifest_hash == (
+        QUENTX_SCENARIO_NATIVE_MANIFEST.content_hash
+    )
+    assert completed.ptrade_audit is not None
+    assert [
+        item.to_dict() for item in completed.ptrade_audit.configuration_requests
+    ] == [
+        {"call": "set_slippage", "value": "5"},
+        {"call": "set_commission", "value": "3"},
+    ]
 
 
 def test_diagnostics_workspace_previews_baseline_versus_trend_regime() -> None:
