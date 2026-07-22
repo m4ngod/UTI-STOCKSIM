@@ -26,6 +26,7 @@ from .market_paths import (
     FiveMinuteBar,
     InstrumentState,
     ScenarioDataWorldInput,
+    SessionPriceLimitReference,
 )
 
 
@@ -644,6 +645,7 @@ class BaoStockHistoricalSource:
 
         factor_by_pair: dict[tuple[str, date], Decimal | None] = {}
         states: list[InstrumentState] = []
+        price_limit_references: list[SessionPriceLimitReference] = []
         for trading_date in calendar.dates:
             for instrument in eligible:
                 if not instrument.active_on(trading_date):
@@ -686,6 +688,25 @@ class BaoStockHistoricalSource:
                     else None
                 )
                 factor_by_pair[pair] = factor
+                try:
+                    previous_close = Decimal(raw["preclose"])
+                except (KeyError, InvalidOperation) as exc:
+                    raise ValueError(
+                        "Admitted previous-close reference data is no longer complete"
+                    ) from exc
+                if previous_close <= 0:
+                    raise ValueError(
+                        "Admitted previous-close reference data must be positive"
+                    )
+                price_limit_references.append(
+                    SessionPriceLimitReference(
+                        instrument=instrument.code,
+                        session_date=trading_date,
+                        previous_close=previous_close,
+                        effective_at=datetime.combine(trading_date, time(9, 30)),
+                        provenance="baostock-daily-unadjusted-preclose-v1",
+                    )
+                )
                 industry_name = _industry_as_of_value(
                     industry,
                     instrument.code,
@@ -756,6 +777,7 @@ class BaoStockHistoricalSource:
             source_snapshot_id=segment.source_snapshot_id,
             bars=loaded_bars.bars,
             instrument_states=tuple(states),
+            price_limit_references=tuple(price_limit_references),
             normalization_provenance="front-5m-to-unadjusted-daily-ratio-v1",
         )
 

@@ -21,6 +21,7 @@ from strategy_diagnostics import (
     InMemoryHistoricalSource,
     InstrumentState,
     ScenarioDataWorldInput,
+    SessionPriceLimitReference,
     SourceArtifact,
     SourceProvenance,
     UnapprovedScenarioRecipeError,
@@ -118,6 +119,15 @@ class _WorkspaceSource:
                     industry="banking",
                     decision_adjustment_factor=Decimal("1"),
                     decision_adjustment_provenance="fixture-v1",
+                ),
+            ),
+            price_limit_references=(
+                SessionPriceLimitReference(
+                    instrument="sh.600000",
+                    session_date=date(2024, 1, 2),
+                    previous_close=Decimal("10"),
+                    effective_at=datetime(2024, 1, 2, 9, 30),
+                    provenance="fixture-preclose-v1",
                 ),
             ),
         )

@@ -23,6 +23,7 @@ from strategy_diagnostics import (
     ScenarioMaterializer,
     ScenarioMarketView,
     ScenarioTransformationRequestV1,
+    SessionPriceLimitReference,
     SourceArtifact,
     SourceProvenance,
     create_diagnostics_application,
@@ -125,6 +126,15 @@ def _world() -> ScenarioDataWorldInput:
                 decision_adjustment_provenance="fixture-as-of-adjustment-v1",
             ),
         ),
+        price_limit_references=(
+            SessionPriceLimitReference(
+                instrument="sh.600000",
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("10.00"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
+            ),
+        ),
     )
 
 
@@ -180,6 +190,7 @@ def _two_bar_world() -> ScenarioDataWorldInput:
                 decision_adjustment_provenance="not-applicable-outside-listing",
             ),
         ),
+        price_limit_references=first.price_limit_references,
     )
 
 
@@ -250,6 +261,22 @@ def _cross_section_world() -> ScenarioDataWorldInput:
                 industry="banking",
                 decision_adjustment_factor=Decimal("1"),
                 decision_adjustment_provenance="fixture-v1",
+            ),
+        ),
+        price_limit_references=(
+            SessionPriceLimitReference(
+                instrument="sh.600000",
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("10.00"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
+            ),
+            SessionPriceLimitReference(
+                instrument="sz.000001",
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("20.00"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
             ),
         ),
     )
@@ -628,21 +655,112 @@ def test_trend_regime_transform_is_deterministic_and_preserves_path_invariants()
             assert node.low <= min(node.open, node.close)
             assert node.high >= max(node.open, node.close)
 
-    opening_prices = {
-        instrument: next(
-            node.open for node in first.nodes if node.instrument == instrument
-        )
-        for instrument in ("sh.600000", "sz.000001")
-    }
+    previous_closes = {"sh.600000": Decimal("10"), "sz.000001": Decimal("20")}
     for node in first.nodes:
         price_limit = (
             Decimal("0.05")
             if node.instrument == "sz.000001"
             else Decimal("0.10")
         )
-        opening = opening_prices[node.instrument]
-        assert node.low >= opening * (Decimal("1") - price_limit)
-        assert node.high <= opening * (Decimal("1") + price_limit)
+        previous_close = previous_closes[node.instrument]
+        assert node.low >= previous_close * (Decimal("1") - price_limit)
+        assert node.high <= previous_close * (Decimal("1") + price_limit)
+
+
+@pytest.mark.parametrize(
+    ("direction", "source_bar", "bound", "extreme"),
+    (
+        (
+            "bullish",
+            FiveMinuteBar(
+                instrument="sh.600000",
+                end_time=datetime(2024, 1, 2, 15, 0),
+                open=Decimal("10.80"),
+                high=Decimal("10.99"),
+                low=Decimal("10.70"),
+                close=Decimal("10.98"),
+                volume=100,
+                amount=Decimal("1090"),
+            ),
+            Decimal("11.00"),
+            "high",
+        ),
+        (
+            "bearish",
+            FiveMinuteBar(
+                instrument="sh.600000",
+                end_time=datetime(2024, 1, 2, 15, 0),
+                open=Decimal("9.20"),
+                high=Decimal("9.30"),
+                low=Decimal("9.01"),
+                close=Decimal("9.02"),
+                volume=100,
+                amount=Decimal("910"),
+            ),
+            Decimal("9.00"),
+            "low",
+        ),
+    ),
+)
+def test_trend_regime_uses_previous_close_for_gap_day_price_limits(
+    direction: str,
+    source_bar: FiveMinuteBar,
+    bound: Decimal,
+    extreme: str,
+) -> None:
+    world = replace(
+        _world(),
+        bars=(source_bar,),
+        price_limit_references=(
+            SessionPriceLimitReference(
+                instrument="sh.600000",
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("10.00"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
+            ),
+        ),
+    )
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((world,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(
+            ScenarioTransformationRequestV1(
+                transformation_id="trend-regime.v1",
+                parameters={"direction": direction, "strength": "1"},
+            ),
+        ),
+        seed=17,
+    )
+
+    values = tuple(getattr(node, extreme) for node in materialized.nodes)
+    if direction == "bullish":
+        assert max(values) <= bound
+    else:
+        assert min(values) >= bound
+
+
+def test_trend_regime_fails_closed_without_previous_close_reference() -> None:
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource(
+            (replace(_world(), price_limit_references=()),)
+        ),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="previous-close reference"):
+        materializer.materialize(
+            _segment(),
+            transformations=(
+                ScenarioTransformationRequestV1(
+                    transformation_id="trend-regime.v1",
+                    parameters={"direction": "bullish", "strength": "1"},
+                ),
+            ),
+            seed=17,
+        )
 
 
 def test_transformed_world_recomputes_every_derived_scenario_data_family() -> None:

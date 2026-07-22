@@ -541,6 +541,14 @@ def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
         )
     )
     assert admission.segment is not None
+    world = source.load_scenario_data_world(admission.segment)
+    assert {
+        (reference.instrument, reference.previous_close, reference.provenance)
+        for reference in world.price_limit_references
+    } == {
+        ("sh.600000", Decimal("20"), "baostock-daily-unadjusted-preclose-v1"),
+        ("sz.000001", Decimal("20"), "baostock-daily-unadjusted-preclose-v1"),
+    }
 
     recipe_version_id = _approve_baseline_recipe(
         application,

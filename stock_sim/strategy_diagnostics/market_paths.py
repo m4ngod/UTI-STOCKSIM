@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import hashlib
 import json
@@ -147,6 +147,31 @@ class InstrumentState:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionPriceLimitReference:
+    """Point-in-time previous close used to derive one session's price limits."""
+
+    instrument: str
+    session_date: date
+    previous_close: Decimal
+    effective_at: datetime
+    provenance: str
+
+    def __post_init__(self) -> None:
+        if not self.instrument.strip():
+            raise ValueError("instrument must not be empty")
+        if self.previous_close <= 0:
+            raise ValueError("previous_close must be positive")
+        if self.effective_at.tzinfo is not None:
+            raise ValueError("price-limit reference time must be market-local")
+        if self.effective_at > datetime.combine(self.session_date, time(9, 30)):
+            raise ValueError(
+                "price-limit reference must be available by the session open"
+            )
+        if not self.provenance.strip():
+            raise ValueError("price-limit reference provenance must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class ScenarioDataWorldInput:
     """Admitted point-in-time inputs used by baseline materialization."""
 
@@ -155,6 +180,7 @@ class ScenarioDataWorldInput:
     source_snapshot_id: str
     bars: tuple[FiveMinuteBar, ...]
     instrument_states: tuple[InstrumentState, ...]
+    price_limit_references: tuple[SessionPriceLimitReference, ...] = ()
     normalization_provenance: str = "canonical-unadjusted-source"
 
     def __post_init__(self) -> None:
@@ -1103,6 +1129,7 @@ __all__ = [
     "MaterializedMarketPath",
     "ParquetMarketPathArtifactStore",
     "ScenarioDataWorldInput",
+    "SessionPriceLimitReference",
     "ScenarioMarketSnapshot",
     "ScenarioMarketView",
     "ScenarioMaterializer",

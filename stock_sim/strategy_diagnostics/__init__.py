@@ -35,6 +35,7 @@ from .market_paths import (
     ScenarioMarketSnapshot,
     ScenarioMarketView,
     ScenarioMaterializer,
+    SessionPriceLimitReference,
 )
 from .recipes import (
     ApprovedScenarioRecipeVersion,
@@ -85,6 +86,7 @@ __all__ = [
     "ScenarioMarketSnapshot",
     "ScenarioMarketView",
     "ScenarioMaterializer",
+    "SessionPriceLimitReference",
     "ApprovedScenarioRecipeVersion",
     "ExecutionConditionsV1",
     "RecipeValidationIssue",

@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import TYPE_CHECKING, Iterable, Literal, Mapping, Protocol
 
 if TYPE_CHECKING:
-    from .market_paths import FiveMinuteBar, InstrumentState, ScenarioDataWorldInput
+    from .market_paths import (
+        FiveMinuteBar,
+        InstrumentState,
+        ScenarioDataWorldInput,
+        SessionPriceLimitReference,
+    )
 
 
 ParameterValueType = Literal["decimal", "enum"]
@@ -381,12 +386,6 @@ def _apply_trend_regime(
     strength = Decimal(str(parameters["strength"]))
     sign = Decimal("1") if direction == "bullish" else Decimal("-1")
     maximum_session_shift = Decimal("0.04")
-    opening_by_instrument_day: dict[tuple[str, object], Decimal] = {}
-    for bar in sorted(world.bars, key=lambda item: (item.end_time, item.instrument)):
-        opening_by_instrument_day.setdefault(
-            (bar.instrument, bar.end_time.date()),
-            bar.open,
-        )
     bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
     for bar in world.bars:
         bars_by_time.setdefault(bar.end_time, []).append(bar)
@@ -401,7 +400,6 @@ def _apply_trend_regime(
             desired_factor,
             bars,
             world,
-            opening_by_instrument_day,
             bullish=direction == "bullish",
         )
         transformed_bars.extend(
@@ -440,7 +438,6 @@ def _price_limit_safe_factor(
     desired_factor: Decimal,
     bars: Iterable[FiveMinuteBar],
     world: ScenarioDataWorldInput,
-    opening_by_instrument_day: Mapping[tuple[str, object], Decimal],
     *,
     bullish: bool,
 ) -> Decimal:
@@ -449,21 +446,70 @@ def _price_limit_safe_factor(
         safe_factors = []
         for bar in bars:
             state = _state_at(states, bar.instrument, bar.end_time)
-            opening = opening_by_instrument_day[(bar.instrument, bar.end_time.date())]
+            previous_close = _previous_close_at(
+                world.price_limit_references,
+                bar.instrument,
+                bar.end_time,
+            )
             safe_factors.append(
-                opening * (Decimal("1") + _price_limit(state.is_st, bar.instrument))
+                _daily_price_limit_bound(
+                    previous_close,
+                    _price_limit(state.is_st, bar.instrument),
+                    bullish=True,
+                )
                 / bar.high
             )
         return max(Decimal("1"), min(desired_factor, *safe_factors))
     safe_factors = []
     for bar in bars:
         state = _state_at(states, bar.instrument, bar.end_time)
-        opening = opening_by_instrument_day[(bar.instrument, bar.end_time.date())]
+        previous_close = _previous_close_at(
+            world.price_limit_references,
+            bar.instrument,
+            bar.end_time,
+        )
         safe_factors.append(
-            opening * (Decimal("1") - _price_limit(state.is_st, bar.instrument))
+            _daily_price_limit_bound(
+                previous_close,
+                _price_limit(state.is_st, bar.instrument),
+                bullish=False,
+            )
             / bar.low
         )
     return min(Decimal("1"), max(desired_factor, *safe_factors))
+
+
+def _previous_close_at(
+    references: Iterable[SessionPriceLimitReference],
+    instrument: str,
+    at_time: datetime,
+) -> Decimal:
+    candidates = tuple(
+        reference
+        for reference in references
+        if reference.instrument == instrument
+        and reference.session_date == at_time.date()
+        and reference.effective_at <= at_time
+    )
+    if not candidates:
+        raise ValueError(
+            f"No point-in-time previous-close reference exists for {instrument!r} "
+            f"on {at_time.date().isoformat()}"
+        )
+    return max(candidates, key=lambda reference: reference.effective_at).previous_close
+
+
+def _daily_price_limit_bound(
+    previous_close: Decimal,
+    limit: Decimal,
+    *,
+    bullish: bool,
+) -> Decimal:
+    direction = Decimal("1") if bullish else Decimal("-1")
+    return (previous_close * (Decimal("1") + direction * limit)).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
 
 
 def _state_at(

@@ -253,55 +253,23 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self.refresh()
 
     def _create_recipe_from_inputs(self) -> None:
-        try:
-            segment_id = self._selected_recipe_segment_id()
-            partial_fills = str(self._partial_fills_input.text()).strip().lower()
-            if partial_fills not in {"true", "false"}:
-                raise ValueError("Partial fills must be true or false")
-            self._logic.create_baseline_recipe(
-                name=str(self._recipe_name_input.text()),
-                segment_id=segment_id,
-                author=str(self._recipe_author_input.text()),
-                cadence_minutes=int(str(self._cadence_input.text())),
-                seed=int(str(self._seed_input.text())),
-                commission_bps=str(self._commission_input.text()),
-                slippage_bps=str(self._slippage_input.text()),
-                max_fill_fraction=str(self._fill_fraction_input.text()),
-                latency_nodes=int(str(self._latency_input.text())),
-                allow_partial_fills=partial_fills == "true",
-            )
-            self._recipe_input_signature = self._recipe_authoring_signature(
-                segment_id=segment_id
-            )
-            self._recipe_action_error = ""
-        except (TypeError, ValueError):
-            self._recipe_action_error = (
-                "Check the recipe fields and select an admitted segment."
-            )
-        except Exception:
-            self._recipe_action_error = "The recipe draft could not be created."
-        self.refresh()
+        self._submit_recipe_from_inputs(include_trend=False)
 
     def _create_trend_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(include_trend=True)
+
+    def _submit_recipe_from_inputs(self, *, include_trend: bool) -> None:
         try:
             segment_id = self._selected_recipe_segment_id()
-            partial_fills = str(self._partial_fills_input.text()).strip().lower()
-            if partial_fills not in {"true", "false"}:
-                raise ValueError("Partial fills must be true or false")
-            self._logic.create_trend_regime_recipe(
-                name=str(self._recipe_name_input.text()),
-                segment_id=segment_id,
-                author=str(self._recipe_author_input.text()),
-                cadence_minutes=int(str(self._cadence_input.text())),
-                seed=int(str(self._seed_input.text())),
-                direction=str(self._trend_direction_input.text()),
-                strength=str(self._trend_strength_input.text()),
-                commission_bps=str(self._commission_input.text()),
-                slippage_bps=str(self._slippage_input.text()),
-                max_fill_fraction=str(self._fill_fraction_input.text()),
-                latency_nodes=int(str(self._latency_input.text())),
-                allow_partial_fills=partial_fills == "true",
-            )
+            recipe_arguments = self._recipe_arguments(segment_id=segment_id)
+            if include_trend:
+                self._logic.create_trend_regime_recipe(
+                    **recipe_arguments,
+                    direction=str(self._trend_direction_input.text()),
+                    strength=str(self._trend_strength_input.text()),
+                )
+            else:
+                self._logic.create_baseline_recipe(**recipe_arguments)
             self._recipe_input_signature = self._recipe_authoring_signature(
                 segment_id=segment_id
             )
@@ -309,10 +277,33 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         except (TypeError, ValueError):
             self._recipe_action_error = (
                 "Check the recipe fields, trend parameters, and admitted segment."
+                if include_trend
+                else "Check the recipe fields and select an admitted segment."
             )
         except Exception:
-            self._recipe_action_error = "The trend/regime draft could not be created."
+            self._recipe_action_error = (
+                "The trend/regime draft could not be created."
+                if include_trend
+                else "The recipe draft could not be created."
+            )
         self.refresh()
+
+    def _recipe_arguments(self, *, segment_id: str) -> dict[str, object]:
+        partial_fills = str(self._partial_fills_input.text()).strip().lower()
+        if partial_fills not in {"true", "false"}:
+            raise ValueError("Partial fills must be true or false")
+        return {
+            "name": str(self._recipe_name_input.text()),
+            "segment_id": segment_id,
+            "author": str(self._recipe_author_input.text()),
+            "cadence_minutes": int(str(self._cadence_input.text())),
+            "seed": int(str(self._seed_input.text())),
+            "commission_bps": str(self._commission_input.text()),
+            "slippage_bps": str(self._slippage_input.text()),
+            "max_fill_fraction": str(self._fill_fraction_input.text()),
+            "latency_nodes": int(str(self._latency_input.text())),
+            "allow_partial_fills": partial_fills == "true",
+        }
 
     def _validate_current_recipe(self) -> None:
         try:
