@@ -94,6 +94,20 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
         "persistence_status": "not_initialized",
         "product": "Strategy Diagnostics Laboratory",
         "status": "ready",
-        "supported_persistence_revision": "0007_execution_stress_audit",
+        "supported_persistence_revision": "0008_ptrade_host_audit",
         "workspace": "Diagnostics",
     }
+
+    worker = subprocess.run(
+        [sys.executable, "-m", "strategy_diagnostics.ptrade_host_worker"],
+        input=json.dumps({"protocol_version": "unsupported"}),
+        cwd=caller_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    worker_envelope = json.loads(worker.stdout)
+    assert worker_envelope["ok"] is False
+    assert worker_envelope["error_type"] == "PTradeCompatibilityError"
+    assert worker_envelope["surface_version"] == "ptrade_surface.v1"

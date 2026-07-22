@@ -35,7 +35,8 @@ _SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
 _AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
 _STRATEGY_RUN_REVISION: Final = "0005_strategy_runs"
 _A_SHARE_EXECUTION_REVISION: Final = "0006_a_share_execution_audit"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0007_execution_stress_audit"
+_EXECUTION_STRESS_REVISION: Final = "0007_execution_stress_audit"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0008_ptrade_host_audit"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -44,6 +45,7 @@ _MIGRATION_REVISIONS: Final = (
     _AI_RECIPE_ASSISTANT_REVISION,
     _STRATEGY_RUN_REVISION,
     _A_SHARE_EXECUTION_REVISION,
+    _EXECUTION_STRESS_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -83,8 +85,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_strategy_run_facts(connection)
             elif revision == _A_SHARE_EXECUTION_REVISION:
                 _add_a_share_execution_audit(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _EXECUTION_STRESS_REVISION:
                 _add_execution_stress_audit(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _add_ptrade_host_audit(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -330,6 +334,20 @@ def _add_execution_stress_audit(connection: Connection) -> None:
         "NOT NULL DEFAULT '0'",
         "ALTER TABLE diagnostic_run_fills ADD COLUMN execution_erosion VARCHAR(64) "
         "NOT NULL DEFAULT '0'",
+    ):
+        connection.exec_driver_sql(statement)
+
+
+def _add_ptrade_host_audit(connection: Connection) -> None:
+    for statement in (
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "ptrade_surface_version VARCHAR(128) NULL",
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "ptrade_manifest_hash VARCHAR(64) NULL",
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "ptrade_host_adapter_version VARCHAR(128) NULL",
+        "ALTER TABLE diagnostic_strategy_runs ADD COLUMN "
+        "ptrade_host_audit_json TEXT NULL",
     ):
         connection.exec_driver_sql(statement)
 

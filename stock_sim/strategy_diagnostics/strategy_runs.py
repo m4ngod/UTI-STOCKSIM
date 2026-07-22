@@ -35,13 +35,30 @@ from .market_paths import (
     ScenarioMarketView,
     SessionPriceLimitReference,
 )
+from .ptrade_host import (
+    PTRADE_IN_PROCESS_HOST_VERSION,
+    PTRADE_SURFACE_VERSION,
+    InProcessPTradeStrategyHost,
+    PTradeCompatibilityError,
+    PTradeHostEvent,
+    PTradeHostInvocation,
+    PTradeHostResult,
+    PTradePortfolioSnapshot,
+    PTradePositionSnapshot,
+    PTradeRunAudit,
+    PTradeRuntimeState,
+    PTradeStrategyHost,
+    REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
+    REFERENCE_PTRADE_STRATEGY_ID,
+    REFERENCE_PTRADE_STRATEGY_VERSION,
+)
 from .transformations import SCENARIO_TRANSFORMATION_CATALOG_VERSION
 
 
 STRATEGY_RUN_ENGINE_VERSION: Final = "anchored-strategy-run.v1"
 BASELINE_EXECUTION_POLICY_VERSION: Final = "anchored-standard-execution.v2"
-REFERENCE_STRATEGY_ID: Final = "anchored-ranked-candidate-reference"
-REFERENCE_STRATEGY_VERSION: Final = "anchored-ranked-candidate-reference.v1"
+REFERENCE_STRATEGY_ID: Final = REFERENCE_PTRADE_STRATEGY_ID
+REFERENCE_STRATEGY_VERSION: Final = REFERENCE_PTRADE_STRATEGY_VERSION
 
 StrategyRunStatus = Literal[
     "running",
@@ -87,6 +104,12 @@ class StrategyRunSpecification:
     order_shares: int
     replica_id: str
     code_identity: str
+    ptrade_surface_version: str = PTRADE_SURFACE_VERSION
+    ptrade_manifest_hash: str = (
+        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.content_hash
+    )
+    ptrade_host_adapter_version: str = PTRADE_IN_PROCESS_HOST_VERSION
+    ptrade_identity_pinned: bool = True
     commission_bps: Decimal = Decimal("3")
     minimum_commission: Decimal = Decimal("5")
     transfer_fee_bps: Decimal = Decimal("0.1")
@@ -132,6 +155,9 @@ class StrategyRunSpecification:
             self.strategy_version,
             self.replica_id,
             self.code_identity,
+            self.ptrade_surface_version,
+            self.ptrade_manifest_hash,
+            self.ptrade_host_adapter_version,
             self.engine_version,
         )
         if any(not value.strip() for value in required_text):
@@ -163,6 +189,16 @@ class StrategyRunSpecification:
             "code_identity": self.code_identity,
             "engine_version": self.engine_version,
         }
+        if self.ptrade_identity_pinned:
+            payload.update(
+                {
+                    "ptrade_surface_version": self.ptrade_surface_version,
+                    "ptrade_manifest_hash": self.ptrade_manifest_hash,
+                    "ptrade_host_adapter_version": (
+                        self.ptrade_host_adapter_version
+                    ),
+                }
+            )
         if self.execution_economics_pinned:
             payload.update(
                 {
@@ -332,6 +368,7 @@ class StrategyRunSnapshot:
     cash: Decimal
     positions: tuple[PortfolioPosition, ...]
     equity_curve: tuple[EquityPoint, ...]
+    ptrade_audit: PTradeRunAudit | None
     failure_code: str | None
     failure_message: str | None
     run_artifact_hash: str | None
@@ -369,6 +406,11 @@ class StrategyRunSnapshot:
                 "positions": [item.to_dict() for item in self.positions],
             },
             "equity_curve": [item.to_dict() for item in self.equity_curve],
+            "ptrade_host": (
+                self.ptrade_audit.to_dict()
+                if self.ptrade_audit is not None
+                else None
+            ),
             "failure": (
                 {
                     "code": self.failure_code,
@@ -401,6 +443,8 @@ class _StrategyRunState:
     cash: Decimal
     positions: tuple[_LedgerPosition, ...]
     equity_curve: tuple[EquityPoint, ...]
+    ptrade_runtime_state: PTradeRuntimeState | None = None
+    ptrade_audit: PTradeRunAudit | None = None
     current_simulation_time: datetime | None = None
     failure_code: str | None = None
     failure_message: str | None = None
@@ -461,6 +505,8 @@ class SqlStrategyRunRepository:
                     "INSERT INTO diagnostic_strategy_runs ("
                     "run_id, status, materialization_hash, recipe_version_id, "
                     "strategy_id, strategy_version, decision_cadence_minutes, "
+                    "ptrade_surface_version, ptrade_manifest_hash, "
+                    "ptrade_host_adapter_version, ptrade_host_audit_json, "
                     "current_simulation_time, next_node_index, state_json, "
                     "requested_execution_json, effective_execution_json, "
                     "execution_overrides_json, run_artifact_hash, failure_code, "
@@ -468,6 +514,8 @@ class SqlStrategyRunRepository:
                     ") VALUES ("
                     ":run_id, :status, :materialization_hash, :recipe_version_id, "
                     ":strategy_id, :strategy_version, :decision_cadence_minutes, "
+                    ":ptrade_surface_version, :ptrade_manifest_hash, "
+                    ":ptrade_host_adapter_version, :ptrade_host_audit_json, "
                     ":current_simulation_time, :next_node_index, :state_json, "
                     ":requested_execution_json, :effective_execution_json, "
                     ":execution_overrides_json, :run_artifact_hash, "
@@ -507,6 +555,11 @@ class SqlStrategyRunRepository:
                     "recipe_version_id = :recipe_version_id, "
                     "strategy_id = :strategy_id, "
                     "strategy_version = :strategy_version, "
+                    "ptrade_surface_version = :ptrade_surface_version, "
+                    "ptrade_manifest_hash = :ptrade_manifest_hash, "
+                    "ptrade_host_adapter_version = "
+                    ":ptrade_host_adapter_version, "
+                    "ptrade_host_audit_json = :ptrade_host_audit_json, "
                     "decision_cadence_minutes = :decision_cadence_minutes, "
                     "current_simulation_time = :current_simulation_time, "
                     "next_node_index = :next_node_index, "
@@ -535,9 +588,15 @@ class StrategyRunEngine:
         self,
         path_loader: Callable[[str], MaterializedMarketPath],
         repository: StrategyRunRepository | None = None,
+        ptrade_host: PTradeStrategyHost | None = None,
     ) -> None:
         self._path_loader = path_loader
         self._repository = repository or InMemoryStrategyRunRepository()
+        self._ptrade_host = ptrade_host or InProcessPTradeStrategyHost()
+
+    @property
+    def ptrade_host_adapter_version(self) -> str:
+        return self._ptrade_host.adapter_version
 
     def replace_repository(self, repository: StrategyRunRepository) -> None:
         self._repository = repository
@@ -545,6 +604,9 @@ class StrategyRunEngine:
     def start(self, specification: StrategyRunSpecification) -> StrategyRunSnapshot:
         path = self._path_loader(specification.materialization_hash)
         self._validate_specification(specification, path)
+        resolved_conditions = specification.resolved_execution_conditions
+        if resolved_conditions is None:
+            raise ValueError("Strategy Run effective execution conditions are not pinned")
         state = _StrategyRunState(
             specification=specification,
             status="running",
@@ -555,6 +617,15 @@ class StrategyRunEngine:
             cash=specification.initial_cash,
             positions=(),
             equity_curve=(),
+            ptrade_runtime_state=None,
+            ptrade_audit=PTradeRunAudit(
+                surface_version=specification.ptrade_surface_version,
+                manifest_hash=specification.ptrade_manifest_hash,
+                execution_resolution=resolved_conditions,
+                host_adapter_versions=(
+                    specification.ptrade_host_adapter_version,
+                ),
+            ),
         )
         self._repository.add(state)
         return self._snapshot(state, path)
@@ -661,8 +732,8 @@ class StrategyRunEngine:
         self._repository.save(state)
         return self.get(run_id)
 
-    @staticmethod
     def _validate_specification(
+        self,
         specification: StrategyRunSpecification,
         path: MaterializedMarketPath,
     ) -> None:
@@ -751,6 +822,22 @@ class StrategyRunEngine:
             specification.strategy_version,
         ) != (REFERENCE_STRATEGY_ID, REFERENCE_STRATEGY_VERSION):
             raise ValueError("Unsupported reference Strategy Under Test version")
+        if specification.ptrade_surface_version != PTRADE_SURFACE_VERSION:
+            raise ValueError("Unsupported PTrade Compatibility Surface version")
+        if not specification.ptrade_identity_pinned:
+            raise ValueError("Strategy Run PTrade identity is not pinned")
+        if (
+            specification.ptrade_manifest_hash
+            != REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.content_hash
+        ):
+            raise ValueError("Unsupported PTrade compatibility manifest hash")
+        if (
+            specification.ptrade_host_adapter_version
+            != self._ptrade_host.adapter_version
+        ):
+            raise ValueError(
+                "Pinned PTrade Host adapter version does not match the engine"
+            )
         if specification.engine_version != STRATEGY_RUN_ENGINE_VERSION:
             raise ValueError("Unsupported Strategy Run Engine version")
         if path.runtime_resolution != "30s":
@@ -779,6 +866,18 @@ class StrategyRunEngine:
         view = ScenarioMarketView(path, initial_cursor=simulation_times[0])
         view.advance_to(simulation_time)
         market_snapshot = view.snapshot()
+        if state.ptrade_runtime_state is None:
+            state, initialization = self._invoke_ptrade_host(
+                state,
+                path,
+                market_snapshot,
+                event="initialize",
+            )
+            if initialization.order_requests:
+                raise PTradeCompatibilityError(
+                    "order",
+                    detail="orders are not accepted during strategy initialization",
+                )
         if _is_decision_time(
             simulation_time,
             cadence_minutes=state.specification.decision_cadence_minutes,
@@ -795,8 +894,9 @@ class StrategyRunEngine:
                 + 1
                 + resolved_conditions.effective.latency_nodes
             )
-            state = self._queue_reference_decision(
+            state = self._queue_ptrade_decision(
                 state,
+                path,
                 market_snapshot,
                 activation_time=(
                     simulation_times[activation_index]
@@ -1024,33 +1124,195 @@ class StrategyRunEngine:
             positions=tuple(sorted(positions.values(), key=lambda item: item.instrument)),
         )
 
-    @staticmethod
-    def _queue_reference_decision(
+    def _queue_ptrade_decision(
+        self,
         state: _StrategyRunState,
+        path: MaterializedMarketPath,
         market_snapshot: ScenarioMarketSnapshot,
         *,
         activation_time: datetime | None,
     ) -> _StrategyRunState:
-        if state.positions or state.orders:
-            return state
-        candidate = _top_ranked_candidate(market_snapshot)
-        if candidate is None:
+        resolved_conditions = state.specification.resolved_execution_conditions
+        if resolved_conditions is None:
+            raise ValueError("Effective execution conditions are not pinned")
+        audit = state.ptrade_audit
+        if audit is None:
+            raise ValueError("PTrade host audit is not initialized")
+        state, result = self._invoke_ptrade_host(
+            state,
+            path,
+            market_snapshot,
+            event="decision",
+        )
+        if not result.order_requests:
             return state
         if activation_time is None:
             raise ValueError(
                 "Effective execution latency extends beyond the Reference "
                 "Market Path"
             )
-        order = StrategyOrder(
-            order_id=f"{state.specification.run_id}:order-0001",
-            instrument=candidate,
-            shares=state.specification.order_shares,
-            decision_time=market_snapshot.simulation_time,
-            activation_time=activation_time,
-            status="queued",
-            unfilled_shares=state.specification.order_shares,
+        orders = state.orders + tuple(
+            StrategyOrder(
+                order_id=(
+                    f"{state.specification.run_id}:order-"
+                    f"{len(state.orders) + index + 1:04d}"
+                ),
+                instrument=request.instrument,
+                shares=request.amount,
+                decision_time=market_snapshot.simulation_time,
+                activation_time=activation_time,
+                status="queued",
+                unfilled_shares=request.amount,
+            )
+            for index, request in enumerate(result.order_requests)
         )
-        return replace(state, orders=(order,))
+        return replace(state, orders=orders)
+
+    def _invoke_ptrade_host(
+        self,
+        state: _StrategyRunState,
+        path: MaterializedMarketPath,
+        market_snapshot: ScenarioMarketSnapshot,
+        *,
+        event: PTradeHostEvent,
+    ) -> tuple[_StrategyRunState, PTradeHostResult]:
+        resolved_conditions = state.specification.resolved_execution_conditions
+        if resolved_conditions is None:
+            raise ValueError("Effective execution conditions are not pinned")
+        audit = state.ptrade_audit
+        if audit is None:
+            raise ValueError("PTrade host audit is not initialized")
+        invocation = PTradeHostInvocation(
+            run_id=state.specification.run_id,
+            strategy_id=state.specification.strategy_id,
+            strategy_version=state.specification.strategy_version,
+            compatibility_manifest_hash=state.specification.ptrade_manifest_hash,
+            materialization_hash=state.specification.materialization_hash,
+            simulation_time=market_snapshot.simulation_time,
+            decision_cadence_minutes=(
+                state.specification.decision_cadence_minutes
+            ),
+            order_shares=state.specification.order_shares,
+            random_seed=(
+                state.specification.materialization_seed
+                + len(state.decision_times)
+            ),
+            market_snapshot=market_snapshot,
+            market_history=tuple(
+                node
+                for node in path.nodes
+                if node.instrument in set(market_snapshot.eligible_universe)
+                and node.simulation_time <= market_snapshot.simulation_time
+            ),
+            portfolio=_ptrade_portfolio_snapshot(state, market_snapshot),
+            event=event,
+            runtime_state=state.ptrade_runtime_state,
+        )
+        result = self._ptrade_host.invoke(invocation)
+        self._validate_ptrade_result(
+            state,
+            path,
+            market_snapshot,
+            event=event,
+            result=result,
+        )
+        audit = audit.append(
+            result,
+            decision_time=market_snapshot.simulation_time,
+        )
+        state = replace(
+            state,
+            ptrade_runtime_state=result.runtime_state,
+            ptrade_audit=audit,
+        )
+        return state, result
+
+    @staticmethod
+    def _validate_ptrade_result(
+        state: _StrategyRunState,
+        path: MaterializedMarketPath,
+        market_snapshot: ScenarioMarketSnapshot,
+        *,
+        event: PTradeHostEvent,
+        result: PTradeHostResult,
+    ) -> None:
+        resolved_conditions = state.specification.resolved_execution_conditions
+        if resolved_conditions is None:
+            raise ValueError("Effective execution conditions are not pinned")
+        if (
+            result.host_adapter_version
+            != state.specification.ptrade_host_adapter_version
+        ):
+            raise ValueError(
+                "PTrade host result adapter does not match the pinned Strategy Run"
+            )
+        if result.runtime_state.universe != market_snapshot.eligible_universe:
+            raise PTradeCompatibilityError(
+                "set_universe",
+                detail="host universe does not match the current Eligible Universe",
+            )
+        eligible = set(market_snapshot.eligible_universe)
+        if any(
+            request.instrument not in eligible
+            for request in result.order_requests
+        ):
+            raise PTradeCompatibilityError(
+                "order",
+                detail="host returned an order outside the current Eligible Universe",
+            )
+        expected_schedule = (
+            ("rebalance", state.specification.decision_cadence_minutes),
+        )
+        if result.scheduled_callbacks != expected_schedule:
+            raise PTradeCompatibilityError(
+                "run_daily",
+                detail="reference strategy schedule differs from the pinned cadence",
+            )
+        if event == "initialize":
+            configuration_requests = result.configuration_requests
+            if tuple(item.call for item in configuration_requests) != (
+                "set_slippage",
+                "set_commission",
+            ):
+                raise PTradeCompatibilityError(
+                    "set_slippage/set_commission",
+                    detail=(
+                        "strategy initialization must issue one slippage and one "
+                        "commission request"
+                    ),
+                )
+            host_requested = replace(
+                resolved_conditions.requested,
+                slippage_bps=configuration_requests[0].value,
+                commission_bps=configuration_requests[1].value,
+            )
+            scenario_overrides = dict(
+                next(
+                    (
+                        item.parameters
+                        for item in path.applied_transformations
+                        if item.family == "execution-stress"
+                    ),
+                    (),
+                )
+            )
+            host_resolution = resolve_execution_conditions(
+                host_requested,
+                scenario_overrides,
+            )
+            if host_resolution != resolved_conditions:
+                raise PTradeCompatibilityError(
+                    "set_slippage/set_commission",
+                    detail=(
+                        "strategy requests do not resolve to the pinned Requested "
+                        "and Effective Execution Conditions"
+                    ),
+                )
+        elif result.configuration_requests:
+            raise PTradeCompatibilityError(
+                result.configuration_requests[0].call,
+                detail="execution configuration may only be requested at initialization",
+            )
 
     @staticmethod
     def _mark_equity(
@@ -1133,6 +1395,7 @@ class StrategyRunEngine:
             cash=state.cash,
             positions=positions,
             equity_curve=state.equity_curve,
+            ptrade_audit=state.ptrade_audit,
             failure_code=state.failure_code,
             failure_message=state.failure_message,
             run_artifact_hash=state.run_artifact_hash,
@@ -1191,6 +1454,42 @@ def _latest_node_at_or_before(
 
 def _simulation_times(path: MaterializedMarketPath) -> tuple[datetime, ...]:
     return tuple(sorted({node.simulation_time for node in path.nodes}))
+
+
+def _ptrade_portfolio_snapshot(
+    state: _StrategyRunState,
+    market_snapshot: ScenarioMarketSnapshot,
+) -> PTradePortfolioSnapshot:
+    prices = {node.instrument: node.close for node in market_snapshot.latest_nodes}
+    positions = tuple(
+        PTradePositionSnapshot(
+            instrument=item.instrument,
+            amount=item.shares,
+            closeable_amount=_sellable_shares(
+                item,
+                market_snapshot.simulation_time.date(),
+            ),
+            average_cost=(
+                item.total_cost / Decimal(item.shares)
+                if item.shares
+                else Decimal("0")
+            ),
+            market_price=prices.get(item.instrument, Decimal("0")),
+            market_value=(
+                prices.get(item.instrument, Decimal("0")) * item.shares
+            ),
+        )
+        for item in state.positions
+    )
+    positions_value = sum(
+        (item.market_value for item in positions),
+        Decimal("0"),
+    )
+    return PTradePortfolioSnapshot(
+        available_cash=state.cash,
+        total_value=state.cash + positions_value,
+        positions=positions,
+    )
 
 
 def _is_decision_time(simulation_time: datetime, *, cadence_minutes: int) -> bool:
@@ -1252,6 +1551,16 @@ def _run_artifact_payload(state: _StrategyRunState) -> dict[str, object]:
             for item in state.positions
         ],
         "equity_curve": [item.to_dict() for item in state.equity_curve],
+        "ptrade_runtime_state": (
+            state.ptrade_runtime_state.to_dict()
+            if state.ptrade_runtime_state is not None
+            else None
+        ),
+        "ptrade_host_audit": (
+            state.ptrade_audit.to_dict()
+            if state.ptrade_audit is not None
+            else None
+        ),
         "failure_code": state.failure_code,
         "failure_message": state.failure_message,
     }
@@ -1295,6 +1604,32 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         order_shares=int(specification_payload["order_shares"]),
         replica_id=str(specification_payload["replica_id"]),
         code_identity=str(specification_payload["code_identity"]),
+        ptrade_surface_version=str(
+            specification_payload.get(
+                "ptrade_surface_version",
+                PTRADE_SURFACE_VERSION,
+            )
+        ),
+        ptrade_manifest_hash=str(
+            specification_payload.get(
+                "ptrade_manifest_hash",
+                REFERENCE_PTRADE_COMPATIBILITY_MANIFEST.content_hash,
+            )
+        ),
+        ptrade_host_adapter_version=str(
+            specification_payload.get(
+                "ptrade_host_adapter_version",
+                PTRADE_IN_PROCESS_HOST_VERSION,
+            )
+        ),
+        ptrade_identity_pinned=all(
+            name in specification_payload
+            for name in (
+                "ptrade_surface_version",
+                "ptrade_manifest_hash",
+                "ptrade_host_adapter_version",
+            )
+        ),
         commission_bps=Decimal(
             str(specification_payload.get("commission_bps", "3"))
         ),
@@ -1469,6 +1804,8 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         for item in cast(list[dict[str, Any]], payload["equity_curve"])
     )
     current_simulation_time = payload.get("current_simulation_time")
+    ptrade_runtime_payload = payload.get("ptrade_runtime_state")
+    ptrade_audit_payload = payload.get("ptrade_host_audit")
     return _StrategyRunState(
         specification=specification,
         status=_parse_run_status(str(payload["status"])),
@@ -1481,6 +1818,20 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         cash=Decimal(str(payload["cash"])),
         positions=positions,
         equity_curve=equity_curve,
+        ptrade_runtime_state=(
+            PTradeRuntimeState.from_dict(
+                cast(dict[str, object], ptrade_runtime_payload)
+            )
+            if isinstance(ptrade_runtime_payload, dict)
+            else None
+        ),
+        ptrade_audit=(
+            PTradeRunAudit.from_dict(
+                cast(dict[str, object], ptrade_audit_payload)
+            )
+            if isinstance(ptrade_audit_payload, dict)
+            else None
+        ),
         current_simulation_time=(
             datetime.fromisoformat(str(current_simulation_time))
             if current_simulation_time is not None
@@ -1514,6 +1865,21 @@ def _strategy_run_row(state: _StrategyRunState) -> dict[str, object]:
         "recipe_version_id": specification.recipe_version_id,
         "strategy_id": specification.strategy_id,
         "strategy_version": specification.strategy_version,
+        "ptrade_surface_version": specification.ptrade_surface_version,
+        "ptrade_manifest_hash": specification.ptrade_manifest_hash,
+        "ptrade_host_adapter_version": (
+            specification.ptrade_host_adapter_version
+        ),
+        "ptrade_host_audit_json": (
+            json.dumps(
+                state.ptrade_audit.to_dict(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            if state.ptrade_audit is not None
+            else None
+        ),
         "decision_cadence_minutes": specification.decision_cadence_minutes,
         "current_simulation_time": (
             state.current_simulation_time.isoformat()

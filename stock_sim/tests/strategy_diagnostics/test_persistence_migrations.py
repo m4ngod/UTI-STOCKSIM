@@ -68,7 +68,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0007_execution_stress_audit"
+    assert first.current_revision == "0008_ptrade_host_audit"
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
@@ -77,13 +77,14 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0005_strategy_runs",
         "0006_a_share_execution_audit",
         "0007_execution_stress_audit",
+        "0008_ptrade_host_audit",
     )
-    assert second.current_revision == "0007_execution_stress_audit"
+    assert second.current_revision == "0008_ptrade_host_audit"
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0007_execution_stress_audit"
+        == "0008_ptrade_host_audit"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -105,7 +106,18 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0005_strategy_runs",
         "0006_a_share_execution_audit",
         "0007_execution_stress_audit",
+        "0008_ptrade_host_audit",
     ]
+    strategy_run_columns = {
+        column["name"]
+        for column in inspect(engine).get_columns("diagnostic_strategy_runs")
+    }
+    assert {
+        "ptrade_surface_version",
+        "ptrade_manifest_hash",
+        "ptrade_host_adapter_version",
+        "ptrade_host_audit_json",
+    } <= strategy_run_columns
     assert {
         "diagnostic_source_snapshots",
         "diagnostic_historical_segments",

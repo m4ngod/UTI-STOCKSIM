@@ -25,7 +25,17 @@ from strategy_diagnostics.execution_conditions import (
     resolve_execution_conditions,
 )
 from strategy_diagnostics.persistence import initialize_diagnostic_persistence
-from strategy_diagnostics.strategy_runs import SqlStrategyRunRepository
+from strategy_diagnostics.ptrade_host import (
+    InProcessPTradeStrategyHost,
+    PTradeHostInvocation,
+    PTradeHostResult,
+    PTradeOrderRequest,
+    SubprocessPTradeStrategyHost,
+)
+from strategy_diagnostics.strategy_runs import (
+    InMemoryStrategyRunRepository,
+    SqlStrategyRunRepository,
+)
 from strategy_diagnostics.transformations import AppliedTransformation
 
 
@@ -198,6 +208,25 @@ def _execution_stress_path(
     )
 
 
+class _OutOfUniverseHost:
+    adapter_version = "ptrade-out-of-universe-test-host.v1"
+
+    def __init__(self) -> None:
+        self._delegate = InProcessPTradeStrategyHost()
+
+    def invoke(self, invocation: PTradeHostInvocation) -> PTradeHostResult:
+        result = replace(
+            self._delegate.invoke(invocation),
+            host_adapter_version=self.adapter_version,
+        )
+        if invocation.event != "decision":
+            return result
+        return replace(
+            result,
+            order_requests=(PTradeOrderRequest("sh.688888", 100),),
+        )
+
+
 def test_half_hour_decisions_use_simulation_time_and_next_node_activation() -> None:
     path = _reference_path()
     engine = _engine(path)
@@ -227,6 +256,185 @@ def test_half_hour_decisions_use_simulation_time_and_next_node_activation() -> N
     assert completed.positions[0].shares == 100
     assert completed.equity_curve[-1].equity == Decimal("99994.99")
     assert completed.run_artifact_hash is not None
+
+
+def test_ptrade_configuration_requests_and_effective_conditions_are_run_evidence(
+    tmp_path: Path,
+) -> None:
+    path = _execution_stress_path(
+        _reference_path(),
+        slippage_bps="100",
+    )
+    requested = RequestedExecutionAssumptions(
+        commission_bps=Decimal("3"),
+        slippage_bps=Decimal("0"),
+        max_fill_fraction=Decimal("1"),
+        latency_nodes=0,
+        allow_partial_fills=True,
+    )
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'ptrade-run-evidence.db'}",
+        future=True,
+    )
+    initialize_diagnostic_persistence(database)
+    engine = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    )
+
+    completed = engine.run_to_completion(
+        engine.start(_spec(path, requested=requested)).run_id
+    )
+
+    assert completed.status == "completed"
+    assert completed.specification.ptrade_surface_version == "ptrade_surface.v1"
+    assert len(completed.specification.ptrade_manifest_hash) == 64
+    audit = completed.ptrade_audit.to_dict()
+    assert audit["surface_version"] == "ptrade_surface.v1"
+    assert audit["manifest_hash"] == completed.specification.ptrade_manifest_hash
+    assert audit["host_adapter_versions"] == ["ptrade-in-process-host.v1"]
+    assert audit["lifecycle_events"] == [
+        "initialize",
+        "scheduled:rebalance",
+        "scheduled:rebalance",
+        "scheduled:rebalance",
+    ]
+    assert audit["configuration_requests"] == [
+        {"call": "set_slippage", "value": "0"},
+        {"call": "set_commission", "value": "3"},
+    ]
+    execution_resolution = audit["execution_resolution"]
+    assert execution_resolution["requested"]["slippage_bps"] == "0"
+    assert execution_resolution["effective"]["slippage_bps"] == "100"
+    assert any(
+        item["name"] == "slippage_bps"
+        and item["override_reason"] == "scenario execution-stress.v1 override"
+        for item in execution_resolution["resolutions"]
+    )
+    assert audit["order_requests"] == [
+        {
+            "decision_time": "2024-01-02T10:00:00",
+            "instrument": "sh.600000",
+            "amount": 100,
+        }
+    ]
+    restarted = StrategyRunEngine(
+        store.get,
+        repository=SqlStrategyRunRepository(database),
+    ).get(completed.run_id)
+    assert restarted.to_dict() == completed.to_dict()
+    with database.connect() as connection:
+        stored = connection.execute(
+            text(
+                "SELECT ptrade_surface_version, ptrade_manifest_hash, "
+                "ptrade_host_adapter_version, ptrade_host_audit_json "
+                "FROM diagnostic_strategy_runs"
+            )
+        ).one()
+    assert stored.ptrade_surface_version == "ptrade_surface.v1"
+    assert stored.ptrade_manifest_hash == completed.specification.ptrade_manifest_hash
+    assert stored.ptrade_host_adapter_version == "ptrade-in-process-host.v1"
+    assert json.loads(stored.ptrade_host_audit_json) == audit
+
+
+def test_production_strategy_run_routes_decisions_through_subprocess_host() -> None:
+    path = _reference_path()
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    engine = StrategyRunEngine(
+        store.get,
+        ptrade_host=SubprocessPTradeStrategyHost(),
+    )
+
+    production_specification = replace(
+        _spec(path),
+        ptrade_host_adapter_version="ptrade-subprocess-host.v1",
+    )
+    completed = engine.run_to_completion(
+        engine.start(production_specification).run_id
+    )
+
+    assert completed.status == "completed"
+    assert completed.orders[0].instrument == "sh.600000"
+    assert completed.orders[0].shares == 100
+    assert completed.ptrade_audit is not None
+    assert completed.ptrade_audit.host_adapter_versions == (
+        "ptrade-subprocess-host.v1",
+    )
+    assert completed.ptrade_audit.configuration_requests[0].to_dict() == {
+        "call": "set_slippage",
+        "value": "0",
+    }
+
+
+def test_strategy_configuration_calls_are_the_requested_assumption_source() -> None:
+    path = _reference_path()
+    declared = RequestedExecutionAssumptions(
+        commission_bps=Decimal("3"),
+        slippage_bps=Decimal("1.5"),
+        max_fill_fraction=Decimal("1"),
+        latency_nodes=0,
+        allow_partial_fills=True,
+    )
+    engine = _engine(path)
+
+    failed = engine.advance(
+        engine.start(_spec(path, requested=declared)).run_id,
+        node_count=1,
+    )
+
+    assert failed.status == "failed"
+    assert failed.failure_code == "PTradeCompatibilityError"
+    assert "strategy requests do not resolve" in str(failed.failure_message)
+
+
+def test_engine_rejects_host_orders_outside_current_eligible_universe() -> None:
+    path = _reference_path()
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    host = _OutOfUniverseHost()
+    engine = StrategyRunEngine(store.get, ptrade_host=host)
+    specification = replace(
+        _spec(path),
+        ptrade_host_adapter_version=host.adapter_version,
+    )
+
+    failed = engine.run_to_completion(engine.start(specification).run_id)
+
+    assert failed.status == "failed"
+    assert failed.failure_code == "PTradeCompatibilityError"
+    assert "outside the current Eligible Universe" in str(failed.failure_message)
+    assert failed.orders == ()
+
+
+def test_host_adapter_is_pinned_in_run_identity_and_cannot_switch_mid_run() -> None:
+    path = _reference_path()
+    store = InMemoryMarketPathArtifactStore()
+    store.put(path)
+    repository = InMemoryStrategyRunRepository()
+    in_process = StrategyRunEngine(store.get, repository=repository)
+    specification = _spec(path, replica_id="adapter-pinning")
+    subprocess_specification = replace(
+        specification,
+        ptrade_host_adapter_version="ptrade-subprocess-host.v1",
+    )
+
+    assert specification.run_id != subprocess_specification.run_id
+    started = in_process.start(specification)
+    in_process.advance(started.run_id, node_count=1)
+    in_process.pause(started.run_id)
+    switched = StrategyRunEngine(
+        store.get,
+        repository=repository,
+        ptrade_host=SubprocessPTradeStrategyHost(),
+    )
+
+    with pytest.raises(ValueError, match="adapter version does not match"):
+        switched.resume(started.run_id)
+    with pytest.raises(ValueError, match="adapter version does not match"):
+        switched.start(specification)
 
 
 def test_cash_check_includes_policy_fees_and_records_rejection_evidence() -> None:
@@ -770,9 +978,12 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "commission_bps",
         "minimum_commission",
         "transfer_fee_bps",
-        "sell_stamp_duty_bps",
-        "execution_conditions",
-    ):
+            "sell_stamp_duty_bps",
+            "execution_conditions",
+            "ptrade_surface_version",
+            "ptrade_manifest_hash",
+            "ptrade_host_adapter_version",
+        ):
         legacy_specification_payload.pop(name)
     legacy_run_id = "strategy-run-" + hashlib.sha256(
         json.dumps(
@@ -819,6 +1030,7 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
     assert migration.applied_revisions == (
         "0006_a_share_execution_audit",
         "0007_execution_stress_audit",
+        "0008_ptrade_host_audit",
     )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"

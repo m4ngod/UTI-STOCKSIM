@@ -46,6 +46,7 @@ from .recipes import (
     RecipeWorkbench,
     ScenarioRecipeDraft,
 )
+from .ptrade_host import PTradeStrategyHost, SubprocessPTradeStrategyHost
 from .transformations import create_initial_transformation_catalog
 from .strategy_runs import (
     BASELINE_EXECUTION_POLICY_VERSION,
@@ -92,6 +93,7 @@ class DiagnosticsApplication:
         artifact_store: MarketPathArtifactStore | None = None,
         recipe_assistant: AIRecipeAssistant | None = None,
         recipe_clock: Callable[[], datetime] | None = None,
+        ptrade_host: PTradeStrategyHost | None = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
         source = historical_source or BaoStockHistoricalSource()
@@ -121,7 +123,10 @@ class DiagnosticsApplication:
             transformation_catalog=self._transformation_catalog,
         )
         self._recipe_assistant = recipe_assistant
-        self._strategy_runs = StrategyRunEngine(self._load_reference_path)
+        self._strategy_runs = StrategyRunEngine(
+            self._load_reference_path,
+            ptrade_host=ptrade_host or SubprocessPTradeStrategyHost(),
+        )
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -495,6 +500,9 @@ class DiagnosticsApplication:
             order_shares=order_shares,
             replica_id=replica_id,
             code_identity="strategy-diagnostics.v1",
+            ptrade_host_adapter_version=(
+                self._strategy_runs.ptrade_host_adapter_version
+            ),
             commission_bps=resolved_conditions.effective.commission_bps,
             resolved_execution_conditions=resolved_conditions,
         )
@@ -549,6 +557,7 @@ def create_diagnostics_application(
     artifact_store: MarketPathArtifactStore | None = None,
     recipe_assistant: AIRecipeAssistant | None = None,
     recipe_clock: Callable[[], datetime] | None = None,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> DiagnosticsApplication:
     return DiagnosticsApplication(
         historical_source=historical_source,
@@ -556,6 +565,7 @@ def create_diagnostics_application(
         artifact_store=artifact_store,
         recipe_assistant=recipe_assistant,
         recipe_clock=recipe_clock,
+        ptrade_host=ptrade_host,
     )
 
 

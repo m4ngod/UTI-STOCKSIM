@@ -854,6 +854,9 @@ def test_diagnostics_panel_controls_and_inspects_an_anchored_baseline_run() -> N
     assert completed["processed_node_count"] == completed["total_node_count"]
     assert completed["equity_curve"]
     assert completed["portfolio"] == {"cash": "100000", "positions": []}
+    assert completed["ptrade_host"]["surface_version"] == "ptrade_surface.v1"
+    assert len(completed["ptrade_host"]["manifest_hash"]) == 64
+    assert completed["specification"]["ptrade_surface_version"] == "ptrade_surface.v1"
     assert completed["run_artifact_hash"]
     assert view == completed
 
