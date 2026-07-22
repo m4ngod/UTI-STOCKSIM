@@ -315,7 +315,7 @@ def test_recipe_validation_fails_closed_with_actionable_rules(
         application.approve_recipe_draft(draft.draft_id, actor="owner")
 
 
-def test_headless_catalog_registers_and_validates_the_trend_regime_transform() -> None:
+def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> None:
     application, segment_id = _application_with_admitted_segment()
 
     catalog = application.transformation_catalog_view()
@@ -350,15 +350,37 @@ def test_headless_catalog_registers_and_validates_the_trend_regime_transform() -
                     "point-in-time-inputs-only",
                     "deterministic-no-future-reads",
                 ],
-            }
+            },
+            {
+                "transformation_id": "volatility-scaling.v1",
+                "family": "volatility",
+                "implementation_version": "volatility-scaling.v1",
+                "parameters": [
+                    {
+                        "name": "multiplier",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0.5",
+                        "maximum": "2",
+                    }
+                ],
+                "compatibility_rules": [
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                ],
+                "causality_constraints": [
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ],
+            },
         ],
     }
 
     payload = _baseline_payload(segment_id)
     payload["transformations"] = [
         {
-            "transformation_id": "trend-regime.v1",
-            "parameters": {"direction": "bullish", "strength": "0.5"},
+            "transformation_id": "volatility-scaling.v1",
+            "parameters": {"multiplier": "1.5"},
         }
     ]
     draft = application.create_manual_recipe_draft(payload, author="researcher")
@@ -367,6 +389,32 @@ def test_headless_catalog_registers_and_validates_the_trend_regime_transform() -
 
     assert validation.is_valid is True
     assert validation.issues == ()
+
+
+@pytest.mark.parametrize("multiplier", ("0.49", "2.01"))
+def test_volatility_scaling_rejects_values_outside_published_bounds(
+    multiplier: str,
+) -> None:
+    application, segment_id = _application_with_admitted_segment()
+    payload = _baseline_payload(segment_id)
+    payload["transformations"] = [
+        {
+            "transformation_id": "volatility-scaling.v1",
+            "parameters": {"multiplier": multiplier},
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is False
+    assert {issue.rule for issue in validation.issues} == {
+        "transformation.parameter-bounds"
+    }
+    assert validation.issues[0].path == "transformations.0.parameters.multiplier"
+    assert validation.issues[0].correction == "Choose a value from 0.5 through 2."
+    with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
+        application.approve_recipe_draft(draft.draft_id, actor="owner")
 
 
 @pytest.mark.parametrize(

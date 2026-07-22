@@ -284,6 +284,38 @@ class MaterializedMarketPath:
     nodes: tuple[MarketPathNode, ...]
     instrument_states: tuple[InstrumentState, ...]
 
+    def path_statistics(
+        self,
+        *,
+        at_time: datetime | None = None,
+    ) -> dict[str, object]:
+        visible_nodes = tuple(
+            node
+            for node in self.nodes
+            if at_time is None or node.simulation_time <= at_time
+        )
+        if not visible_nodes:
+            raise ValueError("Path statistics require at least one visible market node")
+        absolute_returns = tuple(
+            abs(dict(node.features)["return_30s"])
+            for node in visible_nodes
+        )
+        range_fractions = tuple(
+            (node.high - node.low) / node.open
+            for node in visible_nodes
+        )
+        count = Decimal(len(visible_nodes))
+        return {
+            "node_count": len(visible_nodes),
+            "mean_absolute_return_30s": _decimal_text(
+                sum(absolute_returns, Decimal("0")) / count
+            ),
+            "mean_range_fraction_30s": _decimal_text(
+                sum(range_fractions, Decimal("0")) / count
+            ),
+            "max_range_fraction_30s": _decimal_text(max(range_fractions)),
+        }
+
     def to_preview_dict(self) -> dict[str, object]:
         return {
             "artifact_hash": self.artifact_hash,
@@ -310,6 +342,7 @@ class MaterializedMarketPath:
             "end_time": self.nodes[-1].simulation_time.isoformat(),
             "first_node": self.nodes[0].to_dict(),
             "last_node": self.nodes[-1].to_dict(),
+            "path_statistics": self.path_statistics(),
         }
 
 

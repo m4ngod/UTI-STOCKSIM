@@ -330,6 +330,62 @@ def test_diagnostics_workspace_previews_baseline_versus_trend_regime() -> None:
     ]
 
 
+def test_diagnostics_workspace_shows_volatility_request_and_path_statistics() -> None:
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = panel.get_view()["historical_segment_catalog"]["segments"][0][
+        "segment_id"
+    ]
+    panel.create_baseline_recipe(
+        name="Baseline control",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+
+    panel.create_volatility_recipe(
+        name="Amplified volatility",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        multiplier="1.5",
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    transformed = panel.materialize_current_recipe()
+    preview = panel.get_view()["scenario_comparison_preview"]
+
+    assert transformed["applied_transformations"] == [
+        {
+            "transformation_id": "volatility-scaling.v1",
+            "family": "volatility",
+            "catalog_version": "scenario-transformation-catalog.v1",
+            "implementation_version": "volatility-scaling.v1",
+            "parameters": {"multiplier": "1.5"},
+        }
+    ]
+    assert preview["transformed"]["applied_transformations"] == transformed[
+        "applied_transformations"
+    ]
+    baseline_statistics = preview["baseline"]["path_statistics"]
+    transformed_statistics = preview["transformed"]["path_statistics"]
+    assert Decimal(
+        str(transformed_statistics["mean_absolute_return_30s"])
+    ) > Decimal(str(baseline_statistics["mean_absolute_return_30s"]))
+    assert Decimal(
+        str(transformed_statistics["mean_range_fraction_30s"])
+    ) > Decimal(str(baseline_statistics["mean_range_fraction_30s"]))
+
+
 def test_diagnostics_workspace_shows_actionable_recipe_validation_feedback() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -418,6 +474,52 @@ def test_diagnostics_adapter_renders_baseline_versus_transformed_preview() -> No
     assert str(preview["market_return_delta"]) in preview_text
     assert "1. sh.600000" in preview_text
     assert "trend-regime.v1" in adapter._transformation_catalog_label.text()
+
+
+def test_diagnostics_adapter_authors_volatility_and_renders_path_statistics() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._seed_input.setText("17")
+    adapter._recipe_name_input.setText("Baseline control")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    adapter._recipe_name_input.setText("Amplified volatility")
+    adapter._volatility_multiplier_input.setText("1.5")
+    adapter._create_volatility_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    preview = adapter.current_view()["scenario_comparison_preview"]
+    transformed = preview["transformed"]
+    preview_text = adapter._scenario_preview_label.text()
+    assert transformed["applied_transformations"][0]["transformation_id"] == (
+        "volatility-scaling.v1"
+    )
+    assert transformed["applied_transformations"][0]["parameters"] == {
+        "multiplier": "1.5"
+    }
+    assert "volatility-scaling.v1" in preview_text
+    assert "multiplier 1.5" in preview_text
+    assert "mean |30s return|" in preview_text
+    assert str(
+        preview["baseline"]["path_statistics"]["mean_absolute_return_30s"]
+    ) in preview_text
+    assert str(
+        transformed["path_statistics"]["mean_absolute_return_30s"]
+    ) in preview_text
+    assert "volatility-scaling.v1" in adapter._transformation_catalog_label.text()
 
 
 def test_diagnostics_adapter_refuses_to_approve_stale_visible_inputs() -> None:

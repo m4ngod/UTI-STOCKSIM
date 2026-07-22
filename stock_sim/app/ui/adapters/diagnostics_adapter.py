@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from .base_adapter import PanelAdapter
 
@@ -97,8 +97,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._partial_fills_input: Any = None
         self._trend_direction_input: Any = None
         self._trend_strength_input: Any = None
+        self._volatility_multiplier_input: Any = None
         self._create_recipe_button: Any = None
         self._create_trend_recipe_button: Any = None
+        self._create_volatility_recipe_button: Any = None
         self._validate_recipe_button: Any = None
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
@@ -160,6 +162,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._trend_direction_input.setPlaceholderText("Trend direction")
         self._trend_strength_input = QLineEdit("0.5")
         self._trend_strength_input.setPlaceholderText("Trend strength (0 to 1)")
+        self._volatility_multiplier_input = QLineEdit("1.5")
+        self._volatility_multiplier_input.setPlaceholderText(
+            "Volatility multiplier (0.5 to 2)"
+        )
         self._create_recipe_button = QPushButton("Create manual baseline recipe")
         self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
         self._create_trend_recipe_button = QPushButton(
@@ -167,6 +173,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         )
         self._create_trend_recipe_button.clicked.connect(
             self._create_trend_recipe_from_inputs
+        )
+        self._create_volatility_recipe_button = QPushButton(
+            "Create volatility recipe"
+        )
+        self._create_volatility_recipe_button.clicked.connect(
+            self._create_volatility_recipe_from_inputs
         )
         self._validate_recipe_button = QPushButton("Validate recipe")
         self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
@@ -212,8 +224,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._partial_fills_input)
         layout.addWidget(self._trend_direction_input)
         layout.addWidget(self._trend_strength_input)
+        layout.addWidget(self._volatility_multiplier_input)
         layout.addWidget(self._create_recipe_button)
         layout.addWidget(self._create_trend_recipe_button)
+        layout.addWidget(self._create_volatility_recipe_button)
         layout.addWidget(self._validate_recipe_button)
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
@@ -253,20 +267,32 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self.refresh()
 
     def _create_recipe_from_inputs(self) -> None:
-        self._submit_recipe_from_inputs(include_trend=False)
+        self._submit_recipe_from_inputs(recipe_kind="baseline")
 
     def _create_trend_recipe_from_inputs(self) -> None:
-        self._submit_recipe_from_inputs(include_trend=True)
+        self._submit_recipe_from_inputs(recipe_kind="trend")
 
-    def _submit_recipe_from_inputs(self, *, include_trend: bool) -> None:
+    def _create_volatility_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(recipe_kind="volatility")
+
+    def _submit_recipe_from_inputs(
+        self,
+        *,
+        recipe_kind: Literal["baseline", "trend", "volatility"],
+    ) -> None:
         try:
             segment_id = self._selected_recipe_segment_id()
             recipe_arguments = self._recipe_arguments(segment_id=segment_id)
-            if include_trend:
+            if recipe_kind == "trend":
                 self._logic.create_trend_regime_recipe(
                     **recipe_arguments,
                     direction=str(self._trend_direction_input.text()),
                     strength=str(self._trend_strength_input.text()),
+                )
+            elif recipe_kind == "volatility":
+                self._logic.create_volatility_recipe(
+                    **recipe_arguments,
+                    multiplier=str(self._volatility_multiplier_input.text()),
                 )
             else:
                 self._logic.create_baseline_recipe(**recipe_arguments)
@@ -276,15 +302,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             self._recipe_action_error = ""
         except (TypeError, ValueError):
             self._recipe_action_error = (
-                "Check the recipe fields, trend parameters, and admitted segment."
-                if include_trend
+                "Check the recipe fields, transformation parameters, and admitted segment."
+                if recipe_kind != "baseline"
                 else "Check the recipe fields and select an admitted segment."
             )
         except Exception:
+            labels = {
+                "baseline": "recipe",
+                "trend": "trend/regime",
+                "volatility": "volatility",
+            }
             self._recipe_action_error = (
-                "The trend/regime draft could not be created."
-                if include_trend
-                else "The recipe draft could not be created."
+                f"The {labels[recipe_kind]} draft could not be created."
             )
         self.refresh()
 
@@ -378,6 +407,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             str(self._partial_fills_input.text()).strip().lower(),
             str(self._trend_direction_input.text()).strip().lower(),
             str(self._trend_strength_input.text()).strip(),
+            str(self._volatility_multiplier_input.text()).strip(),
         )
 
     def _assert_recipe_inputs_match_draft(self) -> None:
@@ -561,12 +591,39 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     for item in rankings
                     if isinstance(item, dict)
                 ) if isinstance(rankings, list) else ""
+                applied = transformed_preview.get("applied_transformations", [])
+                transformation_summary = ", ".join(
+                    (
+                        f"{item.get('transformation_id', 'unknown')} ("
+                        + ", ".join(
+                            f"{name} {value}"
+                            for name, value in parameters.items()
+                        )
+                        + ")"
+                    )
+                    for item in applied
+                    if isinstance(item, dict)
+                    and isinstance((parameters := item.get("parameters")), dict)
+                ) if isinstance(applied, list) else ""
+                baseline_statistics = baseline_preview.get("path_statistics", {})
+                transformed_statistics = transformed_preview.get(
+                    "path_statistics", {}
+                )
+                if not isinstance(baseline_statistics, dict):
+                    baseline_statistics = {}
+                if not isinstance(transformed_statistics, dict):
+                    transformed_statistics = {}
                 self._scenario_preview_label.setText(
                     "Baseline vs transformed | market return: "
                     f"{baseline_market.get('return', 'unknown')} -> "
                     f"{transformed_market.get('return', 'unknown')} | delta: "
                     f"{comparison.get('market_return_delta', 'unknown')} | ranking: "
-                    f"{ranking_summary or 'not available'}"
+                    f"{ranking_summary or 'not available'} | requested: "
+                    f"{transformation_summary or 'not available'} | "
+                    "mean |30s return|: "
+                    f"{baseline_statistics.get('mean_absolute_return_30s', 'unknown')}"
+                    " -> "
+                    f"{transformed_statistics.get('mean_absolute_return_30s', 'unknown')}"
                 )
             else:
                 self._scenario_preview_label.setText(

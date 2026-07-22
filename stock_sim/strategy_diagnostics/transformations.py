@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import TYPE_CHECKING, Iterable, Literal, Mapping, Protocol
+from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Protocol
 
 if TYPE_CHECKING:
     from .market_paths import (
@@ -347,12 +347,14 @@ def apply_registered_transformations(
     applied: list[AppliedTransformation] = []
     for request in ordered_requests:
         entry = catalog.get_entry(request.transformation_id)
-        if entry.transformation_id == "trend-regime.v1":
-            transformed = _apply_trend_regime(transformed, request.parameters)
-        else:  # pragma: no cover - catalog registration and implementation stay atomic
+        implementation = _TRANSFORMATION_IMPLEMENTATIONS.get(
+            entry.transformation_id
+        )
+        if implementation is None:  # pragma: no cover - registration stays atomic
             raise ValueError(
                 f"No implementation exists for {entry.transformation_id!r}"
             )
+        transformed = implementation(transformed, request.parameters)
         applied.append(
             AppliedTransformation(
                 transformation_id=entry.transformation_id,
@@ -425,6 +427,89 @@ def _apply_trend_regime(
             )
         ),
     )
+
+
+def _apply_volatility_scaling(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> ScenarioDataWorldInput:
+    multiplier = Decimal(str(parameters["multiplier"]))
+    transformed_bars: list[FiveMinuteBar] = []
+    for bar in sorted(
+        world.bars,
+        key=lambda item: (item.end_time, item.instrument),
+    ):
+        state = _state_at(world.instrument_states, bar.instrument, bar.end_time)
+        reference = _price_limit_reference_at(
+            world.price_limit_references,
+            bar.instrument,
+            bar.end_time,
+        )
+        if reference.is_st is not state.is_st:
+            raise ValueError(
+                "Point-in-time price-limit rule and Instrument State disagree "
+                f"for {bar.instrument!r}"
+            )
+        lower_bound: Decimal | None = None
+        upper_bound: Decimal | None = None
+        if reference.limit_fraction is not None:
+            lower_bound = _daily_price_limit_bound(
+                reference.previous_close,
+                reference.limit_fraction,
+                bullish=False,
+            )
+            upper_bound = _daily_price_limit_bound(
+                reference.previous_close,
+                reference.limit_fraction,
+                bullish=True,
+            )
+            if bar.low < lower_bound or bar.high > upper_bound:
+                raise ValueError(
+                    "Admitted source data already exceeds its point-in-time "
+                    "price limits"
+                )
+
+        def scale(price: Decimal) -> Decimal:
+            scaled = reference.previous_close + multiplier * (
+                price - reference.previous_close
+            )
+            if lower_bound is not None:
+                scaled = max(lower_bound, scaled)
+            if upper_bound is not None:
+                scaled = min(upper_bound, scaled)
+            if scaled <= 0:
+                raise ValueError(
+                    "Volatility scaling produced a nonpositive market price"
+                )
+            return scaled
+
+        transformed_open = scale(bar.open)
+        transformed_high = scale(bar.high)
+        transformed_low = scale(bar.low)
+        transformed_close = scale(bar.close)
+        transformed_bars.append(
+            replace(
+                bar,
+                open=transformed_open,
+                high=transformed_high,
+                low=transformed_low,
+                close=transformed_close,
+                amount=bar.amount * transformed_close / bar.close,
+            )
+        )
+    return replace(world, bars=tuple(transformed_bars))
+
+
+_TRANSFORMATION_IMPLEMENTATIONS: Mapping[
+    str,
+    Callable[
+        ["ScenarioDataWorldInput", Mapping[str, object]],
+        "ScenarioDataWorldInput",
+    ],
+] = {
+    "trend-regime.v1": _apply_trend_regime,
+    "volatility-scaling.v1": _apply_volatility_scaling,
+}
 
 
 def _session_progress(end_time: datetime) -> Decimal:
@@ -538,6 +623,28 @@ def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
     return ScenarioTransformationCatalog(
         catalog_version="scenario-transformation-catalog.v1",
         entries=(
+            TransformationCatalogEntry(
+                transformation_id="volatility-scaling.v1",
+                family="volatility",
+                implementation_version="volatility-scaling.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="multiplier",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.5"),
+                        maximum=Decimal("2"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
             TransformationCatalogEntry(
                 transformation_id="trend-regime.v1",
                 family="trend-regime",

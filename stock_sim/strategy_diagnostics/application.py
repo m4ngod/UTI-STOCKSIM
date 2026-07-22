@@ -308,15 +308,21 @@ class DiagnosticsApplication:
         *,
         at_time: datetime,
     ) -> dict[str, object]:
-        view = self.open_scenario_market_view(
-            artifact_hash,
-            at_time=at_time,
-        )
+        self.status()
+        if self._scenario_materializer is None:
+            raise RuntimeError("No Scenario Materializer is configured")
+        path = self._scenario_materializer.get(artifact_hash)
+        view = ScenarioMarketView(path, initial_cursor=at_time)
         snapshot = view.snapshot().to_dict()
         snapshot.update(
             {
                 "artifact_hash": view.artifact_hash,
                 "reconstructed": True,
+                "applied_transformations": [
+                    transformation.to_dict()
+                    for transformation in path.applied_transformations
+                ],
+                "path_statistics": path.path_statistics(at_time=at_time),
             }
         )
         return snapshot

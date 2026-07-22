@@ -203,6 +203,40 @@ class DiagnosticsPanel:
             allow_partial_fills=allow_partial_fills,
         )
 
+    def create_volatility_recipe(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        author: str,
+        cadence_minutes: int,
+        seed: int,
+        multiplier: str,
+        commission_bps: str = "3",
+        slippage_bps: str = "0",
+        max_fill_fraction: str = "1",
+        latency_nodes: int = 0,
+        allow_partial_fills: bool = True,
+    ) -> dict[str, object]:
+        return self._create_recipe(
+            name=name,
+            segment_id=segment_id,
+            author=author,
+            cadence_minutes=cadence_minutes,
+            seed=seed,
+            transformations=(
+                {
+                    "transformation_id": "volatility-scaling.v1",
+                    "parameters": {"multiplier": multiplier},
+                },
+            ),
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+            max_fill_fraction=max_fill_fraction,
+            latency_nodes=latency_nodes,
+            allow_partial_fills=allow_partial_fills,
+        )
+
     def _create_recipe(
         self,
         *,

@@ -681,9 +681,186 @@ def test_trend_regime_transform_is_deterministic_and_preserves_path_invariants()
             if node.instrument == "sz.000001"
             else Decimal("0.10")
         )
+
+
+class _AdmittedCrossSectionFixtureSource(_AdmittedFixtureSource):
+    def inspect(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> HistoricalSourceInspection | None:
+        inspection = super().inspect(selection)
+        return replace(inspection, bar_count=4) if inspection is not None else None
+
+    def load_scenario_data_world(
+        self,
+        segment: HistoricalMarketSegment,
+    ) -> ScenarioDataWorldInput:
+        return replace(
+            _cross_section_world(),
+            segment_id=segment.segment_id,
+            segment_content_hash=segment.content_hash,
+            source_snapshot_id=segment.source_snapshot_id,
+        )
         previous_close = previous_closes[node.instrument]
         assert node.low >= previous_close * (Decimal("1") - price_limit)
         assert node.high <= previous_close * (Decimal("1") + price_limit)
+
+
+def test_volatility_scaling_is_deterministic_and_preserves_path_invariants() -> None:
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_cross_section_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    request = ScenarioTransformationRequestV1(
+        transformation_id="volatility-scaling.v1",
+        parameters={"multiplier": "1.5"},
+    )
+
+    baseline = materializer.materialize_baseline(_segment(), seed=17)
+    first = materializer.materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+    second = materializer.materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+
+    assert first == second
+    assert first.artifact_hash == second.artifact_hash
+    assert first.artifact_hash != baseline.artifact_hash
+    assert [item.to_dict() for item in first.applied_transformations] == [
+        {
+            "transformation_id": "volatility-scaling.v1",
+            "family": "volatility",
+            "catalog_version": "scenario-transformation-catalog.v1",
+            "implementation_version": "volatility-scaling.v1",
+            "parameters": {"multiplier": "1.5"},
+        }
+    ]
+
+    first_shanghai_bar = tuple(
+        node
+        for node in first.nodes
+        if node.instrument == "sh.600000"
+        and node.simulation_time <= datetime(2024, 1, 2, 9, 35)
+    )
+    assert first_shanghai_bar[0].open == Decimal("10")
+    assert max(node.high for node in first_shanghai_bar) == Decimal("10.45")
+    assert min(node.low for node in first_shanghai_bar) == Decimal("9.85")
+    assert first_shanghai_bar[-1].close == Decimal("10.30")
+    assert sum(node.volume for node in first_shanghai_bar) == 100
+    assert max(
+        node.high for node in first.nodes if node.instrument == "sz.000001"
+    ) == Decimal("21")
+
+    previous_closes = {"sh.600000": Decimal("10"), "sz.000001": Decimal("20")}
+    for node in first.nodes:
+        assert node.low <= min(node.open, node.close)
+        assert node.high >= max(node.open, node.close)
+        assert node.volume >= 0
+        price_limit = (
+            Decimal("0.05")
+            if node.instrument == "sz.000001"
+            else Decimal("0.10")
+        )
+        previous_close = previous_closes[node.instrument]
+        assert node.low >= previous_close * (Decimal("1") - price_limit)
+        assert node.high <= previous_close * (Decimal("1") + price_limit)
+        second = (
+            node.simulation_time.hour * 3600
+            + node.simulation_time.minute * 60
+            + node.simulation_time.second
+        )
+        assert 9 * 3600 + 30 * 60 < second <= 11 * 3600 + 30 * 60
+
+    def mean_absolute_return(path: object) -> Decimal:
+        nodes = getattr(path, "nodes")
+        values = [abs(dict(node.features)["return_30s"]) for node in nodes]
+        return sum(values, Decimal("0")) / Decimal(len(values))
+
+    assert mean_absolute_return(first) > mean_absolute_return(baseline)
+
+
+def test_volatility_scaling_fails_closed_without_previous_close_reference() -> None:
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource(
+            (replace(_world(), price_limit_references=()),)
+        ),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="previous-close reference"):
+        materializer.materialize(
+            _segment(),
+            transformations=(
+                ScenarioTransformationRequestV1(
+                    transformation_id="volatility-scaling.v1",
+                    parameters={"multiplier": "1.5"},
+                ),
+            ),
+            seed=17,
+        )
+
+
+def test_volatility_scaling_fails_closed_on_point_in_time_rule_mismatch() -> None:
+    reference = replace(
+        _world().price_limit_references[0],
+        is_st=True,
+        limit_fraction=Decimal("0.05"),
+        rule_code="fixture.sh-main.risk-warning.5pct",
+    )
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource(
+            (replace(_world(), price_limit_references=(reference,)),)
+        ),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="disagree"):
+        materializer.materialize(
+            _segment(),
+            transformations=(
+                ScenarioTransformationRequestV1(
+                    transformation_id="volatility-scaling.v1",
+                    parameters={"multiplier": "1.5"},
+                ),
+            ),
+            seed=17,
+        )
+
+
+def test_volatility_scaling_does_not_hide_source_price_limit_violations() -> None:
+    invalid_source = FiveMinuteBar(
+        instrument="sh.600000",
+        end_time=datetime(2024, 1, 2, 15, 0),
+        open=Decimal("10.80"),
+        high=Decimal("11.01"),
+        low=Decimal("10.70"),
+        close=Decimal("10.98"),
+        volume=100,
+        amount=Decimal("1090"),
+    )
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource(
+            (replace(_world(), bars=(invalid_source,)),)
+        ),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="source data already exceeds"):
+        materializer.materialize(
+            _segment(),
+            transformations=(
+                ScenarioTransformationRequestV1(
+                    transformation_id="volatility-scaling.v1",
+                    parameters={"multiplier": "0.5"},
+                ),
+            ),
+            seed=17,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1006,3 +1183,101 @@ def test_headless_application_previews_baseline_versus_transformed_results() -> 
         "candidates"
     ]
     assert Decimal(str(comparison["market_return_delta"])) > 0
+
+
+def test_headless_application_previews_volatility_and_recomputed_statistics() -> None:
+    source = _AdmittedCrossSectionFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(_segment().selection)
+    assert admission.segment is not None
+    baseline_version_id = _approve_baseline_recipe(
+        application,
+        admission.segment.segment_id,
+        seed=17,
+    )
+    volatility_payload = {
+        "schema_version": "scenario_recipe.v1",
+        "name": "Amplified volatility",
+        "historical_segment_id": admission.segment.segment_id,
+        "transformations": [
+            {
+                "transformation_id": "volatility-scaling.v1",
+                "parameters": {"multiplier": "1.5"},
+            }
+        ],
+        "execution_conditions": {},
+        "decision_cadence_minutes": 30,
+        "materialization_seed": 17,
+        "data_policy": "point-in-time",
+        "market_rule_profile": "a-share-cash-equity.v1",
+    }
+    volatility_draft = application.create_manual_recipe_draft(
+        volatility_payload,
+        author="test",
+    )
+    assert application.validate_recipe_draft(volatility_draft.draft_id).is_valid
+    volatility_version_id = application.approve_recipe_draft(
+        volatility_draft.draft_id,
+        actor="test-owner",
+    ).version_id
+    baseline = application.materialize_reference_path(baseline_version_id)
+    transformed = application.materialize_reference_path(volatility_version_id)
+
+    comparison = application.compare_reference_market_paths(
+        baseline.artifact_hash,
+        transformed.artifact_hash,
+        at_time=datetime(2024, 1, 2, 9, 40),
+    )
+
+    transformed_preview = comparison["transformed"]
+    assert transformed_preview["applied_transformations"] == [
+        {
+            "transformation_id": "volatility-scaling.v1",
+            "family": "volatility",
+            "catalog_version": "scenario-transformation-catalog.v1",
+            "implementation_version": "volatility-scaling.v1",
+            "parameters": {"multiplier": "1.5"},
+        }
+    ]
+    assert transformed_preview["market_context"] == {
+        "return": "0.04875",
+        "breadth": "1",
+        "instrument_count": 2,
+    }
+    assert transformed_preview["sector_context"] == {
+        "banking": {
+            "return": "0.04875",
+            "breadth": "1",
+            "instrument_count": 2,
+        }
+    }
+    assert transformed_preview["candidates"] == ["sh.600000", "sz.000001"]
+    assert transformed_preview["rankings"] == [
+        {"instrument": "sh.600000", "rank": 1, "score": "0.00375"},
+        {"instrument": "sz.000001", "rank": 2, "score": "-0.00375"},
+    ]
+    assert set(transformed_preview["features"]["sh.600000"]) == {
+        "candidate_rank",
+        "candidate_score",
+        "market_breadth",
+        "market_return",
+        "relative_strength",
+        "return_30s",
+        "sector_breadth",
+        "sector_return",
+        "session_return",
+    }
+    baseline_statistics = comparison["baseline"]["path_statistics"]
+    transformed_statistics = transformed_preview["path_statistics"]
+    assert transformed_statistics["node_count"] == 40
+    assert Decimal(
+        str(transformed_statistics["mean_absolute_return_30s"])
+    ) > Decimal(str(baseline_statistics["mean_absolute_return_30s"]))
+    assert Decimal(
+        str(transformed_statistics["mean_range_fraction_30s"])
+    ) > Decimal(str(baseline_statistics["mean_range_fraction_30s"]))
