@@ -160,6 +160,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._resume_run_button: Any = None
         self._complete_run_button: Any = None
         self._cancel_run_button: Any = None
+        self._campaign_status_label: Any = None
+        self._campaign_equity_overlay_view: Any = None
+        self._campaign_drawdown_overlay_view: Any = None
+        self._run_campaign_button: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._run_action_error = ""
@@ -377,6 +381,23 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._complete_run_button.clicked.connect(self._complete_baseline_run)
         self._cancel_run_button = QPushButton("Cancel at node boundary")
         self._cancel_run_button.clicked.connect(self._cancel_baseline_run)
+        self._campaign_status_label = QLabel("Baseline Campaign: not started")
+        self._campaign_equity_overlay_view = QPlainTextEdit()
+        self._campaign_equity_overlay_view.setReadOnly(True)
+        self._campaign_equity_overlay_view.setPlainText(
+            "Equity comparison: run both strategies on the Baseline Campaign."
+        )
+        self._campaign_drawdown_overlay_view = QPlainTextEdit()
+        self._campaign_drawdown_overlay_view.setReadOnly(True)
+        self._campaign_drawdown_overlay_view.setPlainText(
+            "Drawdown comparison: run both strategies on the Baseline Campaign."
+        )
+        self._run_campaign_button = QPushButton(
+            "Run two-strategy Baseline Campaign"
+        )
+        self._run_campaign_button.clicked.connect(
+            self._run_baseline_campaign_from_inputs
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -453,6 +474,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._resume_run_button)
         layout.addWidget(self._complete_run_button)
         layout.addWidget(self._cancel_run_button)
+        layout.addWidget(self._campaign_status_label)
+        layout.addWidget(self._campaign_equity_overlay_view)
+        layout.addWidget(self._campaign_drawdown_overlay_view)
+        layout.addWidget(self._run_campaign_button)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -715,6 +740,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
 
     def _cancel_baseline_run(self) -> None:
         self._apply_run_action(self._logic.cancel_baseline_run)
+
+    def _run_baseline_campaign_from_inputs(self) -> None:
+        try:
+            self._logic.run_baseline_campaign(
+                initial_cash=str(self._run_initial_cash_input.text()).strip(),
+                order_shares=int(str(self._run_order_shares_input.text()).strip()),
+                campaign_replica_id=str(self._run_replica_input.text()).strip(),
+            )
+            self._run_action_error = ""
+        except Exception as error:
+            self._run_action_error = str(error) or "Unable to run Baseline Campaign."
+        self.refresh()
 
     def _apply_run_action(self, action: Any) -> None:
         try:
@@ -1093,6 +1130,85 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             )
             self._run_execution_conditions_view.setPlainText(
                 "\n".join(condition_lines)
+            )
+        campaign = self._current_view.get("baseline_campaign", {})
+        if not isinstance(campaign, dict):
+            campaign = {}
+        completeness = campaign.get("completeness", {})
+        if not isinstance(completeness, dict):
+            completeness = {}
+        if self._campaign_status_label is not None:
+            campaign_status = str(campaign.get("status", "not_started"))
+            completeness_label = str(
+                completeness.get("label", "not run")
+            )
+            details = (
+                f"Baseline Campaign: {campaign_status} | {completeness_label}"
+            )
+            shared_nodes = campaign.get("shared_market_nodes", {})
+            if isinstance(shared_nodes, dict) and shared_nodes.get(
+                "identical_observed_timeline"
+            ):
+                details += (
+                    " | identical market nodes "
+                    f"({shared_nodes.get('observed_node_count', 0)})"
+                )
+            if self._run_action_error:
+                details += f" | {self._run_action_error}"
+            self._campaign_status_label.setText(details)
+        if self._campaign_equity_overlay_view is not None:
+            equity_lines = ["Simulation Time | Strategy | Equity"]
+            equity_overlay = campaign.get("equity_overlay", [])
+            if isinstance(equity_overlay, list):
+                for series in equity_overlay:
+                    if not isinstance(series, dict):
+                        continue
+                    strategy = str(series.get("strategy_id", "unknown"))
+                    points = series.get("points", [])
+                    if not isinstance(points, list):
+                        continue
+                    equity_lines.extend(
+                        " | ".join(
+                            (
+                                str(point.get("simulation_time", "unknown")),
+                                strategy,
+                                str(point.get("equity", "unknown")),
+                            )
+                        )
+                        for point in points
+                        if isinstance(point, dict)
+                    )
+            if len(equity_lines) == 1:
+                equity_lines.append("No campaign equity points recorded yet")
+            self._campaign_equity_overlay_view.setPlainText(
+                "\n".join(equity_lines)
+            )
+        if self._campaign_drawdown_overlay_view is not None:
+            drawdown_lines = ["Simulation Time | Strategy | Drawdown"]
+            drawdown_overlay = campaign.get("drawdown_overlay", [])
+            if isinstance(drawdown_overlay, list):
+                for series in drawdown_overlay:
+                    if not isinstance(series, dict):
+                        continue
+                    strategy = str(series.get("strategy_id", "unknown"))
+                    points = series.get("points", [])
+                    if not isinstance(points, list):
+                        continue
+                    drawdown_lines.extend(
+                        " | ".join(
+                            (
+                                str(point.get("simulation_time", "unknown")),
+                                strategy,
+                                str(point.get("drawdown", "unknown")),
+                            )
+                        )
+                        for point in points
+                        if isinstance(point, dict)
+                    )
+            if len(drawdown_lines) == 1:
+                drawdown_lines.append("No campaign drawdown points recorded yet")
+            self._campaign_drawdown_overlay_view.setPlainText(
+                "\n".join(drawdown_lines)
             )
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):

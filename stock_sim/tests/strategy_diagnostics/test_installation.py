@@ -146,6 +146,26 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
     )
     assert live_minute_probe.stdout.strip() == "ptrade/live_minute_strategy.py"
 
+    campaign_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from strategy_diagnostics import "
+                "BaselineCampaignSpecification, RANDOM_SOURCE_VERSION; "
+                "print(BaselineCampaignSpecification.__name__, RANDOM_SOURCE_VERSION)"
+            ),
+        ],
+        cwd=caller_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert campaign_probe.stdout.strip() == (
+        "BaselineCampaignSpecification materialization_seed+decision_index.v1"
+    )
+
     worker = subprocess.run(
         [sys.executable, "-m", "strategy_diagnostics.ptrade_host_worker"],
         input=json.dumps({"protocol_version": "unsupported"}),

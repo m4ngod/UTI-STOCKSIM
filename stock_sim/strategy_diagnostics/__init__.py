@@ -148,6 +148,14 @@ from .strategy_runs import (
     StrategyRunSnapshot,
     StrategyRunSpecification,
 )
+from .strategy_campaigns import (
+    RANDOM_SOURCE_VERSION,
+    BaselineCampaignRunner,
+    BaselineCampaignSnapshot,
+    BaselineCampaignSpecification,
+    CampaignMemberResult,
+    CampaignStatus,
+)
 
 __all__ = [
     "AIRecipeAssistant",
@@ -276,5 +284,11 @@ __all__ = [
     "StrategyRunEngine",
     "StrategyRunSnapshot",
     "StrategyRunSpecification",
+    "BaselineCampaignRunner",
+    "BaselineCampaignSnapshot",
+    "BaselineCampaignSpecification",
+    "CampaignMemberResult",
+    "CampaignStatus",
+    "RANDOM_SOURCE_VERSION",
     "create_diagnostics_application",
 ]

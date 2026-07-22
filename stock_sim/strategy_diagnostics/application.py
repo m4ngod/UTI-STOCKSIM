@@ -47,9 +47,18 @@ from .recipes import (
     ScenarioRecipeDraft,
 )
 from .ptrade_host import (
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
     PTradeStrategyHost,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
     SubprocessPTradeStrategyHost,
     ptrade_manifest_for,
+)
+from .strategy_campaigns import (
+    BaselineCampaignRunner,
+    BaselineCampaignSnapshot,
+    BaselineCampaignSpecification,
 )
 from .transformations import create_initial_transformation_catalog
 from .strategy_runs import (
@@ -422,6 +431,69 @@ class DiagnosticsApplication:
     ) -> StrategyRunSnapshot:
         """Start one registered strategy on an approved anchored path."""
 
+        specification = self._baseline_strategy_run_specification(
+            recipe_version_id,
+            materialization_hash,
+            initial_cash=initial_cash,
+            order_shares=order_shares,
+            replica_id=replica_id,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+        )
+        return self._strategy_runs.start(specification)
+
+    def run_baseline_campaign(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        campaign_replica_id: str,
+        nodes_per_batch: int = 10_000,
+    ) -> BaselineCampaignSnapshot:
+        """Run both V1 representative strategies on isolated path replicas."""
+
+        specifications = (
+            self._baseline_strategy_run_specification(
+                recipe_version_id,
+                materialization_hash,
+                initial_cash=initial_cash,
+                order_shares=order_shares,
+                replica_id=f"{campaign_replica_id}:quentx",
+                strategy_id=QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                strategy_version=QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+            ),
+            self._baseline_strategy_run_specification(
+                recipe_version_id,
+                materialization_hash,
+                initial_cash=initial_cash,
+                order_shares=order_shares,
+                replica_id=f"{campaign_replica_id}:live-minute",
+                strategy_id=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+                strategy_version=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+            ),
+        )
+        campaign = BaselineCampaignSpecification(
+            campaign_replica_id=campaign_replica_id,
+            strategy_runs=specifications,
+        )
+        return BaselineCampaignRunner(self._strategy_runs).run(
+            campaign,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def _baseline_strategy_run_specification(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        replica_id: str,
+        strategy_id: str,
+        strategy_version: str,
+    ) -> StrategyRunSpecification:
         self.status()
         approved = self._recipe_workbench.get_version(recipe_version_id)
         if any(
@@ -487,7 +559,7 @@ class DiagnosticsApplication:
                 "Materialized execution conditions do not match the approved recipe"
             )
         manifest = ptrade_manifest_for(strategy_id, strategy_version)
-        specification = StrategyRunSpecification(
+        return StrategyRunSpecification(
             recipe_version_id=approved.version_id,
             recipe_content_hash=approved.content_hash,
             materialization_hash=path.artifact_hash,
@@ -515,7 +587,6 @@ class DiagnosticsApplication:
             commission_bps=resolved_conditions.effective.commission_bps,
             resolved_execution_conditions=resolved_conditions,
         )
-        return self._strategy_runs.start(specification)
 
     def strategy_run_status(self, run_id: str) -> StrategyRunSnapshot:
         self.status()

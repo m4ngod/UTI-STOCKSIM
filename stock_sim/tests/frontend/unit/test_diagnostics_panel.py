@@ -22,6 +22,7 @@ from strategy_diagnostics import (
     InMemoryMarketPathArtifactStore,
     InMemoryHistoricalSource,
     InstrumentState,
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_MANIFEST,
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
@@ -634,6 +635,54 @@ def test_headless_application_selects_the_registered_quentx_strategy() -> None:
     ]
 
 
+def test_diagnostics_panel_runs_a_comparable_two_strategy_baseline_campaign() -> None:
+    panel = DiagnosticsPanel(_execution_admittable_application())  # type: ignore[arg-type]
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    panel.create_baseline_recipe(
+        name="Two-strategy Baseline Campaign",
+        segment_id=str(admitted["segment"]["segment_id"]),
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        commission_bps="3",
+        slippage_bps="5",
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    materialized = panel.materialize_current_recipe()
+
+    campaign = panel.run_baseline_campaign(
+        initial_cash="100000",
+        order_shares=1000,
+        campaign_replica_id="workspace-campaign-1",
+    )
+    view = panel.get_view()["baseline_campaign"]
+
+    assert campaign["status"] == "completed"
+    assert campaign["completeness"]["label"] == "2/2 complete"
+    assert campaign["pinned_conditions"]["materialization_hash"] == (
+        materialized["artifact_hash"]
+    )
+    assert campaign["shared_market_nodes"]["identical_observed_timeline"] is True
+    assert [item["strategy_id"] for item in campaign["members"]] == [
+        QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+        LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    ]
+    assert {
+        item["materialization_hash"] for item in campaign["members"]
+    } == {materialized["artifact_hash"]}
+    assert len(
+        {item["run_id"] for item in campaign["members"]}
+    ) == len(campaign["members"])
+    assert len(campaign["equity_overlay"]) == 2
+    assert len(campaign["drawdown_overlay"]) == 2
+    assert view == campaign
+
+
 def test_diagnostics_workspace_previews_baseline_versus_trend_regime() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -1108,6 +1157,68 @@ def test_diagnostics_adapter_controls_and_renders_a_baseline_strategy_run() -> N
         in order_text
     )
     assert "No A-share order decisions recorded yet" in order_text
+
+
+def test_diagnostics_adapter_runs_and_renders_a_two_strategy_campaign() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _execution_admittable_application()
+    )
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("UI Baseline Campaign")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._cadence_input.setText("30")
+    adapter._seed_input.setText("17")
+    adapter._slippage_input.setText("5")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+    adapter._run_initial_cash_input.setText("100000")
+    adapter._run_order_shares_input.setText("1000")
+    adapter._run_replica_input.setText("ui-campaign-1")
+
+    adapter._run_campaign_button.click()
+    campaign = adapter.current_view()["baseline_campaign"]
+
+    assert campaign["status"] == "completed"
+    assert "2/2 complete" in adapter._campaign_status_label.text()
+    equity_text = adapter._campaign_equity_overlay_view.toPlainText()
+    drawdown_text = adapter._campaign_drawdown_overlay_view.toPlainText()
+    assert QUENTX_SCENARIO_NATIVE_STRATEGY_ID in equity_text
+    assert LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID in equity_text
+    assert "Simulation Time | Strategy | Equity" in equity_text
+    assert "Simulation Time | Strategy | Drawdown" in drawdown_text
+
+
+def test_diagnostics_adapter_explains_campaign_policy_before_launch() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("Default single-run recipe")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    adapter._run_campaign_button.click()
+
+    assert adapter.current_view()["baseline_campaign"]["status"] == "not_started"
+    assert "slippage 5 bps" in adapter._campaign_status_label.text()
+    assert "commission 3 bps" in adapter._campaign_status_label.text()
 
 
 def test_diagnostics_adapter_compares_execution_overrides_and_erosion() -> None:

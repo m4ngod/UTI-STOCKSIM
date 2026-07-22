@@ -109,7 +109,7 @@ def initialize(context: PTradeContext) -> None:
     global strategy_global_counter
     strategy_global_counter += 1
     set_universe(context.eligible_universe)
-    set_slippage(Decimal("0"))
+    set_slippage(Decimal("5"))
     set_commission(Decimal("3"))
     run_daily(
         scheduled_scan,

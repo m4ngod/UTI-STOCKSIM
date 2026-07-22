@@ -89,6 +89,17 @@ class DiagnosticsApplicationPort(Protocol):
         strategy_version: str = "anchored-ranked-candidate-reference.v1",
     ) -> _StrategyRunSnapshot: ...
 
+    def run_baseline_campaign(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        campaign_replica_id: str,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
     def strategy_run_status(self, run_id: str) -> _StrategyRunSnapshot: ...
 
     def advance_strategy_run(
@@ -135,6 +146,12 @@ class DiagnosticsPanel:
             "status": "not_started",
             "message": "Materialize an approved anchored recipe to start a run.",
         }
+        self._baseline_campaign: dict[str, object] = {
+            "status": "not_started",
+            "message": (
+                "Materialize an approved anchored recipe to compare both strategies."
+            ),
+        }
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
@@ -150,6 +167,7 @@ class DiagnosticsPanel:
             self._scenario_comparison_preview
         )
         view["baseline_strategy_run"] = dict(self._baseline_strategy_run)
+        view["baseline_campaign"] = dict(self._baseline_campaign)
         return view
 
     def admit_historical_segment(
@@ -587,6 +605,30 @@ class DiagnosticsPanel:
             replica_id=replica_id,
         )
         return self._record_baseline_run(snapshot)
+
+    def run_baseline_campaign(
+        self,
+        *,
+        initial_cash: str,
+        order_shares: int,
+        campaign_replica_id: str,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        materialization = self._recipe_workbench.get("materialization")
+        if not isinstance(materialization, dict):
+            raise ValueError(
+                "Materialize an approved anchored recipe before running a campaign"
+            )
+        snapshot = self._application.run_baseline_campaign(
+            str(materialization["recipe_version_id"]),
+            str(materialization["artifact_hash"]),
+            initial_cash=Decimal(initial_cash),
+            order_shares=order_shares,
+            campaign_replica_id=campaign_replica_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+        self._baseline_campaign = snapshot.to_dict()
+        return dict(self._baseline_campaign)
 
     def advance_baseline_run(self, *, node_count: int = 1) -> dict[str, object]:
         snapshot = self._application.advance_strategy_run(

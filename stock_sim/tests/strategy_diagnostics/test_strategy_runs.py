@@ -374,6 +374,13 @@ def _live_minute_spec(
         path,
         order_shares=1000,
         replica_id=replica_id,
+        requested=RequestedExecutionAssumptions(
+            commission_bps=Decimal("3"),
+            slippage_bps=Decimal("5"),
+            max_fill_fraction=Decimal("1"),
+            latency_nodes=0,
+            allow_partial_fills=True,
+        ),
     )
     return replace(
         specification,
@@ -542,7 +549,7 @@ def test_live_minute_scenario_native_run_is_deterministic_and_auditable(
         "candidate_data_policy": "active-scenario-point-in-time-only",
     }
     assert first.ptrade_audit.configuration_requests == (
-        PTradeConfigurationRequest("set_slippage", Decimal("0")),
+        PTradeConfigurationRequest("set_slippage", Decimal("5")),
         PTradeConfigurationRequest("set_commission", Decimal("3")),
     )
     assert any(
