@@ -22,13 +22,13 @@ from .historical_segments import (
     SourceProvenance,
     SourceSnapshot,
 )
-from .market_rules import resolve_a_share_price_limit_rule
 from .market_paths import (
     FiveMinuteBar,
     InstrumentState,
     ScenarioDataWorldInput,
     SessionPriceLimitReference,
 )
+from .market_rules import resolve_a_share_price_limit_rule
 
 
 _REQUIRED_DAILY_FIELDS = frozenset(
