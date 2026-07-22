@@ -227,9 +227,11 @@ def test_openai_responses_adapter_emits_the_same_draft_contract() -> None:
             ],
         }
     )
+    scenario_recipe_schema = ScenarioRecipeV1.stable_json_schema()
+    scenario_recipe_schema["properties"]["name"]["maxLength"] = 37
     request = AIRecipeAssistantRequest(
         intent="Create a bullish trend regime.",
-        scenario_recipe_schema=ScenarioRecipeV1.stable_json_schema(),
+        scenario_recipe_schema=scenario_recipe_schema,
         admitted_segments=(
             {
                 "segment_id": "segment_fixture",
@@ -294,9 +296,15 @@ def test_openai_responses_adapter_emits_the_same_draft_contract() -> None:
     assert text_format["strict"] is True
     assert text_format["schema"]["additionalProperties"] is False
     recipe_schema = text_format["schema"]["properties"]["recipe"]
+    assert recipe_schema["properties"]["name"]["maxLength"] == 37
     assert recipe_schema["properties"]["historical_segment_id"]["enum"] == [
         "segment_fixture"
     ]
+    execution_schema = recipe_schema["properties"]["execution_conditions"]
+    assert set(execution_schema["required"]) == set(
+        execution_schema["properties"]
+    )
+    assert "default" not in execution_schema["properties"]["commission_bps"]
     transformation_schema = recipe_schema["properties"]["transformations"]["items"]
     assert transformation_schema["properties"]["transformation_id"]["enum"] == [
         "trend-regime.v1"

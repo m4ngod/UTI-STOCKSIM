@@ -247,6 +247,7 @@ class OpenAIResponsesRecipeAssistant:
                     "name": "ai_recipe_draft_output_v1",
                     "strict": True,
                     "schema": _openai_output_schema(
+                        request.scenario_recipe_schema,
                         request.transformation_catalog,
                         request.admitted_segments,
                     ),
@@ -344,6 +345,7 @@ def _drop_null_transformation_parameters(payload: object) -> None:
 
 
 def _openai_output_schema(
+    scenario_recipe_schema: Mapping[str, object],
     transformation_catalog: Mapping[str, object],
     admitted_segments: tuple[Mapping[str, object], ...],
 ) -> dict[str, object]:
@@ -361,6 +363,7 @@ def _openai_output_schema(
                 "enum": ["ai_recipe_draft_output.v1"],
             },
             "recipe": _recipe_schema(
+                scenario_recipe_schema,
                 transformation_catalog,
                 admitted_segments,
             ),
@@ -408,6 +411,7 @@ def _openai_output_schema(
 
 
 def _recipe_schema(
+    scenario_recipe_schema: Mapping[str, object],
     transformation_catalog: Mapping[str, object],
     admitted_segments: tuple[Mapping[str, object], ...],
 ) -> dict[str, object]:
@@ -421,79 +425,94 @@ def _recipe_schema(
     )
     if not segment_ids:
         raise ValueError("AI Recipe Assistant requires an admitted segment")
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": [
-            "schema_version",
-            "name",
-            "historical_segment_id",
-            "transformations",
-            "execution_conditions",
-            "decision_cadence_minutes",
-            "materialization_seed",
-            "data_policy",
-            "market_rule_profile",
-        ],
-        "properties": {
-            "schema_version": {
-                "type": "string",
-                "enum": ["scenario_recipe.v1"],
-            },
-            "name": {"type": "string", "minLength": 1, "maxLength": 120},
-            "historical_segment_id": {
-                "type": "string",
-                "enum": segment_ids,
-            },
-            "transformations": {
-                "type": "array",
-                "items": _transformation_items_schema(transformation_catalog),
-            },
-            "execution_conditions": _execution_conditions_schema(),
-            "decision_cadence_minutes": {
-                "type": "integer",
-                "enum": [30, 60],
-            },
-            "materialization_seed": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 2_147_483_647,
-            },
-            "data_policy": {
-                "type": "string",
-                "enum": ["point-in-time"],
-            },
-            "market_rule_profile": {
-                "type": "string",
-                "enum": ["a-share-cash-equity.v1"],
-            },
-        },
-    }
+    recipe_schema = _strict_schema_from_recipe_contract(scenario_recipe_schema)
+    raw_properties = recipe_schema.get("properties")
+    if not isinstance(raw_properties, dict):
+        raise ValueError("Scenario Recipe schema has no properties")
+    properties = cast(dict[str, object], raw_properties)
+    raw_segment_schema = properties.get("historical_segment_id")
+    if not isinstance(raw_segment_schema, dict):
+        raise ValueError("Scenario Recipe schema has no historical segment field")
+    segment_schema = cast(dict[str, object], raw_segment_schema)
+    segment_schema["enum"] = segment_ids
+    raw_transformations_schema = properties.get("transformations")
+    if not isinstance(raw_transformations_schema, dict):
+        raise ValueError("Scenario Recipe schema has no transformations field")
+    transformations_schema = cast(dict[str, object], raw_transformations_schema)
+    transformations_schema["items"] = _transformation_items_schema(
+        transformation_catalog
+    )
+    return recipe_schema
 
 
-def _execution_conditions_schema() -> dict[str, object]:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": [
-            "commission_bps",
-            "slippage_bps",
-            "max_fill_fraction",
-            "latency_nodes",
-            "allow_partial_fills",
-        ],
-        "properties": {
-            "commission_bps": {"type": "string", "pattern": _DECIMAL_PATTERN},
-            "slippage_bps": {"type": "string", "pattern": _DECIMAL_PATTERN},
-            "max_fill_fraction": {"type": "string", "pattern": _DECIMAL_PATTERN},
-            "latency_nodes": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 120,
-            },
-            "allow_partial_fills": {"type": "boolean"},
-        },
-    }
+def _strict_schema_from_recipe_contract(
+    scenario_recipe_schema: Mapping[str, object],
+) -> dict[str, object]:
+    raw_definitions = scenario_recipe_schema.get("definitions")
+    definitions: Mapping[str, object]
+    if isinstance(raw_definitions, dict):
+        definitions = raw_definitions
+    else:
+        definitions = {}
+    normalized = _normalize_provider_schema(
+        scenario_recipe_schema,
+        definitions=definitions,
+    )
+    if not isinstance(normalized, dict):
+        raise ValueError("Scenario Recipe schema must be an object")
+    return normalized
+
+
+def _normalize_provider_schema(
+    node: object,
+    *,
+    definitions: Mapping[str, object],
+) -> object:
+    if isinstance(node, Mapping):
+        reference = node.get("$ref")
+        if isinstance(reference, str):
+            prefix = "#/definitions/"
+            if not reference.startswith(prefix):
+                raise ValueError(
+                    f"Unsupported Scenario Recipe schema reference: {reference}"
+                )
+            referenced = definitions.get(reference[len(prefix) :])
+            if referenced is None:
+                raise ValueError(
+                    f"Unknown Scenario Recipe schema reference: {reference}"
+                )
+            return _normalize_provider_schema(
+                referenced,
+                definitions=definitions,
+            )
+        normalized: dict[str, object] = {}
+        for key, value in node.items():
+            if not isinstance(key, str):
+                raise ValueError("Scenario Recipe schema keys must be strings")
+            if key in {"$id", "$schema", "definitions", "default", "title"}:
+                continue
+            if key.startswith("x-"):
+                continue
+            normalized[key] = _normalize_provider_schema(
+                value,
+                definitions=definitions,
+            )
+        if normalized.get("type") == "object":
+            raw_properties = normalized.get("properties", {})
+            if not isinstance(raw_properties, dict):
+                raise ValueError("Scenario Recipe object properties are invalid")
+            normalized["properties"] = raw_properties
+            normalized["additionalProperties"] = False
+            normalized["required"] = list(raw_properties)
+        return normalized
+    if isinstance(node, (list, tuple)):
+        return [
+            _normalize_provider_schema(item, definitions=definitions)
+            for item in node
+        ]
+    if node is None or isinstance(node, (bool, int, float, str)):
+        return node
+    raise ValueError("Scenario Recipe schema contains a non-JSON value")
 
 
 def _transformation_items_schema(
