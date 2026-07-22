@@ -174,6 +174,16 @@ class _TransformationApplication:
     statistics: tuple[tuple[str, str], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _ShockRecoveryPlan:
+    direction: str
+    displacement_by_time: tuple[tuple[datetime, Decimal], ...]
+    phase_windows: tuple[
+        tuple[TransformationPhase, tuple[datetime, ...]], ...
+    ]
+    peak_displacement: Decimal
+
+
 class ScenarioTransformationCatalog:
     """Immutable registry of reviewed deterministic transformations."""
 
@@ -564,8 +574,33 @@ def _apply_shock_recovery(
     world: ScenarioDataWorldInput,
     parameters: Mapping[str, object],
 ) -> _TransformationApplication:
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+    source_times = tuple(sorted(bars_by_time))
+    plan = _build_shock_recovery_plan(parameters, source_times)
+    transformed_bars, effective_displacements = _apply_shock_recovery_plan(
+        world,
+        bars_by_time,
+        plan,
+    )
+    return _TransformationApplication(
+        world=replace(world, bars=transformed_bars),
+        phase_markers=_shock_recovery_phase_markers(plan),
+        statistics=_shock_recovery_statistics(
+            world,
+            bars_by_time,
+            effective_displacements,
+            requested_peak_displacement=plan.peak_displacement,
+        ),
+    )
+
+
+def _build_shock_recovery_plan(
+    parameters: Mapping[str, object],
+    source_times: tuple[datetime, ...],
+) -> _ShockRecoveryPlan:
     direction = str(parameters["direction"])
-    sign = Decimal("1") if direction == "bullish" else Decimal("-1")
     gap_fraction = Decimal(str(parameters["gap_fraction"]))
     shock_fraction = Decimal(str(parameters["shock_fraction"]))
     shock_duration = int(Decimal(str(parameters["shock_duration_bars"])))
@@ -573,11 +608,6 @@ def _apply_shock_recovery(
         Decimal(str(parameters["persistence_duration_bars"]))
     )
     recovery_duration = int(Decimal(str(parameters["recovery_duration_bars"])))
-
-    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
-    for bar in world.bars:
-        bars_by_time.setdefault(bar.end_time, []).append(bar)
-    source_times = tuple(sorted(bars_by_time))
     required_source_times = (
         1 + shock_duration + persistence_duration + recovery_duration
     )
@@ -619,66 +649,96 @@ def _apply_shock_recovery(
             Decimal("1") - Decimal(step) / Decimal(recovery_duration)
         )
 
+    return _ShockRecoveryPlan(
+        direction=direction,
+        displacement_by_time=tuple(
+            (end_time, displacement_by_time[end_time])
+            for end_time in source_times
+        ),
+        phase_windows=tuple(phase_windows),
+        peak_displacement=peak_displacement,
+    )
+
+
+def _apply_shock_recovery_plan(
+    world: ScenarioDataWorldInput,
+    bars_by_time: Mapping[datetime, list[FiveMinuteBar]],
+    plan: _ShockRecoveryPlan,
+) -> tuple[tuple[FiveMinuteBar, ...], tuple[tuple[datetime, Decimal], ...]]:
+    sign = Decimal("1") if plan.direction == "bullish" else Decimal("-1")
+
     transformed_bars: list[FiveMinuteBar] = []
-    effective_displacements: dict[datetime, Decimal] = {}
-    for end_time in source_times:
+    effective_displacements: list[tuple[datetime, Decimal]] = []
+    for end_time, displacement in plan.displacement_by_time:
         bars = bars_by_time[end_time]
-        desired_factor = Decimal("1") + sign * displacement_by_time[end_time]
+        desired_factor = Decimal("1") + sign * displacement
         effective_factor = _price_limit_safe_factor(
             desired_factor,
             bars,
             world,
-            bullish=direction == "bullish",
+            bullish=plan.direction == "bullish",
         )
-        effective_displacements[end_time] = abs(
-            effective_factor - Decimal("1")
+        effective_displacements.append(
+            (end_time, abs(effective_factor - Decimal("1")))
         )
         transformed_bars.extend(
             _scale_bar(bar, effective_factor) for bar in bars
         )
+    return (
+        tuple(
+            sorted(
+                transformed_bars,
+                key=lambda item: (item.end_time, item.instrument),
+            )
+        ),
+        tuple(effective_displacements),
+    )
 
-    phase_markers = tuple(
+
+def _shock_recovery_phase_markers(
+    plan: _ShockRecoveryPlan,
+) -> tuple[TransformationPhaseMarker, ...]:
+    return tuple(
         TransformationPhaseMarker(
             phase=phase,
             start_source_bar_end_time=times[0],
             end_source_bar_end_time=times[-1],
             source_time_count=len(times),
         )
-        for phase, times in phase_windows
+        for phase, times in plan.phase_windows
     )
-    statistics = tuple(
+
+
+def _shock_recovery_statistics(
+    world: ScenarioDataWorldInput,
+    bars_by_time: Mapping[datetime, list[FiveMinuteBar]],
+    effective_displacements: tuple[tuple[datetime, Decimal], ...],
+    *,
+    requested_peak_displacement: Decimal,
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
         sorted(
             {
                 "affected_source_bar_count": str(
                     sum(
                         len(bars_by_time[end_time])
-                        for end_time, displacement in effective_displacements.items()
+                        for end_time, displacement in effective_displacements
                         if displacement != 0
                     )
                 ),
                 "effective_peak_displacement_fraction": _decimal_text(
-                    max(effective_displacements.values())
+                    max(
+                        displacement
+                        for _, displacement in effective_displacements
+                    )
                 ),
                 "requested_peak_displacement_fraction": _decimal_text(
-                    peak_displacement
+                    requested_peak_displacement
                 ),
                 "source_bar_count": str(len(world.bars)),
-                "source_time_count": str(len(source_times)),
+                "source_time_count": str(len(effective_displacements)),
             }.items()
         )
-    )
-    return _TransformationApplication(
-        world=replace(
-            world,
-            bars=tuple(
-                sorted(
-                    transformed_bars,
-                    key=lambda item: (item.end_time, item.instrument),
-                )
-            ),
-        ),
-        phase_markers=phase_markers,
-        statistics=statistics,
     )
 
 
