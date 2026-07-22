@@ -45,6 +45,32 @@ _REQUIRED_CHECKS = (
 )
 
 
+def _approve_baseline_recipe(
+    application: object,
+    segment_id: str,
+    *,
+    seed: int,
+) -> str:
+    payload = {
+        "schema_version": "scenario_recipe.v1",
+        "name": "Baseline control",
+        "historical_segment_id": segment_id,
+        "transformations": [],
+        "execution_conditions": {},
+        "decision_cadence_minutes": 30,
+        "materialization_seed": seed,
+        "data_policy": "point-in-time",
+        "market_rule_profile": "a-share-cash-equity.v1",
+    }
+    draft = application.create_manual_recipe_draft(payload, author="test")
+    validation = application.validate_recipe_draft(draft.draft_id)
+    assert validation.is_valid
+    return application.approve_recipe_draft(
+        draft.draft_id,
+        actor="test-owner",
+    ).version_id
+
+
 def _segment() -> HistoricalMarketSegment:
     return HistoricalMarketSegment(
         segment_id="segment_fixture",
@@ -360,9 +386,13 @@ def test_headless_application_materializes_and_previews_an_admitted_segment() ->
     admission = application.admit_historical_segment(_segment().selection)
     assert admission.segment is not None
 
-    materialized = application.materialize_baseline_reference_path(
+    recipe_version_id = _approve_baseline_recipe(
+        application,
         admission.segment.segment_id,
         seed=17,
+    )
+    materialized = application.materialize_baseline_reference_path(
+        recipe_version_id
     )
     preview = application.preview_reference_market_path(
         materialized.artifact_hash,

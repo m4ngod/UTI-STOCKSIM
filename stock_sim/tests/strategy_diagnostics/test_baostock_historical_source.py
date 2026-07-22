@@ -19,6 +19,34 @@ from strategy_diagnostics import (
 )
 
 
+def _approve_baseline_recipe(
+    application: object,
+    segment_id: str,
+    *,
+    seed: int,
+) -> str:
+    draft = application.create_manual_recipe_draft(
+        {
+            "schema_version": "scenario_recipe.v1",
+            "name": "Baseline control",
+            "historical_segment_id": segment_id,
+            "transformations": [],
+            "execution_conditions": {},
+            "decision_cadence_minutes": 30,
+            "materialization_seed": seed,
+            "data_policy": "point-in-time",
+            "market_rule_profile": "a-share-cash-equity.v1",
+        },
+        author="test",
+    )
+    validation = application.validate_recipe_draft(draft.draft_id)
+    assert validation.is_valid
+    return application.approve_recipe_draft(
+        draft.draft_id,
+        actor="test-owner",
+    ).version_id
+
+
 def _write_csv(path: Path, fieldnames: tuple[str, ...], rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -514,9 +542,13 @@ def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
     )
     assert admission.segment is not None
 
-    materialized = application.materialize_baseline_reference_path(
+    recipe_version_id = _approve_baseline_recipe(
+        application,
         admission.segment.segment_id,
         seed=23,
+    )
+    materialized = application.materialize_baseline_reference_path(
+        recipe_version_id
     )
     preview = application.preview_reference_market_path(
         materialized.artifact_hash,
@@ -563,8 +595,10 @@ def test_materialization_rejects_equal_row_count_source_changes_after_inspection
     )
     assert admission.segment is not None
 
+    recipe_version_id = _approve_baseline_recipe(
+        application,
+        admission.segment.segment_id,
+        seed=23,
+    )
     with pytest.raises(ValueError, match="changed after admission"):
-        application.materialize_baseline_reference_path(
-            admission.segment.segment_id,
-            seed=23,
-        )
+        application.materialize_baseline_reference_path(recipe_version_id)

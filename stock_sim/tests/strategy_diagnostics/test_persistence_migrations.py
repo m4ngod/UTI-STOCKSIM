@@ -68,15 +68,16 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0002_historical_segment_catalog"
+    assert first.current_revision == "0003_scenario_recipe_lifecycle"
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
+        "0003_scenario_recipe_lifecycle",
     )
-    assert second.current_revision == "0002_historical_segment_catalog"
+    assert second.current_revision == "0003_scenario_recipe_lifecycle"
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
-    assert application.status().persistence_revision == "0002_historical_segment_catalog"
+    assert application.status().persistence_revision == "0003_scenario_recipe_lifecycle"
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
         legacy_row = connection.execute(
@@ -92,10 +93,15 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     assert revisions == [
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
+        "0003_scenario_recipe_lifecycle",
     ]
     assert {
         "diagnostic_source_snapshots",
         "diagnostic_historical_segments",
+        "diagnostic_recipe_drafts",
+        "diagnostic_recipe_validations",
+        "diagnostic_recipe_approvals",
+        "diagnostic_recipe_versions",
     }.issubset(set(inspect(engine).get_table_names()))
 
 

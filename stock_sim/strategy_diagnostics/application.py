@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import cast
+from typing import Callable, Mapping, cast
 
 from sqlalchemy.engine import Engine
 
@@ -29,7 +29,14 @@ from .persistence import (
     DIAGNOSTIC_SCHEMA_REVISION,
     DiagnosticMigrationReport,
     SqlHistoricalSegmentCatalog,
+    SqlScenarioRecipeRepository,
     initialize_diagnostic_persistence,
+)
+from .recipes import (
+    ApprovedScenarioRecipeVersion,
+    RecipeValidationResult,
+    RecipeWorkbench,
+    ScenarioRecipeDraft,
 )
 
 
@@ -65,6 +72,7 @@ class DiagnosticsApplication:
         historical_source: HistoricalSource | None = None,
         market_data_source: HistoricalMarketDataSource | None = None,
         artifact_store: MarketPathArtifactStore | None = None,
+        recipe_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
         source = historical_source or BaoStockHistoricalSource()
@@ -87,6 +95,7 @@ class DiagnosticsApplication:
             if candidate_market_source is not None
             else None
         )
+        self._recipe_workbench = RecipeWorkbench(clock=recipe_clock)
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -104,6 +113,9 @@ class DiagnosticsApplication:
     def initialize_persistence(self, engine: Engine) -> DiagnosticMigrationReport:
         report = initialize_diagnostic_persistence(engine)
         self._historical_segments.replace_catalog(SqlHistoricalSegmentCatalog(engine))
+        self._recipe_workbench.replace_repository(
+            SqlScenarioRecipeRepository(engine)
+        )
         state = self.start()
         self._state = replace(
             state,
@@ -125,7 +137,10 @@ class DiagnosticsApplication:
 
     def list_historical_segments(self) -> tuple[HistoricalMarketSegment, ...]:
         self.status()
-        return self._historical_segments.list_segments()
+        return cast(
+            tuple[HistoricalMarketSegment, ...],
+            self._historical_segments.list_segments(),
+        )
 
     def recommend_historical_segments(
         self,
@@ -133,7 +148,10 @@ class DiagnosticsApplication:
         limit: int = 3,
     ) -> tuple[HistoricalSegmentRecommendation, ...]:
         self.status()
-        return self._historical_segments.recommend(intent=intent, limit=limit)
+        return cast(
+            tuple[HistoricalSegmentRecommendation, ...],
+            self._historical_segments.recommend(intent=intent, limit=limit),
+        )
 
     def latest_segment_admission(self) -> SegmentAdmissionReport | None:
         self.status()
@@ -158,26 +176,74 @@ class DiagnosticsApplication:
 
     def materialize_baseline_reference_path(
         self,
-        segment_id: str,
-        *,
-        seed: int,
+        recipe_version_id: str,
     ) -> MaterializedMarketPath:
         self.status()
         if self._scenario_materializer is None:
             raise RuntimeError(
                 "The configured historical source cannot materialize market paths"
             )
+        approved = self._recipe_workbench.get_version(recipe_version_id)
         segment = next(
             (
                 item
                 for item in self._historical_segments.list_segments()
-                if item.segment_id == segment_id
+                if item.segment_id == approved.recipe.historical_segment_id
             ),
             None,
         )
         if segment is None:
             raise ValueError("Only an admitted Historical Market Segment can be materialized")
-        return self._scenario_materializer.materialize_baseline(segment, seed=seed)
+        return self._scenario_materializer.materialize_baseline(
+            segment,
+            seed=approved.recipe.materialization_seed,
+        )
+
+    def create_manual_recipe_draft(
+        self,
+        payload: Mapping[str, object],
+        *,
+        author: str,
+    ) -> ScenarioRecipeDraft:
+        self.status()
+        return self._recipe_workbench.create_draft(payload, author=author)
+
+    def validate_recipe_draft(self, draft_id: str) -> RecipeValidationResult:
+        self.status()
+        return self._recipe_workbench.validate_draft(
+            draft_id,
+            admitted_segments=self._historical_segments.list_segments(),
+        )
+
+    def approve_recipe_draft(
+        self,
+        draft_id: str,
+        *,
+        actor: str,
+    ) -> ApprovedScenarioRecipeVersion:
+        self.status()
+        return self._recipe_workbench.approve_draft(draft_id, actor=actor)
+
+    def revise_recipe_version(
+        self,
+        version_id: str,
+        payload: Mapping[str, object],
+        *,
+        author: str,
+    ) -> ScenarioRecipeDraft:
+        self.status()
+        return self._recipe_workbench.revise_version(
+            version_id,
+            payload,
+            author=author,
+        )
+
+    def get_recipe_version(
+        self,
+        version_id: str,
+    ) -> ApprovedScenarioRecipeVersion:
+        self.status()
+        return self._recipe_workbench.get_version(version_id)
 
     def open_scenario_market_view(
         self,
@@ -210,18 +276,20 @@ class DiagnosticsApplication:
                 "reconstructed": True,
             }
         )
-        return snapshot
+        return cast(dict[str, object], snapshot)
 
 
 def create_diagnostics_application(
     historical_source: HistoricalSource | None = None,
     market_data_source: HistoricalMarketDataSource | None = None,
     artifact_store: MarketPathArtifactStore | None = None,
+    recipe_clock: Callable[[], datetime] | None = None,
 ) -> DiagnosticsApplication:
     return DiagnosticsApplication(
         historical_source=historical_source,
         market_data_source=market_data_source,
         artifact_store=artifact_store,
+        recipe_clock=recipe_clock,
     )
 
 

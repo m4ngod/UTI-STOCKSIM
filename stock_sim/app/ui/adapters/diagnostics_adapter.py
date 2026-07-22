@@ -77,7 +77,27 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._intent_input: Any = None
         self._admit_button: Any = None
         self._recommend_button: Any = None
+        self._recipe_status_label: Any = None
+        self._recipe_feedback_label: Any = None
+        self._recipe_approval_label: Any = None
+        self._recipe_materialization_label: Any = None
+        self._recipe_name_input: Any = None
+        self._recipe_segment_input: Any = None
+        self._recipe_author_input: Any = None
+        self._recipe_actor_input: Any = None
+        self._cadence_input: Any = None
+        self._seed_input: Any = None
+        self._commission_input: Any = None
+        self._slippage_input: Any = None
+        self._fill_fraction_input: Any = None
+        self._latency_input: Any = None
+        self._partial_fills_input: Any = None
+        self._create_recipe_button: Any = None
+        self._validate_recipe_button: Any = None
+        self._approve_recipe_button: Any = None
+        self._materialize_recipe_button: Any = None
         self._action_error = ""
+        self._recipe_action_error = ""
 
     def current_view(self) -> dict[str, Any]:
         return dict(self._current_view)
@@ -104,6 +124,36 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._recommend_button = QPushButton("Recommend admitted segments")
         self._recommend_button.clicked.connect(self._recommend_from_inputs)
         self._recommendation_label = QLabel("No recommendations yet")
+        self._recipe_status_label = QLabel("Scenario recipe: not started")
+        self._recipe_feedback_label = QLabel("No validation feedback yet")
+        self._recipe_approval_label = QLabel("Not approved")
+        self._recipe_materialization_label = QLabel("Not materialized")
+        self._recipe_name_input = QLineEdit("Baseline control")
+        self._recipe_segment_input = QLineEdit()
+        self._recipe_segment_input.setPlaceholderText(
+            "Admitted segment ID (blank uses latest)"
+        )
+        self._recipe_author_input = QLineEdit()
+        self._recipe_author_input.setPlaceholderText("Recipe author")
+        self._recipe_actor_input = QLineEdit()
+        self._recipe_actor_input.setPlaceholderText("Approval actor")
+        self._cadence_input = QLineEdit("30")
+        self._seed_input = QLineEdit("0")
+        self._commission_input = QLineEdit("3")
+        self._slippage_input = QLineEdit("0")
+        self._fill_fraction_input = QLineEdit("1")
+        self._latency_input = QLineEdit("0")
+        self._partial_fills_input = QLineEdit("true")
+        self._create_recipe_button = QPushButton("Create manual baseline recipe")
+        self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
+        self._validate_recipe_button = QPushButton("Validate recipe")
+        self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
+        self._approve_recipe_button = QPushButton("Approve recipe explicitly")
+        self._approve_recipe_button.clicked.connect(self._approve_current_recipe)
+        self._materialize_recipe_button = QPushButton("Materialize baseline")
+        self._materialize_recipe_button.clicked.connect(
+            self._materialize_current_recipe
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -118,6 +168,25 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._intent_input)
         layout.addWidget(self._recommend_button)
         layout.addWidget(self._recommendation_label)
+        layout.addWidget(self._recipe_status_label)
+        layout.addWidget(self._recipe_feedback_label)
+        layout.addWidget(self._recipe_approval_label)
+        layout.addWidget(self._recipe_materialization_label)
+        layout.addWidget(self._recipe_name_input)
+        layout.addWidget(self._recipe_segment_input)
+        layout.addWidget(self._recipe_author_input)
+        layout.addWidget(self._recipe_actor_input)
+        layout.addWidget(self._cadence_input)
+        layout.addWidget(self._seed_input)
+        layout.addWidget(self._commission_input)
+        layout.addWidget(self._slippage_input)
+        layout.addWidget(self._fill_fraction_input)
+        layout.addWidget(self._latency_input)
+        layout.addWidget(self._partial_fills_input)
+        layout.addWidget(self._create_recipe_button)
+        layout.addWidget(self._validate_recipe_button)
+        layout.addWidget(self._approve_recipe_button)
+        layout.addWidget(self._materialize_recipe_button)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -149,6 +218,70 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         except Exception:
             self._action_error = (
                 "Recommendations could not be prepared. Admit a segment and try again."
+            )
+        self.refresh()
+
+    def _create_recipe_from_inputs(self) -> None:
+        try:
+            segment_id = str(self._recipe_segment_input.text()).strip()
+            if not segment_id:
+                catalog = self._current_view.get("historical_segment_catalog", {})
+                segments = catalog.get("segments", []) if isinstance(catalog, dict) else []
+                latest = segments[-1] if isinstance(segments, list) and segments else {}
+                if not isinstance(latest, dict) or not latest.get("segment_id"):
+                    raise ValueError("Admit a Historical Market Segment first")
+                segment_id = str(latest["segment_id"])
+            partial_fills = str(self._partial_fills_input.text()).strip().lower()
+            if partial_fills not in {"true", "false"}:
+                raise ValueError("Partial fills must be true or false")
+            self._logic.create_baseline_recipe(
+                name=str(self._recipe_name_input.text()),
+                segment_id=segment_id,
+                author=str(self._recipe_author_input.text()),
+                cadence_minutes=int(str(self._cadence_input.text())),
+                seed=int(str(self._seed_input.text())),
+                commission_bps=str(self._commission_input.text()),
+                slippage_bps=str(self._slippage_input.text()),
+                max_fill_fraction=str(self._fill_fraction_input.text()),
+                latency_nodes=int(str(self._latency_input.text())),
+                allow_partial_fills=partial_fills == "true",
+            )
+            self._recipe_action_error = ""
+        except (TypeError, ValueError):
+            self._recipe_action_error = (
+                "Check the recipe fields and select an admitted segment."
+            )
+        except Exception:
+            self._recipe_action_error = "The recipe draft could not be created."
+        self.refresh()
+
+    def _validate_current_recipe(self) -> None:
+        try:
+            self._logic.validate_current_recipe()
+            self._recipe_action_error = ""
+        except Exception:
+            self._recipe_action_error = "Create a recipe draft before validation."
+        self.refresh()
+
+    def _approve_current_recipe(self) -> None:
+        try:
+            self._logic.approve_current_recipe(
+                actor=str(self._recipe_actor_input.text())
+            )
+            self._recipe_action_error = ""
+        except Exception:
+            self._recipe_action_error = (
+                "Approval requires a valid recipe and a named approval actor."
+            )
+        self.refresh()
+
+    def _materialize_current_recipe(self) -> None:
+        try:
+            self._logic.materialize_current_recipe()
+            self._recipe_action_error = ""
+        except Exception:
+            self._recipe_action_error = (
+                "Only an approved recipe version can be materialized."
             )
         self.refresh()
 
@@ -221,6 +354,47 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 self._recommendation_label.setText(" | ".join(labels))
             else:
                 self._recommendation_label.setText("No recommendations yet")
+        workbench = self._current_view.get("scenario_recipe_workbench", {})
+        if not isinstance(workbench, dict):
+            workbench = {}
+        if self._recipe_status_label is not None:
+            self._recipe_status_label.setText(
+                f"Scenario recipe: {workbench.get('status', 'not started')}"
+            )
+        validation = workbench.get("validation")
+        if self._recipe_feedback_label is not None:
+            feedback = "No validation feedback yet"
+            if isinstance(validation, dict):
+                issues = validation.get("issues", [])
+                if isinstance(issues, list) and issues:
+                    feedback = "; ".join(
+                        str(item.get("correction", item.get("message", "Invalid field")))
+                        for item in issues
+                        if isinstance(item, dict)
+                    )
+                elif validation.get("is_valid") is True:
+                    feedback = "Validation passed"
+            if self._recipe_action_error:
+                feedback = self._recipe_action_error
+            self._recipe_feedback_label.setText(feedback)
+        approved = workbench.get("approved_version")
+        if self._recipe_approval_label is not None:
+            if isinstance(approved, dict):
+                self._recipe_approval_label.setText(
+                    "Approved by "
+                    f"{approved.get('approval_actor', 'unknown')} at "
+                    f"{approved.get('approved_at', 'unknown')}"
+                )
+            else:
+                self._recipe_approval_label.setText("Not approved")
+        materialization = workbench.get("materialization")
+        if self._recipe_materialization_label is not None:
+            if isinstance(materialization, dict):
+                self._recipe_materialization_label.setText(
+                    f"Materialized: {materialization.get('artifact_hash', 'unknown')}"
+                )
+            else:
+                self._recipe_materialization_label.setText("Not materialized")
 
 
 __all__ = ["DiagnosticsPanelAdapter"]

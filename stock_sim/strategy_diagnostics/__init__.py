@@ -36,6 +36,17 @@ from .market_paths import (
     ScenarioMarketView,
     ScenarioMaterializer,
 )
+from .recipes import (
+    ApprovedScenarioRecipeVersion,
+    ExecutionConditionsV1,
+    RecipeValidationIssue,
+    RecipeValidationResult,
+    RecipeWorkbench,
+    ScenarioRecipeDraft,
+    ScenarioRecipeV1,
+    ScenarioTransformationRequestV1,
+    UnapprovedScenarioRecipeError,
+)
 
 __all__ = [
     "DIAGNOSTIC_SCHEMA_REVISION",
@@ -68,5 +79,14 @@ __all__ = [
     "ScenarioMarketSnapshot",
     "ScenarioMarketView",
     "ScenarioMaterializer",
+    "ApprovedScenarioRecipeVersion",
+    "ExecutionConditionsV1",
+    "RecipeValidationIssue",
+    "RecipeValidationResult",
+    "RecipeWorkbench",
+    "ScenarioRecipeDraft",
+    "ScenarioRecipeV1",
+    "ScenarioTransformationRequestV1",
+    "UnapprovedScenarioRecipeError",
     "create_diagnostics_application",
 ]
