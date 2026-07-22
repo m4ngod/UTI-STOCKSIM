@@ -1133,6 +1133,25 @@ def test_execution_stress_path_identity_fails_closed() -> None:
         )
 
 
+def test_strategy_run_rejects_an_unregistered_non_execution_transformation() -> None:
+    baseline = _reference_path()
+    forged = replace(
+        baseline,
+        applied_transformations=(
+            AppliedTransformation(
+                transformation_id="forged-trend.v1",
+                family="trend-regime",
+                catalog_version=baseline.transformation_catalog_version,
+                implementation_version="forged-trend-implementation.v1",
+                parameters=(("strength", "0.5"),),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="not registered"):
+        _engine(forged).start(_spec(forged, replica_id="forged-trend"))
+
+
 def test_hourly_decisions_are_independent_of_wall_time_batch_size() -> None:
     path = _reference_path()
     spec = _spec(path, cadence_minutes=60)
@@ -1429,6 +1448,7 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "0006_a_share_execution_audit",
         "0007_execution_stress_audit",
         "0008_ptrade_host_audit",
+        "0009_isolated_sensitivity_sets",
     )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"

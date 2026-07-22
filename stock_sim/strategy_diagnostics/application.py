@@ -18,6 +18,15 @@ from .historical_segments import (
     HistoricalSource,
     SegmentAdmissionReport,
 )
+from .isolated_sensitivity_sets import (
+    ISOLATED_SENSITIVITY_FAMILIES,
+    IsolatedSensitivitySetRunner,
+    IsolatedSensitivitySetSnapshot,
+    IsolatedSensitivitySetSpecification,
+    SensitivityCampaignCase,
+    SensitivitySweepDefinition,
+    SqlIsolatedSensitivitySetRepository,
+)
 from .market_paths import (
     HistoricalMarketDataSource,
     MarketPathArtifactStore,
@@ -56,6 +65,8 @@ from .ptrade_host import (
     ptrade_manifest_for,
 )
 from .strategy_campaigns import (
+    BASELINE_CAMPAIGN_COMMISSION_BPS,
+    BASELINE_CAMPAIGN_SLIPPAGE_BPS,
     BaselineCampaignRunner,
     BaselineCampaignSnapshot,
     BaselineCampaignSpecification,
@@ -140,6 +151,9 @@ class DiagnosticsApplication:
             self._load_reference_path,
             ptrade_host=ptrade_host or SubprocessPTradeStrategyHost(),
         )
+        self._isolated_sensitivity_sets = IsolatedSensitivitySetRunner(
+            self._execute_isolated_sensitivity_case
+        )
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -161,6 +175,9 @@ class DiagnosticsApplication:
             SqlScenarioRecipeRepository(engine)
         )
         self._strategy_runs.replace_repository(SqlStrategyRunRepository(engine))
+        self._isolated_sensitivity_sets.replace_repository(
+            SqlIsolatedSensitivitySetRepository(engine)
+        )
         state = self.start()
         self._state = replace(
             state,
@@ -253,6 +270,179 @@ class DiagnosticsApplication:
             segment,
             transformations=approved.recipe.transformations,
             seed=approved.recipe.materialization_seed,
+        )
+
+    def create_isolated_sensitivity_case(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+    ) -> SensitivityCampaignCase:
+        """Anchor one approved single-family recipe to its exact materialization."""
+
+        self.status()
+        approved = self._recipe_workbench.get_version(recipe_version_id)
+        if len(approved.recipe.transformations) != 1:
+            raise ValueError(
+                "A Sensitivity Campaign Case requires exactly one transformation family"
+            )
+        expected_path = self.materialize_reference_path(recipe_version_id)
+        if expected_path.artifact_hash != materialization_hash:
+            raise ValueError(
+                "Sensitivity Campaign Case materialization does not match its approved recipe"
+            )
+        path = self._load_reference_path(materialization_hash)
+        if len(path.applied_transformations) != 1:
+            raise ValueError(
+                "A Sensitivity Campaign Case path requires exactly one transformation family"
+            )
+        requested = approved.recipe.transformations[0]
+        applied = path.applied_transformations[0]
+        catalog_entry = self._transformation_catalog.get_entry(
+            requested.transformation_id
+        )
+        if (
+            requested.transformation_id != applied.transformation_id
+            or catalog_entry.family != applied.family
+            or catalog_entry.implementation_version
+            != applied.implementation_version
+            or self._transformation_catalog.catalog_version
+            != path.transformation_catalog_version
+        ):
+            raise ValueError(
+                "Sensitivity Campaign Case transformation provenance does not match "
+                "its approved recipe and catalog"
+            )
+        execution = approved.recipe.execution_conditions
+        return SensitivityCampaignCase(
+            recipe_version_id=approved.version_id,
+            recipe_content_hash=approved.content_hash,
+            materialization_hash=path.artifact_hash,
+            historical_segment_id=path.segment_id,
+            historical_segment_content_hash=path.segment_content_hash,
+            source_snapshot_id=path.source_snapshot_id,
+            materialization_seed=path.seed,
+            expander_version=path.expander_version,
+            source_resolution=path.source_resolution,
+            runtime_resolution=path.runtime_resolution,
+            numeric_tolerance=path.numeric_tolerance,
+            normalization_provenance=path.normalization_provenance,
+            transformation_catalog_version=path.transformation_catalog_version,
+            transformation_id=applied.transformation_id,
+            transformation_family=applied.family,
+            transformation_implementation_version=(
+                applied.implementation_version
+            ),
+            transformation_parameters=tuple(sorted(applied.parameters)),
+            market_rule_profile_version=path.market_rule_profile_version,
+            decision_cadence_minutes=approved.recipe.decision_cadence_minutes,
+            requested_execution_conditions=RequestedExecutionAssumptions(
+                commission_bps=execution.commission_bps,
+                slippage_bps=execution.slippage_bps,
+                max_fill_fraction=execution.max_fill_fraction,
+                latency_nodes=execution.latency_nodes,
+                allow_partial_fills=execution.allow_partial_fills,
+            ),
+        )
+
+    def plan_isolated_sensitivity_set(
+        self,
+        case_anchors: tuple[tuple[str, str], ...],
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        sensitivity_set_replica_id: str,
+    ) -> IsolatedSensitivitySetSnapshot:
+        """Plan a bounded six-family set from explicitly approved case anchors."""
+
+        cases = tuple(
+            self.create_isolated_sensitivity_case(
+                recipe_version_id,
+                materialization_hash,
+            )
+            for recipe_version_id, materialization_hash in case_anchors
+        )
+        if cases:
+            requested = cases[0].requested_execution_conditions
+            if (
+                requested.commission_bps != BASELINE_CAMPAIGN_COMMISSION_BPS
+                or requested.slippage_bps != BASELINE_CAMPAIGN_SLIPPAGE_BPS
+            ):
+                raise ValueError(
+                    "Isolated Sensitivity Set requires requested slippage 5 bps "
+                    "and commission 3 bps for both representative strategies"
+                )
+        specification = IsolatedSensitivitySetSpecification(
+            sensitivity_set_replica_id=sensitivity_set_replica_id,
+            sweeps=tuple(
+                SensitivitySweepDefinition(
+                    transformation_family=family,
+                    transformation_id=family_cases[0].transformation_id,
+                    transformation_implementation_version=(
+                        family_cases[0].transformation_implementation_version
+                    ),
+                    levels=family_cases,
+                )
+                for family in ISOLATED_SENSITIVITY_FAMILIES
+                if (
+                    family_cases := tuple(
+                        case
+                        for case in cases
+                        if case.transformation_family == family
+                    )
+                )
+            ),
+            initial_cash=initial_cash,
+            order_shares=order_shares,
+        )
+        return self._isolated_sensitivity_sets.plan(specification)
+
+    def isolated_sensitivity_set_status(
+        self,
+        sensitivity_set_id: str,
+    ) -> IsolatedSensitivitySetSnapshot:
+        self.status()
+        return self._isolated_sensitivity_sets.get(sensitivity_set_id)
+
+    def advance_isolated_sensitivity_set(
+        self,
+        sensitivity_set_id: str,
+        *,
+        max_cases: int = 1,
+        nodes_per_batch: int = 10_000,
+    ) -> IsolatedSensitivitySetSnapshot:
+        self.status()
+        return self._isolated_sensitivity_sets.advance(
+            sensitivity_set_id,
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def resume_isolated_sensitivity_set(
+        self,
+        sensitivity_set_id: str,
+        *,
+        max_cases: int | None = None,
+        nodes_per_batch: int = 10_000,
+    ) -> IsolatedSensitivitySetSnapshot:
+        self.status()
+        return self._isolated_sensitivity_sets.resume(
+            sensitivity_set_id,
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def retry_isolated_sensitivity_case(
+        self,
+        sensitivity_set_id: str,
+        case_id: str,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> IsolatedSensitivitySetSnapshot:
+        self.status()
+        return self._isolated_sensitivity_sets.retry_case(
+            sensitivity_set_id,
+            case_id,
+            nodes_per_batch=nodes_per_batch,
         )
 
     def create_manual_recipe_draft(
@@ -483,6 +673,26 @@ class DiagnosticsApplication:
             nodes_per_batch=nodes_per_batch,
         )
 
+    def _execute_isolated_sensitivity_case(
+        self,
+        specification: IsolatedSensitivitySetSpecification,
+        case: SensitivityCampaignCase,
+        attempt_number: int,
+        nodes_per_batch: int,
+    ) -> BaselineCampaignSnapshot:
+        campaign_replica_id = (
+            f"{specification.sensitivity_set_replica_id}:"
+            f"{case.case_id}:attempt-{attempt_number}"
+        )
+        return self.run_baseline_campaign(
+            case.recipe_version_id,
+            case.materialization_hash,
+            initial_cash=specification.initial_cash,
+            order_shares=specification.order_shares,
+            campaign_replica_id=campaign_replica_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+
     def _baseline_strategy_run_specification(
         self,
         recipe_version_id: str,
@@ -496,12 +706,15 @@ class DiagnosticsApplication:
     ) -> StrategyRunSpecification:
         self.status()
         approved = self._recipe_workbench.get_version(recipe_version_id)
-        if any(
-            item.transformation_id != "execution-stress.v1"
-            for item in approved.recipe.transformations
-        ):
+        if len(approved.recipe.transformations) > 1:
             raise ValueError(
-                "This anchored run supports a baseline or execution-stress recipe"
+                "An anchored Strategy Run supports a baseline or one isolated "
+                "transformation family"
+            )
+        expected_path = self.materialize_reference_path(recipe_version_id)
+        if expected_path.artifact_hash != materialization_hash:
+            raise ValueError(
+                "Materialized inputs do not match the approved recipe"
             )
         path = self._load_reference_path(materialization_hash)
         if (

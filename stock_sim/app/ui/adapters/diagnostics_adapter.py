@@ -164,6 +164,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._campaign_equity_overlay_view: Any = None
         self._campaign_drawdown_overlay_view: Any = None
         self._run_campaign_button: Any = None
+        self._sensitivity_status_label: Any = None
+        self._sensitivity_curves_view: Any = None
+        self._stage_sensitivity_case_button: Any = None
+        self._plan_sensitivity_set_button: Any = None
+        self._advance_sensitivity_set_button: Any = None
+        self._resume_sensitivity_set_button: Any = None
+        self._sensitivity_retry_case_input: Any = None
+        self._retry_sensitivity_case_button: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._run_action_error = ""
@@ -398,6 +406,48 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._run_campaign_button.clicked.connect(
             self._run_baseline_campaign_from_inputs
         )
+        self._sensitivity_status_label = QLabel(
+            "Isolated Sensitivity Set: not planned"
+        )
+        self._sensitivity_curves_view = QPlainTextEdit()
+        self._sensitivity_curves_view.setReadOnly(True)
+        self._sensitivity_curves_view.setPlainText(
+            "Sensitivity curves: stage, plan, and run approved cases."
+        )
+        self._stage_sensitivity_case_button = QPushButton(
+            "Stage current materialization as sensitivity case"
+        )
+        self._stage_sensitivity_case_button.clicked.connect(
+            self._stage_current_sensitivity_case
+        )
+        self._plan_sensitivity_set_button = QPushButton(
+            "Plan Isolated Sensitivity Set"
+        )
+        self._plan_sensitivity_set_button.clicked.connect(
+            self._plan_sensitivity_set_from_inputs
+        )
+        self._advance_sensitivity_set_button = QPushButton(
+            "Run next sensitivity case"
+        )
+        self._advance_sensitivity_set_button.clicked.connect(
+            self._advance_sensitivity_set
+        )
+        self._resume_sensitivity_set_button = QPushButton(
+            "Resume pending sensitivity cases"
+        )
+        self._resume_sensitivity_set_button.clicked.connect(
+            self._resume_sensitivity_set
+        )
+        self._sensitivity_retry_case_input = QLineEdit("")
+        self._sensitivity_retry_case_input.setPlaceholderText(
+            "Incomplete sensitivity case id to retry"
+        )
+        self._retry_sensitivity_case_button = QPushButton(
+            "Retry incomplete sensitivity case"
+        )
+        self._retry_sensitivity_case_button.clicked.connect(
+            self._retry_sensitivity_case
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -478,6 +528,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._campaign_equity_overlay_view)
         layout.addWidget(self._campaign_drawdown_overlay_view)
         layout.addWidget(self._run_campaign_button)
+        layout.addWidget(self._sensitivity_status_label)
+        layout.addWidget(self._sensitivity_curves_view)
+        layout.addWidget(self._stage_sensitivity_case_button)
+        layout.addWidget(self._plan_sensitivity_set_button)
+        layout.addWidget(self._advance_sensitivity_set_button)
+        layout.addWidget(self._resume_sensitivity_set_button)
+        layout.addWidget(self._sensitivity_retry_case_input)
+        layout.addWidget(self._retry_sensitivity_case_button)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -752,6 +810,43 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         except Exception as error:
             self._run_action_error = str(error) or "Unable to run Baseline Campaign."
         self.refresh()
+
+    def _stage_current_sensitivity_case(self) -> None:
+        try:
+            self._logic.stage_current_materialization_as_sensitivity_case()
+            self._run_action_error = ""
+        except Exception as error:
+            self._run_action_error = str(error) or "Unable to stage sensitivity case."
+        self.refresh()
+
+    def _plan_sensitivity_set_from_inputs(self) -> None:
+        try:
+            self._logic.plan_isolated_sensitivity_set(
+                initial_cash=str(self._run_initial_cash_input.text()).strip(),
+                order_shares=int(str(self._run_order_shares_input.text()).strip()),
+                sensitivity_set_replica_id=str(
+                    self._run_replica_input.text()
+                ).strip(),
+            )
+            self._run_action_error = ""
+        except Exception as error:
+            self._run_action_error = str(error) or "Unable to plan sensitivity set."
+        self.refresh()
+
+    def _advance_sensitivity_set(self) -> None:
+        self._apply_run_action(
+            lambda: self._logic.advance_isolated_sensitivity_set(max_cases=1)
+        )
+
+    def _resume_sensitivity_set(self) -> None:
+        self._apply_run_action(self._logic.resume_isolated_sensitivity_set)
+
+    def _retry_sensitivity_case(self) -> None:
+        self._apply_run_action(
+            lambda: self._logic.retry_isolated_sensitivity_case(
+                case_id=str(self._sensitivity_retry_case_input.text()).strip()
+            )
+        )
 
     def _apply_run_action(self, action: Any) -> None:
         try:
@@ -1210,6 +1305,143 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             self._campaign_drawdown_overlay_view.setPlainText(
                 "\n".join(drawdown_lines)
             )
+        staging = self._current_view.get(
+            "isolated_sensitivity_case_staging", {}
+        )
+        if not isinstance(staging, dict):
+            staging = {}
+        sensitivity = self._current_view.get("isolated_sensitivity_set", {})
+        if not isinstance(sensitivity, dict):
+            sensitivity = {}
+        sensitivity_completeness = sensitivity.get("completeness", {})
+        if not isinstance(sensitivity_completeness, dict):
+            sensitivity_completeness = {}
+        if self._sensitivity_status_label is not None:
+            completed_count = sensitivity_completeness.get(
+                "completed_count", 0
+            )
+            total_count = sensitivity_completeness.get(
+                "total_count", staging.get("case_count", 0)
+            )
+            status_text = (
+                "Isolated Sensitivity Set: "
+                f"{sensitivity.get('status', 'not_planned')} | "
+                f"{completed_count}/{total_count} complete | "
+                f"{sensitivity_completeness.get('incomplete_count', 0)} incomplete | "
+                f"{sensitivity_completeness.get('pending_count', 0)} pending | "
+                f"{staging.get('case_count', 0)} staged"
+            )
+            sensitivity_set_id = sensitivity.get("sensitivity_set_id")
+            if sensitivity_set_id:
+                status_text += f" | {sensitivity_set_id}"
+            if self._run_action_error:
+                status_text += f" | {self._run_action_error}"
+            self._sensitivity_status_label.setText(status_text)
+        if self._sensitivity_curves_view is not None:
+            curve_lines = [
+                "Family | Strategy | Parameters | Final Equity | Max Drawdown | "
+                "Case | Attempt | Campaign | Run | Recipe | Materialization"
+            ]
+            curves = sensitivity.get("sensitivity_curves", [])
+            if isinstance(curves, list):
+                for curve in curves:
+                    if not isinstance(curve, dict):
+                        continue
+                    family = str(curve.get("family", "unknown"))
+                    strategy = str(curve.get("strategy_id", "unknown"))
+                    points = curve.get("points", [])
+                    if not isinstance(points, list):
+                        continue
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        parameters = point.get("parameters", {})
+                        parameter_text = (
+                            ", ".join(
+                                f"{name}={value}"
+                                for name, value in sorted(parameters.items())
+                            )
+                            if isinstance(parameters, dict)
+                            else str(parameters)
+                        )
+                        curve_lines.append(
+                            " | ".join(
+                                (
+                                    family,
+                                    strategy,
+                                    parameter_text,
+                                    str(point.get("final_equity", "unknown")),
+                                    str(point.get("max_drawdown", "unknown")),
+                                    str(point.get("case_id", "unknown")),
+                                    str(point.get("attempt_number", "unknown")),
+                                    str(point.get("campaign_id", "unknown")),
+                                    str(point.get("run_id", "unknown")),
+                                    str(point.get("recipe_version_id", "unknown")),
+                                    str(
+                                        point.get(
+                                            "materialization_hash", "unknown"
+                                        )
+                                    ),
+                                )
+                            )
+                        )
+            if len(curve_lines) == 1:
+                curve_lines.append("No completed sensitivity case points yet")
+            curve_lines.append("")
+            curve_lines.append(
+                "Case Audit | Status | Family | Recipe | Materialization | Attempts"
+            )
+            cases = sensitivity.get("cases", [])
+            if isinstance(cases, list):
+                for case in cases:
+                    if not isinstance(case, dict):
+                        continue
+                    attempts = case.get("attempts", [])
+                    attempt_count = len(attempts) if isinstance(attempts, list) else 0
+                    curve_lines.append(
+                        " | ".join(
+                            (
+                                str(case.get("case_id", "unknown")),
+                                str(case.get("status", "unknown")),
+                                str(case.get("family", "unknown")),
+                                str(case.get("recipe_version_id", "unknown")),
+                                str(case.get("materialization_hash", "unknown")),
+                                str(attempt_count),
+                            )
+                        )
+                    )
+                    if isinstance(attempts, list):
+                        for attempt in attempts:
+                            if not isinstance(attempt, dict):
+                                continue
+                            members = attempt.get("members", [])
+                            member_summary = ", ".join(
+                                (
+                                    f"{member.get('run_id', 'unknown')}="
+                                    f"{member.get('status', 'unknown')}"
+                                )
+                                for member in members
+                                if isinstance(member, dict)
+                            ) if isinstance(members, list) else ""
+                            failure = attempt.get("failure", {})
+                            failure_message = (
+                                str(failure.get("message", ""))
+                                if isinstance(failure, dict)
+                                else ""
+                            )
+                            curve_lines.append(
+                                "  Attempt "
+                                f"{attempt.get('attempt_number', 'unknown')} | "
+                                f"{attempt.get('status', 'unknown')} | "
+                                f"campaign={attempt.get('campaign_id', 'unknown')} | "
+                                f"runs={member_summary or 'none'}"
+                                + (
+                                    f" | failure={failure_message}"
+                                    if failure_message
+                                    else ""
+                                )
+                            )
+            self._sensitivity_curves_view.setPlainText("\n".join(curve_lines))
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):
             comparison = {}

@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
-from typing import Any, Callable, Final, Literal, Protocol, cast
+from typing import Any, Callable, Final, Literal, Mapping, Protocol, cast
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
@@ -53,7 +53,10 @@ from .ptrade_host import (
     REFERENCE_PTRADE_STRATEGY_VERSION,
     ptrade_manifest_for,
 )
-from .transformations import SCENARIO_TRANSFORMATION_CATALOG_VERSION
+from .transformations import (
+    SCENARIO_TRANSFORMATION_CATALOG_VERSION,
+    create_initial_transformation_catalog,
+)
 
 
 STRATEGY_RUN_ENGINE_VERSION: Final = "anchored-strategy-run.v1"
@@ -216,6 +219,94 @@ class StrategyRunSpecification:
                 self.resolved_execution_conditions.to_dict()
             )
         return payload
+
+    @classmethod
+    def from_pinned_dict(
+        cls,
+        payload: Mapping[str, object],
+    ) -> "StrategyRunSpecification":
+        """Restore a formal pinned specification and reject schema drift."""
+
+        required_keys = {
+            "recipe_version_id",
+            "recipe_content_hash",
+            "materialization_hash",
+            "source_snapshot_id",
+            "materialization_seed",
+            "transformation_catalog_version",
+            "transformation_implementation_versions",
+            "market_rule_profile_version",
+            "execution_policy_version",
+            "strategy_id",
+            "strategy_version",
+            "decision_cadence_minutes",
+            "initial_cash",
+            "order_shares",
+            "replica_id",
+            "code_identity",
+            "ptrade_surface_version",
+            "ptrade_manifest_hash",
+            "ptrade_host_adapter_version",
+            "commission_bps",
+            "minimum_commission",
+            "transfer_fee_bps",
+            "sell_stamp_duty_bps",
+            "execution_conditions",
+            "engine_version",
+        }
+        actual_keys = set(payload)
+        if actual_keys != required_keys:
+            raise ValueError(
+                "Pinned Strategy Run specification schema mismatch; "
+                f"missing={sorted(required_keys - actual_keys)}, "
+                f"unexpected={sorted(actual_keys - required_keys)}"
+            )
+        implementations = payload["transformation_implementation_versions"]
+        execution_conditions = payload["execution_conditions"]
+        if not isinstance(implementations, list) or not isinstance(
+            execution_conditions,
+            Mapping,
+        ):
+            raise ValueError("Pinned Strategy Run specification values are malformed")
+        return cls(
+            recipe_version_id=str(payload["recipe_version_id"]),
+            recipe_content_hash=str(payload["recipe_content_hash"]),
+            materialization_hash=str(payload["materialization_hash"]),
+            source_snapshot_id=str(payload["source_snapshot_id"]),
+            materialization_seed=int(str(payload["materialization_seed"])),
+            transformation_catalog_version=str(
+                payload["transformation_catalog_version"]
+            ),
+            transformation_implementation_versions=tuple(
+                str(item) for item in implementations
+            ),
+            market_rule_profile_version=str(
+                payload["market_rule_profile_version"]
+            ),
+            execution_policy_version=str(payload["execution_policy_version"]),
+            strategy_id=str(payload["strategy_id"]),
+            strategy_version=str(payload["strategy_version"]),
+            decision_cadence_minutes=int(
+                str(payload["decision_cadence_minutes"])
+            ),
+            initial_cash=Decimal(str(payload["initial_cash"])),
+            order_shares=int(str(payload["order_shares"])),
+            replica_id=str(payload["replica_id"]),
+            code_identity=str(payload["code_identity"]),
+            ptrade_surface_version=str(payload["ptrade_surface_version"]),
+            ptrade_manifest_hash=str(payload["ptrade_manifest_hash"]),
+            ptrade_host_adapter_version=str(
+                payload["ptrade_host_adapter_version"]
+            ),
+            commission_bps=Decimal(str(payload["commission_bps"])),
+            minimum_commission=Decimal(str(payload["minimum_commission"])),
+            transfer_fee_bps=Decimal(str(payload["transfer_fee_bps"])),
+            sell_stamp_duty_bps=Decimal(str(payload["sell_stamp_duty_bps"])),
+            resolved_execution_conditions=ResolvedExecutionConditions.from_dict(
+                cast(Mapping[str, object], execution_conditions)
+            ),
+            engine_version=str(payload["engine_version"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,22 +848,40 @@ class StrategyRunEngine:
                 "transformation"
             )
         if any(
-            item.family != "execution-stress"
-            or item.transformation_id != EXECUTION_STRESS_TRANSFORMATION_ID
-            or item.implementation_version
-            != EXECUTION_STRESS_IMPLEMENTATION_VERSION
-            or item.catalog_version != path.transformation_catalog_version
+            item.catalog_version != path.transformation_catalog_version
             for item in path.applied_transformations
         ):
             raise ValueError(
-                "This anchored Strategy Run supports only execution-stress "
-                "transformations"
+                "Strategy Run transformations must belong to the materialized catalog"
+            )
+        if any(
+            item.transformation_id != EXECUTION_STRESS_TRANSFORMATION_ID
+            or item.implementation_version
+            != EXECUTION_STRESS_IMPLEMENTATION_VERSION
+            for item in execution_transformations
+        ):
+            raise ValueError(
+                "This anchored Strategy Run supports only execution-stress.v1 "
+                "for the execution-stress family"
             )
         if (
             path.transformation_catalog_version
             != SCENARIO_TRANSFORMATION_CATALOG_VERSION
         ):
             raise ValueError("Unsupported Scenario Transformation Catalog version")
+        transformation_catalog = create_initial_transformation_catalog()
+        for transformation in path.applied_transformations:
+            entry = transformation_catalog.get_entry(
+                transformation.transformation_id
+            )
+            if (
+                transformation.family != entry.family
+                or transformation.implementation_version
+                != entry.implementation_version
+            ):
+                raise ValueError(
+                    "Strategy Run transformation does not match the registered catalog"
+                )
         expected_path_identity = (
             path.artifact_hash,
             path.source_snapshot_id,

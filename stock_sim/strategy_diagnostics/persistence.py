@@ -36,7 +36,8 @@ _AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
 _STRATEGY_RUN_REVISION: Final = "0005_strategy_runs"
 _A_SHARE_EXECUTION_REVISION: Final = "0006_a_share_execution_audit"
 _EXECUTION_STRESS_REVISION: Final = "0007_execution_stress_audit"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0008_ptrade_host_audit"
+_PTRADE_HOST_AUDIT_REVISION: Final = "0008_ptrade_host_audit"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0009_isolated_sensitivity_sets"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -46,6 +47,7 @@ _MIGRATION_REVISIONS: Final = (
     _STRATEGY_RUN_REVISION,
     _A_SHARE_EXECUTION_REVISION,
     _EXECUTION_STRESS_REVISION,
+    _PTRADE_HOST_AUDIT_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -87,8 +89,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _add_a_share_execution_audit(connection)
             elif revision == _EXECUTION_STRESS_REVISION:
                 _add_execution_stress_audit(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _PTRADE_HOST_AUDIT_REVISION:
                 _add_ptrade_host_audit(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_isolated_sensitivity_sets(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -210,6 +214,18 @@ def _create_ai_recipe_assistant_audit(connection: Connection) -> None:
         "error_code VARCHAR(128) NULL, "
         "error_message TEXT NULL, "
         "FOREIGN KEY(draft_id) REFERENCES diagnostic_recipe_drafts(draft_id)"
+        ")"
+    )
+
+
+def _create_isolated_sensitivity_sets(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_isolated_sensitivity_sets ("
+        "sensitivity_set_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "status VARCHAR(32) NOT NULL, "
+        "specification_json TEXT NOT NULL, "
+        "snapshot_json TEXT NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL"
         ")"
     )
 

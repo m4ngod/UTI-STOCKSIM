@@ -683,6 +683,62 @@ def test_diagnostics_panel_runs_a_comparable_two_strategy_baseline_campaign() ->
     assert view == campaign
 
 
+def test_application_anchors_and_runs_an_approved_single_family_sensitivity_case() -> None:
+    application = _admittable_application()
+    panel = DiagnosticsPanel(application)  # type: ignore[arg-type]
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    panel.create_trend_regime_recipe(
+        name="Sensitivity trend level",
+        segment_id=str(admitted["segment"]["segment_id"]),
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        direction="bullish",
+        strength="0.25",
+        commission_bps="3",
+        slippage_bps="5",
+    )
+    panel.validate_current_recipe()
+    approved = panel.approve_current_recipe(actor="owner")
+    materialized = panel.materialize_current_recipe()
+    staged = panel.stage_current_materialization_as_sensitivity_case()
+
+    case = getattr(application, "create_isolated_sensitivity_case")(
+        str(approved["version_id"]),
+        str(materialized["artifact_hash"]),
+    )
+    campaign = getattr(application, "run_baseline_campaign")(
+        str(approved["version_id"]),
+        str(materialized["artifact_hash"]),
+        initial_cash=Decimal("100000"),
+        order_shares=1000,
+        campaign_replica_id="sensitivity-trend-attempt-1",
+    )
+
+    assert case.transformation_family == "trend-regime"
+    assert case.transformation_parameters == (
+        ("direction", "bullish"),
+        ("strength", "0.25"),
+    )
+    assert case.recipe_version_id == approved["version_id"]
+    assert case.materialization_hash == materialized["artifact_hash"]
+    assert staged["case_id"] == case.case_id
+    assert panel.get_view()["isolated_sensitivity_case_staging"][
+        "case_count"
+    ] == 1
+    assert all(member.snapshot is not None for member in campaign.members), [
+        (member.failure_code, member.failure_message) for member in campaign.members
+    ]
+    assert campaign.status == "completed", campaign.to_dict()
+    assert {
+        member.specification.materialization_hash for member in campaign.members
+    } == {materialized["artifact_hash"]}
+
+
 def test_diagnostics_workspace_previews_baseline_versus_trend_regime() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -1195,6 +1251,64 @@ def test_diagnostics_adapter_runs_and_renders_a_two_strategy_campaign() -> None:
     assert LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID in equity_text
     assert "Simulation Time | Strategy | Equity" in equity_text
     assert "Simulation Time | Strategy | Drawdown" in drawdown_text
+
+
+def test_diagnostics_adapter_renders_traceable_sensitivity_curves() -> None:
+    _ensure_qapp()
+    adapter = DiagnosticsPanelAdapter()
+    adapter.widget()
+    adapter._apply_view(
+        {
+            "isolated_sensitivity_case_staging": {
+                "case_count": 12,
+                "cases": [],
+            },
+            "isolated_sensitivity_set": {
+                "sensitivity_set_id": "isolated-sensitivity-fixture",
+                "status": "partial",
+                "completeness": {
+                    "completed_count": 1,
+                    "incomplete_count": 0,
+                    "pending_count": 11,
+                    "total_count": 12,
+                },
+                "sensitivity_curves": [
+                    {
+                        "family": "trend-regime",
+                        "strategy_id": "quentx-5.2.3-scenario-native",
+                        "strategy_version": "quentx-5.2.3-scenario-native.v1",
+                        "points": [
+                            {
+                                "case_id": "sensitivity-case-fixture",
+                                "attempt_number": 1,
+                                "campaign_id": "baseline-campaign-fixture",
+                                "run_id": "strategy-run-fixture",
+                                "recipe_version_id": "recipe-version-fixture",
+                                "materialization_hash": "path-hash-fixture",
+                                "parameters": {
+                                    "direction": "bullish",
+                                    "strength": "0.25",
+                                },
+                                "final_equity": "100100",
+                                "max_drawdown": "0.01",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+
+    assert "partial" in adapter._sensitivity_status_label.text()
+    assert "1/12 complete" in adapter._sensitivity_status_label.text()
+    curve_text = adapter._sensitivity_curves_view.toPlainText()
+    assert "trend-regime" in curve_text
+    assert "sensitivity-case-fixture" in curve_text
+    assert "baseline-campaign-fixture" in curve_text
+    assert "strategy-run-fixture" in curve_text
+    assert "recipe-version-fixture" in curve_text
+    assert "path-hash-fixture" in curve_text
+    assert "strength=0.25" in curve_text
 
 
 def test_diagnostics_adapter_explains_campaign_policy_before_launch() -> None:

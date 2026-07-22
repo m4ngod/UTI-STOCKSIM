@@ -165,7 +165,11 @@ class BaselineCampaignSpecification:
 
 
 class _StrategyRunExecutor(Protocol):
+    def get(self, run_id: str) -> StrategyRunSnapshot: ...
+
     def start(self, specification: StrategyRunSpecification) -> StrategyRunSnapshot: ...
+
+    def resume(self, run_id: str) -> StrategyRunSnapshot: ...
 
     def run_to_completion(
         self,
@@ -373,10 +377,25 @@ class BaselineCampaignRunner:
         members: list[CampaignMemberResult] = []
         for run_specification in specification.strategy_runs:
             try:
-                started = self._strategy_runs.start(run_specification)
-                completed = self._strategy_runs.run_to_completion(
-                    started.run_id,
-                    nodes_per_batch=nodes_per_batch,
+                try:
+                    current = self._strategy_runs.get(
+                        run_specification.run_id
+                    )
+                except (KeyError, ValueError):
+                    current = self._strategy_runs.start(run_specification)
+                if current.specification != run_specification:
+                    raise ValueError(
+                        "Existing Strategy Run does not belong to its campaign replica"
+                    )
+                if current.status == "paused":
+                    current = self._strategy_runs.resume(current.run_id)
+                completed = (
+                    current
+                    if current.status in ("completed", "failed", "cancelled")
+                    else self._strategy_runs.run_to_completion(
+                        current.run_id,
+                        nodes_per_batch=nodes_per_batch,
+                    )
                 )
                 if completed.specification != run_specification:
                     raise ValueError(

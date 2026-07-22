@@ -21,6 +21,13 @@ class _StrategyRunSnapshot(Protocol):
     def to_dict(self) -> dict[str, object]: ...
 
 
+class _SensitivityCampaignCase(Protocol):
+    @property
+    def case_id(self) -> str: ...
+
+    def to_dict(self) -> dict[str, object]: ...
+
+
 class DiagnosticsApplicationPort(Protocol):
     def start(self) -> _DiagnosticsState: ...
 
@@ -100,6 +107,45 @@ class DiagnosticsApplicationPort(Protocol):
         nodes_per_batch: int = 10_000,
     ) -> _StrategyRunSnapshot: ...
 
+    def create_isolated_sensitivity_case(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+    ) -> _SensitivityCampaignCase: ...
+
+    def plan_isolated_sensitivity_set(
+        self,
+        case_anchors: tuple[tuple[str, str], ...],
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        sensitivity_set_replica_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def advance_isolated_sensitivity_set(
+        self,
+        sensitivity_set_id: str,
+        *,
+        max_cases: int = 1,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
+    def resume_isolated_sensitivity_set(
+        self,
+        sensitivity_set_id: str,
+        *,
+        max_cases: int | None = None,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
+    def retry_isolated_sensitivity_case(
+        self,
+        sensitivity_set_id: str,
+        case_id: str,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
     def strategy_run_status(self, run_id: str) -> _StrategyRunSnapshot: ...
 
     def advance_strategy_run(
@@ -152,6 +198,15 @@ class DiagnosticsPanel:
                 "Materialize an approved anchored recipe to compare both strategies."
             ),
         }
+        self._sensitivity_case_anchors: list[tuple[str, str]] = []
+        self._sensitivity_case_views: list[dict[str, object]] = []
+        self._isolated_sensitivity_set: dict[str, object] = {
+            "status": "not_planned",
+            "message": (
+                "Stage approved single-family materializations before planning."
+            ),
+            "sensitivity_curves": [],
+        }
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
@@ -168,6 +223,13 @@ class DiagnosticsPanel:
         )
         view["baseline_strategy_run"] = dict(self._baseline_strategy_run)
         view["baseline_campaign"] = dict(self._baseline_campaign)
+        view["isolated_sensitivity_case_staging"] = {
+            "case_count": len(self._sensitivity_case_views),
+            "cases": [dict(case) for case in self._sensitivity_case_views],
+        }
+        view["isolated_sensitivity_set"] = dict(
+            self._isolated_sensitivity_set
+        )
         return view
 
     def admit_historical_segment(
@@ -630,6 +692,88 @@ class DiagnosticsPanel:
         self._baseline_campaign = snapshot.to_dict()
         return dict(self._baseline_campaign)
 
+    def stage_current_materialization_as_sensitivity_case(
+        self,
+    ) -> dict[str, object]:
+        materialization = self._recipe_workbench.get("materialization")
+        if not isinstance(materialization, dict):
+            raise ValueError(
+                "Materialize an approved single-family recipe before staging a case"
+            )
+        case = self._application.create_isolated_sensitivity_case(
+            str(materialization["recipe_version_id"]),
+            str(materialization["artifact_hash"]),
+        )
+        if any(
+            str(existing.get("case_id")) == case.case_id
+            for existing in self._sensitivity_case_views
+        ):
+            raise ValueError("This Sensitivity Campaign Case is already staged")
+        case_view = case.to_dict()
+        case_view["case_id"] = case.case_id
+        self._sensitivity_case_anchors.append(
+            (
+                str(materialization["recipe_version_id"]),
+                str(materialization["artifact_hash"]),
+            )
+        )
+        self._sensitivity_case_views.append(case_view)
+        return dict(case_view)
+
+    def plan_isolated_sensitivity_set(
+        self,
+        *,
+        initial_cash: str,
+        order_shares: int,
+        sensitivity_set_replica_id: str,
+    ) -> dict[str, object]:
+        snapshot = self._application.plan_isolated_sensitivity_set(
+            tuple(self._sensitivity_case_anchors),
+            initial_cash=Decimal(initial_cash),
+            order_shares=order_shares,
+            sensitivity_set_replica_id=sensitivity_set_replica_id,
+        )
+        return self._record_isolated_sensitivity_set(snapshot)
+
+    def advance_isolated_sensitivity_set(
+        self,
+        *,
+        max_cases: int = 1,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.advance_isolated_sensitivity_set(
+            self._sensitivity_set_id(),
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_isolated_sensitivity_set(snapshot)
+
+    def resume_isolated_sensitivity_set(
+        self,
+        *,
+        max_cases: int | None = None,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.resume_isolated_sensitivity_set(
+            self._sensitivity_set_id(),
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_isolated_sensitivity_set(snapshot)
+
+    def retry_isolated_sensitivity_case(
+        self,
+        *,
+        case_id: str,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.retry_isolated_sensitivity_case(
+            self._sensitivity_set_id(),
+            case_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_isolated_sensitivity_set(snapshot)
+
     def advance_baseline_run(self, *, node_count: int = 1) -> dict[str, object]:
         snapshot = self._application.advance_strategy_run(
             self._baseline_run_id(),
@@ -672,6 +816,21 @@ class DiagnosticsPanel:
     ) -> dict[str, object]:
         self._baseline_strategy_run = snapshot.to_dict()
         return dict(self._baseline_strategy_run)
+
+    def _sensitivity_set_id(self) -> str:
+        sensitivity_set_id = self._isolated_sensitivity_set.get(
+            "sensitivity_set_id"
+        )
+        if not isinstance(sensitivity_set_id, str):
+            raise ValueError("No Isolated Sensitivity Set has been planned")
+        return sensitivity_set_id
+
+    def _record_isolated_sensitivity_set(
+        self,
+        snapshot: _StrategyRunSnapshot,
+    ) -> dict[str, object]:
+        self._isolated_sensitivity_set = snapshot.to_dict()
+        return dict(self._isolated_sensitivity_set)
 
     def _require_workbench_item(self, key: str) -> dict[str, object]:
         item = self._recipe_workbench.get(key)

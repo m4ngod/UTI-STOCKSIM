@@ -141,13 +141,26 @@ def _snapshot(
 
 
 class _RecordingEngine:
-    def __init__(self, snapshots: tuple[StrategyRunSnapshot, ...]) -> None:
+    def __init__(
+        self,
+        snapshots: tuple[StrategyRunSnapshot, ...],
+        *,
+        existing: tuple[StrategyRunSnapshot, ...] = (),
+    ) -> None:
         self._snapshots = {item.run_id: item for item in snapshots}
+        self._states = {item.run_id: item for item in existing}
         self.calls: list[tuple[str, str]] = []
+
+    def get(self, run_id: str) -> StrategyRunSnapshot:
+        self.calls.append(("get", run_id))
+        try:
+            return self._states[run_id]
+        except KeyError as error:
+            raise KeyError(f"Unknown Strategy Run {run_id!r}") from error
 
     def start(self, specification: StrategyRunSpecification) -> StrategyRunSnapshot:
         self.calls.append(("start", specification.run_id))
-        return replace(
+        started = replace(
             self._snapshots[specification.run_id],
             status="running",
             processed_node_count=0,
@@ -157,6 +170,14 @@ class _RecordingEngine:
             failure_message=None,
             run_artifact_hash=None,
         )
+        self._states[specification.run_id] = started
+        return started
+
+    def resume(self, run_id: str) -> StrategyRunSnapshot:
+        self.calls.append(("resume", run_id))
+        resumed = replace(self._states[run_id], status="running")
+        self._states[run_id] = resumed
+        return resumed
 
     def run_to_completion(
         self,
@@ -166,7 +187,9 @@ class _RecordingEngine:
     ) -> StrategyRunSnapshot:
         assert nodes_per_batch > 0
         self.calls.append(("complete", run_id))
-        return self._snapshots[run_id]
+        completed = self._snapshots[run_id]
+        self._states[run_id] = completed
+        return completed
 
 
 def test_campaign_runs_two_isolated_replicas_sequentially_and_overlays_curves() -> None:
@@ -195,8 +218,10 @@ def test_campaign_runs_two_isolated_replicas_sequentially_and_overlays_curves() 
     view = campaign.to_dict()
 
     assert engine.calls == [
+        ("get", first.run_id),
         ("start", first.run_id),
         ("complete", first.run_id),
+        ("get", second.run_id),
         ("start", second.run_id),
         ("complete", second.run_id),
     ]
@@ -274,13 +299,39 @@ def test_campaign_contains_one_strategy_failure_and_still_runs_the_other_replica
         "is_complete": False,
     }
     assert [call[0] for call in engine.calls] == [
+        "get",
         "start",
         "complete",
+        "get",
         "start",
         "complete",
     ]
     assert view["members"][0]["failure"]["message"] == "strategy callback failed"
     assert view["members"][1]["status"] == "completed"
+
+
+def test_campaign_resumes_existing_runs_after_a_mid_case_restart() -> None:
+    specification = _campaign_specification()
+    first = _snapshot(specification.strategy_runs[0])
+    second_completed = _snapshot(specification.strategy_runs[1])
+    second_running = replace(
+        second_completed,
+        status="running",
+        run_artifact_hash=None,
+    )
+    engine = _RecordingEngine(
+        (first, second_completed),
+        existing=(first, second_running),
+    )
+
+    campaign = BaselineCampaignRunner(engine).run(specification)
+
+    assert campaign.status == "completed"
+    assert engine.calls == [
+        ("get", first.run_id),
+        ("get", second_running.run_id),
+        ("complete", second_running.run_id),
+    ]
 
 
 def test_campaign_does_not_claim_isolation_without_member_host_audits() -> None:

@@ -94,7 +94,7 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
         "persistence_status": "not_initialized",
         "product": "Strategy Diagnostics Laboratory",
         "status": "ready",
-        "supported_persistence_revision": "0008_ptrade_host_audit",
+        "supported_persistence_revision": "0009_isolated_sensitivity_sets",
         "workspace": "Diagnostics",
     }
 
