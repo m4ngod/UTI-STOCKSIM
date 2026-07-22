@@ -439,17 +439,11 @@ def _apply_volatility_scaling(
         world.bars,
         key=lambda item: (item.end_time, item.instrument),
     ):
-        state = _state_at(world.instrument_states, bar.instrument, bar.end_time)
-        reference = _price_limit_reference_at(
-            world.price_limit_references,
+        reference = _validated_price_limit_reference_at(
+            world,
             bar.instrument,
             bar.end_time,
         )
-        if reference.is_st is not state.is_st:
-            raise ValueError(
-                "Point-in-time price-limit rule and Instrument State disagree "
-                f"for {bar.instrument!r}"
-            )
         lower_bound: Decimal | None = None
         upper_bound: Decimal | None = None
         if reference.limit_fraction is not None:
@@ -529,20 +523,13 @@ def _price_limit_safe_factor(
     *,
     bullish: bool,
 ) -> Decimal:
-    states = tuple(world.instrument_states)
     safe_factors: list[Decimal] = []
     for bar in bars:
-        state = _state_at(states, bar.instrument, bar.end_time)
-        reference = _price_limit_reference_at(
-            world.price_limit_references,
+        reference = _validated_price_limit_reference_at(
+            world,
             bar.instrument,
             bar.end_time,
         )
-        if reference.is_st is not state.is_st:
-            raise ValueError(
-                "Point-in-time price-limit rule and Instrument State disagree "
-                f"for {bar.instrument!r}"
-            )
         if reference.limit_fraction is None:
             continue
         safe_factors.append(
@@ -586,6 +573,29 @@ def _price_limit_reference_at(
             f"on {at_time.date().isoformat()}"
         )
     return max(candidates, key=lambda reference: reference.effective_at)
+
+
+def _validated_price_limit_reference_at(
+    world: ScenarioDataWorldInput,
+    instrument: str,
+    at_time: datetime,
+) -> SessionPriceLimitReference:
+    state = _state_at(
+        world.instrument_states,
+        instrument,
+        at_time,
+    )
+    reference = _price_limit_reference_at(
+        world.price_limit_references,
+        instrument,
+        at_time,
+    )
+    if reference.is_st is not state.is_st:
+        raise ValueError(
+            "Point-in-time price-limit rule and Instrument State disagree "
+            f"for {instrument!r}"
+        )
+    return reference
 
 
 def _daily_price_limit_bound(

@@ -681,6 +681,9 @@ def test_trend_regime_transform_is_deterministic_and_preserves_path_invariants()
             if node.instrument == "sz.000001"
             else Decimal("0.10")
         )
+        previous_close = previous_closes[node.instrument]
+        assert node.low >= previous_close * (Decimal("1") - price_limit)
+        assert node.high <= previous_close * (Decimal("1") + price_limit)
 
 
 class _AdmittedCrossSectionFixtureSource(_AdmittedFixtureSource):
@@ -701,9 +704,6 @@ class _AdmittedCrossSectionFixtureSource(_AdmittedFixtureSource):
             segment_content_hash=segment.content_hash,
             source_snapshot_id=segment.source_snapshot_id,
         )
-        previous_close = previous_closes[node.instrument]
-        assert node.low >= previous_close * (Decimal("1") - price_limit)
-        assert node.high <= previous_close * (Decimal("1") + price_limit)
 
 
 def test_volatility_scaling_is_deterministic_and_preserves_path_invariants() -> None:
