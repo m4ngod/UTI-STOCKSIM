@@ -133,6 +133,12 @@ def _world() -> ScenarioDataWorldInput:
                 previous_close=Decimal("10.00"),
                 effective_at=datetime(2024, 1, 2, 9, 30),
                 provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board="sh-main",
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code="fixture.sh-main.ordinary.10pct",
             ),
         ),
     )
@@ -270,6 +276,12 @@ def _cross_section_world() -> ScenarioDataWorldInput:
                 previous_close=Decimal("10.00"),
                 effective_at=datetime(2024, 1, 2, 9, 30),
                 provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board="sh-main",
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code="fixture.sh-main.ordinary.10pct",
             ),
             SessionPriceLimitReference(
                 instrument="sz.000001",
@@ -277,6 +289,12 @@ def _cross_section_world() -> ScenarioDataWorldInput:
                 previous_close=Decimal("20.00"),
                 effective_at=datetime(2024, 1, 2, 9, 30),
                 provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board="sz-main",
+                is_st=True,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.05"),
+                rule_code="fixture.sz-main.risk-warning.5pct",
             ),
         ),
     )
@@ -613,6 +631,7 @@ def test_trend_regime_transform_is_deterministic_and_preserves_path_invariants()
     assert first.transformation_catalog_version == (
         "scenario-transformation-catalog.v1"
     )
+    assert first.market_rule_profile_version == "a-share-cash-equity.v1"
     assert [item.to_dict() for item in first.applied_transformations] == [
         {
             "transformation_id": "trend-regime.v1",
@@ -718,6 +737,12 @@ def test_trend_regime_uses_previous_close_for_gap_day_price_limits(
                 previous_close=Decimal("10.00"),
                 effective_at=datetime(2024, 1, 2, 9, 30),
                 provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board="sh-main",
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code="fixture.sh-main.ordinary.10pct",
             ),
         ),
     )
@@ -751,6 +776,72 @@ def test_trend_regime_fails_closed_without_previous_close_reference() -> None:
     )
 
     with pytest.raises(ValueError, match="previous-close reference"):
+        materializer.materialize(
+            _segment(),
+            transformations=(
+                ScenarioTransformationRequestV1(
+                    transformation_id="trend-regime.v1",
+                    parameters={"direction": "bullish", "strength": "1"},
+                ),
+            ),
+            seed=17,
+        )
+
+
+def test_trend_regime_does_not_invent_limits_for_initial_unbounded_session() -> None:
+    source_bar = FiveMinuteBar(
+        instrument="sh.600000",
+        end_time=datetime(2024, 1, 2, 15, 0),
+        open=Decimal("10.80"),
+        high=Decimal("10.99"),
+        low=Decimal("10.70"),
+        close=Decimal("10.98"),
+        volume=100,
+        amount=Decimal("1090"),
+    )
+    reference = replace(
+        _world().price_limit_references[0],
+        listing_stage="initial-unbounded",
+        limit_fraction=None,
+        rule_code="fixture.sh-main.ipo-initial-unbounded.v1",
+    )
+    world = replace(
+        _world(),
+        bars=(source_bar,),
+        price_limit_references=(reference,),
+    )
+
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((world,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(
+            ScenarioTransformationRequestV1(
+                transformation_id="trend-regime.v1",
+                parameters={"direction": "bullish", "strength": "1"},
+            ),
+        ),
+        seed=17,
+    )
+
+    assert max(node.high for node in materialized.nodes) > Decimal("11.00")
+
+
+def test_trend_regime_fails_closed_when_rule_and_st_state_disagree() -> None:
+    reference = replace(
+        _world().price_limit_references[0],
+        is_st=True,
+        limit_fraction=Decimal("0.05"),
+        rule_code="fixture.sh-main.risk-warning.5pct",
+    )
+    world = replace(_world(), price_limit_references=(reference,))
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((world,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="disagree"):
         materializer.materialize(
             _segment(),
             transformations=(

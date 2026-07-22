@@ -14,6 +14,11 @@ import tempfile
 from typing import Iterable, Mapping, Protocol
 
 from .historical_segments import HistoricalMarketSegment
+from .market_rules import (
+    A_SHARE_MARKET_RULE_PROFILE_VERSION,
+    AShareBoard,
+    ListingStage,
+)
 from .transformations import (
     AppliedTransformation,
     ScenarioTransformationCatalog,
@@ -155,6 +160,12 @@ class SessionPriceLimitReference:
     previous_close: Decimal
     effective_at: datetime
     provenance: str
+    profile_version: str
+    board: AShareBoard
+    is_st: bool
+    listing_stage: ListingStage
+    limit_fraction: Decimal | None
+    rule_code: str
 
     def __post_init__(self) -> None:
         if not self.instrument.strip():
@@ -169,6 +180,17 @@ class SessionPriceLimitReference:
             )
         if not self.provenance.strip():
             raise ValueError("price-limit reference provenance must not be empty")
+        if self.profile_version != A_SHARE_MARKET_RULE_PROFILE_VERSION:
+            raise ValueError("unsupported Market Rule Profile version")
+        if self.listing_stage not in {"continuous", "initial-unbounded"}:
+            raise ValueError("unsupported listing stage")
+        if self.listing_stage == "initial-unbounded":
+            if self.limit_fraction is not None:
+                raise ValueError("unbounded sessions must not declare a limit fraction")
+        elif self.limit_fraction is None or not Decimal("0") < self.limit_fraction <= 1:
+            raise ValueError("continuous sessions require a valid limit fraction")
+        if not self.rule_code.strip():
+            raise ValueError("price-limit rule_code must not be empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +278,7 @@ class MaterializedMarketPath:
     reconstructed: bool
     numeric_tolerance: str
     normalization_provenance: str
+    market_rule_profile_version: str
     transformation_catalog_version: str
     applied_transformations: tuple[AppliedTransformation, ...]
     nodes: tuple[MarketPathNode, ...]
@@ -273,6 +296,7 @@ class MaterializedMarketPath:
             "reconstructed": self.reconstructed,
             "numeric_tolerance": self.numeric_tolerance,
             "normalization_provenance": self.normalization_provenance,
+            "market_rule_profile_version": self.market_rule_profile_version,
             "transformation_catalog_version": self.transformation_catalog_version,
             "applied_transformations": [
                 transformation.to_dict()
@@ -375,6 +399,9 @@ class ParquetMarketPathArtifactStore:
             reconstructed=bool(manifest["reconstructed"]),
             numeric_tolerance=str(manifest["numeric_tolerance"]),
             normalization_provenance=str(manifest["normalization_provenance"]),
+            market_rule_profile_version=str(
+                manifest["market_rule_profile_version"]
+            ),
             transformation_catalog_version=str(
                 manifest["transformation_catalog_version"]
             ),
@@ -977,6 +1004,7 @@ def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
         "reconstructed": path.reconstructed,
         "numeric_tolerance": path.numeric_tolerance,
         "normalization_provenance": path.normalization_provenance,
+        "market_rule_profile_version": path.market_rule_profile_version,
         "transformation_catalog_version": path.transformation_catalog_version,
         "applied_transformations": [
             transformation.to_dict()
@@ -1003,6 +1031,7 @@ def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
         "reconstructed": path.reconstructed,
         "numeric_tolerance": path.numeric_tolerance,
         "normalization_provenance": path.normalization_provenance,
+        "market_rule_profile_version": path.market_rule_profile_version,
         "transformation_catalog_version": path.transformation_catalog_version,
         "applied_transformations": [
             transformation.to_dict()
@@ -1096,6 +1125,7 @@ class ScenarioMaterializer:
             reconstructed=True,
             numeric_tolerance=str(_PRICE_TOLERANCE),
             normalization_provenance=world.normalization_provenance,
+            market_rule_profile_version=A_SHARE_MARKET_RULE_PROFILE_VERSION,
             transformation_catalog_version=(
                 self._transformation_catalog.catalog_version
             ),

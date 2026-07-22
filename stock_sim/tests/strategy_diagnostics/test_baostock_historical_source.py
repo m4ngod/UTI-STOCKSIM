@@ -302,7 +302,7 @@ def test_local_baostock_interval_passes_real_point_in_time_checks(tmp_path: Path
     assert "instrument-catalog" in {
         artifact.name for artifact in report.source_snapshot.artifacts
     }
-    assert "trading-calendar-selection" in {
+    assert "trading-calendar-causal-history" in {
         artifact.name for artifact in report.source_snapshot.artifacts
     }
     assert "baostock" not in report.segment.to_dict()
@@ -548,6 +548,34 @@ def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
     } == {
         ("sh.600000", Decimal("20"), "baostock-daily-unadjusted-preclose-v1"),
         ("sz.000001", Decimal("20"), "baostock-daily-unadjusted-preclose-v1"),
+    }
+    assert {
+        (
+            reference.instrument,
+            reference.board,
+            reference.is_st,
+            reference.listing_stage,
+            reference.limit_fraction,
+            reference.profile_version,
+        )
+        for reference in world.price_limit_references
+    } == {
+        (
+            "sh.600000",
+            "sh-main",
+            False,
+            "continuous",
+            Decimal("0.10"),
+            "a-share-cash-equity.v1",
+        ),
+        (
+            "sz.000001",
+            "sz-main",
+            False,
+            "continuous",
+            Decimal("0.10"),
+            "a-share-cash-equity.v1",
+        ),
     }
 
     recipe_version_id = _approve_baseline_recipe(

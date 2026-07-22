@@ -128,6 +128,12 @@ class _WorkspaceSource:
                     previous_close=Decimal("10"),
                     effective_at=datetime(2024, 1, 2, 9, 30),
                     provenance="fixture-preclose-v1",
+                    profile_version="a-share-cash-equity.v1",
+                    board="sh-main",
+                    is_st=False,
+                    listing_stage="continuous",
+                    limit_fraction=Decimal("0.10"),
+                    rule_code="fixture.sh-main.ordinary.10pct",
                 ),
             ),
         )

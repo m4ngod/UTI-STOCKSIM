@@ -442,48 +442,49 @@ def _price_limit_safe_factor(
     bullish: bool,
 ) -> Decimal:
     states = tuple(world.instrument_states)
-    if bullish:
-        safe_factors = []
-        for bar in bars:
-            state = _state_at(states, bar.instrument, bar.end_time)
-            previous_close = _previous_close_at(
-                world.price_limit_references,
-                bar.instrument,
-                bar.end_time,
-            )
-            safe_factors.append(
-                _daily_price_limit_bound(
-                    previous_close,
-                    _price_limit(state.is_st, bar.instrument),
-                    bullish=True,
-                )
-                / bar.high
-            )
-        return max(Decimal("1"), min(desired_factor, *safe_factors))
-    safe_factors = []
+    safe_factors: list[Decimal] = []
     for bar in bars:
         state = _state_at(states, bar.instrument, bar.end_time)
-        previous_close = _previous_close_at(
+        reference = _price_limit_reference_at(
             world.price_limit_references,
             bar.instrument,
             bar.end_time,
         )
+        if reference.is_st is not state.is_st:
+            raise ValueError(
+                "Point-in-time price-limit rule and Instrument State disagree "
+                f"for {bar.instrument!r}"
+            )
+        if reference.limit_fraction is None:
+            continue
         safe_factors.append(
             _daily_price_limit_bound(
-                previous_close,
-                _price_limit(state.is_st, bar.instrument),
-                bullish=False,
+                reference.previous_close,
+                reference.limit_fraction,
+                bullish=bullish,
             )
-            / bar.low
+            / (bar.high if bullish else bar.low)
+        )
+    if not safe_factors:
+        return desired_factor
+    if bullish:
+        if min(safe_factors) < Decimal("1"):
+            raise ValueError(
+                "Admitted source data already exceeds its point-in-time upper price limit"
+            )
+        return max(Decimal("1"), min(desired_factor, *safe_factors))
+    if max(safe_factors) > Decimal("1"):
+        raise ValueError(
+            "Admitted source data already exceeds its point-in-time lower price limit"
         )
     return min(Decimal("1"), max(desired_factor, *safe_factors))
 
 
-def _previous_close_at(
+def _price_limit_reference_at(
     references: Iterable[SessionPriceLimitReference],
     instrument: str,
     at_time: datetime,
-) -> Decimal:
+) -> SessionPriceLimitReference:
     candidates = tuple(
         reference
         for reference in references
@@ -496,7 +497,7 @@ def _previous_close_at(
             f"No point-in-time previous-close reference exists for {instrument!r} "
             f"on {at_time.date().isoformat()}"
         )
-    return max(candidates, key=lambda reference: reference.effective_at).previous_close
+    return max(candidates, key=lambda reference: reference.effective_at)
 
 
 def _daily_price_limit_bound(
@@ -528,17 +529,6 @@ def _state_at(
             f"No point-in-time Instrument State exists for {instrument!r}"
         )
     return max(candidates, key=lambda state: state.effective_at)
-
-
-def _price_limit(is_st: bool, instrument: str) -> Decimal:
-    if is_st:
-        return Decimal("0.05")
-    normalized = instrument.lower()
-    if normalized.startswith("bj."):
-        return Decimal("0.30")
-    if normalized.startswith("sh.688") or normalized.startswith("sz.300"):
-        return Decimal("0.20")
-    return Decimal("0.10")
 
 
 def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:

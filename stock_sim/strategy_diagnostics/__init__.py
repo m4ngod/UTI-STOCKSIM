@@ -37,6 +37,11 @@ from .market_paths import (
     ScenarioMaterializer,
     SessionPriceLimitReference,
 )
+from .market_rules import (
+    A_SHARE_MARKET_RULE_PROFILE_VERSION,
+    ResolvedPriceLimitRule,
+    resolve_a_share_price_limit_rule,
+)
 from .recipes import (
     ApprovedScenarioRecipeVersion,
     ExecutionConditionsV1,
@@ -87,6 +92,9 @@ __all__ = [
     "ScenarioMarketView",
     "ScenarioMaterializer",
     "SessionPriceLimitReference",
+    "A_SHARE_MARKET_RULE_PROFILE_VERSION",
+    "ResolvedPriceLimitRule",
+    "resolve_a_share_price_limit_rule",
     "ApprovedScenarioRecipeVersion",
     "ExecutionConditionsV1",
     "RecipeValidationIssue",
