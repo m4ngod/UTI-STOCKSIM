@@ -338,6 +338,90 @@ def _shock_request() -> ScenarioTransformationRequestV1:
     )
 
 
+def _market_structure_world() -> ScenarioDataWorldInput:
+    instruments = (
+        ("sh.600000", "banking", "sh-main"),
+        ("sh.600001", "banking", "sh-main"),
+        ("sz.000001", "technology", "sz-main"),
+        ("sz.000002", "technology", "sz-main"),
+    )
+    closes_by_time = (
+        (datetime(2024, 1, 2, 9, 35), ("10", "10", "10", "10")),
+        (datetime(2024, 1, 2, 9, 40), ("10.2", "10.05", "10.15", "10.1")),
+        (datetime(2024, 1, 2, 9, 45), ("10.4", "10.1", "10.3", "10.2")),
+    )
+    previous_closes = {instrument: Decimal("10") for instrument, _, _ in instruments}
+    bars: list[FiveMinuteBar] = []
+    for end_time, closes in closes_by_time:
+        for (instrument, _industry, _board), close_text in zip(
+            instruments,
+            closes,
+            strict=True,
+        ):
+            opening = previous_closes[instrument]
+            close = Decimal(close_text)
+            volume = 100
+            bars.append(
+                FiveMinuteBar(
+                    instrument=instrument,
+                    end_time=end_time,
+                    open=opening,
+                    high=max(opening, close),
+                    low=min(opening, close),
+                    close=close,
+                    volume=volume,
+                    amount=close * volume,
+                )
+            )
+            previous_closes[instrument] = close
+    return ScenarioDataWorldInput(
+        segment_id="segment_fixture",
+        segment_content_hash="1" * 64,
+        source_snapshot_id="snapshot_fixture",
+        bars=tuple(bars),
+        instrument_states=tuple(
+            InstrumentState(
+                instrument=instrument,
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                eligible=True,
+                trading_status="trading",
+                is_st=False,
+                industry=industry,
+                decision_adjustment_factor=Decimal("1"),
+                decision_adjustment_provenance="fixture-v1",
+            )
+            for instrument, industry, _board in instruments
+        ),
+        price_limit_references=tuple(
+            SessionPriceLimitReference(
+                instrument=instrument,
+                session_date=date(2024, 1, 2),
+                previous_close=Decimal("10"),
+                effective_at=datetime(2024, 1, 2, 9, 30),
+                provenance="fixture-preclose-v1",
+                profile_version="a-share-cash-equity.v1",
+                board=board,
+                is_st=False,
+                listing_stage="continuous",
+                limit_fraction=Decimal("0.10"),
+                rule_code=f"fixture.{board}.ordinary.10pct",
+            )
+            for instrument, _industry, board in instruments
+        ),
+    )
+
+
+def _market_structure_request() -> ScenarioTransformationRequestV1:
+    return ScenarioTransformationRequestV1(
+        transformation_id="market-structure.v1",
+        parameters={
+            "breadth_target": "0.5",
+            "dispersion_fraction": "0.04",
+            "sector_concentration": "1",
+        },
+    )
+
+
 class _AdmittedFixtureSource:
     def __init__(self) -> None:
         self._selection = _segment().selection
@@ -764,6 +848,26 @@ class _AdmittedShockFixtureSource(_AdmittedCrossSectionFixtureSource):
         )
 
 
+class _AdmittedMarketStructureFixtureSource(_AdmittedCrossSectionFixtureSource):
+    def inspect(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> HistoricalSourceInspection | None:
+        inspection = super().inspect(selection)
+        return replace(inspection, bar_count=12) if inspection is not None else None
+
+    def load_scenario_data_world(
+        self,
+        segment: HistoricalMarketSegment,
+    ) -> ScenarioDataWorldInput:
+        return replace(
+            _market_structure_world(),
+            segment_id=segment.segment_id,
+            segment_content_hash=segment.content_hash,
+            source_snapshot_id=segment.source_snapshot_id,
+        )
+
+
 def test_volatility_scaling_is_deterministic_and_preserves_path_invariants() -> None:
     materializer = ScenarioMaterializer(
         source=InMemoryHistoricalMarketDataSource((_cross_section_world(),)),
@@ -1044,6 +1148,218 @@ def test_shock_recovery_phase_identity_survives_artifact_store_restart(
     assert restored.applied_transformations[0].to_dict() == materialized.applied_transformations[
         0
     ].to_dict()
+
+
+def test_market_structure_is_deterministic_and_recomputes_the_full_world() -> None:
+    request = _market_structure_request()
+    first_materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_market_structure_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    baseline = first_materializer.materialize_baseline(_segment(), seed=17)
+    first = first_materializer.materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+    second = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_market_structure_world(),)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(request,),
+        seed=17,
+    )
+    distributed = first_materializer.materialize(
+        _segment(),
+        transformations=(
+            ScenarioTransformationRequestV1(
+                transformation_id="market-structure.v1",
+                parameters={
+                    **request.parameters,
+                    "sector_concentration": "0",
+                },
+            ),
+        ),
+        seed=17,
+    )
+
+    assert first.artifact_hash == second.artifact_hash
+    assert first.to_preview_dict() == second.to_preview_dict()
+    assert distributed.artifact_hash != first.artifact_hash
+    assert dict(distributed.applied_transformations[0].statistics)[
+        "effective_final_sector_winner_concentration"
+    ] == "0.5"
+    assert first.applied_transformations[0].to_dict() == {
+        "transformation_id": "market-structure.v1",
+        "family": "market-structure",
+        "catalog_version": "scenario-transformation-catalog.v1",
+        "implementation_version": "market-structure.v1",
+        "parameters": {
+            "breadth_target": "0.5",
+            "dispersion_fraction": "0.04",
+            "sector_concentration": "1",
+        },
+        "statistics": {
+            "affected_source_bar_count": "7",
+            "effective_final_breadth": "0.5",
+            "effective_final_return_spread_fraction": "0.04",
+            "effective_final_sector_winner_concentration": "1",
+            "source_bar_count": "12",
+            "source_time_count": "3",
+        },
+    }
+    assert all(node.low <= node.open <= node.high for node in first.nodes)
+    assert all(node.low <= node.close <= node.high for node in first.nodes)
+    assert all(
+        Decimal("9") <= node.low <= node.high <= Decimal("11")
+        for node in first.nodes
+    )
+    assert all(node.volume >= 0 for node in first.nodes)
+    final_closes = {
+        instrument: next(
+            node.close
+            for node in reversed(first.nodes)
+            if node.instrument == instrument
+        )
+        for instrument in (
+            "sh.600000",
+            "sh.600001",
+            "sz.000001",
+            "sz.000002",
+        )
+    }
+    assert final_closes == {
+        "sh.600000": Decimal("10.2"),
+        "sh.600001": Decimal("10.2"),
+        "sz.000001": Decimal("9.8"),
+        "sz.000002": Decimal("9.8"),
+    }
+
+    baseline_snapshot = ScenarioMarketView(
+        baseline,
+        initial_cursor=datetime(2024, 1, 2, 9, 45),
+    ).snapshot().to_dict()
+    transformed_snapshot = ScenarioMarketView(
+        first,
+        initial_cursor=datetime(2024, 1, 2, 9, 45),
+    ).snapshot().to_dict()
+    assert baseline_snapshot["market_context"] == {
+        "return": "0.025",
+        "breadth": "1",
+        "instrument_count": 4,
+    }
+    assert transformed_snapshot["market_context"] == {
+        "return": "0",
+        "breadth": "0.5",
+        "instrument_count": 4,
+    }
+    assert transformed_snapshot["sector_context"] == {
+        "banking": {
+            "return": "0.02",
+            "breadth": "1",
+            "instrument_count": 2,
+        },
+        "technology": {
+            "return": "-0.02",
+            "breadth": "0",
+            "instrument_count": 2,
+        },
+    }
+    assert baseline_snapshot["features"] != transformed_snapshot["features"]
+    assert baseline_snapshot["rankings"] != transformed_snapshot["rankings"]
+    assert transformed_snapshot["candidates"] == [
+        "sh.600000",
+        "sh.600001",
+        "sz.000001",
+        "sz.000002",
+    ]
+
+
+def test_market_structure_never_uses_future_source_bars() -> None:
+    original = _market_structure_world()
+    changed_future_bars = tuple(
+        replace(
+            bar,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("9.9"),
+            close=Decimal("9.9"),
+            amount=Decimal("990"),
+        )
+        if bar.end_time == datetime(2024, 1, 2, 9, 45)
+        else bar
+        for bar in original.bars
+    )
+    changed_future = replace(original, bars=changed_future_bars)
+
+    first = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((original,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(_market_structure_request(),),
+        seed=17,
+    )
+    second = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((changed_future,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    ).materialize(
+        _segment(),
+        transformations=(_market_structure_request(),),
+        seed=17,
+    )
+
+    cutoff = datetime(2024, 1, 2, 9, 40)
+    assert tuple(
+        node for node in first.nodes if node.simulation_time <= cutoff
+    ) == tuple(
+        node for node in second.nodes if node.simulation_time <= cutoff
+    )
+
+
+def test_market_structure_requires_multiple_point_in_time_industries() -> None:
+    world = _market_structure_world()
+    single_industry_world = replace(
+        world,
+        instrument_states=tuple(
+            replace(state, industry="banking") for state in world.instrument_states
+        ),
+    )
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((single_industry_world,)),
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+
+    with pytest.raises(ValueError, match="multiple point-in-time industries"):
+        materializer.materialize(
+            _segment(),
+            transformations=(_market_structure_request(),),
+            seed=17,
+        )
+
+
+def test_market_structure_identity_survives_artifact_store_restart(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-structure-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_market_structure_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(root),
+    ).materialize(
+        _segment(),
+        transformations=(_market_structure_request(),),
+        seed=17,
+    )
+
+    restored = ParquetMarketPathArtifactStore(root).get(
+        materialized.artifact_hash
+    )
+
+    assert restored == materialized
+    assert restored.applied_transformations[0].to_dict() == (
+        materialized.applied_transformations[0].to_dict()
+    )
 
 
 def test_volatility_scaling_fails_closed_without_previous_close_reference() -> None:
@@ -1627,3 +1943,91 @@ def test_headless_application_previews_shock_phases_and_recomputed_statistics() 
     ) > Decimal(
         str(baseline_preview["path_statistics"]["mean_absolute_return_30s"])
     )
+
+
+def test_headless_application_previews_requested_and_effective_market_structure() -> None:
+    source = _AdmittedMarketStructureFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(_segment().selection)
+    assert admission.segment is not None
+    baseline_version_id = _approve_baseline_recipe(
+        application,
+        admission.segment.segment_id,
+        seed=17,
+    )
+    structure_payload = {
+        "schema_version": "scenario_recipe.v1",
+        "name": "Concentrated two-sector structure",
+        "historical_segment_id": admission.segment.segment_id,
+        "transformations": [
+            {
+                "transformation_id": "market-structure.v1",
+                "parameters": _market_structure_request().parameters,
+            }
+        ],
+        "execution_conditions": {},
+        "decision_cadence_minutes": 30,
+        "materialization_seed": 17,
+        "data_policy": "point-in-time",
+        "market_rule_profile": "a-share-cash-equity.v1",
+    }
+    structure_draft = application.create_manual_recipe_draft(
+        structure_payload,
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(structure_draft.draft_id).is_valid
+    structure_version_id = application.approve_recipe_draft(
+        structure_draft.draft_id,
+        actor="owner",
+    ).version_id
+    baseline = application.materialize_reference_path(baseline_version_id)
+    transformed = application.materialize_reference_path(structure_version_id)
+
+    comparison = application.compare_reference_market_paths(
+        baseline.artifact_hash,
+        transformed.artifact_hash,
+        at_time=datetime(2024, 1, 2, 9, 45),
+    )
+
+    baseline_preview = comparison["baseline"]
+    transformed_preview = comparison["transformed"]
+    applied = transformed_preview["applied_transformations"][0]
+    assert applied["parameters"] == {
+        "breadth_target": "0.5",
+        "dispersion_fraction": "0.04",
+        "sector_concentration": "1",
+    }
+    assert applied["statistics"] == {
+        "affected_source_bar_count": "7",
+        "effective_final_breadth": "0.5",
+        "effective_final_return_spread_fraction": "0.04",
+        "effective_final_sector_winner_concentration": "1",
+        "source_bar_count": "12",
+        "source_time_count": "3",
+    }
+    assert baseline_preview["market_context"] != transformed_preview[
+        "market_context"
+    ]
+    assert baseline_preview["sector_context"] != transformed_preview[
+        "sector_context"
+    ]
+    assert baseline_preview["features"] != transformed_preview["features"]
+    assert baseline_preview["rankings"] != transformed_preview["rankings"]
+    assert transformed_preview["market_context"]["breadth"] == "0.5"
+    assert transformed_preview["sector_context"] == {
+        "banking": {
+            "return": "0.02",
+            "breadth": "1",
+            "instrument_count": 2,
+        },
+        "technology": {
+            "return": "-0.02",
+            "breadth": "0",
+            "instrument_count": 2,
+        },
+    }

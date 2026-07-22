@@ -104,10 +104,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._shock_duration_input: Any = None
         self._persistence_duration_input: Any = None
         self._recovery_duration_input: Any = None
+        self._breadth_target_input: Any = None
+        self._dispersion_fraction_input: Any = None
+        self._sector_concentration_input: Any = None
         self._create_recipe_button: Any = None
         self._create_trend_recipe_button: Any = None
         self._create_volatility_recipe_button: Any = None
         self._create_shock_recovery_recipe_button: Any = None
+        self._create_market_structure_recipe_button: Any = None
         self._validate_recipe_button: Any = None
         self._approve_recipe_button: Any = None
         self._materialize_recipe_button: Any = None
@@ -197,6 +201,18 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._recovery_duration_input.setPlaceholderText(
             "Recovery duration in 5-minute bars"
         )
+        self._breadth_target_input = QLineEdit("0.5")
+        self._breadth_target_input.setPlaceholderText(
+            "Target advancing breadth (0.1 to 0.9)"
+        )
+        self._dispersion_fraction_input = QLineEdit("0.04")
+        self._dispersion_fraction_input.setPlaceholderText(
+            "Target cross-sectional return spread (0.01 to 0.1)"
+        )
+        self._sector_concentration_input = QLineEdit("1")
+        self._sector_concentration_input.setPlaceholderText(
+            "Sector concentration (0 to 1)"
+        )
         self._create_recipe_button = QPushButton("Create manual baseline recipe")
         self._create_recipe_button.clicked.connect(self._create_recipe_from_inputs)
         self._create_trend_recipe_button = QPushButton(
@@ -216,6 +232,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         )
         self._create_shock_recovery_recipe_button.clicked.connect(
             self._create_shock_recovery_recipe_from_inputs
+        )
+        self._create_market_structure_recipe_button = QPushButton(
+            "Create market structure recipe"
+        )
+        self._create_market_structure_recipe_button.clicked.connect(
+            self._create_market_structure_recipe_from_inputs
         )
         self._validate_recipe_button = QPushButton("Validate recipe")
         self._validate_recipe_button.clicked.connect(self._validate_current_recipe)
@@ -268,10 +290,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._shock_duration_input)
         layout.addWidget(self._persistence_duration_input)
         layout.addWidget(self._recovery_duration_input)
+        layout.addWidget(self._breadth_target_input)
+        layout.addWidget(self._dispersion_fraction_input)
+        layout.addWidget(self._sector_concentration_input)
         layout.addWidget(self._create_recipe_button)
         layout.addWidget(self._create_trend_recipe_button)
         layout.addWidget(self._create_volatility_recipe_button)
         layout.addWidget(self._create_shock_recovery_recipe_button)
+        layout.addWidget(self._create_market_structure_recipe_button)
         layout.addWidget(self._validate_recipe_button)
         layout.addWidget(self._approve_recipe_button)
         layout.addWidget(self._materialize_recipe_button)
@@ -322,6 +348,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
     def _create_shock_recovery_recipe_from_inputs(self) -> None:
         self._submit_recipe_from_inputs(recipe_kind="shock-recovery")
 
+    def _create_market_structure_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(recipe_kind="market-structure")
+
     def _submit_recipe_from_inputs(
         self,
         *,
@@ -330,6 +359,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             "trend",
             "volatility",
             "shock-recovery",
+            "market-structure",
         ],
     ) -> None:
         try:
@@ -362,6 +392,17 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                         str(self._recovery_duration_input.text())
                     ),
                 )
+            elif recipe_kind == "market-structure":
+                self._logic.create_market_structure_recipe(
+                    **recipe_arguments,
+                    breadth_target=str(self._breadth_target_input.text()),
+                    dispersion_fraction=str(
+                        self._dispersion_fraction_input.text()
+                    ),
+                    sector_concentration=str(
+                        self._sector_concentration_input.text()
+                    ),
+                )
             else:
                 self._logic.create_baseline_recipe(**recipe_arguments)
             self._recipe_input_signature = self._recipe_authoring_signature(
@@ -380,6 +421,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 "trend": "trend/regime",
                 "volatility": "volatility",
                 "shock-recovery": "shock and recovery",
+                "market-structure": "market structure",
             }
             self._recipe_action_error = (
                 f"The {labels[recipe_kind]} draft could not be created."
@@ -483,6 +525,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             str(self._shock_duration_input.text()).strip(),
             str(self._persistence_duration_input.text()).strip(),
             str(self._recovery_duration_input.text()).strip(),
+            str(self._breadth_target_input.text()).strip(),
+            str(self._dispersion_fraction_input.text()).strip(),
+            str(self._sector_concentration_input.text()).strip(),
         )
 
     def _assert_recipe_inputs_match_draft(self) -> None:
@@ -682,6 +727,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 ) if isinstance(applied, list) else ""
                 phase_labels: list[str] = []
                 effective_peak = ""
+                market_structure_summary = ""
                 if isinstance(applied, list):
                     for item in applied:
                         if not isinstance(item, dict):
@@ -699,6 +745,26 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                         ) is not None:
                             effective_peak = str(
                                 statistics["effective_peak_displacement_fraction"]
+                            )
+                        parameters = item.get("parameters", {})
+                        if (
+                            item.get("transformation_id") == "market-structure.v1"
+                            and isinstance(parameters, dict)
+                            and isinstance(statistics, dict)
+                        ):
+                            market_structure_summary = (
+                                " | market structure: requested breadth "
+                                f"{parameters.get('breadth_target', 'unknown')}"
+                                " | effective breadth "
+                                f"{statistics.get('effective_final_breadth', 'unknown')}"
+                                " | requested dispersion "
+                                f"{parameters.get('dispersion_fraction', 'unknown')}"
+                                " | effective spread "
+                                f"{statistics.get('effective_final_return_spread_fraction', 'unknown')}"
+                                " | requested sector concentration "
+                                f"{parameters.get('sector_concentration', 'unknown')}"
+                                " | effective sector winner concentration "
+                                f"{statistics.get('effective_final_sector_winner_concentration', 'unknown')}"
                             )
                 phase_summary = ""
                 if phase_labels:
@@ -730,7 +796,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     f"{baseline_statistics.get('mean_absolute_return_30s', 'unknown')}"
                     " -> "
                     f"{transformed_statistics.get('mean_absolute_return_30s', 'unknown')}"
-                    f"{phase_summary} | provenance: {reconstruction_notice}"
+                    f"{phase_summary}{market_structure_summary} | provenance: "
+                    f"{reconstruction_notice}"
                 )
             else:
                 self._scenario_preview_label.setText(

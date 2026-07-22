@@ -118,9 +118,9 @@ def test_deterministic_fake_emits_the_model_independent_draft_contract() -> None
         ),
         transformation_proposals=(
             TransformationProposalV1(
-                capability="intraday-breadth-divergence",
-                description="Model a breadth divergence regime.",
-                rationale="The registered catalog has no breadth transform.",
+                capability="intraday-order-book-imbalance",
+                description="Model an order-book imbalance regime.",
+                rationale="The registered catalog has no order-book transform.",
             ),
         ),
     )
@@ -176,9 +176,9 @@ def test_deterministic_fake_emits_the_model_independent_draft_contract() -> None
         },
         "transformation_proposals": [
             {
-                "capability": "intraday-breadth-divergence",
-                "description": "Model a breadth divergence regime.",
-                "rationale": "The registered catalog has no breadth transform.",
+                "capability": "intraday-order-book-imbalance",
+                "description": "Model an order-book imbalance regime.",
+                "rationale": "The registered catalog has no order-book transform.",
                 "schema_version": "transformation_proposal.v1",
                 "status": "non_executable",
             }
@@ -394,9 +394,9 @@ def test_application_turns_ai_intent_into_a_valid_but_untrusted_draft() -> None:
             ),
             transformation_proposals=(
                 TransformationProposalV1(
-                    capability="intraday-breadth-divergence",
-                    description="Model a breadth divergence regime.",
-                    rationale="The registered catalog has no breadth transform.",
+                    capability="intraday-order-book-imbalance",
+                    description="Model an order-book imbalance regime.",
+                    rationale="The registered catalog has no order-book transform.",
                 ),
             ),
         )
@@ -616,9 +616,9 @@ def test_ai_audit_survives_restart_and_links_subsequent_approval(
             ),
             transformation_proposals=(
                 TransformationProposalV1(
-                    capability="intraday-breadth-divergence",
-                    description="Model a breadth divergence regime.",
-                    rationale="The registered catalog has no breadth transform.",
+                    capability="intraday-order-book-imbalance",
+                    description="Model an order-book imbalance regime.",
+                    rationale="The registered catalog has no order-book transform.",
                 ),
             ),
         )
@@ -661,9 +661,9 @@ def test_ai_audit_survives_restart_and_links_subsequent_approval(
     assert audit.attempt.response_hash == authored.attempt.response_hash
     assert audit.attempt.transformation_proposals == (
         TransformationProposalV1(
-            capability="intraday-breadth-divergence",
-            description="Model a breadth divergence regime.",
-            rationale="The registered catalog has no breadth transform.",
+            capability="intraday-order-book-imbalance",
+            description="Model an order-book imbalance regime.",
+            rationale="The registered catalog has no order-book transform.",
         ),
     )
     assert audit.validation is not None

@@ -173,6 +173,95 @@ class _ShockWorkspaceSource(_WorkspaceSource):
         return replace(base, bars=bars)
 
 
+class _MarketStructureWorkspaceSource(_WorkspaceSource):
+    def inspect(
+        self,
+        selection: HistoricalSegmentSelection,
+    ) -> HistoricalSourceInspection | None:
+        inspection = super().inspect(selection)
+        if inspection is None:
+            return None
+        return replace(
+            inspection,
+            artifacts=(SourceArtifact("market-structure-bars", "d" * 64, 12),),
+            eligible_instrument_count=4,
+            bar_count=12,
+        )
+
+    def load_scenario_data_world(self, segment: object) -> ScenarioDataWorldInput:
+        instruments = (
+            ("sh.600000", "banking", "sh-main"),
+            ("sh.600001", "banking", "sh-main"),
+            ("sz.000001", "technology", "sz-main"),
+            ("sz.000002", "technology", "sz-main"),
+        )
+        closes_by_time = (
+            (datetime(2024, 1, 2, 9, 35), ("10", "10", "10", "10")),
+            (datetime(2024, 1, 2, 9, 40), ("10.2", "10.05", "10.15", "10.1")),
+            (datetime(2024, 1, 2, 9, 45), ("10.4", "10.1", "10.3", "10.2")),
+        )
+        previous_closes = {
+            instrument: Decimal("10") for instrument, _industry, _board in instruments
+        }
+        bars: list[FiveMinuteBar] = []
+        for end_time, closes in closes_by_time:
+            for (instrument, _industry, _board), close_text in zip(
+                instruments,
+                closes,
+                strict=True,
+            ):
+                opening = previous_closes[instrument]
+                close = Decimal(close_text)
+                bars.append(
+                    FiveMinuteBar(
+                        instrument=instrument,
+                        end_time=end_time,
+                        open=opening,
+                        high=max(opening, close),
+                        low=min(opening, close),
+                        close=close,
+                        volume=100,
+                        amount=close * 100,
+                    )
+                )
+                previous_closes[instrument] = close
+        return ScenarioDataWorldInput(
+            segment_id=str(getattr(segment, "segment_id")),
+            segment_content_hash=str(getattr(segment, "content_hash")),
+            source_snapshot_id=str(getattr(segment, "source_snapshot_id")),
+            bars=tuple(bars),
+            instrument_states=tuple(
+                InstrumentState(
+                    instrument=instrument,
+                    effective_at=datetime(2024, 1, 2, 9, 30),
+                    eligible=True,
+                    trading_status="trading",
+                    is_st=False,
+                    industry=industry,
+                    decision_adjustment_factor=Decimal("1"),
+                    decision_adjustment_provenance="fixture-v1",
+                )
+                for instrument, industry, _board in instruments
+            ),
+            price_limit_references=tuple(
+                SessionPriceLimitReference(
+                    instrument=instrument,
+                    session_date=date(2024, 1, 2),
+                    previous_close=Decimal("10"),
+                    effective_at=datetime(2024, 1, 2, 9, 30),
+                    provenance="fixture-preclose-v1",
+                    profile_version="a-share-cash-equity.v1",
+                    board=board,
+                    is_st=False,
+                    listing_stage="continuous",
+                    limit_fraction=Decimal("0.10"),
+                    rule_code=f"fixture.{board}.ordinary.10pct",
+                )
+                for instrument, _industry, board in instruments
+            ),
+        )
+
+
 def _admittable_application() -> object:
     selection = HistoricalSegmentSelection(
         market="mainland-a-share",
@@ -190,6 +279,16 @@ def _admittable_application() -> object:
 
 def _shock_admittable_application() -> object:
     source = _ShockWorkspaceSource()
+    return create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+
+def _market_structure_admittable_application() -> object:
+    source = _MarketStructureWorkspaceSource()
     return create_diagnostics_application(
         historical_source=source,
         market_data_source=source,
@@ -491,6 +590,71 @@ def test_diagnostics_workspace_shows_shock_recovery_phases_and_statistics() -> N
     )
 
 
+def test_diagnostics_workspace_shows_requested_and_effective_market_structure() -> None:
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _market_structure_admittable_application()
+    )
+    panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = panel.get_view()["historical_segment_catalog"]["segments"][0][
+        "segment_id"
+    ]
+    panel.create_baseline_recipe(
+        name="Baseline control",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+
+    panel.create_market_structure_recipe(
+        name="Concentrated two-sector structure",
+        segment_id=segment_id,
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        breadth_target="0.5",
+        dispersion_fraction="0.04",
+        sector_concentration="1",
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    transformed = panel.materialize_current_recipe()
+    preview = panel.get_view()["scenario_comparison_preview"]
+
+    applied = transformed["applied_transformations"][0]
+    assert applied["transformation_id"] == "market-structure.v1"
+    assert applied["parameters"] == {
+        "breadth_target": "0.5",
+        "dispersion_fraction": "0.04",
+        "sector_concentration": "1",
+    }
+    assert applied["statistics"]["effective_final_breadth"] == "0.5"
+    assert (
+        applied["statistics"]["effective_final_return_spread_fraction"]
+        == "0.04"
+    )
+    assert (
+        applied["statistics"]["effective_final_sector_winner_concentration"]
+        == "1"
+    )
+    assert preview["baseline"]["market_context"] != preview["transformed"][
+        "market_context"
+    ]
+    assert preview["baseline"]["sector_context"] != preview["transformed"][
+        "sector_context"
+    ]
+    assert preview["baseline"]["rankings"] != preview["transformed"][
+        "rankings"
+    ]
+
+
 def test_diagnostics_workspace_shows_actionable_recipe_validation_feedback() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -669,6 +833,49 @@ def test_diagnostics_adapter_previews_shock_phases_without_microstructure_claim(
     assert "effective peak 0.04" in preview_text
     assert "not recorded microstructure" in preview_text
     assert "shock-recovery.v1" in adapter._transformation_catalog_label.text()
+
+
+def test_diagnostics_adapter_previews_requested_and_effective_market_structure() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _market_structure_admittable_application()
+    )
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._seed_input.setText("17")
+    adapter._recipe_name_input.setText("Baseline control")
+    adapter._create_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    adapter._recipe_name_input.setText("Concentrated two-sector structure")
+    adapter._breadth_target_input.setText("0.5")
+    adapter._dispersion_fraction_input.setText("0.04")
+    adapter._sector_concentration_input.setText("1")
+    adapter._create_market_structure_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+
+    preview = adapter.current_view()["scenario_comparison_preview"]
+    preview_text = adapter._scenario_preview_label.text()
+    applied = preview["transformed"]["applied_transformations"][0]
+    assert applied["transformation_id"] == "market-structure.v1"
+    assert "market-structure.v1" in preview_text
+    assert "requested breadth 0.5" in preview_text
+    assert "effective breadth 0.5" in preview_text
+    assert "requested dispersion 0.04" in preview_text
+    assert "effective spread 0.04" in preview_text
+    assert "requested sector concentration 1" in preview_text
+    assert "effective sector winner concentration 1" in preview_text
+    assert "market-structure.v1" in adapter._transformation_catalog_label.text()
 
 
 def test_diagnostics_adapter_refuses_to_approve_stale_visible_inputs() -> None:

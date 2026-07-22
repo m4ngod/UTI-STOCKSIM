@@ -324,6 +324,43 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
         "catalog_version": "scenario-transformation-catalog.v1",
         "transformations": [
             {
+                "transformation_id": "market-structure.v1",
+                "family": "market-structure",
+                "implementation_version": "market-structure.v1",
+                "parameters": [
+                    {
+                        "name": "breadth_target",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0.1",
+                        "maximum": "0.9",
+                    },
+                    {
+                        "name": "dispersion_fraction",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0.01",
+                        "maximum": "0.1",
+                    },
+                    {
+                        "name": "sector_concentration",
+                        "value_type": "decimal",
+                        "required": True,
+                        "minimum": "0",
+                        "maximum": "1",
+                    },
+                ],
+                "compatibility_rules": [
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "cross-sectional-world-with-multiple-industries",
+                ],
+                "causality_constraints": [
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ],
+            },
+            {
                 "transformation_id": "shock-recovery.v1",
                 "family": "shock-recovery",
                 "implementation_version": "shock-recovery.v1",
@@ -470,6 +507,28 @@ def test_headless_catalog_registers_versioned_transforms_with_typed_bounds() -> 
     assert shock_validation.is_valid is True
     assert shock_validation.issues == ()
 
+    payload["transformations"] = [
+        {
+            "transformation_id": "market-structure.v1",
+            "parameters": {
+                "breadth_target": "0.5",
+                "dispersion_fraction": "0.04",
+                "sector_concentration": "1",
+            },
+        }
+    ]
+    structure_draft = application.create_manual_recipe_draft(
+        payload,
+        author="researcher",
+    )
+
+    structure_validation = application.validate_recipe_draft(
+        structure_draft.draft_id
+    )
+
+    assert structure_validation.is_valid is True
+    assert structure_validation.issues == ()
+
 
 @pytest.mark.parametrize("multiplier", ("0.49", "2.01"))
 def test_volatility_scaling_rejects_values_outside_published_bounds(
@@ -536,6 +595,50 @@ def test_shock_recovery_rejects_invalid_phase_parameters(
     assert validation.is_valid is False
     assert {issue.rule for issue in validation.issues} == {expected_rule}
     assert validation.issues[0].path == f"transformations.0.parameters.{parameter}"
+    with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
+        application.approve_recipe_draft(draft.draft_id, actor="owner")
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    (
+        ("breadth_target", "0.09"),
+        ("breadth_target", "0.91"),
+        ("dispersion_fraction", "0.009"),
+        ("dispersion_fraction", "0.101"),
+        ("sector_concentration", "-0.01"),
+        ("sector_concentration", "1.01"),
+    ),
+)
+def test_market_structure_rejects_values_outside_published_bounds(
+    parameter: str,
+    value: str,
+) -> None:
+    application, segment_id = _application_with_admitted_segment()
+    parameters = {
+        "breadth_target": "0.5",
+        "dispersion_fraction": "0.04",
+        "sector_concentration": "1",
+    }
+    parameters[parameter] = value
+    payload = _baseline_payload(segment_id)
+    payload["transformations"] = [
+        {
+            "transformation_id": "market-structure.v1",
+            "parameters": parameters,
+        }
+    ]
+    draft = application.create_manual_recipe_draft(payload, author="researcher")
+
+    validation = application.validate_recipe_draft(draft.draft_id)
+
+    assert validation.is_valid is False
+    assert {issue.rule for issue in validation.issues} == {
+        "transformation.parameter-bounds"
+    }
+    assert validation.issues[0].path == (
+        f"transformations.0.parameters.{parameter}"
+    )
     with pytest.raises(UnapprovedScenarioRecipeError, match="validation"):
         application.approve_recipe_draft(draft.draft_id, actor="owner")
 

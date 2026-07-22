@@ -184,6 +184,11 @@ class _ShockRecoveryPlan:
     peak_displacement: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class _MarketStructurePlan:
+    desired_factors: tuple[tuple[datetime, str, Decimal], ...]
+
+
 class ScenarioTransformationCatalog:
     """Immutable registry of reviewed deterministic transformations."""
 
@@ -742,6 +747,296 @@ def _shock_recovery_statistics(
     )
 
 
+def _apply_market_structure(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+    plan = _build_market_structure_plan(world, bars_by_time, parameters)
+    transformed_world, effective_factors = _apply_market_structure_plan(
+        world,
+        plan,
+    )
+    return _TransformationApplication(
+        world=transformed_world,
+        statistics=_market_structure_statistics(
+            world,
+            transformed_world,
+            effective_factors,
+        ),
+    )
+
+
+def _build_market_structure_plan(
+    world: ScenarioDataWorldInput,
+    bars_by_time: Mapping[datetime, list[FiveMinuteBar]],
+    parameters: Mapping[str, object],
+) -> _MarketStructurePlan:
+    breadth_target = Decimal(str(parameters["breadth_target"]))
+    dispersion_fraction = Decimal(str(parameters["dispersion_fraction"]))
+    sector_concentration = Decimal(str(parameters["sector_concentration"]))
+    times_by_session: dict[object, list[datetime]] = {}
+    for end_time in bars_by_time:
+        times_by_session.setdefault(end_time.date(), []).append(end_time)
+    if any(len(times) < 2 for times in times_by_session.values()):
+        raise ValueError(
+            "Market structure transformation requires at least two source "
+            "bar times per session"
+        )
+
+    session_anchors: dict[tuple[object, str], Decimal] = {}
+    seen_sessions: set[object] = set()
+    desired_factors: list[tuple[datetime, str, Decimal]] = []
+    for end_time in sorted(bars_by_time):
+        active = _active_market_structure_bars(
+            world,
+            bars_by_time[end_time],
+            end_time,
+        )
+        industries = {state.industry for _bar, state in active}
+        if len(active) < 2:
+            raise ValueError(
+                "Market structure transformation requires multiple eligible "
+                "point-in-time instruments"
+            )
+        if len(industries) < 2:
+            raise ValueError(
+                "Market structure transformation requires multiple "
+                "point-in-time industries"
+            )
+        session_date = end_time.date()
+        for bar, _state in active:
+            session_anchors.setdefault(
+                (session_date, bar.instrument),
+                bar.open,
+            )
+        if session_date not in seen_sessions:
+            desired_factors.extend(
+                (end_time, bar.instrument, Decimal("1"))
+                for bar, _state in active
+            )
+            seen_sessions.add(session_date)
+            continue
+        target_returns = _market_structure_target_returns(
+            active,
+            session_anchors,
+            breadth_target=breadth_target,
+            dispersion_fraction=dispersion_fraction,
+            sector_concentration=sector_concentration,
+        )
+        for bar, _state in active:
+            target_close = session_anchors[(session_date, bar.instrument)] * (
+                Decimal("1") + target_returns[bar.instrument]
+            )
+            desired_factors.append(
+                (end_time, bar.instrument, target_close / bar.close)
+            )
+    return _MarketStructurePlan(desired_factors=tuple(desired_factors))
+
+
+def _active_market_structure_bars(
+    world: ScenarioDataWorldInput,
+    bars: Iterable[FiveMinuteBar],
+    at_time: datetime,
+) -> tuple[tuple[FiveMinuteBar, InstrumentState], ...]:
+    active: list[tuple[FiveMinuteBar, InstrumentState]] = []
+    for bar in bars:
+        state = _state_at(world.instrument_states, bar.instrument, at_time)
+        if state.eligible and state.trading_status == "trading":
+            active.append((bar, state))
+    return tuple(sorted(active, key=lambda item: item[0].instrument))
+
+
+def _market_structure_target_returns(
+    active: tuple[tuple[FiveMinuteBar, InstrumentState], ...],
+    session_anchors: Mapping[tuple[object, str], Decimal],
+    *,
+    breadth_target: Decimal,
+    dispersion_fraction: Decimal,
+    sector_concentration: Decimal,
+) -> dict[str, Decimal]:
+    session_date = active[0][0].end_time.date()
+    source_returns = {
+        bar.instrument: (
+            bar.close / session_anchors[(session_date, bar.instrument)]
+            - Decimal("1")
+        )
+        for bar, _state in active
+    }
+    industry_by_instrument = {
+        bar.instrument: state.industry for bar, state in active
+    }
+    instruments_by_industry: dict[str, list[str]] = {}
+    for instrument, industry in industry_by_instrument.items():
+        instruments_by_industry.setdefault(industry, []).append(instrument)
+    sector_returns = {
+        industry: sum(
+            (source_returns[instrument] for instrument in instruments),
+            Decimal("0"),
+        )
+        / Decimal(len(instruments))
+        for industry, instruments in instruments_by_industry.items()
+    }
+    instrument_scores = _normalized_rank_scores(source_returns)
+    sector_scores = _normalized_rank_scores(sector_returns)
+    blended_scores = {
+        instrument: (
+            (Decimal("1") - sector_concentration)
+            * instrument_scores[instrument]
+            + sector_concentration
+            * sector_scores[industry_by_instrument[instrument]]
+        )
+        for instrument in source_returns
+    }
+    ordered = tuple(
+        sorted(
+            source_returns,
+            key=lambda instrument: (
+                -blended_scores[instrument],
+                -source_returns[instrument],
+                instrument,
+            ),
+        )
+    )
+    instrument_count = len(ordered)
+    requested_winner_count = int(
+        (breadth_target * Decimal(instrument_count)).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    winner_count = min(
+        instrument_count - 1,
+        max(1, requested_winner_count),
+    )
+    winners = frozenset(ordered[:winner_count])
+    loser_count = instrument_count - winner_count
+    winner_return = (
+        dispersion_fraction
+        * Decimal(loser_count)
+        / Decimal(instrument_count)
+    )
+    loser_return = (
+        -dispersion_fraction
+        * Decimal(winner_count)
+        / Decimal(instrument_count)
+    )
+    return {
+        instrument: winner_return if instrument in winners else loser_return
+        for instrument in ordered
+    }
+
+
+def _normalized_rank_scores(
+    values: Mapping[str, Decimal],
+) -> dict[str, Decimal]:
+    ordered = tuple(sorted(values, key=lambda key: (-values[key], key)))
+    if len(ordered) == 1:
+        return {ordered[0]: Decimal("1")}
+    denominator = Decimal(len(ordered) - 1)
+    return {
+        key: Decimal(len(ordered) - rank - 1) / denominator
+        for rank, key in enumerate(ordered)
+    }
+
+
+def _apply_market_structure_plan(
+    world: ScenarioDataWorldInput,
+    plan: _MarketStructurePlan,
+) -> tuple[ScenarioDataWorldInput, tuple[tuple[datetime, str, Decimal], ...]]:
+    desired_by_bar = {
+        (end_time, instrument): factor
+        for end_time, instrument, factor in plan.desired_factors
+    }
+    transformed_bars: list[FiveMinuteBar] = []
+    effective_factors: list[tuple[datetime, str, Decimal]] = []
+    for bar in sorted(
+        world.bars,
+        key=lambda item: (item.end_time, item.instrument),
+    ):
+        desired_factor = desired_by_bar.get((bar.end_time, bar.instrument))
+        if desired_factor is None:
+            transformed_bars.append(bar)
+            continue
+        effective_factor = _price_limit_safe_factor(
+            desired_factor,
+            (bar,),
+            world,
+            bullish=desired_factor >= Decimal("1"),
+        )
+        transformed_bars.append(_scale_bar(bar, effective_factor))
+        effective_factors.append(
+            (bar.end_time, bar.instrument, effective_factor)
+        )
+    return (
+        replace(world, bars=tuple(transformed_bars)),
+        tuple(effective_factors),
+    )
+
+
+def _market_structure_statistics(
+    source_world: ScenarioDataWorldInput,
+    transformed_world: ScenarioDataWorldInput,
+    effective_factors: tuple[tuple[datetime, str, Decimal], ...],
+) -> tuple[tuple[str, str], ...]:
+    final_time = max(end_time for end_time, _instrument, _factor in effective_factors)
+    final_bars = tuple(
+        bar for bar in transformed_world.bars if bar.end_time == final_time
+    )
+    active = _active_market_structure_bars(
+        transformed_world,
+        final_bars,
+        final_time,
+    )
+    session_anchors: dict[str, Decimal] = {}
+    for bar in transformed_world.bars:
+        if bar.end_time.date() == final_time.date():
+            session_anchors.setdefault(bar.instrument, bar.open)
+    final_returns = {
+        bar.instrument: bar.close / session_anchors[bar.instrument] - Decimal("1")
+        for bar, _state in active
+    }
+    winner_instruments = tuple(
+        instrument
+        for instrument, value in final_returns.items()
+        if value > 0
+    )
+    breadth = Decimal(len(winner_instruments)) / Decimal(len(final_returns))
+    sector_by_instrument = {
+        bar.instrument: state.industry for bar, state in active
+    }
+    winner_counts_by_sector: dict[str, int] = {}
+    for instrument in winner_instruments:
+        industry = sector_by_instrument[instrument]
+        winner_counts_by_sector[industry] = (
+            winner_counts_by_sector.get(industry, 0) + 1
+        )
+    sector_winner_concentration = (
+        Decimal(max(winner_counts_by_sector.values()))
+        / Decimal(len(winner_instruments))
+        if winner_instruments
+        else Decimal("0")
+    )
+    statistics = {
+        "affected_source_bar_count": str(
+            sum(factor != Decimal("1") for _time, _instrument, factor in effective_factors)
+        ),
+        "effective_final_breadth": _decimal_text(breadth),
+        "effective_final_return_spread_fraction": _decimal_text(
+            max(final_returns.values()) - min(final_returns.values())
+        ),
+        "effective_final_sector_winner_concentration": _decimal_text(
+            sector_winner_concentration
+        ),
+        "source_bar_count": str(len(source_world.bars)),
+        "source_time_count": str(
+            len({bar.end_time for bar in source_world.bars})
+        ),
+    }
+    return tuple(sorted(statistics.items()))
+
+
 def _scale_bar(bar: FiveMinuteBar, factor: Decimal) -> FiveMinuteBar:
     return replace(
         bar,
@@ -760,6 +1055,7 @@ _TRANSFORMATION_IMPLEMENTATIONS: Mapping[
         _TransformationApplication,
     ],
 ] = {
+    "market-structure.v1": _apply_market_structure,
     "shock-recovery.v1": _apply_shock_recovery,
     "trend-regime.v1": _apply_trend_regime,
     "volatility-scaling.v1": _apply_volatility_scaling,
@@ -922,6 +1218,43 @@ def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
     return ScenarioTransformationCatalog(
         catalog_version="scenario-transformation-catalog.v1",
         entries=(
+            TransformationCatalogEntry(
+                transformation_id="market-structure.v1",
+                family="market-structure",
+                implementation_version="market-structure.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="breadth_target",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.1"),
+                        maximum=Decimal("0.9"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="dispersion_fraction",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.01"),
+                        maximum=Decimal("0.1"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="sector_concentration",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "cross-sectional-world-with-multiple-industries",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
             TransformationCatalogEntry(
                 transformation_id="shock-recovery.v1",
                 family="shock-recovery",
