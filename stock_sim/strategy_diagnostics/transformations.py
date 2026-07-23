@@ -227,6 +227,26 @@ class ScenarioTransformationCatalog:
                 f"Transformation {transformation_id!r} is not registered"
             ) from exc
 
+    def canonical_parameters(
+        self,
+        transformation_id: str,
+        values: Mapping[str, object],
+    ) -> tuple[tuple[str, str], ...]:
+        """Return the catalog-defined stable representation of valid parameters."""
+
+        entry = self.get_entry(transformation_id)
+        issues = self._validate_parameters(
+            "transformation",
+            entry,
+            values,
+        )
+        if issues:
+            raise ValueError(
+                "Cannot canonicalize invalid transformation parameters: "
+                + "; ".join(issue.message for issue in issues)
+            )
+        return _canonical_parameters(entry, values)
+
     def validate_requests(
         self,
         requests: Iterable[TransformationRequest],

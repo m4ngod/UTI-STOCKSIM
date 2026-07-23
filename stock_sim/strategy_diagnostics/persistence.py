@@ -38,7 +38,10 @@ _A_SHARE_EXECUTION_REVISION: Final = "0006_a_share_execution_audit"
 _EXECUTION_STRESS_REVISION: Final = "0007_execution_stress_audit"
 _PTRADE_HOST_AUDIT_REVISION: Final = "0008_ptrade_host_audit"
 _ISOLATED_SENSITIVITY_REVISION: Final = "0009_isolated_sensitivity_sets"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0010_formal_diagnostic_campaigns"
+_FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION: Final = (
+    "0010_formal_diagnostic_campaigns"
+)
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0011_diagnostic_evidence"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -50,6 +53,7 @@ _MIGRATION_REVISIONS: Final = (
     _EXECUTION_STRESS_REVISION,
     _PTRADE_HOST_AUDIT_REVISION,
     _ISOLATED_SENSITIVITY_REVISION,
+    _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -95,8 +99,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _add_ptrade_host_audit(connection)
             elif revision == _ISOLATED_SENSITIVITY_REVISION:
                 _create_isolated_sensitivity_sets(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION:
                 _create_diagnostic_campaigns(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_diagnostic_evidence(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -244,6 +250,40 @@ def _create_diagnostic_campaigns(connection: Connection) -> None:
         "specification_json TEXT NOT NULL, "
         "snapshot_json TEXT NOT NULL, "
         "updated_at_utc VARCHAR(64) NOT NULL"
+        ")"
+    )
+
+
+def _create_diagnostic_evidence(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_guardrail_profiles ("
+        "profile_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "strategy_id VARCHAR(128) NOT NULL, "
+        "strategy_version VARCHAR(128) NOT NULL, "
+        "profile_version VARCHAR(128) NOT NULL, "
+        "profile_json TEXT NOT NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_evidence_packages ("
+        "evidence_package_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "campaign_id VARCHAR(96) NOT NULL, "
+        "schema_version VARCHAR(64) NOT NULL, "
+        "status VARCHAR(32) NOT NULL, "
+        "measurement_artifact_hash VARCHAR(64) NOT NULL, "
+        "artifact_hash VARCHAR(64) UNIQUE NOT NULL, "
+        "FOREIGN KEY(campaign_id) REFERENCES diagnostic_campaigns(campaign_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_findings ("
+        "finding_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "evidence_package_id VARCHAR(96) NOT NULL, "
+        "strategy_id VARCHAR(128) NOT NULL, "
+        "finding_kind VARCHAR(32) NOT NULL, "
+        "finding_json TEXT NOT NULL, "
+        "FOREIGN KEY(evidence_package_id) "
+        "REFERENCES diagnostic_evidence_packages(evidence_package_id)"
         ")"
     )
 

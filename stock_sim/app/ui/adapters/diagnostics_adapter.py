@@ -181,6 +181,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._resume_diagnostic_campaign_button: Any = None
         self._diagnostic_retry_case_input: Any = None
         self._retry_diagnostic_campaign_case_button: Any = None
+        self._diagnostic_evidence_status_label: Any = None
+        self._diagnostic_evidence_details_view: Any = None
+        self._build_diagnostic_evidence_button: Any = None
+        self._explain_diagnostic_findings_button: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._run_action_error = ""
@@ -506,6 +510,27 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._retry_diagnostic_campaign_case_button.clicked.connect(
             self._retry_diagnostic_campaign_case
         )
+        self._diagnostic_evidence_status_label = QLabel(
+            "Diagnostic Evidence: not built"
+        )
+        self._diagnostic_evidence_details_view = QPlainTextEdit()
+        self._diagnostic_evidence_details_view.setReadOnly(True)
+        self._diagnostic_evidence_details_view.setPlainText(
+            "Complete a Formal Diagnostic Campaign to calculate and seal "
+            "multidimensional evidence."
+        )
+        self._build_diagnostic_evidence_button = QPushButton(
+            "Build and seal Diagnostic Evidence"
+        )
+        self._build_diagnostic_evidence_button.clicked.connect(
+            self._build_diagnostic_evidence
+        )
+        self._explain_diagnostic_findings_button = QPushButton(
+            "Explain sealed findings (optional)"
+        )
+        self._explain_diagnostic_findings_button.clicked.connect(
+            self._explain_diagnostic_findings
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -603,6 +628,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._retry_diagnostic_campaign_case_button)
         layout.addWidget(self._diagnostic_campaign_status_label)
         layout.addWidget(self._diagnostic_campaign_details_view)
+        layout.addWidget(self._build_diagnostic_evidence_button)
+        layout.addWidget(self._explain_diagnostic_findings_button)
+        layout.addWidget(self._diagnostic_evidence_status_label)
+        layout.addWidget(self._diagnostic_evidence_details_view)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -981,6 +1010,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 ).strip()
             )
         )
+
+    def _build_diagnostic_evidence(self) -> None:
+        self._apply_run_action(self._logic.build_diagnostic_evidence)
+
+    def _explain_diagnostic_findings(self) -> None:
+        self._apply_run_action(self._logic.explain_diagnostic_findings)
 
     def _apply_run_action(self, action: Any) -> None:
         try:
@@ -1697,6 +1732,291 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 detail_lines.append("No compound case outcomes recorded")
             self._diagnostic_campaign_details_view.setPlainText(
                 "\n".join(detail_lines)
+            )
+        diagnostic_evidence = self._current_view.get(
+            "diagnostic_evidence",
+            {},
+        )
+        if not isinstance(diagnostic_evidence, dict):
+            diagnostic_evidence = {}
+        evidence_metrics = diagnostic_evidence.get("metrics", [])
+        evidence_comparisons = diagnostic_evidence.get(
+            "comparisons",
+            [],
+        )
+        evidence_breaches = diagnostic_evidence.get(
+            "guardrail_breaches",
+            [],
+        )
+        evidence_breakpoints = diagnostic_evidence.get(
+            "sensitivity_breakpoints",
+            [],
+        )
+        evidence_findings = diagnostic_evidence.get(
+            "diagnostic_findings",
+            [],
+        )
+        if self._diagnostic_evidence_status_label is not None:
+            evidence_status = str(
+                diagnostic_evidence.get("status", "not_built")
+            )
+            evidence_status_text = (
+                f"Diagnostic Evidence: {evidence_status} | "
+                f"{len(evidence_metrics) if isinstance(evidence_metrics, list) else 0} "
+                "metrics | "
+                f"{len(evidence_comparisons) if isinstance(evidence_comparisons, list) else 0} "
+                "comparisons | "
+                f"{len(evidence_breaches) if isinstance(evidence_breaches, list) else 0} "
+                "guardrail crossings | "
+                f"{len(evidence_breakpoints) if isinstance(evidence_breakpoints, list) else 0} "
+                "sensitivity breakpoints | "
+                f"{len(evidence_findings) if isinstance(evidence_findings, list) else 0} "
+                "findings"
+            )
+            evidence_package_id = diagnostic_evidence.get(
+                "evidence_package_id"
+            )
+            if evidence_package_id:
+                evidence_status_text += f" | {evidence_package_id}"
+            self._diagnostic_evidence_status_label.setText(
+                evidence_status_text
+            )
+        if self._diagnostic_evidence_details_view is not None:
+            evidence_lines = [
+                "Sealed multidimensional evidence",
+                "No universal composite score or strategy ranking is produced.",
+            ]
+            if diagnostic_evidence.get("status") == "sealed":
+                evidence_lines.extend(
+                    (
+                        "Artifact | "
+                        f"{diagnostic_evidence.get('artifact_hash', 'unknown')}",
+                        "Measurement artifact | "
+                        f"{diagnostic_evidence.get('measurement_artifact_hash', 'unknown')}",
+                        "",
+                        "Common metrics",
+                        "Strategy | Layer | Case | Metric | Value",
+                    )
+                )
+                if isinstance(evidence_metrics, list):
+                    for metric in evidence_metrics:
+                        if not isinstance(metric, dict):
+                            continue
+                        evidence_lines.append(
+                            " | ".join(
+                                (
+                                    str(
+                                        metric.get(
+                                            "strategy_id",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(metric.get("layer", "unknown")),
+                                    str(metric.get("case_id", "unknown")),
+                                    str(metric.get("name", "unknown")),
+                                    str(metric.get("value", "unknown")),
+                                )
+                            )
+                        )
+                evidence_lines.extend(
+                    (
+                        "",
+                        "Case and cross-strategy comparisons",
+                        (
+                            "Kind | Subject strategy | Control strategy | "
+                            "Case relationship | Metric | Delta"
+                        ),
+                    )
+                )
+                if (
+                    isinstance(evidence_comparisons, list)
+                    and evidence_comparisons
+                ):
+                    for comparison in evidence_comparisons:
+                        if not isinstance(comparison, dict):
+                            continue
+                        case_relationship = comparison.get("case_id")
+                        if not case_relationship:
+                            case_relationship = (
+                                f"{comparison.get('subject_case_id', 'unknown')}"
+                                " -> "
+                                f"{comparison.get('control_case_id', 'unknown')}"
+                            )
+                        evidence_lines.append(
+                            " | ".join(
+                                (
+                                    str(comparison.get("kind", "unknown")),
+                                    str(
+                                        comparison.get(
+                                            "subject_strategy_id",
+                                            comparison.get(
+                                                "strategy_id",
+                                                "unknown",
+                                            ),
+                                        )
+                                    ),
+                                    str(
+                                        comparison.get(
+                                            "control_strategy_id",
+                                            comparison.get(
+                                                "strategy_id",
+                                                "unknown",
+                                            ),
+                                        )
+                                    ),
+                                    str(case_relationship),
+                                    str(
+                                        comparison.get(
+                                            "metric_name",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(comparison.get("delta", "unknown")),
+                                )
+                            )
+                        )
+                else:
+                    evidence_lines.append(
+                        "No sealed comparisons were produced"
+                    )
+                evidence_lines.extend(("", "Guardrail crossings"))
+                if isinstance(evidence_breaches, list) and evidence_breaches:
+                    for breach in evidence_breaches:
+                        if not isinstance(breach, dict):
+                            continue
+                        threshold = breach.get("threshold", {})
+                        if not isinstance(threshold, dict):
+                            threshold = {}
+                        evidence_lines.append(
+                            " | ".join(
+                                (
+                                    str(
+                                        breach.get(
+                                            "strategy_id",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(breach.get("case_id", "unknown")),
+                                    str(breach.get("metric_name", "unknown")),
+                                    str(breach.get("metric_value", "unknown")),
+                                    str(
+                                        threshold.get(
+                                            "operator",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(
+                                        threshold.get(
+                                            "value",
+                                            "unknown",
+                                        )
+                                    ),
+                                )
+                            )
+                        )
+                else:
+                    evidence_lines.append("No guardrail crossings observed")
+                evidence_lines.extend(("", "Sensitivity breakpoints"))
+                if (
+                    isinstance(evidence_breakpoints, list)
+                    and evidence_breakpoints
+                ):
+                    for breakpoint in evidence_breakpoints:
+                        if not isinstance(breakpoint, dict):
+                            continue
+                        breakpoint_interval = breakpoint.get(
+                            "bounded_interval"
+                        )
+                        breakpoint_level = breakpoint.get("observed_level")
+                        boundary_view = (
+                            breakpoint_interval
+                            if breakpoint_interval
+                            else breakpoint_level
+                        )
+                        evidence_lines.append(
+                            " | ".join(
+                                (
+                                    str(
+                                        breakpoint.get(
+                                            "strategy_id",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(
+                                        breakpoint.get(
+                                            "transformation_family",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(
+                                        breakpoint.get(
+                                            "metric_name",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(boundary_view),
+                                )
+                            )
+                        )
+                else:
+                    evidence_lines.append(
+                        "No observed sensitivity breakpoints"
+                    )
+                evidence_lines.extend(("", "Diagnostic Findings"))
+                if isinstance(evidence_findings, list) and evidence_findings:
+                    for finding in evidence_findings:
+                        if not isinstance(finding, dict):
+                            continue
+                        evidence_lines.append(
+                            " | ".join(
+                                (
+                                    str(finding.get("kind", "unknown")),
+                                    str(
+                                        finding.get(
+                                            "finding_id",
+                                            "unknown",
+                                        )
+                                    ),
+                                    str(finding.get("statement", "")),
+                                )
+                            )
+                        )
+                else:
+                    evidence_lines.append(
+                        "No deterministic findings were produced"
+                    )
+                explanations = self._current_view.get(
+                    "diagnostic_finding_explanations",
+                    {},
+                )
+                if not isinstance(explanations, dict):
+                    explanations = {}
+                evidence_lines.extend(("", "Optional sealed-finding explanations"))
+                explanation_items = explanations.get("explanations", [])
+                if isinstance(explanation_items, list) and explanation_items:
+                    for explanation in explanation_items:
+                        if not isinstance(explanation, dict):
+                            continue
+                        evidence_lines.append(
+                            f"{explanation.get('finding_id', 'unknown')} | "
+                            f"{explanation.get('text', '')}"
+                        )
+                else:
+                    evidence_lines.append(
+                        "No optional explanation requested; measurements remain "
+                        "deterministic and sealed."
+                    )
+            else:
+                evidence_lines.append(
+                    str(
+                        diagnostic_evidence.get(
+                            "message",
+                            "Complete a Formal Diagnostic Campaign first.",
+                        )
+                    )
+                )
+            self._diagnostic_evidence_details_view.setPlainText(
+                "\n".join(evidence_lines)
             )
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):

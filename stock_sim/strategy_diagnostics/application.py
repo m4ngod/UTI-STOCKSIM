@@ -10,6 +10,19 @@ from typing import Callable, Mapping, cast
 from sqlalchemy.engine import Engine
 
 from .baostock_source import BaoStockHistoricalSource
+from .diagnostic_evidence import (
+    DiagnosticEvidenceArtifactStore,
+    DiagnosticEvidenceBuilder,
+    DiagnosticEvidencePackage,
+    DiagnosticExplanationBundle,
+    DiagnosticFindingExplanationProvider,
+    GuardrailThreshold,
+    StrategyGuardrailProfile,
+)
+from .diagnostic_evidence_storage import (
+    JsonDiagnosticEvidenceArtifactStore,
+    SqlDiagnosticEvidenceRepository,
+)
 from .historical_segments import (
     HistoricalMarketSegment,
     HistoricalSegmentAdmissionService,
@@ -128,6 +141,10 @@ class DiagnosticsApplication:
         recipe_assistant: AIRecipeAssistant | None = None,
         recipe_clock: Callable[[], datetime] | None = None,
         ptrade_host: PTradeStrategyHost | None = None,
+        evidence_artifact_store: DiagnosticEvidenceArtifactStore | None = None,
+        finding_explanation_provider: (
+            DiagnosticFindingExplanationProvider | None
+        ) = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
         source = historical_source or BaoStockHistoricalSource()
@@ -167,6 +184,16 @@ class DiagnosticsApplication:
         self._diagnostic_campaigns = DiagnosticCampaignRunner(
             self._execute_diagnostic_campaign_case
         )
+        self._evidence_artifact_store = (
+            evidence_artifact_store
+            or JsonDiagnosticEvidenceArtifactStore.from_environment()
+        )
+        self._diagnostic_evidence = DiagnosticEvidenceBuilder(
+            self._diagnostic_campaigns.get,
+            self._load_reference_path,
+            self._evidence_artifact_store,
+        )
+        self._finding_explanation_provider = finding_explanation_provider
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -193,6 +220,12 @@ class DiagnosticsApplication:
         )
         self._diagnostic_campaigns.replace_repository(
             SqlDiagnosticCampaignRepository(engine)
+        )
+        self._diagnostic_evidence.replace_repository(
+            SqlDiagnosticEvidenceRepository(
+                engine,
+                self._evidence_artifact_store,
+            )
         )
         state = self.start()
         self._state = replace(
@@ -316,8 +349,15 @@ class DiagnosticsApplication:
         catalog_entry = self._transformation_catalog.get_entry(
             requested.transformation_id
         )
+        requested_parameters = (
+            self._transformation_catalog.canonical_parameters(
+                requested.transformation_id,
+                requested.parameters,
+            )
+        )
         if (
             requested.transformation_id != applied.transformation_id
+            or requested_parameters != applied.parameters
             or catalog_entry.family != applied.family
             or catalog_entry.implementation_version
             != applied.implementation_version
@@ -401,8 +441,14 @@ class DiagnosticsApplication:
             catalog_entry = self._transformation_catalog.get_entry(
                 transformation_id
             )
+            requested_parameters = (
+                self._transformation_catalog.canonical_parameters(
+                    transformation_id,
+                    requested.parameters,
+                )
+            )
             if (
-                dict(requested.parameters) != dict(applied.parameters)
+                requested_parameters != applied.parameters
                 or catalog_entry.family != applied.family
                 or catalog_entry.implementation_version
                 != applied.implementation_version
@@ -657,6 +703,116 @@ class DiagnosticsApplication:
             campaign_id,
             case_id,
             nodes_per_batch=nodes_per_batch,
+        )
+
+    def strategy_guardrail_profiles(
+        self,
+    ) -> tuple[StrategyGuardrailProfile, ...]:
+        """Return the explicit versioned V1 profiles for selectable strategies."""
+
+        self.status()
+        return (
+            StrategyGuardrailProfile(
+                strategy_id=QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                strategy_version=QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+                profile_version="quentx-balanced-diagnostics.v1",
+                thresholds=(
+                    GuardrailThreshold(
+                        metric_name="total_return",
+                        operator="less_than",
+                        value=Decimal("-0.05"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="maximum_drawdown",
+                        operator="greater_than",
+                        value=Decimal("0.20"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="turnover",
+                        operator="greater_than",
+                        value=Decimal("8"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="instrument_concentration",
+                        operator="greater_than",
+                        value=Decimal("0.60"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="execution_erosion_bps",
+                        operator="greater_than",
+                        value=Decimal("75"),
+                    ),
+                ),
+            ),
+            StrategyGuardrailProfile(
+                strategy_id=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+                strategy_version=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+                profile_version="live-minute-capital-preservation.v1",
+                thresholds=(
+                    GuardrailThreshold(
+                        metric_name="total_return",
+                        operator="less_than",
+                        value=Decimal("-0.03"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="maximum_drawdown",
+                        operator="greater_than",
+                        value=Decimal("0.15"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="turnover",
+                        operator="greater_than",
+                        value=Decimal("4"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="instrument_concentration",
+                        operator="greater_than",
+                        value=Decimal("0.70"),
+                    ),
+                    GuardrailThreshold(
+                        metric_name="execution_erosion_bps",
+                        operator="greater_than",
+                        value=Decimal("50"),
+                    ),
+                ),
+            ),
+        )
+
+    def build_diagnostic_evidence(
+        self,
+        campaign_id: str,
+        *,
+        guardrail_profiles: tuple[StrategyGuardrailProfile, ...] | None = None,
+    ) -> DiagnosticEvidencePackage:
+        self.status()
+        return self._diagnostic_evidence.build(
+            campaign_id,
+            (
+                guardrail_profiles
+                if guardrail_profiles is not None
+                else self.strategy_guardrail_profiles()
+            ),
+        )
+
+    def diagnostic_evidence_status(
+        self,
+        evidence_package_id: str,
+    ) -> DiagnosticEvidencePackage:
+        self.status()
+        return self._diagnostic_evidence.get(evidence_package_id)
+
+    def explain_diagnostic_findings(
+        self,
+        evidence_package_id: str,
+    ) -> DiagnosticExplanationBundle:
+        self.status()
+        if self._finding_explanation_provider is None:
+            raise RuntimeError(
+                "No Diagnostic Finding explanation provider is configured"
+            )
+        return self._diagnostic_evidence.explain(
+            evidence_package_id,
+            self._finding_explanation_provider,
         )
 
     def create_manual_recipe_draft(
@@ -1081,6 +1237,10 @@ def create_diagnostics_application(
     recipe_assistant: AIRecipeAssistant | None = None,
     recipe_clock: Callable[[], datetime] | None = None,
     ptrade_host: PTradeStrategyHost | None = None,
+    evidence_artifact_store: DiagnosticEvidenceArtifactStore | None = None,
+    finding_explanation_provider: (
+        DiagnosticFindingExplanationProvider | None
+    ) = None,
 ) -> DiagnosticsApplication:
     return DiagnosticsApplication(
         historical_source=historical_source,
@@ -1089,6 +1249,8 @@ def create_diagnostics_application(
         recipe_assistant=recipe_assistant,
         recipe_clock=recipe_clock,
         ptrade_host=ptrade_host,
+        evidence_artifact_store=evidence_artifact_store,
+        finding_explanation_provider=finding_explanation_provider,
     )
 
 

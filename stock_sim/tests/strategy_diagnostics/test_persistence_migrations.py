@@ -68,7 +68,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0010_formal_diagnostic_campaigns"
+    assert first.current_revision == "0011_diagnostic_evidence"
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
@@ -80,13 +80,14 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0008_ptrade_host_audit",
         "0009_isolated_sensitivity_sets",
         "0010_formal_diagnostic_campaigns",
+        "0011_diagnostic_evidence",
     )
-    assert second.current_revision == "0010_formal_diagnostic_campaigns"
+    assert second.current_revision == "0011_diagnostic_evidence"
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0010_formal_diagnostic_campaigns"
+        == "0011_diagnostic_evidence"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -111,6 +112,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0008_ptrade_host_audit",
         "0009_isolated_sensitivity_sets",
         "0010_formal_diagnostic_campaigns",
+        "0011_diagnostic_evidence",
     ]
     strategy_run_columns = {
         column["name"]
@@ -133,6 +135,9 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "diagnostic_strategy_runs",
         "diagnostic_isolated_sensitivity_sets",
         "diagnostic_campaigns",
+        "diagnostic_guardrail_profiles",
+        "diagnostic_evidence_packages",
+        "diagnostic_findings",
         "diagnostic_run_orders",
         "diagnostic_run_fills",
         "diagnostic_run_positions",

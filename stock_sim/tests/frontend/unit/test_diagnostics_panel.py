@@ -19,6 +19,7 @@ from strategy_diagnostics import (
     FiveMinuteBar,
     HistoricalSegmentSelection,
     HistoricalSourceInspection,
+    InMemoryDiagnosticEvidenceArtifactStore,
     InMemoryMarketPathArtifactStore,
     InMemoryHistoricalSource,
     InstrumentState,
@@ -448,6 +449,7 @@ def _market_structure_admittable_application() -> object:
         historical_source=source,
         market_data_source=source,
         artifact_store=InMemoryMarketPathArtifactStore(),
+        evidence_artifact_store=InMemoryDiagnosticEvidenceArtifactStore(),
         recipe_clock=lambda: datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
     )
 
@@ -1569,6 +1571,333 @@ def test_diagnostics_adapter_renders_formal_campaign_layers_and_failures() -> No
     assert "strategy-run-failed" in details
     assert "fixture compound failure" in details
     assert "compound-case-pending" in details
+
+
+def test_application_exposes_versioned_strategy_specific_guardrails() -> None:
+    application = _admittable_application()
+    getattr(application, "start")()
+
+    profiles = getattr(application, "strategy_guardrail_profiles")()
+
+    assert [profile.strategy_id for profile in profiles] == [
+        QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+        LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    ]
+    assert profiles[0].profile_version == "quentx-balanced-diagnostics.v1"
+    assert profiles[1].profile_version == (
+        "live-minute-capital-preservation.v1"
+    )
+    assert profiles[0].profile_id != profiles[1].profile_id
+    assert {
+        threshold.metric_name for threshold in profiles[0].thresholds
+    } >= {
+        "total_return",
+        "maximum_drawdown",
+        "turnover",
+        "instrument_concentration",
+        "execution_erosion_bps",
+    }
+
+
+def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> None:
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _market_structure_admittable_application()
+    )
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    segment_id = str(admitted["segment"]["segment_id"])
+    common = {
+        "segment_id": segment_id,
+        "author": "researcher",
+        "cadence_minutes": 30,
+        "seed": 17,
+        "commission_bps": "3",
+        "slippage_bps": "5",
+    }
+
+    panel.create_baseline_recipe(name="Evidence baseline", **common)
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+    panel.run_baseline_campaign(
+        initial_cash="100000",
+        order_shares=1000,
+        campaign_replica_id="evidence-baseline-anchor",
+    )
+
+    def approve_materialize_and_stage() -> None:
+        validation = panel.validate_current_recipe()
+        assert validation["is_valid"] is True
+        panel.approve_current_recipe(actor="owner")
+        panel.materialize_current_recipe()
+        panel.stage_current_materialization_as_sensitivity_case()
+
+    for level, strength in enumerate(("0.10", "0.20"), start=1):
+        panel.create_trend_regime_recipe(
+            name=f"Trend evidence level {level}",
+            direction="bullish",
+            strength=strength,
+            **common,
+        )
+        approve_materialize_and_stage()
+    for level, multiplier in enumerate(("0.75", "1.25"), start=1):
+        panel.create_volatility_recipe(
+            name=f"Volatility evidence level {level}",
+            multiplier=multiplier,
+            **common,
+        )
+        approve_materialize_and_stage()
+    for level, shock_fraction in enumerate(("0.02", "0.04"), start=1):
+        panel.create_shock_recovery_recipe(
+            name=f"Shock evidence level {level}",
+            direction="bearish",
+            gap_fraction="0.01",
+            shock_fraction=shock_fraction,
+            shock_duration_bars=1,
+            persistence_duration_bars=0,
+            recovery_duration_bars=1,
+            **common,
+        )
+        approve_materialize_and_stage()
+    for level, breadth in enumerate(("0.25", "0.75"), start=1):
+        panel.create_market_structure_recipe(
+            name=f"Structure evidence level {level}",
+            breadth_target=breadth,
+            dispersion_fraction="0.02",
+            sector_concentration="0.75",
+            **common,
+        )
+        approve_materialize_and_stage()
+    for level, multiplier in enumerate(("0.50", "1.50"), start=1):
+        panel.create_liquidity_recipe(
+            name=f"Liquidity evidence level {level}",
+            volume_multiplier=multiplier,
+            cross_sectional_concentration="0.50",
+            **common,
+        )
+        approve_materialize_and_stage()
+    for level, slippage in enumerate(("25", "100"), start=1):
+        panel.create_execution_stress_recipe(
+            name=f"Execution evidence level {level}",
+            override_commission_bps="8",
+            override_slippage_bps=slippage,
+            override_max_fill_fraction="1",
+            override_latency_nodes=0,
+            override_allow_partial_fills=True,
+            rejection_mode="none",
+            **common,
+        )
+        approve_materialize_and_stage()
+
+    isolated = panel.plan_isolated_sensitivity_set(
+        initial_cash="100000",
+        order_shares=1000,
+        sensitivity_set_replica_id="evidence-isolated-set",
+    )
+    assert isolated["completeness"]["total_count"] == 12
+
+    panel.create_compound_recipe(
+        name="Evidence compound stress",
+        transformations=(
+            {
+                "transformation_id": "trend-regime.v1",
+                "parameters": {
+                    "direction": "bearish",
+                    "strength": "0.20",
+                },
+            },
+            {
+                "transformation_id": "volatility-scaling.v1",
+                "parameters": {"multiplier": "1.25"},
+            },
+        ),
+        **common,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+    panel.stage_current_materialization_as_compound_case()
+    planned = panel.plan_diagnostic_campaign(
+        initial_cash="100000",
+        order_shares=1000,
+        campaign_replica_id="formal-evidence-vertical",
+    )
+    assert planned["campaign_type"] == "formal_diagnostic_campaign"
+    completed = panel.resume_diagnostic_campaign()
+    assert completed["status"] == "completed"
+
+    evidence = panel.build_diagnostic_evidence()
+
+    assert evidence["status"] == "sealed"
+    assert evidence["campaign_id"] == completed["campaign_id"]
+    assert evidence["artifact_hash"]
+    assert evidence["measurement_artifact_hash"]
+    metric_names = {metric["name"] for metric in evidence["metrics"]}
+    assert {
+        "total_return",
+        "net_return",
+        "benchmark_relative_return",
+        "maximum_drawdown",
+        "maximum_recovery_duration_minutes",
+        "return_volatility",
+        "turnover",
+        "average_holding_duration_minutes",
+        "average_cash_utilization",
+        "instrument_concentration",
+        "industry_concentration",
+        "trade_count",
+        "total_fees",
+        "fill_count",
+        "partial_fill_count",
+        "unfilled_quantity",
+        "rejection_count",
+        "execution_erosion",
+    } <= metric_names
+    assert any(
+        comparison["kind"] == "cross-strategy"
+        and comparison["layer"] == "compound"
+        for comparison in evidence["comparisons"]
+    )
+    assert evidence["sensitivity_curves"]
+    assert evidence["diagnostic_findings"]
+    assert "composite_score" not in repr(evidence)
+    assert panel.get_view()["diagnostic_evidence"] == evidence
+
+    replacement = panel.plan_diagnostic_campaign(
+        initial_cash="100000",
+        order_shares=1000,
+        campaign_replica_id="formal-evidence-replacement",
+    )
+
+    assert replacement["campaign_id"] != completed["campaign_id"]
+    replacement_view = panel.get_view()
+    assert replacement_view["diagnostic_evidence"]["status"] == "not_built"
+    assert "evidence_package_id" not in replacement_view[
+        "diagnostic_evidence"
+    ]
+    assert replacement_view["diagnostic_finding_explanations"]["status"] == (
+        "not_requested"
+    )
+    with pytest.raises(
+        ValueError,
+        match="No sealed Diagnostic Evidence Package",
+    ):
+        panel.refresh_diagnostic_evidence()
+    with pytest.raises(
+        ValueError,
+        match="No sealed Diagnostic Evidence Package",
+    ):
+        panel.explain_diagnostic_findings()
+
+
+def test_diagnostics_adapter_renders_sealed_multidimensional_evidence() -> None:
+    _ensure_qapp()
+    adapter = DiagnosticsPanelAdapter()
+    adapter.widget()
+    adapter._apply_view(
+        {
+            "diagnostic_evidence": {
+                "status": "sealed",
+                "evidence_package_id": "diagnostic-evidence-fixture",
+                "artifact_hash": "a" * 64,
+                "measurement_artifact_hash": "b" * 64,
+                "metrics": [
+                    {
+                        "strategy_id": QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                        "layer": "baseline",
+                        "case_id": "baseline-case",
+                        "name": "total_return",
+                        "value": "0.12",
+                    },
+                    {
+                        "strategy_id": QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                        "layer": "compound",
+                        "case_id": "compound-case",
+                        "name": "execution_erosion_bps",
+                        "value": "84",
+                    },
+                ],
+                "comparisons": [
+                    {
+                        "kind": "cross-strategy",
+                        "metric_name": "total_return",
+                        "case_id": "compound-case",
+                        "subject_strategy_id": (
+                            QUENTX_SCENARIO_NATIVE_STRATEGY_ID
+                        ),
+                        "control_strategy_id": (
+                            LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID
+                        ),
+                        "delta": "0.04",
+                    }
+                ],
+                "guardrail_breaches": [
+                    {
+                        "strategy_id": QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                        "case_id": "compound-case",
+                        "metric_name": "execution_erosion_bps",
+                        "metric_value": "84",
+                        "threshold": {
+                            "operator": "greater_than",
+                            "value": "75",
+                        },
+                    }
+                ],
+                "sensitivity_breakpoints": [
+                    {
+                        "strategy_id": QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                        "transformation_family": "liquidity",
+                        "metric_name": "execution_erosion_bps",
+                        "bounded_interval": {
+                            "lower_parameters": {"level": "1"},
+                            "upper_parameters": {"level": "2"},
+                        },
+                    }
+                ],
+                "diagnostic_findings": [
+                    {
+                        "kind": "weakness",
+                        "finding_id": "diagnostic-finding-fixture",
+                        "statement": (
+                            "Execution erosion crossed the selected guardrail."
+                        ),
+                    }
+                ],
+            },
+            "diagnostic_finding_explanations": {
+                "status": "available",
+                "explanations": [
+                    {
+                        "finding_id": "diagnostic-finding-fixture",
+                        "text": "The sealed finding is sensitive to liquidity.",
+                    }
+                ],
+            },
+        }
+    )
+
+    status = adapter._diagnostic_evidence_status_label.text()
+    assert "sealed" in status
+    assert "2 metrics" in status
+    assert "1 comparisons" in status
+    assert "1 guardrail crossings" in status
+    assert "1 sensitivity breakpoints" in status
+    assert "1 findings" in status
+    details = adapter._diagnostic_evidence_details_view.toPlainText()
+    assert "No universal composite score or strategy ranking" in details
+    assert "total_return | 0.12" in details
+    assert (
+        f"cross-strategy | {QUENTX_SCENARIO_NATIVE_STRATEGY_ID} | "
+        f"{LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID} | compound-case | "
+        "total_return | 0.04"
+    ) in details
+    assert "execution_erosion_bps | 84 | greater_than | 75" in details
+    assert "liquidity | execution_erosion_bps" in details
+    assert "diagnostic-finding-fixture" in details
+    assert "The sealed finding is sensitive to liquidity." in details
 
 
 def test_diagnostics_adapter_runs_a_staged_compound_quick_experiment() -> None:

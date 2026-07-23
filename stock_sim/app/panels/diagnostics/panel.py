@@ -192,6 +192,21 @@ class DiagnosticsApplicationPort(Protocol):
         nodes_per_batch: int = 10_000,
     ) -> _StrategyRunSnapshot: ...
 
+    def build_diagnostic_evidence(
+        self,
+        campaign_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def diagnostic_evidence_status(
+        self,
+        evidence_package_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def explain_diagnostic_findings(
+        self,
+        evidence_package_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
     def strategy_run_status(self, run_id: str) -> _StrategyRunSnapshot: ...
 
     def advance_strategy_run(
@@ -278,6 +293,24 @@ class DiagnosticsPanel:
             "failures": [],
             "compound_case_outcomes": [],
         }
+        self._diagnostic_evidence: dict[str, object] = {
+            "status": "not_built",
+            "message": (
+                "Complete a Formal Diagnostic Campaign to seal evidence."
+            ),
+            "metrics": [],
+            "comparisons": [],
+            "guardrail_breaches": [],
+            "sensitivity_breakpoints": [],
+            "diagnostic_findings": [],
+        }
+        self._diagnostic_explanations: dict[str, object] = {
+            "status": "not_requested",
+            "message": (
+                "Optional explanations can reference sealed findings only."
+            ),
+            "explanations": [],
+        }
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
@@ -306,6 +339,10 @@ class DiagnosticsPanel:
             "cases": [dict(case) for case in self._compound_case_views],
         }
         view["diagnostic_campaign"] = dict(self._diagnostic_campaign)
+        view["diagnostic_evidence"] = dict(self._diagnostic_evidence)
+        view["diagnostic_finding_explanations"] = dict(
+            self._diagnostic_explanations
+        )
         return view
 
     def admit_historical_segment(
@@ -983,6 +1020,51 @@ class DiagnosticsPanel:
         )
         return self._record_diagnostic_campaign(snapshot)
 
+    def build_diagnostic_evidence(self) -> dict[str, object]:
+        campaign_id = self._diagnostic_campaign_id()
+        package = self._application.build_diagnostic_evidence(
+            campaign_id
+        )
+        evidence = package.to_dict()
+        if evidence.get("campaign_id") != campaign_id:
+            raise ValueError(
+                "Diagnostic Evidence Package does not belong to the current "
+                "Diagnostic Campaign"
+            )
+        self._diagnostic_evidence = evidence
+        self._diagnostic_explanations = {
+            "status": "not_requested",
+            "message": (
+                "Optional explanations can reference sealed findings only."
+            ),
+            "explanations": [],
+        }
+        return dict(self._diagnostic_evidence)
+
+    def refresh_diagnostic_evidence(self) -> dict[str, object]:
+        campaign_id = self._diagnostic_campaign_id()
+        package = self._application.diagnostic_evidence_status(
+            self._diagnostic_evidence_id()
+        )
+        evidence = package.to_dict()
+        if evidence.get("campaign_id") != campaign_id:
+            raise ValueError(
+                "Diagnostic Evidence Package does not belong to the current "
+                "Diagnostic Campaign"
+            )
+        self._diagnostic_evidence = evidence
+        return dict(self._diagnostic_evidence)
+
+    def explain_diagnostic_findings(self) -> dict[str, object]:
+        bundle = self._application.explain_diagnostic_findings(
+            self._diagnostic_evidence_id()
+        )
+        self._diagnostic_explanations = {
+            "status": "available",
+            **bundle.to_dict(),
+        }
+        return dict(self._diagnostic_explanations)
+
     def advance_baseline_run(self, *, node_count: int = 1) -> dict[str, object]:
         snapshot = self._application.advance_strategy_run(
             self._baseline_run_id(),
@@ -1051,8 +1133,49 @@ class DiagnosticsPanel:
         self,
         snapshot: _StrategyRunSnapshot,
     ) -> dict[str, object]:
-        self._diagnostic_campaign = snapshot.to_dict()
+        previous_campaign_id = self._diagnostic_campaign.get("campaign_id")
+        campaign = snapshot.to_dict()
+        next_campaign_id = campaign.get("campaign_id")
+        if (
+            isinstance(next_campaign_id, str)
+            and next_campaign_id != previous_campaign_id
+        ):
+            self._diagnostic_evidence = {
+                "status": "not_built",
+                "message": (
+                    "Complete this Formal Diagnostic Campaign to seal evidence."
+                ),
+                "metrics": [],
+                "comparisons": [],
+                "guardrail_breaches": [],
+                "sensitivity_breakpoints": [],
+                "diagnostic_findings": [],
+            }
+            self._diagnostic_explanations = {
+                "status": "not_requested",
+                "message": (
+                    "Optional explanations can reference sealed findings only."
+                ),
+                "explanations": [],
+            }
+        self._diagnostic_campaign = campaign
         return dict(self._diagnostic_campaign)
+
+    def _diagnostic_evidence_id(self) -> str:
+        evidence_package_id = self._diagnostic_evidence.get(
+            "evidence_package_id"
+        )
+        if not isinstance(evidence_package_id, str):
+            raise ValueError("No sealed Diagnostic Evidence Package exists")
+        if (
+            self._diagnostic_evidence.get("campaign_id")
+            != self._diagnostic_campaign_id()
+        ):
+            raise ValueError(
+                "No sealed Diagnostic Evidence Package exists for the current "
+                "Diagnostic Campaign"
+            )
+        return evidence_package_id
 
     def _require_workbench_item(self, key: str) -> dict[str, object]:
         item = self._recipe_workbench.get(key)

@@ -186,6 +186,26 @@ from .formal_diagnostic_campaigns import (
     InMemoryDiagnosticCampaignRepository,
     SqlDiagnosticCampaignRepository,
 )
+from .diagnostic_evidence import (
+    DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION,
+    EVIDENCE_FAMILIES,
+    DiagnosticEvidenceArtifactStore,
+    DiagnosticEvidenceBuilder,
+    DiagnosticEvidencePackage,
+    DiagnosticEvidenceRepository,
+    DiagnosticExplanationBundle,
+    DiagnosticFindingExplanation,
+    DiagnosticFindingExplanationProvider,
+    GuardrailThreshold,
+    InMemoryDiagnosticEvidenceRepository,
+    SealedFindingExplanationRequest,
+    StrategyGuardrailProfile,
+)
+from .diagnostic_evidence_storage import (
+    InMemoryDiagnosticEvidenceArtifactStore,
+    JsonDiagnosticEvidenceArtifactStore,
+    SqlDiagnosticEvidenceRepository,
+)
 
 __all__ = [
     "AIRecipeAssistant",
@@ -346,5 +366,21 @@ __all__ = [
     "DiagnosticCampaignSpecification",
     "InMemoryDiagnosticCampaignRepository",
     "SqlDiagnosticCampaignRepository",
+    "DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION",
+    "EVIDENCE_FAMILIES",
+    "DiagnosticEvidenceArtifactStore",
+    "DiagnosticEvidenceBuilder",
+    "DiagnosticEvidencePackage",
+    "DiagnosticEvidenceRepository",
+    "DiagnosticExplanationBundle",
+    "DiagnosticFindingExplanation",
+    "DiagnosticFindingExplanationProvider",
+    "GuardrailThreshold",
+    "InMemoryDiagnosticEvidenceArtifactStore",
+    "InMemoryDiagnosticEvidenceRepository",
+    "JsonDiagnosticEvidenceArtifactStore",
+    "SealedFindingExplanationRequest",
+    "SqlDiagnosticEvidenceRepository",
+    "StrategyGuardrailProfile",
     "create_diagnostics_application",
 ]
