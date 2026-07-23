@@ -173,6 +173,19 @@ from .isolated_sensitivity_sets import (
     SensitivitySetStatus,
     SqlIsolatedSensitivitySetRepository,
 )
+from .formal_diagnostic_campaigns import (
+    DIAGNOSTIC_CAMPAIGN_SCHEMA_VERSION,
+    CampaignTransformation,
+    DiagnosticCampaignCase,
+    DiagnosticCampaignCaseAttempt,
+    DiagnosticCampaignCaseSnapshot,
+    DiagnosticCampaignRepository,
+    DiagnosticCampaignRunner,
+    DiagnosticCampaignSnapshot,
+    DiagnosticCampaignSpecification,
+    InMemoryDiagnosticCampaignRepository,
+    SqlDiagnosticCampaignRepository,
+)
 
 __all__ = [
     "AIRecipeAssistant",
@@ -322,5 +335,16 @@ __all__ = [
     "SensitivitySweepDefinition",
     "SensitivitySetStatus",
     "SqlIsolatedSensitivitySetRepository",
+    "DIAGNOSTIC_CAMPAIGN_SCHEMA_VERSION",
+    "CampaignTransformation",
+    "DiagnosticCampaignCase",
+    "DiagnosticCampaignCaseAttempt",
+    "DiagnosticCampaignCaseSnapshot",
+    "DiagnosticCampaignRepository",
+    "DiagnosticCampaignRunner",
+    "DiagnosticCampaignSnapshot",
+    "DiagnosticCampaignSpecification",
+    "InMemoryDiagnosticCampaignRepository",
+    "SqlDiagnosticCampaignRepository",
     "create_diagnostics_application",
 ]

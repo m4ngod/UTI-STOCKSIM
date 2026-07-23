@@ -28,6 +28,11 @@ class _SensitivityCampaignCase(Protocol):
     def to_dict(self) -> dict[str, object]: ...
 
 
+class _DiagnosticCampaignCase(_SensitivityCampaignCase, Protocol):
+    @property
+    def layer(self) -> str: ...
+
+
 class DiagnosticsApplicationPort(Protocol):
     def start(self) -> _DiagnosticsState: ...
 
@@ -146,6 +151,47 @@ class DiagnosticsApplicationPort(Protocol):
         nodes_per_batch: int = 10_000,
     ) -> _StrategyRunSnapshot: ...
 
+    def create_diagnostic_campaign_case(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+    ) -> _DiagnosticCampaignCase: ...
+
+    def plan_diagnostic_campaign(
+        self,
+        *,
+        baseline_anchor: tuple[str, str] | None,
+        isolated_sensitivity_set_id: str | None,
+        compound_case_anchors: tuple[tuple[str, str], ...],
+        initial_cash: Decimal,
+        order_shares: int,
+        campaign_replica_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def advance_diagnostic_campaign(
+        self,
+        campaign_id: str,
+        *,
+        max_cases: int = 1,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
+    def resume_diagnostic_campaign(
+        self,
+        campaign_id: str,
+        *,
+        max_cases: int | None = None,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
+    def retry_diagnostic_campaign_case(
+        self,
+        campaign_id: str,
+        case_id: str,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> _StrategyRunSnapshot: ...
+
     def strategy_run_status(self, run_id: str) -> _StrategyRunSnapshot: ...
 
     def advance_strategy_run(
@@ -198,6 +244,7 @@ class DiagnosticsPanel:
                 "Materialize an approved anchored recipe to compare both strategies."
             ),
         }
+        self._baseline_campaign_anchor: tuple[str, str] | None = None
         self._sensitivity_case_anchors: list[tuple[str, str]] = []
         self._sensitivity_case_views: list[dict[str, object]] = []
         self._isolated_sensitivity_set: dict[str, object] = {
@@ -206,6 +253,30 @@ class DiagnosticsPanel:
                 "Stage approved single-family materializations before planning."
             ),
             "sensitivity_curves": [],
+        }
+        self._compound_case_anchors: list[tuple[str, str]] = []
+        self._compound_case_views: list[dict[str, object]] = []
+        self._diagnostic_campaign: dict[str, object] = {
+            "status": "not_planned",
+            "campaign_type": "quick_experiment",
+            "formal_attribution": {
+                "eligible": False,
+                "claim_status": "not_permitted",
+                "missing_layers": [
+                    "baseline",
+                    "isolated_sensitivity",
+                    "compound",
+                ],
+            },
+            "progress": {
+                "completed_count": 0,
+                "incomplete_count": 0,
+                "pending_count": 0,
+                "total_count": 0,
+            },
+            "layers": {},
+            "failures": [],
+            "compound_case_outcomes": [],
         }
         self._application.start()
 
@@ -230,6 +301,11 @@ class DiagnosticsPanel:
         view["isolated_sensitivity_set"] = dict(
             self._isolated_sensitivity_set
         )
+        view["compound_campaign_case_staging"] = {
+            "case_count": len(self._compound_case_views),
+            "cases": [dict(case) for case in self._compound_case_views],
+        }
+        view["diagnostic_campaign"] = dict(self._diagnostic_campaign)
         return view
 
     def admit_historical_segment(
@@ -354,6 +430,39 @@ class DiagnosticsPanel:
                     "parameters": {"multiplier": multiplier},
                 },
             ),
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+            max_fill_fraction=max_fill_fraction,
+            latency_nodes=latency_nodes,
+            allow_partial_fills=allow_partial_fills,
+        )
+
+    def create_compound_recipe(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        author: str,
+        cadence_minutes: int,
+        seed: int,
+        transformations: tuple[dict[str, object], ...],
+        commission_bps: str = "3",
+        slippage_bps: str = "0",
+        max_fill_fraction: str = "1",
+        latency_nodes: int = 0,
+        allow_partial_fills: bool = True,
+    ) -> dict[str, object]:
+        if len(transformations) < 2:
+            raise ValueError(
+                "A Compound Scenario Case requires at least two transformations"
+            )
+        return self._create_recipe(
+            name=name,
+            segment_id=segment_id,
+            author=author,
+            cadence_minutes=cadence_minutes,
+            seed=seed,
+            transformations=transformations,
             commission_bps=commission_bps,
             slippage_bps=slippage_bps,
             max_fill_fraction=max_fill_fraction,
@@ -689,6 +798,10 @@ class DiagnosticsPanel:
             campaign_replica_id=campaign_replica_id,
             nodes_per_batch=nodes_per_batch,
         )
+        self._baseline_campaign_anchor = (
+            str(materialization["recipe_version_id"]),
+            str(materialization["artifact_hash"]),
+        )
         self._baseline_campaign = snapshot.to_dict()
         return dict(self._baseline_campaign)
 
@@ -774,6 +887,102 @@ class DiagnosticsPanel:
         )
         return self._record_isolated_sensitivity_set(snapshot)
 
+    def stage_current_materialization_as_compound_case(
+        self,
+    ) -> dict[str, object]:
+        materialization = self._recipe_workbench.get("materialization")
+        if not isinstance(materialization, dict):
+            raise ValueError(
+                "Materialize an approved compound recipe before staging a case"
+            )
+        case = self._application.create_diagnostic_campaign_case(
+            str(materialization["recipe_version_id"]),
+            str(materialization["artifact_hash"]),
+        )
+        if case.layer != "compound":
+            raise ValueError(
+                "A Compound Scenario Case requires at least two transformations"
+            )
+        if any(
+            str(existing.get("case_id")) == case.case_id
+            for existing in self._compound_case_views
+        ):
+            raise ValueError("This Compound Campaign Case is already staged")
+        case_view = case.to_dict()
+        case_view["case_id"] = case.case_id
+        case_view["layer"] = case.layer
+        self._compound_case_anchors.append(
+            (
+                str(materialization["recipe_version_id"]),
+                str(materialization["artifact_hash"]),
+            )
+        )
+        self._compound_case_views.append(case_view)
+        return dict(case_view)
+
+    def plan_diagnostic_campaign(
+        self,
+        *,
+        initial_cash: str,
+        order_shares: int,
+        campaign_replica_id: str,
+    ) -> dict[str, object]:
+        isolated_sensitivity_set_id = self._isolated_sensitivity_set.get(
+            "sensitivity_set_id"
+        )
+        snapshot = self._application.plan_diagnostic_campaign(
+            baseline_anchor=self._baseline_campaign_anchor,
+            isolated_sensitivity_set_id=(
+                str(isolated_sensitivity_set_id)
+                if isinstance(isolated_sensitivity_set_id, str)
+                else None
+            ),
+            compound_case_anchors=tuple(self._compound_case_anchors),
+            initial_cash=Decimal(initial_cash),
+            order_shares=order_shares,
+            campaign_replica_id=campaign_replica_id,
+        )
+        return self._record_diagnostic_campaign(snapshot)
+
+    def advance_diagnostic_campaign(
+        self,
+        *,
+        max_cases: int = 1,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.advance_diagnostic_campaign(
+            self._diagnostic_campaign_id(),
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_diagnostic_campaign(snapshot)
+
+    def resume_diagnostic_campaign(
+        self,
+        *,
+        max_cases: int | None = None,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.resume_diagnostic_campaign(
+            self._diagnostic_campaign_id(),
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_diagnostic_campaign(snapshot)
+
+    def retry_diagnostic_campaign_case(
+        self,
+        *,
+        case_id: str,
+        nodes_per_batch: int = 10_000,
+    ) -> dict[str, object]:
+        snapshot = self._application.retry_diagnostic_campaign_case(
+            self._diagnostic_campaign_id(),
+            case_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+        return self._record_diagnostic_campaign(snapshot)
+
     def advance_baseline_run(self, *, node_count: int = 1) -> dict[str, object]:
         snapshot = self._application.advance_strategy_run(
             self._baseline_run_id(),
@@ -831,6 +1040,19 @@ class DiagnosticsPanel:
     ) -> dict[str, object]:
         self._isolated_sensitivity_set = snapshot.to_dict()
         return dict(self._isolated_sensitivity_set)
+
+    def _diagnostic_campaign_id(self) -> str:
+        campaign_id = self._diagnostic_campaign.get("campaign_id")
+        if not isinstance(campaign_id, str):
+            raise ValueError("No Diagnostic Campaign has been planned")
+        return campaign_id
+
+    def _record_diagnostic_campaign(
+        self,
+        snapshot: _StrategyRunSnapshot,
+    ) -> dict[str, object]:
+        self._diagnostic_campaign = snapshot.to_dict()
+        return dict(self._diagnostic_campaign)
 
     def _require_workbench_item(self, key: str) -> dict[str, object]:
         item = self._recipe_workbench.get(key)

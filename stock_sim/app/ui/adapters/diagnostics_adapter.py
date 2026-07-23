@@ -138,6 +138,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._create_recipe_button: Any = None
         self._create_trend_recipe_button: Any = None
         self._create_volatility_recipe_button: Any = None
+        self._create_compound_recipe_button: Any = None
         self._create_shock_recovery_recipe_button: Any = None
         self._create_market_structure_recipe_button: Any = None
         self._create_liquidity_recipe_button: Any = None
@@ -172,6 +173,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._resume_sensitivity_set_button: Any = None
         self._sensitivity_retry_case_input: Any = None
         self._retry_sensitivity_case_button: Any = None
+        self._diagnostic_campaign_status_label: Any = None
+        self._diagnostic_campaign_details_view: Any = None
+        self._stage_compound_case_button: Any = None
+        self._plan_diagnostic_campaign_button: Any = None
+        self._advance_diagnostic_campaign_button: Any = None
+        self._resume_diagnostic_campaign_button: Any = None
+        self._diagnostic_retry_case_input: Any = None
+        self._retry_diagnostic_campaign_case_button: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._run_action_error = ""
@@ -316,6 +325,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._create_volatility_recipe_button.clicked.connect(
             self._create_volatility_recipe_from_inputs
         )
+        self._create_compound_recipe_button = QPushButton(
+            "Create trend plus volatility compound recipe"
+        )
+        self._create_compound_recipe_button.clicked.connect(
+            self._create_compound_recipe_from_inputs
+        )
         self._create_shock_recovery_recipe_button = QPushButton(
             "Create shock and recovery recipe"
         )
@@ -448,6 +463,49 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._retry_sensitivity_case_button.clicked.connect(
             self._retry_sensitivity_case
         )
+        self._diagnostic_campaign_status_label = QLabel(
+            "Diagnostic Campaign: not planned"
+        )
+        self._diagnostic_campaign_details_view = QPlainTextEdit()
+        self._diagnostic_campaign_details_view.setReadOnly(True)
+        self._diagnostic_campaign_details_view.setPlainText(
+            "Plan a Formal Diagnostic Campaign or Quick Experiment to inspect "
+            "layer progress and compound outcomes."
+        )
+        self._stage_compound_case_button = QPushButton(
+            "Stage current materialization as compound case"
+        )
+        self._stage_compound_case_button.clicked.connect(
+            self._stage_current_compound_case
+        )
+        self._plan_diagnostic_campaign_button = QPushButton(
+            "Plan Diagnostic Campaign"
+        )
+        self._plan_diagnostic_campaign_button.clicked.connect(
+            self._plan_diagnostic_campaign_from_inputs
+        )
+        self._advance_diagnostic_campaign_button = QPushButton(
+            "Run next diagnostic campaign case"
+        )
+        self._advance_diagnostic_campaign_button.clicked.connect(
+            self._advance_diagnostic_campaign
+        )
+        self._resume_diagnostic_campaign_button = QPushButton(
+            "Resume pending diagnostic campaign cases"
+        )
+        self._resume_diagnostic_campaign_button.clicked.connect(
+            self._resume_diagnostic_campaign
+        )
+        self._diagnostic_retry_case_input = QLineEdit("")
+        self._diagnostic_retry_case_input.setPlaceholderText(
+            "Incomplete diagnostic campaign case id to retry"
+        )
+        self._retry_diagnostic_campaign_case_button = QPushButton(
+            "Retry incomplete diagnostic campaign case"
+        )
+        self._retry_diagnostic_campaign_case_button.clicked.connect(
+            self._retry_diagnostic_campaign_case
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -502,6 +560,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._create_recipe_button)
         layout.addWidget(self._create_trend_recipe_button)
         layout.addWidget(self._create_volatility_recipe_button)
+        layout.addWidget(self._create_compound_recipe_button)
         layout.addWidget(self._create_shock_recovery_recipe_button)
         layout.addWidget(self._create_market_structure_recipe_button)
         layout.addWidget(self._create_liquidity_recipe_button)
@@ -536,6 +595,14 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._resume_sensitivity_set_button)
         layout.addWidget(self._sensitivity_retry_case_input)
         layout.addWidget(self._retry_sensitivity_case_button)
+        layout.addWidget(self._stage_compound_case_button)
+        layout.addWidget(self._plan_diagnostic_campaign_button)
+        layout.addWidget(self._advance_diagnostic_campaign_button)
+        layout.addWidget(self._resume_diagnostic_campaign_button)
+        layout.addWidget(self._diagnostic_retry_case_input)
+        layout.addWidget(self._retry_diagnostic_campaign_case_button)
+        layout.addWidget(self._diagnostic_campaign_status_label)
+        layout.addWidget(self._diagnostic_campaign_details_view)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -579,6 +646,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
     def _create_volatility_recipe_from_inputs(self) -> None:
         self._submit_recipe_from_inputs(recipe_kind="volatility")
 
+    def _create_compound_recipe_from_inputs(self) -> None:
+        self._submit_recipe_from_inputs(recipe_kind="compound")
+
     def _create_shock_recovery_recipe_from_inputs(self) -> None:
         self._submit_recipe_from_inputs(recipe_kind="shock-recovery")
 
@@ -598,6 +668,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             "baseline",
             "trend",
             "volatility",
+            "compound",
             "shock-recovery",
             "market-structure",
             "liquidity",
@@ -617,6 +688,31 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 self._logic.create_volatility_recipe(
                     **recipe_arguments,
                     multiplier=str(self._volatility_multiplier_input.text()),
+                )
+            elif recipe_kind == "compound":
+                self._logic.create_compound_recipe(
+                    **recipe_arguments,
+                    transformations=(
+                        {
+                            "transformation_id": "trend-regime.v1",
+                            "parameters": {
+                                "direction": str(
+                                    self._trend_direction_input.text()
+                                ),
+                                "strength": str(
+                                    self._trend_strength_input.text()
+                                ),
+                            },
+                        },
+                        {
+                            "transformation_id": "volatility-scaling.v1",
+                            "parameters": {
+                                "multiplier": str(
+                                    self._volatility_multiplier_input.text()
+                                )
+                            },
+                        },
+                    ),
                 )
             elif recipe_kind == "shock-recovery":
                 self._logic.create_shock_recovery_recipe(
@@ -702,6 +798,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 "baseline": "recipe",
                 "trend": "trend/regime",
                 "volatility": "volatility",
+                "compound": "trend plus volatility compound",
                 "shock-recovery": "shock and recovery",
                 "market-structure": "market structure",
                 "liquidity": "liquidity stress",
@@ -845,6 +942,43 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._apply_run_action(
             lambda: self._logic.retry_isolated_sensitivity_case(
                 case_id=str(self._sensitivity_retry_case_input.text()).strip()
+            )
+        )
+
+    def _stage_current_compound_case(self) -> None:
+        self._apply_run_action(
+            self._logic.stage_current_materialization_as_compound_case
+        )
+
+    def _plan_diagnostic_campaign_from_inputs(self) -> None:
+        self._apply_run_action(
+            lambda: self._logic.plan_diagnostic_campaign(
+                initial_cash=str(
+                    self._run_initial_cash_input.text()
+                ).strip(),
+                order_shares=int(
+                    str(self._run_order_shares_input.text()).strip()
+                ),
+                campaign_replica_id=str(
+                    self._run_replica_input.text()
+                ).strip(),
+            )
+        )
+
+    def _advance_diagnostic_campaign(self) -> None:
+        self._apply_run_action(
+            lambda: self._logic.advance_diagnostic_campaign(max_cases=1)
+        )
+
+    def _resume_diagnostic_campaign(self) -> None:
+        self._apply_run_action(self._logic.resume_diagnostic_campaign)
+
+    def _retry_diagnostic_campaign_case(self) -> None:
+        self._apply_run_action(
+            lambda: self._logic.retry_diagnostic_campaign_case(
+                case_id=str(
+                    self._diagnostic_retry_case_input.text()
+                ).strip()
             )
         )
 
@@ -1442,6 +1576,128 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                                 )
                             )
             self._sensitivity_curves_view.setPlainText("\n".join(curve_lines))
+        diagnostic_campaign = self._current_view.get(
+            "diagnostic_campaign", {}
+        )
+        if not isinstance(diagnostic_campaign, dict):
+            diagnostic_campaign = {}
+        campaign_progress = diagnostic_campaign.get("progress", {})
+        if not isinstance(campaign_progress, dict):
+            campaign_progress = {}
+        attribution = diagnostic_campaign.get("formal_attribution", {})
+        if not isinstance(attribution, dict):
+            attribution = {}
+        campaign_type = str(
+            diagnostic_campaign.get("campaign_type", "not_planned")
+        )
+        campaign_type_label = {
+            "formal_diagnostic_campaign": "Formal Diagnostic Campaign",
+            "quick_experiment": "Quick Experiment",
+        }.get(campaign_type, "Diagnostic Campaign")
+        if self._diagnostic_campaign_status_label is not None:
+            status_text = (
+                f"{campaign_type_label}: "
+                f"{diagnostic_campaign.get('status', 'not_planned')} | "
+                f"{campaign_progress.get('completed_count', 0)}/"
+                f"{campaign_progress.get('total_count', 0)} complete | "
+                f"{campaign_progress.get('incomplete_count', 0)} failed | "
+                f"{campaign_progress.get('pending_count', 0)} pending | "
+                "attribution "
+                f"{attribution.get('claim_status', 'not_permitted')}"
+            )
+            campaign_id = diagnostic_campaign.get("campaign_id")
+            if campaign_id:
+                status_text += f" | {campaign_id}"
+            self._diagnostic_campaign_status_label.setText(status_text)
+        if self._diagnostic_campaign_details_view is not None:
+            detail_lines = [
+                "Layer | Status | Complete | Failed | Pending"
+            ]
+            layers = diagnostic_campaign.get("layers", {})
+            if not isinstance(layers, dict):
+                layers = {}
+            for key, label in (
+                ("baseline", "Baseline"),
+                ("isolated_sensitivity", "Isolated Sensitivity"),
+                ("compound", "Compound"),
+            ):
+                layer = layers.get(key, {})
+                if not isinstance(layer, dict):
+                    layer = {}
+                completed_count = layer.get("completed_count", 0)
+                total_count = layer.get("total_count", 0)
+                incomplete_count = layer.get("incomplete_count", 0)
+                pending_count = layer.get("pending_count", 0)
+                line = (
+                    f"{label} | {layer.get('status', 'not_planned')} | "
+                    f"{completed_count}/{total_count} complete"
+                )
+                if incomplete_count:
+                    line += f" | {incomplete_count} failed"
+                if pending_count:
+                    line += f" | {pending_count} pending"
+                detail_lines.append(line)
+            detail_lines.extend(("", "Failures"))
+            failures = diagnostic_campaign.get("failures", [])
+            if isinstance(failures, list) and failures:
+                for failure in failures:
+                    if not isinstance(failure, dict):
+                        continue
+                    identity_parts = tuple(
+                        str(failure[key])
+                        for key in ("strategy_id", "run_id")
+                        if failure.get(key)
+                    )
+                    detail_lines.append(
+                        " | ".join(
+                            (
+                                str(failure.get("case_id", "unknown")),
+                                str(failure.get("layer", "unknown")),
+                                "attempt "
+                                f"{failure.get('attempt_number', 'unknown')}",
+                                *identity_parts,
+                                str(failure.get("code", "unknown")),
+                                str(failure.get("message", "")),
+                            )
+                        )
+                    )
+            else:
+                detail_lines.append("No campaign failures recorded")
+            detail_lines.extend(("", "Compound Case Outcomes"))
+            outcomes = diagnostic_campaign.get("compound_case_outcomes", [])
+            if isinstance(outcomes, list) and outcomes:
+                for outcome in outcomes:
+                    if not isinstance(outcome, dict):
+                        continue
+                    members = outcome.get("members", [])
+                    member_summary = (
+                        ", ".join(
+                            f"{member.get('strategy_id', 'unknown')}="
+                            f"{member.get('status', 'unknown')}"
+                            for member in members
+                            if isinstance(member, dict)
+                        )
+                        if isinstance(members, list)
+                        else ""
+                    )
+                    detail_lines.append(
+                        " | ".join(
+                            (
+                                str(outcome.get("case_id", "unknown")),
+                                str(outcome.get("status", "unknown")),
+                                "attempt "
+                                f"{outcome.get('attempt_number', 'unknown')}",
+                                "campaign="
+                                f"{outcome.get('campaign_id') or 'none'}",
+                                f"members={member_summary or 'none'}",
+                            )
+                        )
+                    )
+            else:
+                detail_lines.append("No compound case outcomes recorded")
+            self._diagnostic_campaign_details_view.setPlainText(
+                "\n".join(detail_lines)
+            )
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):
             comparison = {}

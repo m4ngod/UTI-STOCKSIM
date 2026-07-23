@@ -654,7 +654,7 @@ def test_ai_audit_survives_restart_and_links_subsequent_approval(
     restarted.initialize_persistence(engine)
     audit = restarted.get_ai_recipe_audit(authored.attempt.attempt_id)
 
-    assert migration.current_revision == "0009_isolated_sensitivity_sets"
+    assert migration.current_revision == "0010_formal_diagnostic_campaigns"
     assert audit.attempt.provider == "deterministic-fake"
     assert audit.attempt.model == "deterministic-recipe-fixture.v1"
     assert audit.attempt.prompt_template_version == "ai-recipe-assistant.v1"

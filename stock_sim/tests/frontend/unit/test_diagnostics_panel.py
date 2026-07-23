@@ -739,6 +739,176 @@ def test_application_anchors_and_runs_an_approved_single_family_sensitivity_case
     } == {materialized["artifact_hash"]}
 
 
+def test_application_anchors_an_approved_compound_campaign_case() -> None:
+    application = _admittable_application()
+    panel = DiagnosticsPanel(application)  # type: ignore[arg-type]
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    panel.create_compound_recipe(
+        name="Trend plus volatility stress",
+        segment_id=str(admitted["segment"]["segment_id"]),
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        transformations=(
+            {
+                "transformation_id": "trend-regime.v1",
+                "parameters": {
+                    "direction": "bearish",
+                    "strength": "0.5",
+                },
+            },
+            {
+                "transformation_id": "volatility-scaling.v1",
+                "parameters": {"multiplier": "1.5"},
+            },
+        ),
+        commission_bps="3",
+        slippage_bps="5",
+    )
+    panel.validate_current_recipe()
+    approved = panel.approve_current_recipe(actor="owner")
+    materialized = panel.materialize_current_recipe()
+
+    case = getattr(application, "create_diagnostic_campaign_case")(
+        str(approved["version_id"]),
+        str(materialized["artifact_hash"]),
+    )
+
+    assert case.layer == "compound"
+    assert tuple(
+        item.transformation_family for item in case.transformations
+    ) == ("trend-regime", "volatility")
+    assert case.recipe_version_id == approved["version_id"]
+    assert case.materialization_hash == materialized["artifact_hash"]
+    with pytest.raises(
+        ValueError,
+        match="exactly one transformation family",
+    ):
+        getattr(application, "create_isolated_sensitivity_case")(
+            str(approved["version_id"]),
+            str(materialized["artifact_hash"]),
+        )
+
+
+def test_application_runs_compound_only_as_a_quick_experiment() -> None:
+    application = _admittable_application()
+    panel = DiagnosticsPanel(application)  # type: ignore[arg-type]
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    panel.create_compound_recipe(
+        name="Compound-only experiment",
+        segment_id=str(admitted["segment"]["segment_id"]),
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        transformations=(
+            {
+                "transformation_id": "trend-regime.v1",
+                "parameters": {
+                    "direction": "bearish",
+                    "strength": "0.5",
+                },
+            },
+            {
+                "transformation_id": "volatility-scaling.v1",
+                "parameters": {"multiplier": "1.5"},
+            },
+        ),
+        commission_bps="3",
+        slippage_bps="5",
+    )
+    panel.validate_current_recipe()
+    approved = panel.approve_current_recipe(actor="owner")
+    materialized = panel.materialize_current_recipe()
+
+    planned = getattr(application, "plan_diagnostic_campaign")(
+        baseline_anchor=None,
+        isolated_sensitivity_set_id=None,
+        compound_case_anchors=(
+            (
+                str(approved["version_id"]),
+                str(materialized["artifact_hash"]),
+            ),
+        ),
+        initial_cash=Decimal("100000"),
+        order_shares=1000,
+        campaign_replica_id="quick-compound-1",
+    )
+    completed = getattr(application, "resume_diagnostic_campaign")(
+        planned.campaign_id
+    )
+
+    assert completed.status == "completed"
+    view = completed.to_dict()
+    assert view["campaign_type"] == "quick_experiment"
+    assert view["formal_attribution"] == {
+        "eligible": False,
+        "claim_status": "not_permitted",
+        "missing_layers": ["baseline", "isolated_sensitivity"],
+    }
+    assert view["layers"]["compound"]["completed_count"] == 1
+    assert all(
+        member["status"] == "completed"
+        for member in view["compound_case_outcomes"][0]["members"]
+    )
+
+
+def test_panel_plans_and_resumes_a_staged_quick_experiment() -> None:
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    admitted = panel.admit_historical_segment(
+        market="mainland-a-share",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    panel.create_compound_recipe(
+        name="Panel compound experiment",
+        segment_id=str(admitted["segment"]["segment_id"]),
+        author="researcher",
+        cadence_minutes=30,
+        seed=17,
+        transformations=(
+            {
+                "transformation_id": "trend-regime.v1",
+                "parameters": {
+                    "direction": "bearish",
+                    "strength": "0.5",
+                },
+            },
+            {
+                "transformation_id": "volatility-scaling.v1",
+                "parameters": {"multiplier": "1.5"},
+            },
+        ),
+        commission_bps="3",
+        slippage_bps="5",
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+
+    staged = panel.stage_current_materialization_as_compound_case()
+    planned = panel.plan_diagnostic_campaign(
+        initial_cash="100000",
+        order_shares=1000,
+        campaign_replica_id="panel-quick-1",
+    )
+    completed = panel.resume_diagnostic_campaign()
+
+    assert staged["layer"] == "compound"
+    assert planned["campaign_type"] == "quick_experiment"
+    assert completed["status"] == "completed"
+    view = panel.get_view()
+    assert view["compound_campaign_case_staging"]["case_count"] == 1
+    assert view["diagnostic_campaign"] == completed
+
+
 def test_diagnostics_workspace_previews_baseline_versus_trend_regime() -> None:
     panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
     panel.admit_historical_segment(
@@ -1309,6 +1479,134 @@ def test_diagnostics_adapter_renders_traceable_sensitivity_curves() -> None:
     assert "recipe-version-fixture" in curve_text
     assert "path-hash-fixture" in curve_text
     assert "strength=0.25" in curve_text
+
+
+def test_diagnostics_adapter_renders_formal_campaign_layers_and_failures() -> None:
+    _ensure_qapp()
+    adapter = DiagnosticsPanelAdapter()
+    adapter.widget()
+    adapter._apply_view(
+        {
+            "diagnostic_campaign": {
+                "campaign_id": "diagnostic-campaign-fixture",
+                "campaign_type": "formal_diagnostic_campaign",
+                "status": "partial",
+                "formal_attribution": {
+                    "eligible": True,
+                    "claim_status": "pending_completion",
+                    "missing_layers": [],
+                },
+                "progress": {
+                    "completed_count": 13,
+                    "incomplete_count": 1,
+                    "pending_count": 1,
+                    "total_count": 15,
+                },
+                "layers": {
+                    "baseline": {
+                        "status": "completed",
+                        "completed_count": 1,
+                        "incomplete_count": 0,
+                        "pending_count": 0,
+                        "total_count": 1,
+                    },
+                    "isolated_sensitivity": {
+                        "status": "completed",
+                        "completed_count": 12,
+                        "incomplete_count": 0,
+                        "pending_count": 0,
+                        "total_count": 12,
+                    },
+                    "compound": {
+                        "status": "partial",
+                        "completed_count": 0,
+                        "incomplete_count": 1,
+                        "pending_count": 1,
+                        "total_count": 2,
+                    },
+                },
+                "failures": [
+                    {
+                        "case_id": "compound-case-failed",
+                        "layer": "compound",
+                        "attempt_number": 1,
+                        "strategy_id": "quentx",
+                        "run_id": "strategy-run-failed",
+                        "code": "RuntimeError",
+                        "message": "fixture compound failure",
+                    }
+                ],
+                "compound_case_outcomes": [
+                    {
+                        "case_id": "compound-case-failed",
+                        "status": "incomplete",
+                        "attempt_number": 1,
+                        "campaign_id": None,
+                        "members": [],
+                    },
+                    {
+                        "case_id": "compound-case-pending",
+                        "status": "planned",
+                        "attempt_number": 0,
+                        "campaign_id": None,
+                        "members": [],
+                    },
+                ],
+            }
+        }
+    )
+
+    status_text = adapter._diagnostic_campaign_status_label.text()
+    assert "Formal Diagnostic Campaign" in status_text
+    assert "13/15 complete" in status_text
+    assert "pending_completion" in status_text
+    details = adapter._diagnostic_campaign_details_view.toPlainText()
+    assert "Baseline | completed | 1/1 complete" in details
+    assert "Isolated Sensitivity | completed | 12/12 complete" in details
+    assert "Compound | partial | 0/2 complete | 1 failed | 1 pending" in details
+    assert "compound-case-failed" in details
+    assert "quentx" in details
+    assert "strategy-run-failed" in details
+    assert "fixture compound failure" in details
+    assert "compound-case-pending" in details
+
+
+def test_diagnostics_adapter_runs_a_staged_compound_quick_experiment() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(_admittable_application())  # type: ignore[arg-type]
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_name_input.setText("UI compound experiment")
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._cadence_input.setText("30")
+    adapter._seed_input.setText("17")
+    adapter._slippage_input.setText("5")
+    adapter._trend_direction_input.setText("bearish")
+    adapter._trend_strength_input.setText("0.5")
+    adapter._volatility_multiplier_input.setText("1.5")
+    adapter._run_initial_cash_input.setText("100000")
+    adapter._run_order_shares_input.setText("1000")
+    adapter._run_replica_input.setText("ui-quick-compound-1")
+
+    adapter._create_compound_recipe_button.click()
+    adapter._validate_recipe_button.click()
+    adapter._approve_recipe_button.click()
+    adapter._materialize_recipe_button.click()
+    adapter._stage_compound_case_button.click()
+    adapter._plan_diagnostic_campaign_button.click()
+    adapter._resume_diagnostic_campaign_button.click()
+
+    campaign = adapter.current_view()["diagnostic_campaign"]
+    assert campaign["campaign_type"] == "quick_experiment"
+    assert campaign["status"] == "completed"
+    assert campaign["formal_attribution"]["claim_status"] == "not_permitted"
+    assert "Quick Experiment" in adapter._diagnostic_campaign_status_label.text()
+    assert "1/1 complete" in adapter._diagnostic_campaign_status_label.text()
 
 
 def test_diagnostics_adapter_explains_campaign_policy_before_launch() -> None:

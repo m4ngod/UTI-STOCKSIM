@@ -46,6 +46,16 @@ from .execution_conditions import (
     RequestedExecutionAssumptions,
     resolve_execution_conditions,
 )
+from .formal_diagnostic_campaigns import (
+    CampaignCaseSpecification,
+    CampaignTransformation,
+    DiagnosticCampaignCase,
+    DiagnosticCampaignExecutionLayer,
+    DiagnosticCampaignRunner,
+    DiagnosticCampaignSnapshot,
+    DiagnosticCampaignSpecification,
+    SqlDiagnosticCampaignRepository,
+)
 from .recipes import (
     AIRecipeAuditRecord,
     AIRecipeAssistant,
@@ -154,6 +164,9 @@ class DiagnosticsApplication:
         self._isolated_sensitivity_sets = IsolatedSensitivitySetRunner(
             self._execute_isolated_sensitivity_case
         )
+        self._diagnostic_campaigns = DiagnosticCampaignRunner(
+            self._execute_diagnostic_campaign_case
+        )
 
     def start(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -177,6 +190,9 @@ class DiagnosticsApplication:
         self._strategy_runs.replace_repository(SqlStrategyRunRepository(engine))
         self._isolated_sensitivity_sets.replace_repository(
             SqlIsolatedSensitivitySetRepository(engine)
+        )
+        self._diagnostic_campaigns.replace_repository(
+            SqlDiagnosticCampaignRepository(engine)
         )
         state = self.start()
         self._state = replace(
@@ -344,6 +360,106 @@ class DiagnosticsApplication:
             ),
         )
 
+    def create_diagnostic_campaign_case(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+    ) -> DiagnosticCampaignCase:
+        """Anchor one approved recipe to its exact immutable Campaign Case."""
+
+        self.status()
+        approved = self._recipe_workbench.get_version(recipe_version_id)
+        expected_path = self.materialize_reference_path(recipe_version_id)
+        if expected_path.artifact_hash != materialization_hash:
+            raise ValueError(
+                "Diagnostic Campaign Case materialization does not match "
+                "its approved recipe"
+            )
+        path = self._load_reference_path(materialization_hash)
+        requested_by_id = {
+            item.transformation_id: item
+            for item in approved.recipe.transformations
+        }
+        applied_by_id = {
+            item.transformation_id: item
+            for item in path.applied_transformations
+        }
+        if (
+            len(requested_by_id) != len(approved.recipe.transformations)
+            or len(applied_by_id) != len(path.applied_transformations)
+            or set(requested_by_id) != set(applied_by_id)
+            or self._transformation_catalog.catalog_version
+            != path.transformation_catalog_version
+        ):
+            raise ValueError(
+                "Diagnostic Campaign Case transformation provenance does not "
+                "match its approved recipe and catalog"
+            )
+        transformations: list[CampaignTransformation] = []
+        for transformation_id, requested in requested_by_id.items():
+            applied = applied_by_id[transformation_id]
+            catalog_entry = self._transformation_catalog.get_entry(
+                transformation_id
+            )
+            if (
+                dict(requested.parameters) != dict(applied.parameters)
+                or catalog_entry.family != applied.family
+                or catalog_entry.implementation_version
+                != applied.implementation_version
+            ):
+                raise ValueError(
+                    "Diagnostic Campaign Case transformation provenance does not "
+                    "match its approved recipe and catalog"
+                )
+            transformations.append(
+                CampaignTransformation(
+                    transformation_id=transformation_id,
+                    transformation_family=applied.family,
+                    transformation_implementation_version=(
+                        applied.implementation_version
+                    ),
+                    transformation_parameters=tuple(
+                        sorted(applied.parameters)
+                    ),
+                )
+            )
+        execution = approved.recipe.execution_conditions
+        return DiagnosticCampaignCase(
+            recipe_version_id=approved.version_id,
+            recipe_content_hash=approved.content_hash,
+            materialization_hash=path.artifact_hash,
+            historical_segment_id=path.segment_id,
+            historical_segment_content_hash=path.segment_content_hash,
+            source_snapshot_id=path.source_snapshot_id,
+            materialization_seed=path.seed,
+            expander_version=path.expander_version,
+            source_resolution=path.source_resolution,
+            runtime_resolution=path.runtime_resolution,
+            numeric_tolerance=path.numeric_tolerance,
+            normalization_provenance=path.normalization_provenance,
+            transformation_catalog_version=(
+                path.transformation_catalog_version
+            ),
+            transformations=tuple(
+                sorted(
+                    transformations,
+                    key=lambda item: (
+                        item.transformation_family,
+                        item.transformation_id,
+                    ),
+                )
+            ),
+            market_rule_profile_version=path.market_rule_profile_version,
+            decision_cadence_minutes=approved.recipe.decision_cadence_minutes,
+            requested_execution_conditions=RequestedExecutionAssumptions(
+                commission_bps=execution.commission_bps,
+                slippage_bps=execution.slippage_bps,
+                max_fill_fraction=execution.max_fill_fraction,
+                latency_nodes=execution.latency_nodes,
+                allow_partial_fills=execution.allow_partial_fills,
+            ),
+        )
+
     def plan_isolated_sensitivity_set(
         self,
         case_anchors: tuple[tuple[str, str], ...],
@@ -441,6 +557,104 @@ class DiagnosticsApplication:
         self.status()
         return self._isolated_sensitivity_sets.retry_case(
             sensitivity_set_id,
+            case_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def plan_diagnostic_campaign(
+        self,
+        *,
+        baseline_anchor: tuple[str, str] | None,
+        isolated_sensitivity_set_id: str | None,
+        compound_case_anchors: tuple[tuple[str, str], ...],
+        initial_cash: Decimal,
+        order_shares: int,
+        campaign_replica_id: str,
+    ) -> DiagnosticCampaignSnapshot:
+        """Plan a Formal Diagnostic Campaign or labeled Quick Experiment."""
+
+        self.status()
+        baseline_case = (
+            self.create_diagnostic_campaign_case(*baseline_anchor)
+            if baseline_anchor is not None
+            else None
+        )
+        if baseline_case is not None and baseline_case.layer != "baseline":
+            raise ValueError(
+                "Baseline Scenario Set requires an approved untransformed recipe"
+            )
+        isolated_specification = None
+        if isolated_sensitivity_set_id is not None:
+            isolated_specification = self._isolated_sensitivity_sets.get(
+                isolated_sensitivity_set_id
+            ).specification
+        compound_cases = tuple(
+            self.create_diagnostic_campaign_case(
+                recipe_version_id,
+                materialization_hash,
+            )
+            for recipe_version_id, materialization_hash in compound_case_anchors
+        )
+        if any(case.layer != "compound" for case in compound_cases):
+            raise ValueError(
+                "Compound Scenario Set requires approved recipes with at least "
+                "two transformation families"
+            )
+        specification = DiagnosticCampaignSpecification(
+            campaign_replica_id=campaign_replica_id,
+            baseline_case=baseline_case,
+            isolated_sensitivity_set=isolated_specification,
+            compound_cases=compound_cases,
+            initial_cash=initial_cash,
+            order_shares=order_shares,
+        )
+        return self._diagnostic_campaigns.plan(specification)
+
+    def diagnostic_campaign_status(
+        self,
+        campaign_id: str,
+    ) -> DiagnosticCampaignSnapshot:
+        self.status()
+        return self._diagnostic_campaigns.get(campaign_id)
+
+    def advance_diagnostic_campaign(
+        self,
+        campaign_id: str,
+        *,
+        max_cases: int = 1,
+        nodes_per_batch: int = 10_000,
+    ) -> DiagnosticCampaignSnapshot:
+        self.status()
+        return self._diagnostic_campaigns.advance(
+            campaign_id,
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def resume_diagnostic_campaign(
+        self,
+        campaign_id: str,
+        *,
+        max_cases: int | None = None,
+        nodes_per_batch: int = 10_000,
+    ) -> DiagnosticCampaignSnapshot:
+        self.status()
+        return self._diagnostic_campaigns.resume(
+            campaign_id,
+            max_cases=max_cases,
+            nodes_per_batch=nodes_per_batch,
+        )
+
+    def retry_diagnostic_campaign_case(
+        self,
+        campaign_id: str,
+        case_id: str,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> DiagnosticCampaignSnapshot:
+        self.status()
+        return self._diagnostic_campaigns.retry_case(
+            campaign_id,
             case_id,
             nodes_per_batch=nodes_per_batch,
         )
@@ -693,6 +907,27 @@ class DiagnosticsApplication:
             nodes_per_batch=nodes_per_batch,
         )
 
+    def _execute_diagnostic_campaign_case(
+        self,
+        specification: DiagnosticCampaignSpecification,
+        layer: DiagnosticCampaignExecutionLayer,
+        case: CampaignCaseSpecification,
+        attempt_number: int,
+        nodes_per_batch: int,
+    ) -> BaselineCampaignSnapshot:
+        campaign_replica_id = (
+            f"{specification.campaign_replica_id}:{layer}:"
+            f"{case.case_id}:attempt-{attempt_number}"
+        )
+        return self.run_baseline_campaign(
+            case.recipe_version_id,
+            case.materialization_hash,
+            initial_cash=specification.initial_cash,
+            order_shares=specification.order_shares,
+            campaign_replica_id=campaign_replica_id,
+            nodes_per_batch=nodes_per_batch,
+        )
+
     def _baseline_strategy_run_specification(
         self,
         recipe_version_id: str,
@@ -706,11 +941,6 @@ class DiagnosticsApplication:
     ) -> StrategyRunSpecification:
         self.status()
         approved = self._recipe_workbench.get_version(recipe_version_id)
-        if len(approved.recipe.transformations) > 1:
-            raise ValueError(
-                "An anchored Strategy Run supports a baseline or one isolated "
-                "transformation family"
-            )
         expected_path = self.materialize_reference_path(recipe_version_id)
         if expected_path.artifact_hash != materialization_hash:
             raise ValueError(
