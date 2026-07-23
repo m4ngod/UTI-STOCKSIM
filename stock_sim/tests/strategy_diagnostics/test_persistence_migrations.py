@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
 
 from strategy_diagnostics import (
@@ -14,6 +16,7 @@ from strategy_diagnostics import (
     SourceProvenance,
     create_diagnostics_application,
 )
+from strategy_diagnostics.persistence import SqlHistoricalSegmentCatalog
 
 
 REQUIRED_CHECKS = (
@@ -68,7 +71,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0011_diagnostic_evidence"
+    assert first.current_revision == "0012_reproduction_manifests"
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
@@ -81,13 +84,14 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0009_isolated_sensitivity_sets",
         "0010_formal_diagnostic_campaigns",
         "0011_diagnostic_evidence",
+        "0012_reproduction_manifests",
     )
-    assert second.current_revision == "0011_diagnostic_evidence"
+    assert second.current_revision == "0012_reproduction_manifests"
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0011_diagnostic_evidence"
+        == "0012_reproduction_manifests"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -113,6 +117,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0009_isolated_sensitivity_sets",
         "0010_formal_diagnostic_campaigns",
         "0011_diagnostic_evidence",
+        "0012_reproduction_manifests",
     ]
     strategy_run_columns = {
         column["name"]
@@ -138,6 +143,8 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "diagnostic_guardrail_profiles",
         "diagnostic_evidence_packages",
         "diagnostic_findings",
+        "diagnostic_reproduction_manifests",
+        "diagnostic_reproduction_attempts",
         "diagnostic_run_orders",
         "diagnostic_run_fills",
         "diagnostic_run_positions",
@@ -182,5 +189,54 @@ def test_admitted_segment_catalog_survives_application_restart(tmp_path: Path) -
     restarted_application.initialize_persistence(engine)
 
     assert admitted.segment is not None
+    assert admitted.source_snapshot is not None
     assert restarted_application.list_historical_segments() == (admitted.segment,)
     assert restarted_application.recommend_historical_segments()[0].segment == admitted.segment
+    catalog = SqlHistoricalSegmentCatalog(engine)
+    assert catalog.get_source_snapshot(
+        admitted.source_snapshot.snapshot_id
+    ) == admitted.source_snapshot
+
+    provenance = admitted.source_snapshot.provenance.to_dict()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE diagnostic_source_snapshots "
+                "SET provenance_json = :provenance_json "
+                "WHERE snapshot_id = :snapshot_id"
+            ),
+            {
+                "provenance_json": json.dumps(
+                    {**provenance, "unexpected": "must fail closed"},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                "snapshot_id": admitted.source_snapshot.snapshot_id,
+            },
+        )
+    with pytest.raises(ValueError, match="provenance schema mismatch"):
+        catalog.get_source_snapshot(admitted.source_snapshot.snapshot_id)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE diagnostic_source_snapshots "
+                "SET provenance_json = :provenance_json "
+                "WHERE snapshot_id = :snapshot_id"
+            ),
+            {
+                "provenance_json": json.dumps(
+                    {
+                        **provenance,
+                        "observed_at": "2026-07-21T00:00:00",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                "snapshot_id": admitted.source_snapshot.snapshot_id,
+            },
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        catalog.get_source_snapshot(admitted.source_snapshot.snapshot_id)

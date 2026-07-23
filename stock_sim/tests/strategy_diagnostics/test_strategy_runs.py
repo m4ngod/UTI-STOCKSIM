@@ -1451,6 +1451,7 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "0009_isolated_sensitivity_sets",
         "0010_formal_diagnostic_campaigns",
         "0011_diagnostic_evidence",
+        "0012_reproduction_manifests",
     )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"

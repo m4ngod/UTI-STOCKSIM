@@ -202,6 +202,21 @@ class DiagnosticsApplicationPort(Protocol):
         evidence_package_id: str,
     ) -> _StrategyRunSnapshot: ...
 
+    def reproduction_manifests(
+        self,
+        evidence_package_id: str,
+    ) -> tuple[_StrategyRunSnapshot, ...]: ...
+
+    def reproduce_strategy_run(
+        self,
+        manifest_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def reproduction_status(
+        self,
+        manifest_id: str,
+    ) -> _StrategyRunSnapshot | None: ...
+
     def explain_diagnostic_findings(
         self,
         evidence_package_id: str,
@@ -311,6 +326,14 @@ class DiagnosticsPanel:
             ),
             "explanations": [],
         }
+        self._reproduction: dict[str, object] = {
+            "status": "not_available",
+            "message": (
+                "Seal Diagnostic Evidence before reproducing an accepted run."
+            ),
+            "manifests": [],
+            "latest_report": None,
+        }
         self._application.start()
 
     def get_view(self) -> dict[str, object]:
@@ -343,6 +366,7 @@ class DiagnosticsPanel:
         view["diagnostic_finding_explanations"] = dict(
             self._diagnostic_explanations
         )
+        view["reproduction"] = dict(self._reproduction)
         return view
 
     def admit_historical_segment(
@@ -1032,6 +1056,21 @@ class DiagnosticsPanel:
                 "Diagnostic Campaign"
             )
         self._diagnostic_evidence = evidence
+        manifests = self._application.reproduction_manifests(
+            str(evidence["evidence_package_id"])
+        )
+        self._reproduction = {
+            "status": (
+                "ready_to_reproduce" if manifests else "not_available"
+            ),
+            "message": (
+                "Select an accepted Strategy Run manifest to reproduce."
+                if manifests
+                else "No accepted Strategy Run manifests are available."
+            ),
+            "manifests": [item.to_dict() for item in manifests],
+            "latest_report": None,
+        }
         self._diagnostic_explanations = {
             "status": "not_requested",
             "message": (
@@ -1054,6 +1093,28 @@ class DiagnosticsPanel:
             )
         self._diagnostic_evidence = evidence
         return dict(self._diagnostic_evidence)
+
+    def reproduce_strategy_run(
+        self,
+        *,
+        manifest_id: str,
+    ) -> dict[str, object]:
+        available_ids = {
+            str(item.get("manifest_id"))
+            for item in self._manifest_views()
+        }
+        if manifest_id not in available_ids:
+            raise ValueError(
+                "Select a Reproduction Manifest from the current sealed evidence"
+            )
+        report = self._application.reproduce_strategy_run(manifest_id)
+        report_view = report.to_dict()
+        self._reproduction = {
+            **self._reproduction,
+            "status": str(report_view["status"]),
+            "latest_report": report_view,
+        }
+        return dict(report_view)
 
     def explain_diagnostic_findings(self) -> dict[str, object]:
         bundle = self._application.explain_diagnostic_findings(
@@ -1158,6 +1219,15 @@ class DiagnosticsPanel:
                 ),
                 "explanations": [],
             }
+            self._reproduction = {
+                "status": "not_available",
+                "message": (
+                    "Seal this Diagnostic Campaign's evidence before "
+                    "reproducing an accepted run."
+                ),
+                "manifests": [],
+                "latest_report": None,
+            }
         self._diagnostic_campaign = campaign
         return dict(self._diagnostic_campaign)
 
@@ -1176,6 +1246,16 @@ class DiagnosticsPanel:
                 "Diagnostic Campaign"
             )
         return evidence_package_id
+
+    def _manifest_views(self) -> list[dict[str, object]]:
+        manifests = self._reproduction.get("manifests")
+        if not isinstance(manifests, list):
+            raise ValueError("Reproduction Manifest state is malformed")
+        return [
+            item
+            for item in manifests
+            if isinstance(item, dict)
+        ]
 
     def _require_workbench_item(self, key: str) -> dict[str, object]:
         item = self._recipe_workbench.get(key)

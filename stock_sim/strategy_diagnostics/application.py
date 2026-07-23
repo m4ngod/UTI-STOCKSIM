@@ -78,6 +78,13 @@ from .recipes import (
     RecipeWorkbench,
     ScenarioRecipeDraft,
 )
+from .reproduction import (
+    DIAGNOSTIC_CODE_IDENTITY,
+    ReproductionManifest,
+    ReproductionReport,
+    ReproductionService,
+)
+from .reproduction_storage import SqlReproductionRepository
 from .ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
@@ -193,6 +200,19 @@ class DiagnosticsApplication:
             self._load_reference_path,
             self._evidence_artifact_store,
         )
+        self._reproduction = ReproductionService(
+            run_loader=self._strategy_runs.get,
+            recipe_hash_loader=lambda version_id: (
+                self._recipe_workbench.get_version(version_id).content_hash
+            ),
+            path_loader=self._load_reference_path,
+            evidence_loader=self._diagnostic_evidence.get,
+            source_snapshot_loader=(
+                self._historical_segments.get_source_snapshot
+            ),
+            replay_run=self._strategy_runs.reproduce,
+            code_identity=DIAGNOSTIC_CODE_IDENTITY,
+        )
         self._finding_explanation_provider = finding_explanation_provider
 
     def start(self) -> DiagnosticsApplicationState:
@@ -227,6 +247,9 @@ class DiagnosticsApplication:
                 self._evidence_artifact_store,
             )
         )
+        self._reproduction.replace_repository(
+            SqlReproductionRepository(engine)
+        )
         state = self.start()
         self._state = replace(
             state,
@@ -256,7 +279,10 @@ class DiagnosticsApplication:
         limit: int = 3,
     ) -> tuple[HistoricalSegmentRecommendation, ...]:
         self.status()
-        return self._historical_segments.recommend(intent=intent, limit=limit)
+        return self._historical_segments.recommend(
+            intent=intent,
+            limit=limit,
+        )
 
     def latest_segment_admission(self) -> SegmentAdmissionReport | None:
         self.status()
@@ -281,7 +307,10 @@ class DiagnosticsApplication:
 
     def transformation_catalog_view(self) -> dict[str, object]:
         self.status()
-        return self._transformation_catalog.to_dict()
+        return cast(
+            dict[str, object],
+            self._transformation_catalog.to_dict(),
+        )
 
     def materialize_baseline_reference_path(
         self,
@@ -785,7 +814,7 @@ class DiagnosticsApplication:
         guardrail_profiles: tuple[StrategyGuardrailProfile, ...] | None = None,
     ) -> DiagnosticEvidencePackage:
         self.status()
-        return self._diagnostic_evidence.build(
+        package = self._diagnostic_evidence.build(
             campaign_id,
             (
                 guardrail_profiles
@@ -793,6 +822,8 @@ class DiagnosticsApplication:
                 else self.strategy_guardrail_profiles()
             ),
         )
+        self._reproduction.accept_evidence(package)
+        return package
 
     def diagnostic_evidence_status(
         self,
@@ -800,6 +831,28 @@ class DiagnosticsApplication:
     ) -> DiagnosticEvidencePackage:
         self.status()
         return self._diagnostic_evidence.get(evidence_package_id)
+
+    def reproduction_manifests(
+        self,
+        evidence_package_id: str,
+    ) -> tuple[ReproductionManifest, ...]:
+        self.status()
+        self._diagnostic_evidence.get(evidence_package_id)
+        return self._reproduction.manifests_for(evidence_package_id)
+
+    def reproduce_strategy_run(
+        self,
+        manifest_id: str,
+    ) -> ReproductionReport:
+        self.status()
+        return self._reproduction.reproduce(manifest_id)
+
+    def reproduction_status(
+        self,
+        manifest_id: str,
+    ) -> ReproductionReport | None:
+        self.status()
+        return self._reproduction.latest_report(manifest_id)
 
     def explain_diagnostic_findings(
         self,
@@ -906,7 +959,7 @@ class DiagnosticsApplication:
             raise RuntimeError("No Scenario Materializer is configured")
         path = self._scenario_materializer.get(artifact_hash)
         view = ScenarioMarketView(path, initial_cursor=at_time)
-        snapshot = view.snapshot().to_dict()
+        snapshot = cast(dict[str, object], view.snapshot().to_dict())
         snapshot.update(
             {
                 "artifact_hash": view.artifact_hash,
@@ -1177,7 +1230,7 @@ class DiagnosticsApplication:
             initial_cash=initial_cash,
             order_shares=order_shares,
             replica_id=replica_id,
-            code_identity="strategy-diagnostics.v1",
+            code_identity=DIAGNOSTIC_CODE_IDENTITY,
             ptrade_surface_version=manifest.surface_version,
             ptrade_manifest_hash=manifest.content_hash,
             ptrade_host_adapter_version=(

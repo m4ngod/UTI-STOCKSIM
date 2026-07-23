@@ -1765,6 +1765,36 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
     assert evidence["diagnostic_findings"]
     assert "composite_score" not in repr(evidence)
     assert panel.get_view()["diagnostic_evidence"] == evidence
+    reproduction = panel.get_view()["reproduction"]
+    assert reproduction["status"] == "ready_to_reproduce"
+    assert len(reproduction["manifests"]) == 28
+    manifest = reproduction["manifests"][0]
+    assert manifest["strategy_run_specification"]["recipe_version_id"]
+    assert manifest["strategy_run_specification"]["strategy_version"]
+    assert manifest["strategy_run_specification"]["ptrade_surface_version"]
+    assert manifest["numeric_tolerance"] == "0.000001"
+
+    report = panel.reproduce_strategy_run(
+        manifest_id=str(manifest["manifest_id"])
+    )
+
+    assert report["status"] == "reproduced_exactly"
+    assert report["accepted_run_id"] == report["reproduced_run_id"]
+    assert report["mismatches"] == []
+    assert {
+        (check["category"], check["status"])
+        for check in report["checks"]
+    } >= {
+        ("dependencies", "exact"),
+        ("orders", "exact"),
+        ("fills", "exact"),
+        ("portfolio", "exact"),
+        ("equity_curve", "exact"),
+        ("metrics", "exact"),
+        ("evidence", "exact"),
+        ("hashes", "exact"),
+    }
+    assert panel.get_view()["reproduction"]["latest_report"] == report
 
     replacement = panel.plan_diagnostic_campaign(
         initial_cash="100000",
@@ -1781,6 +1811,9 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
     assert replacement_view["diagnostic_finding_explanations"]["status"] == (
         "not_requested"
     )
+    assert replacement_view["reproduction"]["status"] == "not_available"
+    assert replacement_view["reproduction"]["manifests"] == []
+    assert replacement_view["reproduction"]["latest_report"] is None
     with pytest.raises(
         ValueError,
         match="No sealed Diagnostic Evidence Package",
@@ -1876,6 +1909,56 @@ def test_diagnostics_adapter_renders_sealed_multidimensional_evidence() -> None:
                     }
                 ],
             },
+            "reproduction": {
+                "status": "reproducibility_invalid",
+                "message": (
+                    "The pinned execution environment changed; no fallback "
+                    "was used."
+                ),
+                "manifests": [
+                    {
+                        "manifest_id": "reproduction-manifest-fixture",
+                        "run_id": "strategy-run-fixture",
+                        "numeric_tolerance": "0.000001",
+                        "strategy_run_specification": {
+                            "strategy_id": (
+                                QUENTX_SCENARIO_NATIVE_STRATEGY_ID
+                            ),
+                            "strategy_version": "1.0.0",
+                            "recipe_version_id": "recipe-version-fixture",
+                            "materialization_hash": "c" * 64,
+                            "source_snapshot_id": "snapshot-fixture",
+                            "code_identity": "strategy-diagnostics.v1",
+                        },
+                    }
+                ],
+                "latest_report": {
+                    "attempt_id": "reproduction-attempt-fixture",
+                    "status": "reproducibility_invalid",
+                    "accepted_run_id": "strategy-run-fixture",
+                    "reproduced_run_id": None,
+                    "checks": [
+                        {
+                            "category": "dependencies",
+                            "status": "mismatch",
+                            "message": (
+                                "A pinned dependency is missing or changed."
+                            ),
+                        }
+                    ],
+                    "mismatches": [
+                        {
+                            "code": "dependency.code_identity_changed",
+                            "path": "code_identity",
+                            "expected": "strategy-diagnostics.v1",
+                            "actual": "strategy-diagnostics.v2",
+                            "message": (
+                                "Pinned diagnostic code identity changed."
+                            ),
+                        }
+                    ],
+                },
+            },
         }
     )
 
@@ -1898,6 +1981,25 @@ def test_diagnostics_adapter_renders_sealed_multidimensional_evidence() -> None:
     assert "liquidity | execution_erosion_bps" in details
     assert "diagnostic-finding-fixture" in details
     assert "The sealed finding is sensitive to liquidity." in details
+    reproduction_status = adapter._reproduction_status_label.text()
+    assert "reproducibility_invalid" in reproduction_status
+    assert "1 manifests" in reproduction_status
+    assert (
+        adapter._reproduction_manifest_input.text()
+        == "reproduction-manifest-fixture"
+    )
+    reproduction_details = adapter._reproduction_details_view.toPlainText()
+    assert (
+        f"{QUENTX_SCENARIO_NATIVE_STRATEGY_ID}@1.0.0"
+        in reproduction_details
+    )
+    assert "recipe-version-fixture" in reproduction_details
+    assert "reproducibility_invalid" in reproduction_details
+    assert "dependency.code_identity_changed | code_identity" in (
+        reproduction_details
+    )
+    assert "expected=strategy-diagnostics.v1" in reproduction_details
+    assert "actual=strategy-diagnostics.v2" in reproduction_details
 
 
 def test_diagnostics_adapter_runs_a_staged_compound_quick_experiment() -> None:

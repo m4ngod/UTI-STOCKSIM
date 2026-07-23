@@ -688,7 +688,7 @@ class StrategyRunEngine:
 
     @property
     def ptrade_host_adapter_version(self) -> str:
-        return self._ptrade_host.adapter_version
+        return cast(str, self._ptrade_host.adapter_version)
 
     def replace_repository(self, repository: StrategyRunRepository) -> None:
         self._repository = repository
@@ -798,6 +798,24 @@ class StrategyRunEngine:
                 f"status={snapshot.status}"
             )
         return snapshot
+
+    def reproduce(
+        self,
+        specification: StrategyRunSpecification,
+        *,
+        nodes_per_batch: int = 10_000,
+    ) -> StrategyRunSnapshot:
+        """Execute one pinned run in a fresh isolated in-memory replica."""
+
+        replay = StrategyRunEngine(
+            self._path_loader,
+            ptrade_host=self._ptrade_host,
+        )
+        started = replay.start(specification)
+        return replay.run_to_completion(
+            started.run_id,
+            nodes_per_batch=nodes_per_batch,
+        )
 
     def pause(self, run_id: str) -> StrategyRunSnapshot:
         state = self._repository.get(run_id)

@@ -185,6 +185,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._diagnostic_evidence_details_view: Any = None
         self._build_diagnostic_evidence_button: Any = None
         self._explain_diagnostic_findings_button: Any = None
+        self._reproduction_status_label: Any = None
+        self._reproduction_manifest_input: Any = None
+        self._reproduce_strategy_run_button: Any = None
+        self._reproduction_details_view: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._run_action_error = ""
@@ -531,6 +535,24 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._explain_diagnostic_findings_button.clicked.connect(
             self._explain_diagnostic_findings
         )
+        self._reproduction_status_label = QLabel(
+            "Strategy Run reproduction: not available"
+        )
+        self._reproduction_manifest_input = QLineEdit("")
+        self._reproduction_manifest_input.setPlaceholderText(
+            "Accepted Reproduction Manifest id"
+        )
+        self._reproduce_strategy_run_button = QPushButton(
+            "Reproduce accepted Strategy Run"
+        )
+        self._reproduce_strategy_run_button.clicked.connect(
+            self._reproduce_strategy_run
+        )
+        self._reproduction_details_view = QPlainTextEdit()
+        self._reproduction_details_view.setReadOnly(True)
+        self._reproduction_details_view.setPlainText(
+            "Seal Diagnostic Evidence to create accepted run manifests."
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -632,6 +654,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._explain_diagnostic_findings_button)
         layout.addWidget(self._diagnostic_evidence_status_label)
         layout.addWidget(self._diagnostic_evidence_details_view)
+        layout.addWidget(self._reproduction_status_label)
+        layout.addWidget(self._reproduction_manifest_input)
+        layout.addWidget(self._reproduce_strategy_run_button)
+        layout.addWidget(self._reproduction_details_view)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -1016,6 +1042,15 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
 
     def _explain_diagnostic_findings(self) -> None:
         self._apply_run_action(self._logic.explain_diagnostic_findings)
+
+    def _reproduce_strategy_run(self) -> None:
+        self._apply_run_action(
+            lambda: self._logic.reproduce_strategy_run(
+                manifest_id=str(
+                    self._reproduction_manifest_input.text()
+                ).strip()
+            )
+        )
 
     def _apply_run_action(self, action: Any) -> None:
         try:
@@ -2017,6 +2052,163 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 )
             self._diagnostic_evidence_details_view.setPlainText(
                 "\n".join(evidence_lines)
+            )
+        reproduction = self._current_view.get("reproduction", {})
+        if not isinstance(reproduction, dict):
+            reproduction = {}
+        manifest_values = reproduction.get("manifests", [])
+        manifests = (
+            [
+                item
+                for item in manifest_values
+                if isinstance(item, dict)
+            ]
+            if isinstance(manifest_values, list)
+            else []
+        )
+        latest_report = reproduction.get("latest_report")
+        if not isinstance(latest_report, dict):
+            latest_report = None
+        if self._reproduction_status_label is not None:
+            status_text = (
+                "Strategy Run reproduction: "
+                f"{reproduction.get('status', 'not_available')} | "
+                f"{len(manifests)} manifests"
+            )
+            if latest_report is not None:
+                status_text += (
+                    " | latest attempt "
+                    f"{latest_report.get('attempt_id', 'unknown')}"
+                )
+            self._reproduction_status_label.setText(status_text)
+        if self._reproduction_manifest_input is not None and manifests:
+            available_ids = [
+                str(item.get("manifest_id", ""))
+                for item in manifests
+            ]
+            selected = str(
+                self._reproduction_manifest_input.text()
+            ).strip()
+            if selected not in available_ids:
+                self._reproduction_manifest_input.setText(
+                    available_ids[0]
+                )
+        if self._reproduction_details_view is not None:
+            reproduction_lines = [
+                "Accepted Strategy Run reproduction",
+                str(
+                    reproduction.get(
+                        "message",
+                        "No reproduction state is available.",
+                    )
+                ),
+                "",
+                "Pinned manifests",
+                (
+                    "Manifest | Run | Strategy version | Recipe version | "
+                    "Materialization | Source snapshot | Code identity | "
+                    "Tolerance"
+                ),
+            ]
+            for manifest in manifests:
+                pinned = manifest.get("strategy_run_specification", {})
+                if not isinstance(pinned, dict):
+                    pinned = {}
+                reproduction_lines.append(
+                    " | ".join(
+                        (
+                            str(manifest.get("manifest_id", "unknown")),
+                            str(manifest.get("run_id", "unknown")),
+                            (
+                                f"{pinned.get('strategy_id', 'unknown')}@"
+                                f"{pinned.get('strategy_version', 'unknown')}"
+                            ),
+                            str(
+                                pinned.get(
+                                    "recipe_version_id",
+                                    "unknown",
+                                )
+                            ),
+                            str(
+                                pinned.get(
+                                    "materialization_hash",
+                                    "unknown",
+                                )
+                            ),
+                            str(
+                                pinned.get(
+                                    "source_snapshot_id",
+                                    "unknown",
+                                )
+                            ),
+                            str(pinned.get("code_identity", "unknown")),
+                            str(
+                                manifest.get(
+                                    "numeric_tolerance",
+                                    "unknown",
+                                )
+                            ),
+                        )
+                    )
+                )
+            if not manifests:
+                reproduction_lines.append(
+                    "No accepted run manifests are available."
+                )
+            if latest_report is not None:
+                reproduction_lines.extend(
+                    (
+                        "",
+                        "Latest reproduction report",
+                        "Status | "
+                        f"{latest_report.get('status', 'unknown')}",
+                        "Accepted run | "
+                        f"{latest_report.get('accepted_run_id', 'unknown')}",
+                        "Reproduced run | "
+                        f"{latest_report.get('reproduced_run_id', 'none')}",
+                        "",
+                        "Checks",
+                    )
+                )
+                checks = latest_report.get("checks", [])
+                if isinstance(checks, list):
+                    for check in checks:
+                        if not isinstance(check, dict):
+                            continue
+                        reproduction_lines.append(
+                            " | ".join(
+                                (
+                                    str(check.get("category", "unknown")),
+                                    str(check.get("status", "unknown")),
+                                    str(check.get("message", "")),
+                                )
+                            )
+                        )
+                mismatches = latest_report.get("mismatches", [])
+                reproduction_lines.extend(("", "Exact mismatch reasons"))
+                if isinstance(mismatches, list) and mismatches:
+                    for mismatch in mismatches:
+                        if not isinstance(mismatch, dict):
+                            continue
+                        reproduction_lines.append(
+                            " | ".join(
+                                (
+                                    str(mismatch.get("code", "unknown")),
+                                    str(mismatch.get("path", "unknown")),
+                                    str(mismatch.get("message", "")),
+                                    "expected="
+                                    f"{mismatch.get('expected', 'unknown')}",
+                                    "actual="
+                                    f"{mismatch.get('actual', 'unknown')}",
+                                )
+                            )
+                        )
+                else:
+                    reproduction_lines.append(
+                        "No mismatches; accepted and reproduced evidence agree."
+                    )
+            self._reproduction_details_view.setPlainText(
+                "\n".join(reproduction_lines)
             )
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):

@@ -16,6 +16,7 @@ from .historical_segments import (
     HistoricalMarketSegment,
     HistoricalSegmentSelection,
     SegmentAdmissionReport,
+    SourceArtifact,
     SourceProvenance,
     SourceSnapshot,
 )
@@ -41,7 +42,8 @@ _ISOLATED_SENSITIVITY_REVISION: Final = "0009_isolated_sensitivity_sets"
 _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION: Final = (
     "0010_formal_diagnostic_campaigns"
 )
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0011_diagnostic_evidence"
+_DIAGNOSTIC_EVIDENCE_REVISION: Final = "0011_diagnostic_evidence"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0012_reproduction_manifests"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -54,6 +56,7 @@ _MIGRATION_REVISIONS: Final = (
     _PTRADE_HOST_AUDIT_REVISION,
     _ISOLATED_SENSITIVITY_REVISION,
     _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION,
+    _DIAGNOSTIC_EVIDENCE_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -101,8 +104,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_isolated_sensitivity_sets(connection)
             elif revision == _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION:
                 _create_diagnostic_campaigns(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _DIAGNOSTIC_EVIDENCE_REVISION:
                 _create_diagnostic_evidence(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_reproduction_manifests(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -284,6 +289,34 @@ def _create_diagnostic_evidence(connection: Connection) -> None:
         "finding_json TEXT NOT NULL, "
         "FOREIGN KEY(evidence_package_id) "
         "REFERENCES diagnostic_evidence_packages(evidence_package_id)"
+        ")"
+    )
+
+
+def _create_reproduction_manifests(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_reproduction_manifests ("
+        "manifest_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "run_id VARCHAR(96) NOT NULL, "
+        "evidence_package_id VARCHAR(96) NOT NULL, "
+        "schema_version VARCHAR(64) NOT NULL, "
+        "numeric_tolerance VARCHAR(64) NOT NULL, "
+        "manifest_content_hash VARCHAR(64) UNIQUE NOT NULL, "
+        "manifest_json TEXT NOT NULL, "
+        "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id), "
+        "FOREIGN KEY(evidence_package_id) "
+        "REFERENCES diagnostic_evidence_packages(evidence_package_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_reproduction_attempts ("
+        "attempt_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "manifest_id VARCHAR(96) NOT NULL, "
+        "status VARCHAR(48) NOT NULL, "
+        "report_json TEXT NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(manifest_id) "
+        "REFERENCES diagnostic_reproduction_manifests(manifest_id)"
         ")"
     )
 
@@ -583,6 +616,52 @@ class SqlHistoricalSegmentCatalog:
             )
             for row in rows
         )
+
+    def get_source_snapshot(self, snapshot_id: str) -> SourceSnapshot:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT snapshot_id, content_hash, provenance_json, "
+                    "artifacts_json FROM diagnostic_source_snapshots "
+                    "WHERE snapshot_id = :snapshot_id"
+                ),
+                {"snapshot_id": snapshot_id},
+            ).mappings().one_or_none()
+        if row is None:
+            raise KeyError("Unknown source snapshot")
+        artifact_values = json.loads(str(row["artifacts_json"]))
+        if not isinstance(artifact_values, list):
+            raise ValueError(
+                "Persisted source snapshot artifacts must be a list"
+            )
+        artifacts: list[SourceArtifact] = []
+        for artifact_value in artifact_values:
+            if not isinstance(artifact_value, dict) or set(
+                artifact_value
+            ) != {"name", "content_hash", "row_count"}:
+                raise ValueError(
+                    "Persisted source snapshot artifact schema mismatch"
+                )
+            artifacts.append(
+                SourceArtifact(
+                    name=str(artifact_value["name"]),
+                    content_hash=str(artifact_value["content_hash"]),
+                    row_count=int(artifact_value["row_count"]),
+                )
+            )
+        snapshot = SourceSnapshot(
+            snapshot_id=str(row["snapshot_id"]),
+            content_hash=str(row["content_hash"]),
+            provenance=_source_provenance_from_json(
+                str(row["provenance_json"])
+            ),
+            artifacts=tuple(artifacts),
+        )
+        if snapshot.snapshot_id != snapshot_id:
+            raise ValueError(
+                "Source snapshot row does not match requested identity"
+            )
+        return snapshot
 
 
 class SqlScenarioRecipeRepository:
@@ -1047,9 +1126,18 @@ class SqlScenarioRecipeRepository:
 
 def _source_provenance_from_json(payload: str) -> SourceProvenance:
     values = json.loads(payload)
+    if not isinstance(values, dict) or set(values) != {
+        "provider",
+        "dataset",
+        "version",
+        "observed_at",
+    }:
+        raise ValueError("Persisted source provenance schema mismatch")
     observed_at = datetime.fromisoformat(str(values["observed_at"]))
     if observed_at.tzinfo is None:
-        observed_at = observed_at.replace(tzinfo=timezone.utc)
+        raise ValueError(
+            "Persisted source provenance observed_at must be timezone-aware"
+        )
     return SourceProvenance(
         provider=str(values["provider"]),
         dataset=str(values["dataset"]),

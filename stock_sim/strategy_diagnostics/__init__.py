@@ -206,6 +206,19 @@ from .diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
     SqlDiagnosticEvidenceRepository,
 )
+from .reproduction import (
+    DIAGNOSTIC_CODE_IDENTITY,
+    REPRODUCTION_MANIFEST_SCHEMA_VERSION,
+    REPRODUCTION_REPORT_SCHEMA_VERSION,
+    InMemoryReproductionRepository,
+    ReproductionCheck,
+    ReproductionManifest,
+    ReproductionMismatch,
+    ReproductionReport,
+    ReproductionRepository,
+    ReproductionService,
+)
+from .reproduction_storage import SqlReproductionRepository
 
 __all__ = [
     "AIRecipeAssistant",
@@ -382,5 +395,16 @@ __all__ = [
     "SealedFindingExplanationRequest",
     "SqlDiagnosticEvidenceRepository",
     "StrategyGuardrailProfile",
+    "DIAGNOSTIC_CODE_IDENTITY",
+    "REPRODUCTION_MANIFEST_SCHEMA_VERSION",
+    "REPRODUCTION_REPORT_SCHEMA_VERSION",
+    "InMemoryReproductionRepository",
+    "ReproductionCheck",
+    "ReproductionManifest",
+    "ReproductionMismatch",
+    "ReproductionReport",
+    "ReproductionRepository",
+    "ReproductionService",
+    "SqlReproductionRepository",
     "create_diagnostics_application",
 ]

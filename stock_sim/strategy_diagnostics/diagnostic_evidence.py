@@ -25,6 +25,7 @@ from .isolated_sensitivity_sets import (
     SensitivitySweepDefinition,
 )
 from .market_paths import MaterializedMarketPath
+from .strategy_runs import StrategyRunSnapshot
 
 
 DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION = "diagnostic-evidence.v1"
@@ -1023,6 +1024,34 @@ def _calculate_metrics(
     return result
 
 
+def calculate_run_evidence_metrics(
+    *,
+    snapshot: StrategyRunSnapshot,
+    path: MaterializedMarketPath,
+    case_id: str,
+    layer: str,
+    reproduction_manifest_id: str,
+) -> tuple[dict[str, object], ...]:
+    """Project one completed run through the sealed common-metric contract."""
+
+    if snapshot.status != "completed" or snapshot.run_artifact_hash is None:
+        raise ValueError(
+            "Reproduction metrics require a completed Strategy Run artifact"
+        )
+    member = snapshot.to_dict()
+    member["strategy_id"] = snapshot.specification.strategy_id
+    member["strategy_version"] = snapshot.specification.strategy_version
+    return tuple(
+        _calculate_metrics(
+            case_id=case_id,
+            layer=layer,
+            member=member,
+            path=path,
+            reproduction_manifest_id=reproduction_manifest_id,
+        ).values()
+    )
+
+
 def _maximum_drawdown(equities: tuple[Decimal, ...]) -> Decimal:
     peak = equities[0]
     maximum = Decimal("0")
@@ -1996,4 +2025,5 @@ __all__ = [
     "InMemoryDiagnosticEvidenceRepository",
     "SealedFindingExplanationRequest",
     "StrategyGuardrailProfile",
+    "calculate_run_evidence_metrics",
 ]
