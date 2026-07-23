@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -104,12 +105,22 @@ from .strategy_campaigns import (
 from .transformations import create_initial_transformation_catalog
 from .strategy_runs import (
     BASELINE_EXECUTION_POLICY_VERSION,
+    CompletedStrategyRunEvidence,
     REFERENCE_STRATEGY_ID,
     REFERENCE_STRATEGY_VERSION,
+    STRATEGY_RUN_ENGINE_VERSION,
     SqlStrategyRunRepository,
     StrategyRunEngine,
     StrategyRunSnapshot,
     StrategyRunSpecification,
+)
+from .v1_acceptance import (
+    V1AcceptanceFacts,
+    V1AcceptanceGate,
+    V1AcceptanceReport,
+    V1AcceptanceSubject,
+    V1CadenceProof,
+    V1ProductSurfaceInventory,
 )
 
 
@@ -271,7 +282,10 @@ class DiagnosticsApplication:
 
     def list_historical_segments(self) -> tuple[HistoricalMarketSegment, ...]:
         self.status()
-        return self._historical_segments.list_segments()
+        return cast(
+            tuple[HistoricalMarketSegment, ...],
+            self._historical_segments.list_segments(),
+        )
 
     def recommend_historical_segments(
         self,
@@ -279,9 +293,12 @@ class DiagnosticsApplication:
         limit: int = 3,
     ) -> tuple[HistoricalSegmentRecommendation, ...]:
         self.status()
-        return self._historical_segments.recommend(
-            intent=intent,
-            limit=limit,
+        return cast(
+            tuple[HistoricalSegmentRecommendation, ...],
+            self._historical_segments.recommend(
+                intent=intent,
+                limit=limit,
+            ),
         )
 
     def latest_segment_admission(self) -> SegmentAdmissionReport | None:
@@ -807,6 +824,172 @@ class DiagnosticsApplication:
             ),
         )
 
+    def recipe_authoring_capabilities(self) -> dict[str, object]:
+        """Report configured authoring surfaces without pretending availability."""
+
+        self.status()
+        assistant = self._recipe_assistant
+        return {
+            "manual_authoring_available": True,
+            "ai_authoring_available": assistant is not None,
+            "ai_provider": (
+                str(getattr(assistant, "provider", "configured"))
+                if assistant is not None
+                else None
+            ),
+            "ai_model": (
+                str(getattr(assistant, "model", "configured"))
+                if assistant is not None
+                else None
+            ),
+        }
+
+    def v1_product_surface_inventory(
+        self,
+    ) -> V1ProductSurfaceInventory:
+        """Inventory the authoritative public application command surface."""
+
+        self.status()
+        commands = tuple(
+            name
+            for name, value in vars(type(self)).items()
+            if not name.startswith("_") and callable(value)
+        )
+        return V1ProductSurfaceInventory(commands)
+
+    def v1_diagnostic_configuration(
+        self,
+        *,
+        selected_strategy_ids: tuple[str, ...] | None = None,
+        selected_guardrail_profile_ids: tuple[str, ...] | None = None,
+    ) -> dict[str, object]:
+        """Resolve the explicit, user-visible V1 strategy/guardrail selection."""
+
+        self.status()
+        strategy_pairs = (
+            (
+                QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+            ),
+            (
+                LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+                LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+            ),
+        )
+        supported_strategy_ids = tuple(item[0] for item in strategy_pairs)
+        requested_strategy_ids = (
+            supported_strategy_ids
+            if selected_strategy_ids is None
+            else selected_strategy_ids
+        )
+        unknown_strategies = set(requested_strategy_ids) - set(
+            supported_strategy_ids
+        )
+        if unknown_strategies:
+            raise ValueError(
+                "Unknown V1 strategy selection: "
+                + ", ".join(sorted(unknown_strategies))
+            )
+        if len(requested_strategy_ids) != len(set(requested_strategy_ids)):
+            raise ValueError("V1 strategy selections must be unique")
+        selected_strategies = tuple(
+            strategy_id
+            for strategy_id in supported_strategy_ids
+            if strategy_id in requested_strategy_ids
+        )
+
+        profiles = self.strategy_guardrail_profiles()
+        supported_profile_ids = tuple(profile.profile_id for profile in profiles)
+        requested_profile_ids = (
+            supported_profile_ids
+            if selected_guardrail_profile_ids is None
+            else selected_guardrail_profile_ids
+        )
+        unknown_profiles = set(requested_profile_ids) - set(
+            supported_profile_ids
+        )
+        if unknown_profiles:
+            raise ValueError(
+                "Unknown V1 guardrail profile selection: "
+                + ", ".join(sorted(unknown_profiles))
+            )
+        if len(requested_profile_ids) != len(set(requested_profile_ids)):
+            raise ValueError("V1 guardrail profile selections must be unique")
+        selected_profiles = tuple(
+            profile
+            for profile in profiles
+            if profile.profile_id in requested_profile_ids
+        )
+        selected_profile_strategy_ids = {
+            profile.strategy_id for profile in selected_profiles
+        }
+
+        errors: list[str] = []
+        if set(selected_strategies) != set(supported_strategy_ids):
+            errors.append("Select both representative V1 strategies.")
+        if (
+            len(selected_profiles) != len(strategy_pairs)
+            or selected_profile_strategy_ids != set(selected_strategies)
+        ):
+            errors.append(
+                "Select one versioned guardrail profile for each V1 strategy."
+            )
+        supported_strategies = []
+        for strategy_id, strategy_version in strategy_pairs:
+            manifest = ptrade_manifest_for(strategy_id, strategy_version)
+            supported_strategies.append(
+                {
+                    **manifest.to_dict(),
+                    "manifest_content_hash": manifest.content_hash,
+                }
+            )
+        return {
+            "status": "complete" if not errors else "incomplete",
+            "supported_strategies": supported_strategies,
+            "supported_guardrail_profiles": [
+                profile.to_dict() for profile in profiles
+            ],
+            "selected_strategy_ids": list(selected_strategies),
+            "selected_guardrail_profile_ids": [
+                profile.profile_id for profile in selected_profiles
+            ],
+            "validation": {
+                "complete": not errors,
+                "errors": errors,
+            },
+        }
+
+    def build_selected_diagnostic_evidence(
+        self,
+        campaign_id: str,
+        *,
+        selected_strategy_ids: tuple[str, ...],
+        selected_guardrail_profile_ids: tuple[str, ...],
+    ) -> DiagnosticEvidencePackage:
+        """Build evidence only for a complete explicit V1 selection."""
+
+        configuration = self.v1_diagnostic_configuration(
+            selected_strategy_ids=selected_strategy_ids,
+            selected_guardrail_profile_ids=(
+                selected_guardrail_profile_ids
+            ),
+        )
+        if configuration["status"] != "complete":
+            raise ValueError(
+                "Complete the V1 strategy and guardrail selection before "
+                "building evidence"
+            )
+        selected_ids = set(selected_guardrail_profile_ids)
+        selected_profiles = tuple(
+            profile
+            for profile in self.strategy_guardrail_profiles()
+            if profile.profile_id in selected_ids
+        )
+        return self.build_diagnostic_evidence(
+            campaign_id,
+            guardrail_profiles=selected_profiles,
+        )
+
     def build_diagnostic_evidence(
         self,
         campaign_id: str,
@@ -838,7 +1021,10 @@ class DiagnosticsApplication:
     ) -> tuple[ReproductionManifest, ...]:
         self.status()
         self._diagnostic_evidence.get(evidence_package_id)
-        return self._reproduction.manifests_for(evidence_package_id)
+        return cast(
+            tuple[ReproductionManifest, ...],
+            self._reproduction.manifests_for(evidence_package_id),
+        )
 
     def reproduce_strategy_run(
         self,
@@ -846,6 +1032,465 @@ class DiagnosticsApplication:
     ) -> ReproductionReport:
         self.status()
         return self._reproduction.reproduce(manifest_id)
+
+    def evaluate_v1_acceptance(
+        self,
+        *,
+        campaign_id: str,
+        evidence_package_id: str,
+        reproduced_manifest_id: str,
+        selected_strategy_ids: tuple[str, ...],
+        selected_guardrail_profile_ids: tuple[str, ...],
+        guided_ui_steps: tuple[str, ...],
+        provenance_sections: tuple[str, ...],
+        curve_overlays: tuple[str, ...],
+    ) -> V1AcceptanceReport:
+        """Evaluate V1 from accepted artifacts and authoritative product facts."""
+
+        self.status()
+        configuration = self.v1_diagnostic_configuration(
+            selected_strategy_ids=selected_strategy_ids,
+            selected_guardrail_profile_ids=(
+                selected_guardrail_profile_ids
+            ),
+        )
+        campaign = self._diagnostic_campaigns.get(campaign_id)
+        evidence = self._diagnostic_evidence.get(evidence_package_id)
+        if evidence.campaign_id != campaign.campaign_id:
+            raise ValueError(
+                "V1 acceptance evidence belongs to another campaign"
+            )
+        manifests = self._reproduction.manifests_for(evidence_package_id)
+        selected_manifest_ids = {
+            manifest.manifest_id for manifest in manifests
+        }
+        if reproduced_manifest_id not in selected_manifest_ids:
+            raise ValueError(
+                "V1 acceptance reproduction belongs to another evidence package"
+            )
+        reproduction = self._reproduction.latest_report(
+            reproduced_manifest_id
+        )
+        if reproduction is None:
+            raise ValueError(
+                "V1 acceptance requires a completed reproduction report"
+            )
+
+        baseline_case = campaign.specification.baseline_case
+        approved = (
+            self._recipe_workbench.get_version(
+                baseline_case.recipe_version_id
+            )
+            if baseline_case is not None
+            else None
+        )
+        segments = self._historical_segments.list_segments()
+        historical_segment = (
+            next(
+                (
+                    segment
+                    for segment in segments
+                    if baseline_case is not None
+                    and segment.segment_id
+                    == baseline_case.historical_segment_id
+                ),
+                None,
+            )
+            if baseline_case is not None
+            else None
+        )
+
+        catalog_view = self._transformation_catalog.to_dict()
+        catalog_entries = cast(
+            list[object],
+            catalog_view["transformations"],
+        )
+        transformation_families = tuple(
+            sorted(
+                str(cast(Mapping[str, object], item)["family"])
+                for item in catalog_entries
+            )
+        )
+
+        strategy_versions_by_id = {
+            QUENTX_SCENARIO_NATIVE_STRATEGY_ID: (
+                QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION
+            ),
+            LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID: (
+                LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION
+            ),
+        }
+        selected_strategy_versions = tuple(
+            (strategy_id, strategy_versions_by_id[strategy_id])
+            for strategy_id in selected_strategy_ids
+            if strategy_id in strategy_versions_by_id
+        )
+        profile_ids = set(selected_guardrail_profile_ids)
+        selected_profiles = tuple(
+            profile
+            for profile in self.strategy_guardrail_profiles()
+            if profile.profile_id in profile_ids
+        )
+        selected_guardrail_profiles = tuple(
+            (
+                profile.strategy_id,
+                profile.strategy_version,
+                profile.profile_version,
+            )
+            for profile in selected_profiles
+        )
+
+        completed_layers = tuple(
+            sorted(
+                {
+                    case.layer
+                    for case in campaign.cases
+                    if case.status == "completed"
+                }
+            )
+        )
+        isolated = campaign.specification.isolated_sensitivity_set
+        isolated_counts: Counter[str] = Counter()
+        if isolated is not None:
+            isolated_counts.update(
+                case.transformation_family
+                for case in isolated.ordered_cases
+            )
+        isolated_cases = tuple(
+            case
+            for case in campaign.cases
+            if case.layer == "isolated_sensitivity"
+        )
+        replicas_share_inputs = bool(isolated_cases) and all(
+            self._completed_campaign_case_is_comparable(case)
+            for case in isolated_cases
+        )
+
+        accepted_equity_curves = 0
+        for manifest in manifests:
+            accepted = manifest.accepted_result
+            equity_curve = accepted.get("equity_curve")
+            if isinstance(equity_curve, list) and equity_curve:
+                accepted_equity_curves += 1
+        next_node_activation = (
+            self._accepted_orders_use_next_node_activation(manifests)
+        )
+        evidence_view = evidence.to_dict()
+        findings = evidence_view.get("diagnostic_findings")
+        finding_count = len(findings) if isinstance(findings, list) else 0
+        explanation_authority = evidence_view.get(
+            "ai_explanation_authority"
+        )
+        ai_explanation_is_limited = (
+            isinstance(explanation_authority, Mapping)
+            and explanation_authority.get("scope")
+            == "sealed_findings_only"
+            and explanation_authority.get(
+                "may_recalculate_measurements"
+            )
+            is False
+            and explanation_authority.get(
+                "may_add_or_remove_findings"
+            )
+            is False
+        )
+        authoring_capabilities = self.recipe_authoring_capabilities()
+        product_surface_inventory = self.v1_product_surface_inventory()
+        cadence_proofs = self._completed_v1_cadence_proofs(campaign)
+
+        facts = V1AcceptanceFacts(
+            historical_segment_admitted=(
+                historical_segment is not None
+                and historical_segment.selection.market
+                == "mainland-a-share"
+                and historical_segment.selection.start_date
+                <= historical_segment.selection.end_date
+            ),
+            source_provenance_available=(
+                historical_segment is not None
+                and all(
+                    (
+                        historical_segment.source_provenance.provider.strip(),
+                        historical_segment.source_provenance.dataset.strip(),
+                        historical_segment.source_provenance.version.strip(),
+                    )
+                )
+            ),
+            transformation_families=transformation_families,
+            manual_recipe_authoring_available=(
+                authoring_capabilities[
+                    "manual_authoring_available"
+                ]
+                is True
+            ),
+            ai_recipe_authoring_available=(
+                authoring_capabilities["ai_authoring_available"] is True
+            ),
+            recipe_validated=(
+                approved is not None
+                and approved.validation_result.is_valid
+            ),
+            recipe_approved=(
+                approved is not None
+                and bool(approved.approval_actor.strip())
+            ),
+            recipe_frozen=(
+                approved is not None
+                and approved.recipe.canonical_json()
+                == approved.validation_result.validated_recipe.canonical_json()
+                if (
+                    approved is not None
+                    and approved.validation_result.validated_recipe is not None
+                )
+                else False
+            ),
+            recipe_versioned=(
+                approved is not None
+                and approved.version_number >= 1
+                and bool(approved.version_id.strip())
+            ),
+            recipe_hashed=(
+                approved is not None
+                and len(approved.content_hash) == 64
+            ),
+            selected_strategy_versions=selected_strategy_versions,
+            selected_guardrail_profiles=selected_guardrail_profiles,
+            supported_decision_cadences=tuple(
+                proof.decision_cadence_minutes
+                for proof in cadence_proofs
+            ),
+            accelerated_simulation_time=(
+                configuration["status"] == "complete"
+                and campaign.status == "completed"
+                and accepted_equity_curves == len(manifests)
+                and bool(manifests)
+            ),
+            next_node_activation=next_node_activation,
+            campaign_type=campaign.specification.campaign_type,
+            campaign_status=campaign.status,
+            completed_campaign_layers=completed_layers,
+            isolated_cases_by_family=tuple(
+                sorted(isolated_counts.items())
+            ),
+            isolated_replicas_share_immutable_inputs=(
+                replicas_share_inputs
+            ),
+            guided_ui_steps=guided_ui_steps,
+            provenance_sections=provenance_sections,
+            curve_overlays=curve_overlays,
+            evidence_status=str(evidence_view.get("status", "unknown")),
+            diagnostic_finding_count=finding_count,
+            accepted_manifest_count=len(manifests),
+            reproduction_status=reproduction.status,
+            ai_explanation_is_limited_to_sealed_findings=(
+                ai_explanation_is_limited
+            ),
+            product_surface_inventory=product_surface_inventory,
+        )
+        subject = V1AcceptanceSubject(
+            campaign_id=campaign.campaign_id,
+            evidence_package_id=evidence.evidence_package_id,
+            evidence_artifact_hash=evidence.artifact_hash,
+            measurement_artifact_hash=str(
+                evidence_view["measurement_artifact_hash"]
+            ),
+            reproduction_manifest_id=reproduced_manifest_id,
+            reproduction_attempt_id=reproduction.attempt_id,
+            selected_strategy_versions=selected_strategy_versions,
+            selected_guardrail_profiles=selected_guardrail_profiles,
+            cadence_proofs=cadence_proofs,
+            product_surface_inventory_hash=(
+                product_surface_inventory.content_hash
+            ),
+        )
+        return V1AcceptanceGate().evaluate(facts, subject)
+
+    def _completed_v1_cadence_proofs(
+        self,
+        campaign: DiagnosticCampaignSnapshot,
+    ) -> tuple[V1CadenceProof, ...]:
+        baseline = campaign.specification.baseline_case
+        if baseline is None:
+            return ()
+        grouped: dict[
+            str,
+            dict[str, list[CompletedStrategyRunEvidence]],
+        ] = {}
+        suffixes = {
+            QUENTX_SCENARIO_NATIVE_STRATEGY_ID: ":quentx",
+            LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID: ":live-minute",
+        }
+        versions = {
+            QUENTX_SCENARIO_NATIVE_STRATEGY_ID: (
+                QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION
+            ),
+            LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID: (
+                LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION
+            ),
+        }
+        evidence = self._strategy_runs.completed_run_evidence(
+            materialization_hash=baseline.materialization_hash,
+            strategy_versions=tuple(versions.items()),
+            decision_cadences=(30, 60),
+        )
+        for record in evidence:
+            specification = record.specification
+            suffix = suffixes.get(specification.strategy_id)
+            if (
+                suffix is None
+                or specification.strategy_version
+                != versions[specification.strategy_id]
+                or specification.source_snapshot_id
+                != baseline.source_snapshot_id
+                or not specification.replica_id.endswith(suffix)
+            ):
+                continue
+            campaign_replica_id = specification.replica_id[
+                : -len(suffix)
+            ]
+            if not campaign_replica_id:
+                continue
+            grouped.setdefault(campaign_replica_id, {}).setdefault(
+                specification.strategy_id,
+                [],
+            ).append(record)
+
+        candidates: dict[int, list[V1CadenceProof]] = {
+            30: [],
+            60: [],
+        }
+        for campaign_replica_id, members in grouped.items():
+            if set(members) != set(suffixes):
+                continue
+            for first in members[
+                QUENTX_SCENARIO_NATIVE_STRATEGY_ID
+            ]:
+                for second in members[
+                    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID
+                ]:
+                    ordered = (first, second)
+                    try:
+                        specification = BaselineCampaignSpecification(
+                            campaign_replica_id=campaign_replica_id,
+                            strategy_runs=(
+                                first.specification,
+                                second.specification,
+                            ),
+                        )
+                    except ValueError:
+                        continue
+                    if (
+                        not first.equity_times
+                        or first.equity_times != second.equity_times
+                        or not all(
+                            self._cadence_proof_audit_matches(record)
+                            for record in ordered
+                        )
+                    ):
+                        continue
+                    cadence = (
+                        first.specification.decision_cadence_minutes
+                    )
+                    candidates[cadence].append(
+                        V1CadenceProof(
+                            decision_cadence_minutes=cadence,
+                            campaign_id=specification.campaign_id,
+                            run_ids=(first.run_id, second.run_id),
+                            run_artifact_hashes=(
+                                first.run_artifact_hash,
+                                second.run_artifact_hash,
+                            ),
+                        )
+                    )
+        return tuple(
+            sorted(proofs, key=lambda proof: proof.campaign_id)[0]
+            for cadence in (30, 60)
+            if (proofs := candidates[cadence])
+        )
+
+    @staticmethod
+    def _cadence_proof_audit_matches(
+        record: CompletedStrategyRunEvidence,
+    ) -> bool:
+        audit = record.ptrade_audit
+        specification = record.specification
+        return (
+            audit is not None
+            and audit.surface_version
+            == specification.ptrade_surface_version
+            and audit.manifest_hash
+            == specification.ptrade_manifest_hash
+            and audit.strategy_id == specification.strategy_id
+            and audit.strategy_version == specification.strategy_version
+            and audit.host_adapter_versions
+            == (specification.ptrade_host_adapter_version,)
+        )
+
+    @staticmethod
+    def _accepted_orders_use_next_node_activation(
+        manifests: tuple[ReproductionManifest, ...],
+    ) -> bool:
+        if not manifests or any(
+            manifest.specification.engine_version
+            != STRATEGY_RUN_ENGINE_VERSION
+            for manifest in manifests
+        ):
+            return False
+        observed_order = False
+        for manifest in manifests:
+            orders = manifest.accepted_result.get("orders")
+            if not isinstance(orders, list):
+                return False
+            for order in orders:
+                if not isinstance(order, Mapping):
+                    return False
+                decision_time = order.get("decision_time")
+                activation_time = order.get("activation_time")
+                if not isinstance(decision_time, str) or not isinstance(
+                    activation_time,
+                    str,
+                ):
+                    return False
+                try:
+                    decision = datetime.fromisoformat(decision_time)
+                    activation = datetime.fromisoformat(activation_time)
+                    if (
+                        (decision.utcoffset() is None)
+                        != (activation.utcoffset() is None)
+                        or activation <= decision
+                    ):
+                        return False
+                except (TypeError, ValueError):
+                    return False
+                observed_order = True
+        return observed_order
+
+    @staticmethod
+    def _completed_campaign_case_is_comparable(
+        case: object,
+    ) -> bool:
+        attempts = getattr(case, "attempts", ())
+        if not attempts:
+            return False
+        attempt = attempts[-1]
+        campaign = getattr(attempt, "campaign", None)
+        if campaign is None:
+            return False
+        view = campaign.to_dict()
+        pinned = view.get("pinned_conditions")
+        shared = view.get("shared_market_nodes")
+        isolation = view.get("isolation")
+        return (
+            view.get("status") == "completed"
+            and isinstance(pinned, Mapping)
+            and bool(pinned.get("materialization_hash"))
+            and bool(pinned.get("source_snapshot_id"))
+            and bool(pinned.get("random_source"))
+            and isinstance(shared, Mapping)
+            and shared.get("identical_observed_timeline") is True
+            and isinstance(isolation, Mapping)
+            and isolation.get("verification_status") == "verified"
+        )
 
     def reproduction_status(
         self,

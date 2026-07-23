@@ -9,6 +9,7 @@ from .base_adapter import PanelAdapter
 
 try:
     from PySide6.QtWidgets import (
+        QCheckBox,
         QLabel,
         QLineEdit,
         QPlainTextEdit,
@@ -71,6 +72,23 @@ except Exception:  # pragma: no cover - exercised only without Qt installed
 
         def click(self) -> None:
             self.clicked.emit()
+
+    class QCheckBox:  # type: ignore[no-redef]
+        def __init__(self, text: str = "") -> None:
+            self._text = text
+            self._checked = False
+
+        def setText(self, text: str) -> None:
+            self._text = text
+
+        def text(self) -> str:
+            return self._text
+
+        def setChecked(self, checked: bool) -> None:
+            self._checked = checked
+
+        def isChecked(self) -> bool:
+            return self._checked
 
     class QVBoxLayout:  # type: ignore[no-redef]
         def __init__(self, *_: object) -> None:
@@ -165,6 +183,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._campaign_equity_overlay_view: Any = None
         self._campaign_drawdown_overlay_view: Any = None
         self._run_campaign_button: Any = None
+        self._strategy_selection_checks: list[Any] = []
+        self._guardrail_selection_checks: list[Any] = []
+        self._apply_diagnostic_configuration_button: Any = None
+        self._diagnostic_configuration_view: Any = None
         self._sensitivity_status_label: Any = None
         self._sensitivity_curves_view: Any = None
         self._stage_sensitivity_case_button: Any = None
@@ -189,6 +211,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._reproduction_manifest_input: Any = None
         self._reproduce_strategy_run_button: Any = None
         self._reproduction_details_view: Any = None
+        self._v1_acceptance_status_label: Any = None
+        self._v1_acceptance_details_view: Any = None
         self._action_error = ""
         self._recipe_action_error = ""
         self._run_action_error = ""
@@ -423,6 +447,30 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._campaign_drawdown_overlay_view.setPlainText(
             "Drawdown comparison: run both strategies on the Baseline Campaign."
         )
+        self._strategy_selection_checks = [
+            QCheckBox("Representative strategy 1"),
+            QCheckBox("Representative strategy 2"),
+        ]
+        for check in self._strategy_selection_checks:
+            check.setChecked(True)
+        self._guardrail_selection_checks = [
+            QCheckBox("Versioned guardrail profile 1"),
+            QCheckBox("Versioned guardrail profile 2"),
+        ]
+        for check in self._guardrail_selection_checks:
+            check.setChecked(True)
+        self._apply_diagnostic_configuration_button = QPushButton(
+            "Apply V1 strategy and guardrail selection"
+        )
+        self._apply_diagnostic_configuration_button.clicked.connect(
+            self._apply_diagnostic_configuration
+        )
+        self._diagnostic_configuration_view = QPlainTextEdit()
+        self._diagnostic_configuration_view.setReadOnly(True)
+        self._diagnostic_configuration_view.setPlainText(
+            "V1 diagnostic configuration: loading two representative "
+            "strategies and their versioned guardrails."
+        )
         self._run_campaign_button = QPushButton(
             "Run two-strategy Baseline Campaign"
         )
@@ -553,6 +601,15 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         self._reproduction_details_view.setPlainText(
             "Seal Diagnostic Evidence to create accepted run manifests."
         )
+        self._v1_acceptance_status_label = QLabel(
+            "V1 acceptance: pending"
+        )
+        self._v1_acceptance_details_view = QPlainTextEdit()
+        self._v1_acceptance_details_view.setReadOnly(True)
+        self._v1_acceptance_details_view.setPlainText(
+            "Complete the guided workflow and reproduce an accepted run "
+            "to evaluate all V1 criteria."
+        )
         layout.addWidget(self._product_label)
         layout.addWidget(self._status_label)
         layout.addWidget(self._message_label)
@@ -633,6 +690,12 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._campaign_status_label)
         layout.addWidget(self._campaign_equity_overlay_view)
         layout.addWidget(self._campaign_drawdown_overlay_view)
+        for check in self._strategy_selection_checks:
+            layout.addWidget(check)
+        for check in self._guardrail_selection_checks:
+            layout.addWidget(check)
+        layout.addWidget(self._apply_diagnostic_configuration_button)
+        layout.addWidget(self._diagnostic_configuration_view)
         layout.addWidget(self._run_campaign_button)
         layout.addWidget(self._sensitivity_status_label)
         layout.addWidget(self._sensitivity_curves_view)
@@ -658,6 +721,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         layout.addWidget(self._reproduction_manifest_input)
         layout.addWidget(self._reproduce_strategy_run_button)
         layout.addWidget(self._reproduction_details_view)
+        layout.addWidget(self._v1_acceptance_status_label)
+        layout.addWidget(self._v1_acceptance_details_view)
         return root
 
     def _admit_from_inputs(self) -> None:
@@ -953,6 +1018,7 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
 
     def _run_baseline_campaign_from_inputs(self) -> None:
         try:
+            self._sync_v1_configuration_from_controls()
             self._logic.run_baseline_campaign(
                 initial_cash=str(self._run_initial_cash_input.text()).strip(),
                 order_shares=int(str(self._run_order_shares_input.text()).strip()),
@@ -1006,8 +1072,9 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         )
 
     def _plan_diagnostic_campaign_from_inputs(self) -> None:
-        self._apply_run_action(
-            lambda: self._logic.plan_diagnostic_campaign(
+        def plan() -> object:
+            self._sync_v1_configuration_from_controls()
+            return self._logic.plan_diagnostic_campaign(
                 initial_cash=str(
                     self._run_initial_cash_input.text()
                 ).strip(),
@@ -1018,7 +1085,8 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     self._run_replica_input.text()
                 ).strip(),
             )
-        )
+
+        self._apply_run_action(plan)
 
     def _advance_diagnostic_campaign(self) -> None:
         self._apply_run_action(
@@ -1038,7 +1106,54 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
         )
 
     def _build_diagnostic_evidence(self) -> None:
-        self._apply_run_action(self._logic.build_diagnostic_evidence)
+        def build() -> object:
+            self._sync_v1_configuration_from_controls()
+            return self._logic.build_diagnostic_evidence()
+
+        self._apply_run_action(build)
+
+    def _apply_diagnostic_configuration(self) -> None:
+        self._apply_run_action(
+            self._sync_v1_configuration_from_controls
+        )
+
+    def _sync_v1_configuration_from_controls(self) -> object:
+        configuration = self._current_view.get(
+            "diagnostic_configuration",
+            {},
+        )
+        if not isinstance(configuration, dict):
+            raise ValueError("V1 diagnostic configuration is unavailable")
+        strategies = configuration.get("supported_strategies", [])
+        profiles = configuration.get(
+            "supported_guardrail_profiles",
+            [],
+        )
+        if not isinstance(strategies, list) or not isinstance(
+            profiles,
+            list,
+        ):
+            raise ValueError("V1 diagnostic configuration is malformed")
+        strategy_ids = tuple(
+            str(item["strategy_id"])
+            for item, check in zip(
+                strategies,
+                self._strategy_selection_checks,
+            )
+            if isinstance(item, dict) and check.isChecked()
+        )
+        profile_ids = tuple(
+            str(item["profile_id"])
+            for item, check in zip(
+                profiles,
+                self._guardrail_selection_checks,
+            )
+            if isinstance(item, dict) and check.isChecked()
+        )
+        return self._logic.configure_v1_diagnostic_selection(
+            strategy_ids=strategy_ids,
+            guardrail_profile_ids=profile_ids,
+        )
 
     def _explain_diagnostic_findings(self) -> None:
         self._apply_run_action(self._logic.explain_diagnostic_findings)
@@ -1156,6 +1271,138 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
             self._transformation_catalog_label.setText(
                 "Transformation catalog: "
                 + (", ".join(identifiers) if identifiers else "not loaded")
+            )
+        diagnostic_configuration = self._current_view.get(
+            "diagnostic_configuration",
+            {},
+        )
+        if not isinstance(diagnostic_configuration, dict):
+            diagnostic_configuration = {}
+        supported_strategies = diagnostic_configuration.get(
+            "supported_strategies",
+            [],
+        )
+        if not isinstance(supported_strategies, list):
+            supported_strategies = []
+        selected_strategy_ids = {
+            str(item)
+            for item in diagnostic_configuration.get(
+                "selected_strategy_ids",
+                [],
+            )
+        }
+        for index, check in enumerate(self._strategy_selection_checks):
+            strategy = (
+                supported_strategies[index]
+                if index < len(supported_strategies)
+                and isinstance(supported_strategies[index], dict)
+                else {}
+            )
+            strategy_id = str(strategy.get("strategy_id", "unavailable"))
+            strategy_version = str(
+                strategy.get("strategy_version", "unknown")
+            )
+            check.setText(f"{strategy_id}@{strategy_version}")
+            check.setChecked(strategy_id in selected_strategy_ids)
+        supported_profiles = diagnostic_configuration.get(
+            "supported_guardrail_profiles",
+            [],
+        )
+        if not isinstance(supported_profiles, list):
+            supported_profiles = []
+        selected_profile_ids = {
+            str(item)
+            for item in diagnostic_configuration.get(
+                "selected_guardrail_profile_ids",
+                [],
+            )
+        }
+        for index, check in enumerate(self._guardrail_selection_checks):
+            profile = (
+                supported_profiles[index]
+                if index < len(supported_profiles)
+                and isinstance(supported_profiles[index], dict)
+                else {}
+            )
+            profile_id = str(profile.get("profile_id", "unavailable"))
+            profile_version = str(
+                profile.get("profile_version", "unknown")
+            )
+            check.setText(f"{profile_version} | {profile_id}")
+            check.setChecked(profile_id in selected_profile_ids)
+        if self._diagnostic_configuration_view is not None:
+            configuration_lines = [
+                "V1 strategy and guardrail configuration",
+                "Status | "
+                f"{diagnostic_configuration.get('status', 'unavailable')}",
+                "",
+                "Representative strategies",
+            ]
+            for strategy in supported_strategies:
+                if not isinstance(strategy, dict):
+                    continue
+                selected = (
+                    str(strategy.get("strategy_id"))
+                    in selected_strategy_ids
+                )
+                configuration_lines.append(
+                    " | ".join(
+                        (
+                            "selected" if selected else "not selected",
+                            str(strategy.get("strategy_id", "unknown")),
+                            str(strategy.get("strategy_version", "unknown")),
+                            "PTrade "
+                            f"{strategy.get('surface_version', 'unknown')}",
+                            "manifest "
+                            f"{strategy.get('manifest_content_hash', 'unknown')}",
+                        )
+                    )
+                )
+            configuration_lines.extend(
+                ("", "Versioned strategy-specific guardrails")
+            )
+            for profile in supported_profiles:
+                if not isinstance(profile, dict):
+                    continue
+                thresholds = profile.get("thresholds", [])
+                threshold_text = (
+                    ", ".join(
+                        f"{item.get('metric_name', 'unknown')} "
+                        f"{item.get('operator', 'unknown')} "
+                        f"{item.get('value', 'unknown')}"
+                        for item in thresholds
+                        if isinstance(item, dict)
+                    )
+                    if isinstance(thresholds, list)
+                    else ""
+                )
+                configuration_lines.append(
+                    " | ".join(
+                        (
+                            (
+                                "selected"
+                                if str(profile.get("profile_id"))
+                                in selected_profile_ids
+                                else "not selected"
+                            ),
+                            str(profile.get("profile_version", "unknown")),
+                            str(profile.get("strategy_id", "unknown")),
+                            threshold_text or "no thresholds",
+                        )
+                    )
+                )
+            validation = diagnostic_configuration.get("validation", {})
+            errors = (
+                validation.get("errors", [])
+                if isinstance(validation, dict)
+                else []
+            )
+            if isinstance(errors, list) and errors:
+                configuration_lines.extend(
+                    ("", "Selection errors", *map(str, errors))
+                )
+            self._diagnostic_configuration_view.setPlainText(
+                "\n".join(configuration_lines)
             )
         if self._catalog_status_label is not None:
             self._catalog_status_label.setText(
@@ -2086,10 +2333,10 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                 str(item.get("manifest_id", ""))
                 for item in manifests
             ]
-            selected = str(
+            selected_manifest_id = str(
                 self._reproduction_manifest_input.text()
             ).strip()
-            if selected not in available_ids:
+            if selected_manifest_id not in available_ids:
                 self._reproduction_manifest_input.setText(
                     available_ids[0]
                 )
@@ -2151,6 +2398,29 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                         )
                     )
                 )
+                execution_conditions = pinned.get(
+                    "execution_conditions",
+                    {},
+                )
+                if isinstance(execution_conditions, dict):
+                    requested = execution_conditions.get("requested")
+                    effective = execution_conditions.get("effective")
+                    reproduction_lines.append(
+                        "  Requested execution | "
+                        + json.dumps(
+                            requested,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                    )
+                    reproduction_lines.append(
+                        "  Effective execution | "
+                        + json.dumps(
+                            effective,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                    )
             if not manifests:
                 reproduction_lines.append(
                     "No accepted run manifests are available."
@@ -2209,6 +2479,94 @@ class DiagnosticsPanelAdapter(PanelAdapter):  # type: ignore[misc]
                     )
             self._reproduction_details_view.setPlainText(
                 "\n".join(reproduction_lines)
+            )
+        v1_acceptance = self._current_view.get("v1_acceptance", {})
+        if not isinstance(v1_acceptance, dict):
+            v1_acceptance = {}
+        if self._v1_acceptance_status_label is not None:
+            acceptance_status = str(
+                v1_acceptance.get("status", "pending")
+            )
+            acceptance_text = f"V1 acceptance: {acceptance_status}"
+            report_id = v1_acceptance.get("report_id")
+            if report_id:
+                acceptance_text += f" | {report_id}"
+            content_hash = v1_acceptance.get("content_hash")
+            if content_hash:
+                acceptance_text += f" | hash {content_hash}"
+            self._v1_acceptance_status_label.setText(acceptance_text)
+        if self._v1_acceptance_details_view is not None:
+            acceptance_lines = [
+                "Strategy Diagnostics Laboratory V1 acceptance",
+                str(
+                    v1_acceptance.get(
+                        "message",
+                        (
+                            "The report is content-addressed and every "
+                            "requirement remains independently visible."
+                        ),
+                    )
+                ),
+                "",
+                "Required capabilities",
+            ]
+            checks = v1_acceptance.get("checks", [])
+            if isinstance(checks, list) and checks:
+                for check in checks:
+                    if not isinstance(check, dict):
+                        continue
+                    missing = check.get("missing", [])
+                    missing_text = (
+                        ", ".join(map(str, missing))
+                        if isinstance(missing, list) and missing
+                        else "none"
+                    )
+                    acceptance_lines.append(
+                        " | ".join(
+                            (
+                                str(check.get("status", "unknown")).upper(),
+                                str(check.get("check_id", "unknown")),
+                                str(check.get("title", "")),
+                                str(check.get("evidence", "")),
+                                f"missing={missing_text}",
+                            )
+                        )
+                    )
+            else:
+                acceptance_lines.append(
+                    "Pending completion of the guided workflow."
+                )
+            acceptance_lines.extend(("", "Explicit V1 exclusions"))
+            exclusions = v1_acceptance.get(
+                "excluded_capabilities",
+                [],
+            )
+            if isinstance(exclusions, list) and exclusions:
+                for exclusion in exclusions:
+                    if not isinstance(exclusion, dict):
+                        continue
+                    acceptance_lines.append(
+                        " | ".join(
+                            (
+                                str(
+                                    exclusion.get("status", "unknown")
+                                ).upper(),
+                                str(
+                                    exclusion.get(
+                                        "capability_id",
+                                        "unknown",
+                                    )
+                                ),
+                                str(exclusion.get("evidence", "")),
+                            )
+                        )
+                    )
+            else:
+                acceptance_lines.append(
+                    "Exclusion audit is available after evaluation."
+                )
+            self._v1_acceptance_details_view.setPlainText(
+                "\n".join(acceptance_lines)
             )
         comparison = self._current_view.get("scenario_comparison_preview", {})
         if not isinstance(comparison, dict):

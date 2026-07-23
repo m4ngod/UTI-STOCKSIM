@@ -15,7 +15,10 @@ from app.panels.diagnostics.panel import DiagnosticsPanel
 from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
 from strategy_diagnostics import (
     A_SHARE_EXECUTION_REASON_CODES,
+    AIRecipeDraftOutputV1,
     AdmissionCheck,
+    DeterministicFakeAIRecipeAssistant,
+    DiagnosticFindingExplanation,
     FiveMinuteBar,
     HistoricalSegmentSelection,
     HistoricalSourceInspection,
@@ -28,6 +31,7 @@ from strategy_diagnostics import (
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
     ScenarioDataWorldInput,
+    ScenarioRecipeV1,
     SessionPriceLimitReference,
     SourceArtifact,
     SourceProvenance,
@@ -241,9 +245,9 @@ class _MarketStructureWorkspaceSource(_WorkspaceSource):
             return None
         return replace(
             inspection,
-            artifacts=(SourceArtifact("market-structure-bars", "d" * 64, 12),),
+            artifacts=(SourceArtifact("market-structure-bars", "d" * 64, 28),),
             eligible_instrument_count=4,
-            bar_count=12,
+            bar_count=28,
         )
 
     def load_scenario_data_world(self, segment: object) -> ScenarioDataWorldInput:
@@ -255,8 +259,12 @@ class _MarketStructureWorkspaceSource(_WorkspaceSource):
         )
         closes_by_time = (
             (datetime(2024, 1, 2, 9, 35), ("10", "10", "10", "10")),
-            (datetime(2024, 1, 2, 9, 40), ("10.2", "10.05", "10.15", "10.1")),
-            (datetime(2024, 1, 2, 9, 45), ("10.4", "10.1", "10.3", "10.2")),
+            (datetime(2024, 1, 2, 9, 40), ("10", "10", "10", "10")),
+            (datetime(2024, 1, 2, 9, 45), ("10", "10", "10", "10")),
+            (datetime(2024, 1, 2, 9, 50), ("9.90", "10", "10", "10")),
+            (datetime(2024, 1, 2, 9, 55), ("9.75", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 0), ("9.82", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 5), ("9.84", "10", "10", "10")),
         )
         previous_closes = {
             instrument: Decimal("10") for instrument, _industry, _board in instruments
@@ -450,6 +458,47 @@ def _market_structure_admittable_application() -> object:
         market_data_source=source,
         artifact_store=InMemoryMarketPathArtifactStore(),
         evidence_artifact_store=InMemoryDiagnosticEvidenceArtifactStore(),
+        recipe_assistant=_configured_recipe_assistant(),
+        recipe_clock=lambda: datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+    )
+
+
+class _V1FindingExplanationProvider:
+    def explain(self, request: object) -> tuple[DiagnosticFindingExplanation, ...]:
+        findings = getattr(request, "findings")
+        return (
+            DiagnosticFindingExplanation(
+                finding_id=str(findings[0]["finding_id"]),
+                text=(
+                    "Plain-language explanation grounded only in the "
+                    "sealed Diagnostic Finding."
+                ),
+            ),
+        )
+
+
+def _configured_recipe_assistant() -> DeterministicFakeAIRecipeAssistant:
+    return DeterministicFakeAIRecipeAssistant(
+        output=AIRecipeDraftOutputV1(
+            recipe=ScenarioRecipeV1(
+                name="Configured V1 assistant",
+                historical_segment_id="segment-fixture",
+                decision_cadence_minutes=30,
+                materialization_seed=17,
+            )
+        )
+    )
+
+
+def _v1_admittable_application() -> object:
+    source = _MarketStructureWorkspaceSource()
+    return create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        evidence_artifact_store=InMemoryDiagnosticEvidenceArtifactStore(),
+        finding_explanation_provider=_V1FindingExplanationProvider(),
+        recipe_assistant=_configured_recipe_assistant(),
         recipe_clock=lambda: datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
     )
 
@@ -490,6 +539,34 @@ def test_diagnostics_panel_uses_the_headless_application_interface() -> None:
         "latest_admission": None,
         "recommendations": [],
     }
+
+
+def test_v1_authoring_and_product_surface_facts_are_authoritative() -> None:
+    default_application = _admittable_application()
+    configured_application = _v1_admittable_application()
+    getattr(default_application, "start")()
+    getattr(configured_application, "start")()
+
+    default_capabilities = getattr(
+        default_application,
+        "recipe_authoring_capabilities",
+    )()
+    configured_capabilities = getattr(
+        configured_application,
+        "recipe_authoring_capabilities",
+    )()
+    inventory = getattr(
+        configured_application,
+        "v1_product_surface_inventory",
+    )()
+
+    assert default_capabilities["manual_authoring_available"] is True
+    assert default_capabilities["ai_authoring_available"] is False
+    assert configured_capabilities["ai_authoring_available"] is True
+    assert configured_capabilities["ai_provider"] == "deterministic-fake"
+    assert inventory.status == "verified"
+    assert inventory.missing_required_commands == ()
+    assert inventory.present_excluded_capabilities == ()
 
 
 def test_diagnostics_adapter_renders_the_logic_panel_view() -> None:
@@ -1599,6 +1676,68 @@ def test_application_exposes_versioned_strategy_specific_guardrails() -> None:
     }
 
 
+def test_application_validates_explicit_v1_strategy_guardrail_selection() -> None:
+    application = _admittable_application()
+    getattr(application, "start")()
+
+    complete = getattr(application, "v1_diagnostic_configuration")()
+
+    assert complete["status"] == "complete"
+    assert complete["validation"] == {
+        "complete": True,
+        "errors": [],
+    }
+    assert [
+        item["strategy_id"] for item in complete["supported_strategies"]
+    ] == [
+        QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+        LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    ]
+    assert len(complete["supported_guardrail_profiles"]) == 2
+    incomplete = getattr(application, "v1_diagnostic_configuration")(
+        selected_strategy_ids=(QUENTX_SCENARIO_NATIVE_STRATEGY_ID,),
+        selected_guardrail_profile_ids=tuple(
+            complete["selected_guardrail_profile_ids"][:1]
+        ),
+    )
+    assert incomplete["status"] == "incomplete"
+    assert incomplete["validation"]["complete"] is False
+    assert incomplete["validation"]["errors"] == [
+        "Select both representative V1 strategies.",
+        "Select one versioned guardrail profile for each V1 strategy.",
+    ]
+
+    with pytest.raises(ValueError, match="Unknown V1 strategy selection"):
+        getattr(application, "v1_diagnostic_configuration")(
+            selected_strategy_ids=("not-supported",),
+        )
+
+
+def test_panel_exposes_and_enforces_v1_diagnostic_configuration() -> None:
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _admittable_application()
+    )
+    initial = panel.get_view()["diagnostic_configuration"]
+    profile_ids = tuple(initial["selected_guardrail_profile_ids"])
+
+    configured = panel.configure_v1_diagnostic_selection(
+        strategy_ids=(QUENTX_SCENARIO_NATIVE_STRATEGY_ID,),
+        guardrail_profile_ids=(profile_ids[0],),
+    )
+
+    assert configured["status"] == "incomplete"
+    assert panel.get_view()["diagnostic_configuration"] == configured
+    with pytest.raises(
+        ValueError,
+        match="Complete the V1 strategy and guardrail selection",
+    ):
+        panel.plan_diagnostic_campaign(
+            initial_cash="100000",
+            order_shares=1000,
+            campaign_replica_id="blocked-incomplete-selection",
+        )
+
+
 def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> None:
     panel = DiagnosticsPanel(  # type: ignore[arg-type]
         _market_structure_admittable_application()
@@ -1617,6 +1756,24 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
         "commission_bps": "3",
         "slippage_bps": "5",
     }
+
+    hourly_common = {**common, "cadence_minutes": 60}
+    panel.create_baseline_recipe(
+        name="Evidence hourly baseline",
+        **hourly_common,
+    )
+    panel.validate_current_recipe()
+    panel.approve_current_recipe(actor="owner")
+    panel.materialize_current_recipe()
+    hourly = panel.run_baseline_campaign(
+        initial_cash="100000",
+        order_shares=1000,
+        campaign_replica_id="evidence-hourly-anchor",
+    )
+    assert {
+        member["specification"]["decision_cadence_minutes"]
+        for member in hourly["members"]
+    } == {60}
 
     panel.create_baseline_recipe(name="Evidence baseline", **common)
     panel.validate_current_recipe()
@@ -1768,6 +1925,17 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
     reproduction = panel.get_view()["reproduction"]
     assert reproduction["status"] == "ready_to_reproduce"
     assert len(reproduction["manifests"]) == 28
+    accepted_orders = [
+        order
+        for item in reproduction["manifests"]
+        for order in item["accepted_result"]["orders"]
+    ]
+    assert accepted_orders
+    assert all(
+        datetime.fromisoformat(order["activation_time"])
+        > datetime.fromisoformat(order["decision_time"])
+        for order in accepted_orders
+    )
     manifest = reproduction["manifests"][0]
     assert manifest["strategy_run_specification"]["recipe_version_id"]
     assert manifest["strategy_run_specification"]["strategy_version"]
@@ -1795,6 +1963,61 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
         ("hashes", "exact"),
     }
     assert panel.get_view()["reproduction"]["latest_report"] == report
+    acceptance = panel.get_view()["v1_acceptance"]
+    assert acceptance["status"] == "passed", [
+        check
+        for check in acceptance["checks"]
+        if not check["passed"]
+    ]
+    assert len(acceptance["checks"]) == 10
+    assert all(check["passed"] for check in acceptance["checks"])
+    assert len(acceptance["excluded_capabilities"]) == 7
+    assert all(
+        item["status"] == "absent"
+        for item in acceptance["excluded_capabilities"]
+    )
+    assert acceptance["subject"] == {
+        "campaign_id": completed["campaign_id"],
+        "evidence_package_id": evidence["evidence_package_id"],
+        "evidence_artifact_hash": evidence["artifact_hash"],
+        "measurement_artifact_hash": evidence[
+            "measurement_artifact_hash"
+        ],
+        "reproduction_manifest_id": manifest["manifest_id"],
+        "reproduction_attempt_id": report["attempt_id"],
+        "selected_strategy_versions": acceptance["evaluated_facts"][
+            "selected_strategy_versions"
+        ],
+        "selected_guardrail_profiles": acceptance["evaluated_facts"][
+            "selected_guardrail_profiles"
+        ],
+        "cadence_proofs": acceptance["subject"]["cadence_proofs"],
+        "product_surface_inventory_hash": acceptance[
+            "evaluated_facts"
+        ]["product_surface_inventory"]["content_hash"],
+    }
+    cadence_proofs = acceptance["subject"]["cadence_proofs"]
+    assert [
+        proof["decision_cadence_minutes"] for proof in cadence_proofs
+    ] == [30, 60]
+    assert all(len(proof["run_ids"]) == 2 for proof in cadence_proofs)
+    assert all(
+        len(artifact_hash) == 64
+        for proof in cadence_proofs
+        for artifact_hash in proof["run_artifact_hashes"]
+    )
+    assert acceptance["evaluated_facts"][
+        "supported_decision_cadences"
+    ] == [30, 60]
+    assert acceptance["evaluated_facts"][
+        "ai_recipe_authoring_available"
+    ] is True
+    assert acceptance["evaluated_facts"][
+        "ai_explanation_is_limited_to_sealed_findings"
+    ] is True
+    assert acceptance["evaluated_facts"][
+        "product_surface_inventory"
+    ]["status"] == "verified"
 
     replacement = panel.plan_diagnostic_campaign(
         initial_cash="100000",
@@ -1814,6 +2037,7 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
     assert replacement_view["reproduction"]["status"] == "not_available"
     assert replacement_view["reproduction"]["manifests"] == []
     assert replacement_view["reproduction"]["latest_report"] is None
+    assert replacement_view["v1_acceptance"]["status"] == "pending"
     with pytest.raises(
         ValueError,
         match="No sealed Diagnostic Evidence Package",
@@ -1824,6 +2048,261 @@ def test_headless_formal_campaign_builds_and_seals_presentable_evidence() -> Non
         match="No sealed Diagnostic Evidence Package",
     ):
         panel.explain_diagnostic_findings()
+
+
+def test_gui_signals_complete_full_v1_acceptance_workflow() -> None:
+    _ensure_qapp()
+    panel = DiagnosticsPanel(  # type: ignore[arg-type]
+        _v1_admittable_application()
+    )
+    adapter = DiagnosticsPanelAdapter().bind(panel)
+    adapter.widget()
+
+    adapter._market_input.setText("mainland-a-share")
+    adapter._start_date_input.setText("2024-01-02")
+    adapter._end_date_input.setText("2024-01-02")
+    adapter._admit_button.click()
+    adapter._recipe_author_input.setText("researcher")
+    adapter._recipe_actor_input.setText("owner")
+    adapter._cadence_input.setText("30")
+    adapter._seed_input.setText("17")
+    adapter._commission_input.setText("3")
+    adapter._slippage_input.setText("5")
+    adapter._run_initial_cash_input.setText("100000")
+    adapter._run_order_shares_input.setText("1000")
+    adapter._apply_diagnostic_configuration_button.click()
+    assert adapter.current_view()["diagnostic_configuration"]["status"] == (
+        "complete"
+    )
+
+    def approve_materialize(button: object, name: str) -> None:
+        adapter._recipe_name_input.setText(name)
+        getattr(button, "click")()
+        adapter._validate_recipe_button.click()
+        assert adapter.current_view()["scenario_recipe_workbench"][
+            "validation"
+        ]["is_valid"] is True
+        adapter._approve_recipe_button.click()
+        adapter._materialize_recipe_button.click()
+        assert adapter.current_view()["scenario_recipe_workbench"][
+            "status"
+        ] == "materialized"
+
+    adapter._cadence_input.setText("60")
+    approve_materialize(
+        adapter._create_recipe_button,
+        "GUI hourly baseline",
+    )
+    adapter._run_replica_input.setText("gui-hourly-baseline")
+    adapter._run_campaign_button.click()
+    hourly_campaign = adapter.current_view()["baseline_campaign"]
+    assert hourly_campaign["status"] == "completed"
+    assert {
+        member["specification"]["decision_cadence_minutes"]
+        for member in hourly_campaign["members"]
+    } == {60}
+
+    adapter._cadence_input.setText("30")
+    approve_materialize(
+        adapter._create_recipe_button,
+        "GUI V1 baseline",
+    )
+    adapter._run_replica_input.setText("gui-v1-baseline")
+    adapter._run_campaign_button.click()
+    assert adapter.current_view()["baseline_campaign"]["status"] == "completed"
+
+    for level, strength in enumerate(("0.10", "0.20"), start=1):
+        adapter._trend_direction_input.setText("bullish")
+        adapter._trend_strength_input.setText(strength)
+        approve_materialize(
+            adapter._create_trend_recipe_button,
+            f"GUI trend {level}",
+        )
+        adapter._stage_sensitivity_case_button.click()
+    for level, multiplier in enumerate(("0.75", "1.25"), start=1):
+        adapter._volatility_multiplier_input.setText(multiplier)
+        approve_materialize(
+            adapter._create_volatility_recipe_button,
+            f"GUI volatility {level}",
+        )
+        adapter._stage_sensitivity_case_button.click()
+    for level, shock_fraction in enumerate(("0.02", "0.04"), start=1):
+        adapter._shock_direction_input.setText("bearish")
+        adapter._gap_fraction_input.setText("0.01")
+        adapter._shock_fraction_input.setText(shock_fraction)
+        adapter._shock_duration_input.setText("1")
+        adapter._persistence_duration_input.setText("0")
+        adapter._recovery_duration_input.setText("1")
+        approve_materialize(
+            adapter._create_shock_recovery_recipe_button,
+            f"GUI shock recovery {level}",
+        )
+        adapter._stage_sensitivity_case_button.click()
+    for level, breadth in enumerate(("0.25", "0.75"), start=1):
+        adapter._breadth_target_input.setText(breadth)
+        adapter._dispersion_fraction_input.setText("0.02")
+        adapter._sector_concentration_input.setText("0.75")
+        approve_materialize(
+            adapter._create_market_structure_recipe_button,
+            f"GUI market structure {level}",
+        )
+        adapter._stage_sensitivity_case_button.click()
+    for level, multiplier in enumerate(("0.50", "1.50"), start=1):
+        adapter._volume_multiplier_input.setText(multiplier)
+        adapter._cross_sectional_concentration_input.setText("0.50")
+        approve_materialize(
+            adapter._create_liquidity_recipe_button,
+            f"GUI liquidity {level}",
+        )
+        adapter._stage_sensitivity_case_button.click()
+    for level, slippage in enumerate(("25", "100"), start=1):
+        adapter._execution_override_commission_input.setText("8")
+        adapter._execution_override_slippage_input.setText(slippage)
+        adapter._execution_override_fill_fraction_input.setText("1")
+        adapter._execution_override_latency_input.setText("0")
+        adapter._execution_override_partial_input.setText("true")
+        adapter._execution_rejection_mode_input.setText("none")
+        approve_materialize(
+            adapter._create_execution_stress_recipe_button,
+            f"GUI execution stress {level}",
+        )
+        adapter._stage_sensitivity_case_button.click()
+
+    staged = adapter.current_view()["isolated_sensitivity_case_staging"]
+    assert staged["case_count"] == 12
+    adapter._run_replica_input.setText("gui-v1-isolated")
+    adapter._plan_sensitivity_set_button.click()
+    assert adapter.current_view()["isolated_sensitivity_set"][
+        "completeness"
+    ]["total_count"] == 12
+
+    adapter._trend_direction_input.setText("bearish")
+    adapter._trend_strength_input.setText("0.20")
+    adapter._volatility_multiplier_input.setText("1.25")
+    approve_materialize(
+        adapter._create_compound_recipe_button,
+        "GUI V1 compound",
+    )
+    adapter._stage_compound_case_button.click()
+    adapter._run_replica_input.setText("gui-v1-formal")
+    adapter._plan_diagnostic_campaign_button.click()
+    assert adapter.current_view()["diagnostic_campaign"][
+        "campaign_type"
+    ] == "formal_diagnostic_campaign"
+    adapter._resume_diagnostic_campaign_button.click()
+    assert adapter.current_view()["diagnostic_campaign"]["status"] == (
+        "completed"
+    )
+
+    adapter._build_diagnostic_evidence_button.click()
+    assert adapter.current_view()["diagnostic_evidence"]["status"] == "sealed"
+    adapter._explain_diagnostic_findings_button.click()
+    assert adapter.current_view()["diagnostic_finding_explanations"][
+        "status"
+    ] == "available"
+    assert adapter._reproduction_manifest_input.text()
+    reproduced_manifest_id = adapter._reproduction_manifest_input.text()
+    adapter._reproduce_strategy_run_button.click()
+
+    view = adapter.current_view()
+    assert view["reproduction"]["latest_report"]["status"] == (
+        "reproduced_exactly"
+    )
+    acceptance = view["v1_acceptance"]
+    assert acceptance["status"] == "passed"
+    assert len(acceptance["checks"]) == 10
+    assert all(check["passed"] for check in acceptance["checks"])
+    assert len(acceptance["excluded_capabilities"]) == 7
+    assert all(
+        item["status"] == "absent"
+        for item in acceptance["excluded_capabilities"]
+    )
+    assert acceptance["subject"]["campaign_id"] == view[
+        "diagnostic_campaign"
+    ]["campaign_id"]
+    assert acceptance["subject"]["evidence_package_id"] == view[
+        "diagnostic_evidence"
+    ]["evidence_package_id"]
+    assert acceptance["subject"]["evidence_artifact_hash"] == view[
+        "diagnostic_evidence"
+    ]["artifact_hash"]
+    assert acceptance["subject"]["reproduction_manifest_id"] == (
+        reproduced_manifest_id
+    )
+    assert acceptance["subject"]["reproduction_attempt_id"] == view[
+        "reproduction"
+    ]["latest_report"]["attempt_id"]
+    assert [
+        proof["decision_cadence_minutes"]
+        for proof in acceptance["subject"]["cadence_proofs"]
+    ] == [30, 60]
+    assert acceptance["evaluated_facts"][
+        "supported_decision_cadences"
+    ] == [30, 60]
+    assert acceptance["evaluated_facts"][
+        "ai_recipe_authoring_available"
+    ] is True
+    assert acceptance["evaluated_facts"][
+        "ai_explanation_is_limited_to_sealed_findings"
+    ] is True
+    assert acceptance["evaluated_facts"][
+        "product_surface_inventory"
+    ]["status"] == "verified"
+    assert len(view["reproduction"]["manifests"]) == 28
+    gui_accepted_orders = [
+        order
+        for item in view["reproduction"]["manifests"]
+        for order in item["accepted_result"]["orders"]
+    ]
+    assert gui_accepted_orders
+    assert all(
+        datetime.fromisoformat(order["activation_time"])
+        > datetime.fromisoformat(order["decision_time"])
+        for order in gui_accepted_orders
+    )
+    manifest = view["reproduction"]["manifests"][0]
+    pinned = manifest["strategy_run_specification"]
+    assert pinned["recipe_version_id"]
+    assert pinned["strategy_version"]
+    assert pinned["execution_conditions"]["requested"]
+    assert pinned["execution_conditions"]["effective"]
+    assert view["diagnostic_evidence"]["diagnostic_findings"]
+    assert view["diagnostic_evidence"]["sensitivity_curves"]
+    assert len(view["baseline_campaign"]["equity_overlay"]) == 2
+    assert len(view["baseline_campaign"]["drawdown_overlay"]) == 2
+
+    configuration_text = (
+        adapter._diagnostic_configuration_view.toPlainText()
+    )
+    assert QUENTX_SCENARIO_NATIVE_STRATEGY_ID in configuration_text
+    assert LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID in configuration_text
+    assert "quentx-balanced-diagnostics.v1" in configuration_text
+    assert "live-minute-capital-preservation.v1" in configuration_text
+    assert "PTrade" in configuration_text
+    assert "Source: BaoStock / workspace-fixture / v1" in (
+        adapter._provenance_label.text()
+    )
+    assert "trend-regime.v1" in adapter._scenario_preview_label.text()
+    assert "volatility-scaling.v1" in adapter._scenario_preview_label.text()
+    assert "Formal Diagnostic Campaign: completed" in (
+        adapter._diagnostic_campaign_status_label.text()
+    )
+    assert "Diagnostic Findings" in (
+        adapter._diagnostic_evidence_details_view.toPlainText()
+    )
+    assert "Plain-language explanation grounded only" in (
+        adapter._diagnostic_evidence_details_view.toPlainText()
+    )
+    reproduction_text = adapter._reproduction_details_view.toPlainText()
+    assert "Requested execution" in reproduction_text
+    assert "Effective execution" in reproduction_text
+    assert "No mismatches" in reproduction_text
+    assert "V1 acceptance: passed" in (
+        adapter._v1_acceptance_status_label.text()
+    )
+    acceptance_text = adapter._v1_acceptance_details_view.toPlainText()
+    assert acceptance_text.count("PASSED |") == 10
+    assert acceptance_text.count("ABSENT |") == 7
 
 
 def test_diagnostics_adapter_renders_sealed_multidimensional_evidence() -> None:

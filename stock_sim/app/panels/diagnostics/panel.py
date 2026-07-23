@@ -197,6 +197,21 @@ class DiagnosticsApplicationPort(Protocol):
         campaign_id: str,
     ) -> _StrategyRunSnapshot: ...
 
+    def v1_diagnostic_configuration(
+        self,
+        *,
+        selected_strategy_ids: tuple[str, ...] | None = None,
+        selected_guardrail_profile_ids: tuple[str, ...] | None = None,
+    ) -> dict[str, object]: ...
+
+    def build_selected_diagnostic_evidence(
+        self,
+        campaign_id: str,
+        *,
+        selected_strategy_ids: tuple[str, ...],
+        selected_guardrail_profile_ids: tuple[str, ...],
+    ) -> _StrategyRunSnapshot: ...
+
     def diagnostic_evidence_status(
         self,
         evidence_package_id: str,
@@ -210,6 +225,19 @@ class DiagnosticsApplicationPort(Protocol):
     def reproduce_strategy_run(
         self,
         manifest_id: str,
+    ) -> _StrategyRunSnapshot: ...
+
+    def evaluate_v1_acceptance(
+        self,
+        *,
+        campaign_id: str,
+        evidence_package_id: str,
+        reproduced_manifest_id: str,
+        selected_strategy_ids: tuple[str, ...],
+        selected_guardrail_profile_ids: tuple[str, ...],
+        guided_ui_steps: tuple[str, ...],
+        provenance_sections: tuple[str, ...],
+        curve_overlays: tuple[str, ...],
     ) -> _StrategyRunSnapshot: ...
 
     def reproduction_status(
@@ -335,6 +363,18 @@ class DiagnosticsPanel:
             "latest_report": None,
         }
         self._application.start()
+        self._diagnostic_configuration = dict(
+            self._application.v1_diagnostic_configuration()
+        )
+        self._v1_acceptance: dict[str, object] = {
+            "status": "pending",
+            "message": (
+                "Complete the guided workflow and verify one reproduction "
+                "to evaluate V1 acceptance."
+            ),
+            "checks": [],
+            "excluded_capabilities": [],
+        }
 
     def get_view(self) -> dict[str, object]:
         view = self._application.status().to_dict()
@@ -367,7 +407,55 @@ class DiagnosticsPanel:
             self._diagnostic_explanations
         )
         view["reproduction"] = dict(self._reproduction)
+        view["diagnostic_configuration"] = dict(
+            self._diagnostic_configuration
+        )
+        view["v1_acceptance"] = dict(self._v1_acceptance)
         return view
+
+    def configure_v1_diagnostic_selection(
+        self,
+        *,
+        strategy_ids: tuple[str, ...],
+        guardrail_profile_ids: tuple[str, ...],
+    ) -> dict[str, object]:
+        next_configuration = dict(
+            self._application.v1_diagnostic_configuration(
+                selected_strategy_ids=strategy_ids,
+                selected_guardrail_profile_ids=guardrail_profile_ids,
+            )
+        )
+        previous_selection = (
+            self._configuration_ids("selected_strategy_ids"),
+            self._configuration_ids("selected_guardrail_profile_ids"),
+        )
+        next_strategy_values = next_configuration.get(
+            "selected_strategy_ids"
+        )
+        next_profile_values = next_configuration.get(
+            "selected_guardrail_profile_ids"
+        )
+        if not isinstance(next_strategy_values, list) or not isinstance(
+            next_profile_values,
+            list,
+        ):
+            raise ValueError("V1 diagnostic configuration is malformed")
+        next_selection = (
+            tuple(str(item) for item in next_strategy_values),
+            tuple(str(item) for item in next_profile_values),
+        )
+        self._diagnostic_configuration = next_configuration
+        if next_selection != previous_selection:
+            self._v1_acceptance = {
+                "status": "pending",
+                "message": (
+                    "The strategy/guardrail selection changed; complete the "
+                    "guided workflow before evaluating V1 acceptance."
+                ),
+                "checks": [],
+                "excluded_capabilities": [],
+            }
+        return dict(self._diagnostic_configuration)
 
     def admit_historical_segment(
         self,
@@ -846,6 +934,7 @@ class DiagnosticsPanel:
         campaign_replica_id: str,
         nodes_per_batch: int = 10_000,
     ) -> dict[str, object]:
+        self._require_v1_configuration()
         materialization = self._recipe_workbench.get("materialization")
         if not isinstance(materialization, dict):
             raise ValueError(
@@ -988,6 +1077,7 @@ class DiagnosticsPanel:
         order_shares: int,
         campaign_replica_id: str,
     ) -> dict[str, object]:
+        self._require_v1_configuration()
         isolated_sensitivity_set_id = self._isolated_sensitivity_set.get(
             "sensitivity_set_id"
         )
@@ -1045,9 +1135,16 @@ class DiagnosticsPanel:
         return self._record_diagnostic_campaign(snapshot)
 
     def build_diagnostic_evidence(self) -> dict[str, object]:
+        self._require_v1_configuration()
         campaign_id = self._diagnostic_campaign_id()
-        package = self._application.build_diagnostic_evidence(
-            campaign_id
+        package = self._application.build_selected_diagnostic_evidence(
+            campaign_id,
+            selected_strategy_ids=self._configuration_ids(
+                "selected_strategy_ids"
+            ),
+            selected_guardrail_profile_ids=self._configuration_ids(
+                "selected_guardrail_profile_ids"
+            ),
         )
         evidence = package.to_dict()
         if evidence.get("campaign_id") != campaign_id:
@@ -1114,6 +1211,21 @@ class DiagnosticsPanel:
             "status": str(report_view["status"]),
             "latest_report": report_view,
         }
+        acceptance = self._application.evaluate_v1_acceptance(
+            campaign_id=self._diagnostic_campaign_id(),
+            evidence_package_id=self._diagnostic_evidence_id(),
+            reproduced_manifest_id=manifest_id,
+            selected_strategy_ids=self._configuration_ids(
+                "selected_strategy_ids"
+            ),
+            selected_guardrail_profile_ids=self._configuration_ids(
+                "selected_guardrail_profile_ids"
+            ),
+            guided_ui_steps=self._guided_ui_steps(),
+            provenance_sections=self._provenance_sections(),
+            curve_overlays=self._curve_overlays(),
+        )
+        self._v1_acceptance = acceptance.to_dict()
         return dict(report_view)
 
     def explain_diagnostic_findings(self) -> dict[str, object]:
@@ -1228,6 +1340,15 @@ class DiagnosticsPanel:
                 "manifests": [],
                 "latest_report": None,
             }
+            self._v1_acceptance = {
+                "status": "pending",
+                "message": (
+                    "Complete the new guided workflow and verify one "
+                    "reproduction to evaluate V1 acceptance."
+                ),
+                "checks": [],
+                "excluded_capabilities": [],
+            }
         self._diagnostic_campaign = campaign
         return dict(self._diagnostic_campaign)
 
@@ -1256,6 +1377,125 @@ class DiagnosticsPanel:
             for item in manifests
             if isinstance(item, dict)
         ]
+
+    def _require_v1_configuration(self) -> None:
+        validation = self._diagnostic_configuration.get("validation")
+        complete = (
+            validation.get("complete")
+            if isinstance(validation, dict)
+            else False
+        )
+        if complete is not True:
+            raise ValueError(
+                "Complete the V1 strategy and guardrail selection before "
+                "continuing"
+            )
+
+    def _configuration_ids(self, key: str) -> tuple[str, ...]:
+        value = self._diagnostic_configuration.get(key)
+        if not isinstance(value, list):
+            raise ValueError("V1 diagnostic configuration is malformed")
+        return tuple(str(item) for item in value)
+
+    def _guided_ui_steps(self) -> tuple[str, ...]:
+        steps: set[str] = set()
+        catalog = self._application.historical_segment_catalog_view()
+        if int(str(catalog.get("segment_count", 0))) > 0:
+            steps.add("select_segment")
+        approved = self._recipe_workbench.get("approved_version")
+        if isinstance(approved, dict):
+            steps.add("approve_recipe")
+        materialization = self._recipe_workbench.get("materialization")
+        if isinstance(materialization, dict):
+            steps.add("materialize_recipe")
+        if self._diagnostic_configuration.get("status") == "complete":
+            steps.update(
+                {"configure_strategies", "configure_guardrails"}
+            )
+        if (
+            self._diagnostic_campaign.get("campaign_type")
+            == "formal_diagnostic_campaign"
+            and self._diagnostic_campaign.get("status") == "completed"
+        ):
+            steps.add("run_formal_campaign")
+        if self._diagnostic_evidence.get("status") == "sealed":
+            steps.add("build_evidence")
+        findings = self._diagnostic_evidence.get("diagnostic_findings")
+        if isinstance(findings, list) and findings:
+            steps.add("inspect_findings")
+        report = self._reproduction.get("latest_report")
+        if (
+            isinstance(report, dict)
+            and report.get("status")
+            in ("reproduced_exactly", "reproduced_within_tolerance")
+        ):
+            steps.add("reproduce_run")
+        return tuple(sorted(steps))
+
+    def _provenance_sections(self) -> tuple[str, ...]:
+        sections: set[str] = set()
+        catalog = self._application.historical_segment_catalog_view()
+        segments = catalog.get("segments")
+        if (
+            isinstance(segments, list)
+            and segments
+            and isinstance(segments[-1], dict)
+            and isinstance(segments[-1].get("provenance"), dict)
+        ):
+            sections.add("source")
+        approved = self._recipe_workbench.get("approved_version")
+        if isinstance(approved, dict) and approved.get("content_hash"):
+            sections.add("recipe")
+        transformation_catalog = (
+            self._application.transformation_catalog_view()
+        )
+        transformations = transformation_catalog.get("transformations")
+        if isinstance(transformations, list) and transformations:
+            sections.add("transformation")
+        supported = self._diagnostic_configuration.get(
+            "supported_strategies"
+        )
+        if isinstance(supported, list) and supported:
+            sections.add("strategy")
+        manifests = self._reproduction.get("manifests")
+        if isinstance(manifests, list) and manifests:
+            specification = (
+                manifests[0].get("strategy_run_specification")
+                if isinstance(manifests[0], dict)
+                else None
+            )
+            conditions = (
+                specification.get("execution_conditions")
+                if isinstance(specification, dict)
+                else None
+            )
+            if isinstance(conditions, dict):
+                if isinstance(conditions.get("requested"), dict):
+                    sections.add("requested_execution")
+                if isinstance(conditions.get("effective"), dict):
+                    sections.add("effective_execution")
+        if self._diagnostic_campaign.get("campaign_id"):
+            sections.add("campaign")
+        if self._diagnostic_evidence.get("artifact_hash"):
+            sections.add("evidence")
+        if isinstance(self._reproduction.get("latest_report"), dict):
+            sections.add("reproduction")
+        return tuple(sorted(sections))
+
+    def _curve_overlays(self) -> tuple[str, ...]:
+        overlays: set[str] = set()
+        equity = self._baseline_campaign.get("equity_overlay")
+        if isinstance(equity, list) and equity:
+            overlays.add("equity")
+        drawdown = self._baseline_campaign.get("drawdown_overlay")
+        if isinstance(drawdown, list) and drawdown:
+            overlays.add("drawdown")
+        sensitivity = self._diagnostic_evidence.get(
+            "sensitivity_curves"
+        )
+        if isinstance(sensitivity, list) and sensitivity:
+            overlays.add("sensitivity")
+        return tuple(sorted(overlays))
 
     def _require_workbench_item(self, key: str) -> dict[str, object]:
         item = self._recipe_workbench.get(key)

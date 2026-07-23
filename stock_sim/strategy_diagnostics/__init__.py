@@ -219,6 +219,23 @@ from .reproduction import (
     ReproductionService,
 )
 from .reproduction_storage import SqlReproductionRepository
+from .v1_acceptance import (
+    V1_ALLOWED_APPLICATION_COMMANDS,
+    V1_ACCEPTANCE_CHECK_IDS,
+    V1_ACCEPTANCE_REPORT_SCHEMA_VERSION,
+    V1_EXCLUDED_CAPABILITIES,
+    V1_PRODUCT_SURFACE_INVENTORY_SCHEMA_VERSION,
+    V1_REQUIRED_APPLICATION_COMMANDS,
+    V1_TRANSFORMATION_FAMILIES,
+    V1AcceptanceCheck,
+    V1AcceptanceFacts,
+    V1AcceptanceGate,
+    V1AcceptanceReport,
+    V1AcceptanceSubject,
+    V1CadenceProof,
+    V1ExcludedCapability,
+    V1ProductSurfaceInventory,
+)
 
 __all__ = [
     "AIRecipeAssistant",
@@ -406,5 +423,20 @@ __all__ = [
     "ReproductionRepository",
     "ReproductionService",
     "SqlReproductionRepository",
+    "V1_ACCEPTANCE_CHECK_IDS",
+    "V1_ACCEPTANCE_REPORT_SCHEMA_VERSION",
+    "V1_ALLOWED_APPLICATION_COMMANDS",
+    "V1_EXCLUDED_CAPABILITIES",
+    "V1_PRODUCT_SURFACE_INVENTORY_SCHEMA_VERSION",
+    "V1_REQUIRED_APPLICATION_COMMANDS",
+    "V1_TRANSFORMATION_FAMILIES",
+    "V1AcceptanceCheck",
+    "V1AcceptanceFacts",
+    "V1AcceptanceGate",
+    "V1AcceptanceReport",
+    "V1AcceptanceSubject",
+    "V1CadenceProof",
+    "V1ExcludedCapability",
+    "V1ProductSurfaceInventory",
     "create_diagnostics_application",
 ]

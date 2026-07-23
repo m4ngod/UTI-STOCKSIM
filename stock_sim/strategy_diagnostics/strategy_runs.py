@@ -516,6 +516,20 @@ class StrategyRunSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletedStrategyRunEvidence:
+    """Lightweight persisted facts used to prove a completed run."""
+
+    specification: StrategyRunSpecification
+    run_artifact_hash: str
+    equity_times: tuple[datetime, ...]
+    ptrade_audit: PTradeRunAudit | None
+
+    @property
+    def run_id(self) -> str:
+        return self.specification.run_id
+
+
+@dataclass(frozen=True, slots=True)
 class _LedgerPosition:
     instrument: str
     shares: int
@@ -548,6 +562,14 @@ class StrategyRunRepository(Protocol):
 
     def get(self, run_id: str) -> _StrategyRunState: ...
 
+    def find_completed(
+        self,
+        *,
+        materialization_hash: str,
+        strategy_versions: tuple[tuple[str, str], ...],
+        decision_cadences: tuple[int, ...],
+    ) -> tuple[_StrategyRunState, ...]: ...
+
     def save(self, state: _StrategyRunState) -> None: ...
 
 
@@ -566,6 +588,33 @@ class InMemoryStrategyRunRepository:
             return self._states[run_id]
         except KeyError as error:
             raise KeyError(f"Unknown Strategy Run {run_id!r}") from error
+
+    def find_completed(
+        self,
+        *,
+        materialization_hash: str,
+        strategy_versions: tuple[tuple[str, str], ...],
+        decision_cadences: tuple[int, ...],
+    ) -> tuple[_StrategyRunState, ...]:
+        accepted_strategies = set(strategy_versions)
+        accepted_cadences = set(decision_cadences)
+        return tuple(
+            state
+            for run_id in sorted(self._states)
+            if (
+                (state := self._states[run_id]).status == "completed"
+                and state.run_artifact_hash is not None
+                and state.specification.materialization_hash
+                == materialization_hash
+                and (
+                    state.specification.strategy_id,
+                    state.specification.strategy_version,
+                )
+                in accepted_strategies
+                and state.specification.decision_cadence_minutes
+                in accepted_cadences
+            )
+        )
 
     def save(self, state: _StrategyRunState) -> None:
         run_id = state.specification.run_id
@@ -636,6 +685,86 @@ class SqlStrategyRunRepository:
         if state.specification.run_id != run_id:
             raise ValueError("Persisted Strategy Run identity does not match its row key")
         return state
+
+    def find_completed(
+        self,
+        *,
+        materialization_hash: str,
+        strategy_versions: tuple[tuple[str, str], ...],
+        decision_cadences: tuple[int, ...],
+    ) -> tuple[_StrategyRunState, ...]:
+        if not strategy_versions or not decision_cadences:
+            return ()
+        parameters: dict[str, object] = {
+            "materialization_hash": materialization_hash,
+        }
+        strategy_clauses = []
+        for index, (strategy_id, strategy_version) in enumerate(
+            strategy_versions
+        ):
+            strategy_id_key = f"strategy_id_{index}"
+            strategy_version_key = f"strategy_version_{index}"
+            strategy_clauses.append(
+                f"(strategy_id = :{strategy_id_key} "
+                f"AND strategy_version = :{strategy_version_key})"
+            )
+            parameters[strategy_id_key] = strategy_id
+            parameters[strategy_version_key] = strategy_version
+        cadence_placeholders = []
+        for index, cadence in enumerate(decision_cadences):
+            key = f"cadence_{index}"
+            cadence_placeholders.append(f":{key}")
+            parameters[key] = cadence
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT run_id, state_json "
+                    "FROM diagnostic_strategy_runs "
+                    "WHERE status = 'completed' "
+                    "AND run_artifact_hash IS NOT NULL "
+                    "AND materialization_hash = :materialization_hash "
+                    f"AND ({' OR '.join(strategy_clauses)}) "
+                    "AND decision_cadence_minutes IN "
+                    f"({', '.join(cadence_placeholders)}) "
+                    "ORDER BY run_id"
+                ),
+                parameters,
+            ).mappings().all()
+        states = []
+        accepted_strategies = set(strategy_versions)
+        accepted_cadences = set(decision_cadences)
+        for row in rows:
+            run_id = str(row["run_id"])
+            payload = json.loads(str(row["state_json"]))
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    "Persisted Strategy Run state must be a JSON object"
+                )
+            state = _strategy_run_state_from_dict(
+                cast(dict[str, Any], payload)
+            )
+            if state.specification.run_id != run_id:
+                raise ValueError(
+                    "Persisted Strategy Run identity does not match its row key"
+                )
+            if (
+                state.status != "completed"
+                or state.run_artifact_hash is None
+                or state.specification.materialization_hash
+                != materialization_hash
+                or (
+                    state.specification.strategy_id,
+                    state.specification.strategy_version,
+                )
+                not in accepted_strategies
+                or state.specification.decision_cadence_minutes
+                not in accepted_cadences
+            ):
+                raise ValueError(
+                    "Persisted Strategy Run filter columns do not match state"
+                )
+            states.append(state)
+        return tuple(states)
 
     def save(self, state: _StrategyRunState) -> None:
         with self._engine.begin() as connection:
@@ -734,6 +863,30 @@ class StrategyRunEngine:
         state = self._repository.get(run_id)
         path = self._path_loader(state.specification.materialization_hash)
         return self._snapshot(state, path)
+
+    def completed_run_evidence(
+        self,
+        *,
+        materialization_hash: str,
+        strategy_versions: tuple[tuple[str, str], ...],
+        decision_cadences: tuple[int, ...],
+    ) -> tuple[CompletedStrategyRunEvidence, ...]:
+        return tuple(
+            CompletedStrategyRunEvidence(
+                specification=state.specification,
+                run_artifact_hash=cast(str, state.run_artifact_hash),
+                equity_times=tuple(
+                    point.simulation_time
+                    for point in state.equity_curve
+                ),
+                ptrade_audit=state.ptrade_audit,
+            )
+            for state in self._repository.find_completed(
+                materialization_hash=materialization_hash,
+                strategy_versions=strategy_versions,
+                decision_cadences=decision_cadences,
+            )
+        )
 
     def advance(self, run_id: str, *, node_count: int = 1) -> StrategyRunSnapshot:
         if node_count <= 0:
@@ -2246,6 +2399,7 @@ def _replace_normalized_run_facts(
 
 __all__ = [
     "BASELINE_EXECUTION_POLICY_VERSION",
+    "CompletedStrategyRunEvidence",
     "EquityPoint",
     "InMemoryStrategyRunRepository",
     "PortfolioPosition",

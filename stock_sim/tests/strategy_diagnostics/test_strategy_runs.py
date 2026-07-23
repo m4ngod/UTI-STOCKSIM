@@ -455,10 +455,30 @@ def test_quentx_scenario_native_run_is_deterministic_and_auditable(
     second_engine = _engine(path)
     second_started = second_engine.start(_quentx_spec(path))
     second = second_engine.run_to_completion(second_started.run_id)
-    restarted = StrategyRunEngine(
+    restarted_engine = StrategyRunEngine(
         store.get,
         repository=SqlStrategyRunRepository(database),
-    ).get(first.run_id)
+    )
+    restarted = restarted_engine.get(first.run_id)
+
+    def unavailable_path(_artifact_hash: str) -> MaterializedMarketPath:
+        raise AssertionError(
+            "completed-run evidence must not load a market path"
+        )
+
+    recovered_evidence = StrategyRunEngine(
+        unavailable_path,
+        repository=SqlStrategyRunRepository(database),
+    ).completed_run_evidence(
+        materialization_hash=path.artifact_hash,
+        strategy_versions=(
+            (
+                QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+            ),
+        ),
+        decision_cadences=(30,),
+    )
 
     assert first.status == "completed"
     assert first.run_artifact_hash == second.run_artifact_hash
@@ -467,6 +487,15 @@ def test_quentx_scenario_native_run_is_deterministic_and_auditable(
     assert first.positions == second.positions
     assert first.equity_curve == second.equity_curve
     assert restarted.to_dict() == first.to_dict()
+    assert len(recovered_evidence) == 1
+    recovered = recovered_evidence[0]
+    assert recovered.run_id == first.run_id
+    assert recovered.specification == first.specification
+    assert recovered.run_artifact_hash == first.run_artifact_hash
+    assert recovered.equity_times == tuple(
+        point.simulation_time for point in first.equity_curve
+    )
+    assert recovered.ptrade_audit == first.ptrade_audit
     assert first.orders[0].instrument == "sh.600000"
     assert first.orders[0].shares == 1000
     assert first.fills
