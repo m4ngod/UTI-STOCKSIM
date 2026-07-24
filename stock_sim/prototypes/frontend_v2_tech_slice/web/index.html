@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UTI Diagnostics — Web vertical slice prototype</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="app" aria-busy="true">
+      <header class="topbar">
+        <strong class="brand">UTI Diagnostics</strong>
+        <span class="context">Breakout v4.2 / Liquidity stress × 1.8 / DGN-24-0719-A</span>
+        <span class="runtime">● runtime adapter ready</span>
+      </header>
+
+      <nav class="states" aria-label="Prototype states">
+        <span>PROTOTYPE STATES</span>
+        <div id="state-buttons"></div>
+      </nav>
+
+      <section class="status-banner" aria-labelledby="status-headline">
+        <div>
+          <span class="eyebrow" id="state-label"></span>
+          <h1 id="status-headline"></h1>
+          <p id="status-detail"></p>
+        </div>
+        <div class="progress-block">
+          <strong id="progress-value"></strong>
+          <progress id="progress" max="100"></progress>
+          <span id="replicas"></span>
+        </div>
+      </section>
+
+      <section class="question-row">
+        <h2>Can the apparent return lead survive hidden and fee stress?</h2>
+        <label>
+          <span class="sr-only">Filter candidates</span>
+          <input id="filter" type="search" placeholder="Filter 50 candidates… Ctrl+K" />
+        </label>
+      </section>
+
+      <section class="workspace">
+        <section class="panel comparison">
+          <span class="eyebrow">COMPARISON SIGNAL · NOT A CONCLUSION</span>
+          <div class="table-scroll">
+            <table aria-label="50 candidate comparison table">
+              <thead>
+                <tr>
+                  <th><button data-sort="rank">Rank</button></th>
+                  <th><button data-sort="candidateId">Candidate</button></th>
+                  <th>Model</th>
+                  <th><button data-sort="returnPct">Return</button></th>
+                  <th>Drawdown</th>
+                  <th><button data-sort="evidenceStatus">Evidence</button></th>
+                  <th>Lock</th>
+                </tr>
+              </thead>
+              <tbody id="candidate-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel timeline-panel">
+          <header>
+            <div>
+              <span class="eyebrow">100K-POINT EVIDENCE TIMELINE · 3 OVERLAYS</span>
+              <h3>Candidate vs baseline under stress</h3>
+            </div>
+            <span class="metric">paint cap 20 fps</span>
+          </header>
+          <canvas id="timeline" role="img" aria-describedby="chart-summary"></canvas>
+          <p id="chart-summary"></p>
+          <details>
+            <summary>Text and table equivalent</summary>
+            <table aria-label="Evidence timeline text and table equivalent">
+              <thead>
+                <tr><th>Step</th><th>Candidate</th><th>Baseline</th><th>Stress</th></tr>
+              </thead>
+              <tbody id="semantic-rows"></tbody>
+            </table>
+          </details>
+        </section>
+      </section>
+
+      <p class="boundary">
+        READ-ONLY PROTOTYPE · no Create/Start/Stop/Evaluate, gate override,
+        promotion, or manual order capability
+      </p>
+    </main>
+
+    <dialog id="details" aria-labelledby="details-title">
+      <header>
+        <h2 id="details-title"></h2>
+        <button id="close-details" aria-label="Close candidate details">×</button>
+      </header>
+      <p id="details-copy"></p>
+      <div class="provenance">
+        <span>source run</span><strong>run-hidden-0719</strong>
+        <span>artifact hash</span><strong>a64e…91c2</strong>
+        <span>failure_type</span><strong>evidence_gate</strong>
+        <span>blocking_metrics</span><strong>hidden_win_rate, fee_breakpoint</strong>
+        <span>next_action</span><strong>paired hidden + sensitivity rerun</strong>
+      </div>
+    </dialog>
+
+    <aside class="tech-switcher" aria-label="Technology prototype switcher">
+      <button id="previous-tech" aria-label="Previous technology prototype">←</button>
+      <strong>B — Embedded Web UI</strong>
+      <span>same contract · DOM + Canvas</span>
+      <button id="next-tech" aria-label="Next technology prototype">→</button>
+    </aside>
+
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
