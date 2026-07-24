@@ -14,6 +14,8 @@ All variants use the same deterministic in-memory prototype state. They contain 
 
 The evidence matrix and recommended composition are recorded in [EVALUATION.md](./EVALUATION.md).
 
+Issue #31 extends the selected Journey Rail shell with a Market/Symbol Detail route. See [MARKET_CONTEXT.md](./MARKET_CONTEXT.md) and the [Market evaluation matrix](./MARKET_EVALUATION.md).
+
 Run from the repository root:
 
 ```powershell
