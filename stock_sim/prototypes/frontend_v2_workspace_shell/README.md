@@ -16,6 +16,8 @@ The evidence matrix and recommended composition are recorded in [EVALUATION.md](
 
 Issue #31 extends the selected Journey Rail shell with a Market/Symbol Detail route. See [MARKET_CONTEXT.md](./MARKET_CONTEXT.md) and the [Market evaluation matrix](./MARKET_EVALUATION.md).
 
+Issue #32 extends the same shell with a diagnostic run monitoring and evidence-interpretation route. See [RUN_EVIDENCE.md](./RUN_EVIDENCE.md) and the [run evidence evaluation matrix](./RUN_EVALUATION.md).
+
 Run from the repository root:
 
 ```powershell
