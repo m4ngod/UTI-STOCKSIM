@@ -12,6 +12,8 @@ Three structurally different variants live on one route and are switched with `?
 
 All variants use the same deterministic in-memory prototype state. They contain no backend mutations and no manual order capability.
 
+The evidence matrix and recommended composition are recorded in [EVALUATION.md](./EVALUATION.md).
+
 Run from the repository root:
 
 ```powershell
