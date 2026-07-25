@@ -27,6 +27,10 @@ from app.services.leaderboard_service import LeaderboardService
 from app.controllers.leaderboard_controller import LeaderboardController
 from app.services.arena_experiment_runner import ArenaExperimentRunner
 from app.services.training_arena_service import TrainingArenaService
+from app.features import (
+    DeterministicFakeRunMonitoringAdapter,
+    RunMonitoringFeature,
+)
 
 
 @dataclass
@@ -55,6 +59,7 @@ class AppContext:
 
     training_arena_service: TrainingArenaService
     arena_experiment_runner: ArenaExperimentRunner
+    run_monitoring_feature: RunMonitoringFeature
 
 
 def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppContext:
@@ -96,6 +101,7 @@ def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
         agent_service=agent_service,
         runtime_gateway=runtime_gateway,
     )
+    run_monitoring_feature = DeterministicFakeRunMonitoringAdapter()
 
     return AppContext(
         settings_store=settings_store,
@@ -115,6 +121,7 @@ def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
         leaderboard_controller=leaderboard_controller,
         training_arena_service=training_arena_service,
         arena_experiment_runner=arena_experiment_runner,
+        run_monitoring_feature=run_monitoring_feature,
     )
 
 

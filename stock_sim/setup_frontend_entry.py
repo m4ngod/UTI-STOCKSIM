@@ -96,7 +96,7 @@ def _start_frontend(*, headless: bool):
 
     # Real GUI path must explicitly opt into real Qt widgets.
     os.environ.setdefault("STOCKSIM_ENABLE_REAL_UI", "1")
-    reset_app_context()
+    context = reset_app_context()
     start_frontend_bridge()
     start_runtime_support_services()
 
@@ -110,22 +110,26 @@ def _start_frontend(*, headless: bool):
     app = QApplication.instance() or QApplication([])
     try:
         app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
+        app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
     except Exception:
         pass
-    mw = MainWindow()
+    mw = MainWindow(
+        run_monitoring_feature=context.run_monitoring_feature,
+    )
     try:
         from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore
         _ui_register_main_window(mw)
     except Exception:
         pass
-    for name in DEFAULT_PRELOAD_PANELS:
-        try:
-            mw.open_panel(name)
-            if _DEBUG_GUI_START:
-                print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
-        except Exception as e:
-            if _DEBUG_GUI_START:
-                print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
+    if not mw.journey_workspace_active:
+        for name in DEFAULT_PRELOAD_PANELS:
+            try:
+                mw.open_panel(name)
+                if _DEBUG_GUI_START:
+                    print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
+            except Exception as e:
+                if _DEBUG_GUI_START:
+                    print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
     try:
         mw.show()
         app.exec()

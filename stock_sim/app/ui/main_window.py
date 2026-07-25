@@ -8,7 +8,10 @@
 在 headless 或缺失 PySide6 时退化为无窗口占位实现，方法仍可被调用以便测试。
 """
 from __future__ import annotations
+import os
 from typing import Any, Optional, List, Dict
+
+from app.features import RunMonitoringFeature
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
@@ -63,8 +66,20 @@ DEFAULT_PRELOAD_PANELS = list(PRIMARY_WORKSPACE_PANELS)
 __all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS", "PRIMARY_WORKSPACE_PANELS"]
 
 class MainWindow(QMainWindow):  # type: ignore[misc]
-    def __init__(self):  # noqa: D401
+    def __init__(
+        self,
+        *,
+        run_monitoring_feature: RunMonitoringFeature | None = None,
+        frontend_v2_enabled: bool | None = None,
+    ):  # noqa: D401
         super().__init__()  # type: ignore
+        self._frontend_v2_enabled = (
+            _frontend_v2_route_enabled()
+            if frontend_v2_enabled is None
+            else frontend_v2_enabled
+        )
+        self._run_monitoring_feature = run_monitoring_feature
+        self._journey_workspace: Any = None
         self._dock = DockManager(self)
         self._layout_store = LayoutPersistence(path="layout_main.json")  # 持久化实例
         self._legacy_central: Any = None
@@ -94,7 +109,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             pass
         self._init_menu()
         self._init_window_style()
-        self._restore_layout_safe()  # 启动时恢复
+        if self._frontend_v2_enabled:
+            self._mount_journey_workspace()
+        else:
+            self._restore_layout_safe()  # 启动时恢复
         # 向 UI 桥注册自身，以允许外部打开动态面板
         try:
             if callable(_register_mw):
@@ -102,7 +120,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         except Exception:  # pragma: no cover
             pass
 
+    @property
+    def journey_workspace_active(self) -> bool:
+        return self._journey_workspace is not None
+
+    def _mount_journey_workspace(self) -> None:
+        if self._journey_workspace is not None:
+            return
+        if self._run_monitoring_feature is None:
+            raise RuntimeError(
+                "Frontend V2 requires the RunMonitoringFeature Interface"
+            )
+        from app.ui.journey_workspace import JourneyWorkspaceHost
+
+        workspace = JourneyWorkspaceHost(
+            self._run_monitoring_feature,
+            parent=self,
+        )
+        self.setCentralWidget(workspace)  # type: ignore[attr-defined]
+        self._journey_workspace = workspace
+
     def ensure_legacy_central_layout(self):
+        if self._frontend_v2_enabled:
+            return None
         if self._legacy_central is not None and self._legacy_layout is not None:
             self._layout = self._legacy_layout
             return self._legacy_layout
@@ -308,6 +348,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Menu --------
     def _init_menu(self):  # 轻量 Panels 菜单
+        if self._frontend_v2_enabled:
+            return
         if not hasattr(self, 'menuBar'):
             return
         try:
@@ -420,6 +462,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.restore_layout(layout)
 
     def _save_layout(self):
+        if self._frontend_v2_enabled:
+            return
         try:
             self._layout_store.save(self.serialize_layout())
         except Exception:  # pragma: no cover
@@ -427,6 +471,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Panel Ops --------
     def open_panel(self, name: str) -> Optional[Any]:
+        if self._frontend_v2_enabled:
+            return None
         # 先看 workspace page，再看 dock；否则主页面已在 workspace 中时，
         # 重复 open_panel(name) 会因为 _dock 中查不到而再挂一份同名页面。
         if name in self._workspace_pages:
@@ -516,6 +562,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Qt Events --------
     def closeEvent(self, event):  # type: ignore[override]
+        if self._journey_workspace is not None:
+            self._journey_workspace.close_adapter()
         # 关闭时保存布局 (即便 headless fallback 也安全调用)
         self._save_layout()
         try:
@@ -524,3 +572,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 super_close(event)
         except Exception:  # pragma: no cover
             pass
+
+
+def _frontend_v2_route_enabled() -> bool:
+    return os.environ.get("STOCKSIM_FRONTEND_V2", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

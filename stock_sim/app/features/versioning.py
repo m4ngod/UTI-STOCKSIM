@@ -1,0 +1,55 @@
+"""Shared naming and version convention for Frontend V2 Feature Interfaces."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class FeatureModuleName(str, Enum):
+    """The six Feature Modules approved for the Frontend V2 journey."""
+
+    STRATEGY_LIBRARY = "StrategyLibraryFeature"
+    SCENARIO_LAB = "ScenarioLabFeature"
+    DIAGNOSTIC_TASKS = "DiagnosticTasksFeature"
+    RUN_MONITORING = "RunMonitoringFeature"
+    EVIDENCE_AND_FINDINGS = "EvidenceAndFindingsFeature"
+    SYSTEM_HEALTH = "SystemHealthFeature"
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureInterfaceVersion:
+    """Major/minor version shared by every Feature Interface."""
+
+    major: int
+    minor: int
+
+    def render(self) -> str:
+        return f"{self.major}.{self.minor}"
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureInterfaceDescriptor:
+    """Identifies one callable Feature Interface and its contract version."""
+
+    name: FeatureModuleName
+    version: FeatureInterfaceVersion
+
+
+RUN_MONITORING_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=0)
+
+ACTIVE_FEATURE_INTERFACES = (
+    FeatureInterfaceDescriptor(
+        name=FeatureModuleName.RUN_MONITORING,
+        version=RUN_MONITORING_INTERFACE_VERSION,
+    ),
+)
+
+
+__all__ = [
+    "ACTIVE_FEATURE_INTERFACES",
+    "RUN_MONITORING_INTERFACE_VERSION",
+    "FeatureInterfaceDescriptor",
+    "FeatureInterfaceVersion",
+    "FeatureModuleName",
+]
