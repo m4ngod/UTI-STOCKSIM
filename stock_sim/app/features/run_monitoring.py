@@ -38,6 +38,7 @@ class Completeness(str, Enum):
 class RunMonitoringPresentationState(str, Enum):
     LOADING = "loading"
     EMPTY = "empty"
+    DISCONNECTED = "disconnected"
 
 
 class SourceKind(str, Enum):
@@ -243,6 +244,42 @@ class DeterministicFakeRunMonitoringAdapter:
     ) -> RunMonitoringViewState:
         if context != RunMonitoringContext.no_selection():
             raise ValueError("Only a no-selection context can advance to empty")
+        return self._transition_state(
+            context,
+            freshness=Freshness.FRESH,
+            phase=ViewPhase.READY,
+            presentation=RunMonitoringPresentationState.EMPTY,
+            completeness=Completeness.EMPTY,
+            error=None,
+        )
+
+    def advance_to_disconnected(
+        self,
+        context: RunMonitoringContext,
+    ) -> RunMonitoringViewState:
+        return self._transition_state(
+            context,
+            freshness=Freshness.DISCONNECTED,
+            phase=ViewPhase.DEGRADED,
+            presentation=RunMonitoringPresentationState.DISCONNECTED,
+            completeness=Completeness.UNKNOWN,
+            error=StructuredFeatureError(
+                code="run_monitoring_source_disconnected",
+                message="Runtime data is unavailable.",
+                retryable=True,
+            ),
+        )
+
+    def _transition_state(
+        self,
+        context: RunMonitoringContext,
+        *,
+        freshness: Freshness,
+        phase: ViewPhase,
+        presentation: RunMonitoringPresentationState,
+        completeness: Completeness,
+        error: StructuredFeatureError | None,
+    ) -> RunMonitoringViewState:
         with self._lock:
             self._ensure_open()
             previous = self._states.get(context)
@@ -252,16 +289,16 @@ class DeterministicFakeRunMonitoringAdapter:
                 interface_version=self.interface_version,
                 revision=previous.revision + 1,
                 observed_at=self._clock(),
-                freshness=Freshness.FRESH,
+                freshness=freshness,
                 age=timedelta(0),
                 freshness_threshold=self._freshness_threshold,
                 source=self._source(),
                 context=context,
-                phase=ViewPhase.READY,
-                presentation=RunMonitoringPresentationState.EMPTY,
-                last_reliable_data=None,
-                error=None,
-                completeness=Completeness.EMPTY,
+                phase=phase,
+                presentation=presentation,
+                last_reliable_data=previous.last_reliable_data,
+                error=error,
+                completeness=completeness,
             )
             self._states[context] = state
             observers = tuple(

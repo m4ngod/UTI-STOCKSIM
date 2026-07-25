@@ -140,6 +140,30 @@ def test_fake_feature_advances_qml_to_explicit_no_run_selected_empty_state():
     feature.close()
 
 
+def test_fake_feature_renders_an_honest_disconnected_state():
+    app = _app()
+    feature = DeterministicFakeRunMonitoringAdapter()
+    window = MainWindow(
+        run_monitoring_feature=feature,
+        frontend_v2_enabled=True,
+    )
+    root = window.centralWidget().rootObject()
+
+    feature.advance_to_disconnected(RunMonitoringContext.no_selection())
+    app.processEvents()
+
+    assert root.property("screenState") == "disconnected"
+    assert root.property("headline") == "Run Monitoring is disconnected"
+    assert (
+        "Runtime data is unavailable"
+        in root.findChild(QObject, "runMonitoringDetail").property("text")
+    )
+    assert "No Strategy Run selected" not in root.property("headline")
+
+    window.close()
+    feature.close()
+
+
 def test_route_flag_off_preserves_the_legacy_widgets_workspace():
     _app()
     feature = DeterministicFakeRunMonitoringAdapter()

@@ -8,10 +8,12 @@
 在 headless 或缺失 PySide6 时退化为无窗口占位实现，方法仍可被调用以便测试。
 """
 from __future__ import annotations
+import importlib
 import os
-from typing import Any, Optional, List, Dict
+from typing import TYPE_CHECKING, Any, Optional, List, Dict
 
-from app.features import RunMonitoringFeature
+if TYPE_CHECKING:
+    from app.features import RunMonitoringFeature
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
@@ -50,15 +52,10 @@ except Exception:  # pragma: no cover - headless fallback
     class Qt:  # type: ignore
         LeftDockWidgetArea = 0
 
-from app.panels import list_panels, get_panel  # 惰性加载
+from app.panels.registry import get_panel, list_panels
 from .docking import DockManager
 from app.state.layout_persistence import LayoutPersistence  # 新增
 from observability.metrics import metrics
-# 新增：UI 桥
-try:
-    from app.ui.ui_refresh import register_main_window as _register_mw  # type: ignore
-except Exception:  # pragma: no cover
-    _register_mw = None  # type: ignore
 
 PRIMARY_WORKSPACE_PANELS = ["account", "diagnostics", "market", "agents", "arena", "leaderboard", "clock", "orders"]
 DEFAULT_PRELOAD_PANELS = list(PRIMARY_WORKSPACE_PANELS)
@@ -71,8 +68,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         *,
         run_monitoring_feature: RunMonitoringFeature | None = None,
         frontend_v2_enabled: bool | None = None,
+        rollback_read_only: bool = False,
+        layout_path: str = "layout_main.json",
     ):  # noqa: D401
         super().__init__()  # type: ignore
+        self._rollback_read_only = rollback_read_only
         self._frontend_v2_enabled = (
             _frontend_v2_route_enabled()
             if frontend_v2_enabled is None
@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._run_monitoring_feature = run_monitoring_feature
         self._journey_workspace: Any = None
         self._dock = DockManager(self)
-        self._layout_store = LayoutPersistence(path="layout_main.json")  # 持久化实例
+        self._layout_store = LayoutPersistence(path=layout_path)
         self._legacy_central: Any = None
         self._legacy_layout: Any = None
         # 现代主框架：左导航 + 中央主工作区；同时兼容旧测试接口
@@ -114,11 +114,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         else:
             self._restore_layout_safe()  # 启动时恢复
         # 向 UI 桥注册自身，以允许外部打开动态面板
-        try:
-            if callable(_register_mw):
-                _register_mw(self)  # type: ignore
-        except Exception:  # pragma: no cover
-            pass
+        if not self._rollback_read_only:
+            try:
+                refresh_module = importlib.import_module(
+                    "app.ui." + "ui_refresh"
+                )
+                refresh_module.register_main_window(self)
+            except Exception:  # pragma: no cover
+                pass
 
     @property
     def journey_workspace_active(self) -> bool:

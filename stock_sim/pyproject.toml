@@ -30,6 +30,9 @@ strategy-diagnostics = "strategy_diagnostics.__main__:main"
 [tool.setuptools]
 # 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?
 
+[tool.setuptools.package-data]
+"stock_sim.release" = ["*.json"]
+
 [tool.setuptools.packages.find]
 where = [""]
 include = [

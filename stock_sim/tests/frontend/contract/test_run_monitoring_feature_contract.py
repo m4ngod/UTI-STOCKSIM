@@ -120,6 +120,22 @@ def test_fake_subscription_advances_loading_to_no_selection_empty_without_sleep(
     adapter.close()
 
 
+def test_fake_disconnected_state_is_degraded_and_never_normalized_to_empty():
+    adapter = DeterministicFakeRunMonitoringAdapter()
+    context = RunMonitoringContext.no_selection()
+
+    disconnected = adapter.advance_to_disconnected(context)
+
+    assert disconnected.presentation is RunMonitoringPresentationState.DISCONNECTED
+    assert disconnected.freshness is Freshness.DISCONNECTED
+    assert disconnected.phase is ViewPhase.DEGRADED
+    assert disconnected.completeness is Completeness.UNKNOWN
+    assert disconnected.last_reliable_data is None
+    assert disconnected.error is not None
+    assert disconnected.error.code == "run_monitoring_source_disconnected"
+    assert disconnected.error.retryable is True
+
+
 def test_subscription_disposal_and_adapter_close_are_repeatable_and_final():
     adapter = DeterministicFakeRunMonitoringAdapter()
     no_selection = RunMonitoringContext.no_selection()

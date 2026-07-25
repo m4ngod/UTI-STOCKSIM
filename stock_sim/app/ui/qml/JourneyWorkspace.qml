@@ -1,5 +1,4 @@
 import QtQuick 2.15
-import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 
 Rectangle {
@@ -10,10 +9,14 @@ Rectangle {
     property string screenState: runMonitoring.presentationState
     property string headline: screenState === "loading"
         ? "Preparing Run Monitoring"
-        : "No Strategy Run selected"
+        : screenState === "disconnected"
+            ? "Run Monitoring is disconnected"
+            : "No Strategy Run selected"
     property string detail: screenState === "loading"
         ? "Waiting for the first immutable Run Monitoring state."
-        : "Open an existing Formal Diagnostic Campaign or Strategy Run to monitor it here."
+        : screenState === "disconnected"
+            ? "Runtime data is unavailable. No Strategy Run state is being inferred."
+            : "Open an existing Formal Diagnostic Campaign or Strategy Run to monitor it here."
 
     DesignTokens {
         id: tokens
@@ -37,19 +40,19 @@ Rectangle {
                 ColumnLayout {
                     spacing: tokens.spaceXs
 
-                    Label {
+                    Text {
                         text: "UTI"
                         color: tokens.accent
                         font.pixelSize: 18
                         font.bold: true
                     }
-                    Label {
+                    Text {
                         text: "Strategy Diagnostics"
                         color: tokens.textPrimary
                         font.pixelSize: tokens.bodySize
                         font.bold: true
                     }
-                    Label {
+                    Text {
                         text: "Research workspace"
                         color: tokens.textQuiet
                         font.pixelSize: tokens.labelSize
@@ -63,7 +66,7 @@ Rectangle {
                     color: tokens.surfaceRaised
                     border.color: tokens.accent
 
-                    Label {
+                    Text {
                         anchors.fill: parent
                         anchors.leftMargin: tokens.spaceMd
                         verticalAlignment: Text.AlignVCenter
@@ -78,7 +81,7 @@ Rectangle {
                     Layout.fillHeight: true
                 }
 
-                Label {
+                Text {
                     Layout.fillWidth: true
                     text: "Read-only diagnostics workspace"
                     color: tokens.textQuiet
@@ -103,13 +106,13 @@ Rectangle {
                     ColumnLayout {
                         spacing: tokens.spaceXs
 
-                        Label {
+                        Text {
                             text: "RUN MONITORING"
                             color: tokens.accent
                             font.pixelSize: tokens.labelSize
                             font.bold: true
                         }
-                        Label {
+                        Text {
                             objectName: "runMonitoringSubtitle"
                             text: "Observe a Strategy Run without entering a trading workspace."
                             color: tokens.textMuted
@@ -121,7 +124,7 @@ Rectangle {
                         Layout.fillWidth: true
                     }
 
-                    Label {
+                    Text {
                         text: runMonitoring.revisionText
                         color: tokens.textQuiet
                         font.pixelSize: tokens.labelSize
@@ -147,7 +150,7 @@ Rectangle {
                             color: tokens.surfaceRaised
                             border.color: tokens.border
 
-                            Label {
+                            Text {
                                 anchors.centerIn: parent
                                 text: workspace.screenState.toUpperCase()
                                 color: tokens.accent
@@ -156,7 +159,7 @@ Rectangle {
                             }
                         }
 
-                        Label {
+                        Text {
                             objectName: "runMonitoringHeadline"
                             text: workspace.headline
                             color: tokens.textPrimary
@@ -164,7 +167,7 @@ Rectangle {
                             font.bold: true
                         }
 
-                        Label {
+                        Text {
                             objectName: "runMonitoringDetail"
                             Layout.fillWidth: true
                             text: workspace.detail
@@ -181,17 +184,17 @@ Rectangle {
                             Layout.fillWidth: true
                             spacing: tokens.spaceLg
 
-                            Label {
+                            Text {
                                 text: "Freshness · " + runMonitoring.freshness
                                 color: tokens.textQuiet
                                 font.pixelSize: tokens.labelSize
                             }
-                            Label {
+                            Text {
                                 text: "Source · " + runMonitoring.sourceIdentity
                                 color: tokens.textQuiet
                                 font.pixelSize: tokens.labelSize
                             }
-                            Label {
+                            Text {
                                 Layout.fillWidth: true
                                 text: "Observed · " + runMonitoring.observedAtText
                                 color: tokens.textQuiet
@@ -206,7 +209,7 @@ Rectangle {
                     Layout.fillHeight: true
                 }
 
-                Label {
+                Text {
                     Layout.fillWidth: true
                     text: "No experiment launch or discretionary trading controls are available in this workspace."
                     color: tokens.textQuiet

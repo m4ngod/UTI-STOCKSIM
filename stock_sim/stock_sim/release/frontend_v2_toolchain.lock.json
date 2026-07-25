@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "platform": {
+    "operating_system": "Windows 11",
+    "architecture": "x86_64"
+  },
+  "toolchain": {
+    "python": "3.11.9",
+    "pyside6": "6.9.1",
+    "qt": "6.9.1",
+    "numpy": "2.3.1",
+    "nuitka": "2.6.8"
+  },
+  "invalidation_policy": "Any locked dependency version change invalidates all affected packaging and performance evidence."
+}

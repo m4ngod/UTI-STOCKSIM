@@ -1,0 +1,734 @@
+from dataclasses import replace
+
+from stock_sim.release.frontend_v2_packaging import (
+    EXPECTED_TOOLCHAIN,
+    LockedPlatform,
+    PackageKind,
+    PROJECT_QML_ROOT,
+    PROJECT_ROOT,
+    audit_frontend_v2_surface,
+    audit_nuitka_dependency_report,
+    certify_frontend_v2_release,
+    classify_windows_operating_system,
+    create_package_build_plans,
+    create_deterministic_package_archive,
+    deploy_scanned_qml_runtime,
+    load_toolchain_lock,
+    main as packaging_main,
+    resolve_qml_dependency_closure,
+    scan_qml_dependencies,
+    toolchain_evidence_identity,
+    verify_release_source,
+    verify_running_toolchain,
+    verify_clean_room_report,
+    write_package_evidence,
+    write_renderer_evidence,
+)
+
+
+def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
+    lock = load_toolchain_lock()
+
+    assert lock.toolchain == EXPECTED_TOOLCHAIN
+    assert lock.toolchain.python == "3.11.9"
+    assert lock.toolchain.pyside6 == "6.9.1"
+    assert lock.toolchain.qt == "6.9.1"
+    assert lock.toolchain.numpy == "2.3.1"
+    assert lock.toolchain.nuitka == "2.6.8"
+    assert lock.invalidation_policy == (
+        "Any locked dependency version change invalidates all affected "
+        "packaging and performance evidence."
+    )
+    assert verify_running_toolchain(lock) == ()
+    assert toolchain_evidence_identity(lock).startswith("sha256:")
+
+
+def test_toolchain_lock_rejects_a_different_build_architecture():
+    lock = load_toolchain_lock()
+    wrong_architecture = replace(
+        lock,
+        platform=LockedPlatform(
+            operating_system=lock.platform.operating_system,
+            architecture="arm64",
+        ),
+    )
+
+    assert "architecture: expected arm64, observed x86_64" in (
+        verify_running_toolchain(wrong_architecture)
+    )
+
+
+def test_windows_platform_lock_does_not_accept_server_builds():
+    assert classify_windows_operating_system(
+        build=26100,
+        product_type=1,
+    ) == "Windows 11"
+    assert classify_windows_operating_system(
+        build=26100,
+        product_type=3,
+    ) == "Windows Server"
+
+
+def test_toolchain_lock_is_included_in_installed_release_package_data():
+    import tomllib
+
+    metadata = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert metadata["tool"]["setuptools"]["package-data"][
+        "stock_sim.release"
+    ] == ["*.json"]
+
+
+def test_qml_dependencies_are_discovered_from_source_imports_not_a_handwritten_list(
+    tmp_path,
+):
+    fixture_root = tmp_path / "qml"
+    fixture_root.mkdir()
+    (fixture_root / "Fixture.qml").write_text(
+        "import QtQuick 2.15\n"
+        "import QtQuick.Dialogs 6.9\n"
+        "Item {}\n",
+        encoding="utf-8",
+    )
+
+    fixture_manifest = scan_qml_dependencies(fixture_root)
+    project_manifest = scan_qml_dependencies(PROJECT_QML_ROOT)
+
+    assert tuple(
+        (dependency.module, dependency.version)
+        for dependency in fixture_manifest.dependencies
+    ) == (
+        ("QtQuick", "2.15"),
+        ("QtQuick.Dialogs", "6.9"),
+    )
+    assert fixture_manifest.scan_kind == "qml-source-import-scan"
+    assert fixture_manifest.source_digest.startswith("sha256:")
+    assert {
+        (dependency.module, dependency.version)
+        for dependency in project_manifest.dependencies
+    } == {
+        ("QtQuick", "2.15"),
+        ("QtQuick.Layouts", "1.15"),
+    }
+    assert not any(
+        dependency.module.startswith("QtWebEngine")
+        for dependency in project_manifest.dependencies
+    )
+
+
+def test_qt_qmlimportscanner_resolves_the_transitive_qml_dependency_closure():
+    closure = resolve_qml_dependency_closure(PROJECT_QML_ROOT)
+
+    names = {dependency.name for dependency in closure.dependencies}
+    assert "QtQuick" in names
+    assert "QtQuick.Layouts" in names
+    assert "QtQml" in names
+    assert not any(
+        name.startswith(("QtWebEngine", "QtWebView"))
+        for name in names
+    )
+    assert closure.scanner == "pyside6-qmlimportscanner"
+    assert closure.raw_output_digest.startswith("sha256:")
+
+
+def test_minimal_package_smoke_observes_loading_empty_and_disconnected(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from stock_sim.release.frontend_v2_package_entry import (
+        RendererLane,
+        run_smoke_journey,
+    )
+
+    result = run_smoke_journey(
+        report_dir=tmp_path,
+        renderer_lane=RendererLane.SOFTWARE,
+        capture_images=False,
+    )
+
+    assert tuple(observation.state for observation in result.observations) == (
+        "loading",
+        "empty",
+        "disconnected",
+    )
+    assert result.observations[-1].headline == (
+        "Run Monitoring is disconnected"
+    )
+    assert result.errors == ()
+    assert result.clean_exit is True
+
+
+def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
+    tmp_path,
+):
+    plans = create_package_build_plans(
+        output_root=tmp_path,
+        source_commit="abc123",
+    )
+
+    assert tuple(plan.kind for plan in plans) == (
+        PackageKind.WIDGETS_ROLLBACK,
+        PackageKind.QML_JOURNEY,
+    )
+    assert {plan.source_commit for plan in plans} == {"abc123"}
+    qml_plan = plans[1]
+    widgets_plan = plans[0]
+    assert qml_plan.source_imports == scan_qml_dependencies(PROJECT_QML_ROOT)
+    assert qml_plan.resolved_qml_dependencies is not None
+    assert "--standalone" in qml_plan.nuitka_command
+    assert "--enable-plugin=pyside6" in qml_plan.nuitka_command
+    assert any(
+        argument.startswith("--include-data-dir=")
+        for argument in qml_plan.nuitka_command
+    )
+    assert not any(
+        "webengine" in argument.casefold()
+        for plan in plans
+        for argument in plan.nuitka_command
+    )
+    assert widgets_plan.resolved_qml_dependencies is None
+
+
+def test_scanner_driven_qml_deployment_copies_modules_and_binary_closure(
+    tmp_path,
+):
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path,
+        source_commit="abc123",
+    )[1]
+    qml_plan.distribution_dir.mkdir(parents=True)
+
+    deployment = deploy_scanned_qml_runtime(qml_plan)
+
+    assert (
+        qml_plan.distribution_dir
+        / "PySide6"
+        / "qml"
+        / "QtQuick"
+        / "Layouts"
+        / "qmldir"
+    ).is_file()
+    assert (
+        qml_plan.distribution_dir / "Qt6QuickLayouts.dll"
+    ).is_file()
+    assert "QtQuick.Layouts" in deployment.qml_modules
+    assert not any(
+        "webengine" in relative_path.casefold()
+        for relative_path in deployment.deployed_files
+    )
+
+
+def test_package_evidence_records_checksums_sizes_delta_and_rollback(
+    tmp_path,
+):
+    plans = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit="abc123",
+    )
+    for plan in plans:
+        plan.distribution_dir.mkdir(parents=True)
+        (plan.distribution_dir / plan.executable_name).write_bytes(
+            plan.kind.value.encode("utf-8")
+        )
+    qml_marker = (
+        plans[1].distribution_dir
+        / "PySide6"
+        / "qml"
+        / "QtQuick"
+        / "qmldir"
+    )
+    qml_marker.parent.mkdir(parents=True)
+    qml_marker.write_text("module QtQuick\n", encoding="utf-8")
+
+    evidence = write_package_evidence(
+        plans=plans,
+        evidence_dir=tmp_path / "evidence",
+    )
+
+    assert evidence.source_commit == "abc123"
+    assert evidence.qml_delta_bytes <= 50 * 1024 * 1024
+    assert evidence.webengine_files == ()
+    assert evidence.widgets_rollback.kind is PackageKind.WIDGETS_ROLLBACK
+    assert evidence.qml_journey.kind is PackageKind.QML_JOURNEY
+    assert evidence.widgets_rollback.tree_sha256.startswith("sha256:")
+    assert evidence.qml_journey.tree_sha256.startswith("sha256:")
+    manifest = tmp_path / "evidence" / "dependency-manifest.json"
+    checksums = tmp_path / "evidence" / "SHA256SUMS.txt"
+    assert manifest.is_file()
+    assert checksums.is_file()
+    assert "UTI-Widgets-Rollback.exe" in checksums.read_text(
+        encoding="utf-8"
+    )
+    assert "UTI-Frontend-V2.exe" in checksums.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_clean_room_report_requires_offline_windows_without_dev_tools(
+    tmp_path,
+):
+    report_path = tmp_path / "clean-room-report.json"
+    report_path.write_text(
+        """
+        {
+          "schema_version": 2,
+          "source_commit": "abc123",
+          "archive_sha256": "sha256:package",
+          "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
+          "architecture": "AMD64",
+          "network_enumeration_succeeded": true,
+          "network_adapters_up": [],
+          "python_on_path": false,
+          "python_installations": [],
+          "compiler_on_path": false,
+          "compiler_installations": [],
+          "dependency_cache_present": false,
+          "dependency_cache_paths": [],
+          "install_succeeded": true,
+          "renderer_lanes": {
+            "hardware": {
+              "exit_code": 0,
+              "graphics_api": "Direct3D11",
+              "states": ["loading", "empty", "disconnected"],
+              "clean_exit": true,
+              "errors": []
+            },
+            "software": {
+              "exit_code": 0,
+              "graphics_api": "Software",
+              "states": ["loading", "empty", "disconnected"],
+              "clean_exit": true,
+              "errors": []
+            }
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    assert verify_clean_room_report(
+        report_path,
+        expected_source_commit="abc123",
+        expected_archive_sha256="sha256:package",
+    ) == ()
+
+    compromised = report_path.read_text(encoding="utf-8").replace(
+        '"python_on_path": false',
+        '"python_on_path": true',
+    )
+    report_path.write_text(compromised, encoding="utf-8")
+    assert "Python is available on PATH" in verify_clean_room_report(
+        report_path,
+        expected_source_commit="abc123",
+        expected_archive_sha256="sha256:package",
+    )
+
+
+def test_release_certification_is_blocked_until_clean_room_evidence_passes(
+    tmp_path,
+):
+    import hashlib
+    import json
+
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    archives_dir = tmp_path / "archives"
+    archives_dir.mkdir()
+    qml_archive = archives_dir / "qml-journey-abc123.zip"
+    widgets_archive = archives_dir / "widgets-rollback-abc123.zip"
+    qml_archive.write_bytes(b"qml-package")
+    widgets_archive.write_bytes(b"widgets-package")
+    qml_sha256 = (
+        "sha256:" + hashlib.sha256(qml_archive.read_bytes()).hexdigest()
+    )
+    widgets_sha256 = (
+        "sha256:"
+        + hashlib.sha256(widgets_archive.read_bytes()).hexdigest()
+    )
+    (evidence_dir / "release-candidate-summary.json").write_text(
+        json.dumps(
+            {
+                "source_commit": "abc123",
+                "archives": [
+                    {
+                        "relative_path": qml_archive.name,
+                        "size_bytes": qml_archive.stat().st_size,
+                        "sha256": qml_sha256,
+                    },
+                    {
+                        "relative_path": widgets_archive.name,
+                        "size_bytes": widgets_archive.stat().st_size,
+                        "sha256": widgets_sha256,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = tmp_path / "clean-room-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_commit": "abc123",
+                "archive_sha256": qml_sha256,
+                "operating_system": "Microsoft Windows 11 Pro",
+                "architecture": "AMD64",
+                "network_enumeration_succeeded": True,
+                "network_adapters_up": [],
+                "python_on_path": False,
+                "python_installations": [],
+                "compiler_on_path": False,
+                "compiler_installations": [],
+                "dependency_cache_present": False,
+                "dependency_cache_paths": [],
+                "install_succeeded": True,
+                "renderer_lanes": {
+                    lane: {
+                        "exit_code": 0,
+                        "graphics_api": graphics_api,
+                        "states": [
+                            "loading",
+                            "empty",
+                            "disconnected",
+                        ],
+                        "clean_exit": True,
+                        "errors": [],
+                    }
+                    for lane, graphics_api in (
+                        ("hardware", "Direct3D11"),
+                        ("software", "Software"),
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    compromised = json.loads(report.read_text(encoding="utf-8"))
+    compromised["renderer_lanes"]["software"]["errors"] = [
+        "module missing"
+    ]
+    report.write_text(json.dumps(compromised), encoding="utf-8")
+    try:
+        certify_frontend_v2_release(
+            output_root=tmp_path,
+            source_commit="abc123",
+            clean_room_report=report,
+        )
+    except RuntimeError as error:
+        assert "software renderer reported errors" in str(error)
+    else:
+        raise AssertionError("Compromised clean-room evidence was accepted")
+    assert not (evidence_dir / "release-summary.json").exists()
+
+    compromised["renderer_lanes"]["software"]["errors"] = []
+    report.write_text(json.dumps(compromised), encoding="utf-8")
+    qml_archive.write_bytes(b"tampered")
+    try:
+        certify_frontend_v2_release(
+            output_root=tmp_path,
+            source_commit="abc123",
+            clean_room_report=report,
+        )
+    except RuntimeError as error:
+        assert "archive checksum does not match" in str(error)
+    else:
+        raise AssertionError("Tampered package archive was accepted")
+    assert not (evidence_dir / "release-summary.json").exists()
+
+    qml_archive.write_bytes(b"qml-package")
+    certification = certify_frontend_v2_release(
+        output_root=tmp_path,
+        source_commit="abc123",
+        clean_room_report=report,
+    )
+
+    assert certification.clean_room_report_sha256.startswith("sha256:")
+    assert (evidence_dir / "release-summary.json").is_file()
+
+
+def test_renderer_evidence_retains_both_lanes_environment_and_lock(
+    tmp_path,
+):
+    reports = {}
+    for lane, graphics_api in (
+        ("hardware", "Direct3D11"),
+        ("software", "Software"),
+    ):
+        report_path = tmp_path / lane / "smoke-report.json"
+        report_path.parent.mkdir()
+        report_path.write_text(
+            """
+            {
+              "renderer_lane": "%s",
+              "graphics_api": "%s",
+              "observations": [
+                {"state": "loading"},
+                {"state": "empty"},
+                {"state": "disconnected"}
+              ],
+              "errors": [],
+              "clean_exit": true
+            }
+            """
+            % (lane, graphics_api),
+            encoding="utf-8",
+        )
+        reports[lane] = report_path
+
+    evidence = write_renderer_evidence(
+        hardware_report=reports["hardware"],
+        software_report=reports["software"],
+        source_commit="abc123",
+        evidence_dir=tmp_path / "evidence",
+    )
+
+    assert evidence.source_commit == "abc123"
+    assert evidence.toolchain_identity.startswith("sha256:")
+    assert evidence.hardware.graphics_api == "Direct3D11"
+    assert evidence.software.graphics_api == "Software"
+    assert evidence.hardware.states == (
+        "loading",
+        "empty",
+        "disconnected",
+    )
+    assert evidence.environment_identity
+    assert (
+        tmp_path / "evidence" / "renderer-gate-report.json"
+    ).is_file()
+
+
+def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
+    tmp_path,
+):
+    safe_report = tmp_path / "safe.xml"
+    safe_report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.features.run_monitoring" />
+          <module name="app.ui.journey_workspace" />
+          <data-file name="app/ui/qml/JourneyWorkspace.qml" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+    unsafe_report = tmp_path / "unsafe.xml"
+    unsafe_report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.panels.orders" />
+          <module name="PySide6.QtWebEngineCore" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+
+    assert audit_nuitka_dependency_report(
+        safe_report,
+        package_kind=PackageKind.QML_JOURNEY,
+    ) == ()
+    unsafe_findings = audit_nuitka_dependency_report(
+        unsafe_report,
+        package_kind=PackageKind.QML_JOURNEY,
+    )
+    assert any("app.panels.orders" in finding for finding in unsafe_findings)
+    assert any("QtWebEngineCore" in finding for finding in unsafe_findings)
+    assert audit_frontend_v2_surface() == ()
+
+
+def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
+    rollback_source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_widgets_rollback_entry.py"
+    ).read_text(encoding="utf-8")
+
+    assert "from app.ui.main_window import MainWindow" in rollback_source
+    assert "rollback_read_only=True" in rollback_source
+    assert "QMainWindow()" not in rollback_source
+
+
+def test_release_source_verification_rejects_untracked_inputs(tmp_path):
+    import subprocess
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+    subprocess.run(
+        ("git", "config", "user.name", "Release Test"),
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.email", "release@example.invalid"),
+        cwd=repository,
+        check=True,
+    )
+    tracked = repository / "route.qml"
+    tracked.write_text("import QtQuick 2.15\n", encoding="utf-8")
+    subprocess.run(("git", "add", "route.qml"), cwd=repository, check=True)
+    subprocess.run(
+        ("git", "commit", "-q", "-m", "fixture"),
+        cwd=repository,
+        check=True,
+    )
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    (repository / "untracked.qml").write_text(
+        "import QtQuick.Layouts 2.15\n",
+        encoding="utf-8",
+    )
+
+    try:
+        verify_release_source(
+            source_root=repository,
+            source_commit=commit,
+        )
+    except RuntimeError as error:
+        assert "clean working tree" in str(error)
+        assert "untracked.qml" in str(error)
+    else:
+        raise AssertionError("Untracked packaging input was accepted")
+
+
+def test_release_source_verification_rejects_ignored_qml_inputs(tmp_path):
+    import subprocess
+
+    repository = tmp_path / "repository"
+    qml_root = repository / "app" / "ui" / "qml"
+    qml_root.mkdir(parents=True)
+    subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+    subprocess.run(
+        ("git", "config", "user.name", "Release Test"),
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.email", "release@example.invalid"),
+        cwd=repository,
+        check=True,
+    )
+    (repository / ".gitignore").write_text(
+        "app/ui/qml/Ignored.qml\n",
+        encoding="utf-8",
+    )
+    (qml_root / "Tracked.qml").write_text(
+        "import QtQuick 2.15\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ("git", "add", ".gitignore", "app/ui/qml/Tracked.qml"),
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "commit", "-q", "-m", "fixture"),
+        cwd=repository,
+        check=True,
+    )
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    (qml_root / "Ignored.qml").write_text(
+        "import QtQuick.Layouts 2.15\n",
+        encoding="utf-8",
+    )
+
+    try:
+        verify_release_source(
+            source_root=repository,
+            source_commit=commit,
+        )
+    except RuntimeError as error:
+        assert "ignored or untracked release input" in str(error)
+        assert "app/ui/qml/Ignored.qml" in str(error)
+    else:
+        raise AssertionError("Ignored QML packaging input was accepted")
+
+
+def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
+    script = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "network_enumeration_succeeded" in script
+    assert "python_installations" in script
+    assert "compiler_installations" in script
+    assert "dependency_cache_paths" in script
+    assert "states_match" in script
+    assert "clean_exit" in script
+    assert "errors.Count -eq 0" in script
+    assert "$pythonInstallations = @(" in script
+    assert "$compilerInstallations = @(" in script
+    assert "$dependencyCachePaths = @(" in script
+
+
+def test_package_archive_is_deterministic_and_installable_by_extraction(
+    tmp_path,
+):
+    import zipfile
+
+    plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit="abc123",
+    )[1]
+    plan.distribution_dir.mkdir(parents=True)
+    (plan.distribution_dir / plan.executable_name).write_bytes(b"exe")
+    (plan.distribution_dir / "runtime.dll").write_bytes(b"dll")
+
+    first = create_deterministic_package_archive(
+        plan,
+        archive_dir=tmp_path / "archives-a",
+    )
+    second = create_deterministic_package_archive(
+        plan,
+        archive_dir=tmp_path / "archives-b",
+    )
+
+    assert first.sha256 == second.sha256
+    with zipfile.ZipFile(
+        tmp_path / "archives-a" / first.relative_path
+    ) as archive:
+        assert archive.namelist() == [
+            "qml-journey/UTI-Frontend-V2.exe",
+            "qml-journey/runtime.dll",
+        ]
+
+
+def test_packaging_cli_can_emit_the_locked_build_plan_without_building(
+    tmp_path,
+    capsys,
+):
+    exit_code = packaging_main(
+        [
+            "--output-root",
+            str(tmp_path / "release"),
+            "--source-commit",
+            "abc123",
+            "--plan-only",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert '"source_commit": "abc123"' in output
+    assert '"kind": "widgets-rollback"' in output
+    assert '"kind": "qml-journey"' in output
+    assert "nuitka" in output
