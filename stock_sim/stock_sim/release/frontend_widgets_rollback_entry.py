@@ -20,6 +20,29 @@ READ_ONLY_ROLLBACK_PANELS = (
 )
 
 
+class ReadOnlyLayoutStore:
+    def __init__(self, path: Path):
+        self._path = path
+        self._layout: dict[str, object] = {"panels": {}}
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    self._layout = payload
+            except (OSError, ValueError):
+                pass
+
+    def get(self) -> dict[str, object]:
+        return json.loads(json.dumps(self._layout))
+
+    def save(self, layout: dict[str, object]) -> None:
+        self._layout = json.loads(json.dumps(layout))
+        self._path.write_text(
+            json.dumps(self._layout, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
 def _layout_path(report_dir: Path | None) -> Path:
     if report_dir is not None:
         return report_dir / "widgets-rollback-layout.json"
@@ -35,29 +58,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from PySide6.QtWidgets import QApplication, QLabel
 
-    from app.panels.registry import (
-        register_panel,
-        reset_registry,
-    )
     from app.ui.main_window import MainWindow
 
-    reset_registry()
-    for panel_name in READ_ONLY_ROLLBACK_PANELS:
-        register_panel(
-            panel_name,
-            lambda name=panel_name: QLabel(
-                f"{name.title()}\nRead-only rollback view"
-            ),
-            title=panel_name.title(),
-            meta={"rollback_mode": "read-only"},
-        )
     app = QApplication.instance() or QApplication([])
+    panel_widgets: dict[str, QLabel] = {}
+
+    def panel_list() -> list[dict[str, str]]:
+        return [
+            {"name": name, "title": name.title()}
+            for name in READ_ONLY_ROLLBACK_PANELS
+        ]
+
+    def panel_get(name: str) -> QLabel:
+        if name not in READ_ONLY_ROLLBACK_PANELS:
+            raise KeyError(name)
+        if name not in panel_widgets:
+            panel_widgets[name] = QLabel(
+                f"{name.title()}\nRead-only rollback view"
+            )
+        return panel_widgets[name]
+
     layout_path = _layout_path(arguments.smoke_report_dir)
     layout_path.parent.mkdir(parents=True, exist_ok=True)
+    layout_store = ReadOnlyLayoutStore(layout_path)
     window = MainWindow(
         frontend_v2_enabled=False,
         rollback_read_only=True,
         layout_path=str(layout_path),
+        panel_list=panel_list,
+        panel_get=panel_get,
+        layout_store=layout_store,
     )
     window.setObjectName("widgetsRollbackPackageWindow")
     for panel_name in READ_ONLY_ROLLBACK_PANELS:

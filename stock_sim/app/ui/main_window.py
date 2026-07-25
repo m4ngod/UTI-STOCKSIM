@@ -10,7 +10,14 @@
 from __future__ import annotations
 import importlib
 import os
-from typing import TYPE_CHECKING, Any, Optional, List, Dict
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Optional,
+    List,
+    Dict,
+)
 
 if TYPE_CHECKING:
     from app.features import RunMonitoringFeature
@@ -52,9 +59,7 @@ except Exception:  # pragma: no cover - headless fallback
     class Qt:  # type: ignore
         LeftDockWidgetArea = 0
 
-from app.panels.registry import get_panel, list_panels
 from .docking import DockManager
-from app.state.layout_persistence import LayoutPersistence  # 新增
 from observability.metrics import metrics
 
 PRIMARY_WORKSPACE_PANELS = ["account", "diagnostics", "market", "agents", "arena", "leaderboard", "clock", "orders"]
@@ -70,9 +75,37 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         frontend_v2_enabled: bool | None = None,
         rollback_read_only: bool = False,
         layout_path: str = "layout_main.json",
+        panel_list: Callable[[], List[Dict[str, Any]]] | None = None,
+        panel_get: Callable[[str], Any] | None = None,
+        layout_store: Any | None = None,
     ):  # noqa: D401
         super().__init__()  # type: ignore
         self._rollback_read_only = rollback_read_only
+        if (panel_list is None) != (panel_get is None):
+            raise ValueError(
+                "panel_list and panel_get must be provided together"
+            )
+        if panel_list is None or panel_get is None:
+            registry_module = importlib.import_module(
+                "app.panels." + "registry"
+            )
+            self._panel_list = registry_module.list_panels
+            self._panel_get = registry_module.get_panel
+        else:
+            self._panel_list = panel_list
+            self._panel_get = panel_get
+        if layout_store is None:
+            if self._rollback_read_only:
+                raise ValueError(
+                    "Read-only rollback mode requires an isolated "
+                    "layout_store"
+                )
+            layout_module = importlib.import_module(
+                "app.state." + "layout_persistence"
+            )
+            layout_store = layout_module.LayoutPersistence(
+                path=layout_path
+            )
         self._frontend_v2_enabled = (
             _frontend_v2_route_enabled()
             if frontend_v2_enabled is None
@@ -81,7 +114,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._run_monitoring_feature = run_monitoring_feature
         self._journey_workspace: Any = None
         self._dock = DockManager(self)
-        self._layout_store = LayoutPersistence(path=layout_path)
+        self._layout_store = layout_store
         self._legacy_central: Any = None
         self._legacy_layout: Any = None
         # 现代主框架：左导航 + 中央主工作区；同时兼容旧测试接口
@@ -376,7 +409,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     panels_menu.removeAction(act)  # type: ignore
             except Exception:  # pragma: no cover
                 pass
-            for p in list_panels():
+            for p in self._panel_list():
                 name = p.get('name')
                 if not name:
                     continue
@@ -487,9 +520,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         existing = self._dock.get_panel(name)
         if existing is not None:
             return existing
-        if not any(p["name"] == name for p in list_panels()):
+        if not any(p["name"] == name for p in self._panel_list()):
             return None
-        obj = get_panel(name)
+        obj = self._panel_get(name)
         widget: Any
         # 支持 PanelAdapter: 若对象提供 widget() 则使用其返回的真实 QWidget
         real_widget = getattr(obj, 'widget', None)
@@ -511,7 +544,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             if name in primary_panels or str(name).startswith('symbol:'):
                 try:
                     if self._workspace_stack is not None and hasattr(self._workspace_stack, 'addWidget'):
-                        title = next((p.get('title') for p in list_panels() if p.get('name') == name), None) or name
+                        title = next((p.get('title') for p in self._panel_list() if p.get('name') == name), None) or name
                         page = self._make_workspace_page(name, widget, title)
                         self._workspace_stack.addWidget(page)  # type: ignore[attr-defined]
                         idx = self._workspace_stack.count() - 1 if hasattr(self._workspace_stack, 'count') else 0
@@ -547,7 +580,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         return ok
 
     def list_registered(self) -> List[str]:
-        return [p["name"] for p in list_panels()]
+        return [p["name"] for p in self._panel_list()]
 
     def list_open(self) -> List[str]:
         """Return the current app-open state with workspace-first semantics.

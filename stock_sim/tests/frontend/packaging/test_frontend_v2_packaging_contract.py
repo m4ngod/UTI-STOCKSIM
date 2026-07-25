@@ -551,7 +551,58 @@ def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
 
     assert "from app.ui.main_window import MainWindow" in rollback_source
     assert "rollback_read_only=True" in rollback_source
+    assert "layout_store=layout_store" in rollback_source
     assert "QMainWindow()" not in rollback_source
+    assert "from app.panels" not in rollback_source
+
+
+def test_widgets_migration_host_accepts_an_isolated_read_only_panel_catalog(
+    tmp_path,
+):
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from app.ui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    widgets = {
+        "diagnostics": QLabel("Diagnostics read-only"),
+        "market": QLabel("Market read-only"),
+    }
+    descriptors = [
+        {"name": name, "title": name.title()}
+        for name in widgets
+    ]
+
+    class MemoryLayoutStore:
+        def __init__(self):
+            self.layout = {"panels": {}}
+
+        def get(self):
+            return self.layout
+
+        def save(self, layout):
+            self.layout = layout
+
+    layout_store = MemoryLayoutStore()
+    window = MainWindow(
+        frontend_v2_enabled=False,
+        rollback_read_only=True,
+        layout_path=str(tmp_path / "layout.json"),
+        panel_list=lambda: descriptors,
+        panel_get=widgets.__getitem__,
+        layout_store=layout_store,
+    )
+
+    assert window.open_panel("diagnostics") is widgets["diagnostics"]
+    assert window.open_panel("market") is widgets["market"]
+    assert window.open_panel("orders") is None
+    assert set(window.list_open()) == {"diagnostics", "market"}
+    window.close()
+    assert set(layout_store.layout["panels"]) == {
+        "diagnostics",
+        "market",
+    }
 
 
 def test_release_source_verification_rejects_untracked_inputs(tmp_path):

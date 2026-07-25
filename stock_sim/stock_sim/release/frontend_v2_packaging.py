@@ -461,7 +461,18 @@ def create_package_build_plans(
         executable_name="UTI-Widgets-Rollback.exe",
         source_imports=None,
         resolved_qml_dependencies=None,
-        extra_arguments=(),
+        extra_arguments=(
+            "--nofollow-import-to=app.panels",
+            "--nofollow-import-to=app.app_context",
+            "--nofollow-import-to=app.core_dto",
+            "--nofollow-import-to=app.features",
+            "--nofollow-import-to=app.runtime_gateway",
+            "--nofollow-import-to=app.state",
+            "--nofollow-import-to=app.ui.journey_workspace",
+            "--nofollow-import-to=app.ui.ui_refresh",
+            "--nofollow-import-to=app.controllers.trading_controller",
+            "--nofollow-import-to=app.services.trading_service",
+        ),
     )
     qml_plan = _build_plan(
         kind=PackageKind.QML_JOURNEY,
@@ -1003,10 +1014,16 @@ def audit_nuitka_dependency_report(
                 )
         if package_kind is PackageKind.WIDGETS_ROLLBACK and folded.startswith(
             (
+                "app.app_context",
+                "app.core_dto",
+                "app.features",
                 "app.runtime_gateway",
+                "app.state",
                 "app.controllers.trading",
                 "app.services.trading",
-                "app.panels.orders",
+                "app.panels",
+                "app.ui.journey_workspace",
+                "app.ui.ui_refresh",
                 "app.ui.adapters.orders",
                 "app.core_dto.trade",
             )
