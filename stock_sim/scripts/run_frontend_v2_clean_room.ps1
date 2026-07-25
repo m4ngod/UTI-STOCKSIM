@@ -9,6 +9,40 @@ param(
     [string]$EvidenceDir
 )
 
+function Reset-RendererLaneEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$LaneDirectory
+    )
+
+    $resolvedRoot = [IO.Path]::GetFullPath($EvidenceRoot)
+    $resolvedLane = [IO.Path]::GetFullPath($LaneDirectory)
+    $allowedLanePaths = @(
+        [IO.Path]::GetFullPath((Join-Path $resolvedRoot "hardware")),
+        [IO.Path]::GetFullPath((Join-Path $resolvedRoot "software"))
+    )
+    $laneIsAllowed = $false
+    foreach ($allowedLanePath in $allowedLanePaths) {
+        if ([string]::Equals(
+            $resolvedLane,
+            $allowedLanePath,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            $laneIsAllowed = $true
+            break
+        }
+    }
+    if (-not $laneIsAllowed) {
+        throw "Refusing to reset a renderer lane outside the evidence root."
+    }
+    if (Test-Path -LiteralPath $resolvedLane) {
+        Remove-Item -LiteralPath $resolvedLane -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $resolvedLane | Out-Null
+}
+
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -128,7 +162,9 @@ $rendererLanes = [ordered]@{}
 if ($installSucceeded) {
     foreach ($lane in @("hardware", "software")) {
         $laneDir = Join-Path $resolvedEvidence $lane
-        New-Item -ItemType Directory -Force -Path $laneDir | Out-Null
+        Reset-RendererLaneEvidence `
+            -EvidenceRoot $resolvedEvidence `
+            -LaneDirectory $laneDir
         & $executable.FullName "--renderer-lane=$lane" "--smoke-report-dir=$laneDir"
         $exitCode = $LASTEXITCODE
         $smokePath = Join-Path $laneDir "smoke-report.json"
@@ -139,11 +175,53 @@ if ($installSucceeded) {
             $statesMatch = (
                 ($states -join "|") -eq "loading|empty|disconnected"
             )
+            $observations = @($smoke.observations)
+            $screenshotNames = @(
+                $observations |
+                    ForEach-Object { [string]$_.screenshot }
+            )
+            $screenshotHashes = @()
+            $screenshotEvidence = @()
+            $screenshotsPresent = $screenshotNames.Count -eq 3
+            foreach ($observation in $observations) {
+                $screenshotName = [string]$observation.screenshot
+                $safeName = [IO.Path]::GetFileName($screenshotName)
+                if (
+                    [string]::IsNullOrWhiteSpace($screenshotName) -or
+                    $safeName -ne $screenshotName
+                ) {
+                    $screenshotsPresent = $false
+                    continue
+                }
+                $screenshotPath = Join-Path $laneDir $safeName
+                if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf)) {
+                    $screenshotsPresent = $false
+                    continue
+                }
+                $screenshotHash = (
+                    Get-FileHash -LiteralPath $screenshotPath -Algorithm SHA256
+                ).Hash.ToLowerInvariant()
+                $qualifiedHash = "sha256:$screenshotHash"
+                $screenshotHashes += $qualifiedHash
+                $relativeScreenshotPath = "$lane/$safeName"
+                $screenshotEvidence += [ordered]@{
+                    state = [string]$observation.state
+                    relative_path = $relativeScreenshotPath
+                    sha256 = $qualifiedHash
+                }
+            }
+            $screenshotsDistinct = (
+                $screenshotsPresent -and
+                $screenshotHashes.Count -eq 3 -and
+                @($screenshotHashes | Sort-Object -Unique).Count -eq 3
+            )
             $rendererLanes[$lane] = [ordered]@{
                 exit_code = $exitCode
                 graphics_api = $smoke.graphics_api
                 states = $states
                 states_match = $statesMatch
+                screenshots = $screenshotEvidence
+                screenshots_distinct = $screenshotsDistinct
                 clean_exit = $smoke.clean_exit
                 errors = @($smoke.errors)
             }
@@ -154,6 +232,8 @@ if ($installSucceeded) {
                 graphics_api = "unavailable"
                 states = @()
                 states_match = $false
+                screenshots = @()
+                screenshots_distinct = $false
                 clean_exit = $false
                 errors = @("smoke-report.json was not produced")
             }
@@ -197,11 +277,13 @@ $gatePassed = (
     $rendererLanes.hardware.exit_code -eq 0 -and
     $rendererLanes.hardware.graphics_api -eq "Direct3D11" -and
     $rendererLanes.hardware.states_match -and
+    $rendererLanes.hardware.screenshots_distinct -and
     $rendererLanes.hardware.clean_exit -and
     $rendererLanes.hardware.errors.Count -eq 0 -and
     $rendererLanes.software.exit_code -eq 0 -and
     $rendererLanes.software.graphics_api -eq "Software" -and
     $rendererLanes.software.states_match -and
+    $rendererLanes.software.screenshots_distinct -and
     $rendererLanes.software.clean_exit -and
     $rendererLanes.software.errors.Count -eq 0
 )

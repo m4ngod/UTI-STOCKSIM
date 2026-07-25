@@ -76,7 +76,7 @@ def run_smoke_journey(
         observations.append(
             _observe_state(
                 root,
-                window,
+                host,
                 report_dir,
                 "loading",
                 capture_images,
@@ -87,7 +87,7 @@ def run_smoke_journey(
         observations.append(
             _observe_state(
                 root,
-                window,
+                host,
                 report_dir,
                 "empty",
                 capture_images,
@@ -98,7 +98,7 @@ def run_smoke_journey(
         observations.append(
             _observe_state(
                 root,
-                window,
+                host,
                 report_dir,
                 "disconnected",
                 capture_images,
@@ -123,7 +123,7 @@ def run_smoke_journey(
 
 def _observe_state(
     root: Any,
-    window: Any,
+    host: Any,
     report_dir: Path,
     expected_state: str,
     capture_images: bool,
@@ -146,14 +146,19 @@ def _observe_state(
     if capture_images:
         screenshot_name = f"{expected_state}.png"
         screenshot_path = report_dir / screenshot_name
-        if not window.grab().save(str(screenshot_path), "PNG"):
-            raise RuntimeError(f"Failed to capture {screenshot_path}")
+        _capture_qml_frame(host, screenshot_path)
     return SmokeStateObservation(
         state=state,
         headline=headline,
         detail=detail,
         screenshot=screenshot_name,
     )
+
+
+def _capture_qml_frame(host: Any, screenshot_path: Path) -> None:
+    image = host.grabFramebuffer()
+    if image.isNull() or not image.save(str(screenshot_path), "PNG"):
+        raise RuntimeError(f"Failed to capture {screenshot_path}")
 
 
 def _graphics_api_name(host: Any) -> str:

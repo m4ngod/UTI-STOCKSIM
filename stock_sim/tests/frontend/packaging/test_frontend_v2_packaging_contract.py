@@ -1,4 +1,10 @@
+import hashlib
+import json
+import shutil
+import subprocess
 from dataclasses import replace
+
+import pytest
 
 from stock_sim.release.frontend_v2_packaging import (
     EXPECTED_TOOLCHAIN,
@@ -24,6 +30,27 @@ from stock_sim.release.frontend_v2_packaging import (
     write_package_evidence,
     write_renderer_evidence,
 )
+
+
+def _write_clean_room_screenshots(root, lane):
+    screenshots = []
+    lane_dir = root / lane
+    lane_dir.mkdir(parents=True, exist_ok=True)
+    for state in ("loading", "empty", "disconnected"):
+        relative_path = f"{lane}/{state}.png"
+        screenshot_path = root / relative_path
+        screenshot_path.write_bytes(f"{lane}:{state}".encode())
+        screenshots.append(
+            {
+                "state": state,
+                "relative_path": relative_path,
+                "sha256": (
+                    "sha256:"
+                    + hashlib.sha256(screenshot_path.read_bytes()).hexdigest()
+                ),
+            }
+        )
+    return screenshots
 
 
 def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
@@ -162,6 +189,68 @@ def test_minimal_package_smoke_observes_loading_empty_and_disconnected(
     assert result.clean_exit is True
 
 
+def test_minimal_package_smoke_captures_distinct_software_frames(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from stock_sim.release.frontend_v2_package_entry import (
+        RendererLane,
+        run_smoke_journey,
+    )
+
+    result = run_smoke_journey(
+        report_dir=tmp_path,
+        renderer_lane=RendererLane.SOFTWARE,
+        capture_images=True,
+    )
+
+    screenshot_digests = {
+        hashlib.sha256((tmp_path / observation.screenshot).read_bytes()).digest()
+        for observation in result.observations
+        if observation.screenshot is not None
+    }
+    assert len(screenshot_digests) == 3
+
+
+def test_qml_smoke_capture_renders_the_quick_framebuffer(tmp_path):
+    from stock_sim.release.frontend_v2_package_entry import (
+        _capture_qml_frame,
+    )
+
+    class CapturedImage:
+        def __init__(self) -> None:
+            self.saved_to = None
+
+        def isNull(self) -> bool:  # noqa: N802 - Qt API convention
+            return False
+
+        def save(self, path: str, image_format: str) -> bool:
+            self.saved_to = (path, image_format)
+            return True
+
+    class QuickHost:
+        def __init__(self) -> None:
+            self.image = CapturedImage()
+            self.framebuffer_grabs = 0
+
+        def grab(self):
+            raise AssertionError("QWidget.grab() can return a stale QML frame")
+
+        def grabFramebuffer(self):  # noqa: N802 - Qt API convention
+            self.framebuffer_grabs += 1
+            return self.image
+
+    host = QuickHost()
+    screenshot_path = tmp_path / "empty.png"
+
+    _capture_qml_frame(host, screenshot_path)
+
+    assert host.framebuffer_grabs == 1
+    assert host.image.saved_to == (str(screenshot_path), "PNG")
+
+
 def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
     tmp_path,
 ):
@@ -272,41 +361,42 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     tmp_path,
 ):
     report_path = tmp_path / "clean-room-report.json"
-    report_path.write_text(
-        """
-        {
-          "schema_version": 2,
-          "source_commit": "abc123",
-          "archive_sha256": "sha256:package",
-          "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
-          "architecture": "AMD64",
-          "network_enumeration_succeeded": true,
-          "network_adapters_up": [],
-          "python_on_path": false,
-          "python_installations": [],
-          "compiler_on_path": false,
-          "compiler_installations": [],
-          "dependency_cache_present": false,
-          "dependency_cache_paths": [],
-          "install_succeeded": true,
-          "renderer_lanes": {
-            "hardware": {
-              "exit_code": 0,
-              "graphics_api": "Direct3D11",
-              "states": ["loading", "empty", "disconnected"],
-              "clean_exit": true,
-              "errors": []
-            },
-            "software": {
-              "exit_code": 0,
-              "graphics_api": "Software",
-              "states": ["loading", "empty", "disconnected"],
-              "clean_exit": true,
-              "errors": []
+    report_payload = {
+        "schema_version": 2,
+        "source_commit": "abc123",
+        "archive_sha256": "sha256:package",
+        "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
+        "architecture": "AMD64",
+        "network_enumeration_succeeded": True,
+        "network_adapters_up": [],
+        "python_on_path": False,
+        "python_installations": [],
+        "compiler_on_path": False,
+        "compiler_installations": [],
+        "dependency_cache_present": False,
+        "dependency_cache_paths": [],
+        "install_succeeded": True,
+        "renderer_lanes": {
+            lane: {
+                "exit_code": 0,
+                "graphics_api": graphics_api,
+                "states": ["loading", "empty", "disconnected"],
+                "screenshots": _write_clean_room_screenshots(
+                    tmp_path,
+                    lane,
+                ),
+                "screenshots_distinct": True,
+                "clean_exit": True,
+                "errors": [],
             }
-          }
-        }
-        """,
+            for lane, graphics_api in (
+                ("hardware", "Direct3D11"),
+                ("software", "Software"),
+            )
+        },
+    }
+    report_path.write_text(
+        json.dumps(report_payload),
         encoding="utf-8",
     )
 
@@ -316,11 +406,121 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         expected_archive_sha256="sha256:package",
     ) == ()
 
-    compromised = report_path.read_text(encoding="utf-8").replace(
-        '"python_on_path": false',
-        '"python_on_path": true',
+    duplicate_screenshot_report = json.loads(
+        report_path.read_text(encoding="utf-8")
     )
-    report_path.write_text(compromised, encoding="utf-8")
+    software_screenshots = duplicate_screenshot_report["renderer_lanes"][
+        "software"
+    ]["screenshots"]
+    software_loading = tmp_path / software_screenshots[0]["relative_path"]
+    software_empty = tmp_path / software_screenshots[1]["relative_path"]
+    software_empty.write_bytes(software_loading.read_bytes())
+    software_screenshots[1]["sha256"] = software_screenshots[0]["sha256"]
+    report_path.write_text(
+        json.dumps(duplicate_screenshot_report),
+        encoding="utf-8",
+    )
+    assert (
+        "software renderer screenshots are not distinct"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ] = _write_clean_room_screenshots(tmp_path, "software")
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ][1]["sha256"] = "sha256:not-a-digest"
+    report_path.write_text(
+        json.dumps(duplicate_screenshot_report),
+        encoding="utf-8",
+    )
+    assert (
+        "software renderer screenshot digest is invalid"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ] = _write_clean_room_screenshots(tmp_path, "software")
+    tampered_screenshot = (
+        tmp_path
+        / duplicate_screenshot_report["renderer_lanes"]["software"][
+            "screenshots"
+        ][1]["relative_path"]
+    )
+    tampered_screenshot.write_bytes(b"tampered")
+    report_path.write_text(
+        json.dumps(duplicate_screenshot_report),
+        encoding="utf-8",
+    )
+    assert (
+        "software renderer screenshot checksum does not match"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ] = _write_clean_room_screenshots(tmp_path, "software")
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ][1]["relative_path"] = "../empty.png"
+    report_path.write_text(
+        json.dumps(duplicate_screenshot_report),
+        encoding="utf-8",
+    )
+    assert (
+        "software renderer screenshot path is unsafe"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ] = _write_clean_room_screenshots(tmp_path, "software")
+    missing_screenshot = (
+        tmp_path
+        / duplicate_screenshot_report["renderer_lanes"]["software"][
+            "screenshots"
+        ][1]["relative_path"]
+    )
+    missing_screenshot.unlink()
+    report_path.write_text(
+        json.dumps(duplicate_screenshot_report),
+        encoding="utf-8",
+    )
+    assert (
+        "software renderer screenshot is missing"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    duplicate_screenshot_report["renderer_lanes"]["software"][
+        "screenshots"
+    ] = _write_clean_room_screenshots(tmp_path, "software")
+    duplicate_screenshot_report["python_on_path"] = True
+    report_path.write_text(
+        json.dumps(duplicate_screenshot_report),
+        encoding="utf-8",
+    )
     assert "Python is available on PATH" in verify_clean_room_report(
         report_path,
         expected_source_commit="abc123",
@@ -331,9 +531,6 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     tmp_path,
 ):
-    import hashlib
-    import json
-
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
     archives_dir = tmp_path / "archives"
@@ -396,6 +593,11 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                             "empty",
                             "disconnected",
                         ],
+                        "screenshots": _write_clean_room_screenshots(
+                            tmp_path,
+                            lane,
+                        ),
+                        "screenshots_distinct": True,
                         "clean_exit": True,
                         "errors": [],
                     }
@@ -450,6 +652,11 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
 
     assert certification.clean_room_report_sha256.startswith("sha256:")
     assert (evidence_dir / "release-summary.json").is_file()
+    assert all(
+        (evidence_dir / lane / f"{state}.png").is_file()
+        for lane in ("hardware", "software")
+        for state in ("loading", "empty", "disconnected")
+    )
 
 
 def test_renderer_evidence_retains_both_lanes_environment_and_lock(
@@ -724,11 +931,100 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "compiler_installations" in script
     assert "dependency_cache_paths" in script
     assert "states_match" in script
+    assert "screenshots_distinct" in script
+    assert "$screenshotHashes" in script
     assert "clean_exit" in script
     assert "errors.Count -eq 0" in script
     assert "$pythonInstallations = @(" in script
     assert "$compilerInstallations = @(" in script
     assert "$dependencyCachePaths = @(" in script
+
+
+def test_clean_room_renderer_lane_reset_removes_stale_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the Windows gate")
+
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    lane_dir = evidence_root / "hardware"
+    lane_dir.mkdir()
+    (lane_dir / "smoke-report.json").write_text(
+        '{"stale": true}',
+        encoding="utf-8",
+    )
+    for state in ("loading", "empty", "disconnected"):
+        (lane_dir / f"{state}.png").write_bytes(b"stale")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    monkeypatch.setenv("ISSUE37_CLEAN_ROOM_SCRIPT", str(script_path))
+    monkeypatch.setenv("ISSUE37_EVIDENCE_DIR", str(evidence_root))
+    command = r"""
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $env:ISSUE37_CLEAN_ROOM_SCRIPT,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw "Clean-room script did not parse."
+    }
+    $resetFunction = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Reset-RendererLaneEvidence"
+    }, $true)
+    if ($null -eq $resetFunction) {
+        throw "Reset-RendererLaneEvidence is unavailable."
+    }
+    Invoke-Expression $resetFunction.Extent.Text
+    Reset-RendererLaneEvidence `
+        -EvidenceRoot $env:ISSUE37_EVIDENCE_DIR `
+        -LaneDirectory $env:ISSUE37_LANE_DIR
+    """
+
+    def invoke_reset(target):
+        monkeypatch.setenv("ISSUE37_LANE_DIR", str(target))
+        return subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                command,
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+    completed = invoke_reset(lane_dir)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert lane_dir.is_dir()
+    assert tuple(lane_dir.iterdir()) == ()
+
+    nested_lane = evidence_root / "unrelated" / "hardware"
+    nested_lane.mkdir(parents=True)
+    nested_marker = nested_lane / "must-survive.txt"
+    nested_marker.write_text("preserve", encoding="utf-8")
+    nested_result = invoke_reset(nested_lane)
+    assert nested_result.returncode != 0
+    assert nested_marker.read_text(encoding="utf-8") == "preserve"
+
+    outside_lane = tmp_path / "software"
+    outside_lane.mkdir()
+    outside_marker = outside_lane / "must-survive.txt"
+    outside_marker.write_text("preserve", encoding="utf-8")
+    outside_result = invoke_reset(outside_lane)
+    assert outside_result.returncode != 0
+    assert outside_marker.read_text(encoding="utf-8") == "preserve"
 
 
 def test_package_archive_is_deterministic_and_installable_by_extraction(

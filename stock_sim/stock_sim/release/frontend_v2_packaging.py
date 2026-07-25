@@ -33,6 +33,7 @@ _QML_IMPORT_PATTERN = re.compile(
     r"(?P<version>[0-9]+\.[0-9]+)"
     r"(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$"
 )
+_SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +180,14 @@ class CleanRoomCertification:
     operating_system: str
     architecture: str
     certified_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CleanRoomScreenshotArtifact:
+    state: str
+    relative_path: str
+    sha256: str
+    source_path: Path
 
 
 EXPECTED_TOOLCHAIN = ToolchainVersions(
@@ -883,11 +892,160 @@ def verify_clean_room_report(
             failures.append(
                 f"{lane_name} renderer did not show all required states"
             )
+        _, screenshot_failures = _inspect_clean_room_screenshots(
+            report_path=report_path,
+            lane_name=lane_name,
+            lane=lane,
+            expected_states=tuple(expected_states),
+        )
+        failures.extend(screenshot_failures)
         if lane.get("clean_exit") is not True:
             failures.append(f"{lane_name} renderer did not exit cleanly")
         if lane.get("errors"):
             failures.append(f"{lane_name} renderer reported errors")
     return tuple(failures)
+
+
+def _inspect_clean_room_screenshots(
+    *,
+    report_path: Path,
+    lane_name: str,
+    lane: dict[str, Any],
+    expected_states: tuple[str, ...],
+) -> tuple[
+    tuple[_CleanRoomScreenshotArtifact, ...],
+    tuple[str, ...],
+]:
+    screenshots = lane.get("screenshots")
+    if (
+        not isinstance(screenshots, list)
+        or len(screenshots) != len(expected_states)
+    ):
+        return (), (
+            f"{lane_name} renderer screenshot evidence is incomplete",
+        )
+
+    report_root = report_path.parent.resolve()
+    lane_root = (report_root / lane_name).resolve()
+    artifacts: list[_CleanRoomScreenshotArtifact] = []
+    failures: list[str] = []
+
+    def fail(message: str) -> None:
+        if message not in failures:
+            failures.append(message)
+
+    for expected_state, screenshot in zip(
+        expected_states,
+        screenshots,
+        strict=True,
+    ):
+        if (
+            not isinstance(screenshot, dict)
+            or screenshot.get("state") != expected_state
+        ):
+            fail(f"{lane_name} renderer screenshot evidence is incomplete")
+            continue
+
+        relative_path = screenshot.get("relative_path")
+        if not isinstance(relative_path, str) or not relative_path:
+            fail(f"{lane_name} renderer screenshot path is unsafe")
+            continue
+        candidate = (report_root / relative_path).resolve()
+        try:
+            candidate.relative_to(lane_root)
+        except ValueError:
+            fail(f"{lane_name} renderer screenshot path is unsafe")
+            continue
+        if candidate.suffix.casefold() != ".png":
+            fail(f"{lane_name} renderer screenshot path is unsafe")
+            continue
+
+        declared_sha256 = screenshot.get("sha256")
+        if (
+            not isinstance(declared_sha256, str)
+            or _SHA256_DIGEST_PATTERN.fullmatch(declared_sha256) is None
+        ):
+            fail(f"{lane_name} renderer screenshot digest is invalid")
+            continue
+        if not candidate.is_file():
+            fail(f"{lane_name} renderer screenshot is missing")
+            continue
+
+        observed = _checksum_file(candidate, report_root)
+        if observed.sha256 != declared_sha256:
+            fail(
+                f"{lane_name} renderer screenshot checksum does not match"
+            )
+            continue
+        artifacts.append(
+            _CleanRoomScreenshotArtifact(
+                state=expected_state,
+                relative_path=relative_path,
+                sha256=declared_sha256,
+                source_path=candidate,
+            )
+        )
+
+    if (
+        lane.get("screenshots_distinct") is not True
+        or len(artifacts) != len(expected_states)
+        or len({artifact.sha256 for artifact in artifacts})
+        != len(expected_states)
+    ):
+        fail(f"{lane_name} renderer screenshots are not distinct")
+    return tuple(artifacts), tuple(failures)
+
+
+def _retain_clean_room_screenshots(
+    *,
+    report_path: Path,
+    report_payload: dict[str, Any],
+    evidence_dir: Path,
+) -> None:
+    lanes = report_payload.get("renderer_lanes")
+    if not isinstance(lanes, dict):
+        raise RuntimeError("Renderer lane evidence is unavailable")
+
+    target_root = evidence_dir.resolve()
+    expected_states = ("loading", "empty", "disconnected")
+    artifacts: list[_CleanRoomScreenshotArtifact] = []
+    for lane_name in ("hardware", "software"):
+        lane = lanes.get(lane_name)
+        if not isinstance(lane, dict):
+            raise RuntimeError(
+                f"{lane_name} renderer lane is unavailable"
+            )
+        lane_artifacts, failures = _inspect_clean_room_screenshots(
+            report_path=report_path,
+            lane_name=lane_name,
+            lane=lane,
+            expected_states=expected_states,
+        )
+        if failures:
+            raise RuntimeError(
+                "Clean-room screenshot evidence changed after verification: "
+                + "; ".join(failures)
+            )
+        artifacts.extend(lane_artifacts)
+
+    for artifact in artifacts:
+        target_path = (target_root / artifact.relative_path).resolve()
+        try:
+            target_path.relative_to(target_root)
+        except ValueError as error:
+            raise RuntimeError(
+                "Clean-room screenshot escapes the evidence root: "
+                f"{artifact.relative_path}"
+            ) from error
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if artifact.source_path.resolve() != target_path:
+            shutil.copy2(artifact.source_path, target_path)
+        retained = _checksum_file(target_path, target_root)
+        if retained.sha256 != artifact.sha256:
+            raise RuntimeError(
+                "Retained clean-room screenshot checksum does not match: "
+                f"{artifact.relative_path}"
+            )
 
 
 def write_renderer_evidence(
@@ -1399,6 +1557,11 @@ def certify_frontend_v2_release(
 
     report_payload: dict[str, Any] = json.loads(
         clean_room_report.read_text(encoding="utf-8")
+    )
+    _retain_clean_room_screenshots(
+        report_path=clean_room_report,
+        report_payload=report_payload,
+        evidence_dir=evidence_dir,
     )
     report_checksum = _checksum_file(
         clean_room_report,
