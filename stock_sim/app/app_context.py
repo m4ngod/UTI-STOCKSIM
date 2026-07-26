@@ -37,6 +37,7 @@ from app.features import (
     EvidenceAndFindingsFeature,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
+    LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
     MarketScenarioId,
     ReproductionManifestId,
@@ -76,7 +77,7 @@ class AppContext:
     arena_experiment_runner: ArenaExperimentRunner
     run_monitoring_feature: RunMonitoringFeature
     run_monitoring_context: RunMonitoringContext
-    evidence_and_findings_feature: EvidenceAndFindingsFeature | None
+    evidence_and_findings_feature: EvidenceAndFindingsFeature
     evidence_and_findings_context: EvidenceAndFindingsContext
 
 
@@ -131,6 +132,9 @@ def build_app_context(
         run_monitoring_feature: RunMonitoringFeature = (
             DeterministicFakeRunMonitoringAdapter()
         )
+        evidence_and_findings_feature: EvidenceAndFindingsFeature = (
+            DeterministicFakeEvidenceAndFindingsAdapter()
+        )
     else:
         live_bridge = event_bridge or start_frontend_bridge()
         run_monitoring_feature = LiveRunMonitoringAdapter(
@@ -138,11 +142,10 @@ def build_app_context(
             event_bridge=live_bridge,
             diagnostic_tasks=training_arena_service,
         )
-    evidence_and_findings_feature: EvidenceAndFindingsFeature | None = (
-        DeterministicFakeEvidenceAndFindingsAdapter()
-        if resolved_mode == "fake"
-        else None
-    )
+        evidence_and_findings_feature = LiveEvidenceAndFindingsAdapter(
+            runtime_gateway=runtime_gateway,
+            event_bridge=live_bridge,
+        )
     evidence_and_findings_context = (
         _evidence_and_findings_context_from_environment(
             run_monitoring_context,
@@ -202,8 +205,7 @@ def reset_app_context(
         )
         if previous is not None:
             previous.run_monitoring_feature.close()
-            if previous.evidence_and_findings_feature is not None:
-                previous.evidence_and_findings_feature.close()
+            previous.evidence_and_findings_feature.close()
         return _app_context
 
 

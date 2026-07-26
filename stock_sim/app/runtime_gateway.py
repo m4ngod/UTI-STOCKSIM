@@ -54,6 +54,32 @@ class RuntimeGateway:
             )
         return reader(run_id)
 
+    def get_evidence_and_findings_snapshot(
+        self,
+        run_id: str,
+    ) -> Dict[str, Any] | None:
+        if self._queries is None:
+            raise RuntimeError(
+                "Evidence & Findings query capability is unavailable"
+            )
+        reader = getattr(
+            self._queries,
+            "get_evidence_and_findings_snapshot",
+            None,
+        )
+        if not callable(reader):
+            raise RuntimeError(
+                "Evidence & Findings query capability is unavailable"
+            )
+        result = reader(run_id)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                "Evidence & Findings query returned an invalid record"
+            )
+        return dict(result)
+
     def ensure_desktop_run(self) -> str | None:
         if self._commands is None:
             return self.get_current_run_id()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 try:
@@ -347,6 +349,114 @@ class RuntimeQueryService:
             raise
         finally:
             sess.close()
+
+    def get_evidence_and_findings_snapshot(
+        self,
+        run_id: str,
+    ) -> Dict[str, Any] | None:
+        """Return persisted evidence plus runtime context for the V2 Adapter."""
+
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise RuntimeError("Evidence & Findings run identity is required")
+        runtime = self.get_run_monitoring_snapshot(normalized_run_id)
+        if runtime is None:
+            return None
+
+        metadata: List[Dict[str, Any]] = []
+        if SessionLocal is not None and AgentBinding is not None:
+            try:
+                sess = SessionLocal()
+            except Exception as error:
+                raise RuntimeError(
+                    "Evidence & Findings persistence session is unavailable"
+                ) from error
+            try:
+                bindings = (
+                    sess.query(AgentBinding)
+                    .filter(AgentBinding.run_id == normalized_run_id)
+                    .order_by(
+                        AgentBinding.updated_at.desc(),
+                        AgentBinding.created_at.desc(),
+                        AgentBinding.agent_name.asc(),
+                    )
+                    .all()
+                )
+                for binding in bindings:
+                    parsed = _safe_parse_meta(
+                        getattr(binding, "meta", None)
+                    )
+                    if not parsed:
+                        continue
+                    parsed["_source_version_order"] = (
+                        _source_order_from_datetime(
+                            getattr(binding, "updated_at", None)
+                            or getattr(binding, "created_at", None)
+                        )
+                    )
+                    metadata.append(parsed)
+            except Exception:
+                try:
+                    sess.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                sess.close()
+
+        payload, payload_metadata = _evidence_payload_from_metadata(
+            self,
+            metadata,
+        )
+        record: Dict[str, Any] = dict(payload or {})
+        merged_meta = payload_metadata
+        source_order = merged_meta.get("_source_version_order")
+        if source_order:
+            record.setdefault("_source_version_order", source_order)
+        selection = record.get("selection")
+        if not isinstance(selection, dict):
+            selection = {}
+            record["selection"] = selection
+        selection.setdefault(
+            "campaign_id",
+            merged_meta.get("formal_diagnostic_campaign_id")
+            or merged_meta.get("campaign_id"),
+        )
+        selection.setdefault("run_id", normalized_run_id)
+        selection.setdefault(
+            "strategy_id",
+            payload_metadata.get("strategy_id")
+            or payload_metadata.get("strategy")
+            or payload_metadata.get("model_id")
+            or runtime.get("strategy_id"),
+        )
+        selection.setdefault(
+            "market_scenario_id",
+            runtime.get("scenario_name"),
+        )
+        selection.setdefault(
+            "approved_recipe_id",
+            merged_meta.get("approved_recipe_id"),
+        )
+        selection.setdefault(
+            "reproduction_manifest_id",
+            payload_metadata.get("reproduction_manifest_id")
+            or runtime.get("reproduction_manifest_id"),
+        )
+        record.setdefault("run_id", normalized_run_id)
+        record.setdefault("status", runtime.get("status"))
+        record.setdefault("updated_at", runtime.get("updated_at"))
+        record.setdefault("runtime_context", dict(runtime))
+        context = record.get("read_only_context")
+        if not isinstance(context, dict):
+            record["read_only_context"] = {
+                "market": list(runtime.get("market_context") or []),
+                "account": list(runtime.get("account_context") or []),
+                "positions": list(runtime.get("position_context") or []),
+                "orders": list(runtime.get("order_context") or []),
+                "fills": list(runtime.get("fill_context") or []),
+            }
+        return record
 
     def list_agent_bindings(self, *, include_all_runs: bool = False) -> List[Dict[str, Any]]:
         if SessionLocal is None or AgentBinding is None:
@@ -1027,6 +1137,101 @@ def _safe_parse_meta(raw: str | None) -> Dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _evidence_payload_from_metadata(
+    service: RuntimeQueryService,
+    metadata: List[Dict[str, Any]],
+) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+    for item in metadata:
+        for key in (
+            "evidence_and_findings",
+            "diagnostic_evidence",
+            "evidence_package",
+            "series_evidence_aggregate",
+        ):
+            value = item.get(key)
+            if isinstance(value, dict):
+                return dict(value), item
+        for key in (
+            "evidence_package_path",
+            "diagnostic_evidence_path",
+            "series_evidence_aggregate_path",
+            "report_path",
+        ):
+            value = str(item.get(key) or "").strip()
+            if value:
+                payload, file_order = _read_cached_evidence_payload(
+                    service,
+                    Path(value),
+                )
+                owner = dict(item)
+                owner["_source_version_order"] = file_order
+                return (
+                    payload,
+                    owner,
+                )
+    return None, next(iter(metadata), {})
+
+
+def _read_cached_evidence_payload(
+    service: RuntimeQueryService,
+    path: Path,
+) -> tuple[Dict[str, Any], int]:
+    try:
+        stat = path.stat()
+    except OSError as error:
+        raise RuntimeError(
+            "Persisted Evidence & Findings package is unavailable"
+        ) from error
+    cache = getattr(service, "_evidence_snapshot_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(service, "_evidence_snapshot_cache", cache)
+    cache_key = str(path.resolve())
+    signature = (int(stat.st_mtime_ns), int(stat.st_size))
+    cached = cache.get(cache_key)
+    if (
+        isinstance(cached, tuple)
+        and len(cached) == 2
+        and cached[0] == signature
+        and isinstance(cached[1], str)
+    ):
+        raw = cached[1]
+    else:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError(
+                "Persisted Evidence & Findings package is unreadable"
+            ) from error
+        cache[cache_key] = (signature, raw)
+    try:
+        payload = json.loads(raw)
+    except Exception as error:
+        raise RuntimeError(
+            "Persisted Evidence & Findings package is invalid"
+        ) from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "Persisted Evidence & Findings package must be an object"
+        )
+    return payload, signature[0]
+
+
+def _source_order_from_datetime(value: Any) -> int:
+    if not isinstance(value, datetime):
+        return 0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    value = value.astimezone(timezone.utc)
+    delta = value - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    nanoseconds = (
+        delta.days * 86_400_000_000_000
+        + delta.seconds * 1_000_000_000
+        + delta.microseconds * 1_000
+    )
+    return max(nanoseconds, 1)
 
 
 def _enum_value(value: Any) -> str:

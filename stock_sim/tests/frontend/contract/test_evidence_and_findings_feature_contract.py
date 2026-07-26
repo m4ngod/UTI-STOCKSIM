@@ -20,6 +20,7 @@ from app.features import (
     EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
     FormalDiagnosticCampaignId,
     Freshness,
+    LiveEvidenceAndFindingsAdapter,
     MarketScenarioId,
     ReproductionManifestId,
     StrategyRunId,
@@ -526,7 +527,7 @@ def test_partial_route_identity_is_preserved_without_inventing_metadata(
     composed.evidence_and_findings_feature.close()
 
 
-def test_production_live_composition_does_not_mount_the_fake_evidence_route(
+def test_production_live_composition_mounts_only_the_live_evidence_adapter(
     tmp_path,
 ):
     composed = build_app_context(
@@ -535,8 +536,16 @@ def test_production_live_composition_does_not_mount_the_fake_evidence_route(
         event_bridge=EventBridge(subscribe_backend=False),
     )
 
-    assert composed.evidence_and_findings_feature is None
+    assert isinstance(
+        composed.evidence_and_findings_feature,
+        LiveEvidenceAndFindingsAdapter,
+    )
+    assert not isinstance(
+        composed.evidence_and_findings_feature,
+        DeterministicFakeEvidenceAndFindingsAdapter,
+    )
     composed.run_monitoring_feature.close()
+    composed.evidence_and_findings_feature.close()
 
 
 def test_selection_rejects_swapped_identity_wrappers():

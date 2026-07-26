@@ -76,6 +76,7 @@ from .evidence_and_findings import (
     SensitivityBreakpoint,
     SensitivityBreakpointId,
 )
+from .live_evidence_and_findings import LiveEvidenceAndFindingsAdapter
 from .versioning import (
     ACTIVE_FEATURE_INTERFACES,
     EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
@@ -129,6 +130,7 @@ __all__ = [
     "FormalDiagnosticCampaignId",
     "Freshness",
     "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
     "MarketScenarioId",
     "OrderEvidenceTrace",
     "PauseDiagnosticTask",

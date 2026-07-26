@@ -483,7 +483,10 @@ class _Subscription:
             if self._disposed or state.revision <= self._last_revision:
                 return
             self._last_revision = state.revision
-            observer(state)
+            try:
+                observer(state)
+            except Exception:
+                return
 
 
 class DeterministicFakeEvidenceAndFindingsAdapter:
@@ -730,6 +733,35 @@ class DeterministicFakeEvidenceAndFindingsAdapter:
             ),
             data=replace(data, candidates=candidates),
         )
+
+    def replay_scripted_state(
+        self,
+        context: EvidenceAndFindingsContext,
+        state: EvidenceAndFindingsViewState,
+    ) -> EvidenceAndFindingsViewState:
+        """Accept a scripted state only when revision and generation advance."""
+
+        if state.context != context:
+            raise ValueError("Scripted evidence state must match its context")
+        with self._lock:
+            self._ensure_open()
+            previous = self._states.get(context) or self._loading_state(context)
+            if (
+                state.revision <= previous.revision
+                or state.source.generation.value
+                < previous.source.generation.value
+            ):
+                return previous
+            self._states[context] = state
+            deliveries = tuple(
+                (observer, subscription)
+                for subscribed_context, observer, subscription
+                in self._subscriptions.values()
+                if subscribed_context == context
+            )
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, state)
+        return state
 
     def close(self) -> None:
         with self._lock:
