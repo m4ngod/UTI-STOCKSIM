@@ -421,3 +421,36 @@ def test_report_file_certification_retains_the_bound_aggregate(tmp_path):
     assert json.loads(output_path.read_text(encoding="utf-8")) == json.loads(
         json.dumps(asdict(certification))
     )
+
+
+def test_report_file_certification_normalizes_dataclass_tuple_fields(tmp_path):
+    hardware_path = tmp_path / "hardware.json"
+    software_path = tmp_path / "software.json"
+    hardware_path.write_text(
+        json.dumps(_passing_lane_report("hardware")),
+        encoding="utf-8",
+    )
+    software_path.write_text(
+        json.dumps(_passing_lane_report("software")),
+        encoding="utf-8",
+    )
+    safety = _passing_safety_report()
+    for key in (
+        "adapter_modes",
+        "checked_surfaces",
+        "runtime_test_cases",
+        "findings",
+    ):
+        safety[key] = tuple(safety[key])
+
+    certification = certify_performance_report_files(
+        hardware_path,
+        software_path,
+        safety,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+        output_path=tmp_path / "certification.json",
+    )
+
+    assert certification.status == "certified"
+    assert certification.failures == ()

@@ -458,10 +458,15 @@ def certify_performance_report_files(
 
     hardware_report = _load_report(hardware_report_path)
     software_report = _load_report(software_report_path)
+    normalized_safety = json.loads(
+        json.dumps(safety_report, sort_keys=True)
+    )
+    if not isinstance(normalized_safety, Mapping):
+        raise ValueError("Safety report must be a JSON object")
     certification = certify_performance_evidence(
         hardware_report,
         software_report,
-        safety_report,
+        normalized_safety,
         expected_source_commit=expected_source_commit,
         expected_toolchain_digest=expected_toolchain_digest,
     )
