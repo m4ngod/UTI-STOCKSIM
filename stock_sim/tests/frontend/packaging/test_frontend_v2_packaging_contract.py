@@ -1083,6 +1083,35 @@ def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
     assert "from app.panels" not in rollback_source
 
 
+def test_widgets_rollback_smoke_records_the_source_commit(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from stock_sim.release.frontend_widgets_rollback_entry import (
+        main as rollback_main,
+    )
+
+    report_dir = tmp_path / "widgets-smoke"
+
+    exit_code = rollback_main(
+        [
+            "--source-commit",
+            "abc123",
+            "--smoke-report-dir",
+            str(report_dir),
+        ]
+    )
+
+    report = json.loads(
+        (report_dir / "smoke-report.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 0
+    assert report["source_commit"] == "abc123"
+    assert report["mode"] == "read-only"
+    assert report["clean_exit"] is True
+
+
 def test_widgets_migration_host_accepts_an_isolated_read_only_panel_catalog(
     tmp_path,
 ):

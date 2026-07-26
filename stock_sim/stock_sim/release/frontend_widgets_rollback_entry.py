@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -33,7 +34,7 @@ class ReadOnlyLayoutStore:
                 pass
 
     def get(self) -> dict[str, object]:
-        return json.loads(json.dumps(self._layout))
+        return deepcopy(self._layout)
 
     def save(self, layout: dict[str, object]) -> None:
         self._layout = json.loads(json.dumps(layout))
@@ -54,6 +55,10 @@ def _layout_path(report_dir: Path | None) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke-report-dir", type=Path)
+    parser.add_argument(
+        "--source-commit",
+        default="unbound-interactive",
+    )
     arguments = parser.parse_args(argv)
 
     from PySide6.QtWidgets import QApplication, QLabel
@@ -104,6 +109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     report = {
         "kind": "widgets-rollback",
+        "source_commit": arguments.source_commit,
         "host_class": type(window).__name__,
         "visible": window.isVisible(),
         "opened_panels": window.list_open(),
