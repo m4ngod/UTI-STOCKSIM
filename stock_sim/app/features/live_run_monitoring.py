@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from threading import RLock, Timer, current_thread
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Protocol, TypeVar
 
 from app.event_bridge import (
     EventBridge,
@@ -16,8 +16,6 @@ from app.event_bridge import (
     EventBridgeConnectionState,
     EventBridgeTerminalPhase,
 )
-from app.runtime_gateway import RuntimeGateway
-
 from .run_monitoring import (
     AlertSeverity,
     CancelDiagnosticTask,
@@ -64,6 +62,13 @@ from .versioning import (
 )
 
 
+class _RunMonitoringRuntimeQueries(Protocol):
+    def get_run_monitoring_snapshot(
+        self,
+        run_id: str,
+    ) -> dict[str, Any] | None: ...
+
+
 class _RefreshResult(str, Enum):
     ABORTED = "aborted"
     COMMITTED_NON_TERMINAL = "committed_non_terminal"
@@ -79,7 +84,7 @@ class LiveRunMonitoringAdapter:
     def __init__(
         self,
         *,
-        runtime_gateway: RuntimeGateway,
+        runtime_gateway: _RunMonitoringRuntimeQueries,
         event_bridge: EventBridge,
         diagnostic_tasks: Any | None = None,
         clock: Callable[[], datetime] | None = None,

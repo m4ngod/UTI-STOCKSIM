@@ -3,7 +3,7 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -30,6 +30,11 @@ from stock_sim.release.frontend_v2_packaging import (
     verify_clean_room_report,
     write_package_evidence,
     write_renderer_evidence,
+)
+from stock_sim.release.no_manual_trading_gate import (
+    POLICY_VERSION,
+    REQUIRED_GATE_SURFACES,
+    audit_no_manual_trading_gate,
 )
 
 
@@ -325,6 +330,15 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
         (plan.distribution_dir / plan.executable_name).write_bytes(
             plan.kind.value.encode("utf-8")
         )
+        plan.nuitka_report.write_text(
+            (
+                '<nuitka-compilation-report mode="standalone" '
+                'completion="yes">'
+                '<module name="app.features.run_monitoring" />'
+                "</nuitka-compilation-report>"
+            ),
+            encoding="utf-8",
+        )
     qml_marker = (
         plans[1].distribution_dir
         / "PySide6"
@@ -347,6 +361,13 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
     assert evidence.qml_journey.kind is PackageKind.QML_JOURNEY
     assert evidence.widgets_rollback.tree_sha256.startswith("sha256:")
     assert evidence.qml_journey.tree_sha256.startswith("sha256:")
+    assert {
+        report.relative_path
+        for report in evidence.dependency_reports
+    } == {
+        "qml-journey/nuitka-report.xml",
+        "widgets-rollback/nuitka-report.xml",
+    }
     manifest = tmp_path / "evidence" / "dependency-manifest.json"
     checksums = tmp_path / "evidence" / "SHA256SUMS.txt"
     assert manifest.is_file()
@@ -548,10 +569,57 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
         "sha256:"
         + hashlib.sha256(widgets_archive.read_bytes()).hexdigest()
     )
+    packages_dir = tmp_path / "packages"
+    dependency_reports = []
+    safe_dependency_xml_by_kind = {
+        "widgets-rollback": (
+            '<nuitka-compilation-report mode="standalone" '
+            'completion="yes">'
+            '<module name="frontend_widgets_rollback_entry" />'
+            "</nuitka-compilation-report>"
+        ),
+        "qml-journey": (
+            '<nuitka-compilation-report mode="standalone" '
+            'completion="yes">'
+            '<module name="app.features.run_monitoring" />'
+            "</nuitka-compilation-report>"
+        ),
+    }
+    for kind in ("widgets-rollback", "qml-journey"):
+        dependency_report = packages_dir / kind / "nuitka-report.xml"
+        dependency_report.parent.mkdir(parents=True)
+        dependency_report.write_text(
+            safe_dependency_xml_by_kind[kind],
+            encoding="utf-8",
+        )
+        dependency_reports.append(
+            {
+                "relative_path": (
+                    dependency_report.relative_to(packages_dir).as_posix()
+                ),
+                "size_bytes": dependency_report.stat().st_size,
+                "sha256": (
+                    "sha256:"
+                    + hashlib.sha256(
+                        dependency_report.read_bytes()
+                    ).hexdigest()
+                ),
+            }
+        )
+    safety_evidence = asdict(
+        audit_no_manual_trading_gate(
+            PROJECT_ROOT,
+            source_commit="abc123",
+        )
+    )
     (evidence_dir / "release-candidate-summary.json").write_text(
         json.dumps(
             {
                 "source_commit": "abc123",
+                "safety": safety_evidence,
+                "packages": {
+                    "dependency_reports": dependency_reports,
+                },
                 "archives": [
                     {
                         "relative_path": qml_archive.name,
@@ -632,6 +700,32 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
 
     compromised["renderer_lanes"]["software"]["errors"] = []
     report.write_text(json.dumps(compromised), encoding="utf-8")
+    qml_dependency_report = (
+        packages_dir / "qml-journey" / "nuitka-report.xml"
+    )
+    qml_dependency_report.write_text(
+        (
+            '<nuitka-compilation-report mode="standalone" '
+            'completion="yes"><module name="services.order_service" />'
+            "</nuitka-compilation-report>"
+        ),
+        encoding="utf-8",
+    )
+    try:
+        certify_frontend_v2_release(
+            output_root=tmp_path,
+            source_commit="abc123",
+            clean_room_report=report,
+        )
+    except RuntimeError as error:
+        assert "dependency report checksum does not match" in str(error)
+    else:
+        raise AssertionError("Tampered dependency report was accepted")
+    qml_dependency_report.write_text(
+        safe_dependency_xml_by_kind["qml-journey"],
+        encoding="utf-8",
+    )
+
     qml_archive.write_bytes(b"tampered")
     try:
         certify_frontend_v2_release(
@@ -728,7 +822,15 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
         """
         <nuitka-compilation-report mode="standalone" completion="yes">
           <module name="app.features.run_monitoring" />
+          <module name="app.features.live_run_monitoring" />
           <module name="app.ui.journey_workspace" />
+          <module name="app.ui.accessibility" />
+          <module name="app.ui.evidence_chart" />
+          <module name="app.event_bridge" />
+          <module name="app.core_dto.snapshot" />
+          <module name="app.services.redis_subscriber" />
+          <module name="infra.event_bus" />
+          <module name="observability.metrics" />
           <data-file name="app/ui/qml/JourneyWorkspace.qml" />
         </nuitka-compilation-report>
         """,
@@ -739,6 +841,9 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
         """
         <nuitka-compilation-report mode="standalone" completion="yes">
           <module name="app.panels.orders" />
+          <module name="app.services.trading_service" />
+          <module name="services.order_service" />
+          <module name="stock_sim.persistence.models_order" />
           <module name="PySide6.QtWebEngineCore" />
         </nuitka-compilation-report>
         """,
@@ -754,6 +859,18 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
         package_kind=PackageKind.QML_JOURNEY,
     )
     assert any("app.panels.orders" in finding for finding in unsafe_findings)
+    assert any(
+        "app.services.trading_service" in finding
+        for finding in unsafe_findings
+    )
+    assert any(
+        "services.order_service" in finding
+        for finding in unsafe_findings
+    )
+    assert any(
+        "stock_sim.persistence.models_order" in finding
+        for finding in unsafe_findings
+    )
     assert any("QtWebEngineCore" in finding for finding in unsafe_findings)
     assert audit_frontend_v2_surface() == ()
 

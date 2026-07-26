@@ -20,6 +20,13 @@ from typing import Any, Sequence
 import xml.etree.ElementTree as ET
 import zipfile
 
+from stock_sim.release.no_manual_trading_gate import (
+    NoManualTradingGateReport,
+    audit_no_manual_trading_gate,
+    qml_source_inventory,
+    verify_safety_gate_payload,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_QML_ROOT = PROJECT_ROOT / "app" / "ui" / "qml"
@@ -34,6 +41,28 @@ _QML_IMPORT_PATTERN = re.compile(
     r"(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$"
 )
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
+    "services",
+    "stock_sim.services",
+    "persistence",
+    "stock_sim.persistence",
+    "app.runtime_gateway",
+    "app.app_context",
+    "app.controllers",
+    "app.panels",
+    "app.ui.adapters",
+    "core.order",
+    "stock_sim.core.order",
+)
+_QML_ALLOWED_APP_MODULE_PREFIXES = (
+    "app.core_dto",
+    "app.event_bridge",
+    "app.features",
+    "app.services.redis_subscriber",
+    "app.ui.accessibility",
+    "app.ui.evidence_chart",
+    "app.ui.journey_workspace",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +171,7 @@ class PackageEvidence:
     qml_delta_bytes: int
     qml_delta_limit_bytes: int
     webengine_files: tuple[str, ...]
+    dependency_reports: tuple[ArtifactChecksum, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +197,7 @@ class RendererGateEvidence:
 class ReleaseBuildResult:
     source_commit: str
     output_root: str
+    safety: NoManualTradingGateReport
     packages: PackageEvidence
     renderers: RendererGateEvidence
     archives: tuple[ArtifactChecksum, ...]
@@ -329,7 +360,7 @@ def toolchain_evidence_identity(
 def scan_qml_dependencies(
     qml_root: Path,
 ) -> QmlDependencyManifest:
-    qml_files = tuple(sorted(qml_root.rglob("*.qml")))
+    qml_files = qml_source_inventory(qml_root)
     if not qml_files:
         raise ValueError(f"No QML sources found under {qml_root}")
 
@@ -719,6 +750,17 @@ def write_package_evidence(
             + ", ".join(webengine_files)
         )
     lock = load_toolchain_lock()
+    package_roots = {
+        plan.output_root.parent.resolve()
+        for plan in plans
+    }
+    if len(package_roots) != 1:
+        raise ValueError("Package plans must share one package root")
+    packages_root = package_roots.pop()
+    dependency_reports = tuple(
+        _checksum_file(plan.nuitka_report, packages_root)
+        for plan in sorted(plans, key=lambda item: item.kind.value)
+    )
     evidence = PackageEvidence(
         source_commit=source_commit,
         toolchain_identity=toolchain_evidence_identity(lock),
@@ -727,6 +769,7 @@ def write_package_evidence(
         qml_delta_bytes=qml_delta_bytes,
         qml_delta_limit_bytes=MAX_QML_DELTA_BYTES,
         webengine_files=webengine_files,
+        dependency_reports=dependency_reports,
     )
     evidence_dir.mkdir(parents=True, exist_ok=True)
     manifest_payload = {
@@ -743,6 +786,9 @@ def write_package_evidence(
         "qml_delta_bytes": qml_delta_bytes,
         "qml_delta_limit_bytes": MAX_QML_DELTA_BYTES,
         "webengine_files": webengine_files,
+        "dependency_reports": tuple(
+            asdict(report) for report in dependency_reports
+        ),
     }
     (evidence_dir / "dependency-manifest.json").write_text(
         json.dumps(
@@ -1160,16 +1206,26 @@ def audit_nuitka_dependency_report(
         if package_kind is PackageKind.QML_JOURNEY and folded.startswith(
             "app."
         ):
-            allowed = (
-                folded.startswith("app.features")
-                or folded == "app.ui"
-                or folded == "app.ui.journey_workspace"
+            allowed = folded == "app.ui" or any(
+                folded == prefix or folded.startswith(prefix + ".")
+                for prefix in _QML_ALLOWED_APP_MODULE_PREFIXES
             )
             if not allowed:
                 findings.append(
                     "Forbidden non-V2 application module in dependency graph: "
                     f"{module_name}"
                 )
+        if (
+            package_kind is PackageKind.QML_JOURNEY
+            and any(
+                folded == prefix or folded.startswith(prefix + ".")
+                for prefix in _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES
+            )
+        ):
+            findings.append(
+                "Forbidden backend transaction module in QML dependency "
+                f"graph: {module_name}"
+            )
         if package_kind is PackageKind.WIDGETS_ROLLBACK and folded.startswith(
             (
                 "app.app_context",
@@ -1200,48 +1256,17 @@ def audit_nuitka_dependency_report(
     return tuple(dict.fromkeys(findings))
 
 
-def audit_frontend_v2_surface() -> tuple[str, ...]:
-    findings = []
-    qml_sources = tuple(sorted(PROJECT_QML_ROOT.rglob("*.qml")))
-    for source in qml_sources:
+def audit_frontend_v2_surface(
+    report: NoManualTradingGateReport | None = None,
+) -> tuple[str, ...]:
+    if report is None:
+        report = audit_no_manual_trading_gate(PROJECT_ROOT)
+    findings = list(report.findings)
+    for source in qml_source_inventory(PROJECT_QML_ROOT):
         content = source.read_text(encoding="utf-8")
-        if re.search(
-            r"^\s*(?:Button|Action|Shortcut)\s*\{",
-            content,
-            re.MULTILINE,
-        ):
-            findings.append(
-                f"Interactive action surface found in {source.name}"
-            )
         if re.search(r"^\s*import\s+QtWeb", content, re.MULTILINE):
             findings.append(f"Web QML import found in {source.name}")
-
-    python_sources = (
-        PROJECT_ROOT
-        / "stock_sim"
-        / "release"
-        / "frontend_v2_package_entry.py",
-        PROJECT_ROOT
-        / "stock_sim"
-        / "release"
-        / "frontend_widgets_rollback_entry.py",
-        PROJECT_ROOT / "app" / "features" / "run_monitoring.py",
-        PROJECT_ROOT / "app" / "ui" / "journey_workspace.py",
-    )
-    forbidden_identifier = re.compile(
-        r"\b(?:submit_order|cancel_order|replace_order|bulk_order|"
-        r"place_order|buy|sell|dispatch)\b",
-        re.IGNORECASE,
-    )
-    for source in python_sources:
-        content = source.read_text(encoding="utf-8")
-        match = forbidden_identifier.search(content)
-        if match is not None:
-            findings.append(
-                f"Forbidden transaction identifier {match.group(0)!r} "
-                f"found in {source.name}"
-            )
-    return tuple(findings)
+    return tuple(dict.fromkeys(findings))
 
 
 def create_deterministic_package_archive(
@@ -1313,16 +1338,20 @@ def build_frontend_v2_release(
             f"Release output directory is not empty: {output_root}"
         )
     output_root.mkdir(parents=True, exist_ok=True)
+    safety_evidence = audit_no_manual_trading_gate(
+        PROJECT_ROOT,
+        source_commit=source_commit,
+    )
+    surface_findings = audit_frontend_v2_surface(safety_evidence)
+    if not safety_evidence.passed or surface_findings:
+        raise RuntimeError(
+            "Frontend V2 safety gate failed: "
+            + "; ".join(surface_findings)
+        )
     plans = create_package_build_plans(
         output_root=output_root / "packages",
         source_commit=source_commit,
     )
-    surface_findings = audit_frontend_v2_surface()
-    if surface_findings:
-        raise RuntimeError(
-            "Frontend V2 surface audit failed: "
-            + "; ".join(surface_findings)
-        )
 
     for plan in plans:
         subprocess.run(
@@ -1388,6 +1417,7 @@ def build_frontend_v2_release(
     result = ReleaseBuildResult(
         source_commit=source_commit,
         output_root=str(output_root.resolve()),
+        safety=safety_evidence,
         packages=package_evidence,
         renderers=renderer_evidence,
         archives=archives,
@@ -1467,6 +1497,81 @@ def verify_release_source(
             )
 
 
+def verify_packaged_dependency_evidence(
+    candidate: dict[str, Any],
+    *,
+    output_root: Path,
+) -> tuple[str, ...]:
+    packages = candidate.get("packages")
+    if not isinstance(packages, dict):
+        return ("Packaged dependency evidence is unavailable",)
+    retained_reports = packages.get("dependency_reports")
+    if not isinstance(retained_reports, list):
+        return ("Packaged dependency report inventory is unavailable",)
+
+    expected_paths = {
+        f"{kind.value}/nuitka-report.xml"
+        for kind in PackageKind
+    }
+    packages_root = (output_root / "packages").resolve()
+    observed_paths: set[str] = set()
+    findings: list[str] = []
+    for retained_report in retained_reports:
+        if not isinstance(retained_report, dict):
+            findings.append(
+                "Packaged dependency report inventory is invalid"
+            )
+            continue
+        relative_path = str(retained_report.get("relative_path", ""))
+        observed_paths.add(relative_path)
+        report_path = (packages_root / relative_path).resolve()
+        try:
+            report_path.relative_to(packages_root)
+        except ValueError:
+            findings.append(
+                f"Dependency report escapes package root: {relative_path}"
+            )
+            continue
+        if not report_path.is_file():
+            findings.append(
+                f"Dependency report is unavailable: {relative_path}"
+            )
+            continue
+        observed = _checksum_file(report_path, packages_root)
+        if (
+            observed.sha256 != retained_report.get("sha256")
+            or observed.size_bytes
+            != retained_report.get("size_bytes")
+        ):
+            findings.append(
+                "dependency report checksum does not match candidate "
+                f"evidence: {relative_path}"
+            )
+            continue
+        try:
+            package_kind = PackageKind(relative_path.split("/", 1)[0])
+        except ValueError:
+            findings.append(
+                f"Dependency report package kind is invalid: {relative_path}"
+            )
+            continue
+        dependency_findings = audit_nuitka_dependency_report(
+            report_path,
+            package_kind=package_kind,
+        )
+        findings.extend(
+            f"{package_kind.value}: {finding}"
+            for finding in dependency_findings
+        )
+    if observed_paths != expected_paths:
+        findings.append(
+            "Packaged dependency report inventory does not match the "
+            f"release pair: expected {sorted(expected_paths)!r}, "
+            f"observed {sorted(observed_paths)!r}"
+        )
+    return tuple(dict.fromkeys(findings))
+
+
 def certify_frontend_v2_release(
     *,
     output_root: Path,
@@ -1485,6 +1590,24 @@ def certify_frontend_v2_release(
     if candidate.get("source_commit") != source_commit:
         raise RuntimeError(
             "Release candidate source commit does not match certification"
+        )
+    safety_failures = verify_safety_gate_evidence(
+        candidate,
+        expected_source_commit=source_commit,
+    )
+    if safety_failures:
+        raise RuntimeError(
+            "Safety gate certification failed: "
+            + "; ".join(safety_failures)
+        )
+    dependency_failures = verify_packaged_dependency_evidence(
+        candidate,
+        output_root=output_root,
+    )
+    if dependency_failures:
+        raise RuntimeError(
+            "Dependency audit certification failed: "
+            + "; ".join(dependency_failures)
         )
     retained_archives = candidate.get("archives", ())
     if not isinstance(retained_archives, list):
@@ -1591,6 +1714,39 @@ def certify_frontend_v2_release(
         encoding="utf-8",
     )
     return certification
+
+
+def verify_safety_gate_evidence(
+    candidate: dict[str, Any],
+    *,
+    expected_source_commit: str,
+) -> tuple[str, ...]:
+    findings = list(
+        verify_safety_gate_payload(
+            candidate,
+            expected_source_commit=expected_source_commit,
+        )
+    )
+    if findings:
+        return tuple(findings)
+    observed = audit_no_manual_trading_gate(
+        PROJECT_ROOT,
+        source_commit=expected_source_commit,
+    )
+    findings.extend(
+        verify_safety_gate_payload(
+            candidate,
+            expected_source_commit=expected_source_commit,
+            expected_source_digest=observed.source_digest,
+        )
+    )
+    safety = candidate.get("safety")
+    expected_payload = json.loads(json.dumps(asdict(observed)))
+    if safety != expected_payload:
+        findings.append(
+            "Safety gate evidence does not match the freshly audited report"
+        )
+    return tuple(dict.fromkeys(findings))
 
 
 def _run_packaged_smoke(
@@ -1707,6 +1863,7 @@ __all__ = [
     "load_toolchain_lock",
     "main",
     "toolchain_evidence_identity",
+    "verify_safety_gate_evidence",
     "verify_clean_room_report",
     "verify_running_toolchain",
 ]

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from threading import RLock, current_thread
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from app.event_bridge import (
     EventBridge,
@@ -15,8 +15,6 @@ from app.event_bridge import (
     EventBridgeConnectionPhase,
     EventBridgeConnectionState,
 )
-from app.runtime_gateway import RuntimeGateway
-
 from .evidence_and_findings import (
     CandidateEvidence,
     DependencyProvenance,
@@ -62,6 +60,13 @@ from .versioning import (
     EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
     FeatureInterfaceVersion,
 )
+
+
+class _EvidenceAndFindingsRuntimeQueries(Protocol):
+    def get_evidence_and_findings_snapshot(
+        self,
+        run_id: str,
+    ) -> dict[str, Any] | None: ...
 
 
 class _LiveEvidenceSubscription:
@@ -118,7 +123,7 @@ class LiveEvidenceAndFindingsAdapter:
     def __init__(
         self,
         *,
-        runtime_gateway: RuntimeGateway,
+        runtime_gateway: _EvidenceAndFindingsRuntimeQueries,
         event_bridge: EventBridge,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
