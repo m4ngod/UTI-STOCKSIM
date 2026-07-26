@@ -1,0 +1,110 @@
+{
+  "adapter_modes": [
+    "deterministic_fake",
+    "live"
+  ],
+  "checked_surfaces": [
+    "feature_interfaces",
+    "qml_adapter_slots",
+    "qml_object_tree",
+    "journey_navigation",
+    "shortcut_allowlist",
+    "telemetry_registry",
+    "runtime_dispatch_live",
+    "runtime_dispatch_deterministic_fake",
+    "read_only_diagnostic_context",
+    "release_blocking"
+  ],
+  "feature_members": [
+    [
+      "EvidenceAndFindingsFeature",
+      [
+        "close",
+        "interface_version",
+        "snapshot",
+        "subscribe"
+      ]
+    ],
+    [
+      "RunMonitoringFeature",
+      [
+        "cancel_diagnostic_task",
+        "close",
+        "interface_version",
+        "pause_diagnostic_task",
+        "resume_diagnostic_task",
+        "snapshot",
+        "subscribe"
+      ]
+    ]
+  ],
+  "findings": [],
+  "policy_version": "frontend-v2-no-manual-trading-v1",
+  "qml_adapter_slots": [
+    [
+      "EvidenceAndFindingsQtAdapter",
+      [
+        "selectCandidate",
+        "selectChartBreakpoint",
+        "selectChartOverlay",
+        "selectChartPointAtRatio",
+        "selectFinding",
+        "setActiveTab",
+        "setEvidenceFilter",
+        "setSortOrder",
+        "setViewportIntent",
+        "stepChartPoint"
+      ]
+    ],
+    [
+      "RunMonitoringQtAdapter",
+      [
+        "cancelDiagnosticTask",
+        "pauseDiagnosticTask",
+        "refresh",
+        "resumeDiagnosticTask"
+      ]
+    ]
+  ],
+  "routes": [
+    "evidence_and_findings",
+    "run_monitoring"
+  ],
+  "runtime_gateway_calls": [
+    [
+      "LiveEvidenceAndFindingsAdapter",
+      [
+        "get_evidence_and_findings_snapshot"
+      ]
+    ],
+    [
+      "LiveRunMonitoringAdapter",
+      [
+        "get_run_monitoring_snapshot"
+      ]
+    ]
+  ],
+  "runtime_test_cases": [
+    "test_live_cancel_diagnostic_task_cannot_reach_order_cancellation",
+    "test_order_and_fill_evidence_renders_only_as_non_editable_context[deterministic_fake]",
+    "test_order_and_fill_evidence_renders_only_as_non_editable_context[live]",
+    "test_qml_object_tree_navigation_and_runtime_surface_are_safe[deterministic_fake]",
+    "test_qml_object_tree_navigation_and_runtime_surface_are_safe[live]"
+  ],
+  "runtime_test_exit_code": 0,
+  "runtime_test_file_digest": "sha256:17b1d389ac1522fb952f7245e2c77c8f4e638316cdd60cd8f4672b4a7ee5187c",
+  "schema_version": 1,
+  "shortcut_keys": [
+    "End",
+    "Enter",
+    "Home",
+    "Left",
+    "Return",
+    "Right",
+    "Space"
+  ],
+  "source_commit": "b4170ac12d4784a5799edde87bbef23f3e352e66",
+  "source_digest": "sha256:41de8042d251254e625ac98a3dda934188b876c9c1f48cfce44b559327b07050",
+  "status": "passed",
+  "telemetry_events": []
+}

@@ -1,0 +1,11 @@
+{
+  "failures": [],
+  "fixture_digest": "sha256:ac6db8ca855a68fff0cd921a65cff4784b29adbeb96f4ea6c9c38a1e59f28e02",
+  "hardware_report_digest": "sha256:a5b3aad053bb9a111afab68df411394c4e7d1bb3d345cf44e589aaee07f3aa47",
+  "safety_report_digest": "sha256:5516b01d4185e88e9d17a7a61946586119505f729031e7ac7a789137e0320d27",
+  "schema_version": 1,
+  "software_report_digest": "sha256:cf0d2db8c4e5f8ba9b7285914c92e844b4c4958d4eba38037e5641338100043e",
+  "source_commit": "b4170ac12d4784a5799edde87bbef23f3e352e66",
+  "status": "certified",
+  "toolchain_lock_digest": "sha256:f53b1b7245e48a33420ee7a2657c7d7bedc35a61cefbe0fc86ce0a1232bfaf1f"
+}
