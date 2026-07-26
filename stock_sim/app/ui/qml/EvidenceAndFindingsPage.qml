@@ -26,6 +26,12 @@ Item {
     readonly property var secondFindingControl: findingRepeater.count > 1
         ? findingRepeater.itemAt(1)
         : null
+    readonly property var firstTabControl: tabRepeater.count > 0
+        ? tabRepeater.itemAt(0)
+        : null
+    readonly property var secondTabControl: tabRepeater.count > 1
+        ? tabRepeater.itemAt(1)
+        : null
 
     function ensureItemVisible(item) {
         if (item === null || !evidenceScroll.visible)
@@ -360,6 +366,7 @@ Item {
                         }
 
                         Repeater {
+                            id: tabRepeater
                             objectName: "evidenceTabRepeater"
                             model: [
                                 "findings",

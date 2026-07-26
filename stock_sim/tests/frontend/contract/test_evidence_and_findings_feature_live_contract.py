@@ -375,6 +375,69 @@ def test_live_adapter_maps_explicit_chart_source_without_mutating_payload():
     adapter.close()
 
 
+def test_live_adapter_reuses_digest_identified_immutable_evidence_payload():
+    adapter, bridge, queries = _live_adapter()
+    context = _selected_context()
+    queries.record["content_digest"] = f"sha256:{'a' * 64}"
+    queries.record["candidates"][0]["chart"] = {
+        "identity": "LIVE-B17-diagnostic-series",
+        "label": "Live normalized outcome path",
+        "unit": "normalized evidence value",
+        "values": [100.0, 101.5, 99.25, 103.0],
+        "overlays": [
+            {
+                "identity": "OV-LIVE-LOW",
+                "label": "Lower threshold",
+                "axis": "horizontal",
+                "coordinate": 99.5,
+                "interpretation": "Lower evidence threshold.",
+                "evidence_ids": ["E-LIVE-RETURN-BASE"],
+            }
+        ],
+    }
+    initial = adapter.snapshot(context)
+    initial_data = initial.last_reliable_data
+    assert initial_data is not None
+
+    queries.record["revision"] = 8
+    queries.record["updated_at"] = (NOW + timedelta(seconds=1)).isoformat()
+    bridge.on_snapshot({"run_id": "RUN-001"})
+    bridge.flush(force=True)
+    unchanged = adapter.snapshot(context)
+
+    assert unchanged.revision == initial.revision + 1
+    assert unchanged.last_reliable_data is initial_data
+
+    queries.record["revision"] = 9
+    queries.record["content_digest"] = f"sha256:{'b' * 64}"
+    queries.record["candidates"][0]["chart"]["values"][-1] = 104.0
+    bridge.on_snapshot({"run_id": "RUN-001"})
+    bridge.flush(force=True)
+    changed = adapter.snapshot(context)
+
+    assert changed.revision == unchanged.revision + 1
+    assert changed.last_reliable_data is not initial_data
+    assert changed.last_reliable_data is not None
+    assert changed.last_reliable_data.candidates[0].chart is not None
+    assert changed.last_reliable_data.candidates[0].chart.values[-1] == 104.0
+
+    adapter.close()
+
+
+def test_live_adapter_rejects_malformed_content_digest():
+    adapter, _bridge, queries = _live_adapter()
+    queries.record["content_digest"] = "sha256:not-a-digest"
+
+    state = adapter.snapshot(_selected_context())
+
+    assert state.phase is ViewPhase.FAILED
+    assert state.presentation is EvidenceAndFindingsPresentationState.FAILED
+    assert state.last_reliable_data is None
+    assert state.error is not None
+    assert state.error.code == "evidence_and_findings_mapping_failed"
+    adapter.close()
+
+
 def test_live_adapter_rejects_malformed_explicit_chart_payload():
     adapter, _bridge, queries = _live_adapter()
     queries.record["candidates"][0]["chart"] = "not-a-chart"

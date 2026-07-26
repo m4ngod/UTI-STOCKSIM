@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
+from re import sub
 
 from app.features import (
     CandidateEvidence,
@@ -241,9 +242,41 @@ class EvidenceChartFrameGate:
             due_in_ns=self._due_in_ns(now_ns),
         )
 
+    def offer_metadata(
+        self,
+        frame: EvidenceChartRenderFrame,
+        *,
+        now_ns: int,
+    ) -> EvidenceChartFrameGateResult:
+        """Commit a newer revision that does not change chart paint work."""
+
+        if self._pending is not None or self._queued_after_terminal is not None:
+            return EvidenceChartFrameGateResult(
+                accepted=False,
+                committed=(),
+                due_in_ns=self._due_in_ns(now_ns),
+            )
+        if frame.revision <= self._highest_revision:
+            return EvidenceChartFrameGateResult(
+                accepted=False,
+                committed=(),
+                due_in_ns=None,
+            )
+        self._highest_revision = frame.revision
+        self._committed_revision = frame.revision
+        return EvidenceChartFrameGateResult(
+            accepted=True,
+            committed=(frame,),
+            due_in_ns=None,
+        )
+
     @property
     def committedRevision(self) -> int:  # noqa: N802
         return self._committed_revision
+
+    @property
+    def max_frames_per_second(self) -> int:
+        return 1_000_000_000 // self._minimum_interval_ns
 
     @property
     def pendingRevision(self) -> int:  # noqa: N802
@@ -626,6 +659,49 @@ def build_evidence_chart_presentation(
     )
 
 
+def advance_evidence_chart_presentation_revision(
+    presentation: EvidenceChartPresentation,
+    state: EvidenceAndFindingsViewState,
+) -> EvidenceChartPresentation:
+    """Advance revision metadata while retaining immutable chart geometry."""
+    terminal = (
+        state.phase is ViewPhase.FAILED
+        or state.presentation is EvidenceAndFindingsPresentationState.FAILED
+        or (
+            state.phase is ViewPhase.READY
+            and state.completeness is Completeness.COMPLETE
+        )
+    )
+    sample = presentation.sample
+    if sample is not None:
+        sample = replace(
+            sample,
+            key=replace(sample.key, revision=state.revision),
+        )
+    marker = f"Accepted evidence revision · r{state.revision}"
+
+    def advance_marker(text: str) -> str:
+        return sub(
+            r"Accepted evidence revision · r\d+",
+            marker,
+            text,
+            count=1,
+        )
+
+    return replace(
+        presentation,
+        frame=replace(
+            presentation.frame,
+            revision=state.revision,
+            terminal=terminal,
+        ),
+        sample=sample,
+        narrative_text=advance_marker(presentation.narrative_text),
+        table_text=advance_marker(presentation.table_text),
+        accessible_text=advance_marker(presentation.accessible_text),
+    )
+
+
 def _selected_finding(
     candidate: CandidateEvidence,
     selected_identity: str,
@@ -725,6 +801,7 @@ def _chart_source_identity(
 
 
 __all__ = [
+    "advance_evidence_chart_presentation_revision",
     "DeterministicEvidenceChartSampler",
     "EvidenceChartFrameGate",
     "EvidenceChartFrameGateResult",

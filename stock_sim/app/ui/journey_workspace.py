@@ -51,6 +51,7 @@ from .evidence_chart import (
     EvidenceChartRenderFrame,
     EvidenceChartSamplingPolicy,
     EvidenceChartViewport,
+    advance_evidence_chart_presentation_revision,
     build_evidence_chart_presentation,
 )
 
@@ -439,6 +440,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
     stateChanged = Signal()
     localStateChanged = Signal()
     chartPresentationChanged = Signal()
+    chartGeometryChanged = Signal()
     chartInteractionChanged = Signal()
     deliveryRequested = Signal(int, object)
 
@@ -512,10 +514,22 @@ class EvidenceAndFindingsQtAdapter(QObject):
             return
         if state.context != self._context or state.revision <= self._state.revision:
             return
+        previous_state = self._state
         self._state = state
         self._repair_local_selection()
+        if (
+            state.context == previous_state.context
+            and state.source == previous_state.source
+            and state.last_reliable_data is previous_state.last_reliable_data
+        ):
+            presentation = advance_evidence_chart_presentation_revision(
+                self._chart_presentation,
+                state,
+            )
+        else:
+            presentation = self._build_chart_presentation()
         self._offer_chart_presentation(
-            self._build_chart_presentation(),
+            presentation,
             local=False,
         )
         self.stateChanged.emit()
@@ -696,24 +710,24 @@ class EvidenceAndFindingsQtAdapter(QObject):
     def chartAcceptedRevisionText(self) -> str:  # noqa: N802
         return f"r{self.chartAcceptedRevision}"
 
-    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(str, notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartSourceIdentity(self) -> str:  # noqa: N802
         return self._chart_presentation.source_identity
 
-    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(int, notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartSourcePointCount(self) -> int:  # noqa: N802
         return self._chart_presentation.source_point_count
 
-    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(int, notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartVisiblePointCount(self) -> int:  # noqa: N802
         sample = self._chart_presentation.sample
         return 0 if sample is None else len(sample.points)
 
-    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(int, notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartOverlayCount(self) -> int:  # noqa: N802
         return len(self._chart_presentation.overlay_identities)
 
-    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(str, notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartSamplingPolicy(self) -> str:  # noqa: N802
         sample = self._chart_presentation.sample
         return (
@@ -734,11 +748,11 @@ class EvidenceAndFindingsQtAdapter(QObject):
     def chartAccessibleText(self) -> str:  # noqa: N802
         return self._chart_presentation.accessible_text
 
-    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property("QVariantList", notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartOverlayIdentities(self) -> list[str]:  # noqa: N802
         return list(self._chart_presentation.overlay_identities)
 
-    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property("QVariantList", notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartOverlayModels(self) -> list[dict[str, object]]:  # noqa: N802
         frame = self._chart_presentation.frame
         return [
@@ -753,7 +767,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
             for item in frame.overlays
         ]
 
-    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property("QVariantList", notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartNormalizedPoints(self) -> list[QPointF]:  # noqa: N802
         sample = self._chart_presentation.sample
         if sample is None:
@@ -1023,11 +1037,14 @@ class EvidenceAndFindingsQtAdapter(QObject):
 
     @Slot(str)
     def setActiveTab(self, value: str) -> None:  # noqa: N802
-        self._set_local(
-            "_active_tab",
-            value,
-            {"findings", "assumptions", "provenance", "context"},
-        )
+        if (
+            value
+            not in {"findings", "assumptions", "provenance", "context"}
+            or value == self._active_tab
+        ):
+            return
+        self._active_tab = value
+        self.localStateChanged.emit()
 
     @Slot(str)
     def setViewportIntent(self, value: str) -> None:  # noqa: N802
@@ -1087,6 +1104,17 @@ class EvidenceAndFindingsQtAdapter(QObject):
                 now_ns=now_ns,
             )
             if local
+            else self._chart_frame_gate.offer_metadata(
+                presentation.frame,
+                now_ns=now_ns,
+            )
+            if (
+                not self._pending_chart_presentations[:-1]
+                and self._same_chart_paint_work(
+                    self._chart_presentation,
+                    presentation,
+                )
+            )
             else self._chart_frame_gate.offer(
                 presentation.frame,
                 now_ns=now_ns,
@@ -1115,8 +1143,20 @@ class EvidenceAndFindingsQtAdapter(QObject):
                 presentation_index
             ]
             del self._pending_chart_presentations[: presentation_index + 1]
+            previous = self._chart_presentation
+            geometry_changed = (
+                previous.source_identity != presentation.source_identity
+                or previous.source_point_count
+                != presentation.source_point_count
+                or previous.frame.points != presentation.frame.points
+                or previous.frame.overlays != presentation.frame.overlays
+                or previous.selected_overlay_identity
+                != presentation.selected_overlay_identity
+            )
             self._chart_presentation = presentation
             self._chart_frame_sequence += 1
+            if geometry_changed:
+                self.chartGeometryChanged.emit()
             self.chartPresentationChanged.emit()
         due_in_ns = result.due_in_ns
         if due_in_ns is None:
@@ -1124,6 +1164,26 @@ class EvidenceAndFindingsQtAdapter(QObject):
         else:
             self._chart_timer.start(max(1, ceil(due_in_ns / 1_000_000)))
         self._sync_chart_interaction_enabled()
+
+    @staticmethod
+    def _same_chart_paint_work(
+        current: EvidenceChartPresentation,
+        candidate: EvidenceChartPresentation,
+    ) -> bool:
+        return bool(
+            current.source_identity == candidate.source_identity
+            and current.source_point_count == candidate.source_point_count
+            and current.frame.points == candidate.frame.points
+            and current.frame.overlays == candidate.frame.overlays
+            and current.frame.selected_point
+            == candidate.frame.selected_point
+            and current.frame.selected_overlay_identity
+            == candidate.frame.selected_overlay_identity
+            and current.frame.selected_finding_identity
+            == candidate.frame.selected_finding_identity
+            and current.frame.selected_breakpoint_identity
+            == candidate.frame.selected_breakpoint_identity
+        )
 
     def _sync_chart_interaction_enabled(self) -> None:
         enabled = not self._pending_chart_presentations

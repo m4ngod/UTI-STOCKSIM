@@ -6,6 +6,7 @@ from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import isfinite
+import re
 from threading import RLock, current_thread
 from typing import Any, Callable, Protocol
 
@@ -60,6 +61,9 @@ from .versioning import (
     EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
     FeatureInterfaceVersion,
 )
+
+
+_SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class _EvidenceAndFindingsRuntimeQueries(Protocol):
@@ -153,6 +157,10 @@ class LiveEvidenceAndFindingsAdapter:
         self._accepted_source_revisions: dict[
             EvidenceAndFindingsContext,
             tuple[SourceGenerationId, _SourceVersion],
+        ] = {}
+        self._mapped_payload_cache: dict[
+            tuple[EvidenceAndFindingsContext, str],
+            EvidenceAndFindingsData,
         ] = {}
         self._subscriptions: dict[
             int,
@@ -296,6 +304,7 @@ class LiveEvidenceAndFindingsAdapter:
             self._dispose_connection_subscription = lambda: None
             self._pending_refreshes.clear()
             self._scheduled_refreshes.clear()
+            self._mapped_payload_cache.clear()
         dispose_batch()
         dispose_connection()
         for subscription in subscriptions:
@@ -639,7 +648,35 @@ class LiveEvidenceAndFindingsAdapter:
                     ),
                     source_revision,
                 )
-            data = _map_record(context, record, payload, candidate_rows)
+            content_digest = _content_digest(record, payload)
+            cache_key = (
+                None
+                if content_digest is None
+                else (context, content_digest)
+            )
+            with self._lock:
+                data = (
+                    None
+                    if cache_key is None
+                    else self._mapped_payload_cache.get(cache_key)
+                )
+            if data is None:
+                data = _map_record(
+                    context,
+                    record,
+                    payload,
+                    candidate_rows,
+                )
+                if cache_key is not None:
+                    with self._lock:
+                        if not self._closed:
+                            self._mapped_payload_cache = {
+                                key: value
+                                for key, value
+                                in self._mapped_payload_cache.items()
+                                if key[0] != context
+                            }
+                            self._mapped_payload_cache[cache_key] = data
         except Exception:
             return (
                 self._failed_state(
@@ -1607,6 +1644,23 @@ def _evidence_payload(record: dict[str, Any]) -> dict[str, Any]:
         if nested:
             return nested
     return record
+
+
+def _content_digest(
+    record: dict[str, Any],
+    payload: dict[str, Any],
+) -> str | None:
+    """Return the producer's immutable semantic-content version, if supplied.
+
+    Producers must change this digest whenever mapped evidence changes.
+    """
+    value = payload.get("content_digest") or record.get("content_digest")
+    if value is None:
+        return None
+    digest = _required_text(value, "evidence content digest")
+    if not _SHA256_DIGEST_PATTERN.fullmatch(digest):
+        raise ValueError("evidence content digest must be a SHA-256 identity")
+    return digest
 
 
 def _candidate_rows(

@@ -45,6 +45,7 @@ def test_frame_gate_caps_commits_and_never_coalesces_away_terminal_revision():
         overlays=(),
     )
     gate = EvidenceChartFrameGate(max_frames_per_second=20)
+    assert gate.max_frames_per_second == 20
 
     first = gate.offer(frame, now_ns=0)
     intermediate = gate.offer(
@@ -142,6 +143,84 @@ def test_qt_adapter_commits_chart_narrative_and_table_on_one_frame_deadline():
     assert "OV-MODEL-A04-DRAWDOWN" in adapter.chartNarrativeText
     assert "OV-MODEL-A04-DRAWDOWN" in adapter.chartTableText
     assert adapter.chartAcceptedRevision == feature.snapshot(context).revision
+
+    adapter.close()
+    feature.close()
+
+
+def test_revision_only_commit_does_not_republish_unchanged_chart_geometry():
+    _app()
+    now = [0]
+    feature = DeterministicFakeEvidenceAndFindingsAdapter()
+    context = _context()
+    completed = feature.advance_to_completed(context)
+    adapter = EvidenceAndFindingsQtAdapter(
+        feature,
+        context=context,
+        chart_clock=lambda: now[0],
+    )
+    geometry_changes = []
+    presentation_changes = []
+    adapter.chartGeometryChanged.connect(
+        lambda: geometry_changes.append(adapter.chartFrameSequence)
+    )
+    adapter.chartPresentationChanged.connect(
+        lambda: presentation_changes.append(adapter.chartFrameSequence)
+    )
+    initial_points = adapter._chart_presentation.sample.points
+
+    now[0] = 10_000_000
+    adapter._accept_state(
+        adapter._mount_generation.value,
+        replace(completed, revision=completed.revision + 1),
+    )
+
+    assert presentation_changes == [adapter.chartFrameSequence]
+    assert geometry_changes == []
+    assert adapter.chartAcceptedRevision == completed.revision + 1
+    assert adapter.chartInteractionEnabled is True
+    assert adapter._chart_presentation.sample.points is initial_points
+    assert (
+        f"Accepted evidence revision · r{completed.revision + 1}"
+        in adapter.chartNarrativeText
+    )
+    assert (
+        f"Accepted evidence revision · r{completed.revision + 1}"
+        in adapter.chartTableText
+    )
+
+    now[0] = 50_000_000
+    adapter.flush_chart_frames()
+    assert presentation_changes == [adapter.chartFrameSequence]
+
+    adapter.close()
+    feature.close()
+
+
+def test_active_tab_input_does_not_schedule_unrelated_chart_work():
+    _app()
+    now = [0]
+    feature = DeterministicFakeEvidenceAndFindingsAdapter()
+    context = _context()
+    feature.advance_to_completed(context)
+    adapter = EvidenceAndFindingsQtAdapter(
+        feature,
+        context=context,
+        chart_clock=lambda: now[0],
+    )
+    initial_sequence = adapter.chartFrameSequence
+    presentation_changes = []
+    adapter.chartPresentationChanged.connect(
+        lambda: presentation_changes.append(adapter.chartFrameSequence)
+    )
+
+    now[0] = 10_000_000
+    adapter.setActiveTab("assumptions")
+
+    assert adapter.activeTab == "assumptions"
+    assert adapter.chartFrameSequence == initial_sequence
+    assert adapter.chartInteractionEnabled is True
+    assert presentation_changes == []
 
     adapter.close()
     feature.close()
