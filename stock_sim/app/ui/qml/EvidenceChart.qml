@@ -44,6 +44,7 @@ Item {
 
     signal pointSelected(real ratio)
     signal pointStepRequested(int direction)
+    signal focusEntered(var item)
 
     Accessible.role: Accessible.Graphic
     Accessible.name: "Diagnostic evidence chart"
@@ -144,6 +145,14 @@ Item {
         Accessible.role: Accessible.Slider
         Accessible.name: "Select diagnostic evidence point"
         Accessible.description: chart.accessibleDescription
+        Accessible.focusable: chart.interactionEnabled
+        Accessible.focused: activeFocus
+        Accessible.onIncreaseAction: chart.pointStepRequested(1)
+        Accessible.onDecreaseAction: chart.pointStepRequested(-1)
+        onActiveFocusChanged: {
+            if (activeFocus)
+                chart.focusEntered(pointSelection)
+        }
         Keys.onLeftPressed: function(event) {
             chart.pointStepRequested(-1)
             event.accepted = true

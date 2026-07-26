@@ -39,6 +39,11 @@ from app.features import (
     RunMonitoringViewState,
     Subscription,
 )
+from .accessibility import (
+    AccessibilityPreferences,
+    AccessibilitySettingsQtAdapter,
+    detect_accessibility_preferences,
+)
 from .evidence_chart import (
     EvidenceChartFrameGate,
     EvidenceChartFrameGateResult,
@@ -144,6 +149,16 @@ class RunMonitoringQtAdapter(QObject):
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def completeness(self) -> str:
         return str(self._state.completeness.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusText(self) -> str:  # noqa: N802
+        details = (
+            f"{self.freshness} · {self.phase} · {self.completeness}"
+        )
+        error = self._state.error
+        if error is not None:
+            return f"{details} · {error.code} · {error.message}"
+        return details
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def revisionText(self) -> str:  # noqa: N802 - QML property convention
@@ -1191,11 +1206,21 @@ class JourneyWorkspaceHost(QQuickWidget):
         context: RunMonitoringContext | None = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
         evidence_context: EvidenceAndFindingsContext | None = None,
+        accessibility_preferences: AccessibilityPreferences | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("journeyWorkspaceHost")
         self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self._workspace_closed = False
+        self._accessibility_settings = AccessibilitySettingsQtAdapter(
+            accessibility_preferences or detect_accessibility_preferences(),
+            parent=self,
+        )
+        self.rootContext().setContextProperty(
+            "accessibilitySettings",
+            self._accessibility_settings,
+        )
         self._run_monitoring = RunMonitoringQtAdapter(
             feature,
             context=context,
@@ -1224,9 +1249,13 @@ class JourneyWorkspaceHost(QQuickWidget):
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
 
     def close_adapter(self) -> None:
+        if self._workspace_closed:
+            return
+        self._workspace_closed = True
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
+        self.setSource(QUrl())
 
 
 __all__ = [

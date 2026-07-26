@@ -1,3 +1,4 @@
+import gc
 import os
 from types import SimpleNamespace
 
@@ -5,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QObject, QPointF, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, QTimer
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication
 
@@ -22,6 +23,21 @@ from app.ui.main_window import MainWindow
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _release_closed_qml_hosts_between_tests():
+    yield
+    app = QApplication.instance()
+    if app is None:
+        return
+    gc.collect()
+    QCoreApplication.sendPostedEvents(
+        None,
+        QEvent.Type.DeferredDelete,
+    )
+    app.processEvents()
+    gc.collect()
 
 
 def test_route_flag_mounts_one_centralized_qml_workspace_with_loading_state():
@@ -71,7 +87,11 @@ def test_workspace_exposes_every_approved_shared_token_family():
     assert tokens.property("durationBrief") > 0
     assert isinstance(tokens.property("reducedMotion"), bool)
     assert tokens.property("durationReducedMotion") == 0
-    assert tokens.property("durationForMotion") == 0
+    assert tokens.property("durationForMotion") == (
+        tokens.property("durationReducedMotion")
+        if tokens.property("reducedMotion")
+        else tokens.property("durationBrief")
+    )
 
     window.close()
     feature.close()

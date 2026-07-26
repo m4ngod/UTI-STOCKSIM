@@ -7,6 +7,57 @@ Item {
     property var adapter
     property var tokens
     property bool hasEvidence: adapter !== null && adapter.hasReliableData
+    property var lastFocusedItem: null
+    readonly property bool hasMeaningfulFocus: (
+        lastFocusedItem !== null
+        && lastFocusedItem.activeFocus
+        && lastFocusedItem.visible
+        && lastFocusedItem.enabled
+    )
+    readonly property var firstCandidateControl: candidateRepeater.count > 0
+        ? candidateRepeater.itemAt(0)
+        : null
+    readonly property var secondCandidateControl: candidateRepeater.count > 1
+        ? candidateRepeater.itemAt(1)
+        : null
+    readonly property var firstFindingControl: findingRepeater.count > 0
+        ? findingRepeater.itemAt(0)
+        : null
+    readonly property var secondFindingControl: findingRepeater.count > 1
+        ? findingRepeater.itemAt(1)
+        : null
+
+    function ensureItemVisible(item) {
+        if (item === null || !evidenceScroll.visible)
+            return
+        var point = item.mapToItem(evidenceScroll.contentItem, 0, 0)
+        var top = point.y - tokens.spaceMd
+        var bottom = point.y + item.height + tokens.spaceMd
+        if (top < evidenceScroll.contentY)
+            evidenceScroll.contentY = Math.max(0, top)
+        else if (bottom > evidenceScroll.contentY + evidenceScroll.height)
+            evidenceScroll.contentY = Math.min(
+                evidenceScroll.contentHeight - evidenceScroll.height,
+                bottom - evidenceScroll.height
+            )
+    }
+
+    function rememberFocus(item) {
+        lastFocusedItem = item
+        ensureItemVisible(item)
+    }
+
+    function restoreFocus() {
+        var target = lastFocusedItem
+        if (target === null || !target.visible || !target.enabled)
+            target = candidateRepeater.count > 0
+                ? candidateRepeater.itemAt(0)
+                : null
+        if (target !== null) {
+            target.forceActiveFocus()
+            ensureItemVisible(target)
+        }
+    }
 
     function focusViewport() {
         if (adapter.viewportIntent === "overview") {
@@ -29,6 +80,8 @@ Item {
         target: adapter
         function onLocalStateChanged() {
             page.focusViewport()
+            if (page.lastFocusedItem !== null)
+                page.ensureItemVisible(page.lastFocusedItem)
         }
     }
 
@@ -42,15 +95,20 @@ Item {
 
         ColumnLayout {
             id: researchSheet
-            width: parent.width - tokens.spaceXl * 2
+            width: Math.max(0, parent.width - tokens.spaceXl * 2)
+            implicitWidth: width
             x: tokens.spaceXl
             y: tokens.spaceLg
             spacing: tokens.spaceLg
 
             RowLayout {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: researchSheet.width
 
                 ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     spacing: tokens.spaceXs
 
                     Text {
@@ -60,9 +118,11 @@ Item {
                         font.bold: true
                     }
                     Text {
+                        Layout.fillWidth: true
                         text: "Compare evidence, inspect failure reasons, and trace every conclusion."
                         color: tokens.textMuted
                         font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WrapAnywhere
                     }
                 }
 
@@ -76,22 +136,44 @@ Item {
             }
 
             Rectangle {
+                id: evidenceAccessibleStatus
+                objectName: "evidenceAccessibleStatus"
                 Layout.fillWidth: true
-                Layout.preferredHeight: 132
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: researchSheet.width
+                Layout.preferredHeight: Math.max(
+                    132,
+                    tokens.textScale >= 1.75
+                        ? 430
+                        : tokens.titleSize + tokens.labelSize * 7
+                            + tokens.spaceLg * 2
+                )
                 radius: tokens.radiusMd
                 color: tokens.surface
                 border.color: tokens.border
+                Accessible.role: Accessible.StatusBar
+                Accessible.name: "Evidence and Findings "
+                    + adapter.presentationState
+                Accessible.description: adapter.statusText + ". "
+                    + adapter.pinnedIdentitiesText
 
-                RowLayout {
+                GridLayout {
                     anchors.fill: parent
                     anchors.margins: tokens.spaceLg
-                    spacing: tokens.spaceXl
+                    columns: tokens.textScale >= 1.75 ? 1 : 3
+                    columnSpacing: tokens.spaceXl
+                    rowSpacing: tokens.spaceMd
 
                     ColumnLayout {
-                        Layout.preferredWidth: 420
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: tokens.textScale >= 1.75
+                            ? -1
+                            : 420
                         spacing: tokens.spaceXs
 
                         Text {
+                            Layout.fillWidth: true
                             text: adapter.presentationState === "loading"
                                 ? "Preparing evidence"
                                 : adapter.presentationState === "empty"
@@ -104,6 +186,7 @@ Item {
                             color: tokens.textPrimary
                             font.pixelSize: tokens.titleSize
                             font.bold: true
+                            wrapMode: Text.WrapAnywhere
                         }
                         Text {
                             Layout.fillWidth: true
@@ -115,6 +198,7 @@ Item {
                     }
 
                     Rectangle {
+                        visible: tokens.textScale < 1.75
                         Layout.preferredWidth: 1
                         Layout.fillHeight: true
                         color: tokens.border
@@ -125,7 +209,7 @@ Item {
                         text: adapter.pinnedIdentitiesText
                         color: tokens.textMuted
                         font.pixelSize: tokens.labelSize
-                        wrapMode: Text.WordWrap
+                        wrapMode: Text.WrapAnywhere
                     }
                 }
             }
@@ -133,10 +217,14 @@ Item {
             ColumnLayout {
                 visible: page.hasEvidence
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: researchSheet.width
                 spacing: tokens.spaceLg
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
                     spacing: tokens.spaceXs
 
                     Text {
@@ -150,13 +238,18 @@ Item {
                         text: adapter.coverageText
                         color: tokens.textPrimary
                         font.pixelSize: tokens.bodySize
-                        wrapMode: Text.WordWrap
+                        wrapMode: Text.WrapAnywhere
                     }
                 }
 
-                RowLayout {
+                GridLayout {
+                    objectName: "evidenceCandidateControlsGrid"
                     Layout.fillWidth: true
-                    spacing: tokens.spaceSm
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    columns: tokens.textScale >= 1.75 ? 1 : 4
+                    columnSpacing: tokens.spaceSm
+                    rowSpacing: tokens.spaceXs
 
                     Text {
                         text: "CANDIDATES"
@@ -166,6 +259,7 @@ Item {
                     }
 
                     Repeater {
+                        id: candidateRepeater
                         objectName: "evidenceCandidateRepeater"
                         model: adapter.candidateIdentities
 
@@ -176,6 +270,7 @@ Item {
                             text: choiceValue
                             selected: adapter.selectedCandidateIdentity === choiceValue
                             accessibleName: "Select candidate " + choiceValue
+                            onFocusEntered: page.rememberFocus(item)
                             onInvoked: adapter.selectCandidate(choiceValue)
                         }
                     }
@@ -185,18 +280,26 @@ Item {
                         text: adapter.candidateSummaryText
                         color: tokens.textQuiet
                         font.pixelSize: tokens.labelSize
-                        horizontalAlignment: Text.AlignRight
-                        wrapMode: Text.WordWrap
+                        horizontalAlignment: tokens.textScale >= 1.75
+                            ? Text.AlignLeft
+                            : Text.AlignRight
+                        wrapMode: Text.WrapAnywhere
                     }
                 }
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
                     spacing: tokens.spaceSm
 
-                    RowLayout {
+                    GridLayout {
                         Layout.fillWidth: true
-                        spacing: tokens.spaceSm
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: parent.width
+                        columns: tokens.textScale >= 1.75 ? 1 : 5
+                        columnSpacing: tokens.spaceSm
+                        rowSpacing: tokens.spaceXs
 
                         Text {
                             text: "LOCAL VIEW"
@@ -211,6 +314,7 @@ Item {
                             text: "Filter · Risk"
                             selected: adapter.evidenceFilter === "risk"
                             accessibleName: "Filter evidence by risk"
+                            onFocusEntered: page.rememberFocus(item)
                             onInvoked: adapter.setEvidenceFilter("risk")
                         }
 
@@ -220,6 +324,7 @@ Item {
                             text: "Sort · Coverage"
                             selected: adapter.sortOrder === "coverage"
                             accessibleName: "Sort evidence by coverage"
+                            onFocusEntered: page.rememberFocus(item)
                             onInvoked: adapter.setSortOrder("coverage")
                         }
 
@@ -229,15 +334,23 @@ Item {
                             text: "Viewport · Compound"
                             selected: adapter.viewportIntent === "compound_stress"
                             accessibleName: "Focus compound stress evidence"
+                            onFocusEntered: page.rememberFocus(item)
                             onInvoked: adapter.setViewportIntent("compound_stress")
                         }
 
-                        Item { Layout.fillWidth: true }
+                        Item {
+                            visible: tokens.textScale < 1.75
+                            Layout.fillWidth: true
+                        }
                     }
 
-                    RowLayout {
+                    GridLayout {
                         Layout.fillWidth: true
-                        spacing: tokens.spaceSm
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: parent.width
+                        columns: tokens.textScale >= 1.75 ? 1 : 6
+                        columnSpacing: tokens.spaceSm
+                        rowSpacing: tokens.spaceXs
 
                         Text {
                             text: "DETAIL"
@@ -264,17 +377,23 @@ Item {
                                 text: "Tab · " + choiceValue
                                 selected: adapter.activeTab === choiceValue
                                 accessibleName: "Show " + choiceValue + " tab"
+                                onFocusEntered: page.rememberFocus(item)
                                 onInvoked: adapter.setActiveTab(choiceValue)
                             }
                         }
 
-                        Item { Layout.fillWidth: true }
+                        Item {
+                            visible: tokens.textScale < 1.75
+                            Layout.fillWidth: true
+                        }
                     }
                 }
 
                 Rectangle {
                     id: comparisonSurface
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
                     Layout.preferredHeight: comparisonText.implicitHeight
                         + tokens.spaceLg * 2
                     radius: tokens.radiusMd
@@ -288,7 +407,7 @@ Item {
                         text: adapter.comparisonText
                         color: tokens.textPrimary
                         font.pixelSize: tokens.labelSize
-                        wrapMode: Text.WordWrap
+                        wrapMode: Text.WrapAnywhere
                     }
                 }
 
@@ -296,7 +415,14 @@ Item {
                     id: evidenceChartSurface
                     objectName: "evidenceChartSurface"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 424
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: Math.max(
+                        424,
+                        tokens.textScale >= 1.75
+                            ? 1000
+                            : 300 + tokens.labelSize * 7
+                    )
                     radius: tokens.radiusMd
                     color: tokens.surfaceRaised
                     border.color: tokens.border
@@ -374,6 +500,7 @@ Item {
                                 focusColor: tokens.focus
                                 labelPixelSize: tokens.labelSize
                                 accessibleDescription: adapter.chartAccessibleText
+                                onFocusEntered: page.rememberFocus(item)
                                 onPointSelected: function(ratio) {
                                     adapter.selectChartPointAtRatio(ratio)
                                 }
@@ -385,6 +512,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             text: adapter.chartSourceIdentity
                                 + " · " + adapter.chartSourcePointCount
                                 + " source · " + adapter.chartVisiblePointCount
@@ -392,12 +520,16 @@ Item {
                                 + " overlays · " + adapter.chartSamplingPolicy
                             color: tokens.textQuiet
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
                         }
 
-                        RowLayout {
+                        GridLayout {
                             Layout.fillWidth: true
-                            spacing: tokens.spaceSm
+                            Layout.minimumWidth: 0
+                            Layout.maximumWidth: parent.width
+                            columns: tokens.textScale >= 1.75 ? 1 : 5
+                            columnSpacing: tokens.spaceSm
+                            rowSpacing: tokens.spaceXs
 
                             Text {
                                 text: "OVERLAYS"
@@ -419,18 +551,26 @@ Item {
                                         === choiceValue
                                     accessibleName: "Select chart overlay "
                                         + choiceValue
+                                    onFocusEntered: page.rememberFocus(item)
                                     onInvoked: adapter.selectChartOverlay(
                                         choiceValue
                                     )
                                 }
                             }
 
-                            Item { Layout.fillWidth: true }
+                            Item {
+                                visible: tokens.textScale < 1.75
+                                Layout.fillWidth: true
+                            }
                         }
 
-                        RowLayout {
+                        GridLayout {
                             Layout.fillWidth: true
-                            spacing: tokens.spaceSm
+                            Layout.minimumWidth: 0
+                            Layout.maximumWidth: parent.width
+                            columns: tokens.textScale >= 1.75 ? 1 : 3
+                            columnSpacing: tokens.spaceSm
+                            rowSpacing: tokens.spaceXs
 
                             Text {
                                 text: "SENSITIVITY BREAKPOINTS"
@@ -456,26 +596,35 @@ Item {
                                         "Select Sensitivity Breakpoint "
                                         + choiceValue
                                     )
+                                    onFocusEntered: page.rememberFocus(item)
                                     onInvoked: adapter.selectChartBreakpoint(
                                         choiceValue
                                     )
                                 }
                             }
 
-                            Item { Layout.fillWidth: true }
+                            Item {
+                                visible: tokens.textScale < 1.75
+                                Layout.fillWidth: true
+                            }
                         }
                     }
                 }
 
                 GridLayout {
                     id: evidenceGrid
+                    objectName: "evidenceResearchGrid"
                     Layout.fillWidth: true
-                    columns: 2
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    columns: tokens.textScale >= 1.75 ? 1 : 2
                     columnSpacing: tokens.spaceXl
                     rowSpacing: tokens.spaceLg
 
                     ColumnLayout {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: parent.width
                         Layout.alignment: Qt.AlignTop
                         spacing: tokens.spaceXs
 
@@ -486,11 +635,14 @@ Item {
                             font.bold: true
                         }
                         Text {
+                            objectName: "evidenceChartAccessibleTable"
                             Layout.fillWidth: true
                             text: adapter.chartTableText
                             color: tokens.textMuted
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
                         }
                     }
 
@@ -498,6 +650,8 @@ Item {
                         objectName: "evidenceFindingsPanel"
                         visible: adapter.activeTab === "findings"
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: parent.width
                         Layout.alignment: Qt.AlignTop
                         spacing: tokens.spaceXs
 
@@ -508,10 +662,16 @@ Item {
                             font.bold: true
                         }
 
-                        RowLayout {
-                            spacing: tokens.spaceSm
+                        GridLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.maximumWidth: parent.width
+                            columns: tokens.textScale >= 1.75 ? 1 : 2
+                            columnSpacing: tokens.spaceSm
+                            rowSpacing: tokens.spaceXs
 
                             Repeater {
+                                id: findingRepeater
                                 objectName: "evidenceFindingRepeater"
                                 model: adapter.findingIdentities
 
@@ -522,30 +682,36 @@ Item {
                                     text: choiceValue
                                     selected: adapter.selectedFindingIdentity === choiceValue
                                     accessibleName: "Select finding " + choiceValue
+                                    onFocusEntered: page.rememberFocus(item)
                                     onInvoked: adapter.selectFinding(choiceValue)
                                 }
                             }
                         }
 
                         Text {
+                            objectName: "evidenceChartAccessibleNarrative"
                             Layout.fillWidth: true
                             text: adapter.chartNarrativeText
                             color: tokens.textPrimary
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
                         }
                         Text {
                             Layout.fillWidth: true
                             text: adapter.breakpointsText
                             color: tokens.textMuted
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
                         }
                     }
                 }
 
                 Rectangle {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
                     Layout.preferredHeight: 1
                     color: tokens.border
                 }
@@ -553,6 +719,8 @@ Item {
                 ColumnLayout {
                     id: detailTabs
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
                     spacing: tokens.spaceSm
 
                     ColumnLayout {
@@ -571,7 +739,7 @@ Item {
                             text: adapter.assumptionsText
                             color: tokens.textMuted
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
                         }
                     }
 
@@ -591,7 +759,7 @@ Item {
                             text: adapter.provenanceText
                             color: tokens.textMuted
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
                         }
                     }
 
@@ -611,7 +779,7 @@ Item {
                             text: adapter.readOnlyContextText
                             color: tokens.textMuted
                             font.pixelSize: tokens.labelSize
-                            wrapMode: Text.WordWrap
+                            wrapMode: Text.WrapAnywhere
                         }
                     }
                 }
@@ -619,10 +787,13 @@ Item {
 
             Text {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: researchSheet.width
                 text: "This route is evidence-only: it has no experiment launch or manual trading controls."
                 color: tokens.textQuiet
                 font.pixelSize: tokens.labelSize
                 horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WrapAnywhere
             }
         }
     }
