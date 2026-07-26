@@ -48,8 +48,11 @@ The report retains the exact protocol in its `measurement` object.
 
 - Usable-state time starts immediately before `QApplication` construction,
   after the locked runtime has loaded.
-- Event latency starts when the production `EventBridge` accepts a batch and
-  ends at the QML `acceptedRevisionChanged` signal.
+- Event latency starts when the production `EventBridge` accepts a batch.
+  Immediately before scene-graph synchronization, the harness snapshots the
+  accepted QML revision; latency ends only when `QQuickWindow.afterRendering`
+  confirms that exact synchronized revision completed a frame. Property-change
+  notification alone is not treated as visible output.
 - Input latency starts when a Return key event is posted to a real QML tab and
   ends when that event commits the corresponding internal Adapter state. QML
   frame visibility is measured separately by the event-to-visible probe.

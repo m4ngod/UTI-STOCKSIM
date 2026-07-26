@@ -189,6 +189,10 @@ def test_reference_fixture_and_release_thresholds_are_locked():
         == "qml_return_key_to_adapter_state"
     )
     assert (
+        REFERENCE_MEASUREMENT_PROTOCOL.event_to_visible_endpoint
+        == "quick_window_after_rendering_revision"
+    )
+    assert (
         REFERENCE_MEASUREMENT_PROTOCOL.memory_window_prep
         == "gc_collect_then_empty_working_set_before_start_marker"
     )

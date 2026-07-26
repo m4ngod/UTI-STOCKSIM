@@ -6,8 +6,51 @@ import sys
 
 import pytest
 
+from stock_sim.release import frontend_v2_performance_runtime
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_runtime_release_decision_delegates_to_central_validator(monkeypatch):
+    report = {
+        "lane": "hardware",
+        "source_commit": "a" * 40,
+        "toolchain_lock_digest": f"sha256:{'b' * 64}",
+    }
+    captured = {}
+
+    def fake_validate(
+        candidate,
+        *,
+        expected_lane,
+        expected_source_commit,
+        expected_toolchain_digest,
+    ):
+        captured.update(
+            candidate=candidate,
+            expected_lane=expected_lane,
+            expected_source_commit=expected_source_commit,
+            expected_toolchain_digest=expected_toolchain_digest,
+        )
+        return ("central gate failed",)
+
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "validate_performance_lane",
+        fake_validate,
+        raising=False,
+    )
+
+    assert frontend_v2_performance_runtime._runtime_threshold_failures(
+        report
+    ) == ("central gate failed",)
+    assert captured == {
+        "candidate": report,
+        "expected_lane": "hardware",
+        "expected_source_commit": "a" * 40,
+        "expected_toolchain_digest": f"sha256:{'b' * 64}",
+    }
 
 
 def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):

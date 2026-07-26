@@ -26,6 +26,7 @@ from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
     QObject,
+    Signal,
     QTimer,
     Qt,
     Slot,
@@ -60,6 +61,7 @@ from .frontend_v2_performance import (
     REFERENCE_FIXTURE,
     REFERENCE_MEASUREMENT_PROTOCOL,
     reference_fixture_digest,
+    validate_performance_lane,
 )
 from .no_manual_trading_gate import audit_qml_text
 
@@ -467,6 +469,8 @@ class _MetricRecorder:
 
 
 class _QtPerformanceProbe(QObject):
+    renderedFrameObserved = Signal(int, object)
+
     def __init__(
         self,
         *,
@@ -522,16 +526,11 @@ class _QtPerformanceProbe(QObject):
         self.errors: list[str] = []
         self.read_only_context_visible = False
         self.manual_action_count = _manual_action_count(self._root)
-        revision_signal = getattr(
-            self._renderer,
-            "acceptedRevisionChanged",
-            None,
+        self._synchronized_revision = 0
+        self.renderedFrameObserved.connect(
+            self._record_rendered_frame,
+            Qt.ConnectionType.QueuedConnection,
         )
-        if revision_signal is None:
-            raise RuntimeError(
-                "QML acceptedRevision change signal is unavailable"
-            )
-        revision_signal.connect(self.qml_revision_changed)
 
         self._watchdog = QTimer(self)
         self._watchdog.setTimerType(Qt.TimerType.PreciseTimer)
@@ -614,14 +613,30 @@ class _QtPerformanceProbe(QObject):
         return self._source_events
 
     @Slot()
+    def before_synchronize(self) -> None:
+        self._synchronized_revision = int(
+            self._renderer.property("acceptedRevision") or 0
+        )
+
+    @Slot()
     def after_render(self) -> None:
+        self.renderedFrameObserved.emit(
+            self._synchronized_revision,
+            perf_counter_ns(),
+        )
+
+    @Slot(int, object)
+    def _record_rendered_frame(
+        self,
+        revision: int,
+        visible_ns_value: object,
+    ) -> None:
         if self._finished:
             return
-        visible_ns = perf_counter_ns()
+        visible_ns = int(cast(int, visible_ns_value))
         self._graphics_api = (
             self._host.quickWindow().rendererInterface().graphicsApi().name
         )
-        revision = int(self._renderer.property("acceptedRevision") or 0)
         if revision > 0:
             self._recorder.record_visible_revision(revision, visible_ns)
         if self._usable_state_ms is None and self._fixture_is_usable():
@@ -635,20 +650,6 @@ class _QtPerformanceProbe(QObject):
             )
             self._adapter.setActiveTab("findings")
             QTimer.singleShot(0, self._start_measurement)
-        if (
-            self._recorder.terminal_visible_ms is not None
-            and self._terminal_sent_ns is not None
-        ):
-            self._finish()
-
-    @Slot()
-    def qml_revision_changed(self) -> None:
-        if self._finished:
-            return
-        visible_ns = perf_counter_ns()
-        revision = int(self._renderer.property("acceptedRevision") or 0)
-        if revision > 0:
-            self._recorder.record_visible_revision(revision, visible_ns)
         if (
             self._recorder.terminal_visible_ms is not None
             and self._terminal_sent_ns is not None
@@ -906,9 +907,13 @@ def run_performance_lane(
         process_started_ns=process_started_ns,
         on_finished=quit_app,
     )
+    host.quickWindow().beforeSynchronizing.connect(
+        probe.before_synchronize,
+        Qt.ConnectionType.DirectConnection,
+    )
     host.quickWindow().afterRendering.connect(
         probe.after_render,
-        Qt.ConnectionType.QueuedConnection,
+        Qt.ConnectionType.DirectConnection,
     )
     host.update()
     host.quickWindow().update()
@@ -1051,46 +1056,15 @@ def _build_report(
 def _runtime_threshold_failures(
     report: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    failures: list[str] = []
-    metrics = report["metrics"]
-    event_p95 = metrics["event_to_visible"]["p95_ms"]
-    input_p95 = metrics["input_response"]["p95_ms"]
-    if (
-        not isinstance(event_p95, (int, float))
-        or event_p95 > PERFORMANCE_THRESHOLDS.event_to_visible_p95_ms
-    ):
-        failures.append("event-to-visible p95 failed")
-    if (
-        not isinstance(input_p95, (int, float))
-        or input_p95 > PERFORMANCE_THRESHOLDS.input_p95_ms
-    ):
-        failures.append("input p95 failed")
-    if metrics["usable_state_ms"] > PERFORMANCE_THRESHOLDS.usable_state_ms:
-        failures.append("usable-state time failed")
-    if (
-        metrics["max_main_thread_stall_ms"]
-        > PERFORMANCE_THRESHOLDS.main_thread_stall_ms
-        or metrics["main_thread_stalls_over_budget"]
-    ):
-        failures.append("main-thread stall gate failed")
-    if metrics["peak_memory_mib"] > PERFORMANCE_THRESHOLDS.peak_memory_mib:
-        failures.append("peak-memory gate failed")
-    terminal = report["terminal"]
-    if (
-        terminal["observed"] is not True
-        or not isinstance(terminal["visible_ms"], (int, float))
-        or terminal["visible_ms"]
-        > PERFORMANCE_THRESHOLDS.terminal_visible_ms
-    ):
-        failures.append("terminal visibility gate failed")
-    if report["revisions_strictly_monotonic"] is not True:
-        failures.append("revision monotonicity gate failed")
-    if report["safety"] != {
-        "manual_trading_action_count": 0,
-        "read_only_context_visible": True,
-    }:
-        failures.append("runtime safety observation failed")
-    return tuple(failures)
+    return validate_performance_lane(
+        report,
+        expected_lane=cast(str, report["lane"]),
+        expected_source_commit=cast(str, report["source_commit"]),
+        expected_toolchain_digest=cast(
+            str,
+            report["toolchain_lock_digest"],
+        ),
+    )
 
 
 def _metric(samples: list[float]) -> dict[str, Any]:
