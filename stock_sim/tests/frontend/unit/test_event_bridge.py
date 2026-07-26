@@ -74,6 +74,7 @@ def test_event_bridge_normalizes_runtime_snapshotupdated():
         merged.extend(batch.get("snapshots") or [])
     item = next((snap for snap in merged if snap.get("symbol") == "AAA"), None)
     assert item is not None
+    assert item["run_id"] == "RUN-1"
     assert item["last"] == 10.0
     assert item["bid_levels"] == [(9.9, 100)]
     assert item["ask_levels"] == [(10.1, 120)]

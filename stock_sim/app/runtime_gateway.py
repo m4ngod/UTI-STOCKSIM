@@ -39,6 +39,21 @@ class RuntimeGateway:
             return None
         return self._queries.get_current_run_id()
 
+    def get_run_monitoring_snapshot(
+        self,
+        run_id: str,
+    ) -> Dict[str, Any] | None:
+        if self._queries is None:
+            raise RuntimeError(
+                "Run Monitoring query capability is unavailable"
+            )
+        reader = getattr(self._queries, "get_run_monitoring_snapshot", None)
+        if not callable(reader):
+            raise RuntimeError(
+                "Run Monitoring query capability is unavailable"
+            )
+        return reader(run_id)
+
     def ensure_desktop_run(self) -> str | None:
         if self._commands is None:
             return self.get_current_run_id()

@@ -36,7 +36,7 @@ def test_wave_zero_reserves_six_feature_names_and_activates_only_run_monitoring(
         FeatureModuleName.RUN_MONITORING,
     )
     assert ACTIVE_FEATURE_INTERFACES[0].version == RUN_MONITORING_INTERFACE_VERSION
-    assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.0"
+    assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.1"
 
 
 def test_fake_snapshot_starts_as_typed_loading_state():
@@ -191,6 +191,9 @@ def test_external_seam_exposes_only_typed_approved_operations():
         "interface_version",
         "snapshot",
         "subscribe",
+        "pause_diagnostic_task",
+        "resume_diagnostic_task",
+        "cancel_diagnostic_task",
         "close",
     }
 

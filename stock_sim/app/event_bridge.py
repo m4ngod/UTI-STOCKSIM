@@ -90,6 +90,11 @@ class EventBridge:
         self._fallback_done = False
         self._local_subscribed = False
         self._local_handlers: list[tuple[Any, str, Callable[[str, dict], None]]] = []
+        self._batch_observers: dict[
+            int,
+            Callable[[tuple[Dict[str, Any], ...]], None],
+        ] = {}
+        self._next_batch_observer_id = 1
 
     def start(self):
         if self._running:
@@ -135,6 +140,21 @@ class EventBridge:
             else:
                 self._flush_locked()
 
+    def subscribe_batches(
+        self,
+        observer: Callable[[tuple[Dict[str, Any], ...]], None],
+    ) -> Callable[[], None]:
+        with self._lock:
+            observer_id = self._next_batch_observer_id
+            self._next_batch_observer_id += 1
+            self._batch_observers[observer_id] = observer
+
+        def _dispose() -> None:
+            with self._lock:
+                self._batch_observers.pop(observer_id, None)
+
+        return _dispose
+
     def _loop(self):
         interval_sec = self.flush_interval_ms / 1000.0
         while self._running and not self._stop_evt.wait(interval_sec):
@@ -166,6 +186,12 @@ class EventBridge:
                 runtime_event_bus.publish(FRONTEND_SNAPSHOT_BATCH_TOPIC, payload)
             except Exception:
                 pass
+        immutable_batch = tuple(dict(item) for item in batch)
+        for observer in tuple(self._batch_observers.values()):
+            try:
+                observer(immutable_batch)
+            except Exception:
+                pass
 
     def _normalize_snapshot_payload(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -191,6 +217,7 @@ class EventBridge:
                 ts_ms = int(time.time() * 1000)
         return {
             "symbol": symbol,
+            "run_id": payload.get("run_id"),
             "last": float(snap.get("last") or 0.0),
             "bid_levels": list(snap.get("bids") or []),
             "ask_levels": list(snap.get("asks") or []),

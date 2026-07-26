@@ -12,6 +12,7 @@ try:
     from stock_sim.persistence.models_position import Position as RuntimePosition  # type: ignore
     from stock_sim.persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
     from stock_sim.persistence.models_order import OrderORM  # type: ignore
+    from stock_sim.persistence.models_simulation_run import SimulationRun  # type: ignore
     from stock_sim.persistence.models_trade import TradeORM  # type: ignore
     from stock_sim.persistence.models_instrument import Instrument  # type: ignore
     from stock_sim.services.account_service import AccountService as RuntimeAccountService  # type: ignore
@@ -26,6 +27,7 @@ except Exception:  # pragma: no cover
         from persistence.models_position import Position as RuntimePosition  # type: ignore
         from persistence.models_bars import Bar1m, Bar1h, Bar1d  # type: ignore
         from persistence.models_order import OrderORM  # type: ignore
+        from persistence.models_simulation_run import SimulationRun  # type: ignore
         from persistence.models_trade import TradeORM  # type: ignore
         from persistence.models_instrument import Instrument  # type: ignore
         from services.account_service import AccountService as RuntimeAccountService  # type: ignore
@@ -41,6 +43,7 @@ except Exception:  # pragma: no cover
         Bar1h = None  # type: ignore
         Bar1d = None  # type: ignore
         OrderORM = None  # type: ignore
+        SimulationRun = None  # type: ignore
         TradeORM = None  # type: ignore
         Instrument = None  # type: ignore
         RuntimeAccountService = None  # type: ignore
@@ -108,6 +111,242 @@ class RuntimeQueryService:
             return run_id or None
         except Exception:
             return None
+
+    def get_run_monitoring_snapshot(
+        self,
+        run_id: str,
+    ) -> Dict[str, Any] | None:
+        """Return one internal, read-only aggregate for the V2 live Adapter."""
+
+        normalized_run_id = str(run_id or "").strip()
+        if (
+            not normalized_run_id
+            or SessionLocal is None
+            or SimulationRun is None
+        ):
+            raise RuntimeError("Run Monitoring persistence is unavailable")
+        try:
+            sess = SessionLocal()
+        except Exception as error:
+            raise RuntimeError(
+                "Run Monitoring persistence session is unavailable"
+            ) from error
+        try:
+            run = sess.get(SimulationRun, normalized_run_id)
+            if run is None:
+                return None
+            bindings = []
+            if AgentBinding is not None:
+                bindings = (
+                    sess.query(AgentBinding)
+                    .filter(AgentBinding.run_id == normalized_run_id)
+                    .order_by(
+                        AgentBinding.updated_at.desc(),
+                        AgentBinding.agent_name.asc(),
+                    )
+                    .all()
+                )
+            binding_context = []
+            merged_meta: Dict[str, Any] = {}
+            account_ids = []
+            for binding in bindings:
+                meta = _safe_parse_meta(getattr(binding, "meta", None))
+                if not merged_meta and meta:
+                    merged_meta = meta
+                account_id = str(
+                    getattr(binding, "account_id", "") or ""
+                ).strip()
+                if account_id:
+                    account_ids.append(account_id)
+                binding_context.append(
+                    " · ".join(
+                        value
+                        for value in (
+                            str(getattr(binding, "agent_name", "") or ""),
+                            str(meta.get("strategy") or meta.get("model_id") or ""),
+                            account_id,
+                        )
+                        if value
+                    )
+                )
+
+            positions = []
+            if RuntimePosition is not None and account_ids:
+                for position in (
+                    sess.query(RuntimePosition)
+                    .filter(RuntimePosition.account_id.in_(account_ids))
+                    .order_by(
+                        RuntimePosition.account_id.asc(),
+                        RuntimePosition.symbol.asc(),
+                    )
+                    .all()
+                ):
+                    positions.append(
+                        f"{getattr(position, 'account_id', '')} · "
+                        f"{getattr(position, 'symbol', '')} · "
+                        f"{int(getattr(position, 'quantity', 0) or 0)}"
+                    )
+
+            orders = []
+            if OrderORM is not None:
+                for order in (
+                    sess.query(OrderORM)
+                    .filter(OrderORM.run_id == normalized_run_id)
+                    .order_by(OrderORM.ts_last.desc(), OrderORM.id.desc())
+                    .limit(20)
+                    .all()
+                ):
+                    orders.append(
+                        f"{getattr(order, 'id', '')} · "
+                        f"{getattr(order, 'symbol', '')} · "
+                        f"{_enum_value(getattr(order, 'status', ''))}"
+                    )
+
+            fills = []
+            market_symbols = set()
+            if TradeORM is not None:
+                for trade in (
+                    sess.query(TradeORM)
+                    .filter(TradeORM.run_id == normalized_run_id)
+                    .order_by(TradeORM.ts.desc(), TradeORM.id.desc())
+                    .limit(20)
+                    .all()
+                ):
+                    symbol = str(getattr(trade, "symbol", "") or "")
+                    if symbol:
+                        market_symbols.add(symbol)
+                    fills.append(
+                        f"{getattr(trade, 'id', '')} · {symbol} · "
+                        f"{int(getattr(trade, 'quantity', 0) or 0)} @ "
+                        f"{float(getattr(trade, 'price', 0.0) or 0.0):.4f}"
+                    )
+            if OrderORM is not None and not market_symbols:
+                market_symbols.update(
+                    str(row[0])
+                    for row in (
+                        sess.query(OrderORM.symbol)
+                        .filter(OrderORM.run_id == normalized_run_id)
+                        .distinct()
+                        .all()
+                    )
+                    if row[0]
+                )
+
+            requested_execution = merged_meta.get("requested_execution")
+            effective_execution = merged_meta.get("effective_execution")
+            override_reasons = merged_meta.get("execution_override_reasons")
+            if not isinstance(requested_execution, dict):
+                requested_execution = {
+                    "speed_profile": str(
+                        getattr(run, "speed_profile", None) or "default"
+                    )
+                }
+            if not isinstance(effective_execution, dict):
+                effective_execution = dict(requested_execution)
+            if not isinstance(override_reasons, dict):
+                override_reasons = {}
+
+            last_sim_day = int(getattr(run, "last_sim_day", 0) or 0)
+            sim_end_day = getattr(run, "sim_end_day", None)
+            total_nodes = int(
+                merged_meta.get("total_nodes")
+                or sim_end_day
+                or max(last_sim_day, 1)
+            )
+            completed_nodes = min(
+                int(merged_meta.get("completed_nodes") or last_sim_day),
+                total_nodes,
+            )
+            failure_reason = str(
+                getattr(run, "failure_reason", "") or ""
+            ).strip()
+            alerts = []
+            if failure_reason:
+                alerts.append(
+                    {
+                        "code": "runtime_run_failure",
+                        "severity": "error",
+                        "message": failure_reason,
+                    }
+                )
+            strategy_id = str(
+                merged_meta.get("strategy")
+                or merged_meta.get("model_id")
+                or ""
+            ).strip() or None
+            return {
+                "run_id": normalized_run_id,
+                "name": str(
+                    getattr(run, "name", "") or normalized_run_id
+                ),
+                "scenario_name": (
+                    str(
+                        getattr(run, "scenario_name", "")
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                "scenario_set_id": (
+                    str(
+                        merged_meta.get("scenario_set_id")
+                        or getattr(run, "environment_tag", None)
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                "strategy_id": strategy_id,
+                "reproduction_manifest_id": (
+                    str(
+                        merged_meta.get("reproduction_manifest_id")
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                "status": str(getattr(run, "status", "") or "created"),
+                "failure_reason": failure_reason or None,
+                "started_at": getattr(run, "started_at", None),
+                "updated_at": getattr(run, "updated_at", None),
+                "ended_at": getattr(run, "ended_at", None),
+                "sim_start_day": getattr(run, "sim_start_day", None),
+                "last_sim_day": last_sim_day,
+                "sim_end_day": sim_end_day,
+                "last_sim_dt": getattr(run, "last_sim_dt", None),
+                "current_node_id": str(
+                    merged_meta.get("current_node_id")
+                    or f"RUN-{str(getattr(run, 'status', 'created')).upper()}"
+                ),
+                "current_node_label": str(
+                    merged_meta.get("current_node_label")
+                    or str(getattr(run, "status", "created")).replace("_", " ").title()
+                ),
+                "completed_nodes": completed_nodes,
+                "total_nodes": total_nodes,
+                "task_id": (
+                    str(
+                        merged_meta.get("diagnostic_task_id")
+                        or merged_meta.get("arena_id")
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                "requested_execution": requested_execution,
+                "effective_execution": effective_execution,
+                "execution_override_reasons": override_reasons,
+                "alerts": alerts,
+                "market_context": sorted(market_symbols),
+                "account_context": binding_context,
+                "position_context": positions,
+                "order_context": orders,
+                "fill_context": fills,
+            }
+        except Exception:
+            try:
+                sess.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            sess.close()
 
     def list_agent_bindings(self, *, include_all_runs: bool = False) -> List[Dict[str, Any]]:
         if SessionLocal is None or AgentBinding is None:

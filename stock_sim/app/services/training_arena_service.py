@@ -23,6 +23,7 @@ ARENA_STATES = {
     "EVALUATING",
     "EVOLVING",
     "STOPPED",
+    "CANCELED",
     "FAILED",
 }
 DEFAULT_MODEL_INITIAL_CASH = 50_000_000.0
@@ -123,6 +124,42 @@ class TrainingArenaService:
         state = self._require_arena(arena_id)
         self._control_agents(state.model_agent_ids + state.retail_agent_ids, "stop")
         state.status = "STOPPED"
+        state.updated_at = datetime.utcnow()
+        return state.to_dict()
+
+    def pause_arena(self, arena_id: str) -> dict[str, Any]:
+        state = self._require_arena(arena_id)
+        if state.status != "RUNNING":
+            raise ValueError("arena can pause only while running")
+        self._control_agents_strict(
+            state.model_agent_ids + state.retail_agent_ids,
+            "pause",
+        )
+        state.status = "PAUSED"
+        state.updated_at = datetime.utcnow()
+        return state.to_dict()
+
+    def resume_arena(self, arena_id: str) -> dict[str, Any]:
+        state = self._require_arena(arena_id)
+        if state.status != "PAUSED":
+            raise ValueError("arena can resume only while paused")
+        self._control_agents_strict(
+            state.model_agent_ids + state.retail_agent_ids,
+            "resume",
+        )
+        state.status = "RUNNING"
+        state.updated_at = datetime.utcnow()
+        return state.to_dict()
+
+    def cancel_diagnostic_task(self, arena_id: str) -> dict[str, Any]:
+        state = self._require_arena(arena_id)
+        if state.status not in {"CREATED", "READY", "RUNNING", "PAUSED"}:
+            raise ValueError("arena diagnostic task is not cancelable")
+        self._control_agents_strict(
+            state.model_agent_ids + state.retail_agent_ids,
+            "stop",
+        )
+        state.status = "CANCELED"
         state.updated_at = datetime.utcnow()
         return state.to_dict()
 
@@ -253,6 +290,24 @@ class TrainingArenaService:
                 self._agent_service.control(agent_id, action)
             except Exception:
                 pass
+
+    def _control_agents_strict(
+        self,
+        agent_ids: list[str],
+        action: str,
+    ) -> None:
+        if not agent_ids:
+            return
+        controller = getattr(self._agent_service, "control_many", None)
+        if callable(controller):
+            result = controller(list(agent_ids), action)
+            if isinstance(result, dict) and result.get("failed"):
+                raise RuntimeError(
+                    f"diagnostic agent control failed: {result['failed']}"
+                )
+            return
+        for agent_id in agent_ids:
+            self._agent_service.control(agent_id, action)
 
     def _complete_model_episode(self, state: TrainingArenaState, *, episode_id: str | None) -> None:
         marker = getattr(self._agent_service, "complete_model_episode", None)

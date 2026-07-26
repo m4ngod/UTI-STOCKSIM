@@ -20,7 +20,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from app.features import RunMonitoringFeature
+    from app.features import RunMonitoringContext, RunMonitoringFeature
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self,
         *,
         run_monitoring_feature: RunMonitoringFeature | None = None,
+        run_monitoring_context: RunMonitoringContext | None = None,
         frontend_v2_enabled: bool | None = None,
         rollback_read_only: bool = False,
         layout_path: str = "layout_main.json",
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             else frontend_v2_enabled
         )
         self._run_monitoring_feature = run_monitoring_feature
+        self._run_monitoring_context = run_monitoring_context
         self._journey_workspace: Any = None
         self._dock = DockManager(self)
         self._layout_store = layout_store
@@ -171,6 +173,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         workspace = JourneyWorkspaceHost(
             self._run_monitoring_feature,
+            context=self._run_monitoring_context,
             parent=self,
         )
         self.setCentralWidget(workspace)  # type: ignore[attr-defined]

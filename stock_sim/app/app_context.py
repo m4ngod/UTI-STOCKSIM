@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from threading import RLock
 
+from app.event_bridge import EventBridge, start_frontend_bridge
 from app.runtime_gateway import RuntimeGateway
 from app.state.settings_store import SettingsStore
 
@@ -29,7 +31,12 @@ from app.services.arena_experiment_runner import ArenaExperimentRunner
 from app.services.training_arena_service import TrainingArenaService
 from app.features import (
     DeterministicFakeRunMonitoringAdapter,
+    FormalDiagnosticCampaignId,
+    LiveRunMonitoringAdapter,
+    RunMonitoringContext,
     RunMonitoringFeature,
+    RunMonitoringSelection,
+    StrategyRunId,
 )
 
 
@@ -60,12 +67,19 @@ class AppContext:
     training_arena_service: TrainingArenaService
     arena_experiment_runner: ArenaExperimentRunner
     run_monitoring_feature: RunMonitoringFeature
+    run_monitoring_context: RunMonitoringContext
 
 
-def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppContext:
+def build_app_context(
+    *,
+    settings_path: str = "frontend_settings.json",
+    run_monitoring_mode: str | None = None,
+    event_bridge: EventBridge | None = None,
+) -> AppContext:
     settings_store = SettingsStore(path=settings_path, auto_save=False)
     runtime_gateway = RuntimeGateway()
-    runtime_gateway.ensure_desktop_run()
+    if not _frontend_v2_enabled():
+        runtime_gateway.ensure_desktop_run()
     _start_market_persistence_services()
 
     market_data_service = MarketDataService(
@@ -101,7 +115,19 @@ def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
         agent_service=agent_service,
         runtime_gateway=runtime_gateway,
     )
-    run_monitoring_feature = DeterministicFakeRunMonitoringAdapter()
+    run_monitoring_context = _run_monitoring_context_from_environment()
+    resolved_mode = _run_monitoring_mode(run_monitoring_mode)
+    if resolved_mode == "fake":
+        run_monitoring_feature: RunMonitoringFeature = (
+            DeterministicFakeRunMonitoringAdapter()
+        )
+    else:
+        live_bridge = event_bridge or start_frontend_bridge()
+        run_monitoring_feature = LiveRunMonitoringAdapter(
+            runtime_gateway=runtime_gateway,
+            event_bridge=live_bridge,
+            diagnostic_tasks=training_arena_service,
+        )
 
     return AppContext(
         settings_store=settings_store,
@@ -122,6 +148,7 @@ def build_app_context(*, settings_path: str = "frontend_settings.json") -> AppCo
         training_arena_service=training_arena_service,
         arena_experiment_runner=arena_experiment_runner,
         run_monitoring_feature=run_monitoring_feature,
+        run_monitoring_context=run_monitoring_context,
     )
 
 
@@ -137,11 +164,70 @@ def get_app_context(*, settings_path: str = "frontend_settings.json") -> AppCont
         return _app_context
 
 
-def reset_app_context(*, settings_path: str = "frontend_settings.json") -> AppContext:
+def reset_app_context(
+    *,
+    settings_path: str = "frontend_settings.json",
+    run_monitoring_mode: str | None = None,
+    event_bridge: EventBridge | None = None,
+) -> AppContext:
     global _app_context
     with _lock:
-        _app_context = build_app_context(settings_path=settings_path)
+        previous = _app_context
+        _app_context = build_app_context(
+            settings_path=settings_path,
+            run_monitoring_mode=run_monitoring_mode,
+            event_bridge=event_bridge,
+        )
+        if previous is not None:
+            previous.run_monitoring_feature.close()
         return _app_context
+
+
+def _frontend_v2_enabled() -> bool:
+    return os.environ.get("STOCKSIM_FRONTEND_V2", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _run_monitoring_mode(explicit: str | None) -> str:
+    value = (
+        explicit
+        or os.environ.get("STOCKSIM_FRONTEND_V2_ADAPTER")
+        or ("live" if _frontend_v2_enabled() else "fake")
+    )
+    normalized = value.strip().lower()
+    if normalized not in {"live", "fake"}:
+        raise ValueError(
+            "Run Monitoring Adapter mode must be 'live' or 'fake'"
+        )
+    return normalized
+
+
+def _run_monitoring_context_from_environment() -> RunMonitoringContext:
+    campaign_id = os.environ.get(
+        "STOCKSIM_FRONTEND_V2_CAMPAIGN_ID",
+        "",
+    ).strip()
+    run_id = os.environ.get("STOCKSIM_FRONTEND_V2_RUN_ID", "").strip()
+    if not campaign_id and not run_id:
+        return RunMonitoringContext.no_selection()
+    if not campaign_id:
+        raise ValueError(
+            "An existing Run Monitoring route requires a campaign identity"
+        )
+    if not run_id:
+        return RunMonitoringContext.for_campaign(
+            FormalDiagnosticCampaignId(campaign_id)
+        )
+    return RunMonitoringContext.for_run(
+        RunMonitoringSelection(
+            campaign_id=FormalDiagnosticCampaignId(campaign_id),
+            run_id=StrategyRunId(run_id),
+        )
+    )
 
 
 def _start_market_persistence_services() -> None:

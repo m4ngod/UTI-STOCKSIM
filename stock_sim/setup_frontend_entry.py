@@ -96,8 +96,8 @@ def _start_frontend(*, headless: bool):
 
     # Real GUI path must explicitly opt into real Qt widgets.
     os.environ.setdefault("STOCKSIM_ENABLE_REAL_UI", "1")
-    context = reset_app_context()
-    start_frontend_bridge()
+    event_bridge = start_frontend_bridge()
+    context = reset_app_context(event_bridge=event_bridge)
     start_runtime_support_services()
 
     register_builtin_panels()
@@ -115,6 +115,11 @@ def _start_frontend(*, headless: bool):
         pass
     mw = MainWindow(
         run_monitoring_feature=context.run_monitoring_feature,
+        run_monitoring_context=getattr(
+            context,
+            "run_monitoring_context",
+            None,
+        ),
     )
     try:
         from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore
