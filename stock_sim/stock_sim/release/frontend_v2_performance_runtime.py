@@ -60,6 +60,7 @@ from .frontend_v2_performance import (
     PERFORMANCE_THRESHOLDS,
     REFERENCE_FIXTURE,
     REFERENCE_MEASUREMENT_PROTOCOL,
+    build_performance_metric,
     reference_fixture_digest,
     validate_performance_lane,
 )
@@ -955,8 +956,8 @@ def _build_report(
     recorder: _MetricRecorder,
     observed_fixture: Mapping[str, int],
 ) -> dict[str, Any]:
-    event_metric = _metric(recorder.event_to_visible_ms)
-    input_metric = _metric(recorder.input_response_ms)
+    event_metric = build_performance_metric(recorder.event_to_visible_ms)
+    input_metric = build_performance_metric(recorder.input_response_ms)
     source_intervals_ms = [
         (current - previous) / 1_000_000
         for previous, current in zip(
@@ -1007,7 +1008,7 @@ def _build_report(
         "metrics": {
             "event_to_visible": event_metric,
             "input_response": input_metric,
-            "source_cadence": _metric(source_intervals_ms),
+            "source_cadence": build_performance_metric(source_intervals_ms),
             "usable_state_ms": round(probe.usable_state_ms, 6),
             "max_main_thread_stall_ms": round(max_stall_ms, 6),
             "main_thread_stalls_over_budget": sum(
@@ -1065,31 +1066,6 @@ def _runtime_threshold_failures(
             report["toolchain_lock_digest"],
         ),
     )
-
-
-def _metric(samples: list[float]) -> dict[str, Any]:
-    rounded = [round(value, 6) for value in samples]
-    ordered = sorted(rounded)
-    return {
-        "count": len(ordered),
-        "p50_ms": _percentile(ordered, 0.50),
-        "p95_ms": _percentile(ordered, 0.95),
-        "max_ms": max(ordered) if ordered else None,
-        "samples_digest": _sample_digest(rounded),
-        "samples_ms": rounded,
-    }
-
-
-def _percentile(ordered: list[float], quantile: float) -> float | None:
-    if not ordered:
-        return None
-    index = max(0, min(len(ordered) - 1, ceil(len(ordered) * quantile) - 1))
-    return ordered[index]
-
-
-def _sample_digest(samples: list[float]) -> str:
-    payload = json.dumps(samples, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
 def _file_digest(path: Path) -> str:

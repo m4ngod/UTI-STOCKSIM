@@ -1,10 +1,13 @@
 from copy import deepcopy
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
+from stock_sim.release import frontend_v2_performance
 from stock_sim.release.no_manual_trading_gate import (
     audit_python_imports,
     audit_python_text,
@@ -23,6 +26,24 @@ from stock_sim.release.frontend_v2_performance import (
 SOURCE_COMMIT = "a" * 40
 TOOLCHAIN_DIGEST = f"sha256:{'b' * 64}"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _sample_metric(
+    *,
+    p50_ms: float,
+    p95_ms: float,
+    max_ms: float,
+) -> dict[str, object]:
+    samples = [p50_ms] * 10 + [p95_ms] * 9 + [max_ms]
+    payload = json.dumps(samples, separators=(",", ":")).encode("utf-8")
+    return {
+        "count": len(samples),
+        "p50_ms": p50_ms,
+        "p95_ms": p95_ms,
+        "max_ms": max_ms,
+        "samples_digest": f"sha256:{hashlib.sha256(payload).hexdigest()}",
+        "samples_ms": samples,
+    }
 
 
 def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
@@ -77,20 +98,16 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
             "nuitka": "2.6.8",
         },
         "metrics": {
-            "event_to_visible": {
-                "count": 1_000,
-                "p50_ms": 8.0,
-                "p95_ms": 19.0,
-                "max_ms": 20.0,
-                "samples_digest": f"sha256:{'c' * 64}",
-            },
-            "input_response": {
-                "count": 100,
-                "p50_ms": 4.0,
-                "p95_ms": 15.0,
-                "max_ms": 16.0,
-                "samples_digest": f"sha256:{'d' * 64}",
-            },
+            "event_to_visible": _sample_metric(
+                p50_ms=8.0,
+                p95_ms=19.0,
+                max_ms=20.0,
+            ),
+            "input_response": _sample_metric(
+                p50_ms=4.0,
+                p95_ms=15.0,
+                max_ms=16.0,
+            ),
             "usable_state_ms": 700.0,
             "max_main_thread_stall_ms": 49.0,
             "main_thread_stalls_over_budget": 0,
@@ -229,7 +246,98 @@ def test_lane_validation_blocks_event_to_visible_p95_over_budget():
 
     assert failures == (
         "hardware event-to-visible p95 exceeds 20.0 ms: 20.001 ms",
+        "hardware event-to-visible sample summary does not match samples",
     )
+
+
+def test_lane_validation_recomputes_raw_sample_digest_and_summary():
+    digest_tampered = _passing_lane_report()
+    digest_tampered["metrics"]["event_to_visible"][
+        "samples_digest"
+    ] = f"sha256:{'0' * 64}"
+    summary_tampered = _passing_lane_report()
+    summary_tampered["metrics"]["input_response"]["p95_ms"] = 14.0
+
+    digest_failures = validate_performance_lane(
+        digest_tampered,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+    summary_failures = validate_performance_lane(
+        summary_tampered,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert (
+        "hardware event-to-visible sample digest does not match samples"
+        in digest_failures
+    )
+    assert (
+        "hardware input sample summary does not match samples"
+        in summary_failures
+    )
+
+
+def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    def git(*arguments):
+        return subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init")
+    git("config", "user.email", "performance-test@example.invalid")
+    git("config", "user.name", "Performance Test")
+    tracked = repository / "tracked.py"
+    tracked.write_text("LOCKED = True\n", encoding="utf-8")
+    git("add", "tracked.py")
+    git("commit", "-m", "fixture")
+    source_commit = git("rev-parse", "HEAD")
+    allowed_report = repository / "hardware.json"
+    allowed_report.write_text("{}\n", encoding="utf-8")
+
+    assert (
+        frontend_v2_performance.validate_measurement_source_checkout(
+            repository,
+            expected_source_commit=source_commit,
+            allowed_untracked_paths=(allowed_report,),
+        )
+        == ()
+    )
+    wrong_head = (
+        frontend_v2_performance.validate_measurement_source_checkout(
+            repository,
+            expected_source_commit="0" * 40,
+            allowed_untracked_paths=(allowed_report,),
+        )
+    )
+    assert any("HEAD does not match" in failure for failure in wrong_head)
+
+    tracked.write_text("LOCKED = False\n", encoding="utf-8")
+    dirty = frontend_v2_performance.validate_measurement_source_checkout(
+        repository,
+        expected_source_commit=source_commit,
+        allowed_untracked_paths=(allowed_report,),
+    )
+    assert any("tracked changes" in failure for failure in dirty)
+
+    tracked.write_text("LOCKED = True\n", encoding="utf-8")
+    unexpected = repository / "rogue.py"
+    unexpected.write_text("ROGUE = True\n", encoding="utf-8")
+    untracked = frontend_v2_performance.validate_measurement_source_checkout(
+        repository,
+        expected_source_commit=source_commit,
+        allowed_untracked_paths=(allowed_report,),
+    )
+    assert any("unexpected untracked files" in failure for failure in untracked)
 
 
 @pytest.mark.parametrize(

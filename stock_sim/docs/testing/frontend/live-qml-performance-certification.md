@@ -72,7 +72,10 @@ Changing any protocol field invalidates the report.
 First commit all implementation and test changes. The resulting immutable
 commit is the measurement source. Do not change production or harness code
 after measuring; if it changes, create a new source commit and rerun both
-lanes.
+lanes. Certifying commands reject a mismatched `HEAD`, any tracked worktree or
+index change, and any untracked file other than the four named evidence
+artifacts passed to the command. This check runs before either renderer or the
+aggregate safety audit.
 
 Run the renderer processes separately:
 
@@ -104,7 +107,9 @@ python -m stock_sim.release.frontend_v2_performance certify `
 
 The aggregate is certified only when both lane files are independent,
 checksum-bound to the same source and exact dependency lock, all thresholds
-pass, and the fresh safety report passes. Retain all four JSON files under:
+pass, every raw timing sample reproduces its stored digest and
+count/p50/p95/max summary, and the fresh safety report passes. Retain all four
+JSON files under:
 
 `docs/testing/frontend/evidence/issue-45/<source-commit>/`
 

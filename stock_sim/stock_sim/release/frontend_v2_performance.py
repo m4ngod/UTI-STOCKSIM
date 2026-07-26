@@ -8,8 +8,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
+import subprocess
 import sys
+from math import ceil
 from time import perf_counter_ns
 from typing import Any, Mapping, Sequence
 
@@ -122,6 +123,90 @@ def reference_fixture_digest() -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def build_performance_metric(samples: Sequence[float]) -> dict[str, Any]:
+    """Build the canonical raw-sample payload and its derived summary."""
+
+    rounded = [round(value, 6) for value in samples]
+    ordered = sorted(rounded)
+    return {
+        "count": len(ordered),
+        "p50_ms": _percentile(ordered, 0.50),
+        "p95_ms": _percentile(ordered, 0.95),
+        "max_ms": max(ordered) if ordered else None,
+        "samples_digest": _sample_digest(rounded),
+        "samples_ms": rounded,
+    }
+
+
+def validate_measurement_source_checkout(
+    project_root: Path,
+    *,
+    expected_source_commit: str,
+    allowed_untracked_paths: Sequence[Path] = (),
+) -> tuple[str, ...]:
+    """Bind certifying evidence to the exact clean Git checkout being run."""
+
+    failures: list[str] = []
+    root = project_root.resolve()
+    repository_result = _run_git(root, "rev-parse", "--show-toplevel")
+    if repository_result.returncode:
+        return ("measurement source is not inside a Git checkout",)
+    repository_root = Path(repository_result.stdout.strip()).resolve()
+
+    head_result = _run_git(repository_root, "rev-parse", "HEAD")
+    if head_result.returncode:
+        failures.append("measurement source HEAD is unavailable")
+    else:
+        head = head_result.stdout.strip()
+        if head != expected_source_commit:
+            failures.append(
+                "measurement source HEAD does not match requested commit: "
+                f"{head}"
+            )
+
+    tracked_result = _run_git(
+        repository_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
+    )
+    if tracked_result.returncode:
+        failures.append("measurement source tracked status is unavailable")
+    elif tracked_result.stdout:
+        failures.append("measurement source checkout has tracked changes")
+
+    allowed = {
+        (
+            path.resolve()
+            if path.is_absolute()
+            else (root / path).resolve()
+        )
+        for path in allowed_untracked_paths
+    }
+    untracked_result = _run_git(
+        repository_root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    )
+    if untracked_result.returncode:
+        failures.append("measurement source untracked status is unavailable")
+    else:
+        unexpected = tuple(
+            relative_path
+            for relative_path in untracked_result.stdout.split("\0")
+            if relative_path
+            and (repository_root / relative_path).resolve() not in allowed
+        )
+        if unexpected:
+            failures.append(
+                "measurement source checkout has unexpected untracked files: "
+                + ", ".join(unexpected)
+            )
+    return tuple(failures)
 
 
 def validate_performance_lane(
@@ -381,13 +466,41 @@ def validate_performance_lane(
         ("event-to-visible", event_metric),
         ("input", input_metric),
     ):
-        digest = metric.get("samples_digest")
-        if not isinstance(digest, str) or not re.fullmatch(
-            r"sha256:[0-9a-f]{64}",
-            digest,
+        samples_value = metric.get("samples_ms")
+        raw_samples = (
+            samples_value if isinstance(samples_value, list) else []
+        )
+        samples = tuple(
+            float(value)
+            for value in raw_samples
+            if _number(value) is not None
+        )
+        if (
+            not samples
+            or len(samples) != len(raw_samples)
+            or any(value < 0 for value in samples)
         ):
             failures.append(
-                f"{expected_lane} {metric_name} sample digest is invalid"
+                f"{expected_lane} {metric_name} sample payload is unavailable"
+            )
+            continue
+        expected_metric = build_performance_metric(samples)
+        if metric.get("samples_ms") != expected_metric["samples_ms"]:
+            failures.append(
+                f"{expected_lane} {metric_name} sample payload is not canonical"
+            )
+        if metric.get("samples_digest") != expected_metric["samples_digest"]:
+            failures.append(
+                f"{expected_lane} {metric_name} sample digest does not "
+                "match samples"
+            )
+        if any(
+            metric.get(field) != expected_metric[field]
+            for field in ("count", "p50_ms", "p95_ms", "max_ms")
+        ):
+            failures.append(
+                f"{expected_lane} {metric_name} sample summary does not "
+                "match samples"
             )
     return tuple(failures)
 
@@ -515,6 +628,31 @@ def _payload_digest(payload: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _percentile(
+    ordered: Sequence[float],
+    quantile: float,
+) -> float | None:
+    if not ordered:
+        return None
+    index = max(0, min(len(ordered) - 1, ceil(len(ordered) * quantile) - 1))
+    return ordered[index]
+
+
+def _sample_digest(samples: Sequence[float]) -> str:
+    payload = json.dumps(samples, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _run_git(project_root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(project_root), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
 def _file_digest(path: Path) -> str:
     return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
@@ -590,6 +728,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     certify_parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
     if arguments.command == "certify":
+        source_failures = validate_measurement_source_checkout(
+            arguments.project_root,
+            expected_source_commit=arguments.source_commit,
+            allowed_untracked_paths=(
+                arguments.hardware_report.resolve(),
+                arguments.software_report.resolve(),
+                arguments.safety_output.resolve(),
+                arguments.output.resolve(),
+            ),
+        )
+        if source_failures:
+            parser.error("; ".join(source_failures))
         safety_report = audit_no_manual_trading_gate(
             arguments.project_root,
             source_commit=arguments.source_commit,
@@ -619,6 +769,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "A certifying lane must run continuously for at least 60 seconds"
         )
+    if not arguments.smoke:
+        output_path = arguments.output.resolve()
+        permitted_artifacts = tuple(
+            output_path.parent / name
+            for name in (
+                "hardware.json",
+                "software.json",
+                "no-manual-trading.json",
+                "certification.json",
+            )
+        )
+        source_failures = validate_measurement_source_checkout(
+            Path(__file__).resolve().parents[2],
+            expected_source_commit=arguments.source_commit,
+            allowed_untracked_paths=(
+                output_path,
+                *permitted_artifacts,
+            ),
+        )
+        if source_failures:
+            parser.error("; ".join(source_failures))
     _configure_renderer_environment(arguments.lane)
     from .frontend_v2_performance_runtime import run_performance_lane
 
@@ -649,9 +820,11 @@ __all__ = [
     "PerformanceCertification",
     "PerformanceMeasurementProtocol",
     "PerformanceThresholds",
+    "build_performance_metric",
     "certify_performance_evidence",
     "certify_performance_report_files",
     "reference_fixture_digest",
+    "validate_measurement_source_checkout",
     "validate_performance_lane",
 ]
 
