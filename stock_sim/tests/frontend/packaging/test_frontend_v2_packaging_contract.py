@@ -8,9 +8,12 @@ from dataclasses import asdict, replace
 import pytest
 
 from stock_sim.release.frontend_v2_packaging import (
+    AccessibilityGateEvidence,
     EXPECTED_TOOLCHAIN,
     LockedPlatform,
+    MandatoryReleaseGateEvidence,
     PackageKind,
+    PerformanceGateEvidence,
     PROJECT_QML_ROOT,
     PROJECT_ROOT,
     audit_frontend_v2_surface,
@@ -24,6 +27,7 @@ from stock_sim.release.frontend_v2_packaging import (
     main as packaging_main,
     resolve_qml_dependency_closure,
     scan_qml_dependencies,
+    SafetyGateEvidence,
     toolchain_evidence_identity,
     verify_release_source,
     verify_running_toolchain,
@@ -38,17 +42,57 @@ from stock_sim.release.no_manual_trading_gate import (
 )
 
 
+_CLEAN_ROOM_JOURNEY = (
+    ("launched_active_run", "run_monitoring", "active", "ready", "fresh", "fresh"),
+    ("active_evidence", "evidence_and_findings", "active", "ready", "fresh", "fresh"),
+    (
+        "disconnected_run",
+        "run_monitoring",
+        "active",
+        "ready",
+        "disconnected",
+        "disconnected",
+    ),
+    (
+        "disconnected_evidence",
+        "evidence_and_findings",
+        "active",
+        "ready",
+        "disconnected",
+        "disconnected",
+    ),
+    ("reconnected_run", "run_monitoring", "active", "ready", "fresh", "fresh"),
+    (
+        "reconnected_evidence",
+        "evidence_and_findings",
+        "active",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    ("completed_run", "run_monitoring", "terminal", "ready", "fresh", "fresh"),
+    (
+        "completed_evidence",
+        "evidence_and_findings",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+)
+
+
 def _write_clean_room_screenshots(root, lane):
     screenshots = []
     lane_dir = root / lane
     lane_dir.mkdir(parents=True, exist_ok=True)
-    for state in ("loading", "empty", "disconnected"):
-        relative_path = f"{lane}/{state}.png"
+    for stage, *_ in _CLEAN_ROOM_JOURNEY:
+        relative_path = f"{lane}/{stage}.png"
         screenshot_path = root / relative_path
-        screenshot_path.write_bytes(f"{lane}:{state}".encode())
+        screenshot_path.write_bytes(f"{lane}:{stage}".encode())
         screenshots.append(
             {
-                "state": state,
+                "stage": stage,
                 "relative_path": relative_path,
                 "sha256": (
                     "sha256:"
@@ -57,6 +101,55 @@ def _write_clean_room_screenshots(root, lane):
             }
         )
     return screenshots
+
+
+def _clean_room_lane(root, lane, graphics_api):
+    return {
+        "exit_code": 0,
+        "graphics_api": graphics_api,
+        "source_commit": "abc123",
+        "production_path": [
+            "EventBridge",
+            "LiveRunMonitoringAdapter",
+            "LiveEvidenceAndFindingsAdapter",
+            "JourneyWorkspaceHost",
+        ],
+        "run_identity": "RUN-RC-001",
+        "routes_rendered": [
+            "run_monitoring",
+            "evidence_and_findings",
+        ],
+        "connection_transitions": [
+            "connected",
+            "disconnected",
+            "reconnected",
+            "completed",
+        ],
+        "observations": [
+            {
+                "stage": stage,
+                "route": route,
+                "run_state": run_state,
+                "evidence_state": evidence_state,
+                "run_freshness": run_freshness,
+                "evidence_freshness": evidence_freshness,
+            }
+            for (
+                stage,
+                route,
+                run_state,
+                evidence_state,
+                run_freshness,
+                evidence_freshness,
+            ) in _CLEAN_ROOM_JOURNEY
+        ],
+        "screenshots": _write_clean_room_screenshots(root, lane),
+        "screenshots_distinct": True,
+        "manual_trading_action_count": 0,
+        "read_only_context_visible": True,
+        "clean_exit": True,
+        "errors": [],
+    }
 
 
 def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
@@ -167,7 +260,7 @@ def test_qt_qmlimportscanner_resolves_the_transitive_qml_dependency_closure():
     assert closure.raw_output_digest.startswith("sha256:")
 
 
-def test_minimal_package_smoke_observes_loading_empty_and_disconnected(
+def test_package_smoke_observes_the_complete_production_journey(
     tmp_path,
     monkeypatch,
 ):
@@ -184,13 +277,17 @@ def test_minimal_package_smoke_observes_loading_empty_and_disconnected(
         capture_images=False,
     )
 
-    assert tuple(observation.state for observation in result.observations) == (
-        "loading",
-        "empty",
+    assert tuple(
+        observation.stage for observation in result.observations
+    ) == tuple(stage for stage, *_ in _CLEAN_ROOM_JOURNEY)
+    assert tuple(
+        observation.run_freshness for observation in result.observations
+    )[2:4] == (
+        "disconnected",
         "disconnected",
     )
     assert result.observations[-1].headline == (
-        "Run Monitoring is disconnected"
+        "Strategy Run reached a terminal state"
     )
     assert result.errors == ()
     assert result.clean_exit is True
@@ -218,7 +315,8 @@ def test_minimal_package_smoke_captures_distinct_software_frames(
         for observation in result.observations
         if observation.screenshot is not None
     }
-    assert len(screenshot_digests) == 3
+    assert len(result.observations) == 8
+    assert len(screenshot_digests) == 6
 
 
 def test_qml_smoke_capture_renders_the_quick_framebuffer(tmp_path):
@@ -385,11 +483,13 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 ):
     report_path = tmp_path / "clean-room-report.json"
     report_payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_commit": "abc123",
         "archive_sha256": "sha256:package",
         "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
         "architecture": "AMD64",
+        "user_name": "WDAGUtilityAccount",
+        "is_windows_sandbox": True,
         "network_enumeration_succeeded": True,
         "network_adapters_up": [],
         "python_on_path": False,
@@ -400,18 +500,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "dependency_cache_paths": [],
         "install_succeeded": True,
         "renderer_lanes": {
-            lane: {
-                "exit_code": 0,
-                "graphics_api": graphics_api,
-                "states": ["loading", "empty", "disconnected"],
-                "screenshots": _write_clean_room_screenshots(
-                    tmp_path,
-                    lane,
-                ),
-                "screenshots_distinct": True,
-                "clean_exit": True,
-                "errors": [],
-            }
+            lane: _clean_room_lane(tmp_path, lane, graphics_api)
             for lane, graphics_api in (
                 ("hardware", "Direct3D11"),
                 ("software", "Software"),
@@ -436,9 +525,9 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "software"
     ]["screenshots"]
     software_loading = tmp_path / software_screenshots[0]["relative_path"]
-    software_empty = tmp_path / software_screenshots[1]["relative_path"]
+    software_empty = tmp_path / software_screenshots[2]["relative_path"]
     software_empty.write_bytes(software_loading.read_bytes())
-    software_screenshots[1]["sha256"] = software_screenshots[0]["sha256"]
+    software_screenshots[2]["sha256"] = software_screenshots[0]["sha256"]
     report_path.write_text(
         json.dumps(duplicate_screenshot_report),
         encoding="utf-8",
@@ -553,6 +642,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 
 def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     tmp_path,
+    monkeypatch,
 ):
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
@@ -640,11 +730,13 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     report.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "source_commit": "abc123",
                 "archive_sha256": qml_sha256,
                 "operating_system": "Microsoft Windows 11 Pro",
-                "architecture": "AMD64",
+                    "architecture": "AMD64",
+                    "user_name": "WDAGUtilityAccount",
+                    "is_windows_sandbox": True,
                 "network_enumeration_succeeded": True,
                 "network_adapters_up": [],
                 "python_on_path": False,
@@ -655,22 +747,11 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "dependency_cache_paths": [],
                 "install_succeeded": True,
                 "renderer_lanes": {
-                    lane: {
-                        "exit_code": 0,
-                        "graphics_api": graphics_api,
-                        "states": [
-                            "loading",
-                            "empty",
-                            "disconnected",
-                        ],
-                        "screenshots": _write_clean_room_screenshots(
-                            tmp_path,
-                            lane,
-                        ),
-                        "screenshots_distinct": True,
-                        "clean_exit": True,
-                        "errors": [],
-                    }
+                    lane: _clean_room_lane(
+                        tmp_path,
+                        lane,
+                        graphics_api,
+                    )
                     for lane, graphics_api in (
                         ("hardware", "Direct3D11"),
                         ("software", "Software"),
@@ -743,10 +824,54 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     report.write_text(json.dumps(compromised), encoding="utf-8-sig")
     expected_report_bytes = report.read_bytes()
     assert expected_report_bytes.startswith(b"\xef\xbb\xbf")
+
+    def write_test_gates(**arguments):
+        gate_path = (
+            arguments["evidence_dir"]
+            / "mandatory-release-gates.json"
+        )
+        gate_path.write_text("{}", encoding="utf-8")
+        return MandatoryReleaseGateEvidence(
+            source_commit="abc123",
+            toolchain_identity="sha256:" + "1" * 64,
+            accessibility=AccessibilityGateEvidence(
+                issue_number=43,
+                issue_url="https://example.invalid/43",
+                source_commit="abc123",
+                status="passed",
+                test_count=10,
+                junit_sha256="sha256:" + "2" * 64,
+            ),
+            safety=SafetyGateEvidence(
+                issue_number=44,
+                issue_url="https://example.invalid/44",
+                source_commit="abc123",
+                status="passed",
+                report_sha256="sha256:" + "3" * 64,
+            ),
+            performance=PerformanceGateEvidence(
+                issue_number=45,
+                issue_url="https://example.invalid/45",
+                source_commit="abc123",
+                status="certified",
+                certification_sha256="sha256:" + "4" * 64,
+                hardware_report_sha256="sha256:" + "5" * 64,
+                software_report_sha256="sha256:" + "6" * 64,
+                safety_report_sha256="sha256:" + "3" * 64,
+            ),
+        )
+
+    monkeypatch.setattr(
+        "stock_sim.release.frontend_v2_packaging."
+        "write_mandatory_release_gate_evidence",
+        write_test_gates,
+    )
     certification = certify_frontend_v2_release(
         output_root=tmp_path,
         source_commit="abc123",
         clean_room_report=report,
+        accessibility_junit=tmp_path / "accessibility.xml",
+        performance_evidence_dir=tmp_path / "performance",
     )
 
     assert certification.clean_room_report_sha256 == (
@@ -757,9 +882,9 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     ).read_bytes() == expected_report_bytes
     assert (evidence_dir / "release-summary.json").is_file()
     assert all(
-        (evidence_dir / lane / f"{state}.png").is_file()
+        (evidence_dir / lane / f"{stage}.png").is_file()
         for lane in ("hardware", "software")
-        for state in ("loading", "empty", "disconnected")
+        for stage, *_ in _CLEAN_ROOM_JOURNEY
     )
 
 
@@ -774,20 +899,53 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
         report_path = tmp_path / lane / "smoke-report.json"
         report_path.parent.mkdir()
         report_path.write_text(
-            """
-            {
-              "renderer_lane": "%s",
-              "graphics_api": "%s",
-              "observations": [
-                {"state": "loading"},
-                {"state": "empty"},
-                {"state": "disconnected"}
-              ],
-              "errors": [],
-              "clean_exit": true
-            }
-            """
-            % (lane, graphics_api),
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "source_commit": "abc123",
+                    "renderer_lane": lane,
+                    "graphics_api": graphics_api,
+                    "production_path": [
+                        "EventBridge",
+                        "LiveRunMonitoringAdapter",
+                        "LiveEvidenceAndFindingsAdapter",
+                        "JourneyWorkspaceHost",
+                    ],
+                    "run_identity": "RUN-RC-001",
+                    "routes_rendered": [
+                        "run_monitoring",
+                        "evidence_and_findings",
+                    ],
+                    "connection_transitions": [
+                        "connected",
+                        "disconnected",
+                        "reconnected",
+                        "completed",
+                    ],
+                    "observations": [
+                        {
+                            "stage": stage,
+                            "route": route,
+                            "run_state": run_state,
+                            "evidence_state": evidence_state,
+                            "run_freshness": run_freshness,
+                            "evidence_freshness": evidence_freshness,
+                        }
+                        for (
+                            stage,
+                            route,
+                            run_state,
+                            evidence_state,
+                            run_freshness,
+                            evidence_freshness,
+                        ) in _CLEAN_ROOM_JOURNEY
+                    ],
+                    "manual_trading_action_count": 0,
+                    "read_only_context_visible": True,
+                    "errors": [],
+                    "clean_exit": True,
+                }
+            ),
             encoding="utf-8",
         )
         reports[lane] = report_path
@@ -803,10 +961,15 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
     assert evidence.toolchain_identity.startswith("sha256:")
     assert evidence.hardware.graphics_api == "Direct3D11"
     assert evidence.software.graphics_api == "Software"
-    assert evidence.hardware.states == (
-        "loading",
-        "empty",
-        "disconnected",
+    assert evidence.hardware.journey_stages == (
+        "launched_active_run",
+        "active_evidence",
+        "disconnected_run",
+        "disconnected_evidence",
+        "reconnected_run",
+        "reconnected_evidence",
+        "completed_run",
+        "completed_evidence",
     )
     assert evidence.environment_identity
     assert (
@@ -1060,6 +1223,15 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
+    assert "schema_version = 3" in script
+    assert '"--source-commit=$SourceCommit"' in script
+    assert "production_path" in script
+    assert "routes_rendered" in script
+    assert "connection_transitions" in script
+    assert "observations" in script
+    assert "manual_trading_action_count" in script
+    assert "read_only_context_visible" in script
+    assert "$requiredVisualGroups" in script
     assert re.search(
         r"""
         \[IO\.File\]::WriteAllText\(

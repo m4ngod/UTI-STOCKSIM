@@ -71,6 +71,11 @@ if ($archiveHash -ne $normalizedExpected) {
 $os = Get-CimInstance Win32_OperatingSystem
 $operatingSystem = "$($os.Caption) $($os.Version)"
 $architecture = $env:PROCESSOR_ARCHITECTURE
+$userName = $env:USERNAME
+$isWindowsSandbox = (
+    $userName -eq "WDAGUtilityAccount" -and
+    (Test-Path -LiteralPath "C:\Users\WDAGUtilityAccount")
+)
 $networkEnumerationSucceeded = $false
 $networkAdaptersUp = @()
 try {
@@ -160,29 +165,84 @@ $executable = Get-ChildItem -LiteralPath $resolvedInstall -Recurse -File |
 $installSucceeded = [bool]$executable
 $rendererLanes = [ordered]@{}
 if ($installSucceeded) {
+    $expectedJourneySignatures = @(
+        "launched_active_run|run_monitoring|active|ready|fresh|fresh",
+        "active_evidence|evidence_and_findings|active|ready|fresh|fresh",
+        "disconnected_run|run_monitoring|active|ready|disconnected|disconnected",
+        "disconnected_evidence|evidence_and_findings|active|ready|disconnected|disconnected",
+        "reconnected_run|run_monitoring|active|ready|fresh|fresh",
+        "reconnected_evidence|evidence_and_findings|active|ready|fresh|fresh",
+        "completed_run|run_monitoring|terminal|ready|fresh|fresh",
+        "completed_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
+    )
+    $expectedProductionPath = @(
+        "EventBridge",
+        "LiveRunMonitoringAdapter",
+        "LiveEvidenceAndFindingsAdapter",
+        "JourneyWorkspaceHost"
+    )
+    $expectedRoutes = @("run_monitoring", "evidence_and_findings")
+    $expectedTransitions = @(
+        "connected",
+        "disconnected",
+        "reconnected",
+        "completed"
+    )
+    $requiredVisualGroups = @(
+        @(
+            "launched_active_run",
+            "disconnected_run",
+            "completed_run"
+        ),
+        @(
+            "active_evidence",
+            "disconnected_evidence",
+            "completed_evidence"
+        )
+    )
     foreach ($lane in @("hardware", "software")) {
         $laneDir = Join-Path $resolvedEvidence $lane
         Reset-RendererLaneEvidence `
             -EvidenceRoot $resolvedEvidence `
             -LaneDirectory $laneDir
-        & $executable.FullName "--renderer-lane=$lane" "--smoke-report-dir=$laneDir"
+        & $executable.FullName `
+            "--renderer-lane=$lane" `
+            "--smoke-report-dir=$laneDir" `
+            "--source-commit=$SourceCommit"
         $exitCode = $LASTEXITCODE
         $smokePath = Join-Path $laneDir "smoke-report.json"
         if (Test-Path -LiteralPath $smokePath) {
             $smoke = Get-Content -LiteralPath $smokePath -Raw -Encoding utf8 |
                 ConvertFrom-Json
-            $states = @($smoke.observations | ForEach-Object { $_.state })
-            $statesMatch = (
-                ($states -join "|") -eq "loading|empty|disconnected"
-            )
             $observations = @($smoke.observations)
+            $journeySignatures = @(
+                $observations |
+                    ForEach-Object {
+                        @(
+                            [string]$_.stage,
+                            [string]$_.route,
+                            [string]$_.run_state,
+                            [string]$_.evidence_state,
+                            [string]$_.run_freshness,
+                            [string]$_.evidence_freshness
+                        ) -join "|"
+                    }
+            )
+            $statesMatch = (
+                ($journeySignatures -join "`n") -eq
+                    ($expectedJourneySignatures -join "`n")
+            )
             $screenshotNames = @(
                 $observations |
                     ForEach-Object { [string]$_.screenshot }
             )
             $screenshotHashes = @()
+            $screenshotHashesByStage = @{}
             $screenshotEvidence = @()
-            $screenshotsPresent = $screenshotNames.Count -eq 3
+            $screenshotsPresent = (
+                $screenshotNames.Count -eq
+                    $expectedJourneySignatures.Count
+            )
             foreach ($observation in $observations) {
                 $screenshotName = [string]$observation.screenshot
                 $safeName = [IO.Path]::GetFileName($screenshotName)
@@ -203,25 +263,102 @@ if ($installSucceeded) {
                 ).Hash.ToLowerInvariant()
                 $qualifiedHash = "sha256:$screenshotHash"
                 $screenshotHashes += $qualifiedHash
+                $screenshotHashesByStage[
+                    [string]$observation.stage
+                ] = $qualifiedHash
                 $relativeScreenshotPath = "$lane/$safeName"
                 $screenshotEvidence += [ordered]@{
-                    state = [string]$observation.state
+                    stage = [string]$observation.stage
                     relative_path = $relativeScreenshotPath
                     sha256 = $qualifiedHash
                 }
             }
+            $majorStatesAreDistinct = $true
+            foreach ($visualGroup in $requiredVisualGroups) {
+                $groupHashes = @(
+                    $visualGroup |
+                        ForEach-Object {
+                            $screenshotHashesByStage[[string]$_]
+                        }
+                )
+                if (
+                    $groupHashes.Count -ne $visualGroup.Count -or
+                    @($groupHashes | Sort-Object -Unique).Count -ne
+                        $visualGroup.Count
+                ) {
+                    $majorStatesAreDistinct = $false
+                }
+            }
             $screenshotsDistinct = (
                 $screenshotsPresent -and
-                $screenshotHashes.Count -eq 3 -and
-                @($screenshotHashes | Sort-Object -Unique).Count -eq 3
+                $screenshotHashes.Count -eq
+                    $expectedJourneySignatures.Count -and
+                $majorStatesAreDistinct
+            )
+            $productionPath = @($smoke.production_path)
+            $routesRendered = @($smoke.routes_rendered)
+            $connectionTransitions = @($smoke.connection_transitions)
+            $productionPathMatches = (
+                ($productionPath -join "|") -eq
+                    ($expectedProductionPath -join "|")
+            )
+            $routesMatch = (
+                ($routesRendered -join "|") -eq
+                    ($expectedRoutes -join "|")
+            )
+            $connectionTransitionsMatch = (
+                ($connectionTransitions -join "|") -eq
+                    ($expectedTransitions -join "|")
             )
             $rendererLanes[$lane] = [ordered]@{
                 exit_code = $exitCode
                 graphics_api = $smoke.graphics_api
-                states = $states
+                source_commit_matches = (
+                    [string]$smoke.source_commit -eq $SourceCommit
+                )
+                source_commit = [string]$smoke.source_commit
+                production_path = $productionPath
+                production_path_matches = $productionPathMatches
+                run_identity = [string]$smoke.run_identity
+                routes_rendered = $routesRendered
+                routes_match = $routesMatch
+                connection_transitions = $connectionTransitions
+                connection_transitions_match = (
+                    $connectionTransitionsMatch
+                )
+                observations = @(
+                    $observations |
+                        ForEach-Object {
+                            [ordered]@{
+                                stage = [string]$_.stage
+                                route = [string]$_.route
+                                run_state = [string]$_.run_state
+                                evidence_state = [string]$_.evidence_state
+                                run_freshness = [string]$_.run_freshness
+                                evidence_freshness = (
+                                    [string]$_.evidence_freshness
+                                )
+                                run_phase = [string]$_.run_phase
+                                evidence_phase = [string]$_.evidence_phase
+                                run_revision = [string]$_.run_revision
+                                evidence_revision = (
+                                    [string]$_.evidence_revision
+                                )
+                                source_generation = (
+                                    [string]$_.source_generation
+                                )
+                            }
+                        }
+                )
                 states_match = $statesMatch
                 screenshots = $screenshotEvidence
                 screenshots_distinct = $screenshotsDistinct
+                manual_trading_action_count = (
+                    [int]$smoke.manual_trading_action_count
+                )
+                read_only_context_visible = (
+                    [bool]$smoke.read_only_context_visible
+                )
                 clean_exit = $smoke.clean_exit
                 errors = @($smoke.errors)
             }
@@ -230,10 +367,21 @@ if ($installSucceeded) {
             $rendererLanes[$lane] = [ordered]@{
                 exit_code = $exitCode
                 graphics_api = "unavailable"
-                states = @()
+                source_commit_matches = $false
+                source_commit = ""
+                production_path = @()
+                production_path_matches = $false
+                run_identity = ""
+                routes_rendered = @()
+                routes_match = $false
+                connection_transitions = @()
+                connection_transitions_match = $false
+                observations = @()
                 states_match = $false
                 screenshots = @()
                 screenshots_distinct = $false
+                manual_trading_action_count = -1
+                read_only_context_visible = $false
                 clean_exit = $false
                 errors = @("smoke-report.json was not produced")
             }
@@ -242,11 +390,13 @@ if ($installSucceeded) {
 }
 
 $report = [ordered]@{
-    schema_version = 2
+    schema_version = 3
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     operating_system = $operatingSystem
     architecture = $architecture
+    user_name = $userName
+    is_windows_sandbox = $isWindowsSandbox
     network_enumeration_succeeded = $networkEnumerationSucceeded
     network_adapters_up = $networkAdaptersUp
     python_on_path = [bool]$pythonCommands
@@ -269,6 +419,7 @@ $reportJson = $report | ConvertTo-Json -Depth 8
 $gatePassed = (
     $operatingSystem -match "Windows 11" -and
     $architecture -match "AMD64|x86_64" -and
+    $isWindowsSandbox -and
     $networkEnumerationSucceeded -and
     $networkAdaptersUp.Count -eq 0 -and
     -not $pythonCommands -and
@@ -280,14 +431,28 @@ $gatePassed = (
     $installSucceeded -and
     $rendererLanes.hardware.exit_code -eq 0 -and
     $rendererLanes.hardware.graphics_api -eq "Direct3D11" -and
+    $rendererLanes.hardware.source_commit_matches -and
+    $rendererLanes.hardware.production_path_matches -and
+    $rendererLanes.hardware.run_identity -eq "RUN-RC-001" -and
+    $rendererLanes.hardware.routes_match -and
+    $rendererLanes.hardware.connection_transitions_match -and
     $rendererLanes.hardware.states_match -and
     $rendererLanes.hardware.screenshots_distinct -and
+    $rendererLanes.hardware.manual_trading_action_count -eq 0 -and
+    $rendererLanes.hardware.read_only_context_visible -and
     $rendererLanes.hardware.clean_exit -and
     $rendererLanes.hardware.errors.Count -eq 0 -and
     $rendererLanes.software.exit_code -eq 0 -and
     $rendererLanes.software.graphics_api -eq "Software" -and
+    $rendererLanes.software.source_commit_matches -and
+    $rendererLanes.software.production_path_matches -and
+    $rendererLanes.software.run_identity -eq "RUN-RC-001" -and
+    $rendererLanes.software.routes_match -and
+    $rendererLanes.software.connection_transitions_match -and
     $rendererLanes.software.states_match -and
     $rendererLanes.software.screenshots_distinct -and
+    $rendererLanes.software.manual_trading_action_count -eq 0 -and
+    $rendererLanes.software.read_only_context_visible -and
     $rendererLanes.software.clean_exit -and
     $rendererLanes.software.errors.Count -eq 0
 )

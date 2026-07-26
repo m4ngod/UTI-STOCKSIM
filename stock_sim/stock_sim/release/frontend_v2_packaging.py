@@ -16,7 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -62,6 +62,78 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
     "app.ui.accessibility",
     "app.ui.evidence_chart",
     "app.ui.journey_workspace",
+)
+_PRODUCTION_JOURNEY_PATH = (
+    "EventBridge",
+    "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
+    "JourneyWorkspaceHost",
+)
+_EXPECTED_CLEAN_ROOM_JOURNEY = (
+    (
+        "launched_active_run",
+        "run_monitoring",
+        "active",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "active_evidence",
+        "evidence_and_findings",
+        "active",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "disconnected_run",
+        "run_monitoring",
+        "active",
+        "ready",
+        "disconnected",
+        "disconnected",
+    ),
+    (
+        "disconnected_evidence",
+        "evidence_and_findings",
+        "active",
+        "ready",
+        "disconnected",
+        "disconnected",
+    ),
+    (
+        "reconnected_run",
+        "run_monitoring",
+        "active",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "reconnected_evidence",
+        "evidence_and_findings",
+        "active",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "completed_run",
+        "run_monitoring",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "completed_evidence",
+        "evidence_and_findings",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
 )
 
 
@@ -178,7 +250,12 @@ class PackageEvidence:
 class RendererLaneEvidence:
     lane: str
     graphics_api: str
-    states: tuple[str, ...]
+    journey_stages: tuple[str, ...]
+    routes_rendered: tuple[str, ...]
+    production_path: tuple[str, ...]
+    connection_transitions: tuple[str, ...]
+    manual_trading_action_count: int
+    read_only_context_visible: bool
     clean_exit: bool
     errors: tuple[str, ...]
 
@@ -208,9 +285,50 @@ class CleanRoomCertification:
     source_commit: str
     qml_archive_sha256: str
     clean_room_report_sha256: str
+    mandatory_release_gates_sha256: str
     operating_system: str
     architecture: str
     certified_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class AccessibilityGateEvidence:
+    issue_number: int
+    issue_url: str
+    source_commit: str
+    status: str
+    test_count: int
+    junit_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class SafetyGateEvidence:
+    issue_number: int
+    issue_url: str
+    source_commit: str
+    status: str
+    report_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceGateEvidence:
+    issue_number: int
+    issue_url: str
+    source_commit: str
+    status: str
+    certification_sha256: str
+    hardware_report_sha256: str
+    software_report_sha256: str
+    safety_report_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class MandatoryReleaseGateEvidence:
+    source_commit: str
+    toolchain_identity: str
+    accessibility: AccessibilityGateEvidence
+    safety: SafetyGateEvidence
+    performance: PerformanceGateEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +337,52 @@ class _CleanRoomScreenshotArtifact:
     relative_path: str
     sha256: str
     source_path: Path
+
+
+_REQUIRED_ACCESSIBILITY_TESTS = frozenset(
+    (
+        (
+            "test_narrator_sees_named_state_progress_commands_and_"
+            "no_trading_actions"
+        ),
+        (
+            "test_keyboard_route_actions_restore_meaningful_visible_"
+            "focus_immediately"
+        ),
+        (
+            "test_evidence_semantics_keep_chart_narrative_and_table_"
+            "on_one_revision"
+        ),
+        (
+            "test_state_changes_remain_distinguishable_and_repair_"
+            "focus_without_color"
+        ),
+        (
+            "test_remount_reestablishes_meaningful_keyboard_focus_"
+            "without_state_mutation"
+        ),
+        (
+            "test_200_percent_text_scale_scrolls_focused_content_and_"
+            "reduces_motion"
+        ),
+        (
+            "test_shared_default_and_high_contrast_tokens_meet_wcag_"
+            "aa_ratios"
+        ),
+        (
+            "test_accessible_journey_renders_at_200_percent_in_"
+            "supported_lanes[software-Software]"
+        ),
+        (
+            "test_accessible_journey_renders_at_200_percent_in_"
+            "supported_lanes[hardware-Direct3D11]"
+        ),
+        (
+            "test_live_journey_certifies_keyboard_narrator_terminal_"
+            "and_remount"
+        ),
+    )
+)
 
 
 EXPECTED_TOOLCHAIN = ToolchainVersions(
@@ -881,7 +1045,7 @@ def verify_clean_room_report(
         report_path.read_text(encoding="utf-8-sig")
     )
     failures = []
-    if payload.get("schema_version") != 2:
+    if payload.get("schema_version") != 3:
         failures.append("Unsupported clean-room report schema")
     if payload.get("source_commit") != expected_source_commit:
         failures.append("Clean-room source commit does not match")
@@ -896,6 +1060,13 @@ def verify_clean_room_report(
         "x86_64",
     }:
         failures.append("Clean-room architecture is not x64")
+    if (
+        payload.get("is_windows_sandbox") is not True
+        or payload.get("user_name") != "WDAGUtilityAccount"
+    ):
+        failures.append(
+            "Clean-room report was not produced by Windows Sandbox"
+        )
     if payload.get("network_enumeration_succeeded") is not True:
         failures.append("Network adapter inventory was not established")
     if payload.get("network_adapters_up"):
@@ -919,7 +1090,9 @@ def verify_clean_room_report(
     if not isinstance(lanes, dict):
         failures.append("Renderer lane evidence is unavailable")
         return tuple(failures)
-    expected_states = ["loading", "empty", "disconnected"]
+    expected_stages = tuple(
+        stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
+    )
     for lane_name, expected_api in (
         ("hardware", "Direct3D11"),
         ("software", "Software"),
@@ -934,17 +1107,76 @@ def verify_clean_room_report(
             failures.append(
                 f"{lane_name} renderer used {lane.get('graphics_api')!r}"
             )
-        if lane.get("states") != expected_states:
+        if tuple(lane.get("production_path", ())) != (
+            _PRODUCTION_JOURNEY_PATH
+        ):
             failures.append(
-                f"{lane_name} renderer did not show all required states"
+                f"{lane_name} renderer did not use the production "
+                "EventBridge path"
+            )
+        if lane.get("run_identity") != "RUN-RC-001":
+            failures.append(
+                f"{lane_name} renderer did not open the existing active run"
+            )
+        if lane.get("source_commit") != expected_source_commit:
+            failures.append(
+                f"{lane_name} renderer source commit does not match"
+            )
+        if tuple(lane.get("routes_rendered", ())) != (
+            "run_monitoring",
+            "evidence_and_findings",
+        ):
+            failures.append(
+                f"{lane_name} renderer did not render both Wave 1 routes"
+            )
+        if tuple(lane.get("connection_transitions", ())) != (
+            "connected",
+            "disconnected",
+            "reconnected",
+            "completed",
+        ):
+            failures.append(
+                f"{lane_name} renderer did not complete the connection "
+                "and terminal journey"
+            )
+        observations = lane.get("observations")
+        observed_journey = (
+            tuple(
+                (
+                    observation.get("stage"),
+                    observation.get("route"),
+                    observation.get("run_state"),
+                    observation.get("evidence_state"),
+                    observation.get("run_freshness"),
+                    observation.get("evidence_freshness"),
+                )
+                for observation in observations
+                if isinstance(observation, dict)
+            )
+            if isinstance(observations, list)
+            else ()
+        )
+        if observed_journey != _EXPECTED_CLEAN_ROOM_JOURNEY:
+            failures.append(
+                f"{lane_name} renderer did not show the complete "
+                "release-candidate journey"
             )
         _, screenshot_failures = _inspect_clean_room_screenshots(
             report_path=report_path,
             lane_name=lane_name,
             lane=lane,
-            expected_states=tuple(expected_states),
+            expected_states=expected_stages,
         )
         failures.extend(screenshot_failures)
+        if lane.get("manual_trading_action_count") != 0:
+            failures.append(
+                f"{lane_name} renderer exposed an unapproved action"
+            )
+        if lane.get("read_only_context_visible") is not True:
+            failures.append(
+                f"{lane_name} renderer did not retain read-only "
+                "orders and fills"
+            )
         if lane.get("clean_exit") is not True:
             failures.append(f"{lane_name} renderer did not exit cleanly")
         if lane.get("errors"):
@@ -985,10 +1217,9 @@ def _inspect_clean_room_screenshots(
         screenshots,
         strict=True,
     ):
-        if (
-            not isinstance(screenshot, dict)
-            or screenshot.get("state") != expected_state
-        ):
+        if not isinstance(screenshot, dict) or screenshot.get(
+            "stage"
+        ) != expected_state:
             fail(f"{lane_name} renderer screenshot evidence is incomplete")
             continue
 
@@ -1032,11 +1263,35 @@ def _inspect_clean_room_screenshots(
             )
         )
 
+    artifact_digests = {
+        artifact.state: artifact.sha256 for artifact in artifacts
+    }
+    route_state_groups = (
+        (
+            "launched_active_run",
+            "disconnected_run",
+            "completed_run",
+        ),
+        (
+            "active_evidence",
+            "disconnected_evidence",
+            "completed_evidence",
+        ),
+    )
+    major_states_are_distinct = all(
+        len(
+            {
+                artifact_digests.get(stage)
+                for stage in stage_group
+            }
+        )
+        == len(stage_group)
+        for stage_group in route_state_groups
+    )
     if (
         lane.get("screenshots_distinct") is not True
         or len(artifacts) != len(expected_states)
-        or len({artifact.sha256 for artifact in artifacts})
-        != len(expected_states)
+        or not major_states_are_distinct
     ):
         fail(f"{lane_name} renderer screenshots are not distinct")
     return tuple(artifacts), tuple(failures)
@@ -1053,7 +1308,9 @@ def _retain_clean_room_screenshots(
         raise RuntimeError("Renderer lane evidence is unavailable")
 
     target_root = evidence_dir.resolve()
-    expected_states = ("loading", "empty", "disconnected")
+    expected_states = tuple(
+        stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
+    )
     artifacts: list[_CleanRoomScreenshotArtifact] = []
     for lane_name in ("hardware", "software"):
         lane = lanes.get(lane_name)
@@ -1105,11 +1362,13 @@ def write_renderer_evidence(
         hardware_report,
         expected_lane="hardware",
         expected_graphics_api="Direct3D11",
+        expected_source_commit=source_commit,
     )
     software = _load_renderer_lane(
         software_report,
         expected_lane="software",
         expected_graphics_api="Software",
+        expected_source_commit=source_commit,
     )
     lock = load_toolchain_lock()
     evidence = RendererGateEvidence(
@@ -1147,13 +1406,22 @@ def _load_renderer_lane(
     *,
     expected_lane: str,
     expected_graphics_api: str,
+    expected_source_commit: str,
 ) -> RendererLaneEvidence:
     payload: dict[str, Any] = json.loads(
         report_path.read_text(encoding="utf-8")
     )
-    states = tuple(
-        str(observation.get("state"))
+    observations = tuple(
+        (
+            str(observation.get("stage")),
+            str(observation.get("route")),
+            str(observation.get("run_state")),
+            str(observation.get("evidence_state")),
+            str(observation.get("run_freshness")),
+            str(observation.get("evidence_freshness")),
+        )
         for observation in payload.get("observations", ())
+        if isinstance(observation, dict)
     )
     errors = tuple(str(error) for error in payload.get("errors", ()))
     if payload.get("renderer_lane") != expected_lane:
@@ -1164,16 +1432,43 @@ def _load_renderer_lane(
         raise RuntimeError(
             f"{expected_lane} used {payload.get('graphics_api')!r}"
         )
-    if states != ("loading", "empty", "disconnected"):
+    if payload.get("source_commit") != expected_source_commit:
         raise RuntimeError(
-            f"{expected_lane} did not show all required states"
+            f"{expected_lane} smoke source commit does not match"
         )
-    if errors or payload.get("clean_exit") is not True:
+    if observations != _EXPECTED_CLEAN_ROOM_JOURNEY:
+        raise RuntimeError(
+            f"{expected_lane} did not show the complete production journey"
+        )
+    routes_rendered = tuple(payload.get("routes_rendered", ()))
+    production_path = tuple(payload.get("production_path", ()))
+    connection_transitions = tuple(
+        payload.get("connection_transitions", ())
+    )
+    if (
+        routes_rendered
+        != ("run_monitoring", "evidence_and_findings")
+        or production_path != _PRODUCTION_JOURNEY_PATH
+        or connection_transitions
+        != ("connected", "disconnected", "reconnected", "completed")
+        or payload.get("run_identity") != "RUN-RC-001"
+        or payload.get("manual_trading_action_count") != 0
+        or payload.get("read_only_context_visible") is not True
+        or errors
+        or payload.get("clean_exit") is not True
+    ):
         raise RuntimeError(f"{expected_lane} renderer smoke failed")
     return RendererLaneEvidence(
         lane=expected_lane,
         graphics_api=expected_graphics_api,
-        states=states,
+        journey_stages=tuple(
+            stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
+        ),
+        routes_rendered=routes_rendered,
+        production_path=production_path,
+        connection_transitions=connection_transitions,
+        manual_trading_action_count=0,
+        read_only_context_visible=True,
         clean_exit=True,
         errors=(),
     )
@@ -1577,6 +1872,8 @@ def certify_frontend_v2_release(
     output_root: Path,
     source_commit: str,
     clean_room_report: Path,
+    accessibility_junit: Path | None = None,
+    performance_evidence_dir: Path | None = None,
 ) -> CleanRoomCertification:
     evidence_dir = output_root / "evidence"
     candidate_path = evidence_dir / "release-candidate-summary.json"
@@ -1677,6 +1974,21 @@ def certify_frontend_v2_release(
         raise RuntimeError(
             "Clean-room certification failed: " + "; ".join(failures)
         )
+    if accessibility_junit is None or performance_evidence_dir is None:
+        raise RuntimeError(
+            "T08 accessibility and T10 performance evidence are mandatory "
+            "release inputs"
+        )
+    mandatory_gates = write_mandatory_release_gate_evidence(
+        accessibility_junit=accessibility_junit,
+        performance_evidence_dir=performance_evidence_dir,
+        candidate=candidate,
+        source_commit=source_commit,
+        evidence_dir=evidence_dir,
+    )
+    mandatory_gates_sha256 = _sha256_path(
+        evidence_dir / "mandatory-release-gates.json"
+    )
 
     report_payload: dict[str, Any] = json.loads(
         clean_room_report.read_text(encoding="utf-8-sig")
@@ -1694,6 +2006,7 @@ def certify_frontend_v2_release(
         source_commit=source_commit,
         qml_archive_sha256=qml_archive_sha256,
         clean_room_report_sha256=report_checksum.sha256,
+        mandatory_release_gates_sha256=mandatory_gates_sha256,
         operating_system=str(report_payload["operating_system"]),
         architecture=str(report_payload["architecture"]),
         certified_at=datetime.now(timezone.utc).isoformat(),
@@ -1706,6 +2019,7 @@ def certify_frontend_v2_release(
         "status": "certified",
         "candidate": candidate,
         "verified_archives": verified_archives,
+        "mandatory_release_gates": asdict(mandatory_gates),
         "clean_room": asdict(certification),
         "clean_room_report": report_payload,
     }
@@ -1749,13 +2063,218 @@ def verify_safety_gate_evidence(
     return tuple(dict.fromkeys(findings))
 
 
+def write_mandatory_release_gate_evidence(
+    *,
+    accessibility_junit: Path,
+    performance_evidence_dir: Path,
+    candidate: Mapping[str, Any],
+    source_commit: str,
+    evidence_dir: Path,
+) -> MandatoryReleaseGateEvidence:
+    """Recompute and retain the exact-build T08, T09, and T10 inputs."""
+
+    accessibility_tree = ET.parse(accessibility_junit)
+    test_cases = tuple(accessibility_tree.getroot().iter("testcase"))
+    observed_test_names = {
+        str(test_case.attrib.get("name", "")) for test_case in test_cases
+    }
+    missing_tests = sorted(
+        _REQUIRED_ACCESSIBILITY_TESTS - observed_test_names
+    )
+    if missing_tests:
+        raise RuntimeError(
+            "T08 accessibility coverage is incomplete: "
+            + ", ".join(missing_tests)
+        )
+    failed_tests = tuple(
+        str(test_case.attrib.get("name", "unnamed"))
+        for test_case in test_cases
+        if any(
+            test_case.find(outcome) is not None
+            for outcome in ("failure", "error", "skipped")
+        )
+    )
+    if failed_tests:
+        raise RuntimeError(
+            "T08 accessibility gate is not fully green: "
+            + ", ".join(failed_tests)
+        )
+
+    performance_paths = {
+        name: performance_evidence_dir / name
+        for name in (
+            "hardware.json",
+            "software.json",
+            "no-manual-trading.json",
+            "certification.json",
+        )
+    }
+    missing_performance_files = tuple(
+        name
+        for name, path in performance_paths.items()
+        if not path.is_file()
+    )
+    if missing_performance_files:
+        raise FileNotFoundError(
+            "T10 performance evidence is incomplete: "
+            + ", ".join(missing_performance_files)
+        )
+    hardware = _load_json_mapping(performance_paths["hardware.json"])
+    software = _load_json_mapping(performance_paths["software.json"])
+    safety = _load_json_mapping(
+        performance_paths["no-manual-trading.json"]
+    )
+    stored_performance = _load_json_mapping(
+        performance_paths["certification.json"]
+    )
+    candidate_safety = candidate.get("safety")
+    if not isinstance(candidate_safety, Mapping):
+        raise RuntimeError("T09 candidate safety evidence is unavailable")
+    normalized_candidate_safety = json.loads(
+        json.dumps(candidate_safety, sort_keys=True)
+    )
+    normalized_safety = json.loads(json.dumps(safety, sort_keys=True))
+    if normalized_candidate_safety != normalized_safety:
+        raise RuntimeError(
+            "T09 safety evidence does not match the release candidate"
+        )
+    safety_failures = verify_safety_gate_payload(
+        {"safety": normalized_safety},
+        expected_source_commit=source_commit,
+    )
+    if safety_failures:
+        raise RuntimeError(
+            "T09 safety gate is not green for the release build: "
+            + "; ".join(safety_failures)
+        )
+
+    from stock_sim.release.frontend_v2_performance import (
+        certify_performance_evidence,
+    )
+
+    toolchain_lock_digest = _sha256_path(TOOLCHAIN_LOCK_PATH)
+    recomputed_performance = certify_performance_evidence(
+        hardware,
+        software,
+        normalized_safety,
+        expected_source_commit=source_commit,
+        expected_toolchain_digest=toolchain_lock_digest,
+    )
+    recomputed_payload = json.loads(
+        json.dumps(asdict(recomputed_performance), sort_keys=True)
+    )
+    normalized_stored_performance = json.loads(
+        json.dumps(stored_performance, sort_keys=True)
+    )
+    if normalized_stored_performance != recomputed_payload:
+        raise RuntimeError(
+            "T10 performance aggregate does not match raw evidence"
+        )
+    if recomputed_performance.status != "certified":
+        raise RuntimeError(
+            "T10 performance gate is not green for the release build: "
+            + "; ".join(recomputed_performance.failures)
+        )
+
+    gates_root = evidence_dir / "gates"
+    accessibility_target = gates_root / "accessibility" / "junit.xml"
+    safety_target = gates_root / "safety" / "no-manual-trading.json"
+    performance_targets = {
+        name: gates_root / "performance" / name
+        for name in (
+            "hardware.json",
+            "software.json",
+            "certification.json",
+        )
+    }
+    accessibility_target.parent.mkdir(parents=True, exist_ok=True)
+    safety_target.parent.mkdir(parents=True, exist_ok=True)
+    next(iter(performance_targets.values())).parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    shutil.copy2(accessibility_junit, accessibility_target)
+    shutil.copy2(
+        performance_paths["no-manual-trading.json"],
+        safety_target,
+    )
+    for name, target in performance_targets.items():
+        shutil.copy2(performance_paths[name], target)
+
+    accessibility = AccessibilityGateEvidence(
+        issue_number=43,
+        issue_url="https://github.com/m4ngod/UTI-STOCKSIM/issues/43",
+        source_commit=source_commit,
+        status="passed",
+        test_count=len(test_cases),
+        junit_sha256=_sha256_path(accessibility_target),
+    )
+    safety_evidence = SafetyGateEvidence(
+        issue_number=44,
+        issue_url="https://github.com/m4ngod/UTI-STOCKSIM/issues/44",
+        source_commit=source_commit,
+        status="passed",
+        report_sha256=_sha256_path(safety_target),
+    )
+    performance_evidence = PerformanceGateEvidence(
+        issue_number=45,
+        issue_url="https://github.com/m4ngod/UTI-STOCKSIM/issues/45",
+        source_commit=source_commit,
+        status="certified",
+        certification_sha256=_sha256_path(
+            performance_targets["certification.json"]
+        ),
+        hardware_report_sha256=_sha256_path(
+            performance_targets["hardware.json"]
+        ),
+        software_report_sha256=_sha256_path(
+            performance_targets["software.json"]
+        ),
+        safety_report_sha256=_sha256_path(safety_target),
+    )
+    evidence = MandatoryReleaseGateEvidence(
+        source_commit=source_commit,
+        toolchain_identity=toolchain_evidence_identity(
+            load_toolchain_lock()
+        ),
+        accessibility=accessibility,
+        safety=safety_evidence,
+        performance=performance_evidence,
+    )
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "mandatory-release-gates.json").write_text(
+        json.dumps(asdict(evidence), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return evidence
+
+
+def _load_json_mapping(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected a JSON object: {path}")
+    return payload
+
+
+def _sha256_path(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return f"sha256:{hasher.hexdigest()}"
+
+
 def _run_packaged_smoke(
     plan: PackageBuildPlan,
     arguments: tuple[str, ...],
 ) -> None:
     executable = plan.distribution_dir / plan.executable_name
     completed = subprocess.run(
-        (str(executable), *arguments),
+        (
+            str(executable),
+            f"--source-commit={plan.source_commit}",
+            *arguments,
+        ),
         cwd=plan.distribution_dir,
         check=False,
     )
@@ -1797,6 +2316,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--certify-clean-room-report", type=Path)
+    parser.add_argument("--accessibility-junit", type=Path)
+    parser.add_argument("--performance-evidence-dir", type=Path)
     arguments = parser.parse_args(argv)
     if arguments.plan_only and arguments.certify_clean_room_report:
         parser.error(
@@ -1823,10 +2344,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if arguments.certify_clean_room_report is not None:
+        if (
+            arguments.accessibility_junit is None
+            or arguments.performance_evidence_dir is None
+        ):
+            parser.error(
+                "--accessibility-junit and --performance-evidence-dir "
+                "are required for certification"
+            )
         certification = certify_frontend_v2_release(
             output_root=arguments.output_root,
             source_commit=arguments.source_commit,
             clean_room_report=arguments.certify_clean_room_report,
+            accessibility_junit=arguments.accessibility_junit,
+            performance_evidence_dir=arguments.performance_evidence_dir,
         )
         print(
             json.dumps(
@@ -1853,11 +2384,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "AccessibilityGateEvidence",
     "CleanRoomCertification",
     "FrontendV2ToolchainLock",
+    "MandatoryReleaseGateEvidence",
     "PackageEvidence",
+    "PerformanceGateEvidence",
     "RendererGateEvidence",
     "ReleaseBuildResult",
+    "SafetyGateEvidence",
     "build_frontend_v2_release",
     "certify_frontend_v2_release",
     "load_toolchain_lock",
@@ -1866,6 +2401,7 @@ __all__ = [
     "verify_safety_gate_evidence",
     "verify_clean_room_report",
     "verify_running_toolchain",
+    "write_mandatory_release_gate_evidence",
 ]
 
 
