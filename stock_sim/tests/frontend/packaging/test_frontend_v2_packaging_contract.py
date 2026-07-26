@@ -387,6 +387,36 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
     assert widgets_plan.resolved_qml_dependencies is None
 
 
+def test_qml_build_plan_excludes_backend_transaction_namespaces(
+    tmp_path,
+):
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path,
+        source_commit="abc123",
+    )[1]
+
+    excluded = {
+        argument.removeprefix("--nofollow-import-to=")
+        for argument in qml_plan.nuitka_command
+        if argument.startswith("--nofollow-import-to=")
+    }
+
+    assert {
+        "app.app_context",
+        "app.controllers",
+        "app.panels",
+        "app.runtime_gateway",
+        "app.services",
+        "app.ui.adapters",
+        "core.order",
+        "persistence",
+        "services",
+        "stock_sim.core.order",
+        "stock_sim.persistence",
+        "stock_sim.services",
+    } <= excluded
+
+
 def test_scanner_driven_qml_deployment_copies_modules_and_binary_closure(
     tmp_path,
 ):

@@ -54,6 +54,20 @@ _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
     "core.order",
     "stock_sim.core.order",
 )
+_QML_NUITKA_EXCLUDED_MODULE_PREFIXES = (
+    "app.app_context",
+    "app.controllers",
+    "app.panels",
+    "app.runtime_gateway",
+    "app.services",
+    "app.ui.adapters",
+    "core.order",
+    "persistence",
+    "services",
+    "stock_sim.core.order",
+    "stock_sim.persistence",
+    "stock_sim.services",
+)
 _QML_ALLOWED_APP_MODULE_PREFIXES = (
     "app.core_dto",
     "app.event_bridge",
@@ -688,6 +702,10 @@ def create_package_build_plans(
         resolved_qml_dependencies=resolved_dependencies,
         extra_arguments=(
             f"--include-data-dir={PROJECT_QML_ROOT}=app/ui/qml",
+            *(
+                f"--nofollow-import-to={module_prefix}"
+                for module_prefix in _QML_NUITKA_EXCLUDED_MODULE_PREFIXES
+            ),
         ),
     )
     return widgets_plan, qml_plan
