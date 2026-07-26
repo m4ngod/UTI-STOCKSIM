@@ -259,8 +259,12 @@ $report = [ordered]@{
     renderer_lanes = $rendererLanes
 }
 $reportPath = Join-Path $resolvedEvidence "clean-room-report.json"
-$report | ConvertTo-Json -Depth 8 |
-    Set-Content -LiteralPath $reportPath -Encoding utf8
+$reportJson = $report | ConvertTo-Json -Depth 8
+[IO.File]::WriteAllText(
+    $reportPath,
+    $reportJson,
+    [Text.UTF8Encoding]::new($false)
+)
 
 $gatePassed = (
     $operatingSystem -match "Windows 11" -and

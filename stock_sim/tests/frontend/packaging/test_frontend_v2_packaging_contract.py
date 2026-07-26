@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import replace
@@ -397,7 +398,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     }
     report_path.write_text(
         json.dumps(report_payload),
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
 
     assert verify_clean_room_report(
@@ -407,7 +408,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     ) == ()
 
     duplicate_screenshot_report = json.loads(
-        report_path.read_text(encoding="utf-8")
+        report_path.read_text(encoding="utf-8-sig")
     )
     software_screenshots = duplicate_screenshot_report["renderer_lanes"][
         "software"
@@ -644,13 +645,21 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     assert not (evidence_dir / "release-summary.json").exists()
 
     qml_archive.write_bytes(b"qml-package")
+    report.write_text(json.dumps(compromised), encoding="utf-8-sig")
+    expected_report_bytes = report.read_bytes()
+    assert expected_report_bytes.startswith(b"\xef\xbb\xbf")
     certification = certify_frontend_v2_release(
         output_root=tmp_path,
         source_commit="abc123",
         clean_room_report=report,
     )
 
-    assert certification.clean_room_report_sha256.startswith("sha256:")
+    assert certification.clean_room_report_sha256 == (
+        "sha256:" + hashlib.sha256(expected_report_bytes).hexdigest()
+    )
+    assert (
+        evidence_dir / "clean-room-report.json"
+    ).read_bytes() == expected_report_bytes
     assert (evidence_dir / "release-summary.json").is_file()
     assert all(
         (evidence_dir / lane / f"{state}.png").is_file()
@@ -933,6 +942,17 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
+    assert re.search(
+        r"""
+        \[IO\.File\]::WriteAllText\(
+        \s*\$reportPath,
+        \s*\$reportJson,
+        \s*\[Text\.UTF8Encoding\]::new\(\$false\)
+        \s*\)
+        """,
+        script,
+        re.VERBOSE,
+    )
     assert "clean_exit" in script
     assert "errors.Count -eq 0" in script
     assert "$pythonInstallations = @(" in script

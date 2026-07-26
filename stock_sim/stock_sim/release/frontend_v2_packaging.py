@@ -832,7 +832,7 @@ def verify_clean_room_report(
     expected_archive_sha256: str,
 ) -> tuple[str, ...]:
     payload: dict[str, Any] = json.loads(
-        report_path.read_text(encoding="utf-8")
+        report_path.read_text(encoding="utf-8-sig")
     )
     failures = []
     if payload.get("schema_version") != 2:
@@ -1556,7 +1556,7 @@ def certify_frontend_v2_release(
         )
 
     report_payload: dict[str, Any] = json.loads(
-        clean_room_report.read_text(encoding="utf-8")
+        clean_room_report.read_text(encoding="utf-8-sig")
     )
     _retain_clean_room_screenshots(
         report_path=clean_room_report,
