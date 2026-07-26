@@ -5,10 +5,17 @@ from __future__ import annotations
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from threading import RLock
+from enum import Enum
+from threading import RLock, Timer, current_thread
 from typing import Any, Callable, TypeVar
 
-from app.event_bridge import EventBridge
+from app.event_bridge import (
+    EventBridge,
+    EventBridgeBatch,
+    EventBridgeConnectionPhase,
+    EventBridgeConnectionState,
+    EventBridgeTerminalPhase,
+)
 from app.runtime_gateway import RuntimeGateway
 
 from .run_monitoring import (
@@ -37,6 +44,7 @@ from .run_monitoring import (
     RunProgress,
     ScenarioSetId,
     SimulationTime,
+    SourceGenerationId,
     SourceKind,
     StrategyUnderTestId,
     StructuredFeatureError,
@@ -47,6 +55,7 @@ from .run_monitoring import (
     TerminalOutcome,
     ViewPhase,
     WallTime,
+    _RevisionGuardedSubscription,
     _diagnostic_task_transition,
 )
 from .versioning import (
@@ -55,31 +64,17 @@ from .versioning import (
 )
 
 
-class _LiveSubscription:
-    def __init__(self, dispose: Callable[[], None]) -> None:
-        self._dispose = dispose
-        self._disposed = False
-        self._lock = RLock()
-
-    @property
-    def disposed(self) -> bool:
-        with self._lock:
-            return self._disposed
-
-    def dispose(self) -> None:
-        with self._lock:
-            if self._disposed:
-                return
-            self._disposed = True
-        self._dispose()
-
-    def mark_disposed(self) -> None:
-        with self._lock:
-            self._disposed = True
+class _RefreshResult(str, Enum):
+    ABORTED = "aborted"
+    COMMITTED_NON_TERMINAL = "committed_non_terminal"
+    COMMITTED_TERMINAL = "committed_terminal"
+    RETRY_CAS = "retry_cas"
 
 
 class LiveRunMonitoringAdapter:
     """Typed, batched live seam for an already-existing Strategy Run."""
+
+    _TERMINAL_CONFIRMATION_INTERVAL_SECONDS = 0.02
 
     def __init__(
         self,
@@ -96,21 +91,57 @@ class LiveRunMonitoringAdapter:
         self._diagnostic_tasks = diagnostic_tasks
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._freshness_threshold = freshness_threshold
+        self._owns_executor = executor is None
+        self._executor_thread_prefix = (
+            f"run-monitoring-{id(self):x}"
+            if self._owns_executor
+            else None
+        )
         self._executor = executor or ThreadPoolExecutor(
             max_workers=1,
-            thread_name_prefix="run-monitoring-diagnostic-task",
+            thread_name_prefix=(
+                self._executor_thread_prefix
+                or "run-monitoring-external"
+            ),
         )
-        self._owns_executor = executor is None
         self._states: dict[RunMonitoringContext, RunMonitoringViewState] = {}
         self._subscriptions: dict[
             int,
-            tuple[RunMonitoringContext, RunMonitoringObserver, _LiveSubscription],
+            tuple[
+                RunMonitoringContext,
+                RunMonitoringObserver,
+                _RevisionGuardedSubscription,
+            ],
         ] = {}
         self._task_handles: dict[DiagnosticTaskId, TaskHandle] = {}
         self._next_subscription_id = 1
         self._next_task_id = 1
+        connection = event_bridge.connection_state
+        self._connection_generation = SourceGenerationId(
+            connection.generation.value
+        )
+        self._connection_sequence = connection.sequence.value
+        self._connection_phase = connection.phase
+        self._pending_refreshes: dict[
+            RunMonitoringContext,
+            tuple[
+                SourceGenerationId,
+                EventBridgeTerminalPhase | None,
+            ],
+        ] = {}
+        self._scheduled_refreshes: set[RunMonitoringContext] = set()
+        self._terminal_confirmation_timers: dict[
+            RunMonitoringContext,
+            tuple[SourceGenerationId, Timer],
+        ] = {}
         self._closed = False
         self._lock = RLock()
+        self._dispose_connection_subscription = (
+            event_bridge.subscribe_connection_state(
+                self._on_connection_state,
+                replay_current=True,
+            )
+        )
         self._dispose_batch_subscription = event_bridge.subscribe_batches(
             self._on_snapshot_batch
         )
@@ -126,15 +157,50 @@ class LiveRunMonitoringAdapter:
         with self._lock:
             self._ensure_open()
             current = self._states.get(context)
+            connection_phase = self._connection_phase
+            connection_generation = self._connection_generation
         if current is not None:
             aged = self._age_state(current)
             if aged is not current:
                 return self._store_and_notify(context, aged)
             return current
+        if connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
+            observed_at = _aware(self._clock())
+            with self._lock:
+                self._ensure_open()
+                existing = self._states.get(context)
+                if existing is not None:
+                    return existing
+                unavailable = self._connection_view_state(
+                    self._empty_state(
+                        context,
+                        revision=1,
+                        observed_at=observed_at,
+                    ),
+                    connection_phase,
+                    revision=1,
+                    observed_at=observed_at,
+                )
+                self._states[context] = unavailable
+                return unavailable
         initial = self._read_state(context, revision=1)
         with self._lock:
             self._ensure_open()
-            return self._states.setdefault(context, initial)
+            existing = self._states.get(context)
+            if existing is not None:
+                return existing
+            if (
+                self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+                or self._connection_generation != connection_generation
+            ):
+                initial = self._connection_view_state(
+                    initial,
+                    self._connection_phase,
+                    revision=1,
+                )
+            self._states[context] = initial
+            return initial
 
     def subscribe(
         self,
@@ -146,7 +212,7 @@ class LiveRunMonitoringAdapter:
             self._ensure_open()
             subscription_id = self._next_subscription_id
             self._next_subscription_id += 1
-            subscription = _LiveSubscription(
+            subscription = _RevisionGuardedSubscription(
                 lambda: self._remove_subscription(subscription_id)
             )
             self._subscriptions[subscription_id] = (
@@ -154,7 +220,8 @@ class LiveRunMonitoringAdapter:
                 observer,
                 subscription,
             )
-        observer(state)
+            state = self._states.get(context, state)
+        subscription.deliver(observer, state)
         return subscription
 
     def pause_diagnostic_task(
@@ -198,45 +265,276 @@ class LiveRunMonitoringAdapter:
             self._subscriptions.clear()
             dispose_batch = self._dispose_batch_subscription
             self._dispose_batch_subscription = lambda: None
+            dispose_connection = self._dispose_connection_subscription
+            self._dispose_connection_subscription = lambda: None
+            self._pending_refreshes.clear()
+            self._scheduled_refreshes.clear()
+            timers = tuple(
+                timer
+                for _, timer
+                in self._terminal_confirmation_timers.values()
+            )
+            self._terminal_confirmation_timers.clear()
         dispose_batch()
+        dispose_connection()
+        for timer in timers:
+            timer.cancel()
         for subscription in subscriptions:
             subscription.mark_disposed()
         if self._owns_executor:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            called_from_owned_worker = bool(
+                self._executor_thread_prefix
+                and current_thread().name.startswith(
+                    self._executor_thread_prefix
+                )
+            )
+            self._executor.shutdown(
+                wait=not called_from_owned_worker,
+                cancel_futures=True,
+            )
 
     def _on_snapshot_batch(
         self,
-        batch: tuple[dict[str, Any], ...],
+        batch: EventBridgeBatch,
     ) -> None:
+        generation = SourceGenerationId(batch.generation.value)
         batch_run_ids = {
             str(item.get("run_id") or "").strip()
-            for item in batch
+            for item in batch.snapshots
             if str(item.get("run_id") or "").strip()
         }
         with self._lock:
-            if self._closed:
+            if (
+                self._closed
+                or generation != self._connection_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
                 return
             contexts = tuple(self._states)
-        for context in contexts:
-            selection = context.selection
-            if (
-                selection is not None
-                and selection.run_id is not None
-                and batch_run_ids
-                and selection.run_id.value not in batch_run_ids
-            ):
-                continue
-            if selection is None or selection.run_id is None:
-                continue
-            self._executor.submit(self._refresh_context, context)
+            to_schedule = []
+            for context in contexts:
+                selection = context.selection
+                if (
+                    selection is not None
+                    and selection.run_id is not None
+                    and batch_run_ids
+                    and selection.run_id.value not in batch_run_ids
+                ):
+                    continue
+                if selection is None or selection.run_id is None:
+                    continue
+                run_id = selection.run_id.value
+                previous_pending = self._pending_refreshes.get(context)
+                terminal_phase = batch.terminal_phase_for(run_id) or (
+                    previous_pending[1]
+                    if previous_pending is not None
+                    and previous_pending[0] == generation
+                    else None
+                )
+                self._pending_refreshes[context] = (
+                    generation,
+                    terminal_phase,
+                )
+                if context not in self._scheduled_refreshes:
+                    self._scheduled_refreshes.add(context)
+                    to_schedule.append(context)
+        for context in to_schedule:
+            self._executor.submit(self._drain_refreshes, context)
 
-    def _refresh_context(self, context: RunMonitoringContext) -> None:
+    def _drain_refreshes(self, context: RunMonitoringContext) -> None:
+        while True:
+            with self._lock:
+                if self._closed:
+                    self._scheduled_refreshes.discard(context)
+                    self._pending_refreshes.pop(context, None)
+                    return
+                pending = self._pending_refreshes.pop(context, None)
+                if pending is None:
+                    self._scheduled_refreshes.discard(context)
+                    return
+            generation, terminal_phase = pending
+            result = self._refresh_context(
+                context,
+                generation=generation,
+            )
+            if result is _RefreshResult.RETRY_CAS:
+                with self._lock:
+                    if (
+                        not self._closed
+                        and generation == self._connection_generation
+                        and self._connection_phase
+                        is EventBridgeConnectionPhase.CONNECTED
+                    ):
+                        existing = self._pending_refreshes.get(context)
+                        self._pending_refreshes[context] = (
+                            generation,
+                            terminal_phase
+                            or (
+                                existing[1]
+                                if existing is not None
+                                and existing[0] == generation
+                                else None
+                            ),
+                        )
+            elif result is _RefreshResult.COMMITTED_TERMINAL:
+                self._cancel_terminal_confirmation(context)
+            elif (
+                terminal_phase is not None
+                and result
+                is _RefreshResult.COMMITTED_NON_TERMINAL
+            ):
+                self._schedule_terminal_confirmation(
+                    context,
+                    generation,
+                )
+            with self._lock:
+                if context not in self._pending_refreshes:
+                    self._scheduled_refreshes.discard(context)
+                    return
+
+    def _on_connection_state(
+        self,
+        connection: EventBridgeConnectionState,
+    ) -> None:
+        generation = SourceGenerationId(connection.generation.value)
         with self._lock:
             if self._closed:
                 return
+            if connection.sequence.value <= self._connection_sequence:
+                return
+            self._connection_sequence = connection.sequence.value
+            self._connection_generation = generation
+            self._connection_phase = connection.phase
+            contexts = tuple(self._states)
+            timers = tuple(
+                timer
+                for _, timer
+                in self._terminal_confirmation_timers.values()
+            )
+            self._terminal_confirmation_timers.clear()
+        for timer in timers:
+            timer.cancel()
+        for context in contexts:
+            self._publish_connection_state(
+                context,
+                connection.phase,
+                generation,
+                connection.sequence.value,
+            )
+
+    def _publish_connection_state(
+        self,
+        context: RunMonitoringContext,
+        phase: EventBridgeConnectionPhase,
+        generation: SourceGenerationId,
+        connection_sequence: int,
+    ) -> None:
+        with self._lock:
+            if (
+                self._closed
+                or generation != self._connection_generation
+                or phase is not self._connection_phase
+                or connection_sequence != self._connection_sequence
+            ):
+                return
+            previous = self._states.get(context)
+            if previous is None:
+                return
+            selection = context.selection
+            if (
+                phase is EventBridgeConnectionPhase.CONNECTED
+                and (
+                    selection is None
+                    or selection.run_id is None
+                )
+            ):
+                state = self._empty_state(
+                    context,
+                    revision=previous.revision + 1,
+                    observed_at=_aware(self._clock()),
+                )
+            else:
+                state = self._connection_view_state(previous, phase)
+            self._states[context] = state
+            deliveries = self._deliveries_for(context)
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, state)
+
+    def _connection_view_state(
+        self,
+        previous: RunMonitoringViewState,
+        phase: EventBridgeConnectionPhase,
+        *,
+        revision: int | None = None,
+        observed_at: datetime | None = None,
+    ) -> RunMonitoringViewState:
+        current_time = observed_at or _aware(self._clock())
+        data = previous.last_reliable_data
+        disconnected = phase is EventBridgeConnectionPhase.DISCONNECTED
+        return replace(
+            previous,
+            revision=revision or previous.revision + 1,
+            observed_at=current_time,
+            freshness=(
+                Freshness.DISCONNECTED if disconnected else Freshness.STALE
+            ),
+            age=(
+                max(
+                    current_time - data.wall_time.observed_at,
+                    timedelta(0),
+                )
+                if data is not None
+                else timedelta(0)
+            ),
+            source=self._source(),
+            phase=ViewPhase.DEGRADED if data is not None else ViewPhase.FAILED,
+            presentation=(
+                previous.presentation
+                if data is not None
+                else RunMonitoringPresentationState.DISCONNECTED
+            ),
+            error=StructuredFeatureError(
+                code=(
+                    "run_monitoring_source_disconnected"
+                    if disconnected
+                    else "run_monitoring_source_reconnecting"
+                ),
+                message=(
+                    "Run Monitoring data is disconnected; showing the "
+                    "last reliable state."
+                    if disconnected
+                    else "Run Monitoring reconnected and is awaiting "
+                    "a current revision."
+                ),
+                retryable=True,
+            ),
+            completeness=(
+                previous.completeness
+                if data is not None
+                else Completeness.UNKNOWN
+            ),
+        )
+
+    def _refresh_context(
+        self,
+        context: RunMonitoringContext,
+        *,
+        generation: SourceGenerationId | None = None,
+    ) -> _RefreshResult:
+        with self._lock:
+            target_generation = generation or self._connection_generation
+            target_connection_sequence = self._connection_sequence
+            if (
+                self._closed
+                or target_generation != self._connection_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _RefreshResult.ABORTED
             previous = self._states.get(context)
         if previous is None:
-            return
+            return _RefreshResult.ABORTED
         state = self._read_state(context, revision=previous.revision + 1)
         if state.last_reliable_data is None and previous.last_reliable_data is not None:
             age = max(
@@ -262,7 +560,132 @@ class LiveRunMonitoringAdapter:
                 ),
                 completeness=previous.completeness,
             )
-        self._store_and_notify(context, state)
+        with self._lock:
+            if (
+                self._closed
+                or target_generation != self._connection_generation
+                or target_connection_sequence != self._connection_sequence
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _RefreshResult.ABORTED
+        stored = self._store_and_notify(
+            context,
+            state,
+            expected_revision=previous.revision,
+            expected_connection_sequence=target_connection_sequence,
+        )
+        data = stored.last_reliable_data
+        if data is not None and data.terminal_outcome is not None:
+            return _RefreshResult.COMMITTED_TERMINAL
+        if stored is state:
+            return _RefreshResult.COMMITTED_NON_TERMINAL
+        with self._lock:
+            if (
+                self._closed
+                or target_generation != self._connection_generation
+                or target_connection_sequence != self._connection_sequence
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _RefreshResult.ABORTED
+        return _RefreshResult.RETRY_CAS
+
+    def _schedule_terminal_confirmation(
+        self,
+        context: RunMonitoringContext,
+        generation: SourceGenerationId,
+    ) -> None:
+        with self._lock:
+            if (
+                self._closed
+                or generation != self._connection_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+                or context in self._terminal_confirmation_timers
+            ):
+                return
+            timer: Timer
+
+            def _fire() -> None:
+                self._submit_terminal_confirmation(
+                    context,
+                    generation,
+                    timer,
+                )
+
+            timer = Timer(
+                self._TERMINAL_CONFIRMATION_INTERVAL_SECONDS,
+                _fire,
+            )
+            timer.daemon = True
+            self._terminal_confirmation_timers[context] = (
+                generation,
+                timer,
+            )
+        timer.start()
+
+    def _submit_terminal_confirmation(
+        self,
+        context: RunMonitoringContext,
+        generation: SourceGenerationId,
+        timer: Timer,
+    ) -> None:
+        with self._lock:
+            current = self._terminal_confirmation_timers.get(context)
+            if (
+                current is None
+                or current[0] != generation
+                or current[1] is not timer
+            ):
+                return
+            self._terminal_confirmation_timers.pop(context, None)
+            if (
+                self._closed
+                or generation != self._connection_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return
+            try:
+                self._executor.submit(
+                    self._terminal_confirmation_attempt,
+                    context,
+                    generation,
+                )
+            except RuntimeError:
+                if not self._closed:
+                    raise
+
+    def _terminal_confirmation_attempt(
+        self,
+        context: RunMonitoringContext,
+        generation: SourceGenerationId,
+    ) -> None:
+        result = self._refresh_context(
+            context,
+            generation=generation,
+        )
+        if result is _RefreshResult.COMMITTED_TERMINAL:
+            self._cancel_terminal_confirmation(context)
+            return
+        if result in {
+            _RefreshResult.COMMITTED_NON_TERMINAL,
+            _RefreshResult.RETRY_CAS,
+        }:
+            self._schedule_terminal_confirmation(context, generation)
+
+    def _cancel_terminal_confirmation(
+        self,
+        context: RunMonitoringContext,
+    ) -> None:
+        with self._lock:
+            current = self._terminal_confirmation_timers.pop(
+                context,
+                None,
+            )
+        if current is not None:
+            current[1].cancel()
 
     def _read_state(
         self,
@@ -562,7 +985,10 @@ class LiveRunMonitoringAdapter:
             if state.freshness in {
                 Freshness.DISCONNECTED,
                 Freshness.STALE,
-            }:
+            } or (
+                self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
                 return _rejected(
                     DiagnosticCommandRejectionReason.DISCONNECTED_SOURCE,
                     "The diagnostic source is disconnected.",
@@ -610,9 +1036,9 @@ class LiveRunMonitoringAdapter:
                 ),
             )
             self._states[context] = queued_state
-            observers = self._observers_for(context)
-        for observer in observers:
-            observer(queued_state)
+            deliveries = self._deliveries_for(context)
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, queued_state)
 
         future = self._executor.submit(
             self._invoke_diagnostic_task,
@@ -725,9 +1151,9 @@ class LiveRunMonitoringAdapter:
                 error=task.error,
             )
             self._states[context] = updated_state
-            observers = self._observers_for(context)
-        for observer in observers:
-            observer(updated_state)
+            deliveries = self._deliveries_for(context)
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, updated_state)
 
     def _diagnostic_task_status(
         self,
@@ -882,26 +1308,52 @@ class LiveRunMonitoringAdapter:
         self,
         context: RunMonitoringContext,
         state: RunMonitoringViewState,
+        *,
+        expected_revision: int | None = None,
+        expected_connection_sequence: int | None = None,
     ) -> RunMonitoringViewState:
         with self._lock:
             if self._closed:
                 return self._states.get(context, state)
             previous = self._states.get(context)
+            if (
+                expected_connection_sequence is not None
+                and expected_connection_sequence
+                != self._connection_sequence
+            ):
+                return previous or state
+            if expected_revision is not None and (
+                previous is None
+                or previous.revision != expected_revision
+            ):
+                return previous or state
+            if state.source.generation != self._connection_generation:
+                return previous or state
+            if (
+                state.freshness is Freshness.FRESH
+                and self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return previous or state
             if previous is not None and state.revision <= previous.revision:
                 return previous
             self._states[context] = state
-            observers = self._observers_for(context)
-        for observer in observers:
-            observer(state)
+            deliveries = self._deliveries_for(context)
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, state)
         return state
 
-    def _observers_for(
+    def _deliveries_for(
         self,
         context: RunMonitoringContext,
-    ) -> tuple[RunMonitoringObserver, ...]:
+    ) -> tuple[
+        tuple[RunMonitoringObserver, _RevisionGuardedSubscription],
+        ...,
+    ]:
         return tuple(
-            observer
-            for subscribed_context, observer, _ in self._subscriptions.values()
+            (observer, subscription)
+            for subscribed_context, observer, subscription
+            in self._subscriptions.values()
             if subscribed_context == context
         )
 
@@ -913,11 +1365,11 @@ class LiveRunMonitoringAdapter:
         if self._closed:
             raise RuntimeError("Run Monitoring Adapter is closed")
 
-    @staticmethod
-    def _source() -> RunMonitoringSource:
+    def _source(self) -> RunMonitoringSource:
         return RunMonitoringSource(
             kind=SourceKind.LIVE_RUNTIME,
             identity="frontend-v2-live-runtime",
+            generation=self._connection_generation,
         )
 
 

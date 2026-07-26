@@ -48,6 +48,15 @@ class SourceKind(str, Enum):
     LIVE_RUNTIME = "live_runtime"
 
 
+@dataclass(frozen=True, slots=True)
+class SourceGenerationId:
+    value: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, int) or self.value < 1:
+            raise ValueError("Source generation must be a positive integer")
+
+
 class RunLifecyclePhase(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -197,6 +206,7 @@ class RunMonitoringContext:
 class RunMonitoringSource:
     kind: SourceKind
     identity: str
+    generation: SourceGenerationId
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,10 +483,11 @@ def _default_fake_time() -> datetime:
     return datetime(2030, 1, 1, tzinfo=timezone.utc)
 
 
-class _AdapterSubscription:
+class _RevisionGuardedSubscription:
     def __init__(self, dispose: Callable[[], None]) -> None:
         self._dispose = dispose
         self._disposed = False
+        self._last_delivered_revision = 0
         self._lock = RLock()
 
     @property
@@ -495,6 +506,20 @@ class _AdapterSubscription:
         with self._lock:
             self._disposed = True
 
+    def deliver(
+        self,
+        observer: RunMonitoringObserver,
+        state: RunMonitoringViewState,
+    ) -> None:
+        with self._lock:
+            if (
+                self._disposed
+                or state.revision <= self._last_delivered_revision
+            ):
+                return
+            self._last_delivered_revision = state.revision
+            observer(state)
+
 
 class DeterministicFakeRunMonitoringAdapter:
     """Deterministic fake for the external Run Monitoring Seam."""
@@ -510,10 +535,15 @@ class DeterministicFakeRunMonitoringAdapter:
         self._states: dict[RunMonitoringContext, RunMonitoringViewState] = {}
         self._subscriptions: dict[
             int,
-            tuple[RunMonitoringContext, RunMonitoringObserver, _AdapterSubscription],
+            tuple[
+                RunMonitoringContext,
+                RunMonitoringObserver,
+                _RevisionGuardedSubscription,
+            ],
         ] = {}
         self._next_subscription_id = 1
         self._next_task_id = 1
+        self._source_generation = SourceGenerationId(1)
         self._closed = False
         self._lock = RLock()
 
@@ -539,7 +569,7 @@ class DeterministicFakeRunMonitoringAdapter:
             self._ensure_open()
             subscription_id = self._next_subscription_id
             self._next_subscription_id += 1
-            subscription = _AdapterSubscription(
+            subscription = _RevisionGuardedSubscription(
                 lambda: self._remove_subscription(subscription_id)
             )
             self._subscriptions[subscription_id] = (
@@ -551,7 +581,7 @@ class DeterministicFakeRunMonitoringAdapter:
             if state is None:
                 state = self._loading_state(context)
                 self._states[context] = state
-        observer(state)
+        subscription.deliver(observer, state)
         return subscription
 
     def advance_to_running(
@@ -651,10 +681,16 @@ class DeterministicFakeRunMonitoringAdapter:
         self,
         context: RunMonitoringContext,
     ) -> RunMonitoringViewState:
+        current = self.snapshot(context)
+        has_reliable_data = current.last_reliable_data is not None
         return self._transition_state(
             context,
             freshness=Freshness.DISCONNECTED,
-            phase=ViewPhase.DEGRADED,
+            phase=(
+                ViewPhase.DEGRADED
+                if has_reliable_data
+                else ViewPhase.FAILED
+            ),
             presentation=RunMonitoringPresentationState.DISCONNECTED,
             completeness=Completeness.UNKNOWN,
             error=StructuredFeatureError(
@@ -663,6 +699,141 @@ class DeterministicFakeRunMonitoringAdapter:
                 retryable=True,
             ),
             data=None,
+        )
+
+    def advance_to_stale(
+        self,
+        context: RunMonitoringContext,
+    ) -> RunMonitoringViewState:
+        return self._transition_state(
+            context,
+            freshness=Freshness.STALE,
+            phase=ViewPhase.DEGRADED,
+            presentation=RunMonitoringPresentationState.ACTIVE,
+            completeness=Completeness.COMPLETE,
+            error=StructuredFeatureError(
+                code="run_monitoring_source_stale",
+                message=(
+                    "Run Monitoring data is older than its "
+                    "freshness threshold."
+                ),
+                retryable=True,
+            ),
+            data=None,
+            age=self._freshness_threshold + timedelta(seconds=1),
+        )
+
+    def advance_to_partial(
+        self,
+        context: RunMonitoringContext,
+    ) -> RunMonitoringViewState:
+        current = self.snapshot(context)
+        data = current.last_reliable_data
+        if data is None:
+            raise ValueError("A reliable run is required for partial state")
+        return self._transition_state(
+            context,
+            freshness=Freshness.FRESH,
+            phase=ViewPhase.DEGRADED,
+            presentation=current.presentation,
+            completeness=Completeness.PARTIAL,
+            error=StructuredFeatureError(
+                code="run_monitoring_partial",
+                message="Some Run Monitoring identity data is unavailable.",
+                retryable=True,
+            ),
+            data=replace(data, reproduction_manifest_id=None),
+        )
+
+    def advance_to_reconnected(
+        self,
+        context: RunMonitoringContext,
+    ) -> RunMonitoringViewState:
+        current = self.snapshot(context)
+        data = current.last_reliable_data
+        if data is None:
+            selection = context.selection
+            if selection is not None and selection.run_id is not None:
+                raise ValueError("A reliable run is required for reconnect")
+            self._source_generation = SourceGenerationId(
+                self._source_generation.value + 1
+            )
+            return self._transition_state(
+                context,
+                freshness=Freshness.FRESH,
+                phase=ViewPhase.READY,
+                presentation=RunMonitoringPresentationState.EMPTY,
+                completeness=Completeness.EMPTY,
+                error=None,
+                data=None,
+            )
+        self._source_generation = SourceGenerationId(
+            self._source_generation.value + 1
+        )
+        return self._transition_state(
+            context,
+            freshness=Freshness.FRESH,
+            phase=ViewPhase.READY,
+            presentation=(
+                RunMonitoringPresentationState.TERMINAL
+                if data.terminal_outcome is not None
+                else RunMonitoringPresentationState.ACTIVE
+            ),
+            completeness=Completeness.COMPLETE,
+            error=None,
+            data=data,
+        )
+
+    def advance_to_failed(
+        self,
+        context: RunMonitoringContext,
+    ) -> RunMonitoringViewState:
+        current = self.snapshot(context)
+        data = current.last_reliable_data
+        if data is None:
+            raise ValueError("A reliable run is required for failed state")
+        failed_data = replace(
+            data,
+            lifecycle=RunLifecyclePhase.FAILED,
+            terminal_outcome=TerminalOutcome.FAILED,
+            capabilities=DiagnosticTaskCapabilities(False, False, False),
+        )
+        return self._transition_state(
+            context,
+            freshness=Freshness.FRESH,
+            phase=ViewPhase.FAILED,
+            presentation=RunMonitoringPresentationState.TERMINAL,
+            completeness=current.completeness,
+            error=StructuredFeatureError(
+                code="diagnostic_run_failed",
+                message="The diagnostic run failed.",
+                retryable=False,
+            ),
+            data=failed_data,
+        )
+
+    def advance_to_completed(
+        self,
+        context: RunMonitoringContext,
+    ) -> RunMonitoringViewState:
+        current = self.snapshot(context)
+        data = current.last_reliable_data
+        if data is None:
+            raise ValueError("A reliable run is required for completed state")
+        completed_data = replace(
+            data,
+            lifecycle=RunLifecyclePhase.COMPLETED,
+            terminal_outcome=TerminalOutcome.COMPLETED,
+            capabilities=DiagnosticTaskCapabilities(False, False, False),
+        )
+        return self._transition_state(
+            context,
+            freshness=Freshness.FRESH,
+            phase=ViewPhase.READY,
+            presentation=RunMonitoringPresentationState.TERMINAL,
+            completeness=current.completeness,
+            error=None,
+            data=completed_data,
         )
 
     def pause_diagnostic_task(
@@ -706,6 +877,7 @@ class DeterministicFakeRunMonitoringAdapter:
         error: StructuredFeatureError | None,
         data: RunMonitoringData | None,
         observed_at: datetime | None = None,
+        age: timedelta = timedelta(0),
     ) -> RunMonitoringViewState:
         with self._lock:
             self._ensure_open()
@@ -717,7 +889,7 @@ class DeterministicFakeRunMonitoringAdapter:
                 revision=previous.revision + 1,
                 observed_at=observed_at or self._clock(),
                 freshness=freshness,
-                age=timedelta(0),
+                age=age,
                 freshness_threshold=self._freshness_threshold,
                 source=self._source(),
                 context=context,
@@ -730,13 +902,14 @@ class DeterministicFakeRunMonitoringAdapter:
                 completeness=completeness,
             )
             self._states[context] = state
-            observers = tuple(
-                observer
-                for subscribed_context, observer, _ in self._subscriptions.values()
+            deliveries = tuple(
+                (observer, subscription)
+                for subscribed_context, observer, subscription
+                in self._subscriptions.values()
                 if subscribed_context == context
             )
-        for observer in observers:
-            observer(state)
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, state)
         return state
 
     def _apply_diagnostic_command(
@@ -821,13 +994,14 @@ class DeterministicFakeRunMonitoringAdapter:
                 completeness=Completeness.COMPLETE,
             )
             self._states[context] = updated_state
-            observers = tuple(
-                observer
-                for subscribed_context, observer, _ in self._subscriptions.values()
+            deliveries = tuple(
+                (observer, subscription)
+                for subscribed_context, observer, subscription
+                in self._subscriptions.values()
                 if subscribed_context == context
             )
-        for observer in observers:
-            observer(updated_state)
+        for observer, subscription in deliveries:
+            subscription.deliver(observer, updated_state)
         return DiagnosticTaskCommandResult(
             accepted=True,
             message=f"Diagnostic task {action} accepted.",
@@ -867,11 +1041,11 @@ class DeterministicFakeRunMonitoringAdapter:
             completeness=Completeness.UNKNOWN,
         )
 
-    @staticmethod
-    def _source() -> RunMonitoringSource:
+    def _source(self) -> RunMonitoringSource:
         return RunMonitoringSource(
             kind=SourceKind.DETERMINISTIC_FAKE,
             identity="frontend-v2-run-monitoring-fake",
+            generation=self._source_generation,
         )
 
     def _remove_subscription(self, subscription_id: int) -> None:
@@ -941,6 +1115,7 @@ __all__ = [
     "ScenarioSetId",
     "SimulationTime",
     "SourceKind",
+    "SourceGenerationId",
     "StrategyUnderTestId",
     "StrategyRunId",
     "StructuredFeatureError",

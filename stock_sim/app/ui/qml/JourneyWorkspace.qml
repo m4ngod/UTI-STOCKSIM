@@ -206,6 +206,8 @@ Rectangle {
                             }
                             Text {
                                 text: "Source · " + runMonitoring.sourceIdentity
+                                    + " · " + runMonitoring.sourceGenerationText
+                                    + " · " + runMonitoring.mountGenerationText
                                 color: tokens.textQuiet
                                 font.pixelSize: tokens.labelSize
                             }

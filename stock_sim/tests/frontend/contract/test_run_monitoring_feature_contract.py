@@ -36,7 +36,7 @@ def test_wave_zero_reserves_six_feature_names_and_activates_only_run_monitoring(
         FeatureModuleName.RUN_MONITORING,
     )
     assert ACTIVE_FEATURE_INTERFACES[0].version == RUN_MONITORING_INTERFACE_VERSION
-    assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.1"
+    assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.2"
 
 
 def test_fake_snapshot_starts_as_typed_loading_state():
@@ -120,7 +120,7 @@ def test_fake_subscription_advances_loading_to_no_selection_empty_without_sleep(
     adapter.close()
 
 
-def test_fake_disconnected_state_is_degraded_and_never_normalized_to_empty():
+def test_fake_disconnected_without_prior_data_is_failed_not_empty():
     adapter = DeterministicFakeRunMonitoringAdapter()
     context = RunMonitoringContext.no_selection()
 
@@ -128,7 +128,7 @@ def test_fake_disconnected_state_is_degraded_and_never_normalized_to_empty():
 
     assert disconnected.presentation is RunMonitoringPresentationState.DISCONNECTED
     assert disconnected.freshness is Freshness.DISCONNECTED
-    assert disconnected.phase is ViewPhase.DEGRADED
+    assert disconnected.phase is ViewPhase.FAILED
     assert disconnected.completeness is Completeness.UNKNOWN
     assert disconnected.last_reliable_data is None
     assert disconnected.error is not None

@@ -9,6 +9,8 @@ Responsibilities:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 from threading import Event, RLock, Thread
 import time
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -35,6 +37,84 @@ ACCOUNT_CREATED_TOPIC = "account.created.canonical"
 ACCOUNT_UPDATED_TOPIC = "account.updated"
 ORDER_REJECTED_TOPIC = "order.rejected"
 ORDER_CANCELED_TOPIC = "order.canceled"
+
+
+@dataclass(frozen=True, slots=True)
+class EventBridgeGenerationId:
+    value: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, int) or self.value < 1:
+            raise ValueError("EventBridge generation must be positive")
+
+
+class EventBridgeConnectionPhase(str, Enum):
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+
+
+@dataclass(frozen=True, slots=True)
+class EventBridgeConnectionSequence:
+    value: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, int) or self.value < 1:
+            raise ValueError("EventBridge connection sequence must be positive")
+
+
+class EventBridgeTerminalPhase(str, Enum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+@dataclass(frozen=True, slots=True)
+class EventBridgeConnectionState:
+    generation: EventBridgeGenerationId
+    sequence: EventBridgeConnectionSequence
+    phase: EventBridgeConnectionPhase
+
+
+@dataclass(frozen=True, slots=True)
+class EventBridgeRunTerminal:
+    run_id: str
+    phase: EventBridgeTerminalPhase
+
+
+@dataclass(frozen=True, slots=True)
+class EventBridgeBatch:
+    generation: EventBridgeGenerationId
+    snapshots: tuple[Dict[str, Any], ...]
+    terminal: bool
+    run_terminals: tuple[EventBridgeRunTerminal, ...]
+
+    def terminal_phase_for(
+        self,
+        run_id: str,
+    ) -> EventBridgeTerminalPhase | None:
+        for terminal in reversed(self.run_terminals):
+            if terminal.run_id == run_id:
+                return terminal.phase
+        return None
+
+
+def _terminal_phase(
+    snapshot: Dict[str, Any],
+) -> EventBridgeTerminalPhase | None:
+    status = str(
+        snapshot.get("status")
+        or snapshot.get("lifecycle")
+        or ""
+    ).strip().lower()
+    if status == "completed":
+        return EventBridgeTerminalPhase.COMPLETED
+    if status == "failed":
+        return EventBridgeTerminalPhase.FAILED
+    if status in {"canceled", "cancelled"}:
+        return EventBridgeTerminalPhase.CANCELED
+    if snapshot.get("terminal"):
+        return EventBridgeTerminalPhase.COMPLETED
+    return None
 
 
 try:  # pragma: no cover
@@ -79,7 +159,9 @@ class EventBridge:
         self._th: Optional[Thread] = None
         self._stop_evt = Event()
         self._lock = RLock()
-        self._snapshots: List[Dict[str, Any]] = []
+        self._snapshots: List[
+            tuple[EventBridgeGenerationId, Dict[str, Any]]
+        ] = []
         self.flush_count = 0
         self.signals = _BridgeSignals()
         self._last_flush_ts = time.time()
@@ -92,9 +174,17 @@ class EventBridge:
         self._local_handlers: list[tuple[Any, str, Callable[[str, dict], None]]] = []
         self._batch_observers: dict[
             int,
-            Callable[[tuple[Dict[str, Any], ...]], None],
+            Callable[[EventBridgeBatch], None],
         ] = {}
         self._next_batch_observer_id = 1
+        self._connection_generation = EventBridgeGenerationId(1)
+        self._connection_sequence = EventBridgeConnectionSequence(1)
+        self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+        self._connection_observers: dict[
+            int,
+            Callable[[EventBridgeConnectionState], None],
+        ] = {}
+        self._next_connection_observer_id = 1
 
     def start(self):
         if self._running:
@@ -121,13 +211,28 @@ class EventBridge:
         self.flush(force=True)
         self._disable_local_subscription()
 
-    def on_snapshot(self, snap: Union[SnapshotDTO, Dict[str, Any]]):
+    @property
+    def connection_generation(self) -> EventBridgeGenerationId:
+        return self.connection_state.generation
+
+    @property
+    def connection_state(self) -> EventBridgeConnectionState:
+        with self._lock:
+            return self._connection_state_locked()
+
+    def on_snapshot(
+        self,
+        snap: Union[SnapshotDTO, Dict[str, Any]],
+        *,
+        generation: EventBridgeGenerationId | int | None = None,
+    ):
         if isinstance(snap, SnapshotDTO):
             payload = snap.model_dump() if hasattr(snap, "model_dump") else snap.dict()
         else:
             payload = snap
         with self._lock:
-            self._snapshots.append(payload)
+            generation_id = self._coerce_generation(generation)
+            self._snapshots.append((generation_id, payload))
             if len(self._snapshots) >= self.max_batch_size:
                 self._flush_locked()
 
@@ -142,7 +247,7 @@ class EventBridge:
 
     def subscribe_batches(
         self,
-        observer: Callable[[tuple[Dict[str, Any], ...]], None],
+        observer: Callable[[EventBridgeBatch], None],
     ) -> Callable[[], None]:
         with self._lock:
             observer_id = self._next_batch_observer_id
@@ -154,6 +259,56 @@ class EventBridge:
                 self._batch_observers.pop(observer_id, None)
 
         return _dispose
+
+    def subscribe_connection_state(
+        self,
+        observer: Callable[[EventBridgeConnectionState], None],
+        *,
+        replay_current: bool = False,
+    ) -> Callable[[], None]:
+        with self._lock:
+            observer_id = self._next_connection_observer_id
+            self._next_connection_observer_id += 1
+            self._connection_observers[observer_id] = observer
+            current = (
+                self._connection_state_locked()
+                if replay_current
+                else None
+            )
+
+        if current is not None:
+            self._notify_connection_observers((observer,), current)
+
+        def _dispose() -> None:
+            with self._lock:
+                self._connection_observers.pop(observer_id, None)
+
+        return _dispose
+
+    def mark_disconnected(self) -> EventBridgeConnectionState:
+        with self._lock:
+            if self._connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
+                return self._connection_state_locked()
+            self._connection_phase = EventBridgeConnectionPhase.DISCONNECTED
+            self._advance_connection_sequence_locked()
+            state = self._connection_state_locked()
+            observers = tuple(self._connection_observers.values())
+        self._notify_connection_observers(observers, state)
+        return state
+
+    def mark_reconnected(self) -> EventBridgeConnectionState:
+        with self._lock:
+            if self._connection_phase is EventBridgeConnectionPhase.CONNECTED:
+                return self._connection_state_locked()
+            self._connection_generation = EventBridgeGenerationId(
+                self._connection_generation.value + 1
+            )
+            self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+            self._advance_connection_sequence_locked()
+            state = self._connection_state_locked()
+            observers = tuple(self._connection_observers.values())
+        self._notify_connection_observers(observers, state)
+        return state
 
     def _loop(self):
         interval_sec = self.flush_interval_ms / 1000.0
@@ -168,10 +323,11 @@ class EventBridge:
     def _flush_locked(self):
         if not self._snapshots:
             return
-        batch = self._snapshots
+        entries = self._snapshots
         self._snapshots = []
         self.flush_count += 1
         self._last_flush_ts = time.time()
+        batch = [payload for _, payload in entries]
         try:
             self.signals.snapshots.emit(batch)  # type: ignore[attr-defined]
         except Exception:
@@ -186,12 +342,37 @@ class EventBridge:
                 runtime_event_bus.publish(FRONTEND_SNAPSHOT_BATCH_TOPIC, payload)
             except Exception:
                 pass
-        immutable_batch = tuple(dict(item) for item in batch)
-        for observer in tuple(self._batch_observers.values()):
-            try:
-                observer(immutable_batch)
-            except Exception:
-                pass
+        grouped: dict[EventBridgeGenerationId, list[Dict[str, Any]]] = {}
+        for generation, item in entries:
+            grouped.setdefault(generation, []).append(item)
+        observers = tuple(self._batch_observers.values())
+        for generation, items in grouped.items():
+            immutable_batch = tuple(dict(item) for item in items)
+            terminal_phases = tuple(
+                phase
+                for item in items
+                if (phase := _terminal_phase(item)) is not None
+            )
+            run_terminals = tuple(
+                EventBridgeRunTerminal(
+                    run_id=run_id,
+                    phase=phase,
+                )
+                for item in items
+                if (phase := _terminal_phase(item)) is not None
+                if (run_id := str(item.get("run_id") or "").strip())
+            )
+            envelope = EventBridgeBatch(
+                generation=generation,
+                snapshots=immutable_batch,
+                terminal=bool(terminal_phases),
+                run_terminals=run_terminals,
+            )
+            for observer in observers:
+                try:
+                    observer(envelope)
+                except Exception:
+                    pass
 
     def _normalize_snapshot_payload(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -245,6 +426,7 @@ class EventBridge:
         except Exception:
             self._fallback_done = True
             metrics.inc("redis_fallback")
+            self._rotate_connection_generation()
             if self._subscribe_backend:
                 self._enable_local_subscription()
 
@@ -270,8 +452,54 @@ class EventBridge:
         if fallback:
             self._fallback_done = True
             metrics.inc("redis_fallback")
+            self._rotate_connection_generation()
             if self._subscribe_backend and not self._local_subscribed:
                 self._enable_local_subscription()
+
+    def _rotate_connection_generation(self) -> EventBridgeConnectionState:
+        with self._lock:
+            self._connection_generation = EventBridgeGenerationId(
+                self._connection_generation.value + 1
+            )
+            self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+            self._advance_connection_sequence_locked()
+            state = self._connection_state_locked()
+            observers = tuple(self._connection_observers.values())
+        self._notify_connection_observers(observers, state)
+        return state
+
+    def _connection_state_locked(self) -> EventBridgeConnectionState:
+        return EventBridgeConnectionState(
+            generation=self._connection_generation,
+            sequence=self._connection_sequence,
+            phase=self._connection_phase,
+        )
+
+    def _advance_connection_sequence_locked(self) -> None:
+        self._connection_sequence = EventBridgeConnectionSequence(
+            self._connection_sequence.value + 1
+        )
+
+    @staticmethod
+    def _notify_connection_observers(
+        observers: tuple[Callable[[EventBridgeConnectionState], None], ...],
+        state: EventBridgeConnectionState,
+    ) -> None:
+        for observer in observers:
+            try:
+                observer(state)
+            except Exception:
+                pass
+
+    def _coerce_generation(
+        self,
+        value: EventBridgeGenerationId | int | None,
+    ) -> EventBridgeGenerationId:
+        if value is None:
+            return self._connection_generation
+        if isinstance(value, EventBridgeGenerationId):
+            return value
+        return EventBridgeGenerationId(int(value))
 
     def _enable_local_subscription(self):
         if self._local_subscribed:
@@ -488,6 +716,13 @@ def stop_frontend_bridge() -> None:
 
 __all__ = [
     "EventBridge",
+    "EventBridgeBatch",
+    "EventBridgeConnectionPhase",
+    "EventBridgeConnectionSequence",
+    "EventBridgeConnectionState",
+    "EventBridgeGenerationId",
+    "EventBridgeRunTerminal",
+    "EventBridgeTerminalPhase",
     "BACKEND_SNAPSHOT_TOPIC",
     "BACKEND_RUNTIME_SNAPSHOT_TOPIC",
     "FRONTEND_SNAPSHOT_BATCH_TOPIC",

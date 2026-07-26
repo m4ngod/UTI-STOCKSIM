@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
+from threading import Lock
 
 from PySide6.QtCore import Property, QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -20,6 +23,22 @@ from app.features import (
 
 
 _QML_ROOT = Path(__file__).resolve().parent / "qml"
+_MOUNT_GENERATIONS = count(1)
+_MOUNT_GENERATION_LOCK = Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class ViewMountGenerationId:
+    value: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, int) or self.value < 1:
+            raise ValueError("View mount generation must be positive")
+
+
+def _next_mount_generation() -> ViewMountGenerationId:
+    with _MOUNT_GENERATION_LOCK:
+        return ViewMountGenerationId(next(_MOUNT_GENERATIONS))
 
 
 class RunMonitoringQtAdapter(QObject):
@@ -27,7 +46,7 @@ class RunMonitoringQtAdapter(QObject):
 
     stateChanged = Signal()
     commandChanged = Signal()
-    deliveryRequested = Signal(object)
+    deliveryRequested = Signal(int, object)
 
     def __init__(
         self,
@@ -40,6 +59,8 @@ class RunMonitoringQtAdapter(QObject):
         self._feature = feature
         self._context = context or RunMonitoringContext.no_selection()
         self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
@@ -50,10 +71,21 @@ class RunMonitoringQtAdapter(QObject):
         )
 
     def _queue_state(self, state: RunMonitoringViewState) -> None:
-        self.deliveryRequested.emit(state)
+        if self._closed:
+            return
+        self.deliveryRequested.emit(self._mount_generation.value, state)
 
-    @Slot(object)
-    def _accept_state(self, state: RunMonitoringViewState) -> None:
+    @Slot(int, object)
+    def _accept_state(
+        self,
+        mount_generation: int,
+        state: RunMonitoringViewState,
+    ) -> None:
+        if (
+            self._closed
+            or mount_generation != self._mount_generation.value
+        ):
+            return
         if state.context != self._context:
             return
         if state.revision <= self._state.revision:
@@ -96,6 +128,18 @@ class RunMonitoringQtAdapter(QObject):
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def sourceIdentity(self) -> str:  # noqa: N802 - QML property convention
         return str(self._state.source.identity)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGenerationText(self) -> str:  # noqa: N802
+        return f"g{self._state.source.generation.value}"
+
+    @Property(int, constant=True)  # type: ignore[arg-type]
+    def mountGeneration(self) -> int:  # noqa: N802
+        return self._mount_generation.value
+
+    @Property(str, constant=True)  # type: ignore[arg-type]
+    def mountGenerationText(self) -> str:  # noqa: N802
+        return f"m{self._mount_generation.value}"
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def campaignIdentity(self) -> str:  # noqa: N802
@@ -279,7 +323,10 @@ class RunMonitoringQtAdapter(QObject):
 
     @Slot()
     def refresh(self) -> None:
-        self._accept_state(self._feature.snapshot(self._context))
+        self._accept_state(
+            self._mount_generation.value,
+            self._feature.snapshot(self._context),
+        )
 
     @Slot()
     def pauseDiagnosticTask(self) -> None:  # noqa: N802
@@ -330,11 +377,17 @@ class RunMonitoringQtAdapter(QObject):
         self.commandChanged.emit()
 
     def close(self) -> None:
-        subscription = self._subscription
-        if subscription is None:
+        if self._closed:
             return
+        self._closed = True
+        subscription = self._subscription
         self._subscription = None
-        subscription.dispose()
+        if subscription is not None:
+            subscription.dispose()
+        try:
+            self.deliveryRequested.disconnect(self._accept_state)
+        except (RuntimeError, TypeError):
+            pass
 
 
 class JourneyWorkspaceHost(QQuickWidget):

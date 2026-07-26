@@ -36,7 +36,7 @@ class FeatureInterfaceDescriptor:
     version: FeatureInterfaceVersion
 
 
-RUN_MONITORING_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=1)
+RUN_MONITORING_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=2)
 
 ACTIVE_FEATURE_INTERFACES = (
     FeatureInterfaceDescriptor(
