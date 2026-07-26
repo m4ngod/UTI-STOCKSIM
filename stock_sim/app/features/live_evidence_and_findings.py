@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 from threading import RLock, current_thread
 from typing import Any, Callable
 
@@ -19,7 +20,10 @@ from app.runtime_gateway import RuntimeGateway
 from .evidence_and_findings import (
     CandidateEvidence,
     DependencyProvenance,
+    DiagnosticEvidenceChart,
     DiagnosticCandidateId,
+    EvidenceChartOverlay,
+    EvidenceChartOverlayAxis,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsData,
     EvidenceAndFindingsObserver,
@@ -1095,6 +1099,69 @@ def _map_candidate(
             for item in assumptions
         ),
         provenance=_map_provenance(provenance, selected_run_id),
+        chart=_map_chart(row.get("chart")),
+    )
+
+
+def _map_chart(value: Any) -> DiagnosticEvidenceChart | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("chart payload must be a mapping when provided")
+    row = _mapping(value)
+    if not row:
+        raise ValueError("chart payload cannot be empty when provided")
+    raw_values = _value_sequence(row.get("values"))
+    if len(raw_values) < 2:
+        raise ValueError("chart values require at least two points")
+    values = tuple(
+        _finite_float(item, "chart value") for item in raw_values
+    )
+    raw_overlays = row.get("overlays")
+    if not isinstance(raw_overlays, (list, tuple)) or any(
+        not isinstance(item, dict) or not item for item in raw_overlays
+    ):
+        raise ValueError("chart overlays must be non-empty mappings")
+    overlays = tuple(
+        EvidenceChartOverlay(
+            identity=_required_text(
+                overlay.get("identity") or overlay.get("id"),
+                "chart overlay identity",
+            ),
+            label=_required_text(
+                overlay.get("label"),
+                "chart overlay label",
+            ),
+            axis=EvidenceChartOverlayAxis(
+                _required_text(
+                    overlay.get("axis"),
+                    "chart overlay axis",
+                )
+            ),
+            coordinate=_finite_float(
+                overlay.get("coordinate"),
+                "chart overlay coordinate",
+            ),
+            interpretation=_required_text(
+                overlay.get("interpretation"),
+                "chart overlay interpretation",
+            ),
+            evidence_ids=tuple(
+                EvidenceRecordId(item)
+                for item in _string_tuple(overlay.get("evidence_ids"))
+            ),
+        )
+        for overlay in (_mapping(item) for item in raw_overlays)
+    )
+    return DiagnosticEvidenceChart(
+        identity=_required_text(
+            row.get("identity") or row.get("id"),
+            "chart identity",
+        ),
+        label=_required_text(row.get("label"), "chart label"),
+        unit=_required_text(row.get("unit"), "chart unit"),
+        values=values,
+        overlays=overlays,
     )
 
 
@@ -1850,6 +1917,18 @@ def _integer(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _finite_float(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a finite number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} must be a finite number") from error
+    if not isfinite(parsed):
+        raise ValueError(f"{label} must be a finite number")
+    return parsed
 
 
 def _boolean(value: Any, *, default: bool) -> bool:

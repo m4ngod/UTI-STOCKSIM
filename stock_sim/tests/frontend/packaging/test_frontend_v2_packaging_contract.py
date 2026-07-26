@@ -139,6 +139,7 @@ def test_qml_dependencies_are_discovered_from_source_imports_not_a_handwritten_l
     } == {
         ("QtQuick", "2.15"),
         ("QtQuick.Layouts", "1.15"),
+        ("QtQuick.Shapes", "1.15"),
     }
     assert not any(
         dependency.module.startswith("QtWebEngine")

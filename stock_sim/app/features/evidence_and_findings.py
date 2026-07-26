@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from functools import lru_cache
+from math import isfinite, sin
 from threading import RLock
 from typing import Callable, Protocol, runtime_checkable
 
@@ -65,6 +67,11 @@ class FindingDisposition(str, Enum):
     CONCERN = "concern"
     FAILED = "failed"
     NOT_ASSESSED = "not_assessed"
+
+
+class EvidenceChartOverlayAxis(str, Enum):
+    HORIZONTAL = "horizontal"
+    VERTICAL = "vertical"
 
 
 def _require_identity(value: str, label: str) -> None:
@@ -237,6 +244,70 @@ class EvidenceProvenance:
     dependencies: tuple[DependencyProvenance, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceChartOverlay:
+    identity: str
+    label: str
+    axis: EvidenceChartOverlayAxis
+    coordinate: float
+    interpretation: str
+    evidence_ids: tuple[EvidenceRecordId, ...]
+
+    def __post_init__(self) -> None:
+        _require_identity(self.identity, "Evidence chart overlay")
+        if not self.label.strip():
+            raise ValueError("Evidence chart overlay label cannot be empty")
+        if not isinstance(self.axis, EvidenceChartOverlayAxis):
+            raise TypeError("axis must be an EvidenceChartOverlayAxis")
+        if not isfinite(self.coordinate):
+            raise ValueError("Evidence chart overlay coordinate must be finite")
+        if not self.interpretation.strip():
+            raise ValueError(
+                "Evidence chart overlay interpretation cannot be empty"
+            )
+        if not isinstance(self.evidence_ids, tuple) or not self.evidence_ids:
+            raise ValueError(
+                "Evidence chart overlay must cite immutable diagnostic evidence"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticEvidenceChart:
+    """Immutable full-fidelity evidence series held outside the renderer."""
+
+    identity: str
+    label: str
+    unit: str
+    values: tuple[float, ...]
+    overlays: tuple[EvidenceChartOverlay, ...]
+
+    def __post_init__(self) -> None:
+        _require_identity(self.identity, "Diagnostic evidence chart")
+        if not self.label.strip():
+            raise ValueError("Diagnostic evidence chart label cannot be empty")
+        if not self.unit.strip():
+            raise ValueError("Diagnostic evidence chart unit cannot be empty")
+        if not isinstance(self.values, tuple) or len(self.values) < 2:
+            raise ValueError(
+                "Diagnostic evidence chart requires an immutable source series"
+            )
+        if not all(
+            isinstance(value, (int, float)) and isfinite(float(value))
+            for value in self.values
+        ):
+            raise ValueError(
+                "Diagnostic evidence chart values must all be finite numbers"
+            )
+        if not isinstance(self.overlays, tuple) or not self.overlays:
+            raise ValueError(
+                "Diagnostic evidence chart requires immutable overlays"
+            )
+        _require_unique_identities(
+            "evidence chart overlay",
+            tuple(item.identity for item in self.overlays),
+        )
+
+
 def _require_unique_identities(
     label: str,
     identities: tuple[object, ...],
@@ -254,6 +325,7 @@ class CandidateEvidence:
     findings: tuple[Finding, ...]
     execution_assumptions: tuple[ExecutionAssumption, ...]
     provenance: EvidenceProvenance
+    chart: DiagnosticEvidenceChart | None = None
 
     def __post_init__(self) -> None:
         evidence_ids = tuple(item.identity for item in self.evidence)
@@ -356,6 +428,13 @@ class CandidateEvidence:
                     raise ValueError(
                         "Sensitivity breakpoint evidence references must "
                         "resolve within the same candidate"
+                    )
+        if self.chart is not None:
+            for overlay in self.chart.overlays:
+                if not set(overlay.evidence_ids).issubset(evidence_id_set):
+                    raise ValueError(
+                        "Evidence chart overlay references must resolve within "
+                        "the same candidate"
                     )
 
 
@@ -880,6 +959,61 @@ def _evidence(
     )
 
 
+@lru_cache(maxsize=8)
+def _reference_chart(
+    candidate_identity: str,
+    return_evidence_id: str,
+    risk_evidence_id: str,
+    sensitivity_evidence_id: str,
+) -> DiagnosticEvidenceChart:
+    phase_offset = 0.0 if candidate_identity == "MODEL-B17" else 0.35
+    values = tuple(
+        100.0
+        + index * 0.00004
+        + 1.7 * sin(index / 911.0 + phase_offset)
+        + 0.45 * sin(index / 83.0 + phase_offset)
+        for index in range(100_000)
+    )
+    return DiagnosticEvidenceChart(
+        identity=f"{candidate_identity}-diagnostic-series",
+        label="Normalized diagnostic outcome path",
+        unit="normalized evidence value",
+        values=values,
+        overlays=(
+            EvidenceChartOverlay(
+                identity=f"OV-{candidate_identity}-BASELINE",
+                label="Baseline reference",
+                axis=EvidenceChartOverlayAxis.HORIZONTAL,
+                coordinate=100.0,
+                interpretation=(
+                    "Reference level for the candidate baseline outcome."
+                ),
+                evidence_ids=(EvidenceRecordId(return_evidence_id),),
+            ),
+            EvidenceChartOverlay(
+                identity=f"OV-{candidate_identity}-DRAWDOWN",
+                label="Observed drawdown boundary",
+                axis=EvidenceChartOverlayAxis.HORIZONTAL,
+                coordinate=97.5,
+                interpretation=(
+                    "Risk boundary tied to the observed drawdown evidence."
+                ),
+                evidence_ids=(EvidenceRecordId(risk_evidence_id),),
+            ),
+            EvidenceChartOverlay(
+                identity=f"OV-{candidate_identity}-FEE-BREAKPOINT",
+                label="Fee sensitivity breakpoint",
+                axis=EvidenceChartOverlayAxis.VERTICAL,
+                coordinate=60_000.0,
+                interpretation=(
+                    "Viewport marker for the fee sensitivity failure evidence."
+                ),
+                evidence_ids=(EvidenceRecordId(sensitivity_evidence_id),),
+            ),
+        ),
+    )
+
+
 def _candidate(
     identity: str,
     *,
@@ -1155,6 +1289,12 @@ def _candidate(
                     artifact_hash="sha256:calendar-a13f",
                 ),
             ),
+        ),
+        chart=_reference_chart(
+            identity,
+            evidence[0].identity.value,
+            evidence[1].identity.value,
+            evidence[6].identity.value,
         ),
     )
 

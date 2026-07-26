@@ -292,6 +292,181 @@ Item {
                     }
                 }
 
+                Rectangle {
+                    id: evidenceChartSurface
+                    objectName: "evidenceChartSurface"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 424
+                    radius: tokens.radiusMd
+                    color: tokens.surfaceRaised
+                    border.color: tokens.border
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceLg
+                        spacing: tokens.spaceSm
+
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            Text {
+                                text: "DIAGNOSTIC EVIDENCE PATH"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Text {
+                                text: adapter.chartAcceptedRevisionText
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                            }
+                        }
+
+                        Item {
+                            id: evidenceChartMount
+                            objectName: "evidenceChartMount"
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: tokens.radiusSm
+                                color: tokens.surface
+                                border.color: tokens.border
+                            }
+
+                            EvidenceChart {
+                                id: productionEvidenceChart
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                normalizedPoints: adapter.chartNormalizedPoints
+                                overlayModels: adapter.chartOverlayModels
+                                selectedPointX: adapter.selectedChartPointX
+                                selectedPointY: adapter.selectedChartPointY
+                                acceptedRevision: adapter.chartAcceptedRevision
+                                samplePointCount: adapter.chartVisiblePointCount
+                                overlayCount: adapter.chartOverlayCount
+                                selectedPointSourceIndex: (
+                                    adapter.selectedChartPointIndex
+                                )
+                                selectedOverlayIdentity: (
+                                    adapter.selectedChartOverlayIdentity
+                                )
+                                selectedFindingIdentity: (
+                                    adapter.selectedChartFindingIdentity
+                                )
+                                selectedBreakpointIdentity: (
+                                    adapter.selectedChartBreakpointIdentity
+                                )
+                                frameSequence: adapter.chartFrameSequence
+                                interactionEnabled: (
+                                    adapter.chartInteractionEnabled
+                                )
+                                seriesColor: tokens.focus
+                                overlayColor: tokens.textQuiet
+                                selectedColor: tokens.accent
+                                pointColor: tokens.textPrimary
+                                pointBorderColor: tokens.surface
+                                focusColor: tokens.focus
+                                labelPixelSize: tokens.labelSize
+                                accessibleDescription: adapter.chartAccessibleText
+                                onPointSelected: function(ratio) {
+                                    adapter.selectChartPointAtRatio(ratio)
+                                }
+                                onPointStepRequested: function(direction) {
+                                    adapter.stepChartPoint(direction)
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: adapter.chartSourceIdentity
+                                + " · " + adapter.chartSourcePointCount
+                                + " source · " + adapter.chartVisiblePointCount
+                                + " visible · " + adapter.chartOverlayCount
+                                + " overlays · " + adapter.chartSamplingPolicy
+                            color: tokens.textQuiet
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WordWrap
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: tokens.spaceSm
+
+                            Text {
+                                text: "OVERLAYS"
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+
+                            Repeater {
+                                objectName: "evidenceChartOverlayRepeater"
+                                model: adapter.chartOverlayIdentities
+
+                                delegate: ResearchChoice {
+                                    property string choiceValue: String(modelData)
+                                    tokens: page.tokens
+                                    enabled: adapter.chartInteractionEnabled
+                                    text: choiceValue
+                                    selected: adapter.selectedChartOverlayIdentity
+                                        === choiceValue
+                                    accessibleName: "Select chart overlay "
+                                        + choiceValue
+                                    onInvoked: adapter.selectChartOverlay(
+                                        choiceValue
+                                    )
+                                }
+                            }
+
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: tokens.spaceSm
+
+                            Text {
+                                text: "SENSITIVITY BREAKPOINTS"
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+
+                            Repeater {
+                                objectName: "evidenceChartBreakpointRepeater"
+                                model: adapter.chartBreakpointIdentities
+
+                                delegate: ResearchChoice {
+                                    property string choiceValue: String(modelData)
+                                    tokens: page.tokens
+                                    enabled: adapter.chartInteractionEnabled
+                                    text: choiceValue
+                                    selected: (
+                                        adapter.selectedChartBreakpointIdentity
+                                        === choiceValue
+                                    )
+                                    accessibleName: (
+                                        "Select Sensitivity Breakpoint "
+                                        + choiceValue
+                                    )
+                                    onInvoked: adapter.selectChartBreakpoint(
+                                        choiceValue
+                                    )
+                                }
+                            }
+
+                            Item { Layout.fillWidth: true }
+                        }
+                    }
+                }
+
                 GridLayout {
                     id: evidenceGrid
                     Layout.fillWidth: true
@@ -312,7 +487,7 @@ Item {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: adapter.evidenceTableText
+                            text: adapter.chartTableText
                             color: tokens.textMuted
                             font.pixelSize: tokens.labelSize
                             wrapMode: Text.WordWrap
@@ -354,7 +529,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: adapter.findingNarrativeText
+                            text: adapter.chartNarrativeText
                             color: tokens.textPrimary
                             font.pixelSize: tokens.labelSize
                             wrapMode: Text.WordWrap

@@ -320,6 +320,75 @@ def _live_adapter():
     return adapter, bridge, queries
 
 
+def test_live_adapter_maps_explicit_chart_source_without_mutating_payload():
+    adapter, bridge, queries = _live_adapter()
+    values = [100.0, 101.5, 99.25, 103.0]
+    queries.record["candidates"][0]["chart"] = {
+        "identity": "LIVE-B17-diagnostic-series",
+        "label": "Live normalized outcome path",
+        "unit": "normalized evidence value",
+        "values": values,
+        "overlays": [
+            {
+                "identity": "OV-LIVE-BASELINE",
+                "label": "Baseline reference",
+                "axis": "horizontal",
+                "coordinate": 100.0,
+                "interpretation": "Baseline outcome reference.",
+                "evidence_ids": ["E-LIVE-RETURN-BASE"],
+            },
+            {
+                "identity": "OV-LIVE-DRAWDOWN",
+                "label": "Drawdown boundary",
+                "axis": "horizontal",
+                "coordinate": 98.0,
+                "interpretation": "Observed drawdown boundary.",
+                "evidence_ids": ["E-LIVE-RISK-BASE"],
+            },
+            {
+                "identity": "OV-LIVE-FEE",
+                "label": "Fee breakpoint",
+                "axis": "vertical",
+                "coordinate": 2.0,
+                "interpretation": "Fee sensitivity breakpoint.",
+                "evidence_ids": ["E-LIVE-EXEC-ISO"],
+            },
+        ],
+    }
+
+    state = adapter.snapshot(_selected_context())
+    data = state.last_reliable_data
+    assert data is not None
+    chart = data.candidates[0].chart
+    assert chart is not None
+    assert chart.identity == "LIVE-B17-diagnostic-series"
+    assert chart.values == (100.0, 101.5, 99.25, 103.0)
+    assert tuple(item.identity for item in chart.overlays) == (
+        "OV-LIVE-BASELINE",
+        "OV-LIVE-DRAWDOWN",
+        "OV-LIVE-FEE",
+    )
+
+    values.append(999.0)
+    assert chart.values == (100.0, 101.5, 99.25, 103.0)
+
+    adapter.close()
+
+
+def test_live_adapter_rejects_malformed_explicit_chart_payload():
+    adapter, _bridge, queries = _live_adapter()
+    queries.record["candidates"][0]["chart"] = "not-a-chart"
+
+    state = adapter.snapshot(_selected_context())
+
+    assert state.phase is ViewPhase.FAILED
+    assert state.presentation is EvidenceAndFindingsPresentationState.FAILED
+    assert state.last_reliable_data is None
+    assert state.error is not None
+    assert state.error.code == "evidence_and_findings_mapping_failed"
+    adapter.close()
+
+
 class _EvidenceContractDriver:
     """Adapter-specific controls behind one shared Feature contract suite."""
 

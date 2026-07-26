@@ -4,10 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import count
+from math import ceil
 from pathlib import Path
 from threading import Lock
+from time import monotonic_ns
+from typing import Callable
 
-from PySide6.QtCore import Property, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    Property,
+    QObject,
+    QPointF,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QWidget
 
@@ -26,6 +38,15 @@ from app.features import (
     RunMonitoringFeature,
     RunMonitoringViewState,
     Subscription,
+)
+from .evidence_chart import (
+    EvidenceChartFrameGate,
+    EvidenceChartFrameGateResult,
+    EvidenceChartPresentation,
+    EvidenceChartRenderFrame,
+    EvidenceChartSamplingPolicy,
+    EvidenceChartViewport,
+    build_evidence_chart_presentation,
 )
 
 
@@ -402,6 +423,8 @@ class EvidenceAndFindingsQtAdapter(QObject):
 
     stateChanged = Signal()
     localStateChanged = Signal()
+    chartPresentationChanged = Signal()
+    chartInteractionChanged = Signal()
     deliveryRequested = Signal(int, object)
 
     def __init__(
@@ -409,6 +432,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         feature: EvidenceAndFindingsFeature,
         *,
         context: EvidenceAndFindingsContext | None = None,
+        chart_clock: Callable[[], int] = monotonic_ns,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -423,7 +447,31 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self._sort_order = "dimension"
         self._active_tab = "findings"
         self._viewport_intent = "overview"
+        self._selected_point_source_index: int | None = None
+        self._selected_overlay = ""
+        self._selected_breakpoint = ""
+        self._chart_clock = chart_clock
+        self._chart_frame_gate = EvidenceChartFrameGate(
+            max_frames_per_second=20
+        )
+        self._pending_chart_presentations: list[
+            EvidenceChartPresentation
+        ] = []
+        self._chart_interaction_enabled = True
+        self._chart_timer = QTimer(self)
+        self._chart_timer.setSingleShot(True)
+        self._chart_timer.timeout.connect(self.flush_chart_frames)
         self._repair_local_selection()
+        self._chart_presentation = self._build_chart_presentation()
+        self._chart_frame_sequence = 1
+        initial_gate = self._chart_frame_gate.offer(
+            self._chart_presentation.frame,
+            now_ns=self._chart_clock(),
+        )
+        if not initial_gate.committed:
+            raise RuntimeError(
+                "Initial Evidence chart presentation was not committed"
+            )
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
@@ -451,6 +499,10 @@ class EvidenceAndFindingsQtAdapter(QObject):
             return
         self._state = state
         self._repair_local_selection()
+        self._offer_chart_presentation(
+            self._build_chart_presentation(),
+            local=False,
+        )
         self.stateChanged.emit()
         self.localStateChanged.emit()
 
@@ -469,6 +521,28 @@ class EvidenceAndFindingsQtAdapter(QObject):
             self._selected_finding = (
                 findings[0].identity.value if findings else ""
             )
+        chart = None if candidate is None else candidate.chart
+        overlay_ids = (
+            set() if chart is None else {item.identity for item in chart.overlays}
+        )
+        if self._selected_overlay not in overlay_ids:
+            self._selected_overlay = (
+                chart.overlays[0].identity
+                if chart is not None and chart.overlays
+                else ""
+            )
+        breakpoints = tuple(
+            breakpoint
+            for finding in findings
+            for breakpoint in finding.sensitivity_breakpoints
+        )
+        breakpoint_ids = {item.identity.value for item in breakpoints}
+        if self._selected_breakpoint not in breakpoint_ids:
+            self._selected_breakpoint = (
+                breakpoints[0].identity.value if breakpoints else ""
+            )
+        if chart is None:
+            self._selected_point_source_index = None
 
     def _candidate(self) -> CandidateEvidence | None:
         data = self._state.last_reliable_data
@@ -599,6 +673,120 @@ class EvidenceAndFindingsQtAdapter(QObject):
     def viewportIntent(self) -> str:  # noqa: N802
         return self._viewport_intent
 
+    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartAcceptedRevision(self) -> int:  # noqa: N802
+        return self._chart_presentation.frame.revision
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartAcceptedRevisionText(self) -> str:  # noqa: N802
+        return f"r{self.chartAcceptedRevision}"
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartSourceIdentity(self) -> str:  # noqa: N802
+        return self._chart_presentation.source_identity
+
+    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartSourcePointCount(self) -> int:  # noqa: N802
+        return self._chart_presentation.source_point_count
+
+    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartVisiblePointCount(self) -> int:  # noqa: N802
+        sample = self._chart_presentation.sample
+        return 0 if sample is None else len(sample.points)
+
+    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartOverlayCount(self) -> int:  # noqa: N802
+        return len(self._chart_presentation.overlay_identities)
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartSamplingPolicy(self) -> str:  # noqa: N802
+        sample = self._chart_presentation.sample
+        return (
+            EvidenceChartSamplingPolicy.UNIFORM_ENDPOINTS_V1.value
+            if sample is None
+            else sample.key.policy.value
+        )
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartNarrativeText(self) -> str:  # noqa: N802
+        return self._chart_presentation.narrative_text
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartTableText(self) -> str:  # noqa: N802
+        return self._chart_presentation.table_text
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartAccessibleText(self) -> str:  # noqa: N802
+        return self._chart_presentation.accessible_text
+
+    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartOverlayIdentities(self) -> list[str]:  # noqa: N802
+        return list(self._chart_presentation.overlay_identities)
+
+    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartOverlayModels(self) -> list[dict[str, object]]:  # noqa: N802
+        frame = self._chart_presentation.frame
+        return [
+            {
+                "identity": item.identity,
+                "axis": item.axis.value,
+                "position": item.normalized_coordinate,
+                "selected": (
+                    item.identity == frame.selected_overlay_identity
+                ),
+            }
+            for item in frame.overlays
+        ]
+
+    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartNormalizedPoints(self) -> list[QPointF]:  # noqa: N802
+        sample = self._chart_presentation.sample
+        if sample is None:
+            return []
+        return [
+            QPointF(item.normalized_x, item.normalized_y)
+            for item in sample.points
+        ]
+
+    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartFrameSequence(self) -> int:  # noqa: N802
+        return self._chart_frame_sequence
+
+    @Property(bool, notify=chartInteractionChanged)  # type: ignore[arg-type]
+    def chartInteractionEnabled(self) -> bool:  # noqa: N802
+        return self._chart_interaction_enabled
+
+    @Property("QVariantList", notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def chartBreakpointIdentities(self) -> list[str]:  # noqa: N802
+        return list(self._chart_presentation.breakpoint_identities)
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def selectedChartOverlayIdentity(self) -> str:  # noqa: N802
+        return self._chart_presentation.selected_overlay_identity
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def selectedChartFindingIdentity(self) -> str:  # noqa: N802
+        return self._chart_presentation.selected_finding_identity
+
+    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def selectedChartBreakpointIdentity(self) -> str:  # noqa: N802
+        return self._chart_presentation.selected_breakpoint_identity
+
+    @Property(int, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def selectedChartPointIndex(self) -> int:  # noqa: N802
+        selected = self._chart_presentation.selected_point_source_index
+        return -1 if selected is None else selected
+
+    @Property(float, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def selectedChartPointX(self) -> float:  # noqa: N802
+        selected = self._chart_presentation.frame.selected_point
+        return -1.0 if selected is None else selected[0]
+
+    @Property(float, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    def selectedChartPointY(self) -> float:  # noqa: N802
+        selected = self._chart_presentation.frame.selected_point
+        return -1.0 if selected is None else selected[1]
+
     @Property(str, notify=localStateChanged)  # type: ignore[arg-type]
     def coverageText(self) -> str:  # noqa: N802
         return (
@@ -628,71 +816,6 @@ class EvidenceAndFindingsQtAdapter(QObject):
                 )
             )
         return "\n".join(lines)
-
-    @Property(str, notify=localStateChanged)  # type: ignore[arg-type]
-    def evidenceTableText(self) -> str:  # noqa: N802
-        candidate = self._candidate()
-        if candidate is None:
-            return ""
-        records = candidate.evidence
-        if self._evidence_filter != "all":
-            records = tuple(
-                item
-                for item in records
-                if self._evidence_filter
-                in {item.dimension.value, item.coverage.value}
-            )
-        key = (
-            (lambda item: (item.coverage.value, item.dimension.value))
-            if self._sort_order == "coverage"
-            else (lambda item: (item.dimension.value, item.coverage.value))
-        )
-        records = tuple(sorted(records, key=key))
-        lines = []
-        for item in records:
-            comparison = ""
-            if item.comparison_evidence_id is not None:
-                comparison = (
-                    f" · reference {item.comparison_evidence_id.value} "
-                    f"{item.comparison_value}"
-                )
-            lines.append(
-                f"{item.identity.value} · {_title(item.coverage)} · "
-                f"{_title(item.dimension)} · {item.label} · "
-                f"{item.value} {item.unit}{comparison} · "
-                f"{item.availability.value} · {item.interpretation}"
-            )
-        return "\n".join(lines)
-
-    @Property(str, notify=localStateChanged)  # type: ignore[arg-type]
-    def findingNarrativeText(self) -> str:  # noqa: N802
-        candidate = self._candidate()
-        if candidate is None:
-            return ""
-        finding = next(
-            (
-                item
-                for item in candidate.findings
-                if item.identity.value == self._selected_finding
-            ),
-            None,
-        )
-        if finding is None:
-            return ""
-        citations = ", ".join(item.value for item in finding.evidence_ids)
-        comparison_citations = ", ".join(
-            item.value for item in finding.comparison_ids
-        )
-        return "\n".join(
-            (
-                f"{finding.identity.value} · {finding.title}",
-                f"Disposition · {finding.disposition.value}",
-                f"Comparison · {finding.comparison_summary}",
-                f"Failure reason · {finding.failure_reason or 'none'}",
-                f"Evidence citations · {citations}",
-                f"Comparison citations · {comparison_citations}",
-            )
-        )
 
     @Property(str, notify=localStateChanged)  # type: ignore[arg-type]
     def breakpointsText(self) -> str:  # noqa: N802
@@ -794,7 +917,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self._selected_candidate = identity
         self._selected_finding = ""
         self._repair_local_selection()
-        self.localStateChanged.emit()
+        self._publish_local_change()
 
     @Slot(str)
     def selectFinding(self, identity: str) -> None:  # noqa: N802
@@ -805,7 +928,72 @@ class EvidenceAndFindingsQtAdapter(QObject):
             return
         if identity != self._selected_finding:
             self._selected_finding = identity
-            self.localStateChanged.emit()
+            self._publish_local_change()
+
+    @Slot(float)
+    def selectChartPointAtRatio(self, ratio: float) -> None:  # noqa: N802
+        if not self._chart_interaction_enabled:
+            return
+        sample = self._chart_presentation.sample
+        if sample is None or not sample.points:
+            return
+        bounded = max(0.0, min(float(ratio), 1.0))
+        sample_index = round(bounded * (len(sample.points) - 1))
+        source_index = sample.points[sample_index].source_index
+        if source_index == self._selected_point_source_index:
+            return
+        self._selected_point_source_index = source_index
+        self._publish_local_change()
+
+    @Slot(int)
+    def stepChartPoint(self, direction: int) -> None:  # noqa: N802
+        if not self._chart_interaction_enabled:
+            return
+        sample = self._chart_presentation.sample
+        if sample is None or not sample.points or direction == 0:
+            return
+        current_index = next(
+            (
+                index
+                for index, point in enumerate(sample.points)
+                if point.source_index == self._selected_point_source_index
+            ),
+            len(sample.points) - 1,
+        )
+        target_index = max(
+            0,
+            min(
+                current_index + (1 if direction > 0 else -1),
+                len(sample.points) - 1,
+            ),
+        )
+        source_index = sample.points[target_index].source_index
+        if source_index == self._selected_point_source_index:
+            return
+        self._selected_point_source_index = source_index
+        self._publish_local_change()
+
+    @Slot(str)
+    def selectChartOverlay(self, identity: str) -> None:  # noqa: N802
+        if (
+            not self._chart_interaction_enabled
+            or identity not in self._chart_presentation.overlay_identities
+            or identity == self._selected_overlay
+        ):
+            return
+        self._selected_overlay = identity
+        self._publish_local_change()
+
+    @Slot(str)
+    def selectChartBreakpoint(self, identity: str) -> None:  # noqa: N802
+        if (
+            not self._chart_interaction_enabled
+            or identity not in self._chart_presentation.breakpoint_identities
+            or identity == self._selected_breakpoint
+        ):
+            return
+        self._selected_breakpoint = identity
+        self._publish_local_change()
 
     @Slot(str)
     def setEvidenceFilter(self, value: str) -> None:  # noqa: N802
@@ -843,12 +1031,124 @@ class EvidenceAndFindingsQtAdapter(QObject):
         if value not in allowed or getattr(self, attribute) == value:
             return
         setattr(self, attribute, value)
+        self._publish_local_change()
+
+    def _publish_local_change(self) -> None:
+        self._offer_chart_presentation(
+            self._build_chart_presentation(),
+            local=True,
+        )
         self.localStateChanged.emit()
+
+    def _build_chart_presentation(self) -> EvidenceChartPresentation:
+        return build_evidence_chart_presentation(
+            self._state,
+            self._candidate(),
+            selected_finding_identity=self._selected_finding,
+            viewport=_chart_viewport(self._viewport_intent),
+            selected_point_source_index=self._selected_point_source_index,
+            selected_overlay_identity=self._selected_overlay,
+            selected_breakpoint_identity=self._selected_breakpoint,
+            evidence_filter=self._evidence_filter,
+            sort_order=self._sort_order,
+        )
+
+    def _offer_chart_presentation(
+        self,
+        presentation: EvidenceChartPresentation,
+        *,
+        local: bool,
+    ) -> None:
+        self._selected_point_source_index = (
+            presentation.selected_point_source_index
+        )
+        self._selected_overlay = presentation.selected_overlay_identity
+        self._selected_breakpoint = presentation.selected_breakpoint_identity
+        self._pending_chart_presentations.append(presentation)
+        now_ns = self._chart_clock()
+        result = (
+            self._chart_frame_gate.offer_local(
+                presentation.frame,
+                now_ns=now_ns,
+            )
+            if local
+            else self._chart_frame_gate.offer(
+                presentation.frame,
+                now_ns=now_ns,
+            )
+        )
+        if not result.accepted:
+            self._pending_chart_presentations.pop()
+        self._apply_chart_gate_result(result)
+
+    def flush_chart_frames(self) -> None:
+        self._apply_chart_gate_result(
+            self._chart_frame_gate.flush(now_ns=self._chart_clock())
+        )
+
+    def _apply_chart_gate_result(
+        self,
+        result: EvidenceChartFrameGateResult,
+    ) -> None:
+        for frame in result.committed:
+            presentation_index = self._matching_chart_presentation_index(
+                frame
+            )
+            if presentation_index is None:
+                continue
+            presentation = self._pending_chart_presentations[
+                presentation_index
+            ]
+            del self._pending_chart_presentations[: presentation_index + 1]
+            self._chart_presentation = presentation
+            self._chart_frame_sequence += 1
+            self.chartPresentationChanged.emit()
+        due_in_ns = result.due_in_ns
+        if due_in_ns is None:
+            self._chart_timer.stop()
+        else:
+            self._chart_timer.start(max(1, ceil(due_in_ns / 1_000_000)))
+        self._sync_chart_interaction_enabled()
+
+    def _sync_chart_interaction_enabled(self) -> None:
+        enabled = not self._pending_chart_presentations
+        if enabled == self._chart_interaction_enabled:
+            return
+        self._chart_interaction_enabled = enabled
+        self.chartInteractionChanged.emit()
+
+    def _matching_chart_presentation_index(
+        self,
+        frame: EvidenceChartRenderFrame,
+    ) -> int | None:
+        for index in range(
+            len(self._pending_chart_presentations) - 1,
+            -1,
+            -1,
+        ):
+            candidate = self._pending_chart_presentations[index].frame
+            if (
+                candidate.revision == frame.revision
+                and candidate.points is frame.points
+                and candidate.overlays is frame.overlays
+                and candidate.selected_point
+                == frame.selected_point
+                and candidate.selected_overlay_identity
+                == frame.selected_overlay_identity
+                and candidate.selected_finding_identity
+                == frame.selected_finding_identity
+                and candidate.selected_breakpoint_identity
+                == frame.selected_breakpoint_identity
+            ):
+                return index
+        return None
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._chart_timer.stop()
+        self._pending_chart_presentations.clear()
         subscription = self._subscription
         self._subscription = None
         if subscription is not None:
@@ -869,6 +1169,16 @@ def _optional_identity(value: object | None) -> str:
     if value is None:
         return "Unavailable"
     return str(getattr(value, "value", "Unavailable"))
+
+
+def _chart_viewport(intent: str) -> EvidenceChartViewport:
+    viewports = {
+        "overview": EvidenceChartViewport(0.0, 1.0),
+        "baseline": EvidenceChartViewport(0.0, 0.25),
+        "sensitivity": EvidenceChartViewport(0.25, 0.7),
+        "compound_stress": EvidenceChartViewport(0.7, 1.0),
+    }
+    return viewports.get(intent, viewports["overview"])
 
 
 class JourneyWorkspaceHost(QQuickWidget):

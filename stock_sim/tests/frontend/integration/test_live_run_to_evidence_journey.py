@@ -272,6 +272,8 @@ def test_live_monitored_run_navigates_to_matching_evidence_and_back():
         "RM-LIVE-41",
         "MODEL-LIVE-41",
         "CMP-LIVE-41-FEE",
+        "Live baseline return",
+        "Live fee sensitivity",
         "Live fee sensitivity finding",
         "BP-LIVE-41-FEE",
     ):
