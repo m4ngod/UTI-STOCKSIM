@@ -37,17 +37,26 @@ class FeatureInterfaceDescriptor:
 
 
 RUN_MONITORING_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=2)
+EVIDENCE_AND_FINDINGS_INTERFACE_VERSION = FeatureInterfaceVersion(
+    major=1,
+    minor=0,
+)
 
 ACTIVE_FEATURE_INTERFACES = (
     FeatureInterfaceDescriptor(
         name=FeatureModuleName.RUN_MONITORING,
         version=RUN_MONITORING_INTERFACE_VERSION,
     ),
+    FeatureInterfaceDescriptor(
+        name=FeatureModuleName.EVIDENCE_AND_FINDINGS,
+        version=EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
+    ),
 )
 
 
 __all__ = [
     "ACTIVE_FEATURE_INTERFACES",
+    "EVIDENCE_AND_FINDINGS_INTERFACE_VERSION",
     "RUN_MONITORING_INTERFACE_VERSION",
     "FeatureInterfaceDescriptor",
     "FeatureInterfaceVersion",

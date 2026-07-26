@@ -30,12 +30,20 @@ from app.controllers.leaderboard_controller import LeaderboardController
 from app.services.arena_experiment_runner import ArenaExperimentRunner
 from app.services.training_arena_service import TrainingArenaService
 from app.features import (
+    ApprovedScenarioRecipeId,
+    DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    EvidenceAndFindingsContext,
+    EvidenceAndFindingsFeature,
+    EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
     LiveRunMonitoringAdapter,
+    MarketScenarioId,
+    ReproductionManifestId,
     RunMonitoringContext,
     RunMonitoringFeature,
     RunMonitoringSelection,
+    StrategyUnderTestId,
     StrategyRunId,
 )
 
@@ -68,6 +76,8 @@ class AppContext:
     arena_experiment_runner: ArenaExperimentRunner
     run_monitoring_feature: RunMonitoringFeature
     run_monitoring_context: RunMonitoringContext
+    evidence_and_findings_feature: EvidenceAndFindingsFeature | None
+    evidence_and_findings_context: EvidenceAndFindingsContext
 
 
 def build_app_context(
@@ -128,6 +138,16 @@ def build_app_context(
             event_bridge=live_bridge,
             diagnostic_tasks=training_arena_service,
         )
+    evidence_and_findings_feature: EvidenceAndFindingsFeature | None = (
+        DeterministicFakeEvidenceAndFindingsAdapter()
+        if resolved_mode == "fake"
+        else None
+    )
+    evidence_and_findings_context = (
+        _evidence_and_findings_context_from_environment(
+            run_monitoring_context,
+        )
+    )
 
     return AppContext(
         settings_store=settings_store,
@@ -149,6 +169,8 @@ def build_app_context(
         arena_experiment_runner=arena_experiment_runner,
         run_monitoring_feature=run_monitoring_feature,
         run_monitoring_context=run_monitoring_context,
+        evidence_and_findings_feature=evidence_and_findings_feature,
+        evidence_and_findings_context=evidence_and_findings_context,
     )
 
 
@@ -180,6 +202,8 @@ def reset_app_context(
         )
         if previous is not None:
             previous.run_monitoring_feature.close()
+            if previous.evidence_and_findings_feature is not None:
+                previous.evidence_and_findings_feature.close()
         return _app_context
 
 
@@ -226,6 +250,58 @@ def _run_monitoring_context_from_environment() -> RunMonitoringContext:
         RunMonitoringSelection(
             campaign_id=FormalDiagnosticCampaignId(campaign_id),
             run_id=StrategyRunId(run_id),
+        )
+    )
+
+
+def _evidence_and_findings_context_from_environment(
+    run_context: RunMonitoringContext,
+) -> EvidenceAndFindingsContext:
+    run_selection = run_context.selection
+    if run_selection is None or run_selection.run_id is None:
+        return EvidenceAndFindingsContext.no_selection()
+    values = {
+        "strategy": os.environ.get(
+            "STOCKSIM_FRONTEND_V2_STRATEGY_ID",
+            "",
+        ).strip(),
+        "scenario": os.environ.get(
+            "STOCKSIM_FRONTEND_V2_MARKET_SCENARIO_ID",
+            "",
+        ).strip(),
+        "recipe": os.environ.get(
+            "STOCKSIM_FRONTEND_V2_APPROVED_RECIPE_ID",
+            "",
+        ).strip(),
+        "manifest": os.environ.get(
+            "STOCKSIM_FRONTEND_V2_REPRODUCTION_MANIFEST_ID",
+            "",
+        ).strip(),
+    }
+    return EvidenceAndFindingsContext.for_selection(
+        EvidenceAndFindingsSelection(
+            campaign_id=run_selection.campaign_id,
+            run_id=run_selection.run_id,
+            strategy_id=(
+                StrategyUnderTestId(values["strategy"])
+                if values["strategy"]
+                else None
+            ),
+            market_scenario_id=(
+                MarketScenarioId(values["scenario"])
+                if values["scenario"]
+                else None
+            ),
+            approved_recipe_id=(
+                ApprovedScenarioRecipeId(values["recipe"])
+                if values["recipe"]
+                else None
+            ),
+            reproduction_manifest_id=(
+                ReproductionManifestId(values["manifest"])
+                if values["manifest"]
+                else None
+            ),
         )
     )
 

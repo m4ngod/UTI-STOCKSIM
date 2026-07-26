@@ -6,6 +6,12 @@ Rectangle {
     objectName: "journeyWorkspace"
     color: tokens.background
 
+    property string activeRoute: "run_monitoring"
+    property bool evidenceAvailable: evidenceAndFindings !== null
+    property var designSystem: tokens
+    property string evidenceScreenState: evidenceAvailable
+        ? evidenceAndFindings.presentationState
+        : "unavailable"
     property string screenState: runMonitoring.presentationState
     property string headline: screenState === "loading"
         ? "Preparing Run Monitoring"
@@ -73,11 +79,18 @@ Rectangle {
                 }
 
                 Rectangle {
+                    objectName: "runMonitoringRouteNavigation"
+                    activeFocusOnTab: true
                     Layout.fillWidth: true
                     Layout.preferredHeight: 44
                     radius: tokens.radiusSm
-                    color: tokens.surfaceRaised
-                    border.color: tokens.accent
+                    color: workspace.activeRoute === "run_monitoring"
+                        ? tokens.surfaceRaised : "transparent"
+                    border.color: workspace.activeRoute === "run_monitoring"
+                        ? tokens.accent : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.name: "Open Run Monitoring"
+                    Accessible.role: Accessible.Button
 
                     Text {
                         anchors.fill: parent
@@ -88,6 +101,50 @@ Rectangle {
                         font.pixelSize: tokens.bodySize
                         font.bold: true
                     }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: workspace.activeRoute = "run_monitoring"
+                    }
+                    Keys.onReturnPressed: workspace.activeRoute = "run_monitoring"
+                    Keys.onSpacePressed: workspace.activeRoute = "run_monitoring"
+                }
+
+                Rectangle {
+                    objectName: "evidenceAndFindingsRouteNavigation"
+                    activeFocusOnTab: true
+                    visible: workspace.evidenceAvailable
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    radius: tokens.radiusSm
+                    color: workspace.activeRoute === "evidence_and_findings"
+                        ? tokens.surfaceRaised : "transparent"
+                    border.color: workspace.activeRoute === "evidence_and_findings"
+                        ? tokens.accent : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.name: "Open Evidence and Findings"
+                    Accessible.role: Accessible.Button
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: tokens.spaceMd
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Evidence & Findings"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: workspace.activeRoute = "evidence_and_findings"
+                    }
+                    Keys.onReturnPressed: (
+                        workspace.activeRoute = "evidence_and_findings"
+                    )
+                    Keys.onSpacePressed: (
+                        workspace.activeRoute = "evidence_and_findings"
+                    )
                 }
 
                 Item {
@@ -109,6 +166,8 @@ Rectangle {
             Layout.fillHeight: true
 
             ColumnLayout {
+                id: runMonitoringPage
+                visible: workspace.activeRoute === "run_monitoring"
                 anchors.fill: parent
                 anchors.margins: tokens.spaceXl
                 spacing: tokens.spaceLg
@@ -489,6 +548,20 @@ Rectangle {
                     color: tokens.textQuiet
                     font.pixelSize: tokens.labelSize
                     horizontalAlignment: Text.AlignRight
+                }
+            }
+
+            Loader {
+                id: evidencePageLoader
+                objectName: "evidenceAndFindingsPageLoader"
+                anchors.fill: parent
+                active: workspace.evidenceAvailable
+                visible: workspace.activeRoute === "evidence_and_findings"
+                sourceComponent: Component {
+                    EvidenceAndFindingsPage {
+                        adapter: evidenceAndFindings
+                        tokens: workspace.designSystem
+                    }
                 }
             }
         }

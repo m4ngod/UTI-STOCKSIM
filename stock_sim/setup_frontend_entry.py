@@ -111,6 +111,13 @@ def _start_frontend(*, headless: bool):
     try:
         app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
         app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
+        evidence_feature = getattr(
+            context,
+            "evidence_and_findings_feature",
+            None,
+        )
+        if evidence_feature is not None:
+            app.aboutToQuit.connect(evidence_feature.close)  # type: ignore[attr-defined]
     except Exception:
         pass
     mw = MainWindow(
@@ -118,6 +125,16 @@ def _start_frontend(*, headless: bool):
         run_monitoring_context=getattr(
             context,
             "run_monitoring_context",
+            None,
+        ),
+        evidence_and_findings_feature=getattr(
+            context,
+            "evidence_and_findings_feature",
+            None,
+        ),
+        evidence_and_findings_context=getattr(
+            context,
+            "evidence_and_findings_context",
             None,
         ),
     )

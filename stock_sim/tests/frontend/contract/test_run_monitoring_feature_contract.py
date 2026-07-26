@@ -8,6 +8,7 @@ from app.features import (
     ACTIVE_FEATURE_INTERFACES,
     Completeness,
     DeterministicFakeRunMonitoringAdapter,
+    EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
     FeatureModuleName,
     FormalDiagnosticCampaignId,
     Freshness,
@@ -23,7 +24,7 @@ from app.features import (
 )
 
 
-def test_wave_zero_reserves_six_feature_names_and_activates_only_run_monitoring():
+def test_wave_zero_reserves_six_names_and_wave_one_activates_two_interfaces():
     assert tuple(member.value for member in FeatureModuleName) == (
         "StrategyLibraryFeature",
         "ScenarioLabFeature",
@@ -34,9 +35,15 @@ def test_wave_zero_reserves_six_feature_names_and_activates_only_run_monitoring(
     )
     assert tuple(descriptor.name for descriptor in ACTIVE_FEATURE_INTERFACES) == (
         FeatureModuleName.RUN_MONITORING,
+        FeatureModuleName.EVIDENCE_AND_FINDINGS,
     )
     assert ACTIVE_FEATURE_INTERFACES[0].version == RUN_MONITORING_INTERFACE_VERSION
+    assert (
+        ACTIVE_FEATURE_INTERFACES[1].version
+        == EVIDENCE_AND_FINDINGS_INTERFACE_VERSION
+    )
     assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.2"
+    assert EVIDENCE_AND_FINDINGS_INTERFACE_VERSION.render() == "1.0"
 
 
 def test_fake_snapshot_starts_as_typed_loading_state():
