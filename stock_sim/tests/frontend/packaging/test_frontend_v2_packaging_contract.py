@@ -1173,6 +1173,43 @@ def test_widgets_dependency_audit_allows_read_only_trade_context_only(
     )
 
 
+def test_dependency_audit_rejects_missing_project_modules_only(tmp_path):
+    report = tmp_path / "missing-project-module.xml"
+    report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.services.model_checkpoint_service">
+            <module_usage
+              name="stock_sim.persistence.models_training"
+              finding="not-found"
+              line="11"
+            />
+            <module_usage
+              name="optional_vendor_acceleration"
+              finding="not-found"
+              line="12"
+            />
+          </module>
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+
+    findings = audit_nuitka_dependency_report(
+        report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    )
+
+    assert any(
+        "Missing project module" in finding
+        and "stock_sim.persistence.models_training" in finding
+        for finding in findings
+    )
+    assert not any(
+        "optional_vendor_acceleration" in finding for finding in findings
+    )
+
+
 def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
     rollback_source = (
         PROJECT_ROOT

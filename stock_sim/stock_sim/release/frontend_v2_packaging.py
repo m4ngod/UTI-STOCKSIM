@@ -41,6 +41,11 @@ _QML_IMPORT_PATTERN = re.compile(
     r"(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$"
 )
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
+    {
+        "stock_sim.persistence.models_training",
+    }
+)
 _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
     "app.runtime_gateway",
     "app.controllers.trading_controller",
@@ -1520,6 +1525,16 @@ def audit_nuitka_dependency_report(
         for element in root.findall(".//module")
         if element.attrib.get("name")
     )
+    for usage in root.findall(".//module_usage"):
+        module_name = usage.attrib.get("name", "")
+        if (
+            usage.attrib.get("finding") == "not-found"
+            and module_name.casefold()
+            in _REQUIRED_PROJECT_DEPENDENCY_MODULES
+        ):
+            findings.append(
+                f"Missing project module in dependency graph: {module_name}"
+            )
     for module_name in module_names:
         folded = module_name.casefold()
         if folded.startswith(

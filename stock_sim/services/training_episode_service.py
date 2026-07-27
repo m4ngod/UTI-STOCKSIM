@@ -8,7 +8,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from stock_sim.persistence.models_training import ModelEpisodeResult, ModelTransition, TrainingEpisode
+from persistence.models_training import ModelEpisodeResult, ModelTransition, TrainingEpisode
 from stock_sim.rl.reward_builder import execution_notional_metrics
 
 

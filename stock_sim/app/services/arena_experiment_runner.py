@@ -21,7 +21,7 @@ from rl.contracts import ACT_CONTRACT_VERSION, OBS_CONTRACT_VERSION, REWARD_CONT
 try:
     from stock_sim import __version__ as STOCK_SIM_VERSION
     from stock_sim.persistence.models_imports import SessionLocal
-    from stock_sim.persistence.models_training import ModelEpisodeResult, ModelTransition, TrainingEpisode
+    from persistence.models_training import ModelEpisodeResult, ModelTransition, TrainingEpisode
     from stock_sim.services.account_service import AccountService as RuntimeAccountService
 except Exception:  # pragma: no cover
     STOCK_SIM_VERSION = None  # type: ignore

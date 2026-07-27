@@ -8,7 +8,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from stock_sim.persistence.models_training import ModelCheckpoint, ModelLineage
+from persistence.models_training import ModelCheckpoint, ModelLineage
 
 
 def _json_dumps(value: Any) -> str:

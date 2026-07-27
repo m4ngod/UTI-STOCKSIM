@@ -13,7 +13,7 @@ import zlib
 
 try:
     from stock_sim.persistence.models_imports import SessionLocal
-    from stock_sim.persistence.models_training import ModelCheckpoint, ModelLineage
+    from persistence.models_training import ModelCheckpoint, ModelLineage
 except Exception:  # pragma: no cover
     SessionLocal = None  # type: ignore
     ModelCheckpoint = None  # type: ignore

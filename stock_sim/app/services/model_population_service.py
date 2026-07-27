@@ -7,7 +7,7 @@ import random
 
 from sqlalchemy.orm import Session
 
-from stock_sim.persistence.models_training import ModelEpisodeResult
+from persistence.models_training import ModelEpisodeResult
 
 from app.services.model_checkpoint_service import ModelCheckpointService
 
