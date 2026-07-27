@@ -65,3 +65,61 @@ EventBridge and live Feature Adapters:
 The report must come from Windows Sandbox as `WDAGUtilityAccount`, show no
 Python, compiler, dependency cache, or active network adapter, and contain no
 missing module, DLL, QML import, or renderer errors.
+
+## Certified release candidate
+
+The Wave 1 release candidate was certified on 2026-07-27 from source commit
+`d4ec8d426b06b64b527eea8ae2861a254f8cde29` on branch
+`codex/issue-46-offline-release-candidate`.
+
+- Release tag: `frontend-v2-wave1-rc-d4ec8d426b06`
+- Release page:
+  <https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/frontend-v2-wave1-rc-d4ec8d426b06>
+- Toolchain identity:
+  `sha256:0868789918094ea360bf7a636d90a15f655e60725a0c2dd700f4fb05af1eb737`
+- Final status: `certified`
+
+### Published offline archives
+
+| Archive | Size | SHA-256 | Stable download |
+| --- | ---: | --- | --- |
+| QML Journey | 76,060,962 bytes | `sha256:9a810d48b760d0d97a9c52a851f480917887bcf5ab91bc234c302c648c43885a` | [qml-journey-d4ec8d426b06.zip](https://github.com/m4ngod/UTI-STOCKSIM/releases/download/frontend-v2-wave1-rc-d4ec8d426b06/qml-journey-d4ec8d426b06.zip) |
+| Widgets rollback | 131,696,670 bytes | `sha256:5bd61586f70905f758d1033f30afe292272a9149c6c29e9dcd6aeaf01eb45f5f` | [widgets-rollback-d4ec8d426b06.zip](https://github.com/m4ngod/UTI-STOCKSIM/releases/download/frontend-v2-wave1-rc-d4ec8d426b06/widgets-rollback-d4ec8d426b06.zip) |
+
+The extracted QML package contains 826 files and 212,892,575 bytes. The
+Widgets rollback package contains 1,736 files and 371,881,741 bytes. The QML
+package is 158,989,166 bytes smaller than the rollback package, remaining
+within the 50 MiB delta gate.
+
+### Mandatory gate results
+
+| Gate | Result |
+| --- | --- |
+| T08 accessibility and representative journey | 13 passed; keyboard, Narrator, chart alternative, 200 percent scaling, reduced motion, contrast, remount, and both renderer sentinels covered |
+| T09 no manual trading | Passed in deterministic-fake and live adapter modes; zero transaction telemetry; orders and fills remained read-only context |
+| T10 hardware lane | 60.001 seconds; event-to-visible p95 7.845 ms; input p95 0.601 ms; peak memory 80.211 MiB; zero over-budget stalls |
+| T10 software lane | 60.000 seconds; event-to-visible p95 10.953 ms; input p95 0.555 ms; peak memory 36.754 MiB; zero over-budget stalls |
+| Offline packaging | QML and Widgets archives built from the same locked source and toolchain; dependency closure and WebEngine exclusion passed |
+| Windows Sandbox | Offline install passed with no Python, compiler, dependency cache, or active network adapter |
+| Installed black-box journey | Direct3D11 and Software lanes each rendered eight distinct stage screenshots; observed state matched every captured frame; zero runtime errors and clean exit |
+
+### Retained audit evidence
+
+All reviewable evidence is retained under
+`docs/testing/frontend/evidence/issue-46/d4ec8d426b06b64b527eea8ae2861a254f8cde29/`.
+It includes the final release summaries, complete dependency manifest,
+checksums, T08 JUnit XML, raw and certified T09/T10 reports, clean-room report,
+hardware/software screenshots, renderer smoke evidence, Sandbox exit code, and
+`release-asset-verification.json`. The latter records each GitHub asset ID,
+stable URL, uploaded state, server-computed full size and SHA-256, matching
+local size and SHA-256, plus byte-identical start, middle, and tail
+`206 Partial Content` probes.
+
+The complete Nuitka dependency reports are retained at
+`qml-journey/nuitka-report.xml` and
+`widgets-rollback/nuitka-report.xml` below that evidence directory. Their
+SHA-256 digests are respectively
+`sha256:58b4e401d7f12ed77174a77acc464a9bc17e3a5f50559809c42b7b79ad6e7eda`
+and
+`sha256:3f76bb86c0606a1730b1720e70180ca12e1b5ff2eba1388373d7444dc5b5eb87`,
+matching the paths, sizes, and digests recorded by the dependency manifest.

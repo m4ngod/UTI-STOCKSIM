@@ -1,0 +1,180 @@
+{
+  "created_at": "2026-07-27T09:40:01.950982+00:00",
+  "environment_identity": "Mango|Windows-10-10.0.26200-SP0|AMD64",
+  "hardware": {
+    "clean_exit": true,
+    "connection_transitions": [
+      "connected",
+      "disconnected",
+      "reconnected",
+      "completed"
+    ],
+    "errors": [],
+    "graphics_api": "Direct3D11",
+    "journey_stages": [
+      "launched_active_run",
+      "active_evidence",
+      "disconnected_run",
+      "disconnected_evidence",
+      "reconnected_run",
+      "reconnected_evidence",
+      "completed_run",
+      "completed_evidence"
+    ],
+    "lane": "hardware",
+    "manual_trading_action_count": 0,
+    "production_path": [
+      "AppContext",
+      "EventBridge",
+      "LiveRunMonitoringAdapter",
+      "LiveEvidenceAndFindingsAdapter",
+      "JourneyWorkspaceHost"
+    ],
+    "read_only_context_visible": true,
+    "routes_rendered": [
+      "run_monitoring",
+      "evidence_and_findings"
+    ]
+  },
+  "qml_dependency_closure": {
+    "dependencies": [
+      {
+        "dependency_type": "module",
+        "name": "QML",
+        "optional": false,
+        "plugin": null,
+        "relative_path": null
+      },
+      {
+        "dependency_type": "module",
+        "name": "QtQml",
+        "optional": true,
+        "plugin": "qmlplugin",
+        "relative_path": "QtQml"
+      },
+      {
+        "dependency_type": "module",
+        "name": "QtQml.Models",
+        "optional": true,
+        "plugin": "modelsplugin",
+        "relative_path": "QtQml/Models"
+      },
+      {
+        "dependency_type": "module",
+        "name": "QtQml.WorkerScript",
+        "optional": true,
+        "plugin": "workerscriptplugin",
+        "relative_path": "QtQml/WorkerScript"
+      },
+      {
+        "dependency_type": "module",
+        "name": "QtQuick",
+        "optional": true,
+        "plugin": "qtquick2plugin",
+        "relative_path": "QtQuick"
+      },
+      {
+        "dependency_type": "module",
+        "name": "QtQuick.Layouts",
+        "optional": true,
+        "plugin": "qquicklayoutsplugin",
+        "relative_path": "QtQuick/Layouts"
+      },
+      {
+        "dependency_type": "module",
+        "name": "QtQuick.Shapes",
+        "optional": false,
+        "plugin": "qmlshapesplugin",
+        "relative_path": "QtQuick/Shapes"
+      }
+    ],
+    "raw_output_digest": "sha256:4966a766aedd77af5889b664e31d0a629e7a5de148dd4a78fac65c2badcf3dc9",
+    "scanner": "pyside6-qmlimportscanner"
+  },
+  "qml_source_imports": {
+    "dependencies": [
+      {
+        "module": "QtQuick",
+        "source_files": [
+          "DesignTokens.qml",
+          "DiagnosticCommandButton.qml",
+          "EvidenceAndFindingsPage.qml",
+          "EvidenceChart.qml",
+          "JourneyWorkspace.qml",
+          "ResearchChoice.qml"
+        ],
+        "version": "2.15"
+      },
+      {
+        "module": "QtQuick.Layouts",
+        "source_files": [
+          "EvidenceAndFindingsPage.qml",
+          "JourneyWorkspace.qml"
+        ],
+        "version": "1.15"
+      },
+      {
+        "module": "QtQuick.Shapes",
+        "source_files": [
+          "EvidenceChart.qml"
+        ],
+        "version": "1.15"
+      }
+    ],
+    "scan_kind": "qml-source-import-scan",
+    "source_digest": "sha256:53f97ac14dc809122b6b9783c428434d29c667f99f462235b636925b56252b5b"
+  },
+  "schema_version": 1,
+  "software": {
+    "clean_exit": true,
+    "connection_transitions": [
+      "connected",
+      "disconnected",
+      "reconnected",
+      "completed"
+    ],
+    "errors": [],
+    "graphics_api": "Software",
+    "journey_stages": [
+      "launched_active_run",
+      "active_evidence",
+      "disconnected_run",
+      "disconnected_evidence",
+      "reconnected_run",
+      "reconnected_evidence",
+      "completed_run",
+      "completed_evidence"
+    ],
+    "lane": "software",
+    "manual_trading_action_count": 0,
+    "production_path": [
+      "AppContext",
+      "EventBridge",
+      "LiveRunMonitoringAdapter",
+      "LiveEvidenceAndFindingsAdapter",
+      "JourneyWorkspaceHost"
+    ],
+    "read_only_context_visible": true,
+    "routes_rendered": [
+      "run_monitoring",
+      "evidence_and_findings"
+    ]
+  },
+  "source_commit": "d4ec8d426b06b64b527eea8ae2861a254f8cde29",
+  "toolchain_identity": "sha256:0868789918094ea360bf7a636d90a15f655e60725a0c2dd700f4fb05af1eb737",
+  "toolchain_lock": {
+    "invalidation_policy": "Any locked dependency version change invalidates all affected packaging and performance evidence.",
+    "platform": {
+      "architecture": "x86_64",
+      "operating_system": "Windows 11"
+    },
+    "schema_version": 1,
+    "toolchain": {
+      "nuitka": "2.6.8",
+      "numpy": "2.3.1",
+      "pyside6": "6.9.1",
+      "python": "3.11.9",
+      "qt": "6.9.1"
+    }
+  }
+}

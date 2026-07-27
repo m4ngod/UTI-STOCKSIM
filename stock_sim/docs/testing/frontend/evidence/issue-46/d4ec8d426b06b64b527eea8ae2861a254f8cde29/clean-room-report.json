@@ -1,0 +1,394 @@
+{
+    "schema_version":  3,
+    "source_commit":  "d4ec8d426b06b64b527eea8ae2861a254f8cde29",
+    "archive_sha256":  "sha256:9a810d48b760d0d97a9c52a851f480917887bcf5ab91bc234c302c648c43885a",
+    "operating_system":  "Microsoft Windows 11 Enterprise 10.0.26100",
+    "architecture":  "AMD64",
+    "user_name":  "WDAGUtilityAccount",
+    "is_windows_sandbox":  true,
+    "network_enumeration_succeeded":  true,
+    "network_adapters_up":  [
+
+                            ],
+    "python_on_path":  false,
+    "python_installations":  [
+
+                             ],
+    "compiler_on_path":  false,
+    "compiler_installations":  [
+
+                               ],
+    "dependency_cache_present":  false,
+    "dependency_cache_paths":  [
+
+                               ],
+    "install_succeeded":  true,
+    "renderer_lanes":  {
+                           "hardware":  {
+                                            "exit_code":  0,
+                                            "graphics_api":  "Direct3D11",
+                                            "source_commit_matches":  true,
+                                            "source_commit":  "d4ec8d426b06b64b527eea8ae2861a254f8cde29",
+                                            "production_path":  [
+                                                                    "AppContext",
+                                                                    "EventBridge",
+                                                                    "LiveRunMonitoringAdapter",
+                                                                    "LiveEvidenceAndFindingsAdapter",
+                                                                    "JourneyWorkspaceHost"
+                                                                ],
+                                            "production_path_matches":  true,
+                                            "run_identity":  "RUN-RC-001",
+                                            "routes_rendered":  [
+                                                                    "run_monitoring",
+                                                                    "evidence_and_findings"
+                                                                ],
+                                            "routes_match":  true,
+                                            "connection_transitions":  [
+                                                                           "connected",
+                                                                           "disconnected",
+                                                                           "reconnected",
+                                                                           "completed"
+                                                                       ],
+                                            "connection_transitions_match":  true,
+                                            "observations":  [
+                                                                 {
+                                                                     "stage":  "launched_active_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r1",
+                                                                     "evidence_revision":  "r2",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "active_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r1",
+                                                                     "evidence_revision":  "r2",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "disconnected_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "disconnected",
+                                                                     "evidence_freshness":  "disconnected",
+                                                                     "run_phase":  "degraded",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r2",
+                                                                     "evidence_revision":  "r3",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "disconnected_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "disconnected",
+                                                                     "evidence_freshness":  "disconnected",
+                                                                     "run_phase":  "degraded",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r2",
+                                                                     "evidence_revision":  "r3",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "reconnected_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r4",
+                                                                     "evidence_revision":  "r5",
+                                                                     "source_generation":  "g2"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "reconnected_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r4",
+                                                                     "evidence_revision":  "r5",
+                                                                     "source_generation":  "g2"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "completed_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "terminal",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "ready",
+                                                                     "run_revision":  "r5",
+                                                                     "evidence_revision":  "r6",
+                                                                     "source_generation":  "g2"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "completed_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "terminal",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "ready",
+                                                                     "run_revision":  "r5",
+                                                                     "evidence_revision":  "r6",
+                                                                     "source_generation":  "g2"
+                                                                 }
+                                                             ],
+                                            "states_match":  true,
+                                            "screenshots":  [
+                                                                {
+                                                                    "stage":  "launched_active_run",
+                                                                    "relative_path":  "hardware/launched_active_run.png",
+                                                                    "sha256":  "sha256:6e2f6a3601ea9131275d190efa6fab9a2ea2f862b39c97a5b22f7fa1d7e6145e"
+                                                                },
+                                                                {
+                                                                    "stage":  "active_evidence",
+                                                                    "relative_path":  "hardware/active_evidence.png",
+                                                                    "sha256":  "sha256:00c459d9a097572bf6272bf36f257c678ee50aae8df0e255e9dd9ab489be765b"
+                                                                },
+                                                                {
+                                                                    "stage":  "disconnected_run",
+                                                                    "relative_path":  "hardware/disconnected_run.png",
+                                                                    "sha256":  "sha256:5f97a4641908ee2b94b7d2f42a04513b33c239064847efedf3825f07d925bc6f"
+                                                                },
+                                                                {
+                                                                    "stage":  "disconnected_evidence",
+                                                                    "relative_path":  "hardware/disconnected_evidence.png",
+                                                                    "sha256":  "sha256:5a4687453a126a13a892727dbf146d3866587c764caad2598ed139f18b4c0ede"
+                                                                },
+                                                                {
+                                                                    "stage":  "reconnected_run",
+                                                                    "relative_path":  "hardware/reconnected_run.png",
+                                                                    "sha256":  "sha256:e8225764937a5e39b24aaaacff19054da3a1658a85edca6ac7987514d1c9e0e6"
+                                                                },
+                                                                {
+                                                                    "stage":  "reconnected_evidence",
+                                                                    "relative_path":  "hardware/reconnected_evidence.png",
+                                                                    "sha256":  "sha256:f53e89b9ed07effc9eeb627f4848aea467cec07f336ef99c30ecc2503515cab0"
+                                                                },
+                                                                {
+                                                                    "stage":  "completed_run",
+                                                                    "relative_path":  "hardware/completed_run.png",
+                                                                    "sha256":  "sha256:543775297b79f59eb6052b3eab589f8689901da835dc6ddca4bcc7b33e174803"
+                                                                },
+                                                                {
+                                                                    "stage":  "completed_evidence",
+                                                                    "relative_path":  "hardware/completed_evidence.png",
+                                                                    "sha256":  "sha256:d58bb964232a23ccbdb845f8735638cbb175bd25efe1ebebe6c610c2f60d7638"
+                                                                }
+                                                            ],
+                                            "screenshots_distinct":  true,
+                                            "manual_trading_action_count":  0,
+                                            "read_only_context_visible":  true,
+                                            "clean_exit":  true,
+                                            "errors":  [
+
+                                                       ]
+                                        },
+                           "software":  {
+                                            "exit_code":  0,
+                                            "graphics_api":  "Software",
+                                            "source_commit_matches":  true,
+                                            "source_commit":  "d4ec8d426b06b64b527eea8ae2861a254f8cde29",
+                                            "production_path":  [
+                                                                    "AppContext",
+                                                                    "EventBridge",
+                                                                    "LiveRunMonitoringAdapter",
+                                                                    "LiveEvidenceAndFindingsAdapter",
+                                                                    "JourneyWorkspaceHost"
+                                                                ],
+                                            "production_path_matches":  true,
+                                            "run_identity":  "RUN-RC-001",
+                                            "routes_rendered":  [
+                                                                    "run_monitoring",
+                                                                    "evidence_and_findings"
+                                                                ],
+                                            "routes_match":  true,
+                                            "connection_transitions":  [
+                                                                           "connected",
+                                                                           "disconnected",
+                                                                           "reconnected",
+                                                                           "completed"
+                                                                       ],
+                                            "connection_transitions_match":  true,
+                                            "observations":  [
+                                                                 {
+                                                                     "stage":  "launched_active_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r1",
+                                                                     "evidence_revision":  "r1",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "active_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r1",
+                                                                     "evidence_revision":  "r1",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "disconnected_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "disconnected",
+                                                                     "evidence_freshness":  "disconnected",
+                                                                     "run_phase":  "degraded",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r2",
+                                                                     "evidence_revision":  "r2",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "disconnected_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "disconnected",
+                                                                     "evidence_freshness":  "disconnected",
+                                                                     "run_phase":  "degraded",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r2",
+                                                                     "evidence_revision":  "r2",
+                                                                     "source_generation":  "g1"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "reconnected_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r4",
+                                                                     "evidence_revision":  "r4",
+                                                                     "source_generation":  "g2"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "reconnected_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "active",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "degraded",
+                                                                     "run_revision":  "r4",
+                                                                     "evidence_revision":  "r4",
+                                                                     "source_generation":  "g2"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "completed_run",
+                                                                     "route":  "run_monitoring",
+                                                                     "run_state":  "terminal",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "ready",
+                                                                     "run_revision":  "r5",
+                                                                     "evidence_revision":  "r5",
+                                                                     "source_generation":  "g2"
+                                                                 },
+                                                                 {
+                                                                     "stage":  "completed_evidence",
+                                                                     "route":  "evidence_and_findings",
+                                                                     "run_state":  "terminal",
+                                                                     "evidence_state":  "ready",
+                                                                     "run_freshness":  "fresh",
+                                                                     "evidence_freshness":  "fresh",
+                                                                     "run_phase":  "ready",
+                                                                     "evidence_phase":  "ready",
+                                                                     "run_revision":  "r5",
+                                                                     "evidence_revision":  "r5",
+                                                                     "source_generation":  "g2"
+                                                                 }
+                                                             ],
+                                            "states_match":  true,
+                                            "screenshots":  [
+                                                                {
+                                                                    "stage":  "launched_active_run",
+                                                                    "relative_path":  "software/launched_active_run.png",
+                                                                    "sha256":  "sha256:266b52feb7ae68c0b2d86d52d9711213803b9318a0f3e936756028c6170b95df"
+                                                                },
+                                                                {
+                                                                    "stage":  "active_evidence",
+                                                                    "relative_path":  "software/active_evidence.png",
+                                                                    "sha256":  "sha256:56d52ec1cf339be1ccaa11e401cbe714e989e3ddbb5a7a03eeb8fb496e346c22"
+                                                                },
+                                                                {
+                                                                    "stage":  "disconnected_run",
+                                                                    "relative_path":  "software/disconnected_run.png",
+                                                                    "sha256":  "sha256:fa81ce1ba4ae17f4606d0c119043f0ef5bb5499a5e58643f2d0d6d880f2495a0"
+                                                                },
+                                                                {
+                                                                    "stage":  "disconnected_evidence",
+                                                                    "relative_path":  "software/disconnected_evidence.png",
+                                                                    "sha256":  "sha256:2c06b0df49f0f981967405a671eaf4596f275d1464bb54795f10b9df34b4c27a"
+                                                                },
+                                                                {
+                                                                    "stage":  "reconnected_run",
+                                                                    "relative_path":  "software/reconnected_run.png",
+                                                                    "sha256":  "sha256:4929e906e74f6500296d81de34aa3df415b9325c26bd860d7d53aa629b038054"
+                                                                },
+                                                                {
+                                                                    "stage":  "reconnected_evidence",
+                                                                    "relative_path":  "software/reconnected_evidence.png",
+                                                                    "sha256":  "sha256:3309c3972df622682819eaaf7335e4bcd77a12de01ff8843ae62da51494805f5"
+                                                                },
+                                                                {
+                                                                    "stage":  "completed_run",
+                                                                    "relative_path":  "software/completed_run.png",
+                                                                    "sha256":  "sha256:4e18d06b8d60c0eacbf7c3467e5a8240189c32abe1fa1316bf37f9fb482c40d4"
+                                                                },
+                                                                {
+                                                                    "stage":  "completed_evidence",
+                                                                    "relative_path":  "software/completed_evidence.png",
+                                                                    "sha256":  "sha256:aa6bd777ef95766f9cb53df3520e8674d13a26e1c96714b4ba39f3369bfea458"
+                                                                }
+                                                            ],
+                                            "screenshots_distinct":  true,
+                                            "manual_trading_action_count":  0,
+                                            "read_only_context_visible":  true,
+                                            "clean_exit":  true,
+                                            "errors":  [
+
+                                                       ]
+                                        }
+                       }
+}
