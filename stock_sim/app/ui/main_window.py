@@ -89,16 +89,25 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     ):  # noqa: D401
         super().__init__()  # type: ignore
         self._rollback_read_only = rollback_read_only
+        self._frontend_v2_enabled = (
+            _frontend_v2_route_enabled()
+            if frontend_v2_enabled is None
+            else frontend_v2_enabled
+        )
         if (panel_list is None) != (panel_get is None):
             raise ValueError(
                 "panel_list and panel_get must be provided together"
             )
         if panel_list is None or panel_get is None:
-            registry_module = importlib.import_module(
-                "app.panels." + "registry"
-            )
-            self._panel_list = registry_module.list_panels
-            self._panel_get = registry_module.get_panel
+            if self._frontend_v2_enabled:
+                self._panel_list = lambda: []
+                self._panel_get = lambda _name: None
+            else:
+                registry_module = importlib.import_module(
+                    "app.panels." + "registry"
+                )
+                self._panel_list = registry_module.list_panels
+                self._panel_get = registry_module.get_panel
         else:
             self._panel_list = panel_list
             self._panel_get = panel_get
@@ -114,11 +123,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             layout_store = layout_module.LayoutPersistence(
                 path=layout_path
             )
-        self._frontend_v2_enabled = (
-            _frontend_v2_route_enabled()
-            if frontend_v2_enabled is None
-            else frontend_v2_enabled
-        )
         self._run_monitoring_feature = run_monitoring_feature
         self._run_monitoring_context = run_monitoring_context
         self._evidence_and_findings_feature = evidence_and_findings_feature

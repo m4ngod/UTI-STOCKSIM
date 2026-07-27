@@ -203,6 +203,62 @@ def test_v2_app_context_uses_only_the_read_only_runtime_boundary(
     context.evidence_and_findings_feature.close()
 
 
+def test_qml_production_journey_never_imports_legacy_panel_registry(
+    tmp_path,
+):
+    script = """
+import importlib.abc
+from pathlib import Path
+import sys
+
+class RejectLegacyPanels(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "app.panels" or fullname.startswith("app.panels."):
+            raise ModuleNotFoundError(
+                f"legacy panel module excluded: {fullname}"
+            )
+        return None
+
+sys.meta_path.insert(0, RejectLegacyPanels())
+
+from stock_sim.release.frontend_v2_package_entry import (
+    RendererLane,
+    run_smoke_journey,
+)
+
+result = run_smoke_journey(
+    report_dir=Path(sys.argv[1]),
+    renderer_lane=RendererLane.SOFTWARE,
+    source_commit="1" * 40,
+    capture_images=False,
+)
+assert result.production_path == (
+    "AppContext",
+    "EventBridge",
+    "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
+    "JourneyWorkspaceHost",
+)
+assert result.manual_trading_action_count == 0
+assert result.clean_exit is True
+"""
+    environment = os.environ.copy()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment["QT_QUICK_BACKEND"] = "software"
+    completed = subprocess.run(
+        (sys.executable, "-c", script, str(tmp_path)),
+        cwd=PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_widgets_rollback_smoke_never_imports_command_runtime_gateway(
     tmp_path,
 ):
