@@ -8,6 +8,8 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
     TOOLCHAIN_LOCK_PATH,
@@ -215,17 +217,18 @@ def test_smoke_observation_snapshots_state_before_frame_capture(
         capture_after_freshness_timer_fires,
     )
 
-    observation = package_entry._observe_state(
-        root=root,
-        host=host,
-        report_dir=tmp_path,
-        stage="active_evidence",
-        route="evidence_and_findings",
-        capture_images=True,
-    )
-
-    assert observation.run_freshness == "fresh"
-    assert observation.run_revision == "r1"
+    with pytest.raises(
+        RuntimeError,
+        match="state changed during frame capture",
+    ):
+        package_entry._observe_state(
+            root=root,
+            host=host,
+            report_dir=tmp_path,
+            stage="active_evidence",
+            route="evidence_and_findings",
+            capture_images=True,
+        )
 
 
 def test_v2_app_context_uses_only_the_read_only_runtime_boundary(

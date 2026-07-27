@@ -643,25 +643,30 @@ def _observe_state(
     evidence_adapter = host._evidence_and_findings
     if evidence_adapter is None:
         raise RuntimeError("Evidence & Findings Adapter is unavailable")
-    observed = {
-        "run_state": str(root.property("screenState")),
-        "evidence_state": str(root.property("evidenceScreenState")),
-        "run_freshness": str(run_adapter.property("freshness")),
-        "evidence_freshness": str(evidence_adapter.property("freshness")),
-        "run_phase": str(run_adapter.property("phase")),
-        "evidence_phase": str(evidence_adapter.property("phase")),
-        "run_revision": str(run_adapter.property("revisionText")),
-        "evidence_revision": str(evidence_adapter.property("revisionText")),
-        "source_generation": str(
-            run_adapter.property("sourceGenerationText")
-        ),
-        "headline": str(root.property("headline")),
-        "detail": str(root.property("detail")),
-    }
+    observed = _snapshot_observed_state(
+        root=root,
+        run_adapter=run_adapter,
+        evidence_adapter=evidence_adapter,
+    )
     screenshot_name = None
     if capture_images:
         screenshot_name = f"{stage}.png"
         _capture_qml_frame(host, report_dir / screenshot_name)
+        observed_after_capture = _snapshot_observed_state(
+            root=root,
+            run_adapter=run_adapter,
+            evidence_adapter=evidence_adapter,
+        )
+        if observed_after_capture != observed:
+            changed_fields = ", ".join(
+                key
+                for key in observed
+                if observed[key] != observed_after_capture[key]
+            )
+            raise RuntimeError(
+                f"{stage}: state changed during frame capture "
+                f"({changed_fields})"
+            )
     return SmokeStateObservation(
         stage=stage,
         route=route,
@@ -678,6 +683,29 @@ def _observe_state(
         detail=observed["detail"],
         screenshot=screenshot_name,
     )
+
+
+def _snapshot_observed_state(
+    *,
+    root: Any,
+    run_adapter: Any,
+    evidence_adapter: Any,
+) -> dict[str, str]:
+    return {
+        "run_state": str(root.property("screenState")),
+        "evidence_state": str(root.property("evidenceScreenState")),
+        "run_freshness": str(run_adapter.property("freshness")),
+        "evidence_freshness": str(evidence_adapter.property("freshness")),
+        "run_phase": str(run_adapter.property("phase")),
+        "evidence_phase": str(evidence_adapter.property("phase")),
+        "run_revision": str(run_adapter.property("revisionText")),
+        "evidence_revision": str(evidence_adapter.property("revisionText")),
+        "source_generation": str(
+            run_adapter.property("sourceGenerationText")
+        ),
+        "headline": str(root.property("headline")),
+        "detail": str(root.property("detail")),
+    }
 
 
 def _unapproved_interactive_action_count(root: Any) -> int:
