@@ -531,9 +531,6 @@ def run_smoke_journey(
         quick_window = host.quickWindow()
         if quick_window is not None:
             quick_window.update()
-        app.processEvents()
-        sleep(0.05)
-        app.processEvents()
         observations.append(
             _observe_state(
                 root=root,
@@ -646,6 +643,21 @@ def _observe_state(
     evidence_adapter = host._evidence_and_findings
     if evidence_adapter is None:
         raise RuntimeError("Evidence & Findings Adapter is unavailable")
+    observed = {
+        "run_state": str(root.property("screenState")),
+        "evidence_state": str(root.property("evidenceScreenState")),
+        "run_freshness": str(run_adapter.property("freshness")),
+        "evidence_freshness": str(evidence_adapter.property("freshness")),
+        "run_phase": str(run_adapter.property("phase")),
+        "evidence_phase": str(evidence_adapter.property("phase")),
+        "run_revision": str(run_adapter.property("revisionText")),
+        "evidence_revision": str(evidence_adapter.property("revisionText")),
+        "source_generation": str(
+            run_adapter.property("sourceGenerationText")
+        ),
+        "headline": str(root.property("headline")),
+        "detail": str(root.property("detail")),
+    }
     screenshot_name = None
     if capture_images:
         screenshot_name = f"{stage}.png"
@@ -653,19 +665,17 @@ def _observe_state(
     return SmokeStateObservation(
         stage=stage,
         route=route,
-        run_state=str(root.property("screenState")),
-        evidence_state=str(root.property("evidenceScreenState")),
-        run_freshness=str(run_adapter.property("freshness")),
-        evidence_freshness=str(evidence_adapter.property("freshness")),
-        run_phase=str(run_adapter.property("phase")),
-        evidence_phase=str(evidence_adapter.property("phase")),
-        run_revision=str(run_adapter.property("revisionText")),
-        evidence_revision=str(evidence_adapter.property("revisionText")),
-        source_generation=str(
-            run_adapter.property("sourceGenerationText")
-        ),
-        headline=str(root.property("headline")),
-        detail=str(root.property("detail")),
+        run_state=observed["run_state"],
+        evidence_state=observed["evidence_state"],
+        run_freshness=observed["run_freshness"],
+        evidence_freshness=observed["evidence_freshness"],
+        run_phase=observed["run_phase"],
+        evidence_phase=observed["evidence_phase"],
+        run_revision=observed["run_revision"],
+        evidence_revision=observed["evidence_revision"],
+        source_generation=observed["source_generation"],
+        headline=observed["headline"],
+        detail=observed["detail"],
         screenshot=screenshot_name,
     )
 

@@ -171,6 +171,63 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert "STOCKSIM_FRONTEND_V2" not in os.environ
 
 
+def test_smoke_observation_snapshots_state_before_frame_capture(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    class FakeObject:
+        def __init__(self, **properties):
+            self.properties = properties
+
+        def property(self, name):
+            return self.properties[name]
+
+    root = FakeObject(
+        screenState="active",
+        evidenceScreenState="ready",
+        headline="Active diagnostic run",
+        detail="Evidence is ready",
+    )
+    run_adapter = FakeObject(
+        freshness="fresh",
+        phase="ready",
+        revisionText="r1",
+        sourceGenerationText="g1",
+    )
+    evidence_adapter = FakeObject(
+        freshness="fresh",
+        phase="degraded",
+        revisionText="r1",
+    )
+    host = FakeObject()
+    host._run_monitoring = run_adapter
+    host._evidence_and_findings = evidence_adapter
+
+    def capture_after_freshness_timer_fires(_host, _path):
+        run_adapter.properties["freshness"] = "stale"
+        run_adapter.properties["revisionText"] = "r2"
+
+    monkeypatch.setattr(
+        package_entry,
+        "_capture_qml_frame",
+        capture_after_freshness_timer_fires,
+    )
+
+    observation = package_entry._observe_state(
+        root=root,
+        host=host,
+        report_dir=tmp_path,
+        stage="active_evidence",
+        route="evidence_and_findings",
+        capture_images=True,
+    )
+
+    assert observation.run_freshness == "fresh"
+    assert observation.run_revision == "r1"
+
+
 def test_v2_app_context_uses_only_the_read_only_runtime_boundary(
     tmp_path,
     monkeypatch,
