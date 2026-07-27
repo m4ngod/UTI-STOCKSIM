@@ -211,10 +211,27 @@ import builtins
 import sys
 
 original_import = builtins.__import__
+forbidden_command_modules = (
+    "app.runtime_gateway",
+    "app.controllers.trading_controller",
+    "app.services.trading_service",
+    "app.panels.market.trade_dialog",
+    "core.order",
+    "services.order_service",
+    "services.runtime_command_service",
+    "stock_sim.core.order",
+    "stock_sim.services.order_service",
+    "stock_sim.services.runtime_command_service",
+)
 
 def reject_command_gateway(name, *args, **kwargs):
-    if name == "app.runtime_gateway":
-        raise ModuleNotFoundError("command-capable runtime gateway excluded")
+    if any(
+        name == prefix or name.startswith(prefix + ".")
+        for prefix in forbidden_command_modules
+    ):
+        raise ModuleNotFoundError(
+            f"command-capable module excluded: {name}"
+        )
     return original_import(name, *args, **kwargs)
 
 builtins.__import__ = reject_command_gateway
