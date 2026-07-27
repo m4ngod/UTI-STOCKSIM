@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import hashlib
 import json
@@ -11,9 +11,22 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Iterable, Mapping, Protocol
+from typing import Iterable, Mapping, Protocol, cast
 
 from .historical_segments import HistoricalMarketSegment
+from .market_rules import (
+    A_SHARE_MARKET_RULE_PROFILE_VERSION,
+    AShareBoard,
+    ListingStage,
+)
+from .transformations import (
+    AppliedTransformation,
+    ScenarioTransformationCatalog,
+    TransformationPhaseMarker,
+    TransformationRequest,
+    apply_registered_transformations,
+    create_initial_transformation_catalog,
+)
 
 
 _PRICE_TOLERANCE = Decimal("0.000001")
@@ -140,6 +153,88 @@ class InstrumentState:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionPriceLimitReference:
+    """Point-in-time previous close used to derive one session's price limits."""
+
+    instrument: str
+    session_date: date
+    previous_close: Decimal
+    effective_at: datetime
+    provenance: str
+    profile_version: str
+    board: AShareBoard
+    is_st: bool
+    listing_stage: ListingStage
+    limit_fraction: Decimal | None
+    rule_code: str
+
+    def __post_init__(self) -> None:
+        if not self.instrument.strip():
+            raise ValueError("instrument must not be empty")
+        if self.previous_close <= 0:
+            raise ValueError("previous_close must be positive")
+        if self.effective_at.tzinfo is not None:
+            raise ValueError("price-limit reference time must be market-local")
+        if self.effective_at > datetime.combine(self.session_date, time(9, 30)):
+            raise ValueError(
+                "price-limit reference must be available by the session open"
+            )
+        if not self.provenance.strip():
+            raise ValueError("price-limit reference provenance must not be empty")
+        if self.profile_version != A_SHARE_MARKET_RULE_PROFILE_VERSION:
+            raise ValueError("unsupported Market Rule Profile version")
+        if self.listing_stage not in {"continuous", "initial-unbounded"}:
+            raise ValueError("unsupported listing stage")
+        if self.listing_stage == "initial-unbounded":
+            if self.limit_fraction is not None:
+                raise ValueError("unbounded sessions must not declare a limit fraction")
+        elif self.limit_fraction is None or not Decimal("0") < self.limit_fraction <= 1:
+            raise ValueError("continuous sessions require a valid limit fraction")
+        if not self.rule_code.strip():
+            raise ValueError("price-limit rule_code must not be empty")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "instrument": self.instrument,
+            "session_date": self.session_date.isoformat(),
+            "previous_close": _decimal_text(self.previous_close),
+            "effective_at": self.effective_at.isoformat(),
+            "provenance": self.provenance,
+            "profile_version": self.profile_version,
+            "board": self.board,
+            "is_st": self.is_st,
+            "listing_stage": self.listing_stage,
+            "limit_fraction": (
+                _decimal_text(self.limit_fraction)
+                if self.limit_fraction is not None
+                else None
+            ),
+            "rule_code": self.rule_code,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "SessionPriceLimitReference":
+        raw_limit_fraction = payload["limit_fraction"]
+        return cls(
+            instrument=str(payload["instrument"]),
+            session_date=date.fromisoformat(str(payload["session_date"])),
+            previous_close=Decimal(str(payload["previous_close"])),
+            effective_at=datetime.fromisoformat(str(payload["effective_at"])),
+            provenance=str(payload["provenance"]),
+            profile_version=str(payload["profile_version"]),
+            board=cast(AShareBoard, str(payload["board"])),
+            is_st=bool(payload["is_st"]),
+            listing_stage=cast(ListingStage, str(payload["listing_stage"])),
+            limit_fraction=(
+                Decimal(str(raw_limit_fraction))
+                if raw_limit_fraction is not None
+                else None
+            ),
+            rule_code=str(payload["rule_code"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ScenarioDataWorldInput:
     """Admitted point-in-time inputs used by baseline materialization."""
 
@@ -148,6 +243,7 @@ class ScenarioDataWorldInput:
     source_snapshot_id: str
     bars: tuple[FiveMinuteBar, ...]
     instrument_states: tuple[InstrumentState, ...]
+    price_limit_references: tuple[SessionPriceLimitReference, ...] = ()
     normalization_provenance: str = "canonical-unadjusted-source"
 
     def __post_init__(self) -> None:
@@ -223,8 +319,53 @@ class MaterializedMarketPath:
     reconstructed: bool
     numeric_tolerance: str
     normalization_provenance: str
+    market_rule_profile_version: str
+    transformation_catalog_version: str
+    applied_transformations: tuple[AppliedTransformation, ...]
     nodes: tuple[MarketPathNode, ...]
     instrument_states: tuple[InstrumentState, ...]
+    price_limit_references: tuple[SessionPriceLimitReference, ...] = ()
+
+    @property
+    def reconstruction_notice(self) -> str:
+        if self.reconstructed:
+            return (
+                "Reconstructed 30-second path from admitted 5-minute bars; "
+                "not recorded microstructure."
+            )
+        return "Path is not reconstructed."
+
+    def path_statistics(
+        self,
+        *,
+        at_time: datetime | None = None,
+    ) -> dict[str, object]:
+        visible_nodes = tuple(
+            node
+            for node in self.nodes
+            if at_time is None or node.simulation_time <= at_time
+        )
+        if not visible_nodes:
+            raise ValueError("Path statistics require at least one visible market node")
+        absolute_returns = tuple(
+            abs(dict(node.features)["return_30s"])
+            for node in visible_nodes
+        )
+        range_fractions = tuple(
+            (node.high - node.low) / node.open
+            for node in visible_nodes
+        )
+        count = Decimal(len(visible_nodes))
+        return {
+            "node_count": len(visible_nodes),
+            "mean_absolute_return_30s": _decimal_text(
+                sum(absolute_returns, Decimal("0")) / count
+            ),
+            "mean_range_fraction_30s": _decimal_text(
+                sum(range_fractions, Decimal("0")) / count
+            ),
+            "max_range_fraction_30s": _decimal_text(max(range_fractions)),
+        }
 
     def to_preview_dict(self) -> dict[str, object]:
         return {
@@ -236,8 +377,15 @@ class MaterializedMarketPath:
             "source_resolution": self.source_resolution,
             "runtime_resolution": self.runtime_resolution,
             "reconstructed": self.reconstructed,
+            "reconstruction_notice": self.reconstruction_notice,
             "numeric_tolerance": self.numeric_tolerance,
             "normalization_provenance": self.normalization_provenance,
+            "market_rule_profile_version": self.market_rule_profile_version,
+            "transformation_catalog_version": self.transformation_catalog_version,
+            "applied_transformations": [
+                transformation.to_dict()
+                for transformation in self.applied_transformations
+            ],
             "node_count": len(self.nodes),
             "instrument_count": len(
                 {state.instrument for state in self.instrument_states if state.eligible}
@@ -246,6 +394,7 @@ class MaterializedMarketPath:
             "end_time": self.nodes[-1].simulation_time.isoformat(),
             "first_node": self.nodes[0].to_dict(),
             "last_node": self.nodes[-1].to_dict(),
+            "path_statistics": self.path_statistics(),
         }
 
 
@@ -335,8 +484,49 @@ class ParquetMarketPathArtifactStore:
             reconstructed=bool(manifest["reconstructed"]),
             numeric_tolerance=str(manifest["numeric_tolerance"]),
             normalization_provenance=str(manifest["normalization_provenance"]),
+            market_rule_profile_version=str(
+                manifest["market_rule_profile_version"]
+            ),
+            transformation_catalog_version=str(
+                manifest["transformation_catalog_version"]
+            ),
+            applied_transformations=tuple(
+                AppliedTransformation(
+                    transformation_id=str(item["transformation_id"]),
+                    family=str(item["family"]),
+                    catalog_version=str(item["catalog_version"]),
+                    implementation_version=str(item["implementation_version"]),
+                    parameters=tuple(
+                        sorted(
+                            (
+                                str(name),
+                                str(value),
+                            )
+                            for name, value in item["parameters"].items()
+                        )
+                    ),
+                    phase_markers=tuple(
+                        TransformationPhaseMarker.from_dict(marker)
+                        for marker in item.get("phase_markers", ())
+                    ),
+                    statistics=tuple(
+                        sorted(
+                            (str(name), str(value))
+                            for name, value in item.get("statistics", {}).items()
+                        )
+                    ),
+                )
+                for item in manifest["applied_transformations"]
+            ),
             nodes=nodes,
             instrument_states=states,
+            price_limit_references=tuple(
+                SessionPriceLimitReference.from_dict(item)
+                for item in cast(
+                    list[Mapping[str, object]],
+                    manifest.get("price_limit_references", []),
+                )
+            ),
         )
         if path.artifact_hash != artifact_hash:
             raise ValueError("artifact manifest identity does not match its address")
@@ -500,6 +690,53 @@ class ScenarioMarketSnapshot:
     def to_dict(self) -> dict[str, object]:
         state_by_instrument = {state.instrument: state for state in self.states}
         node_by_instrument = {node.instrument: node for node in self.latest_nodes}
+        feature_by_instrument = {
+            instrument: dict(node.features)
+            for instrument, node in node_by_instrument.items()
+        }
+        ranked_instruments = sorted(
+            (
+                instrument
+                for instrument in self.eligible_universe
+                if "candidate_rank" in feature_by_instrument.get(instrument, {})
+            ),
+            key=lambda instrument: (
+                feature_by_instrument[instrument]["candidate_rank"],
+                instrument,
+            ),
+        )
+        context_instrument = next(
+            (
+                instrument
+                for instrument in self.eligible_universe
+                if "market_return" in feature_by_instrument.get(instrument, {})
+            ),
+            None,
+        )
+        market_context: dict[str, object] = {}
+        if context_instrument is not None:
+            features = feature_by_instrument[context_instrument]
+            market_context = {
+                "return": _decimal_text(features["market_return"]),
+                "breadth": _decimal_text(features["market_breadth"]),
+                "instrument_count": len(ranked_instruments),
+            }
+        sector_context: dict[str, dict[str, object]] = {}
+        for instrument in ranked_instruments:
+            state = state_by_instrument[instrument]
+            if state.industry in sector_context:
+                continue
+            features = feature_by_instrument[instrument]
+            members = tuple(
+                candidate
+                for candidate in ranked_instruments
+                if state_by_instrument[candidate].industry == state.industry
+            )
+            sector_context[state.industry] = {
+                "return": _decimal_text(features["sector_return"]),
+                "breadth": _decimal_text(features["sector_breadth"]),
+                "instrument_count": len(members),
+            }
         return {
             "simulation_time": self.simulation_time.isoformat(),
             "eligible_universe": list(self.eligible_universe),
@@ -526,6 +763,19 @@ class ScenarioMarketSnapshot:
                 for instrument in self.eligible_universe
                 if instrument in node_by_instrument
             },
+            "market_context": market_context,
+            "sector_context": sector_context,
+            "candidates": ranked_instruments,
+            "rankings": [
+                {
+                    "instrument": instrument,
+                    "rank": int(feature_by_instrument[instrument]["candidate_rank"]),
+                    "score": _decimal_text(
+                        feature_by_instrument[instrument]["candidate_score"]
+                    ),
+                }
+                for instrument in ranked_instruments
+            ],
             "latest_nodes": {
                 instrument: node_by_instrument[instrument].to_dict()
                 for instrument in self.eligible_universe
@@ -699,21 +949,154 @@ def _is_a_share_five_minute_bar_end(value: datetime) -> bool:
 
 def _with_causal_features(
     nodes: tuple[MarketPathNode, ...],
+    instrument_states: tuple[InstrumentState, ...],
 ) -> tuple[MarketPathNode, ...]:
     previous_by_instrument: dict[str, Decimal] = {}
     session_open: dict[tuple[str, object], Decimal] = {}
+    session_volume: dict[tuple[str, object], int] = {}
+    session_turnover_value: dict[tuple[str, object], Decimal] = {}
     enriched: list[MarketPathNode] = []
     for node in nodes:
         previous = previous_by_instrument.get(node.instrument, node.open)
         session_key = (node.instrument, node.simulation_time.date())
         opening = session_open.setdefault(session_key, node.open)
+        cumulative_volume = session_volume.get(session_key, 0) + node.volume
+        cumulative_turnover = (
+            session_turnover_value.get(session_key, Decimal("0")) + node.amount
+        )
+        session_volume[session_key] = cumulative_volume
+        session_turnover_value[session_key] = cumulative_turnover
         features = (
             ("return_30s", node.close / previous - Decimal(1)),
             ("session_return", node.close / opening - Decimal(1)),
+            ("session_volume", Decimal(cumulative_volume)),
+            ("session_turnover_value", cumulative_turnover),
+            ("capacity_proxy_30s", node.amount),
         )
         enriched.append(replace(node, features=features))
         previous_by_instrument[node.instrument] = node.close
-    return tuple(enriched)
+    by_time: dict[datetime, list[MarketPathNode]] = {}
+    for node in enriched:
+        by_time.setdefault(node.simulation_time, []).append(node)
+    recomputed: list[MarketPathNode] = []
+    for simulation_time in sorted(by_time):
+        nodes_at_time = by_time[simulation_time]
+        eligible: list[tuple[MarketPathNode, InstrumentState]] = []
+        for node in nodes_at_time:
+            state = _instrument_state_at(
+                instrument_states,
+                node.instrument,
+                simulation_time,
+            )
+            if state is not None and state.eligible:
+                eligible.append((node, state))
+        session_returns = {
+            node.instrument: dict(node.features)["session_return"]
+            for node, _state in eligible
+        }
+        session_volumes = {
+            node.instrument: dict(node.features)["session_volume"]
+            for node, _state in eligible
+        }
+        if not session_returns:
+            recomputed.extend(nodes_at_time)
+            continue
+        market_return = sum(session_returns.values(), Decimal("0")) / Decimal(
+            len(session_returns)
+        )
+        market_breadth = Decimal(
+            sum(value > 0 for value in session_returns.values())
+        ) / Decimal(len(session_returns))
+        market_session_volume = sum(
+            session_volumes.values(),
+            Decimal("0"),
+        ) / Decimal(len(session_volumes))
+        relative_liquidity = {
+            instrument: (
+                volume / market_session_volume - Decimal("1")
+                if market_session_volume > 0
+                else Decimal("0")
+            )
+            for instrument, volume in session_volumes.items()
+        }
+        sector_members: dict[str, list[str]] = {}
+        for node, state in eligible:
+            sector_members.setdefault(state.industry, []).append(node.instrument)
+        sector_values: dict[str, tuple[Decimal, Decimal]] = {}
+        for industry, instruments in sector_members.items():
+            values = [session_returns[instrument] for instrument in instruments]
+            sector_values[industry] = (
+                sum(values, Decimal("0")) / Decimal(len(values)),
+                Decimal(sum(value > 0 for value in values)) / Decimal(len(values)),
+            )
+        relative_strengths = {
+            instrument: value - market_return
+            for instrument, value in session_returns.items()
+        }
+        scores = {
+            instrument: (
+                relative_strengths[instrument]
+                + Decimal("0.01") * relative_liquidity[instrument]
+            )
+            for instrument in session_returns
+        }
+        ranked = tuple(
+            sorted(scores, key=lambda instrument: (-scores[instrument], instrument))
+        )
+        rank_by_instrument = {
+            instrument: Decimal(rank)
+            for rank, instrument in enumerate(ranked, start=1)
+        }
+        state_by_instrument = {node.instrument: state for node, state in eligible}
+        for node in nodes_at_time:
+            state = state_by_instrument.get(node.instrument)
+            if state is None:
+                recomputed.append(node)
+                continue
+            sector_return, sector_breadth = sector_values[state.industry]
+            recomputed.append(
+                replace(
+                    node,
+                    features=(
+                        *node.features,
+                        ("market_return", market_return),
+                        ("market_breadth", market_breadth),
+                        ("sector_return", sector_return),
+                        ("sector_breadth", sector_breadth),
+                        (
+                            "relative_strength",
+                            relative_strengths[node.instrument],
+                        ),
+                        (
+                            "relative_liquidity",
+                            relative_liquidity[node.instrument],
+                        ),
+                        ("candidate_score", scores[node.instrument]),
+                        ("candidate_rank", rank_by_instrument[node.instrument]),
+                    ),
+                )
+            )
+    return tuple(
+        sorted(
+            recomputed,
+            key=lambda item: (item.simulation_time, item.instrument),
+        )
+    )
+
+
+def _instrument_state_at(
+    states: tuple[InstrumentState, ...],
+    instrument: str,
+    simulation_time: datetime,
+) -> InstrumentState | None:
+    matches = tuple(
+        state
+        for state in states
+        if state.instrument == instrument and state.effective_at <= simulation_time
+    )
+    if not matches:
+        return None
+    return max(matches, key=lambda state: state.effective_at)
 
 
 def _validate_reaggregation(
@@ -753,7 +1136,7 @@ def _validate_reaggregation(
 
 
 def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
-    return {
+    content: dict[str, object] = {
         "segment_id": path.segment_id,
         "segment_content_hash": path.segment_content_hash,
         "source_snapshot_id": path.source_snapshot_id,
@@ -764,12 +1147,24 @@ def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
         "reconstructed": path.reconstructed,
         "numeric_tolerance": path.numeric_tolerance,
         "normalization_provenance": path.normalization_provenance,
+        "market_rule_profile_version": path.market_rule_profile_version,
+        "transformation_catalog_version": path.transformation_catalog_version,
+        "applied_transformations": [
+            transformation.to_dict()
+            for transformation in path.applied_transformations
+        ],
         "nodes": [node.to_dict() for node in path.nodes],
         "instrument_states": [
             state.to_dict()
             for state in path.instrument_states
         ],
     }
+    if path.price_limit_references:
+        content["price_limit_references"] = [
+            reference.to_dict()
+            for reference in path.price_limit_references
+        ]
+    return content
 
 
 def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
@@ -785,8 +1180,19 @@ def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
         "reconstructed": path.reconstructed,
         "numeric_tolerance": path.numeric_tolerance,
         "normalization_provenance": path.normalization_provenance,
+        "market_rule_profile_version": path.market_rule_profile_version,
+        "transformation_catalog_version": path.transformation_catalog_version,
+        "applied_transformations": [
+            transformation.to_dict()
+            for transformation in path.applied_transformations
+        ],
         "node_count": len(path.nodes),
         "instrument_state_count": len(path.instrument_states),
+        "price_limit_references": [
+            reference.to_dict()
+            for reference in path.price_limit_references
+        ],
+        "price_limit_reference_count": len(path.price_limit_references),
     }
 
 
@@ -801,14 +1207,27 @@ class ScenarioMaterializer:
         self,
         source: HistoricalMarketDataSource,
         artifact_store: MarketPathArtifactStore,
+        transformation_catalog: ScenarioTransformationCatalog | None = None,
     ) -> None:
         self._source = source
         self._artifact_store = artifact_store
+        self._transformation_catalog = (
+            transformation_catalog or create_initial_transformation_catalog()
+        )
 
     def materialize_baseline(
         self,
         segment: HistoricalMarketSegment,
         *,
+        seed: int,
+    ) -> MaterializedMarketPath:
+        return self.materialize(segment, transformations=(), seed=seed)
+
+    def materialize(
+        self,
+        segment: HistoricalMarketSegment,
+        *,
+        transformations: Iterable[TransformationRequest],
         seed: int,
     ) -> MaterializedMarketPath:
         world = self._source.load_scenario_data_world(segment)
@@ -827,6 +1246,11 @@ class ScenarioMaterializer:
         bar_keys = tuple((bar.instrument, bar.end_time) for bar in world.bars)
         if len(bar_keys) != len(set(bar_keys)):
             raise ValueError("materialization input contains duplicate five-minute bars")
+        world, applied_transformations = apply_registered_transformations(
+            world,
+            transformations,
+            catalog=self._transformation_catalog,
+        )
         expanded_by_bar = tuple(
             node
             for bar in sorted(
@@ -841,7 +1265,7 @@ class ScenarioMaterializer:
                 key=lambda item: (item.simulation_time, item.instrument),
             )
         )
-        nodes = _with_causal_features(expanded)
+        nodes = _with_causal_features(expanded, world.instrument_states)
         _validate_reaggregation(world.bars, nodes)
         path = MaterializedMarketPath(
             artifact_hash="",
@@ -855,11 +1279,22 @@ class ScenarioMaterializer:
             reconstructed=True,
             numeric_tolerance=str(_PRICE_TOLERANCE),
             normalization_provenance=world.normalization_provenance,
+            market_rule_profile_version=A_SHARE_MARKET_RULE_PROFILE_VERSION,
+            transformation_catalog_version=(
+                self._transformation_catalog.catalog_version
+            ),
+            applied_transformations=applied_transformations,
             nodes=nodes,
             instrument_states=tuple(
                 sorted(
                     world.instrument_states,
                     key=lambda item: (item.effective_at, item.instrument),
+                )
+            ),
+            price_limit_references=tuple(
+                sorted(
+                    world.price_limit_references,
+                    key=lambda item: (item.session_date, item.instrument),
                 )
             ),
         )
@@ -871,6 +1306,7 @@ class ScenarioMaterializer:
 
 
 __all__ = [
+    "AppliedTransformation",
     "EligibleUniverseAccessError",
     "FiveMinuteBar",
     "FutureDataAccessError",
@@ -883,6 +1319,7 @@ __all__ = [
     "MaterializedMarketPath",
     "ParquetMarketPathArtifactStore",
     "ScenarioDataWorldInput",
+    "SessionPriceLimitReference",
     "ScenarioMarketSnapshot",
     "ScenarioMarketView",
     "ScenarioMaterializer",

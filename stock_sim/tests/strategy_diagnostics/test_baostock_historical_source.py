@@ -19,6 +19,34 @@ from strategy_diagnostics import (
 )
 
 
+def _approve_baseline_recipe(
+    application: object,
+    segment_id: str,
+    *,
+    seed: int,
+) -> str:
+    draft = application.create_manual_recipe_draft(
+        {
+            "schema_version": "scenario_recipe.v1",
+            "name": "Baseline control",
+            "historical_segment_id": segment_id,
+            "transformations": [],
+            "execution_conditions": {},
+            "decision_cadence_minutes": 30,
+            "materialization_seed": seed,
+            "data_policy": "point-in-time",
+            "market_rule_profile": "a-share-cash-equity.v1",
+        },
+        author="test",
+    )
+    validation = application.validate_recipe_draft(draft.draft_id)
+    assert validation.is_valid
+    return application.approve_recipe_draft(
+        draft.draft_id,
+        actor="test-owner",
+    ).version_id
+
+
 def _write_csv(path: Path, fieldnames: tuple[str, ...], rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -274,7 +302,7 @@ def test_local_baostock_interval_passes_real_point_in_time_checks(tmp_path: Path
     assert "instrument-catalog" in {
         artifact.name for artifact in report.source_snapshot.artifacts
     }
-    assert "trading-calendar-selection" in {
+    assert "trading-calendar-causal-history" in {
         artifact.name for artifact in report.source_snapshot.artifacts
     }
     assert "baostock" not in report.segment.to_dict()
@@ -513,10 +541,50 @@ def test_local_baostock_segment_materializes_as_canonical_unadjusted_world(
         )
     )
     assert admission.segment is not None
+    world = source.load_scenario_data_world(admission.segment)
+    assert {
+        (reference.instrument, reference.previous_close, reference.provenance)
+        for reference in world.price_limit_references
+    } == {
+        ("sh.600000", Decimal("20"), "baostock-daily-unadjusted-preclose-v1"),
+        ("sz.000001", Decimal("20"), "baostock-daily-unadjusted-preclose-v1"),
+    }
+    assert {
+        (
+            reference.instrument,
+            reference.board,
+            reference.is_st,
+            reference.listing_stage,
+            reference.limit_fraction,
+            reference.profile_version,
+        )
+        for reference in world.price_limit_references
+    } == {
+        (
+            "sh.600000",
+            "sh-main",
+            False,
+            "continuous",
+            Decimal("0.10"),
+            "a-share-cash-equity.v1",
+        ),
+        (
+            "sz.000001",
+            "sz-main",
+            False,
+            "continuous",
+            Decimal("0.10"),
+            "a-share-cash-equity.v1",
+        ),
+    }
 
-    materialized = application.materialize_baseline_reference_path(
+    recipe_version_id = _approve_baseline_recipe(
+        application,
         admission.segment.segment_id,
         seed=23,
+    )
+    materialized = application.materialize_baseline_reference_path(
+        recipe_version_id
     )
     preview = application.preview_reference_market_path(
         materialized.artifact_hash,
@@ -563,8 +631,10 @@ def test_materialization_rejects_equal_row_count_source_changes_after_inspection
     )
     assert admission.segment is not None
 
+    recipe_version_id = _approve_baseline_recipe(
+        application,
+        admission.segment.segment_id,
+        seed=23,
+    )
     with pytest.raises(ValueError, match="changed after admission"):
-        application.materialize_baseline_reference_path(
-            admission.segment.segment_id,
-            seed=23,
-        )
+        application.materialize_baseline_reference_path(recipe_version_id)

@@ -193,6 +193,28 @@ class SourceSnapshot:
     provenance: SourceProvenance
     artifacts: tuple[SourceArtifact, ...]
 
+    def __post_init__(self) -> None:
+        artifacts = tuple(
+            sorted(self.artifacts, key=lambda item: item.name)
+        )
+        if artifacts != self.artifacts:
+            raise ValueError(
+                "source snapshot artifacts must use canonical name order"
+            )
+        payload = {
+            "provenance": self.provenance.to_dict(),
+            "artifacts": [artifact.to_dict() for artifact in artifacts],
+        }
+        content_hash = _canonical_hash(payload)
+        if self.content_hash != content_hash:
+            raise ValueError(
+                "source snapshot content hash does not match its content"
+            )
+        if self.snapshot_id != f"snapshot_{content_hash[:20]}":
+            raise ValueError(
+                "source snapshot identity does not match its content hash"
+            )
+
     @classmethod
     def from_inspection(
         cls,
@@ -309,10 +331,13 @@ class HistoricalSegmentCatalog(Protocol):
 
     def list_segments(self) -> tuple[HistoricalMarketSegment, ...]: ...
 
+    def get_source_snapshot(self, snapshot_id: str) -> SourceSnapshot: ...
+
 
 class InMemoryHistoricalSegmentCatalog:
     def __init__(self) -> None:
         self._segments: dict[str, HistoricalMarketSegment] = {}
+        self._source_snapshots: dict[str, SourceSnapshot] = {}
 
     def add(
         self,
@@ -320,10 +345,14 @@ class InMemoryHistoricalSegmentCatalog:
         segment: HistoricalMarketSegment,
         report: SegmentAdmissionReport,
     ) -> HistoricalMarketSegment:
-        del snapshot, report
+        del report
+        existing_snapshot = self._source_snapshots.get(snapshot.snapshot_id)
+        if existing_snapshot is not None and existing_snapshot != snapshot:
+            raise ValueError("immutable source snapshot identity collision")
         existing = self._segments.get(segment.segment_id)
         if existing is not None and existing != segment:
             raise ValueError("immutable historical segment identity collision")
+        self._source_snapshots[snapshot.snapshot_id] = snapshot
         self._segments[segment.segment_id] = segment
         return self._segments[segment.segment_id]
 
@@ -338,6 +367,12 @@ class InMemoryHistoricalSegmentCatalog:
                 ),
             )
         )
+
+    def get_source_snapshot(self, snapshot_id: str) -> SourceSnapshot:
+        try:
+            return self._source_snapshots[snapshot_id]
+        except KeyError as error:
+            raise KeyError("Unknown source snapshot") from error
 
 
 _REQUIRED_ADMISSION_CHECKS = (
@@ -468,6 +503,9 @@ class HistoricalSegmentAdmissionService:
 
     def list_segments(self) -> tuple[HistoricalMarketSegment, ...]:
         return self._catalog.list_segments()
+
+    def get_source_snapshot(self, snapshot_id: str) -> SourceSnapshot:
+        return self._catalog.get_source_snapshot(snapshot_id)
 
     def latest_report(self) -> SegmentAdmissionReport | None:
         return self._latest_report

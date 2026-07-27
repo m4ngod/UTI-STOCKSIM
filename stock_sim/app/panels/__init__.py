@@ -59,7 +59,12 @@ def register_builtin_panels():
 
 # ---------------- 实现注入：用 UI 适配器替换占位 ----------------
 
-def register_ui_adapters(*, read_only: bool = False):
+def register_ui_adapters(
+    *,
+    read_only: bool = False,
+    diagnostics_engine=None,
+    diagnostics_application_factory=None,
+):
     """
     将占位面板替换为“逻辑面板 + Qt 适配器”实例。
     - 若缺少依赖/GUI 不可用，静默忽略，保留占位面板。
@@ -72,8 +77,17 @@ def register_ui_adapters(*, read_only: bool = False):
         from app.ui.adapters.diagnostics_adapter import DiagnosticsPanelAdapter
         from strategy_diagnostics import create_diagnostics_application
 
+        application_factory = (
+            diagnostics_application_factory or create_diagnostics_application
+        )
+        if diagnostics_engine is None and not read_only:
+            from persistence.models_imports import engine as diagnostics_engine
+
         def _diagnostics_factory():
-            logic = _DiagnosticsLogic(create_diagnostics_application())
+            application = application_factory()
+            if diagnostics_engine is not None and not read_only:
+                application.initialize_persistence(diagnostics_engine)
+            logic = _DiagnosticsLogic(application)
             return DiagnosticsPanelAdapter().bind(logic)
 
         replace_panel(

@@ -26,7 +26,9 @@ from .market_paths import (
     FiveMinuteBar,
     InstrumentState,
     ScenarioDataWorldInput,
+    SessionPriceLimitReference,
 )
+from .market_rules import resolve_a_share_price_limit_rule
 
 
 _REQUIRED_DAILY_FIELDS = frozenset(
@@ -160,6 +162,7 @@ class _InstrumentCatalog:
 @dataclass(frozen=True, slots=True)
 class _TradingCalendar:
     dates: tuple[date, ...]
+    all_dates: tuple[date, ...]
     artifact: SourceArtifact
 
 
@@ -644,6 +647,7 @@ class BaoStockHistoricalSource:
 
         factor_by_pair: dict[tuple[str, date], Decimal | None] = {}
         states: list[InstrumentState] = []
+        price_limit_references: list[SessionPriceLimitReference] = []
         for trading_date in calendar.dates:
             for instrument in eligible:
                 if not instrument.active_on(trading_date):
@@ -686,6 +690,41 @@ class BaoStockHistoricalSource:
                     else None
                 )
                 factor_by_pair[pair] = factor
+                try:
+                    previous_close = Decimal(raw["preclose"])
+                except (KeyError, InvalidOperation) as exc:
+                    raise ValueError(
+                        "Admitted previous-close reference data is no longer complete"
+                    ) from exc
+                if previous_close <= 0:
+                    raise ValueError(
+                        "Admitted previous-close reference data must be positive"
+                    )
+                price_limit_rule = resolve_a_share_price_limit_rule(
+                    instrument=instrument.code,
+                    session_date=trading_date,
+                    is_st=raw.get("isST", "").strip() == "1",
+                    listing_trading_day_number=_listing_trading_day_number(
+                        instrument,
+                        trading_date,
+                        calendar.all_dates,
+                    ),
+                )
+                price_limit_references.append(
+                    SessionPriceLimitReference(
+                        instrument=instrument.code,
+                        session_date=trading_date,
+                        previous_close=previous_close,
+                        effective_at=datetime.combine(trading_date, time(9, 30)),
+                        provenance="baostock-daily-unadjusted-preclose-v1",
+                        profile_version=price_limit_rule.profile_version,
+                        board=price_limit_rule.board,
+                        is_st=price_limit_rule.is_st,
+                        listing_stage=price_limit_rule.listing_stage,
+                        limit_fraction=price_limit_rule.limit_fraction,
+                        rule_code=price_limit_rule.rule_code,
+                    )
+                )
                 industry_name = _industry_as_of_value(
                     industry,
                     instrument.code,
@@ -756,6 +795,7 @@ class BaoStockHistoricalSource:
             source_snapshot_id=segment.source_snapshot_id,
             bars=loaded_bars.bars,
             instrument_states=tuple(states),
+            price_limit_references=tuple(price_limit_references),
             normalization_provenance="front-5m-to-unadjusted-daily-ratio-v1",
         )
 
@@ -918,10 +958,23 @@ class BaoStockHistoricalSource:
         selection: HistoricalSegmentSelection,
     ) -> _TradingCalendar:
         path = self._layout.resolved_trading_calendar_path
-        _, rows = _read_csv_date_window(
-            path,
-            selection.start_date,
-            selection.end_date,
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            all_rows = tuple(dict(row) for row in csv.DictReader(handle))
+        causal_rows = tuple(
+            row
+            for row in all_rows
+            if (
+                (parsed := _parse_date(row.get("date", ""))) is not None
+                and parsed <= selection.end_date
+            )
+        )
+        rows = tuple(
+            row
+            for row in causal_rows
+            if (
+                (parsed := _parse_date(row.get("date", ""))) is not None
+                and selection.start_date <= parsed <= selection.end_date
+            )
         )
         parsed_dates = tuple(
             sorted(
@@ -938,10 +991,19 @@ class BaoStockHistoricalSource:
             )
         return _TradingCalendar(
             dates=parsed_dates,
+            all_dates=tuple(
+                sorted(
+                    {
+                        parsed
+                        for row in causal_rows
+                        if (parsed := _parse_date(row.get("date", ""))) is not None
+                    }
+                )
+            ),
             artifact=_artifact_from_payload(
-                "trading-calendar-selection",
-                rows,
-                len(parsed_dates),
+                "trading-calendar-causal-history",
+                causal_rows,
+                len(causal_rows),
             ),
         )
 
@@ -1168,6 +1230,27 @@ def _parse_minute_end_time(value: str) -> datetime | None:
         return datetime.strptime(digits[:14], "%Y%m%d%H%M%S")
     except ValueError:
         return None
+
+
+def _listing_trading_day_number(
+    instrument: _Instrument,
+    session_date: date,
+    all_trading_dates: Iterable[date],
+) -> int | None:
+    if session_date < instrument.ipo_date:
+        raise ValueError("session date precedes the instrument IPO date")
+    if (session_date - instrument.ipo_date).days > 60:
+        return None
+    sessions = tuple(
+        trading_date
+        for trading_date in all_trading_dates
+        if instrument.ipo_date <= trading_date <= session_date
+    )
+    if not sessions or sessions[0] != instrument.ipo_date:
+        raise ValueError(
+            "The trading calendar cannot resolve the instrument listing stage"
+        )
+    return len(sessions)
 
 
 def _daily_adjustment_factor(

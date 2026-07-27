@@ -11,21 +11,29 @@ sys.path = [p for p in sys.path if p != root_str]
 # 插入最前
 sys.path.insert(0, root_str)
 
-# 预载入 stock_sim 以执行动态别名映射 (可选)
+# Frontend V2 contract collection mixes the installed ``stock_sim.*`` import
+# surface with legacy top-level ``app`` imports.  Preload the package-qualified
+# persistence model graph so SQLAlchemy sees one canonical model set, while
+# production ``import stock_sim`` remains lazy.
 try:
-    import stock_sim  # noqa: F401
+    from stock_sim.persistence import models_init as _package_models_init  # noqa: F401
 except Exception:
     pass
 
 # 自动隔离事件持久化以避免 sqlite 锁 (需测试的场景可显式调用 enable_event_persistence(force=True))
-try:
-    from stock_sim.services.event_persistence_service import disable_event_persistence
-except Exception:  # 回退
-    try:
-        from services.event_persistence_service import disable_event_persistence  # type: ignore
-    except Exception:
-        def disable_event_persistence():  # type: ignore
-            return True
+def disable_event_persistence():  # type: ignore
+    """Disable event persistence only when a test already imported the service."""
+
+    for module_name in (
+        "stock_sim.services.event_persistence_service",
+        "services.event_persistence_service",
+    ):
+        module = sys.modules.get(module_name)
+        disable = getattr(module, "disable_event_persistence", None)
+        if callable(disable):
+            disable()
+    return True
+
 
 @pytest.fixture(autouse=True)
 def _isolate_event_persist():
