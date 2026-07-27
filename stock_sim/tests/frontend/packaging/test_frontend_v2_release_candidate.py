@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from shutil import copy2
 import xml.etree.ElementTree as ET
 
 from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
+    TOOLCHAIN_LOCK_PATH,
     verify_clean_room_report,
     write_mandatory_release_gate_evidence,
 )
@@ -119,6 +121,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
 ):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    monkeypatch.delenv("STOCKSIM_FRONTEND_V2", raising=False)
     from stock_sim.release.frontend_v2_package_entry import (
         RendererLane,
         run_smoke_journey,
@@ -131,6 +134,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     )
 
     assert result.production_path == (
+        "AppContext",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
@@ -162,6 +166,39 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.read_only_context_visible is True
     assert result.errors == ()
     assert result.clean_exit is True
+    assert "STOCKSIM_FRONTEND_V2" not in os.environ
+
+
+def test_v2_app_context_uses_only_the_read_only_runtime_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    from app.app_context import build_app_context
+    from app.diagnostics_runtime_gateway import DiagnosticsRuntimeGateway
+    from app.event_bridge import EventBridge
+
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="live",
+        event_bridge=EventBridge(subscribe_backend=False),
+    )
+
+    assert isinstance(
+        context.runtime_gateway,
+        DiagnosticsRuntimeGateway,
+    )
+    assert context.trading_service is None
+    assert context.trading_controller is None
+    for forbidden in (
+        "submit_order",
+        "cancel_order",
+        "replace_order",
+        "dispatch",
+    ):
+        assert not hasattr(context.runtime_gateway, forbidden)
+    context.run_monitoring_feature.close()
+    context.evidence_and_findings_feature.close()
 
 
 def test_clean_room_report_requires_the_complete_production_journey(
@@ -177,6 +214,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "graphics_api": graphics_api,
             "source_commit": "abc123",
             "production_path": [
+                "AppContext",
                 "EventBridge",
                 "LiveRunMonitoringAdapter",
                 "LiveEvidenceAndFindingsAdapter",
@@ -267,6 +305,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
     )
 
     compromised["renderer_lanes"]["software"]["production_path"] = [
+        "AppContext",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
@@ -301,10 +340,16 @@ REQUIRED_ACCESSIBILITY_TESTS = (
         "[hardware-Direct3D11]"
     ),
     "test_live_journey_certifies_keyboard_narrator_terminal_and_remount",
+    "test_release_evidence_records_verified_source_and_toolchain",
 )
 
 
-def _write_accessibility_junit(path, names=REQUIRED_ACCESSIBILITY_TESTS):
+def _write_accessibility_junit(
+    path,
+    *,
+    source_commit,
+    names=REQUIRED_ACCESSIBILITY_TESTS,
+):
     suite = ET.Element(
         "testsuite",
         {
@@ -313,6 +358,26 @@ def _write_accessibility_junit(path, names=REQUIRED_ACCESSIBILITY_TESTS):
             "failures": "0",
             "errors": "0",
             "skipped": "0",
+        },
+    )
+    properties = ET.SubElement(suite, "properties")
+    ET.SubElement(
+        properties,
+        "property",
+        {
+            "name": "frontend_v2_source_commit",
+            "value": source_commit,
+        },
+    )
+    ET.SubElement(
+        properties,
+        "property",
+        {
+            "name": "frontend_v2_toolchain_lock_sha256",
+            "value": (
+                "sha256:"
+                + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
+            ),
         },
     )
     for name in names:
@@ -359,7 +424,10 @@ def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
 ):
     source_commit, performance_dir = _copy_performance_evidence(tmp_path)
     accessibility_junit = tmp_path / "accessibility.xml"
-    _write_accessibility_junit(accessibility_junit)
+    _write_accessibility_junit(
+        accessibility_junit,
+        source_commit=source_commit,
+    )
     safety = json.loads(
         (performance_dir / "no-manual-trading.json").read_text(
             encoding="utf-8"
@@ -414,6 +482,7 @@ def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
     )
     _write_accessibility_junit(
         accessibility_junit,
+        source_commit=source_commit,
         names=parameterized_names,
     )
     safety = json.loads(
@@ -441,6 +510,7 @@ def test_mandatory_release_gates_fail_closed_on_missing_accessibility_coverage(
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
+        source_commit=source_commit,
         names=REQUIRED_ACCESSIBILITY_TESTS[:-1],
     )
     safety = json.loads(
@@ -468,7 +538,10 @@ def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
 ):
     source_commit, performance_dir = _copy_performance_evidence(tmp_path)
     accessibility_junit = tmp_path / "accessibility.xml"
-    _write_accessibility_junit(accessibility_junit)
+    _write_accessibility_junit(
+        accessibility_junit,
+        source_commit=source_commit,
+    )
     safety = json.loads(
         (performance_dir / "no-manual-trading.json").read_text(
             encoding="utf-8"
@@ -500,6 +573,35 @@ def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
         raise AssertionError("Tampered performance evidence was accepted")
 
 
+def test_mandatory_release_gates_reject_unbound_accessibility_evidence(
+    tmp_path,
+):
+    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    accessibility_junit = tmp_path / "accessibility.xml"
+    _write_accessibility_junit(
+        accessibility_junit,
+        source_commit="0" * 40,
+    )
+    safety = json.loads(
+        (performance_dir / "no-manual-trading.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    try:
+        write_mandatory_release_gate_evidence(
+            accessibility_junit=accessibility_junit,
+            performance_evidence_dir=performance_dir,
+            candidate={"safety": safety},
+            source_commit=source_commit,
+            evidence_dir=tmp_path / "release-evidence",
+        )
+    except RuntimeError as error:
+        assert "accessibility source identity" in str(error)
+    else:
+        raise AssertionError("Mismatched accessibility source was accepted")
+
+
 def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     script = (
         PROJECT_ROOT
@@ -521,9 +623,12 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "$remainingSandboxProcesses" in script
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
+    assert "'^[0-9a-f]{40}$'" in script
+    assert "'^sha256:[0-9a-f]{64}$'" in script
+    assert "'^[A-Za-z0-9][A-Za-z0-9._-]*$'" in script
 
 
-def test_default_installed_entry_is_live_and_honestly_disconnected():
+def test_default_installed_entry_uses_the_production_app_context():
     source = (
         PROJECT_ROOT
         / "stock_sim"
@@ -532,7 +637,7 @@ def test_default_installed_entry_is_live_and_honestly_disconnected():
     ).read_text(encoding="utf-8")
 
     assert "DeterministicFake" not in source
-    assert "LiveRunMonitoringAdapter" in source
-    assert "LiveEvidenceAndFindingsAdapter" in source
-    assert "mark_disconnected" in source
-    assert "_UnavailableRuntimeQueries" in source
+    assert "from app.app_context import build_app_context" in source
+    assert "from app.ui.main_window import MainWindow" in source
+    assert "_UnavailableRuntimeQueries" not in source
+    assert "window = QMainWindow()" not in source

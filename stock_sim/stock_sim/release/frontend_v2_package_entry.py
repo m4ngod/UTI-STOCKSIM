@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import Future
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -23,6 +22,7 @@ SCENARIO_ID = "SCENARIO-RC-001"
 RECIPE_ID = "RECIPE-RC-001"
 MANIFEST_ID = "RM-RC-001"
 PRODUCTION_PATH = (
+    "AppContext",
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
@@ -152,32 +152,6 @@ class PackageSmokeResult:
     read_only_context_visible: bool
     errors: tuple[str, ...]
     clean_exit: bool
-
-
-class _DirectExecutor:
-    """Deterministic scheduler behind the production live Adapters."""
-
-    def submit(
-        self,
-        function: Callable[..., Any],
-        /,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Future[Any]:
-        future: Future[Any] = Future()
-        try:
-            future.set_result(function(*args, **kwargs))
-        except BaseException as error:
-            future.set_exception(error)
-        return future
-
-    def shutdown(
-        self,
-        wait: bool = True,
-        *,
-        cancel_futures: bool = False,
-    ) -> None:
-        return None
 
 
 class _ReleaseCandidateRuntimeQueries:
@@ -405,22 +379,6 @@ class _ReleaseCandidateRuntimeQueries:
         }
 
 
-class _UnavailableRuntimeQueries:
-    """Installed default when no external diagnostics runtime is present."""
-
-    def get_run_monitoring_snapshot(
-        self,
-        run_id: str,
-    ) -> dict[str, Any] | None:
-        return None
-
-    def get_evidence_and_findings_snapshot(
-        self,
-        run_id: str,
-    ) -> dict[str, Any] | None:
-        return None
-
-
 def configure_renderer_environment(renderer_lane: RendererLane) -> None:
     if renderer_lane is RendererLane.SOFTWARE:
         os.environ["QT_QUICK_BACKEND"] = "software"
@@ -430,6 +388,66 @@ def configure_renderer_environment(renderer_lane: RendererLane) -> None:
     os.environ["QSG_RHI_BACKEND"] = "d3d11"
 
 
+def _configure_smoke_route_identity() -> dict[str, str | None]:
+    route_identity = {
+        "STOCKSIM_FRONTEND_V2": "1",
+        "STOCKSIM_FRONTEND_V2_CAMPAIGN_ID": CAMPAIGN_ID,
+        "STOCKSIM_FRONTEND_V2_RUN_ID": RUN_ID,
+        "STOCKSIM_FRONTEND_V2_STRATEGY_ID": STRATEGY_ID,
+        "STOCKSIM_FRONTEND_V2_MARKET_SCENARIO_ID": SCENARIO_ID,
+        "STOCKSIM_FRONTEND_V2_APPROVED_RECIPE_ID": RECIPE_ID,
+        "STOCKSIM_FRONTEND_V2_REPRODUCTION_MANIFEST_ID": MANIFEST_ID,
+    }
+    previous = {
+        name: os.environ.get(name)
+        for name in route_identity
+    }
+    os.environ.update(route_identity)
+    return previous
+
+
+def _restore_environment(previous: dict[str, str | None]) -> None:
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+def _create_production_window(
+    *,
+    event_bridge: Any,
+    settings_path: Path,
+    runtime_gateway: Any | None = None,
+) -> tuple[Any, Any, Any]:
+    from app.app_context import build_app_context
+    from app.ui.main_window import MainWindow
+
+    context = build_app_context(
+        settings_path=str(settings_path),
+        run_monitoring_mode="live",
+        event_bridge=event_bridge,
+        runtime_gateway=runtime_gateway,
+    )
+    window = MainWindow(
+        run_monitoring_feature=context.run_monitoring_feature,
+        run_monitoring_context=context.run_monitoring_context,
+        evidence_and_findings_feature=(
+            context.evidence_and_findings_feature
+        ),
+        evidence_and_findings_context=(
+            context.evidence_and_findings_context
+        ),
+        frontend_v2_enabled=True,
+    )
+    if not window.journey_workspace_active:
+        raise RuntimeError(
+            "Production AppContext did not mount the Journey Workspace"
+        )
+    host = window._journey_workspace
+    return context, window, host
+
+
 def run_smoke_journey(
     *,
     report_dir: Path,
@@ -437,66 +455,27 @@ def run_smoke_journey(
     source_commit: str = "development-smoke",
     capture_images: bool = True,
 ) -> PackageSmokeResult:
-    from PySide6.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication
 
     from app.event_bridge import EventBridge
-    from app.features import (
-        ApprovedScenarioRecipeId,
-        EvidenceAndFindingsContext,
-        EvidenceAndFindingsSelection,
-        FormalDiagnosticCampaignId,
-        LiveEvidenceAndFindingsAdapter,
-        LiveRunMonitoringAdapter,
-        MarketScenarioId,
-        ReproductionManifestId,
-        RunMonitoringContext,
-        RunMonitoringSelection,
-        StrategyRunId,
-        StrategyUnderTestId,
-    )
-    from app.ui.journey_workspace import JourneyWorkspaceHost
 
     report_dir.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
     queries = _ReleaseCandidateRuntimeQueries()
     bridge = EventBridge(subscribe_backend=False)
-    executor = _DirectExecutor()
-    run_context = RunMonitoringContext.for_run(
-        RunMonitoringSelection(
-            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
-            run_id=StrategyRunId(RUN_ID),
+    previous_environment = _configure_smoke_route_identity()
+    try:
+        context, window, host = _create_production_window(
+            event_bridge=bridge,
+            runtime_gateway=queries,
+            settings_path=report_dir / "frontend-v2-settings.json",
         )
-    )
-    evidence_context = EvidenceAndFindingsContext.for_selection(
-        EvidenceAndFindingsSelection(
-            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
-            run_id=StrategyRunId(RUN_ID),
-            strategy_id=StrategyUnderTestId(STRATEGY_ID),
-            market_scenario_id=MarketScenarioId(SCENARIO_ID),
-            approved_recipe_id=ApprovedScenarioRecipeId(RECIPE_ID),
-            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
-        )
-    )
-    run_feature = LiveRunMonitoringAdapter(
-        runtime_gateway=queries,
-        event_bridge=bridge,
-        executor=executor,
-    )
-    evidence_feature = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=queries,
-        event_bridge=bridge,
-        executor=executor,
-    )
-    window = QMainWindow()
+    except BaseException:
+        _restore_environment(previous_environment)
+        raise
+    run_feature = context.run_monitoring_feature
+    evidence_feature = context.evidence_and_findings_feature
     window.setObjectName("frontendV2PackageWindow")
-    host = JourneyWorkspaceHost(
-        run_feature,
-        context=run_context,
-        evidence_feature=evidence_feature,
-        evidence_context=evidence_context,
-        parent=window,
-    )
-    window.setCentralWidget(host)
     window.resize(1280, 720)
     bridge.start()
     window.show()
@@ -610,6 +589,7 @@ def run_smoke_journey(
         run_feature.close()
         evidence_feature.close()
         bridge.stop()
+        _restore_environment(previous_environment)
         app.processEvents()
 
     result = PackageSmokeResult(
@@ -752,71 +732,24 @@ def _write_smoke_report(
 
 
 def _run_interactive() -> int:
-    from PySide6.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication
 
-    from app.event_bridge import EventBridge
-    from app.features import (
-        ApprovedScenarioRecipeId,
-        EvidenceAndFindingsContext,
-        EvidenceAndFindingsSelection,
-        FormalDiagnosticCampaignId,
-        LiveEvidenceAndFindingsAdapter,
-        LiveRunMonitoringAdapter,
-        MarketScenarioId,
-        ReproductionManifestId,
-        RunMonitoringContext,
-        RunMonitoringSelection,
-        StrategyRunId,
-        StrategyUnderTestId,
+    from app.event_bridge import (
+        start_frontend_bridge,
+        stop_frontend_bridge,
     )
-    from app.ui.journey_workspace import JourneyWorkspaceHost
 
     app = QApplication.instance() or QApplication([])
-    bridge = EventBridge(subscribe_backend=False)
-    bridge.mark_disconnected()
-    queries = _UnavailableRuntimeQueries()
-    executor = _DirectExecutor()
-    run_feature = LiveRunMonitoringAdapter(
-        runtime_gateway=queries,
+    bridge = start_frontend_bridge()
+    os.environ["STOCKSIM_FRONTEND_V2"] = "1"
+    context, window, _host = _create_production_window(
         event_bridge=bridge,
-        executor=executor,
+        settings_path=Path("frontend-v2-settings.json"),
     )
-    evidence_feature = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=queries,
-        event_bridge=bridge,
-        executor=executor,
-    )
-    run_context = RunMonitoringContext.for_run(
-        RunMonitoringSelection(
-            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
-            run_id=StrategyRunId(RUN_ID),
-        )
-    )
-    evidence_context = EvidenceAndFindingsContext.for_selection(
-        EvidenceAndFindingsSelection(
-            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
-            run_id=StrategyRunId(RUN_ID),
-            strategy_id=StrategyUnderTestId(STRATEGY_ID),
-            market_scenario_id=MarketScenarioId(SCENARIO_ID),
-            approved_recipe_id=ApprovedScenarioRecipeId(RECIPE_ID),
-            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
-        )
-    )
-    window = QMainWindow()
-    host = JourneyWorkspaceHost(
-        run_feature,
-        context=run_context,
-        evidence_feature=evidence_feature,
-        evidence_context=evidence_context,
-        parent=window,
-    )
-    window.setCentralWidget(host)
     window.resize(1024, 640)
-    app.aboutToQuit.connect(host.close_adapter)
-    app.aboutToQuit.connect(run_feature.close)
-    app.aboutToQuit.connect(evidence_feature.close)
-    app.aboutToQuit.connect(bridge.stop)
-    bridge.start()
+    app.aboutToQuit.connect(context.run_monitoring_feature.close)
+    app.aboutToQuit.connect(context.evidence_and_findings_feature.close)
+    app.aboutToQuit.connect(stop_frontend_bridge)
     window.show()
     return int(app.exec())
 

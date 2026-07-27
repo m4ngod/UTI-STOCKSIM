@@ -4,31 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from threading import RLock
+from typing import TYPE_CHECKING, Any
 
 from app.event_bridge import EventBridge, start_frontend_bridge
-from app.runtime_gateway import RuntimeGateway
 from app.state.settings_store import SettingsStore
 
-from app.services.market_data_service import MarketDataService
-from app.controllers.market_controller import MarketController
-
-from app.services.account_service import AccountService
-from app.controllers.account_controller import AccountController
-
-from app.services.trading_service import TradingService
-from app.controllers.trading_controller import TradingController
-
-from app.services.agent_service import AgentService
-from app.controllers.agent_controller import AgentController
-
-from app.services.clock_service import ClockService
-from app.services.rollback_service import RollbackService
-from app.controllers.clock_controller import ClockController
-
-from app.services.leaderboard_service import LeaderboardService
-from app.controllers.leaderboard_controller import LeaderboardController
-from app.services.arena_experiment_runner import ArenaExperimentRunner
-from app.services.training_arena_service import TrainingArenaService
 from app.features import (
     ApprovedScenarioRecipeId,
     DeterministicFakeEvidenceAndFindingsAdapter,
@@ -48,33 +28,50 @@ from app.features import (
     StrategyRunId,
 )
 
+if TYPE_CHECKING:
+    from app.controllers.account_controller import AccountController
+    from app.controllers.agent_controller import AgentController
+    from app.controllers.clock_controller import ClockController
+    from app.controllers.leaderboard_controller import LeaderboardController
+    from app.controllers.market_controller import MarketController
+    from app.controllers.trading_controller import TradingController
+    from app.services.account_service import AccountService
+    from app.services.agent_service import AgentService
+    from app.services.arena_experiment_runner import ArenaExperimentRunner
+    from app.services.clock_service import ClockService
+    from app.services.leaderboard_service import LeaderboardService
+    from app.services.market_data_service import MarketDataService
+    from app.services.rollback_service import RollbackService
+    from app.services.trading_service import TradingService
+    from app.services.training_arena_service import TrainingArenaService
+
 
 @dataclass
 class AppContext:
     settings_store: SettingsStore
-    runtime_gateway: RuntimeGateway
+    runtime_gateway: Any
 
-    market_data_service: MarketDataService
-    market_controller: MarketController
+    market_data_service: MarketDataService | None
+    market_controller: MarketController | None
 
-    account_service: AccountService
-    account_controller: AccountController
+    account_service: AccountService | None
+    account_controller: AccountController | None
 
-    trading_service: TradingService
-    trading_controller: TradingController
+    trading_service: TradingService | None
+    trading_controller: TradingController | None
 
-    agent_service: AgentService
-    agent_controller: AgentController
+    agent_service: AgentService | None
+    agent_controller: AgentController | None
 
-    clock_service: ClockService
-    rollback_service: RollbackService
-    clock_controller: ClockController
+    clock_service: ClockService | None
+    rollback_service: RollbackService | None
+    clock_controller: ClockController | None
 
-    leaderboard_service: LeaderboardService
-    leaderboard_controller: LeaderboardController
+    leaderboard_service: LeaderboardService | None
+    leaderboard_controller: LeaderboardController | None
 
-    training_arena_service: TrainingArenaService
-    arena_experiment_runner: ArenaExperimentRunner
+    training_arena_service: TrainingArenaService | None
+    arena_experiment_runner: ArenaExperimentRunner | None
     run_monitoring_feature: RunMonitoringFeature
     run_monitoring_context: RunMonitoringContext
     evidence_and_findings_feature: EvidenceAndFindingsFeature
@@ -86,46 +83,115 @@ def build_app_context(
     settings_path: str = "frontend_settings.json",
     run_monitoring_mode: str | None = None,
     event_bridge: EventBridge | None = None,
+    runtime_gateway: Any | None = None,
+    legacy_read_only: bool = False,
 ) -> AppContext:
     settings_store = SettingsStore(path=settings_path, auto_save=False)
-    runtime_gateway = RuntimeGateway()
-    if not _frontend_v2_enabled():
+    frontend_v2_enabled = _frontend_v2_enabled()
+    if runtime_gateway is None:
+        if frontend_v2_enabled or legacy_read_only:
+            from app.diagnostics_runtime_gateway import (
+                DiagnosticsRuntimeGateway,
+            )
+
+            runtime_gateway = DiagnosticsRuntimeGateway()
+        else:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+    if not frontend_v2_enabled and not legacy_read_only:
         runtime_gateway.ensure_desktop_run()
-    _start_market_persistence_services()
+    if frontend_v2_enabled:
+        market_data_service = None
+        market_controller = None
+        account_service = None
+        account_controller = None
+        trading_service = None
+        trading_controller = None
+        agent_service = None
+        agent_controller = None
+        clock_service = None
+        rollback_service = None
+        clock_controller = None
+        leaderboard_service = None
+        leaderboard_controller = None
+        training_arena_service = None
+        arena_experiment_runner = None
+    else:
+        _start_market_persistence_services()
+        from app.controllers.account_controller import AccountController
+        from app.controllers.agent_controller import AgentController
+        from app.controllers.clock_controller import ClockController
+        from app.controllers.leaderboard_controller import (
+            LeaderboardController,
+        )
+        from app.controllers.market_controller import MarketController
+        from app.services.account_service import AccountService
+        from app.services.agent_service import AgentService
+        from app.services.arena_experiment_runner import (
+            ArenaExperimentRunner,
+        )
+        from app.services.clock_service import ClockService
+        from app.services.leaderboard_service import LeaderboardService
+        from app.services.market_data_service import MarketDataService
+        from app.services.rollback_service import RollbackService
+        from app.services.training_arena_service import TrainingArenaService
 
-    market_data_service = MarketDataService(
-        enable_runtime_holdings=True,
-        allow_synthetic_fallback=False,
-        runtime_gateway=runtime_gateway,
-    )
-    market_controller = MarketController(market_data_service, runtime_gateway=runtime_gateway)
+        market_data_service = MarketDataService(
+            enable_runtime_holdings=True,
+            allow_synthetic_fallback=False,
+            runtime_gateway=runtime_gateway,
+        )
+        market_controller = MarketController(
+            market_data_service,
+            runtime_gateway=runtime_gateway,
+        )
+        account_service = AccountService(
+            allow_synthetic_fallback=False,
+            runtime_gateway=runtime_gateway,
+        )
+        account_controller = AccountController(account_service)
+        if legacy_read_only:
+            trading_service = None
+            trading_controller = None
+        else:
+            from app.controllers.trading_controller import (
+                TradingController,
+            )
+            from app.services.trading_service import TradingService
 
-    account_service = AccountService(allow_synthetic_fallback=False, runtime_gateway=runtime_gateway)
-    account_controller = AccountController(account_service)
-
-    trading_service = TradingService(runtime_gateway=runtime_gateway)
-    trading_controller = TradingController(trading_service)
-
-    agent_service = AgentService(runtime_gateway=runtime_gateway)
-    agent_controller = AgentController(agent_service)
-
-    clock_service = ClockService(runtime_gateway=runtime_gateway)
-    rollback_service = RollbackService(
-        clock_service,
-        account_service=account_service,
-        agent_service=agent_service,
-    )
-    clock_controller = ClockController(clock_service, rollback_service)
-
-    leaderboard_service = LeaderboardService(use_runtime=True, runtime_gateway=runtime_gateway)
-    leaderboard_controller = LeaderboardController(leaderboard_service)
-    training_arena_service = TrainingArenaService(agent_service=agent_service)
-    arena_experiment_runner = ArenaExperimentRunner(
-        arena_service=training_arena_service,
-        clock_service=clock_service,
-        agent_service=agent_service,
-        runtime_gateway=runtime_gateway,
-    )
+            trading_service = TradingService(
+                runtime_gateway=runtime_gateway
+            )
+            trading_controller = TradingController(trading_service)
+        agent_service = AgentService(runtime_gateway=runtime_gateway)
+        agent_controller = AgentController(agent_service)
+        clock_service = ClockService(runtime_gateway=runtime_gateway)
+        rollback_service = RollbackService(
+            clock_service,
+            account_service=account_service,
+            agent_service=agent_service,
+        )
+        clock_controller = ClockController(
+            clock_service,
+            rollback_service,
+        )
+        leaderboard_service = LeaderboardService(
+            use_runtime=True,
+            runtime_gateway=runtime_gateway,
+        )
+        leaderboard_controller = LeaderboardController(
+            leaderboard_service
+        )
+        training_arena_service = TrainingArenaService(
+            agent_service=agent_service
+        )
+        arena_experiment_runner = ArenaExperimentRunner(
+            arena_service=training_arena_service,
+            clock_service=clock_service,
+            agent_service=agent_service,
+            runtime_gateway=runtime_gateway,
+        )
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
     if resolved_mode == "fake":
@@ -194,6 +260,8 @@ def reset_app_context(
     settings_path: str = "frontend_settings.json",
     run_monitoring_mode: str | None = None,
     event_bridge: EventBridge | None = None,
+    runtime_gateway: Any | None = None,
+    legacy_read_only: bool = False,
 ) -> AppContext:
     global _app_context
     with _lock:
@@ -202,6 +270,8 @@ def reset_app_context(
             settings_path=settings_path,
             run_monitoring_mode=run_monitoring_mode,
             event_bridge=event_bridge,
+            runtime_gateway=runtime_gateway,
+            legacy_read_only=legacy_read_only,
         )
         if previous is not None:
             previous.run_monitoring_feature.close()

@@ -26,7 +26,6 @@ if _CHART_STAGE not in ("plot-only", "line", "candles"):
 
 from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
-from app.services.trading_service import SubmitOrderRequest, TradingService
 from infra.event_bus import event_bus  # 新增：回退订阅
 try:
     from app.event_bridge import on_trade_executed, subscribe_topic  # type: ignore
@@ -1071,8 +1070,9 @@ class SymbolDetailAdapter:
 
 
 class MarketPanelAdapter(PanelAdapter):
-    def __init__(self):
+    def __init__(self, *, read_only: bool = False):
         super().__init__()
+        self._read_only = read_only
         self._watch_widget: Optional[Any] = None
         self._detail = SymbolDetailAdapter()
         self._root: Optional[Any] = None
@@ -1095,7 +1095,11 @@ class MarketPanelAdapter(PanelAdapter):
         self._last_detail_refresh_ts: float = 0.0
         self._detail_throttle_sec: float = 0.5
         self._selection_generation: int = 0
-        self._trade_ctl = TradingService()
+        self._trade_ctl: Any = None
+        if not self._read_only:
+            from app.services.trading_service import TradingService
+
+            self._trade_ctl = TradingService()
 
     def _post_to_ui(self, cb) -> bool:
         if not ui_runtime_enabled():
@@ -1170,14 +1174,15 @@ class MarketPanelAdapter(PanelAdapter):
             except Exception:
                 pass
             # 操作条：创建标的按钮
-            try:
-                self._btn_create = QPushButton("Create Instrument")  # type: ignore
-                def _on_create_clicked():
-                    self._open_create_dialog()
-                self._btn_create.clicked.connect(_on_create_clicked)  # type: ignore[attr-defined]
-                left_v.addWidget(self._btn_create)  # type: ignore
-            except Exception:
-                pass
+            if not self._read_only:
+                try:
+                    self._btn_create = QPushButton("Create Instrument")  # type: ignore
+                    def _on_create_clicked():
+                        self._open_create_dialog()
+                    self._btn_create.clicked.connect(_on_create_clicked)  # type: ignore[attr-defined]
+                    left_v.addWidget(self._btn_create)  # type: ignore
+                except Exception:
+                    pass
             # 自选列表
             self._symbol_list = QListWidget()  # type: ignore
             try:
@@ -1929,6 +1934,10 @@ class MarketPanelAdapter(PanelAdapter):
             self._refresh_detail_throttled(force=True)
 
     def _open_trade_dialog(self, side: str) -> None:
+        if self._read_only or self._trade_ctl is None:
+            return
+        from app.services.trading_service import SubmitOrderRequest
+
         symbol = (self._selected_symbol or "").strip()
         if not symbol and self._logic is not None:
             try:

@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, replace
 
 import pytest
@@ -109,6 +110,7 @@ def _clean_room_lane(root, lane, graphics_api):
         "graphics_api": graphics_api,
         "source_commit": "abc123",
         "production_path": [
+            "AppContext",
             "EventBridge",
             "LiveRunMonitoringAdapter",
             "LiveEvidenceAndFindingsAdapter",
@@ -387,7 +389,7 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
     assert widgets_plan.resolved_qml_dependencies is None
 
 
-def test_qml_build_plan_excludes_backend_transaction_namespaces(
+def test_qml_build_plan_keeps_app_context_but_excludes_transaction_namespaces(
     tmp_path,
 ):
     qml_plan = create_package_build_plans(
@@ -401,19 +403,19 @@ def test_qml_build_plan_excludes_backend_transaction_namespaces(
         if argument.startswith("--nofollow-import-to=")
     }
 
+    assert "app.app_context" not in excluded
     assert {
-        "app.app_context",
         "app.controllers",
         "app.panels",
         "app.runtime_gateway",
         "app.services",
         "app.ui.adapters",
         "core.order",
-        "persistence",
-        "services",
+        "services.order_service",
+        "services.runtime_command_service",
         "stock_sim.core.order",
-        "stock_sim.persistence",
-        "stock_sim.services",
+        "stock_sim.services.order_service",
+        "stock_sim.services.runtime_command_service",
     } <= excluded
 
 
@@ -936,6 +938,7 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "renderer_lane": lane,
                     "graphics_api": graphics_api,
                     "production_path": [
+                        "AppContext",
                         "EventBridge",
                         "LiveRunMonitoringAdapter",
                         "LiveEvidenceAndFindingsAdapter",
@@ -1060,7 +1063,7 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
         "services.order_service" in finding
         for finding in unsafe_findings
     )
-    assert any(
+    assert not any(
         "stock_sim.persistence.models_order" in finding
         for finding in unsafe_findings
     )
@@ -1077,10 +1080,13 @@ def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
     ).read_text(encoding="utf-8")
 
     assert "from app.ui.main_window import MainWindow" in rollback_source
+    assert "from app.panels import" in rollback_source
+    assert "register_builtin_panels" in rollback_source
+    assert "register_ui_adapters" in rollback_source
     assert "rollback_read_only=True" in rollback_source
     assert "layout_store=layout_store" in rollback_source
     assert "QMainWindow()" not in rollback_source
-    assert "from app.panels" not in rollback_source
+    assert "QLabel(" not in rollback_source
 
 
 def test_widgets_rollback_smoke_records_the_source_commit(
@@ -1088,27 +1094,42 @@ def test_widgets_rollback_smoke_records_the_source_commit(
     monkeypatch,
 ):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from stock_sim.release.frontend_widgets_rollback_entry import (
-        main as rollback_main,
-    )
+    monkeypatch.setenv("STOCKSIM_ENABLE_REAL_UI", "1")
 
     report_dir = tmp_path / "widgets-smoke"
 
-    exit_code = rollback_main(
-        [
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "stock_sim.release.frontend_widgets_rollback_entry",
             "--source-commit",
             "abc123",
             "--smoke-report-dir",
             str(report_dir),
-        ]
+        ),
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
     )
 
     report = json.loads(
         (report_dir / "smoke-report.json").read_text(encoding="utf-8")
     )
-    assert exit_code == 0
+    assert completed.returncode == 0, completed.stderr
     assert report["source_commit"] == "abc123"
     assert report["mode"] == "read-only"
+    assert report["placeholder_panels"] == []
+    assert report["real_panel_count"] >= 3
+    assert report["manual_trading_action_count"] == 0
+    assert {
+        "diagnostics",
+        "market",
+        "orders",
+    } <= set(report["opened_panels"])
     assert report["clean_exit"] is True
 
 

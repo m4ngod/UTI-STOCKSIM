@@ -316,6 +316,19 @@ def test_python_import_gate_rejects_backend_transaction_dependencies():
     )
 
 
+def test_python_import_gate_allows_only_the_named_app_context_entry():
+    source = "from app.app_context import build_app_context\n"
+
+    assert audit_python_imports(
+        "frontend_v2_package_entry.py",
+        source,
+        allowed_backend_imports=(
+            "app.app_context.build_app_context",
+        ),
+    ) == ()
+    assert audit_python_imports("other.py", source)
+
+
 @pytest.mark.parametrize(
     ("source", "expected_finding"),
     (

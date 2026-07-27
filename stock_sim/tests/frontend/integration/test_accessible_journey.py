@@ -240,6 +240,9 @@ def test_evidence_semantics_keep_chart_narrative_and_table_on_one_revision():
     assert bool(alternate_interface.state().selected) is True
     assert "F-MODEL-B17-02" in _accessible_name(narrative)
 
+    chart.forceActiveFocus()
+    app.processEvents()
+    assert chart.property("activeFocus") is True
     chart_interface = _interface(chart)
     assert chart_interface.role() == QAccessible.Role.Slider
     assert QAccessibleActionInterface.increaseAction() in (

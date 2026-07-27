@@ -337,9 +337,11 @@ def audit_python_imports(
     content: str,
     *,
     package_name: str | None = None,
+    allowed_backend_imports: Iterable[str] = (),
 ) -> tuple[str, ...]:
     tree = ast.parse(content)
     findings: list[str] = []
+    allowed_imports = frozenset(allowed_backend_imports)
     for node in ast.walk(tree):
         dynamic_loader: str | None = None
         if isinstance(node, ast.Import) and any(
@@ -473,6 +475,8 @@ def audit_python_imports(
                     "dynamic import"
                 )
         for module_name in imported_modules:
+            if module_name in allowed_imports:
+                continue
             if not _is_forbidden_backend_module(module_name):
                 continue
             findings.append(
@@ -1027,6 +1031,11 @@ def audit_no_manual_trading_gate(
                 package_name=_source_package_name(
                     project_root,
                     source_path,
+                ),
+                allowed_backend_imports=(
+                    ("app.app_context.build_app_context",)
+                    if source_path.name == "frontend_v2_package_entry.py"
+                    else ()
                 ),
             )
         )

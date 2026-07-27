@@ -42,42 +42,44 @@ _QML_IMPORT_PATTERN = re.compile(
 )
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
-    "services",
-    "stock_sim.services",
-    "persistence",
-    "stock_sim.persistence",
     "app.runtime_gateway",
-    "app.app_context",
-    "app.controllers",
-    "app.panels",
-    "app.ui.adapters",
+    "app.controllers.trading_controller",
+    "app.panels.market.trade_dialog",
+    "app.services.trading_service",
     "core.order",
+    "services.order_service",
+    "services.runtime_command_service",
     "stock_sim.core.order",
+    "stock_sim.services.order_service",
+    "stock_sim.services.runtime_command_service",
 )
 _QML_NUITKA_EXCLUDED_MODULE_PREFIXES = (
-    "app.app_context",
     "app.controllers",
     "app.panels",
     "app.runtime_gateway",
     "app.services",
     "app.ui.adapters",
     "core.order",
-    "persistence",
-    "services",
+    "services.order_service",
+    "services.runtime_command_service",
     "stock_sim.core.order",
-    "stock_sim.persistence",
-    "stock_sim.services",
+    "stock_sim.services.order_service",
+    "stock_sim.services.runtime_command_service",
 )
 _QML_ALLOWED_APP_MODULE_PREFIXES = (
+    "app.app_context",
     "app.core_dto",
+    "app.diagnostics_runtime_gateway",
     "app.event_bridge",
     "app.features",
     "app.services.redis_subscriber",
+    "app.state.settings_store",
     "app.ui.accessibility",
     "app.ui.evidence_chart",
     "app.ui.journey_workspace",
 )
 _PRODUCTION_JOURNEY_PATH = (
+    "AppContext",
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
@@ -395,6 +397,10 @@ _REQUIRED_ACCESSIBILITY_TESTS = frozenset(
             "test_live_journey_certifies_keyboard_narrator_terminal_"
             "and_remount"
         ),
+        (
+            "test_release_evidence_records_verified_source_and_"
+            "toolchain"
+        ),
     )
 )
 
@@ -680,16 +686,18 @@ def create_package_build_plans(
         source_imports=None,
         resolved_qml_dependencies=None,
         extra_arguments=(
-            "--nofollow-import-to=app.panels",
-            "--nofollow-import-to=app.app_context",
-            "--nofollow-import-to=app.core_dto",
-            "--nofollow-import-to=app.features",
             "--nofollow-import-to=app.runtime_gateway",
-            "--nofollow-import-to=app.state",
             "--nofollow-import-to=app.ui.journey_workspace",
             "--nofollow-import-to=app.ui.ui_refresh",
             "--nofollow-import-to=app.controllers.trading_controller",
             "--nofollow-import-to=app.services.trading_service",
+            "--nofollow-import-to=app.panels.market.trade_dialog",
+            "--nofollow-import-to=core.order",
+            "--nofollow-import-to=services.order_service",
+            "--nofollow-import-to=services.runtime_command_service",
+            "--nofollow-import-to=stock_sim.core.order",
+            "--nofollow-import-to=stock_sim.services.order_service",
+            "--nofollow-import-to=stock_sim.services.runtime_command_service",
         ),
     )
     qml_plan = _build_plan(
@@ -1541,18 +1549,19 @@ def audit_nuitka_dependency_report(
             )
         if package_kind is PackageKind.WIDGETS_ROLLBACK and folded.startswith(
             (
-                "app.app_context",
-                "app.core_dto",
-                "app.features",
                 "app.runtime_gateway",
-                "app.state",
                 "app.controllers.trading",
                 "app.services.trading",
-                "app.panels",
+                "app.panels.market.trade_dialog",
                 "app.ui.journey_workspace",
                 "app.ui.ui_refresh",
-                "app.ui.adapters.orders",
                 "app.core_dto.trade",
+                "core.order",
+                "services.order_service",
+                "services.runtime_command_service",
+                "stock_sim.core.order",
+                "stock_sim.services.order_service",
+                "stock_sim.services.runtime_command_service",
             )
         ):
             findings.append(
@@ -2092,7 +2101,36 @@ def write_mandatory_release_gate_evidence(
     """Recompute and retain the exact-build T08, T09, and T10 inputs."""
 
     accessibility_tree = ET.parse(accessibility_junit)
-    test_cases = tuple(accessibility_tree.getroot().iter("testcase"))
+    accessibility_root = accessibility_tree.getroot()
+    test_cases = tuple(accessibility_root.iter("testcase"))
+    accessibility_properties: dict[str, set[str]] = {}
+    for property_element in accessibility_root.iter("property"):
+        property_name = str(property_element.attrib.get("name", ""))
+        property_value = str(property_element.attrib.get("value", ""))
+        if property_name:
+            accessibility_properties.setdefault(
+                property_name,
+                set(),
+            ).add(property_value)
+    source_identities = accessibility_properties.get(
+        "frontend_v2_source_commit",
+        set(),
+    )
+    if source_identities != {source_commit}:
+        raise RuntimeError(
+            "T08 accessibility source identity does not match the "
+            "release build"
+        )
+    toolchain_lock_digest = _sha256_path(TOOLCHAIN_LOCK_PATH)
+    toolchain_identities = accessibility_properties.get(
+        "frontend_v2_toolchain_lock_sha256",
+        set(),
+    )
+    if toolchain_identities != {toolchain_lock_digest}:
+        raise RuntimeError(
+            "T08 accessibility toolchain identity does not match the "
+            "release build"
+        )
     observed_test_names: set[str] = set()
     for test_case in test_cases:
         test_name = str(test_case.attrib.get("name", ""))
@@ -2172,7 +2210,6 @@ def write_mandatory_release_gate_evidence(
         certify_performance_evidence,
     )
 
-    toolchain_lock_digest = _sha256_path(TOOLCHAIN_LOCK_PATH)
     recomputed_performance = certify_performance_evidence(
         hardware,
         software,

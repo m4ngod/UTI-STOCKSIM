@@ -1,4 +1,4 @@
-"""Minimal same-commit Qt Widgets rollback package for the T02 size gate."""
+"""Same-commit read-only Qt Widgets rollback package."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 from typing import Sequence
 
 
@@ -18,6 +19,7 @@ READ_ONLY_ROLLBACK_PANELS = (
     "arena",
     "leaderboard",
     "clock",
+    "orders",
 )
 
 
@@ -61,37 +63,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
 
-    from PySide6.QtWidgets import QApplication, QLabel
+    from PySide6.QtWidgets import (
+        QAbstractButton,
+        QApplication,
+    )
 
+    from app.app_context import reset_app_context
+    from app.event_bridge import EventBridge
+    from app.panels import (
+        get_panel,
+        list_panels,
+        register_builtin_panels,
+        register_ui_adapters,
+        reset_registry,
+    )
     from app.ui.main_window import MainWindow
 
+    os.environ.pop("STOCKSIM_FRONTEND_V2", None)
     app = QApplication.instance() or QApplication([])
-    panel_widgets: dict[str, QLabel] = {}
-
-    def panel_list() -> list[dict[str, str]]:
-        return [
-            {"name": name, "title": name.title()}
-            for name in READ_ONLY_ROLLBACK_PANELS
-        ]
-
-    def panel_get(name: str) -> QLabel:
-        if name not in READ_ONLY_ROLLBACK_PANELS:
-            raise KeyError(name)
-        if name not in panel_widgets:
-            panel_widgets[name] = QLabel(
-                f"{name.title()}\nRead-only rollback view"
-            )
-        return panel_widgets[name]
-
     layout_path = _layout_path(arguments.smoke_report_dir)
     layout_path.parent.mkdir(parents=True, exist_ok=True)
+    bridge = EventBridge(subscribe_backend=False)
+    bridge.mark_disconnected()
+    context = reset_app_context(
+        settings_path=str(layout_path.with_name("frontend-settings.json")),
+        run_monitoring_mode="live",
+        event_bridge=bridge,
+        legacy_read_only=True,
+    )
+    reset_registry()
+    register_builtin_panels()
+    register_ui_adapters(read_only=True)
     layout_store = ReadOnlyLayoutStore(layout_path)
     window = MainWindow(
         frontend_v2_enabled=False,
         rollback_read_only=True,
         layout_path=str(layout_path),
-        panel_list=panel_list,
-        panel_get=panel_get,
+        panel_list=list_panels,
+        panel_get=get_panel,
         layout_store=layout_store,
     )
     window.setObjectName("widgetsRollbackPackageWindow")
@@ -107,6 +116,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     screenshot_path = arguments.smoke_report_dir / "widgets-rollback.png"
     if not window.grab().save(str(screenshot_path), "PNG"):
         return 1
+    panel_implementations = {
+        name: type(get_panel(name)).__name__
+        for name in READ_ONLY_ROLLBACK_PANELS
+    }
+    placeholder_panels = sorted(
+        name
+        for name, implementation in panel_implementations.items()
+        if implementation == "_PlaceholderPanel"
+    )
+    forbidden_manual_action = re.compile(
+        r"^(?:buy|sell|submit order|cancel order|replace order|bulk order)$",
+        re.IGNORECASE,
+    )
+    manual_trading_action_count = sum(
+        1
+        for button in window.findChildren(QAbstractButton)
+        if forbidden_manual_action.fullmatch(button.text().strip())
+    )
     report = {
         "kind": "widgets-rollback",
         "source_commit": arguments.source_commit,
@@ -114,6 +141,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "visible": window.isVisible(),
         "opened_panels": window.list_open(),
         "mode": "read-only",
+        "panel_implementations": panel_implementations,
+        "placeholder_panels": placeholder_panels,
+        "real_panel_count": (
+            len(panel_implementations) - len(placeholder_panels)
+        ),
+        "manual_trading_action_count": manual_trading_action_count,
         "screenshot": screenshot_path.name,
         "clean_exit": True,
     }
@@ -122,6 +155,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         encoding="utf-8",
     )
     window.close()
+    context.run_monitoring_feature.close()
+    context.evidence_and_findings_feature.close()
+    bridge.stop()
     app.processEvents()
     return 0
 

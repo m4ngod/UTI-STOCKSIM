@@ -59,7 +59,7 @@ def register_builtin_panels():
 
 # ---------------- 实现注入：用 UI 适配器替换占位 ----------------
 
-def register_ui_adapters():
+def register_ui_adapters(*, read_only: bool = False):
     """
     将占位面板替换为“逻辑面板 + Qt 适配器”实例。
     - 若缺少依赖/GUI 不可用，静默忽略，保留占位面板。
@@ -100,7 +100,9 @@ def register_ui_adapters():
         from app.ui.adapters.market_adapter import MarketPanelAdapter
         def _market_factory():
             logic = _MarketLogic(ctx.market_controller, ctx.market_data_service)
-            return MarketPanelAdapter().bind(logic)  # type: ignore
+            return MarketPanelAdapter(
+                read_only=read_only
+            ).bind(logic)  # type: ignore
         replace_panel("market", _market_factory, title="Market", meta={"i18n_key": "panel.market"})
     except Exception:
         pass

@@ -48,6 +48,17 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
 
+if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+    throw "SourceCommit must be a lowercase 40-character Git commit."
+}
+if ($ExpectedArchiveSha256 -cnotmatch '^sha256:[0-9a-f]{64}$') {
+    throw "ExpectedArchiveSha256 must be a lowercase sha256 digest."
+}
+$packageArchiveName = Split-Path -Leaf $PackageArchive
+if ($packageArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "Package archive name contains unsafe characters."
+}
+
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDir)
 $installDir = Join-Path $resolvedEvidence "installed"
 $resolvedInstall = [IO.Path]::GetFullPath($installDir)
@@ -176,6 +187,7 @@ if ($installSucceeded) {
         "completed_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
     )
     $expectedProductionPath = @(
+        "AppContext",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
