@@ -72,11 +72,15 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
     "app.diagnostics_runtime_gateway",
     "app.event_bridge",
     "app.features",
+    "app.i18n",
     "app.services.redis_subscriber",
-    "app.state.settings_store",
+    "app.state",
     "app.ui.accessibility",
+    "app.ui.docking",
     "app.ui.evidence_chart",
     "app.ui.journey_workspace",
+    "app.ui.main_window",
+    "app.ui.ui_refresh",
 )
 _PRODUCTION_JOURNEY_PATH = (
     "AppContext",

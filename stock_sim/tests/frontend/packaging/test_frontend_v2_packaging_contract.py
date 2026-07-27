@@ -1071,6 +1071,61 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
     assert audit_frontend_v2_surface() == ()
 
 
+def test_qml_dependency_audit_allows_production_main_window_host_only(
+    tmp_path,
+):
+    host_report = tmp_path / "qml-production-host.xml"
+    host_report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.app_context" />
+          <module name="app.i18n.loader" />
+          <module name="app.state.app_state" />
+          <module name="app.state.layout_persistence" />
+          <module name="app.state.settings_state" />
+          <module name="app.state.version_store" />
+          <module name="app.ui.docking" />
+          <module name="app.ui.main_window" />
+          <module name="app.ui.ui_refresh" />
+          <module name="app.ui.journey_workspace" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+    command_report = tmp_path / "qml-command-path.xml"
+    command_report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.controllers.trading_controller" />
+          <module name="app.panels.orders" />
+          <module name="app.services.trading_service" />
+          <module name="services.order_service" />
+          <module name="services.runtime_command_service" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+
+    assert audit_nuitka_dependency_report(
+        host_report,
+        package_kind=PackageKind.QML_JOURNEY,
+    ) == ()
+    command_findings = audit_nuitka_dependency_report(
+        command_report,
+        package_kind=PackageKind.QML_JOURNEY,
+    )
+    for module_name in (
+        "app.controllers.trading_controller",
+        "app.panels.orders",
+        "app.services.trading_service",
+        "services.order_service",
+        "services.runtime_command_service",
+    ):
+        assert any(
+            module_name in finding for finding in command_findings
+        )
+
+
 def test_widgets_dependency_audit_allows_read_only_trade_context_only(
     tmp_path,
 ):
