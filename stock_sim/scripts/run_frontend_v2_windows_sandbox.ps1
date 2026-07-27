@@ -189,4 +189,23 @@ if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
     throw "Windows Sandbox did not produce clean-room-report.json."
 }
 
+$sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
+do {
+    $remainingSandboxProcesses = @(
+        Get-Process `
+            -Name WindowsSandboxRemoteSession, WindowsSandboxServer `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.Id -notin $existingSandboxProcessIds }
+    )
+    if ($remainingSandboxProcesses.Count -eq 0) {
+        break
+    }
+    Start-Sleep -Milliseconds 500
+}
+while ([DateTime]::UtcNow -lt $sandboxShutdownDeadline)
+if ($remainingSandboxProcesses.Count -gt 0) {
+    $remainingSandboxProcesses |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
 Get-Item -LiteralPath $reportPath

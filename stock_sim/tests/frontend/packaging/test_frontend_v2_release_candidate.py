@@ -517,6 +517,8 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "Test-Path -LiteralPath $exitCodePath" in script
     assert "Start-Sleep -Milliseconds 500" in script
     assert "WaitForExit" not in script
+    assert "$sandboxShutdownDeadline" in script
+    assert "$remainingSandboxProcesses" in script
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
 
