@@ -398,6 +398,42 @@ def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
     ).is_file()
 
 
+def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
+    tmp_path,
+):
+    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    accessibility_junit = tmp_path / "accessibility.xml"
+    base_name = (
+        "test_shared_default_and_high_contrast_tokens_meet_wcag_aa_ratios"
+    )
+    parameterized_names = tuple(
+        name for name in REQUIRED_ACCESSIBILITY_TESTS if name != base_name
+    ) + (
+        f"{base_name}[None]",
+        f"{base_name}[preferences1]",
+    )
+    _write_accessibility_junit(
+        accessibility_junit,
+        names=parameterized_names,
+    )
+    safety = json.loads(
+        (performance_dir / "no-manual-trading.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    evidence = write_mandatory_release_gate_evidence(
+        accessibility_junit=accessibility_junit,
+        performance_evidence_dir=performance_dir,
+        candidate={"safety": safety},
+        source_commit=source_commit,
+        evidence_dir=tmp_path / "release-evidence",
+    )
+
+    assert evidence.accessibility.status == "passed"
+    assert evidence.accessibility.test_count == len(parameterized_names)
+
+
 def test_mandatory_release_gates_fail_closed_on_missing_accessibility_coverage(
     tmp_path,
 ):
@@ -478,7 +514,9 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "run_frontend_v2_clean_room.ps1" in script
     assert "sandbox-exit-code.txt" in script
     assert "shutdown.exe /s /t 0" in script
-    assert "WaitForExit" in script
+    assert "Test-Path -LiteralPath $exitCodePath" in script
+    assert "Start-Sleep -Milliseconds 500" in script
+    assert "WaitForExit" not in script
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
 

@@ -141,24 +141,37 @@ $configuration = @"
 )
 
 $sandboxCommand = Get-Command WindowsSandbox.exe -ErrorAction Stop
+$existingSandboxProcessIds = @(
+    Get-Process `
+        -Name WindowsSandboxRemoteSession, WindowsSandboxServer `
+        -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Id
+)
 $sandboxProcess = Start-Process `
     -FilePath $sandboxCommand.Source `
     -ArgumentList "`"$configurationPath`"" `
     -WindowStyle Hidden `
     -PassThru
-$completed = $sandboxProcess.WaitForExit($TimeoutSeconds * 1000)
-if (-not $completed) {
-    Stop-Process -Id $sandboxProcess.Id -Force -ErrorAction SilentlyContinue
-    throw "Windows Sandbox validation exceeded $TimeoutSeconds seconds."
+$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+while (
+    -not (Test-Path -LiteralPath $exitCodePath -PathType Leaf) -and
+    [DateTime]::UtcNow -lt $deadline
+) {
+    Start-Sleep -Milliseconds 500
 }
 if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
-    $details = if (Test-Path -LiteralPath $sandboxErrorPath) {
-        Get-Content -LiteralPath $sandboxErrorPath -Raw -Encoding UTF8
+    if (-not $sandboxProcess.HasExited) {
+        Stop-Process `
+            -Id $sandboxProcess.Id `
+            -Force `
+            -ErrorAction SilentlyContinue
     }
-    else {
-        "No sandbox error report was produced."
-    }
-    throw "Windows Sandbox did not produce an exit code. $details"
+    Get-Process `
+        -Name WindowsSandboxRemoteSession, WindowsSandboxServer `
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.Id -notin $existingSandboxProcessIds } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    throw "Windows Sandbox validation exceeded $TimeoutSeconds seconds."
 }
 $sandboxExitCode = (
     Get-Content -LiteralPath $exitCodePath -Raw -Encoding UTF8

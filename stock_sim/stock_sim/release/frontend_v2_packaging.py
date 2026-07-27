@@ -2093,9 +2093,11 @@ def write_mandatory_release_gate_evidence(
 
     accessibility_tree = ET.parse(accessibility_junit)
     test_cases = tuple(accessibility_tree.getroot().iter("testcase"))
-    observed_test_names = {
-        str(test_case.attrib.get("name", "")) for test_case in test_cases
-    }
+    observed_test_names: set[str] = set()
+    for test_case in test_cases:
+        test_name = str(test_case.attrib.get("name", ""))
+        observed_test_names.add(test_name)
+        observed_test_names.add(test_name.partition("[")[0])
     missing_tests = sorted(
         _REQUIRED_ACCESSIBILITY_TESTS - observed_test_names
     )
