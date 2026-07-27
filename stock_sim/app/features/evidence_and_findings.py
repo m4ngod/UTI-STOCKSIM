@@ -88,6 +88,14 @@ class ApprovedScenarioRecipeId:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticEvidencePackageId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_identity(self.value, "Diagnostic Evidence Package")
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticCandidateId:
     value: str
 
@@ -347,8 +355,6 @@ class CandidateEvidence:
         )
 
         evidence_id_set = set(evidence_ids)
-        comparison_id_set = set(comparison_ids)
-        evidence_by_id = {item.identity: item for item in self.evidence}
 
         for record in self.evidence:
             has_comparison_id = record.comparison_evidence_id is not None
@@ -373,15 +379,6 @@ class CandidateEvidence:
                 )
 
         for comparison in self.comparisons:
-            comparison_references = (
-                comparison.reference_evidence_id,
-                comparison.observed_evidence_id,
-            )
-            if not set(comparison_references).issubset(evidence_id_set):
-                raise ValueError(
-                    "Evidence comparison evidence references must resolve "
-                    "within the same candidate"
-                )
             if (
                 comparison.reference_evidence_id
                 == comparison.observed_evidence_id
@@ -390,16 +387,6 @@ class CandidateEvidence:
                     "Evidence comparison reference and observed evidence "
                     "must differ"
                 )
-            observed = evidence_by_id[comparison.observed_evidence_id]
-            if (
-                observed.comparison_evidence_id
-                != comparison.reference_evidence_id
-            ):
-                raise ValueError(
-                    "Evidence comparison must match the observed evidence "
-                    "comparison pair"
-                )
-
         for finding in self.findings:
             _require_unique_identities(
                 "finding evidence reference",
@@ -409,26 +396,11 @@ class CandidateEvidence:
                 "finding comparison reference",
                 tuple(finding.comparison_ids),
             )
-            if not set(finding.evidence_ids).issubset(evidence_id_set):
-                raise ValueError(
-                    "Finding evidence references must resolve within the same "
-                    "candidate"
-                )
-            if not set(finding.comparison_ids).issubset(comparison_id_set):
-                raise ValueError(
-                    "Finding comparison references must resolve within the "
-                    "same candidate"
-                )
             for breakpoint in finding.sensitivity_breakpoints:
                 _require_unique_identities(
                     "sensitivity breakpoint evidence reference",
                     tuple(breakpoint.evidence_ids),
                 )
-                if not set(breakpoint.evidence_ids).issubset(evidence_id_set):
-                    raise ValueError(
-                        "Sensitivity breakpoint evidence references must "
-                        "resolve within the same candidate"
-                    )
         if self.chart is not None:
             for overlay in self.chart.overlays:
                 if not set(overlay.evidence_ids).issubset(evidence_id_set):
@@ -468,15 +440,84 @@ class ReadOnlyEvidenceContext:
 class EvidenceAndFindingsData:
     """Independently renderable, read-only research evidence payload."""
 
+    evidence_package_id: DiagnosticEvidencePackageId
     selection: EvidenceAndFindingsSelection
     candidates: tuple[CandidateEvidence, ...]
     read_only_context: ReadOnlyEvidenceContext
 
     def __post_init__(self) -> None:
+        if not isinstance(
+            self.evidence_package_id,
+            DiagnosticEvidencePackageId,
+        ):
+            raise TypeError(
+                "evidence_package_id must be a DiagnosticEvidencePackageId"
+            )
         _require_unique_identities(
             "candidate",
             tuple(item.identity for item in self.candidates),
         )
+        evidence_ids = tuple(
+            record.identity
+            for candidate in self.candidates
+            for record in candidate.evidence
+        )
+        comparison_ids = tuple(
+            comparison.identity
+            for candidate in self.candidates
+            for comparison in candidate.comparisons
+        )
+        finding_ids = tuple(
+            finding.identity
+            for candidate in self.candidates
+            for finding in candidate.findings
+        )
+        breakpoints = tuple(
+            breakpoint
+            for candidate in self.candidates
+            for finding in candidate.findings
+            for breakpoint in finding.sensitivity_breakpoints
+        )
+        _require_unique_identities("evidence", evidence_ids)
+        _require_unique_identities("comparison", comparison_ids)
+        _require_unique_identities("finding", finding_ids)
+        _require_unique_identities(
+            "sensitivity breakpoint",
+            tuple(item.identity for item in breakpoints),
+        )
+        evidence_id_set = set(evidence_ids)
+        comparison_id_set = set(comparison_ids)
+        for candidate in self.candidates:
+            for comparison in candidate.comparisons:
+                if not {
+                    comparison.reference_evidence_id,
+                    comparison.observed_evidence_id,
+                }.issubset(evidence_id_set):
+                    raise ValueError(
+                        "Evidence comparison evidence references must resolve "
+                        "within the evidence package"
+                    )
+            for finding in candidate.findings:
+                if not set(finding.evidence_ids).issubset(evidence_id_set):
+                    raise ValueError(
+                        "Finding evidence references must resolve within the "
+                        "evidence package"
+                    )
+                if not set(finding.comparison_ids).issubset(
+                    comparison_id_set
+                ):
+                    raise ValueError(
+                        "Finding comparison references must resolve within the "
+                        "evidence package"
+                    )
+                for breakpoint in finding.sensitivity_breakpoints:
+                    if not set(breakpoint.evidence_ids).issubset(
+                        evidence_id_set
+                    ):
+                        raise ValueError(
+                            "Sensitivity breakpoint evidence references must "
+                            "resolve within the evidence package"
+                        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1303,6 +1344,9 @@ def _completed_data(
     selection: EvidenceAndFindingsSelection,
 ) -> EvidenceAndFindingsData:
     return EvidenceAndFindingsData(
+        evidence_package_id=DiagnosticEvidencePackageId(
+            f"diagnostic-evidence-{selection.campaign_id.value}"
+        ),
         selection=selection,
         candidates=(
             _candidate(
@@ -1353,6 +1397,7 @@ __all__ = [
     "DependencyProvenance",
     "DeterministicFakeEvidenceAndFindingsAdapter",
     "DiagnosticCandidateId",
+    "DiagnosticEvidencePackageId",
     "EvidenceComparison",
     "EvidenceComparisonId",
     "EvidenceAndFindingsContext",

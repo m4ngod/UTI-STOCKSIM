@@ -21,6 +21,7 @@ from .evidence_and_findings import (
     DependencyProvenance,
     DiagnosticEvidenceChart,
     DiagnosticCandidateId,
+    DiagnosticEvidencePackageId,
     EvidenceChartOverlay,
     EvidenceChartOverlayAxis,
     EvidenceAndFindingsContext,
@@ -1076,6 +1077,16 @@ def _map_record(
         for row in candidate_rows
     )
     return EvidenceAndFindingsData(
+        evidence_package_id=DiagnosticEvidencePackageId(
+            _required_text(
+                payload.get("evidence_package_id")
+                or (
+                    "legacy-evidence-package:"
+                    f"{selection.campaign_id.value}:{selection.run_id.value}"
+                ),
+                "evidence_package_id",
+            )
+        ),
         selection=selection,
         candidates=candidates,
         read_only_context=_map_read_only_context(record, payload),

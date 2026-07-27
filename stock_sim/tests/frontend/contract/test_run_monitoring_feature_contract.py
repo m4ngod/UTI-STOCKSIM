@@ -43,7 +43,7 @@ def test_wave_zero_reserves_six_names_and_wave_one_activates_two_interfaces():
         == EVIDENCE_AND_FINDINGS_INTERFACE_VERSION
     )
     assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.2"
-    assert EVIDENCE_AND_FINDINGS_INTERFACE_VERSION.render() == "1.0"
+    assert EVIDENCE_AND_FINDINGS_INTERFACE_VERSION.render() == "1.1"
 
 
 def test_fake_snapshot_starts_as_typed_loading_state():

@@ -39,7 +39,7 @@ class FeatureInterfaceDescriptor:
 RUN_MONITORING_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=2)
 EVIDENCE_AND_FINDINGS_INTERFACE_VERSION = FeatureInterfaceVersion(
     major=1,
-    minor=0,
+    minor=1,
 )
 
 ACTIVE_FEATURE_INTERFACES = (

@@ -40,7 +40,7 @@ def test_feature_starts_with_an_explicit_immutable_loading_contract():
     state = feature.snapshot(context)
 
     assert feature.interface_version == EVIDENCE_AND_FINDINGS_INTERFACE_VERSION
-    assert feature.interface_version.render() == "1.0"
+    assert feature.interface_version.render() == "1.1"
     assert isinstance(state, EvidenceAndFindingsViewState)
     assert state.interface_version == feature.interface_version
     assert state.revision == 1
@@ -312,10 +312,27 @@ def test_candidate_evidence_rejects_unpaired_or_dangling_graph_references():
     )
     with pytest.raises(ValueError, match="comparison evidence references"):
         replace(
-            candidate,
-            comparisons=(
-                dangling_comparison,
-                *candidate.comparisons[1:],
+            data,
+            candidates=(
+                replace(
+                    candidate,
+                    evidence=tuple(
+                        replace(
+                            record,
+                            comparison_evidence_id=None,
+                            comparison_value=None,
+                        )
+                        if record.identity
+                        == dangling_comparison.observed_evidence_id
+                        else record
+                        for record in candidate.evidence
+                    ),
+                    comparisons=(
+                        dangling_comparison,
+                        *candidate.comparisons[1:],
+                    ),
+                ),
+                *data.candidates[1:],
             ),
         )
 
@@ -325,10 +342,16 @@ def test_candidate_evidence_rejects_unpaired_or_dangling_graph_references():
     )
     with pytest.raises(ValueError, match="[Ff]inding evidence references"):
         replace(
-            candidate,
-            findings=(
-                dangling_finding_evidence,
-                *candidate.findings[1:],
+            data,
+            candidates=(
+                replace(
+                    candidate,
+                    findings=(
+                        dangling_finding_evidence,
+                        *candidate.findings[1:],
+                    ),
+                ),
+                *data.candidates[1:],
             ),
         )
 
@@ -338,10 +361,16 @@ def test_candidate_evidence_rejects_unpaired_or_dangling_graph_references():
     )
     with pytest.raises(ValueError, match="[Ff]inding comparison references"):
         replace(
-            candidate,
-            findings=(
-                dangling_finding_comparison,
-                *candidate.findings[1:],
+            data,
+            candidates=(
+                replace(
+                    candidate,
+                    findings=(
+                        dangling_finding_comparison,
+                        *candidate.findings[1:],
+                    ),
+                ),
+                *data.candidates[1:],
             ),
         )
 
@@ -359,10 +388,16 @@ def test_candidate_evidence_rejects_unpaired_or_dangling_graph_references():
         match="[Ss]ensitivity breakpoint evidence references",
     ):
         replace(
-            candidate,
-            findings=(
-                dangling_breakpoint_finding,
-                *candidate.findings[1:],
+            data,
+            candidates=(
+                replace(
+                    candidate,
+                    findings=(
+                        dangling_breakpoint_finding,
+                        *candidate.findings[1:],
+                    ),
+                ),
+                *data.candidates[1:],
             ),
         )
 
