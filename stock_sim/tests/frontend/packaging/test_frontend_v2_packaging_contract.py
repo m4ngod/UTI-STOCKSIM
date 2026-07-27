@@ -1180,7 +1180,7 @@ def test_dependency_audit_rejects_missing_project_modules_only(tmp_path):
         <nuitka-compilation-report mode="standalone" completion="yes">
           <module name="app.services.model_checkpoint_service">
             <module_usage
-              name="stock_sim.persistence.models_training"
+              name="persistence.models_training"
               finding="not-found"
               line="11"
             />
@@ -1202,7 +1202,7 @@ def test_dependency_audit_rejects_missing_project_modules_only(tmp_path):
 
     assert any(
         "Missing project module" in finding
-        and "stock_sim.persistence.models_training" in finding
+        and "persistence.models_training" in finding
         for finding in findings
     )
     assert not any(

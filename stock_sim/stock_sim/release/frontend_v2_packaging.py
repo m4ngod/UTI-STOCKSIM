@@ -43,7 +43,7 @@ _QML_IMPORT_PATTERN = re.compile(
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
     {
-        "stock_sim.persistence.models_training",
+        "persistence.models_training",
     }
 )
 _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
