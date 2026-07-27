@@ -1071,6 +1071,53 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
     assert audit_frontend_v2_surface() == ()
 
 
+def test_widgets_dependency_audit_allows_read_only_trade_context_only(
+    tmp_path,
+):
+    read_only_report = tmp_path / "widgets-read-only.xml"
+    read_only_report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.core_dto.trade" />
+          <module name="stock_sim.persistence.models_order" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+    command_report = tmp_path / "widgets-command-path.xml"
+    command_report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.services.trading_service" />
+          <module name="services.order_service" />
+          <module name="services.runtime_command_service" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+
+    assert audit_nuitka_dependency_report(
+        read_only_report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    ) == ()
+    command_findings = audit_nuitka_dependency_report(
+        command_report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    )
+    assert any(
+        "app.services.trading_service" in finding
+        for finding in command_findings
+    )
+    assert any(
+        "services.order_service" in finding
+        for finding in command_findings
+    )
+    assert any(
+        "services.runtime_command_service" in finding
+        for finding in command_findings
+    )
+
+
 def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
     rollback_source = (
         PROJECT_ROOT

@@ -1555,7 +1555,6 @@ def audit_nuitka_dependency_report(
                 "app.panels.market.trade_dialog",
                 "app.ui.journey_workspace",
                 "app.ui.ui_refresh",
-                "app.core_dto.trade",
                 "core.order",
                 "services.order_service",
                 "services.runtime_command_service",
