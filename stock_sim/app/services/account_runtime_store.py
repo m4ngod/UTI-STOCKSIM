@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from threading import RLock
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 import time
 
 from app.core_dto.account import AccountDTO, PositionDTO
-from app.runtime_gateway import RuntimeGateway
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 try:
     from app.event_bridge import on_account_created, on_account_updated  # type: ignore
@@ -96,7 +98,11 @@ def account_dto_from_account_event(payload: dict | None) -> AccountDTO | None:
 
 class AccountRuntimeStore:
     def __init__(self, runtime_gateway: RuntimeGateway | None = None):
-        self._runtime_gateway = runtime_gateway or RuntimeGateway()
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
         self._lock = RLock()
         self._accounts: Dict[str, AccountDTO] = {}
         self._cancel_subs: List[object] = []

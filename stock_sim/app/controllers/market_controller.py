@@ -15,18 +15,20 @@ Future Hooks (Task50):
 - TODO: 自适应批大小调优 Hook (基于延迟反馈)
 """
 from __future__ import annotations
-from typing import Dict, List, Optional, Any, Callable
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable
 from threading import RLock
 import time
 
 from app.core_dto.snapshot import SnapshotDTO
 from app.event_bridge import publish_instrument_created
-from app.runtime_gateway import RuntimeGateway
 from app.services.market_data_service import MarketDataService, Timeframe
 from app.indicators.executor import indicator_executor
 from observability.metrics import metrics
 from app.utils.validators import safe_float, safe_int, derive_third_value, round_to_price_step
 from observability.struct_logger import logger  # 新增结构化日志
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 __all__ = ["MarketController"]
 

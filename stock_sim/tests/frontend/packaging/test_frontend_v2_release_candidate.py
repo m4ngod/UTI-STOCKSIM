@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from shutil import copy2
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 from stock_sim.release.frontend_v2_packaging import (
@@ -199,6 +201,59 @@ def test_v2_app_context_uses_only_the_read_only_runtime_boundary(
         assert not hasattr(context.runtime_gateway, forbidden)
     context.run_monitoring_feature.close()
     context.evidence_and_findings_feature.close()
+
+
+def test_widgets_rollback_smoke_never_imports_command_runtime_gateway(
+    tmp_path,
+):
+    script = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+
+def reject_command_gateway(name, *args, **kwargs):
+    if name == "app.runtime_gateway":
+        raise ModuleNotFoundError("command-capable runtime gateway excluded")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = reject_command_gateway
+
+from stock_sim.release.frontend_widgets_rollback_entry import main
+
+raise SystemExit(
+    main(
+        [
+            "--smoke-report-dir",
+            sys.argv[1],
+            "--source-commit",
+            "1" * 40,
+        ]
+    )
+)
+"""
+    environment = os.environ.copy()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment["QT_QUICK_BACKEND"] = "software"
+    completed = subprocess.run(
+        (sys.executable, "-c", script, str(tmp_path)),
+        cwd=PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(
+        (tmp_path / "smoke-report.json").read_text(encoding="utf-8")
+    )
+    assert report["placeholder_panels"] == []
+    assert report["real_panel_count"] == 8
+    assert report["manual_trading_action_count"] == 0
+    assert report["clean_exit"] is True
 
 
 def test_clean_room_report_requires_the_complete_production_journey(

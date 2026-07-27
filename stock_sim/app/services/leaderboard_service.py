@@ -1,7 +1,7 @@
 """Leaderboard service for frontend ranking views."""
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 import math
 import random
 import time
@@ -9,7 +9,9 @@ from threading import RLock
 
 from observability.metrics import metrics
 from app.core_dto.leaderboard import LeaderboardRowDTO
-from app.runtime_gateway import RuntimeGateway
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 VALID_WINDOWS = {"1d", "7d", "30d", "90d", "ytd", "all"}
 
@@ -42,7 +44,11 @@ class LeaderboardService:
         self._ttl_ms = int(ttl_seconds * 1000)
         self._agent_count = agent_count
         self._use_runtime = use_runtime
-        self._runtime_gateway = runtime_gateway or RuntimeGateway()
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
         self._cache: Dict[str, Tuple[int, List[LeaderboardRowDTO]]] = {}
         self._prev_ranks: Dict[str, Dict[str, int]] = {}
         self._prev_order: Dict[str, Dict[str, int]] = {}

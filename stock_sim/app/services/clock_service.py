@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from threading import RLock
 import os
 import time
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from observability.metrics import metrics
 from app.core_dto.clock import ClockStateDTO
-from app.runtime_gateway import RuntimeGateway
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 try:
     from infra.event_bus import event_bus  # type: ignore
@@ -43,7 +45,11 @@ class ClockService:
         self._lock = RLock()
         self._state = _ClockInternal()
         self._runtime_day_seconds = max(1.0, float(os.environ.get("STOCKSIM_SIM_DAY_SECONDS", "120")))
-        self._runtime_gateway = runtime_gateway or RuntimeGateway()
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
 
     def _now_ms(self) -> int:
         return int(time.time() * 1000)

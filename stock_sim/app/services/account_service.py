@@ -19,18 +19,20 @@
 
 """
 from __future__ import annotations
-from typing import Callable, Tuple, Optional, List
+from typing import TYPE_CHECKING, Callable, Tuple, Optional, List
 import time
 import math
 import threading
 
 from observability.metrics import metrics
 from app.core_dto.account import AccountDTO, PositionDTO
-from app.runtime_gateway import RuntimeGateway
 from app.services.account_runtime_store import (
     AccountRuntimeStore,
     account_dto_from_runtime_payload,
 )
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 # ---------------- Fetcher 协议 ----------------
 Fetcher = Callable[[str], AccountDTO]
@@ -55,7 +57,11 @@ class AccountService:
         self._fetcher: Fetcher = fetcher or _synthetic_fetcher
         self._diff_threshold = diff_threshold
         self._allow_synthetic_fallback = allow_synthetic_fallback
-        self._runtime_gateway = runtime_gateway or RuntimeGateway()
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
         self._runtime_store = runtime_store or AccountRuntimeStore(self._runtime_gateway)
         self._last_account: Optional[AccountDTO] = None
         self._lock = threading.RLock()

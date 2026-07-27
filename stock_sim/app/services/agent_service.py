@@ -19,15 +19,17 @@ from dataclasses import dataclass
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional
 
 from app.core_dto.agent import AgentMetaDTO
 from app.event_bridge import publish_account_created, publish_agent_status_changed
 from infra.event_bus import event_bus
 from observability.metrics import metrics
-from app.runtime_gateway import RuntimeGateway
 
 from .log_stream_service import LogStreamService
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 try:
     from agents.retail_strategy import allocate_retail_strategies
@@ -99,8 +101,13 @@ class AgentService:
         self._retail_counters: Dict[str, int] = {}
         self._runtime_agents: Dict[str, Any] = {}
         self._runtime_stop_threads: Dict[str, threading.Thread] = {}
-        self._runtime_gateway = runtime_gateway or RuntimeGateway()
-        self._sync_runtime_bindings_enabled = runtime_gateway is not None
+        runtime_gateway_injected = runtime_gateway is not None
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
+        self._sync_runtime_bindings_enabled = runtime_gateway_injected
         self._retail_agent_factory = retail_agent_factory or self._default_retail_agent_factory
         self._model_agent_factory = model_agent_factory or self._default_model_agent_factory
         self._uses_default_account_bootstrapper = account_bootstrapper is None

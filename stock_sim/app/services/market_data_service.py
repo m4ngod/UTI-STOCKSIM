@@ -1,7 +1,7 @@
 """App-layer market data service."""
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 from datetime import date, datetime, timezone
 import math
 import threading
@@ -9,9 +9,11 @@ import time
 
 import numpy as np
 
-from app.runtime_gateway import RuntimeGateway
 from observability.metrics import metrics
 from .bars_cache import BarsCache, BarDict, BarsSeries, Timeframe
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 
 Fetcher = Callable[[str, Timeframe, int], List[BarDict]]
@@ -49,7 +51,11 @@ class MarketDataService:
         self._series_placeholder = fetcher is None
         self._allow_synthetic_fallback = bool(allow_synthetic_fallback)
         self._enable_runtime_holdings = enable_runtime_holdings
-        self._runtime_gateway = runtime_gateway or RuntimeGateway()
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
         self._subscribed: Set[str] = set()
         self._default_limit = default_limit
         self._lock = threading.RLock()
