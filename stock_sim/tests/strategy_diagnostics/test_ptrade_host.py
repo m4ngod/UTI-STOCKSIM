@@ -539,3 +539,46 @@ def test_subprocess_transport_wraps_start_and_timeout_failures() -> None:
     timed_out = SubprocessPTradeStrategyHost(timeout_seconds=0.000001)
     with pytest.raises(PTradeHostProcessError, match="timeout"):
         timed_out.invoke(invocation)
+
+
+def test_subprocess_transport_uses_explicit_frozen_worker_arguments(
+    monkeypatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def complete(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return ptrade_host_module.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="{}",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ptrade_host_module.subprocess, "run", complete)
+    transport = ptrade_host_module._IsolatedSubprocessPTradeWorkerTransport(
+        worker_arguments=("--ptrade-host-worker",)
+    )
+
+    response = transport.exchange(
+        "{}",
+        python_executable=r"C:\Release\UTI-Frontend-V2.exe",
+        timeout_seconds=5,
+    )
+
+    assert response == "{}"
+    assert observed["command"] == [
+        r"C:\Release\UTI-Frontend-V2.exe",
+        "--ptrade-host-worker",
+    ]
+
+
+def test_subprocess_host_rejects_a_string_as_worker_arguments() -> None:
+    with pytest.raises(
+        ValueError,
+        match="sequence of non-empty strings",
+    ):
+        SubprocessPTradeStrategyHost(
+            worker_arguments="--ptrade-host-worker",
+        )

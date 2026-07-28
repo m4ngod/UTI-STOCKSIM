@@ -42,6 +42,7 @@ from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
 from strategy_diagnostics.market_paths import ParquetMarketPathArtifactStore
+from strategy_diagnostics.ptrade_host import PTradeStrategyHost
 
 
 UTC = timezone.utc
@@ -336,6 +337,7 @@ def create_file_backed_formal_v1_release_fixture(
     *,
     database_path: Path,
     artifact_root: Path,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> FileBackedFormalV1ReleaseFixture:
     """Create, close, and reopen the real V1 release fixture."""
 
@@ -347,6 +349,7 @@ def create_file_backed_formal_v1_release_fixture(
         application = _new_application(
             source=source,
             artifact_root=artifact_root,
+            ptrade_host=ptrade_host,
         )
         application.start()
         application.initialize_persistence(engine)
@@ -395,6 +398,7 @@ def create_file_backed_formal_v1_release_fixture(
             source=source,
             artifact_root=artifact_root,
             market_path_store=reopened_paths,
+            ptrade_host=ptrade_host,
         )
         reopened.start()
         migration = reopened.initialize_persistence(reopened_engine)
@@ -459,6 +463,7 @@ def _new_application(
     source: DeterministicReleaseMarketSource,
     artifact_root: Path,
     market_path_store: ParquetMarketPathArtifactStore | None = None,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> DiagnosticsApplication:
     return create_diagnostics_application(
         historical_source=source,
@@ -474,6 +479,7 @@ def _new_application(
             artifact_root
         ),
         recipe_clock=lambda: RELEASE_FIXTURE_CLOCK,
+        ptrade_host=ptrade_host,
     )
 
 

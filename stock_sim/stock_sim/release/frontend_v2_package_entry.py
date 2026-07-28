@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -24,6 +25,22 @@ PRODUCTION_PATH = (
     "LiveEvidenceAndFindingsAdapter",
     "JourneyWorkspaceHost",
 )
+
+_PTRADE_WORKER_MODULE = "strategy_diagnostics.ptrade_host_worker"
+
+
+def _ptrade_worker_arguments() -> tuple[str, ...]:
+    if "__compiled__" in globals():
+        return ("--ptrade-host-worker",)
+    return ("-m", _PTRADE_WORKER_MODULE)
+
+
+def _run_ptrade_host_worker() -> int:
+    from strategy_diagnostics.ptrade_host_worker import main as worker_main
+
+    return worker_main()
+
+
 EXPECTED_JOURNEY = (
     (
         "launched_terminal_run",
@@ -697,6 +714,7 @@ def _run_smoke_journey(
         ACTIVE_FEATURE_INTERFACES,
         LiveStrategyDiagnosticsV1ApplicationAdapter,
     )
+    from strategy_diagnostics import SubprocessPTradeStrategyHost
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         create_file_backed_formal_v1_release_fixture,
     )
@@ -706,6 +724,10 @@ def _run_smoke_journey(
     fixture = create_file_backed_formal_v1_release_fixture(
         database_path=persistence_root / "strategy-diagnostics-v1.sqlite3",
         artifact_root=persistence_root / "artifacts",
+        ptrade_host=SubprocessPTradeStrategyHost(
+            python_executable=sys.executable,
+            worker_arguments=_ptrade_worker_arguments(),
+        ),
     )
     cleanup.callback(
         _record_cleanup,
@@ -815,13 +837,13 @@ def _run_smoke_journey(
             if state["closed"]:
                 return
             _close_mount(
+                app=app,
                 context=context,
                 window=window,
                 host=host,
                 errors=cleanup_errors,
             )
             state["closed"] = True
-            app.processEvents()
 
         cleanup.callback(close_mount)
         lifecycle_checks.append(
@@ -1123,20 +1145,30 @@ def _run_smoke_journey(
 
 def _close_mount(
     *,
+    app: Any,
     context: Any,
     window: Any,
     host: Any,
     errors: list[str] | None = None,
 ) -> None:
+    from PySide6.QtCore import QEvent
+
     observed_errors = errors if errors is not None else []
     for label, action in (
         ("QML Adapter", host.close_adapter),
-        ("MainWindow", window.close),
         ("Run Monitoring Feature", context.run_monitoring_feature.close),
         (
             "Evidence and Findings Feature",
             context.evidence_and_findings_feature.close,
         ),
+        ("MainWindow", window.close),
+        ("QML Host deferred delete", host.deleteLater),
+        ("MainWindow deferred delete", window.deleteLater),
+        (
+            "Qt deferred-delete delivery",
+            lambda: app.sendPostedEvents(None, QEvent.Type.DeferredDelete),
+        ),
+        ("Qt event drain", app.processEvents),
     ):
         try:
             action()
@@ -1164,6 +1196,8 @@ def _mount_is_closed(
     window: Any,
     host: Any,
 ) -> bool:
+    from shiboken6 import isValid
+
     return bool(
         getattr(host, "_workspace_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
@@ -1172,7 +1206,8 @@ def _mount_is_closed(
             "_closed",
             False,
         )
-        and not window.isVisible()
+        and not isValid(host)
+        and not isValid(window)
     )
 
 
@@ -1387,6 +1422,9 @@ def _run_interactive() -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
+    if raw_arguments == ("--ptrade-host-worker",):
+        return _run_ptrade_host_worker()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--renderer-lane",
@@ -1396,7 +1434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--smoke-report-dir", type=Path)
     parser.add_argument("--source-commit", default="unbound")
     parser.add_argument("--no-images", action="store_true")
-    arguments = parser.parse_args(argv)
+    arguments = parser.parse_args(raw_arguments)
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
     if arguments.smoke_report_dir is not None:

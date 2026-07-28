@@ -1067,6 +1067,178 @@ def test_default_installed_entry_uses_the_production_app_context():
     ) < source.index("    bridge.start()")
 
 
+def test_compiled_entry_uses_its_dedicated_ptrade_worker_mode(monkeypatch):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    assert package_entry._ptrade_worker_arguments() == (
+        "-m",
+        "strategy_diagnostics.ptrade_host_worker",
+    )
+
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+
+    assert package_entry._ptrade_worker_arguments() == (
+        "--ptrade-host-worker",
+    )
+
+
+def test_installed_entry_dispatches_the_ptrade_worker_before_qml(
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    monkeypatch.setattr(package_entry, "_run_ptrade_host_worker", lambda: 37)
+
+    assert package_entry.main(["--ptrade-host-worker"]) == 37
+
+
+def test_release_smoke_joins_live_features_before_deleting_qt_mount(
+    monkeypatch,
+):
+    import shiboken6
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _close_mount,
+        _mount_is_closed,
+    )
+
+    events: list[str] = []
+
+    class Feature:
+        _closed = False
+
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(self.name)
+            self._closed = True
+
+    class Host:
+        _workspace_closed = False
+        deleted = False
+
+        def close_adapter(self):
+            events.append("adapter")
+            self._workspace_closed = True
+
+        def deleteLater(self):
+            events.append("host-delete")
+            self.deleted = True
+
+    class Window:
+        deleted = False
+
+        def close(self):
+            events.append("window")
+
+        def deleteLater(self):
+            events.append("window-delete")
+            self.deleted = True
+
+        def isVisible(self):
+            if self.deleted:
+                raise RuntimeError("wrapped C++ object is deleted")
+            return False
+
+    class App:
+        def sendPostedEvents(self, *_args):
+            events.append("deferred-delete")
+
+        def processEvents(self):
+            events.append("process-events")
+
+    context = type(
+        "Context",
+        (),
+        {
+            "run_monitoring_feature": Feature("run-feature"),
+            "evidence_and_findings_feature": Feature("evidence-feature"),
+        },
+    )()
+    host = Host()
+    window = Window()
+    monkeypatch.setattr(
+        shiboken6,
+        "isValid",
+        lambda item: not item.deleted,
+    )
+
+    _close_mount(
+        app=App(),
+        context=context,
+        window=window,
+        host=host,
+    )
+
+    assert events == [
+        "adapter",
+        "run-feature",
+        "evidence-feature",
+        "window",
+        "host-delete",
+        "window-delete",
+        "deferred-delete",
+        "process-events",
+    ]
+    assert _mount_is_closed(context, window, host) is True
+
+
+def test_release_smoke_repeats_real_qt_journey_in_one_process(tmp_path):
+    script = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["QT_QUICK_BACKEND"] = "software"
+
+from stock_sim.release.frontend_v2_package_entry import (
+    RendererLane,
+    run_smoke_journey,
+)
+
+root = Path(sys.argv[1])
+results = [
+    run_smoke_journey(
+        report_dir=root / f"journey-{index}",
+        renderer_lane=RendererLane.SOFTWARE,
+        capture_images=False,
+    )
+    for index in range(2)
+]
+payload = [
+    {
+        "clean_exit": result.clean_exit,
+        "errors": list(result.errors),
+    }
+    for result in results
+]
+print(json.dumps(payload, sort_keys=True))
+raise SystemExit(
+    0
+    if all(result.clean_exit and not result.errors for result in results)
+    else 1
+)
+"""
+    completed = subprocess.run(
+        (sys.executable, "-c", script, str(tmp_path)),
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=240,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [
+        {"clean_exit": True, "errors": []},
+        {"clean_exit": True, "errors": []},
+    ]
+
+
 def test_production_window_factory_closes_features_when_window_fails(
     tmp_path,
     monkeypatch,

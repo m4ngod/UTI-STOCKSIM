@@ -1070,14 +1070,40 @@ class SubprocessPTradeStrategyHost:
         self,
         *,
         python_executable: str | None = None,
+        worker_arguments: Sequence[str] | None = None,
         timeout_seconds: float = 30,
         transport: PTradeWorkerTransport | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("PTrade subprocess timeout must be positive")
+        if isinstance(worker_arguments, (str, bytes)):
+            raise ValueError(
+                "PTrade subprocess worker arguments must be a sequence "
+                "of non-empty strings"
+            )
+        resolved_worker_arguments = tuple(
+            worker_arguments
+            if worker_arguments is not None
+            else ("-m", "strategy_diagnostics.ptrade_host_worker")
+        )
+        if not resolved_worker_arguments or any(
+            not isinstance(argument, str) or not argument
+            for argument in resolved_worker_arguments
+        ):
+            raise ValueError(
+                "PTrade subprocess worker arguments must be a sequence "
+                "of non-empty strings"
+            )
+        if transport is not None and worker_arguments is not None:
+            raise ValueError(
+                "PTrade subprocess worker arguments configure only the "
+                "built-in isolated transport"
+            )
         self._python_executable = python_executable or sys.executable
         self._timeout_seconds = timeout_seconds
-        self._transport = transport or _IsolatedSubprocessPTradeWorkerTransport()
+        self._transport = transport or _IsolatedSubprocessPTradeWorkerTransport(
+            worker_arguments=resolved_worker_arguments
+        )
 
     @property
     def adapter_version(self) -> str:
@@ -1097,6 +1123,16 @@ class SubprocessPTradeStrategyHost:
 
 
 class _IsolatedSubprocessPTradeWorkerTransport:
+    def __init__(
+        self,
+        *,
+        worker_arguments: Sequence[str] = (
+            "-m",
+            "strategy_diagnostics.ptrade_host_worker",
+        ),
+    ) -> None:
+        self._worker_arguments = tuple(worker_arguments)
+
     def exchange(
         self,
         request_text: str,
@@ -1117,11 +1153,7 @@ class _IsolatedSubprocessPTradeWorkerTransport:
                 prefix="uti-ptrade-host-"
             ) as working_directory:
                 completed = subprocess.run(
-                    [
-                        python_executable,
-                        "-m",
-                        "strategy_diagnostics.ptrade_host_worker",
-                    ],
+                    [python_executable, *self._worker_arguments],
                     input=request_text,
                     cwd=working_directory,
                     env=environment,
