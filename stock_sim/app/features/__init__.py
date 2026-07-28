@@ -49,6 +49,7 @@ from .evidence_and_findings import (
     CandidateEvidence,
     DependencyProvenance,
     DeterministicFakeEvidenceAndFindingsAdapter,
+    DiagnosticEvidenceCurve,
     DiagnosticEvidenceChart,
     DiagnosticEvidencePackageId,
     DiagnosticCandidateId,
@@ -79,6 +80,8 @@ from .evidence_and_findings import (
     ReadOnlyEvidenceContext,
     SensitivityBreakpoint,
     SensitivityBreakpointId,
+    SensitivityCurveAxis,
+    SensitivityCurvePoint,
 )
 from .live_evidence_and_findings import LiveEvidenceAndFindingsAdapter
 from .live_strategy_diagnostics_v1_application import (
@@ -122,6 +125,7 @@ __all__ = [
     "DeterministicFakeEvidenceAndFindingsAdapter",
     "DeterministicFakeRunMonitoringAdapter",
     "DiagnosticCandidateId",
+    "DiagnosticEvidenceCurve",
     "DiagnosticEvidenceChart",
     "DiagnosticEvidencePackageId",
     "DiagnosticCommandRejectionReason",
@@ -184,6 +188,8 @@ __all__ = [
     "ScenarioSetId",
     "SensitivityBreakpoint",
     "SensitivityBreakpointId",
+    "SensitivityCurveAxis",
+    "SensitivityCurvePoint",
     "SimulationTime",
     "SourceGenerationId",
     "SourceKind",

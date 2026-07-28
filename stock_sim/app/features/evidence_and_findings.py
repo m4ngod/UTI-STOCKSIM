@@ -316,6 +316,85 @@ class DiagnosticEvidenceChart:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SensitivityCurveAxis:
+    parameter_name: str
+    value_type: str
+    order: str
+
+    def __post_init__(self) -> None:
+        if not self.parameter_name.strip():
+            raise ValueError("Sensitivity curve axis parameter cannot be empty")
+        if self.value_type != "decimal" or self.order != "ascending":
+            raise ValueError("Unsupported sensitivity curve axis semantics")
+
+
+@dataclass(frozen=True, slots=True)
+class SensitivityCurvePoint:
+    case_id: MarketScenarioId
+    run_id: StrategyRunId
+    evidence_id: EvidenceRecordId
+    parameters: tuple[tuple[str, str], ...]
+    value: str
+    run_artifact_hash: str
+    reproduction_manifest_id: ReproductionManifestId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parameters, tuple) or not self.parameters:
+            raise ValueError("Sensitivity curve point parameters cannot be empty")
+        parameter_names = tuple(name for name, _value in self.parameters)
+        if any(not name.strip() for name in parameter_names):
+            raise ValueError("Sensitivity curve parameter names cannot be empty")
+        if len(set(parameter_names)) != len(parameter_names):
+            raise ValueError("Sensitivity curve parameter names must be unique")
+        if not self.value.strip():
+            raise ValueError("Sensitivity curve point value cannot be empty")
+        _require_identity(
+            self.run_artifact_hash,
+            "Sensitivity curve Run artifact hash",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticEvidenceCurve:
+    """Immutable typed projection of one sealed V1 sensitivity curve."""
+
+    identity: str
+    transformation_family: str
+    transformation_id: str
+    strategy_id: StrategyUnderTestId
+    strategy_version: str
+    metric_name: str
+    unit: str
+    axis: SensitivityCurveAxis | None
+    points: tuple[SensitivityCurvePoint, ...]
+    chart: DiagnosticEvidenceChart | None = None
+
+    def __post_init__(self) -> None:
+        _require_identity(self.identity, "Diagnostic evidence curve")
+        for label, value in (
+            ("transformation family", self.transformation_family),
+            ("transformation identity", self.transformation_id),
+            ("strategy version", self.strategy_version),
+            ("metric name", self.metric_name),
+            ("unit", self.unit),
+        ):
+            if not value.strip():
+                raise ValueError(f"Diagnostic evidence curve {label} cannot be empty")
+        if not isinstance(self.points, tuple) or len(self.points) < 2:
+            raise ValueError(
+                "Diagnostic evidence curve requires at least two sealed points"
+            )
+        _require_unique_identities(
+            "diagnostic evidence curve point",
+            tuple(item.evidence_id for item in self.points),
+        )
+        if self.chart is not None and self.chart.identity != self.identity:
+            raise ValueError(
+                "Diagnostic evidence chart must preserve its source curve identity"
+            )
+
+
 def _require_unique_identities(
     label: str,
     identities: tuple[object, ...],
@@ -334,6 +413,7 @@ class CandidateEvidence:
     execution_assumptions: tuple[ExecutionAssumption, ...]
     provenance: EvidenceProvenance
     chart: DiagnosticEvidenceChart | None = None
+    curves: tuple[DiagnosticEvidenceCurve, ...] = ()
 
     def __post_init__(self) -> None:
         evidence_ids = tuple(item.identity for item in self.evidence)
@@ -408,6 +488,35 @@ class CandidateEvidence:
                         "Evidence chart overlay references must resolve within "
                         "the same candidate"
                     )
+        _require_unique_identities(
+            "diagnostic evidence curve",
+            tuple(item.identity for item in self.curves),
+        )
+        for curve in self.curves:
+            if (
+                self.identity.value
+                != f"{curve.strategy_id.value}@{curve.strategy_version}"
+            ):
+                raise ValueError(
+                    "Diagnostic evidence curve Strategy must match its candidate"
+                )
+            if not {
+                point.evidence_id for point in curve.points
+            }.issubset(evidence_id_set):
+                raise ValueError(
+                    "Diagnostic evidence curve points must resolve within the "
+                    "same candidate"
+                )
+        chart_identities = {
+            curve.chart.identity
+            for curve in self.curves
+            if curve.chart is not None
+        }
+        if self.chart is not None and self.curves:
+            if self.chart.identity not in chart_identities:
+                raise ValueError(
+                    "Candidate chart must be one of its typed sensitivity curves"
+                )
 
 
 @dataclass(frozen=True, slots=True)

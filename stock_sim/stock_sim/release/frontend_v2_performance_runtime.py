@@ -151,7 +151,7 @@ def _trim_process_working_set() -> None:
 
 
 class _PerformanceRuntimeQueries:
-    """Thread-safe typed Run fixture plus the pre-#51 Evidence query fixture."""
+    """Thread-safe typed Run and Evidence read-model fixture."""
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -185,6 +185,10 @@ class _PerformanceRuntimeQueries:
         )
         content_hasher.update(array("d", self._chart_values).tobytes())
         self._content_digest = f"sha256:{content_hasher.hexdigest()}"
+        self._evidence_projection_cache: dict[
+            tuple[str, EvidenceAndFindingsContext],
+            EvidenceAndFindingsData,
+        ] = {}
 
     @property
     def current_evidence_read_revision(self) -> int:
@@ -324,11 +328,67 @@ class _PerformanceRuntimeQueries:
         self,
         journey: ResolvedV1Journey,
     ) -> ApplicationReadResult[EvidenceAndFindingsData]:
-        del journey
-        return self._read_failure(
-            code=ApplicationReadErrorCode.READ_FAILED,
-            message="Typed Evidence reads are introduced by Issue #51.",
-            retryable=False,
+        from app.features.live_evidence_and_findings import (
+            _candidate_rows,
+            _evidence_payload,
+            _map_record,
+        )
+
+        selection = journey.evidence_context.selection
+        if (
+            selection is None
+            or selection.campaign_id.value != CAMPAIGN_ID
+            or selection.run_id.value != RUN_ID
+        ):
+            return self._read_failure(
+                code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
+                message=(
+                    "The performance Diagnostic Evidence identity does not "
+                    "match its journey."
+                ),
+                retryable=False,
+            )
+        record = self.get_evidence_and_findings_snapshot(RUN_ID)
+        if record is None:
+            return self._read_failure(
+                code=ApplicationReadErrorCode.EVIDENCE_PENDING,
+                message="Performance Diagnostic Evidence is pending.",
+                retryable=True,
+            )
+        cache_key = (self._content_digest, journey.evidence_context)
+        with self._lock:
+            data = self._evidence_projection_cache.get(cache_key)
+        try:
+            if data is None:
+                payload = _evidence_payload(record)
+                mapped = _map_record(
+                    journey.evidence_context,
+                    record,
+                    payload,
+                    _candidate_rows(payload),
+                )
+                with self._lock:
+                    data = self._evidence_projection_cache.setdefault(
+                        cache_key,
+                        mapped,
+                    )
+        except Exception:
+            return self._read_failure(
+                code=ApplicationReadErrorCode.EVIDENCE_MAPPING_FAILED,
+                message="Performance Diagnostic Evidence is invalid.",
+                retryable=False,
+            )
+        revision, status, updated_at = self._run_source_state()
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=self._run_source_token(
+                revision,
+                status,
+                updated_at,
+            ),
+            source_observed_at=updated_at,
+            value=data,
+            error=None,
         )
 
     def _run_source_state(self) -> tuple[int, str, datetime]:
@@ -972,7 +1032,7 @@ def run_performance_lane(
         event_bridge=bridge,
     )
     evidence_feature = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=queries,
+        application_read_model=queries,
         event_bridge=bridge,
     )
     evidence_context = _evidence_context()

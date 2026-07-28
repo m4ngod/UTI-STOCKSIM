@@ -625,11 +625,15 @@ class EvidenceAndFindingsQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def pinnedIdentitiesText(self) -> str:  # noqa: N802
-        selection = self._state.context.selection
+        data = self._state.last_reliable_data
+        selection = (
+            data.selection
+            if data is not None
+            else self._state.context.selection
+        )
         if selection is None:
             return "No Formal Diagnostic Campaign or Strategy Run selected."
-        return "\n".join(
-            (
+        lines = [
                 f"Campaign · {selection.campaign_id.value}",
                 f"Run · {selection.run_id.value}",
                 (
@@ -648,8 +652,13 @@ class EvidenceAndFindingsQtAdapter(QObject):
                     "Reproduction Manifest · "
                     f"{_optional_identity(selection.reproduction_manifest_id)}"
                 ),
+        ]
+        if data is not None:
+            lines.append(
+                "Diagnostic Evidence Package · "
+                f"{data.evidence_package_id.value}"
             )
-        )
+        return "\n".join(lines)
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def hasReliableData(self) -> bool:  # noqa: N802
@@ -677,6 +686,55 @@ class EvidenceAndFindingsQtAdapter(QObject):
         return "  ·  ".join(
             f"{item.identity.value} — {item.label}" for item in data.candidates
         )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def curveCatalogText(self) -> str:  # noqa: N802
+        data = self._state.last_reliable_data
+        curves = (
+            ()
+            if data is None
+            else tuple(
+                curve
+                for candidate in data.candidates
+                for curve in candidate.curves
+            )
+        )
+        if not curves:
+            return (
+                "No sealed sensitivity curves are available; typed textual "
+                "evidence remains authoritative."
+            )
+        lines = []
+        for curve in curves:
+            axis = (
+                (
+                    f"{curve.axis.parameter_name} "
+                    f"({curve.axis.value_type}, {curve.axis.order})"
+                )
+                if curve.axis is not None
+                else "categorical"
+            )
+            points = ", ".join(
+                (
+                    f"case {point.case_id.value} / run {point.run_id.value} / "
+                    f"metric {point.evidence_id.value} / manifest "
+                    f"{point.reproduction_manifest_id.value} / artifact "
+                    f"{point.run_artifact_hash} / parameters "
+                    f"{', '.join(f'{name}={value}' for name, value in point.parameters)} "
+                    f"/ value {point.value} {curve.unit}"
+                )
+                for point in curve.points
+            )
+            lines.append(
+                (
+                    f"{curve.identity} · transformation "
+                    f"{curve.transformation_family} / {curve.transformation_id} · "
+                    f"strategy {curve.strategy_id.value}@{curve.strategy_version} · "
+                    f"metric {curve.metric_name} / unit {curve.unit} · "
+                    f"axis {axis} · {points}"
+                )
+            )
+        return "\n".join(lines)
 
     @Property(str, notify=localStateChanged)  # type: ignore[arg-type]
     def selectedCandidateIdentity(self) -> str:  # noqa: N802
@@ -828,7 +886,14 @@ class EvidenceAndFindingsQtAdapter(QObject):
         candidate = self._candidate()
         if candidate is None:
             return ""
-        records = {item.identity: item for item in candidate.evidence}
+        data = self._state.last_reliable_data
+        if data is None:
+            return ""
+        records = {
+            item.identity: item
+            for package_candidate in data.candidates
+            for item in package_candidate.evidence
+        }
         lines = [f"TYPED COMPARISONS · {candidate.identity.value}"]
         for comparison in candidate.comparisons:
             reference = records[comparison.reference_evidence_id]

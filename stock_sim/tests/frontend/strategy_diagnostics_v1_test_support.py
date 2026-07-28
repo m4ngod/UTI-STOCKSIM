@@ -18,6 +18,7 @@ from app.features import (
     ApplicationReadResult,
     DiagnosticTaskCapabilities,
     EvidenceAndFindingsContext,
+    EvidenceAndFindingsData,
     EvidenceCoverage,
     ExecutionAssumption,
     MarketScenarioId,
@@ -38,13 +39,30 @@ from app.features import (
     V1JourneySelector,
     WallTime,
 )
+from app.features.live_evidence_and_findings import (
+    _candidate_rows,
+    _content_digest,
+    _evidence_payload,
+    _map_record as _map_evidence_record,
+    _optional_aware as _optional_evidence_time,
+    _status_token,
+    _validate_record_selection,
+)
 
 
 class DictionaryFixtureApplicationReadModel:
     """Translate legacy dictionary fixtures at the test boundary only."""
 
-    def __init__(self, queries: object | None) -> None:
+    def __init__(
+        self,
+        queries: object | None,
+        *,
+        evidence_context: EvidenceAndFindingsContext | None = None,
+    ) -> None:
         self._queries = queries
+        self._evidence_context = (
+            evidence_context or EvidenceAndFindingsContext.no_selection()
+        )
 
     @property
     def interface_version(self) -> ApplicationReadModelVersion:
@@ -61,7 +79,7 @@ class DictionaryFixtureApplicationReadModel:
                     run_id=selector.run_id,
                 )
             ),
-            evidence_context=EvidenceAndFindingsContext.no_selection(),
+            evidence_context=self._evidence_context,
             evidence_package_id=selector.evidence_package_id,
             campaign_case_id=MarketScenarioId("TEST-CASE"),
             campaign_layer=EvidenceCoverage.BASELINE,
@@ -106,8 +124,114 @@ class DictionaryFixtureApplicationReadModel:
             error=None,
         )
 
-    def read_evidence(self, journey: ResolvedV1Journey):
-        raise AssertionError("Run Monitoring must not read Evidence in #50")
+    def read_evidence(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[EvidenceAndFindingsData]:
+        selection = journey.evidence_context.selection
+        if selection is None:
+            return _evidence_failure(
+                ApplicationReadErrorCode.SELECTION_NOT_FOUND,
+                retryable=False,
+            )
+        queries = self._queries
+        method = (
+            getattr(queries, "get_evidence_and_findings_snapshot", None)
+            if queries is not None
+            else None
+        )
+        if not callable(method):
+            return _evidence_failure(
+                ApplicationReadErrorCode.READ_FAILED,
+                retryable=True,
+            )
+        try:
+            record = method(selection.run_id.value)
+        except Exception:
+            return _evidence_failure(
+                ApplicationReadErrorCode.READ_FAILED,
+                retryable=True,
+            )
+        if not isinstance(record, Mapping):
+            return _evidence_failure(
+                ApplicationReadErrorCode.EVIDENCE_PENDING,
+                retryable=True,
+                availability=ApplicationReadAvailability.PENDING,
+            )
+        token: SourceRevisionToken | None = None
+        try:
+            record_dict = dict(record)
+            _validate_record_selection(journey.evidence_context, record_dict)
+            payload = _evidence_payload(record_dict)
+            _validate_record_selection(journey.evidence_context, payload)
+            content_digest = _content_digest(record_dict, payload)
+            token = (
+                SourceRevisionToken(content_digest.removeprefix("sha256:"))
+                if content_digest is not None
+                else _token(_evidence_semantic_payload(record_dict, payload))
+            )
+            candidate_rows = _candidate_rows(payload)
+            status = _status_token(
+                payload.get("status") or record.get("status")
+            )
+            if not candidate_rows:
+                return _evidence_failure(
+                    ApplicationReadErrorCode.EVIDENCE_PENDING,
+                    retryable=True,
+                    availability=ApplicationReadAvailability.PENDING,
+                    token=token,
+                )
+            data = _map_evidence_record(
+                journey.evidence_context,
+                record_dict,
+                payload,
+                candidate_rows,
+            )
+        except Exception:
+            return _evidence_failure(
+                ApplicationReadErrorCode.EVIDENCE_MAPPING_FAILED,
+                retryable=False,
+                token=token,
+            )
+        observed_at = (
+            _optional_evidence_time(payload.get("updated_at"))
+            or _optional_evidence_time(payload.get("created_at"))
+            or _optional_evidence_time(record.get("updated_at"))
+        )
+        if status in {"failed", "error"}:
+            return ApplicationReadResult(
+                availability=ApplicationReadAvailability.PARTIAL,
+                source_token=token,
+                source_observed_at=observed_at,
+                value=data,
+                error=ApplicationReadError(
+                    code=ApplicationReadErrorCode.EVIDENCE_MAPPING_FAILED,
+                    message="The Diagnostic Evidence result failed.",
+                    retryable=False,
+                ),
+            )
+        if status in {"partial", "running", "pending"}:
+            return ApplicationReadResult(
+                availability=ApplicationReadAvailability.PARTIAL,
+                source_token=token,
+                source_observed_at=observed_at,
+                value=data,
+                error=ApplicationReadError(
+                    code=ApplicationReadErrorCode.EVIDENCE_PARTIAL,
+                    message=(
+                        "Some diagnostic evidence is incomplete or "
+                        "temporarily unavailable."
+                    ),
+                    retryable=True,
+                ),
+            )
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=token,
+            source_observed_at=observed_at,
+            value=data,
+            error=None,
+        )
 
 
 def _failure(code: str) -> ApplicationReadResult[RunMonitoringData]:
@@ -125,6 +249,32 @@ def _failure(code: str) -> ApplicationReadResult[RunMonitoringData]:
             code=error_code,
             message="Run Monitoring data is unavailable.",
             retryable=error_code is ApplicationReadErrorCode.READ_FAILED,
+        ),
+    )
+
+
+def _evidence_failure(
+    code: ApplicationReadErrorCode,
+    *,
+    retryable: bool,
+    availability: ApplicationReadAvailability = (
+        ApplicationReadAvailability.FAILED
+    ),
+    token: SourceRevisionToken | None = None,
+) -> ApplicationReadResult[EvidenceAndFindingsData]:
+    return ApplicationReadResult(
+        availability=availability,
+        source_token=token,
+        source_observed_at=None,
+        value=None,
+        error=ApplicationReadError(
+            code=code,
+            message=(
+                "Diagnostic Evidence is still materializing."
+                if code is ApplicationReadErrorCode.EVIDENCE_PENDING
+                else "Diagnostic Evidence is unavailable."
+            ),
+            retryable=retryable,
         ),
     )
 
@@ -233,6 +383,31 @@ def _map_record(
         capabilities=DiagnosticTaskCapabilities(False, False, False),
         active_task=None,
     )
+
+
+def _evidence_semantic_payload(
+    record: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> dict[str, object]:
+    transient = {
+        "revision",
+        "updated_at",
+        "created_at",
+        "_source_version_order",
+        "content_digest",
+    }
+    return {
+        "record": {
+            str(key): value
+            for key, value in record.items()
+            if key not in transient and key != "evidence_and_findings"
+        },
+        "payload": {
+            str(key): value
+            for key, value in payload.items()
+            if key not in transient
+        },
+    }
 
 
 def _token(value: object) -> SourceRevisionToken:

@@ -32,11 +32,15 @@ from .evidence_and_findings import (
     CandidateEvidence,
     DependencyProvenance,
     DiagnosticCandidateId,
+    DiagnosticEvidenceChart,
+    DiagnosticEvidenceCurve,
     DiagnosticEvidencePackageId,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsData,
     EvidenceAndFindingsSelection,
     EvidenceAvailability,
+    EvidenceChartOverlay,
+    EvidenceChartOverlayAxis,
     EvidenceComparison,
     EvidenceComparisonId,
     EvidenceCoverage,
@@ -52,6 +56,8 @@ from .evidence_and_findings import (
     ReadOnlyEvidenceContext,
     SensitivityBreakpoint,
     SensitivityBreakpointId,
+    SensitivityCurveAxis,
+    SensitivityCurvePoint,
 )
 from .run_monitoring import (
     AlertSeverity,
@@ -132,9 +138,13 @@ _RISK_METRICS = frozenset(
     {
         "maximum_drawdown",
         "maximum_recovery_duration_minutes",
+        "worst_period_return",
+    }
+)
+_STABILITY_METRICS = frozenset(
+    {
         "return_volatility",
         "loss_period_fraction",
-        "worst_period_return",
     }
 )
 _EXPOSURE_METRICS = frozenset(
@@ -214,6 +224,7 @@ class _ResolvedBackendJourney:
 class _SealedEvidenceGraph:
     metrics: tuple[Mapping[str, object], ...]
     comparisons: tuple[Mapping[str, object], ...]
+    curves: tuple[Mapping[str, object], ...]
     breakpoints: tuple[Mapping[str, object], ...]
     findings: tuple[Mapping[str, object], ...]
 
@@ -222,6 +233,7 @@ class _SealedEvidenceGraph:
         return cls(
             metrics=_mapping_sequence(payload, "metrics"),
             comparisons=_mapping_sequence(payload, "comparisons"),
+            curves=_mapping_sequence(payload, "sensitivity_curves"),
             breakpoints=_mapping_sequence(payload, "sensitivity_breakpoints"),
             findings=_mapping_sequence(payload, "diagnostic_findings"),
         )
@@ -729,7 +741,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             raise ValueError("Canceled Strategy Run cannot claim a completed artifact")
 
         observed_at = resolved.observed_at
-        assumptions = ()
+        assumptions: tuple[ExecutionAssumption, ...] = ()
         if specification.resolved_execution_conditions is not None:
             assumptions = tuple(
                 ExecutionAssumption(
@@ -920,35 +932,190 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
     ) -> None:
         metric_ids = _unique_source_ids(graph.metrics, "metric_id")
         comparison_ids = _unique_source_ids(graph.comparisons, "comparison_id")
+        _unique_source_ids(graph.curves, "curve_id")
         breakpoint_ids = _unique_source_ids(graph.breakpoints, "breakpoint_id")
         _unique_source_ids(graph.findings, "finding_id")
+        metrics_by_id = {
+            str(metric["metric_id"]): metric for metric in graph.metrics
+        }
+        curves_by_id = {
+            str(curve["curve_id"]): curve for curve in graph.curves
+        }
+        curve_points_by_id: dict[
+            str,
+            tuple[Mapping[str, object], ...],
+        ] = {}
+        breakpoint_strategy_by_id: dict[str, str] = {}
+        known_case_ids: set[str] = set()
+        known_run_ids: set[str] = set()
+        for metric in graph.metrics:
+            _require_manifest_relationship(
+                metric,
+                manifests_by_reference,
+            )
+            known_case_ids.add(str(metric["case_id"]))
+            known_run_ids.add(str(metric["run_id"]))
         for comparison in graph.comparisons:
-            if not {
-                str(comparison["control_metric_id"]),
-                str(comparison["subject_metric_id"]),
-            }.issubset(metric_ids):
+            control = metrics_by_id.get(str(comparison["control_metric_id"]))
+            subject = metrics_by_id.get(str(comparison["subject_metric_id"]))
+            if control is None or subject is None:
                 raise ValueError("Evidence comparison has a dangling metric")
+            for prefix, metric in (
+                ("control", control),
+                ("subject", subject),
+            ):
+                for comparison_key, metric_key in (
+                    (f"{prefix}_strategy_id", "strategy_id"),
+                    (f"{prefix}_strategy_version", "strategy_version"),
+                    (f"{prefix}_case_id", "case_id"),
+                    (f"{prefix}_run_id", "run_id"),
+                    (
+                        f"{prefix}_run_artifact_hash",
+                        "run_artifact_hash",
+                    ),
+                    (
+                        f"{prefix}_reproduction_manifest_id",
+                        "reproduction_manifest_id",
+                    ),
+                ):
+                    if str(comparison[comparison_key]) != str(
+                        metric[metric_key]
+                    ):
+                        raise ValueError(
+                            "Evidence comparison relationship does not match "
+                            "its metric"
+                        )
+                if str(comparison["metric_name"]) != str(metric["name"]):
+                    raise ValueError(
+                        "Evidence comparison metric family does not match"
+                    )
+            if Decimal(str(comparison["delta"])) != (
+                Decimal(str(subject["value"]))
+                - Decimal(str(control["value"]))
+            ):
+                raise ValueError("Evidence comparison delta does not match")
+        for curve in graph.curves:
+            points = _mapping_sequence(curve, "points")
+            if len(points) < 2:
+                raise ValueError("Sensitivity curve has fewer than two points")
+            curve_id = str(curve["curve_id"])
+            curve_points_by_id[curve_id] = points
+            for point in points:
+                metric_id = str(point["metric_id"])
+                curve_metric = metrics_by_id.get(metric_id)
+                if curve_metric is None:
+                    raise ValueError("Sensitivity curve has a dangling metric")
+                for key in (
+                    "strategy_id",
+                    "strategy_version",
+                    "metric_name",
+                ):
+                    metric_key = "name" if key == "metric_name" else key
+                    if str(curve[key]) != str(curve_metric[metric_key]):
+                        raise ValueError(
+                            "Sensitivity curve relationship does not match its "
+                            "metric"
+                        )
+                for point_key, metric_key in (
+                    ("case_id", "case_id"),
+                    ("run_id", "run_id"),
+                    ("value", "value"),
+                    ("run_artifact_hash", "run_artifact_hash"),
+                    (
+                        "reproduction_manifest_id",
+                        "reproduction_manifest_id",
+                    ),
+                ):
+                    if str(point[point_key]) != str(
+                        curve_metric[metric_key]
+                    ):
+                        raise ValueError(
+                            "Sensitivity curve point does not match its metric"
+                        )
         for breakpoint in graph.breakpoints:
-            if not _string_set(breakpoint, "metric_ids").issubset(metric_ids):
-                raise ValueError("Sensitivity breakpoint has a dangling metric")
-            if not _string_set(
+            curve_id = str(breakpoint["curve_id"])
+            source_curve = curves_by_id.get(curve_id)
+            if source_curve is None:
+                raise ValueError("Sensitivity breakpoint has a dangling curve")
+            breakpoint_id = str(breakpoint["breakpoint_id"])
+            for key in (
+                "transformation_family",
+                "strategy_id",
+                "strategy_version",
+                "metric_name",
+            ):
+                if str(breakpoint[key]) != str(source_curve[key]):
+                    raise ValueError(
+                        "Sensitivity breakpoint relationship does not match "
+                        "its curve"
+                    )
+            selected_points = _selected_breakpoint_points(
                 breakpoint,
-                "comparison_ids",
-            ).issubset(comparison_ids):
-                raise ValueError("Sensitivity breakpoint has a dangling comparison")
+                curve_points_by_id[curve_id],
+            )
+            for breakpoint_key, point_key in (
+                ("case_ids", "case_id"),
+                ("run_ids", "run_id"),
+                ("metric_ids", "metric_id"),
+                ("run_artifact_hashes", "run_artifact_hash"),
+                (
+                    "reproduction_manifest_ids",
+                    "reproduction_manifest_id",
+                ),
+            ):
+                if _string_tuple(breakpoint, breakpoint_key) != tuple(
+                    str(point[point_key]) for point in selected_points
+                ):
+                    raise ValueError(
+                        "Sensitivity breakpoint relationship does not match "
+                        "its selected curve points"
+                    )
+            expected_comparison_ids = _breakpoint_comparison_ids(
+                source_curve,
+                selected_points,
+                graph.comparisons,
+            )
+            if (
+                _string_tuple(breakpoint, "comparison_ids")
+                != expected_comparison_ids
+            ):
+                raise ValueError(
+                    "Sensitivity breakpoint comparisons do not match "
+                    "its selected curve points"
+                )
+            breakpoint_strategy_by_id[breakpoint_id] = str(
+                source_curve["strategy_id"]
+            )
         for finding in graph.findings:
-            if not _string_set(finding, "metric_ids").issubset(metric_ids):
+            finding_metric_ids = _string_set(finding, "metric_ids")
+            if not finding_metric_ids.issubset(metric_ids):
                 raise ValueError("Finding has a dangling metric")
-            if not _string_set(
+            finding_comparison_ids = _string_set(
                 finding,
                 "comparison_ids",
-            ).issubset(comparison_ids):
+            )
+            if not finding_comparison_ids.issubset(comparison_ids):
                 raise ValueError("Finding has a dangling comparison")
-            if not _string_set(
+            finding_breakpoint_ids = _string_set(
                 finding,
                 "breakpoint_ids",
-            ).issubset(breakpoint_ids):
+            )
+            if not finding_breakpoint_ids.issubset(breakpoint_ids):
                 raise ValueError("Finding has a dangling breakpoint")
+            if any(
+                breakpoint_strategy_by_id[breakpoint_id]
+                != str(finding["strategy_id"])
+                for breakpoint_id in finding_breakpoint_ids
+            ):
+                raise ValueError(
+                    "Finding relationship does not match its breakpoints"
+                )
+            if not _string_set(finding, "case_ids").issubset(
+                known_case_ids
+            ):
+                raise ValueError("Finding has a dangling Campaign Case")
+            if not _string_set(finding, "run_ids").issubset(known_run_ids):
+                raise ValueError("Finding has a dangling Strategy Run")
             if any(
                 reference not in manifests_by_reference
                 for reference in _string_set(
@@ -1006,8 +1173,35 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                 key=lambda item: str(item["finding_id"]),
             )
         )
+        selected_curves = tuple(
+            sorted(
+                (
+                    item
+                    for item in graph.curves
+                    if item["strategy_id"] == strategy_id
+                    and item["strategy_version"] == strategy_version
+                ),
+                key=lambda item: str(item["curve_id"]),
+            )
+        )
         breakpoints_by_id = {
             str(item["breakpoint_id"]): item for item in graph.breakpoints
+        }
+        breakpoints_by_curve: dict[
+            str,
+            tuple[Mapping[str, object], ...],
+        ] = {
+            str(curve["curve_id"]): tuple(
+                sorted(
+                    (
+                        breakpoint
+                        for breakpoint in graph.breakpoints
+                        if breakpoint["curve_id"] == curve["curve_id"]
+                    ),
+                    key=lambda item: str(item["breakpoint_id"]),
+                )
+            )
+            for curve in selected_curves
         }
         mapped_records = tuple(_map_metric(item) for item in selected_metrics)
         mapped_comparisons = tuple(
@@ -1020,6 +1214,21 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                 breakpoints_by_id,
             )
             for item in selected_findings
+        )
+        mapped_curves = tuple(
+            _map_curve(
+                item,
+                breakpoints_by_curve[str(item["curve_id"])],
+            )
+            for item in selected_curves
+        )
+        primary_chart = next(
+            (
+                curve.chart
+                for curve in mapped_curves
+                if curve.chart is not None
+            ),
+            None,
         )
         relevant_manifests = tuple(
             item
@@ -1046,7 +1255,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                     item.manifest_content_hash,
                 }
             )
-        assumptions = ()
+        assumptions: tuple[ExecutionAssumption, ...] = ()
         if relevant_manifests:
             resolved_conditions = relevant_manifests[
                 0
@@ -1089,7 +1298,8 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                     )
                 ),
             ),
-            chart=None,
+            chart=primary_chart,
+            curves=mapped_curves,
         )
 
     def _evidence_context(
@@ -1361,11 +1571,149 @@ def _string_set(
     return {str(item) for item in value}
 
 
+def _string_tuple(
+    payload: Mapping[str, object],
+    key: str,
+) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TypeError(f"{key} must be a sequence")
+    return tuple(str(item) for item in value)
+
+
+def _require_manifest_relationship(
+    payload: Mapping[str, object],
+    manifests_by_reference: Mapping[str, ReproductionManifest],
+) -> None:
+    reference_id = str(payload["reproduction_manifest_id"])
+    manifest = manifests_by_reference.get(reference_id)
+    if manifest is None:
+        raise ValueError("Evidence record has a dangling Reproduction Manifest")
+    expected = (
+        str(payload["case_id"]),
+        str(payload["run_id"]),
+        str(payload["run_artifact_hash"]),
+        str(payload["strategy_id"]),
+        str(payload["strategy_version"]),
+    )
+    actual = (
+        manifest.case_id,
+        manifest.run_id,
+        manifest.run_artifact_hash,
+        manifest.specification.strategy_id,
+        manifest.specification.strategy_version,
+    )
+    if expected != actual:
+        raise ValueError(
+            "Evidence record relationship does not match its "
+            "Reproduction Manifest"
+        )
+
+
+def _selected_breakpoint_points(
+    breakpoint: Mapping[str, object],
+    curve_points: tuple[Mapping[str, object], ...],
+) -> tuple[Mapping[str, object], ...]:
+    observed = breakpoint.get("observed_level")
+    bounded = breakpoint.get("bounded_interval")
+    case_ids: tuple[str, ...]
+    declared_parameters: tuple[object, ...]
+    if isinstance(observed, Mapping) and bounded is None:
+        case_ids = (str(observed["case_id"]),)
+        declared_parameters = (observed["parameters"],)
+    elif observed is None and isinstance(bounded, Mapping):
+        case_ids = (
+            str(bounded["lower_case_id"]),
+            str(bounded["upper_case_id"]),
+        )
+        declared_parameters = (
+            bounded["lower_parameters"],
+            bounded["upper_parameters"],
+        )
+    else:
+        raise ValueError(
+            "Sensitivity breakpoint must select one observed level or "
+            "one bounded interval"
+        )
+    points_by_case = {
+        str(point["case_id"]): point for point in curve_points
+    }
+    if len(points_by_case) != len(curve_points):
+        raise ValueError("Sensitivity curve Case identities must be unique")
+    try:
+        selected = tuple(points_by_case[case_id] for case_id in case_ids)
+    except KeyError as error:
+        raise ValueError(
+            "Sensitivity breakpoint selects a missing curve point"
+        ) from error
+    for parameters, point in zip(
+        declared_parameters,
+        selected,
+        strict=True,
+    ):
+        point_parameters = point.get("parameters")
+        if (
+            not isinstance(parameters, Mapping)
+            or not isinstance(point_parameters, Mapping)
+            or {
+                str(key): str(value)
+                for key, value in parameters.items()
+            }
+            != {
+                str(key): str(value)
+                for key, value in point_parameters.items()
+            }
+        ):
+            raise ValueError(
+                "Sensitivity breakpoint parameters do not match "
+                "its selected curve point"
+            )
+    return selected
+
+
+def _breakpoint_comparison_ids(
+    curve: Mapping[str, object],
+    selected_points: tuple[Mapping[str, object], ...],
+    comparisons: tuple[Mapping[str, object], ...],
+) -> tuple[str, ...]:
+    strategy_id = str(curve["strategy_id"])
+    metric_name = str(curve["metric_name"])
+    related = (
+        str(comparison["comparison_id"])
+        for point in selected_points
+        for comparison in comparisons
+        if str(comparison["metric_name"]) == metric_name
+        and strategy_id
+        in (
+            str(
+                comparison.get(
+                    "subject_strategy_id",
+                    comparison["strategy_id"],
+                )
+            ),
+            str(
+                comparison.get(
+                    "control_strategy_id",
+                    comparison["strategy_id"],
+                )
+            ),
+        )
+        and str(point["case_id"])
+        in (
+            str(comparison["subject_case_id"]),
+            str(comparison["control_case_id"]),
+        )
+    )
+    return tuple(dict.fromkeys(related))
+
+
 def _dimension(name: str) -> EvidenceDimension:
     if name in _RETURN_METRICS:
         return EvidenceDimension.RETURN
     if name in _RISK_METRICS:
         return EvidenceDimension.RISK
+    if name in _STABILITY_METRICS:
+        return EvidenceDimension.STABILITY
     if name in _EXPOSURE_METRICS:
         return EvidenceDimension.EXPOSURE
     if name in _EXECUTION_METRICS:
@@ -1422,6 +1770,108 @@ def _map_comparison(payload: Mapping[str, object]) -> EvidenceComparison:
             f"Persisted V1 delta {payload['delta']} between control run "
             f"{payload['control_run_id']} and subject run "
             f"{payload['subject_run_id']}."
+        ),
+    )
+
+
+def _map_curve(
+    payload: Mapping[str, object],
+    breakpoints: Sequence[Mapping[str, object]],
+) -> DiagnosticEvidenceCurve:
+    metric_name = str(payload["metric_name"])
+    points = tuple(
+        _map_curve_point(point)
+        for point in _mapping_sequence(payload, "points")
+    )
+    overlays = tuple(_map_curve_overlay(item) for item in breakpoints)
+    chart = (
+        DiagnosticEvidenceChart(
+            identity=str(payload["curve_id"]),
+            label=(
+                f"{payload['transformation_family']} · "
+                f"{metric_name.replace('_', ' ')}"
+            ),
+            unit=_unit(metric_name),
+            values=tuple(
+                float(Decimal(point.value))
+                for point in points
+            ),
+            overlays=overlays,
+        )
+        if overlays
+        else None
+    )
+    return DiagnosticEvidenceCurve(
+        identity=str(payload["curve_id"]),
+        transformation_family=str(payload["transformation_family"]),
+        transformation_id=str(payload["transformation_id"]),
+        strategy_id=StrategyUnderTestId(str(payload["strategy_id"])),
+        strategy_version=str(payload["strategy_version"]),
+        metric_name=metric_name,
+        unit=_unit(metric_name),
+        axis=_map_curve_axis(payload.get("sweep_axis")),
+        points=points,
+        chart=chart,
+    )
+
+
+def _map_curve_axis(value: object) -> SensitivityCurveAxis | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("Sensitivity curve axis must be an object")
+    return SensitivityCurveAxis(
+        parameter_name=str(value["parameter_name"]),
+        value_type=str(value["value_type"]),
+        order=str(value["order"]),
+    )
+
+
+def _map_curve_point(
+    payload: Mapping[str, object],
+) -> SensitivityCurvePoint:
+    parameters = payload.get("parameters")
+    if not isinstance(parameters, Mapping):
+        raise TypeError("Sensitivity curve point parameters must be an object")
+    return SensitivityCurvePoint(
+        case_id=MarketScenarioId(str(payload["case_id"])),
+        run_id=StrategyRunId(str(payload["run_id"])),
+        evidence_id=EvidenceRecordId(str(payload["metric_id"])),
+        parameters=tuple(
+            sorted(
+                (str(name), str(value))
+                for name, value in parameters.items()
+            )
+        ),
+        value=str(payload["value"]),
+        run_artifact_hash=str(payload["run_artifact_hash"]),
+        reproduction_manifest_id=ReproductionManifestId(
+            str(payload["reproduction_manifest_id"])
+        ),
+    )
+
+
+def _map_curve_overlay(
+    payload: Mapping[str, object],
+) -> EvidenceChartOverlay:
+    threshold = payload.get("threshold")
+    if not isinstance(threshold, Mapping):
+        raise TypeError("Sensitivity breakpoint threshold must be an object")
+    return EvidenceChartOverlay(
+        identity=str(payload["breakpoint_id"]),
+        label=(
+            f"{payload['transformation_family']} · "
+            f"{payload['metric_name']} guardrail"
+        ),
+        axis=EvidenceChartOverlayAxis.HORIZONTAL,
+        coordinate=float(Decimal(str(threshold["value"]))),
+        interpretation=(
+            f"Persisted V1 guardrail {threshold['operator']} "
+            f"{threshold['value']}."
+        ),
+        evidence_ids=tuple(
+            EvidenceRecordId(value)
+            for value in sorted(_string_set(payload, "metric_ids"))
         ),
     )
 

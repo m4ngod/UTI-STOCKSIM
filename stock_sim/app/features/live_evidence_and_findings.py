@@ -1,4 +1,4 @@
-"""Live Evidence & Findings Adapter over runtime and persisted evidence data."""
+"""Live Evidence & Findings Adapter over the typed V1 application read model."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from math import isfinite
 import re
 from threading import RLock, current_thread
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from app.event_bridge import (
     EventBridge,
@@ -28,6 +28,7 @@ from .evidence_and_findings import (
     EvidenceAndFindingsData,
     EvidenceAndFindingsObserver,
     EvidenceAndFindingsPresentationState,
+    EvidenceAndFindingsSelection,
     EvidenceAndFindingsSource,
     EvidenceAndFindingsSubscription,
     EvidenceAndFindingsViewState,
@@ -58,6 +59,14 @@ from .run_monitoring import (
     StructuredFeatureError,
     ViewPhase,
 )
+from .strategy_diagnostics_v1_read_model import (
+    APPLICATION_READ_MODEL_INTERFACE_VERSION,
+    ApplicationReadAvailability,
+    ApplicationReadError,
+    SourceRevisionToken,
+    StrategyDiagnosticsV1ApplicationReadModel,
+    V1JourneySelector,
+)
 from .versioning import (
     EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
     FeatureInterfaceVersion,
@@ -65,13 +74,6 @@ from .versioning import (
 
 
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
-
-
-class _EvidenceAndFindingsRuntimeQueries(Protocol):
-    def get_evidence_and_findings_snapshot(
-        self,
-        run_id: str,
-    ) -> dict[str, Any] | None: ...
 
 
 class _LiveEvidenceSubscription:
@@ -113,13 +115,9 @@ class _LiveEvidenceSubscription:
 
 
 @dataclass(frozen=True, slots=True)
-class _SourceVersion:
-    """Comparable source identity for numeric and artifact-backed records."""
-
-    revision: int | None
-    identity: str | None
-    order: int | None
-    created_at: datetime | None
+class _AuthoritativeEvidenceRead:
+    state: EvidenceAndFindingsViewState
+    source_token: SourceRevisionToken | None
 
 
 class LiveEvidenceAndFindingsAdapter:
@@ -128,14 +126,16 @@ class LiveEvidenceAndFindingsAdapter:
     def __init__(
         self,
         *,
-        runtime_gateway: _EvidenceAndFindingsRuntimeQueries,
+        application_read_model: StrategyDiagnosticsV1ApplicationReadModel,
         event_bridge: EventBridge,
+        journey_selector: V1JourneySelector | None = None,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
         executor: Executor | None = None,
     ) -> None:
-        self._runtime_gateway = runtime_gateway
+        self._application_read_model = application_read_model
         self._event_bridge = event_bridge
+        self._journey_selector = journey_selector
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._freshness_threshold = freshness_threshold
         self._owns_executor = executor is None
@@ -155,13 +155,9 @@ class LiveEvidenceAndFindingsAdapter:
             EvidenceAndFindingsContext,
             EvidenceAndFindingsViewState,
         ] = {}
-        self._accepted_source_revisions: dict[
+        self._source_tokens: dict[
             EvidenceAndFindingsContext,
-            tuple[SourceGenerationId, _SourceVersion],
-        ] = {}
-        self._mapped_payload_cache: dict[
-            tuple[EvidenceAndFindingsContext, str],
-            EvidenceAndFindingsData,
+            SourceRevisionToken,
         ] = {}
         self._subscriptions: dict[
             int,
@@ -203,70 +199,119 @@ class LiveEvidenceAndFindingsAdapter:
         self,
         context: EvidenceAndFindingsContext,
     ) -> EvidenceAndFindingsViewState:
-        while True:
-            with self._lock:
-                self._ensure_open()
-                current = self._states.get(context)
-                connection_phase = self._connection_phase
-                connection_generation = self._connection_generation
-            if current is not None:
-                aged = self._age_state(current)
-                if aged is not current:
-                    return self._store_and_notify(context, aged)
-                return current
-            if connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
-                observed_at = _aware(self._clock())
-                with self._lock:
-                    self._ensure_open()
-                    existing = self._states.get(context)
-                    if existing is not None:
-                        return existing
-                    unavailable = self._connection_view_state(
-                        self._empty_state(
-                            context,
-                            revision=1,
-                            observed_at=observed_at,
-                        ),
-                        connection_phase,
-                        revision=1,
-                        observed_at=observed_at,
-                    )
-                    self._states[context] = unavailable
-                    return unavailable
-            initial, source_revision = self._read_state(
-                context,
-                revision=1,
-            )
+        with self._lock:
+            self._ensure_open()
+            current = self._states.get(context)
+            connection_phase = self._connection_phase
+            connection_generation = self._connection_generation
+        if current is not None:
+            aged = self._age_state(current)
+            if aged is not current:
+                return self._store_and_notify(context, aged)
+            return current
+        if connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
+            observed_at = _aware(self._clock())
             with self._lock:
                 self._ensure_open()
                 existing = self._states.get(context)
                 if existing is not None:
                     return existing
-                connection_changed = (
+                unavailable = self._connection_view_state(
+                    self._empty_state(
+                        context,
+                        revision=1,
+                        observed_at=observed_at,
+                    ),
+                    connection_phase,
+                    revision=1,
+                    observed_at=observed_at,
+                )
+                self._states[context] = unavailable
+                return unavailable
+        if self._owns_executor:
+            return self._start_initial_read(
+                context,
+                generation=connection_generation,
+            )
+        while True:
+            authoritative = self._read_state(context, revision=1)
+            initial = authoritative.state
+            with self._lock:
+                self._ensure_open()
+                existing = self._states.get(context)
+                if existing is not None:
+                    return existing
+                if (
+                    self._connection_phase
+                    is EventBridgeConnectionPhase.CONNECTED
+                    and self._connection_generation != connection_generation
+                ):
+                    connection_generation = self._connection_generation
+                    continue
+                if (
                     self._connection_phase
                     is not EventBridgeConnectionPhase.CONNECTED
-                    or self._connection_generation != connection_generation
-                )
-                if (
-                    connection_changed
-                    and self._connection_phase
-                    is EventBridgeConnectionPhase.CONNECTED
                 ):
-                    continue
-                if connection_changed:
                     initial = self._connection_view_state(
                         initial,
                         self._connection_phase,
                         revision=1,
                     )
-                    source_revision = None
                 self._states[context] = initial
-                if source_revision is not None:
-                    self._accepted_source_revisions[context] = (
-                        initial.source.generation,
-                        source_revision,
-                    )
+                if authoritative.source_token is not None:
+                    self._source_tokens[context] = authoritative.source_token
                 return initial
+
+    def _start_initial_read(
+        self,
+        context: EvidenceAndFindingsContext,
+        *,
+        generation: SourceGenerationId,
+    ) -> EvidenceAndFindingsViewState:
+        observed_at = _aware(self._clock())
+        should_schedule = False
+        with self._lock:
+            self._ensure_open()
+            existing = self._states.get(context)
+            if existing is not None:
+                return existing
+            if (
+                self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+                or generation != self._connection_generation
+            ):
+                unavailable = self._connection_view_state(
+                    self._empty_state(
+                        context,
+                        revision=1,
+                        observed_at=observed_at,
+                    ),
+                    self._connection_phase,
+                    revision=1,
+                    observed_at=observed_at,
+                )
+                self._states[context] = unavailable
+                return unavailable
+            loading = self._loading_state(
+                context,
+                revision=1,
+                observed_at=observed_at,
+            )
+            self._states[context] = loading
+            self._pending_refreshes[context] = generation
+            if context not in self._scheduled_refreshes:
+                self._scheduled_refreshes.add(context)
+                should_schedule = True
+        if should_schedule:
+            try:
+                self._executor.submit(self._drain_refreshes, context)
+            except RuntimeError:
+                with self._lock:
+                    if not self._closed:
+                        self._scheduled_refreshes.discard(context)
+                        self._pending_refreshes.pop(context, None)
+                        raise
+        return loading
 
     def subscribe(
         self,
@@ -305,7 +350,6 @@ class LiveEvidenceAndFindingsAdapter:
             self._dispose_connection_subscription = lambda: None
             self._pending_refreshes.clear()
             self._scheduled_refreshes.clear()
-            self._mapped_payload_cache.clear()
         dispose_batch()
         dispose_connection()
         for subscription in subscriptions:
@@ -493,15 +537,25 @@ class LiveEvidenceAndFindingsAdapter:
             ):
                 return False
             previous = self._states.get(context)
+            previous_token = self._source_tokens.get(context)
         if previous is None:
             return False
-        state, source_revision = self._read_state(
+        authoritative = self._read_state(
             context,
             revision=previous.revision + 1,
         )
+        state = authoritative.state
+        source_token_to_store = authoritative.source_token
+        if (
+            authoritative.source_token is not None
+            and authoritative.source_token == previous_token
+            and _same_authoritative_presentation(previous, state)
+        ):
+            return False
         if (
             state.last_reliable_data is None
             and previous.last_reliable_data is not None
+            and (state.error is None or state.error.retryable)
         ):
             elapsed = max(
                 state.observed_at - previous.observed_at,
@@ -524,13 +578,15 @@ class LiveEvidenceAndFindingsAdapter:
                     ),
                     retryable=True,
                 ),
+                completeness=previous.completeness,
             )
+            source_token_to_store = previous_token
         stored = self._store_and_notify(
             context,
             state,
             expected_revision=previous.revision,
             expected_connection_sequence=target_sequence,
-            source_revision=source_revision,
+            source_token=source_token_to_store,
         )
         if stored is state:
             return False
@@ -545,12 +601,6 @@ class LiveEvidenceAndFindingsAdapter:
                 and current is stored
                 and current is not None
                 and current.revision != previous.revision
-                and self._source_revision_is_new_locked(
-                    context,
-                    generation,
-                    source_revision,
-                    state,
-                )
             )
 
     def _read_state(
@@ -558,161 +608,198 @@ class LiveEvidenceAndFindingsAdapter:
         context: EvidenceAndFindingsContext,
         *,
         revision: int,
-    ) -> tuple[
-        EvidenceAndFindingsViewState,
-        _SourceVersion | None,
-    ]:
+    ) -> _AuthoritativeEvidenceRead:
         observed_at = _aware(self._clock())
         selection = context.selection
         if selection is None:
-            return (
-                self._empty_state(
+            return _AuthoritativeEvidenceRead(
+                state=self._empty_state(
                     context,
                     revision=revision,
                     observed_at=observed_at,
                 ),
-                None,
+                source_token=None,
             )
-        try:
-            record = (
-                self._runtime_gateway
-                .get_evidence_and_findings_snapshot(
-                    selection.run_id.value
-                )
-            )
-        except Exception:
-            return (
-                self._failed_state(
+        if not APPLICATION_READ_MODEL_INTERFACE_VERSION.accepts(
+            self._application_read_model.interface_version
+        ):
+            return _AuthoritativeEvidenceRead(
+                state=self._failed_state(
                     context,
                     revision=revision,
                     observed_at=observed_at,
-                    code="evidence_and_findings_query_failed",
+                    code="strategy_diagnostics_contract_incompatible",
                     message=(
-                        "Evidence & Findings data is temporarily unavailable."
-                    ),
-                    retryable=True,
-                    disconnected=True,
-                ),
-                None,
-            )
-        if record is None:
-            return (
-                self._empty_state(
-                    context,
-                    revision=revision,
-                    observed_at=observed_at,
-                ),
-                None,
-            )
-        source_revision = _source_version(record, record)
-        try:
-            _validate_record_selection(context, record)
-            payload = _evidence_payload(record)
-            _validate_record_selection(context, payload)
-            source_revision = _source_version(record, payload)
-            status = _status_token(
-                payload.get("status")
-                or record.get("status")
-            )
-            candidate_rows = _candidate_rows(payload)
-            if not candidate_rows:
-                if status in {"loading", "running", "pending"}:
-                    return (
-                        self._loading_state(
-                            context,
-                            revision=revision,
-                            observed_at=observed_at,
-                        ),
-                        source_revision,
-                    )
-                if status in {"failed", "error"}:
-                    return (
-                        self._failed_state(
-                            context,
-                            revision=revision,
-                            observed_at=observed_at,
-                            code="evidence_and_findings_source_failed",
-                            message=(
-                                "The diagnostic evidence source reported "
-                                "a failed result."
-                            ),
-                            retryable=False,
-                            disconnected=False,
-                        ),
-                        source_revision,
-                    )
-                return (
-                    self._empty_state(
-                        context,
-                        revision=revision,
-                        observed_at=observed_at,
-                    ),
-                    source_revision,
-                )
-            content_digest = _content_digest(record, payload)
-            cache_key = (
-                None
-                if content_digest is None
-                else (context, content_digest)
-            )
-            with self._lock:
-                data = (
-                    None
-                    if cache_key is None
-                    else self._mapped_payload_cache.get(cache_key)
-                )
-            if data is None:
-                data = _map_record(
-                    context,
-                    record,
-                    payload,
-                    candidate_rows,
-                )
-                if cache_key is not None:
-                    with self._lock:
-                        if not self._closed:
-                            self._mapped_payload_cache = {
-                                key: value
-                                for key, value
-                                in self._mapped_payload_cache.items()
-                                if key[0] != context
-                            }
-                            self._mapped_payload_cache[cache_key] = data
-        except Exception:
-            return (
-                self._failed_state(
-                    context,
-                    revision=revision,
-                    observed_at=observed_at,
-                    code="evidence_and_findings_mapping_failed",
-                    message=(
-                        "Evidence & Findings data failed integrity validation."
+                        "The Strategy Diagnostics read-model version is "
+                        "incompatible."
                     ),
                     retryable=False,
                     disconnected=False,
                 ),
-                source_revision,
+                source_token=None,
             )
-        source_updated_at = (
-            _optional_aware(payload.get("updated_at"))
-            or _optional_aware(payload.get("created_at"))
-            or _optional_aware(record.get("updated_at"))
-            or observed_at
+
+        configured_selector = self._journey_selector
+        selector = (
+            configured_selector
+            if configured_selector is not None
+            and configured_selector.campaign_id == selection.campaign_id
+            and configured_selector.run_id == selection.run_id
+            else V1JourneySelector(
+                campaign_id=selection.campaign_id,
+                run_id=selection.run_id,
+                manifest_id=selection.reproduction_manifest_id,
+            )
         )
-        age = max(observed_at - source_updated_at, timedelta(0))
+        try:
+            journey_result = self._application_read_model.resolve_journey(
+                selector
+            )
+            if journey_result.value is None:
+                error = _structured_application_error(journey_result.error)
+                if (
+                    journey_result.availability
+                    is ApplicationReadAvailability.PENDING
+                ):
+                    return _AuthoritativeEvidenceRead(
+                        state=self._loading_state(
+                            context,
+                            revision=revision,
+                            observed_at=observed_at,
+                            error=error,
+                        ),
+                        source_token=journey_result.source_token,
+                    )
+                return _AuthoritativeEvidenceRead(
+                    state=self._failed_state(
+                        context,
+                        revision=revision,
+                        observed_at=observed_at,
+                        code=error.code,
+                        message=error.message,
+                        retryable=error.retryable,
+                        disconnected=False,
+                    ),
+                    source_token=journey_result.source_token,
+                )
+            journey = journey_result.value
+            if not _selection_accepts(
+                selection,
+                journey.evidence_context.selection,
+            ):
+                return _AuthoritativeEvidenceRead(
+                    state=self._failed_state(
+                        context,
+                        revision=revision,
+                        observed_at=observed_at,
+                        code="strategy_diagnostics_identity_mismatch",
+                        message=(
+                            "The resolved Diagnostic Evidence identity does "
+                            "not match the selected Journey."
+                        ),
+                        retryable=False,
+                        disconnected=False,
+                    ),
+                    source_token=journey_result.source_token,
+                )
+            evidence_result = self._application_read_model.read_evidence(
+                journey
+            )
+        except Exception:  # noqa: BLE001 - typed seam must fail closed
+            return _AuthoritativeEvidenceRead(
+                state=self._failed_state(
+                    context,
+                    revision=revision,
+                    observed_at=observed_at,
+                    code="strategy_diagnostics_read_failed",
+                    message=(
+                        "Evidence & Findings data is temporarily unavailable."
+                    ),
+                    retryable=True,
+                    disconnected=False,
+                ),
+                source_token=None,
+            )
+
+        if evidence_result.value is None:
+            error = _structured_application_error(evidence_result.error)
+            if (
+                evidence_result.availability
+                is ApplicationReadAvailability.PENDING
+            ):
+                return _AuthoritativeEvidenceRead(
+                    state=self._loading_state(
+                        context,
+                        revision=revision,
+                        observed_at=observed_at,
+                        error=error,
+                    ),
+                    source_token=evidence_result.source_token,
+                )
+            return _AuthoritativeEvidenceRead(
+                state=self._failed_state(
+                    context,
+                    revision=revision,
+                    observed_at=observed_at,
+                    code=error.code,
+                    message=error.message,
+                    retryable=error.retryable,
+                    disconnected=False,
+                ),
+                source_token=evidence_result.source_token,
+            )
+
+        data = evidence_result.value
+        if (
+            data.selection != journey.evidence_context.selection
+            or not _selection_accepts(selection, data.selection)
+            or (
+                journey.evidence_package_id is not None
+                and data.evidence_package_id
+                != journey.evidence_package_id
+            )
+            or (
+                selector.evidence_package_id is not None
+                and data.evidence_package_id
+                != selector.evidence_package_id
+            )
+        ):
+            return _AuthoritativeEvidenceRead(
+                state=self._failed_state(
+                    context,
+                    revision=revision,
+                    observed_at=observed_at,
+                    code="strategy_diagnostics_identity_mismatch",
+                    message=(
+                        "The authoritative Diagnostic Evidence projection does "
+                        "not match the selected Journey."
+                    ),
+                    retryable=False,
+                    disconnected=False,
+                ),
+                source_token=evidence_result.source_token,
+            )
+
+        source_observed_at = (
+            evidence_result.source_observed_at or observed_at
+        )
+        age = max(observed_at - source_observed_at, timedelta(0))
         stale = age > self._freshness_threshold
         completeness = _data_completeness(data)
-        failed = status in {"failed", "error"}
-        if status in {"partial", "running", "pending"} or failed:
+        partial = evidence_result.availability in {
+            ApplicationReadAvailability.PENDING,
+            ApplicationReadAvailability.PARTIAL,
+        }
+        if partial:
             completeness = Completeness.PARTIAL
-        partial = completeness is Completeness.PARTIAL
+        partial = partial or completeness is Completeness.PARTIAL
+        failed = (
+            evidence_result.error is not None
+            and not evidence_result.error.retryable
+        )
         error = (
-            StructuredFeatureError(
-                code="evidence_and_findings_source_failed",
-                message="The diagnostic evidence result is failed.",
-                retryable=False,
-            )
-            if failed
+            _structured_application_error(evidence_result.error)
+            if evidence_result.error is not None
             else StructuredFeatureError(
                 code="evidence_and_findings_source_stale",
                 message=(
@@ -722,7 +809,7 @@ class LiveEvidenceAndFindingsAdapter:
             )
             if stale
             else StructuredFeatureError(
-                code="evidence_and_findings_partial",
+                code="diagnostic_evidence_partial",
                 message=(
                     "Some diagnostic evidence is incomplete or unavailable."
                 ),
@@ -731,8 +818,8 @@ class LiveEvidenceAndFindingsAdapter:
             if partial
             else None
         )
-        return (
-            EvidenceAndFindingsViewState(
+        return _AuthoritativeEvidenceRead(
+            state=EvidenceAndFindingsViewState(
                 interface_version=self.interface_version,
                 revision=revision,
                 observed_at=observed_at,
@@ -757,7 +844,7 @@ class LiveEvidenceAndFindingsAdapter:
                 error=error,
                 completeness=completeness,
             ),
-            source_revision,
+            source_token=evidence_result.source_token,
         )
 
     def _loading_state(
@@ -766,6 +853,7 @@ class LiveEvidenceAndFindingsAdapter:
         *,
         revision: int,
         observed_at: datetime,
+        error: StructuredFeatureError | None = None,
     ) -> EvidenceAndFindingsViewState:
         return EvidenceAndFindingsViewState(
             interface_version=self.interface_version,
@@ -779,7 +867,7 @@ class LiveEvidenceAndFindingsAdapter:
             phase=ViewPhase.LOADING,
             presentation=EvidenceAndFindingsPresentationState.LOADING,
             last_reliable_data=None,
-            error=None,
+            error=error,
             completeness=Completeness.UNKNOWN,
         )
 
@@ -859,12 +947,7 @@ class LiveEvidenceAndFindingsAdapter:
         age = state.age + elapsed
         source_failed = (
             state.error is not None
-            and state.error.code
-            in {
-                "evidence_and_findings_query_failed",
-                "evidence_and_findings_mapping_failed",
-                "evidence_and_findings_source_unavailable",
-            }
+            and state.freshness is Freshness.STALE
         )
         stale = age > self._freshness_threshold
         if current_time == state.observed_at and age == state.age:
@@ -906,7 +989,7 @@ class LiveEvidenceAndFindingsAdapter:
         *,
         expected_revision: int | None = None,
         expected_connection_sequence: int | None = None,
-        source_revision: _SourceVersion | None = None,
+        source_token: SourceRevisionToken | None = None,
     ) -> EvidenceAndFindingsViewState:
         with self._lock:
             if self._closed:
@@ -925,13 +1008,6 @@ class LiveEvidenceAndFindingsAdapter:
                 return previous or state
             if state.source.generation != self._connection_generation:
                 return previous or state
-            if not self._source_revision_is_new_locked(
-                context,
-                state.source.generation,
-                source_revision,
-                state,
-            ):
-                return previous or state
             if (
                 state.freshness is Freshness.FRESH
                 and self._connection_phase
@@ -941,95 +1017,12 @@ class LiveEvidenceAndFindingsAdapter:
             if previous is not None and state.revision <= previous.revision:
                 return previous
             self._states[context] = state
-            if source_revision is not None:
-                self._accepted_source_revisions[context] = (
-                    state.source.generation,
-                    source_revision,
-                )
+            if source_token is not None:
+                self._source_tokens[context] = source_token
             deliveries = self._deliveries_for(context)
         for observer, subscription in deliveries:
             subscription.deliver(observer, state)
         return state
-
-    def _source_revision_is_new_locked(
-        self,
-        context: EvidenceAndFindingsContext,
-        generation: SourceGenerationId,
-        source_revision: _SourceVersion | None,
-        candidate: EvidenceAndFindingsViewState,
-    ) -> bool:
-        if source_revision is None:
-            return True
-        accepted = self._accepted_source_revisions.get(context)
-        if accepted is None or accepted[0] != generation:
-            return True
-        previous = accepted[1]
-        current = source_revision
-        if current.revision is not None:
-            if previous.revision is None:
-                return True
-            if current.revision > previous.revision:
-                return True
-            if current.revision < previous.revision:
-                return False
-            return self._equal_source_version_recovers_locked(
-                context,
-                candidate,
-            )
-        if previous.revision is not None:
-            return False
-        if current.identity is not None or previous.identity is not None:
-            if current.identity is None or previous.identity is None:
-                return current.identity is not None
-            if current.identity == previous.identity:
-                return self._equal_source_version_recovers_locked(
-                    context,
-                    candidate,
-                )
-            order = _compare_source_order(current.order, previous.order)
-            if order is not None:
-                return order
-            if (
-                current.created_at is None
-                or previous.created_at is None
-            ):
-                return False
-            return current.created_at > previous.created_at
-        order = _compare_source_order(current.order, previous.order)
-        if order is not None:
-            return order
-        if current.created_at is not None:
-            if previous.created_at is None:
-                return True
-            if current.created_at > previous.created_at:
-                return True
-            if current.created_at < previous.created_at:
-                return False
-        elif previous.created_at is not None:
-            return False
-        return self._equal_source_version_recovers_locked(
-            context,
-            candidate,
-        )
-
-    def _equal_source_version_recovers_locked(
-        self,
-        context: EvidenceAndFindingsContext,
-        candidate: EvidenceAndFindingsViewState,
-    ) -> bool:
-        visible = self._states.get(context)
-        return bool(
-            visible is not None
-            and visible.freshness is not Freshness.FRESH
-            and candidate.freshness is Freshness.FRESH
-            and candidate.phase is ViewPhase.READY
-            and candidate.presentation
-            is EvidenceAndFindingsPresentationState.READY
-            and candidate.error is None
-            and candidate.completeness is visible.completeness
-            and visible.last_reliable_data is not None
-            and candidate.last_reliable_data == visible.last_reliable_data
-        )
 
     def _deliveries_for(
         self,
@@ -1062,6 +1055,63 @@ class LiveEvidenceAndFindingsAdapter:
             identity="frontend-v2-live-evidence",
             generation=self._connection_generation,
         )
+
+
+def _structured_application_error(
+    error: ApplicationReadError | None,
+) -> StructuredFeatureError:
+    if error is None:
+        return StructuredFeatureError(
+            code="strategy_diagnostics_read_failed",
+            message="Evidence & Findings data is temporarily unavailable.",
+            retryable=True,
+        )
+    return StructuredFeatureError(
+        code=error.code.value,
+        message=error.message,
+        retryable=error.retryable,
+        correlation_id=error.correlation_id,
+    )
+
+
+def _selection_accepts(
+    expected: EvidenceAndFindingsSelection,
+    actual: EvidenceAndFindingsSelection | None,
+) -> bool:
+    if actual is None:
+        return False
+    if (
+        expected.campaign_id != actual.campaign_id
+        or expected.run_id != actual.run_id
+    ):
+        return False
+    optional_pairs = (
+        (expected.strategy_id, actual.strategy_id),
+        (expected.market_scenario_id, actual.market_scenario_id),
+        (expected.approved_recipe_id, actual.approved_recipe_id),
+        (
+            expected.reproduction_manifest_id,
+            actual.reproduction_manifest_id,
+        ),
+    )
+    return all(
+        expected_value is None or expected_value == actual_value
+        for expected_value, actual_value in optional_pairs
+    )
+
+
+def _same_authoritative_presentation(
+    previous: EvidenceAndFindingsViewState,
+    candidate: EvidenceAndFindingsViewState,
+) -> bool:
+    return (
+        previous.freshness is candidate.freshness
+        and previous.phase is candidate.phase
+        and previous.presentation is candidate.presentation
+        and previous.last_reliable_data == candidate.last_reliable_data
+        and previous.error == candidate.error
+        and previous.completeness is candidate.completeness
+    )
 
 
 def _map_record(
@@ -2012,79 +2062,6 @@ def _boolean(value: Any, *, default: bool) -> bool:
     if token in {"0", "false", "no", "off"}:
         return False
     raise ValueError("Evidence boolean value is invalid")
-
-
-def _source_version(
-    record: dict[str, Any],
-    payload: dict[str, Any],
-) -> _SourceVersion:
-    revision = _positive_int(
-        payload.get("revision")
-        or payload.get("evidence_revision")
-        or record.get("revision")
-        or record.get("evidence_revision")
-    )
-    identity = _optional_text(
-        payload.get("aggregate_hash")
-        or payload.get("evidence_hash")
-        or payload.get("record_hash")
-        or record.get("aggregate_hash")
-        or record.get("evidence_hash")
-        or record.get("record_hash")
-    )
-    order = _positive_int(
-        payload.get("_source_version_order")
-        or record.get("_source_version_order")
-    )
-    aggregate_backed = bool(
-        identity
-        or _status_token(payload.get("record_kind"))
-        == "series_evidence_aggregate_v1"
-    )
-    raw_created_at = (
-        payload.get("created_at")
-        or payload.get("updated_at")
-        or record.get("created_at")
-        or record.get("updated_at")
-        if aggregate_backed
-        else payload.get("updated_at")
-        or payload.get("created_at")
-        or record.get("updated_at")
-        or record.get("created_at")
-    )
-    try:
-        created_at = _optional_aware(raw_created_at)
-    except (TypeError, ValueError):
-        created_at = None
-    return _SourceVersion(
-        revision=revision,
-        identity=identity,
-        order=order,
-        created_at=created_at,
-    )
-
-
-def _compare_source_order(
-    current: int | None,
-    previous: int | None,
-) -> bool | None:
-    if current is None and previous is None:
-        return None
-    if current is None:
-        return False
-    if previous is None:
-        return True
-    if current == previous:
-        return None
-    return current > previous
-
-
-def _positive_int(value: Any) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
 
 
 def _slug(value: str) -> str:

@@ -651,6 +651,16 @@ Item {
                             Accessible.role: Accessible.StaticText
                             Accessible.name: text
                         }
+                        Text {
+                            objectName: "evidenceCurveCatalog"
+                            Layout.fillWidth: true
+                            text: adapter.curveCatalogText
+                            color: tokens.textMuted
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
+                        }
                     }
 
                     ColumnLayout {

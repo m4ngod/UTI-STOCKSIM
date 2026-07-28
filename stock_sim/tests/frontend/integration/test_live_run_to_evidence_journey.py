@@ -264,7 +264,10 @@ def test_live_monitored_run_navigates_to_matching_evidence_and_back():
         executor=_DirectExecutor(),
     )
     evidence_feature = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            gateway._queries,
+            evidence_context=evidence_context,
+        ),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -356,7 +359,10 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
         executor=_DirectExecutor(),
     )
     evidence_feature = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=evidence_context,
+        ),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),

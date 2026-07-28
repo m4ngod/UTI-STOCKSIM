@@ -156,7 +156,7 @@ class PackageSmokeResult:
 
 
 class _ReleaseCandidateRuntimeQueries:
-    """Typed Run fixture plus the pre-#51 Evidence query fixture."""
+    """Typed Run and Evidence read-model fixture for package smoke."""
 
     def __init__(self) -> None:
         self._revision = 1
@@ -340,13 +340,75 @@ class _ReleaseCandidateRuntimeQueries:
         )
 
     def read_evidence(self, journey: Any) -> Any:
-        from app.features import ApplicationReadErrorCode
+        from app.features import (
+            ApplicationReadAvailability,
+            ApplicationReadError,
+            ApplicationReadErrorCode,
+            ApplicationReadResult,
+        )
+        from app.features.live_evidence_and_findings import (
+            _candidate_rows,
+            _evidence_payload,
+            _map_record,
+        )
 
-        del journey
-        return self._read_failure(
-            code=ApplicationReadErrorCode.READ_FAILED,
-            message="Typed Evidence reads are introduced by Issue #51.",
-            retryable=False,
+        selection = journey.evidence_context.selection
+        if (
+            selection is None
+            or selection.campaign_id.value != CAMPAIGN_ID
+            or selection.run_id.value != RUN_ID
+        ):
+            return self._read_failure(
+                code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
+                message=(
+                    "The release-candidate Diagnostic Evidence identity "
+                    "does not match."
+                ),
+                retryable=False,
+            )
+        record = self.get_evidence_and_findings_snapshot(RUN_ID)
+        if record is None:
+            return self._read_failure(
+                code=ApplicationReadErrorCode.EVIDENCE_PENDING,
+                message="Release-candidate Diagnostic Evidence is pending.",
+                retryable=True,
+            )
+        try:
+            payload = _evidence_payload(record)
+            data = _map_record(
+                journey.evidence_context,
+                record,
+                payload,
+                _candidate_rows(payload),
+            )
+        except Exception:
+            return self._read_failure(
+                code=ApplicationReadErrorCode.EVIDENCE_MAPPING_FAILED,
+                message="Release-candidate Diagnostic Evidence is invalid.",
+                retryable=False,
+            )
+        partial = self._status != "completed"
+        return ApplicationReadResult(
+            availability=(
+                ApplicationReadAvailability.PARTIAL
+                if partial
+                else ApplicationReadAvailability.READY
+            ),
+            source_token=self._run_source_token(),
+            source_observed_at=self._updated_at,
+            value=data,
+            error=(
+                ApplicationReadError(
+                    code=ApplicationReadErrorCode.EVIDENCE_PARTIAL,
+                    message=(
+                        "The release-candidate Diagnostic Evidence package "
+                        "is not sealed yet."
+                    ),
+                    retryable=True,
+                )
+                if partial
+                else None
+            ),
         )
 
     def _run_source_token(self) -> Any:

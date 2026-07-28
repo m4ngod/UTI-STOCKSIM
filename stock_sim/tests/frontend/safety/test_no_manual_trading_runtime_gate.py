@@ -325,7 +325,10 @@ def mounted_v2_mode(request):
             executor=_DirectExecutor(),
         )
         evidence_feature = LiveEvidenceAndFindingsAdapter(
-            runtime_gateway=gateway,
+            application_read_model=DictionaryFixtureApplicationReadModel(
+                gateway._queries,
+                evidence_context=_evidence_context(),
+            ),
             event_bridge=bridge,
             clock=lambda: NOW,
             executor=_DirectExecutor(),

@@ -207,16 +207,18 @@ def build_app_context(
         live_bridge = event_bridge or start_frontend_bridge()
         if strategy_diagnostics_read_model is None:
             strategy_diagnostics_read_model = _build_strategy_diagnostics_read_model()
+        journey_selector = _v1_journey_selector_from_environment(
+            run_monitoring_context
+        )
         run_monitoring_feature = LiveRunMonitoringAdapter(
             application_read_model=strategy_diagnostics_read_model,
             event_bridge=live_bridge,
-            journey_selector=_v1_journey_selector_from_environment(
-                run_monitoring_context
-            ),
+            journey_selector=journey_selector,
         )
         evidence_and_findings_feature = LiveEvidenceAndFindingsAdapter(
-            runtime_gateway=runtime_gateway,
+            application_read_model=strategy_diagnostics_read_model,
             event_bridge=live_bridge,
+            journey_selector=journey_selector,
         )
     evidence_and_findings_context = _evidence_and_findings_context_from_environment(
         run_monitoring_context,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,6 +39,18 @@ from tests.strategy_diagnostics.test_diagnostic_evidence import (
 )
 
 NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+
+class _PayloadOverride:
+    def __init__(self, package, payload):
+        self._package = package
+        self._payload = payload
+
+    def __getattr__(self, name):
+        return getattr(self._package, name)
+
+    def sealed_payload(self):
+        return self._payload
 
 
 def _persist_formal_v1(database_path: Path, artifact_root: Path):
@@ -187,6 +200,11 @@ def test_live_adapter_reopens_file_backed_v1_and_preserves_exact_identities(
         for candidate in evidence.value.candidates
         for finding in candidate.findings
     }
+    curve_ids = {
+        curve.identity
+        for candidate in evidence.value.candidates
+        for curve in candidate.curves
+    }
     sealed = package.sealed_payload()
     assert metric_ids == {item["metric_id"] for item in sealed["metrics"]}
     assert comparison_ids == {
@@ -195,6 +213,176 @@ def test_live_adapter_reopens_file_backed_v1_and_preserves_exact_identities(
     assert finding_ids == {
         item["finding_id"] for item in sealed["diagnostic_findings"]
     }
+    assert curve_ids == {
+        item["curve_id"] for item in sealed["sensitivity_curves"]
+    }
+    assert {
+        point.evidence_id.value
+        for candidate in evidence.value.candidates
+        for curve in candidate.curves
+        for point in curve.points
+    }.issubset(metric_ids)
+    engine.dispose()
+
+
+def test_live_adapter_rejects_self_consistent_dangling_curve_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    application, engine, campaign, selected_run, package, manifest = (
+        _persist_formal_v1(
+            tmp_path / "diagnostics.sqlite3",
+            tmp_path / "artifacts",
+        )
+    )
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+        clock=lambda: NOW,
+    )
+    resolved = adapter.resolve_journey(
+        V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(campaign.campaign_id),
+            run_id=StrategyRunId(selected_run.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                package.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(manifest.manifest_id),
+        )
+    )
+    assert resolved.value is not None
+
+    payload = deepcopy(package.sealed_payload())
+    point = payload["sensitivity_curves"][0]["points"][0]
+    metric_id = point["metric_id"]
+    forged_manifest_id = "reproduction-manifest-forged"
+    point["reproduction_manifest_id"] = forged_manifest_id
+    for metric in payload["metrics"]:
+        if metric["metric_id"] == metric_id:
+            metric["reproduction_manifest_id"] = forged_manifest_id
+    for comparison in payload["comparisons"]:
+        if comparison["control_metric_id"] == metric_id:
+            comparison["control_reproduction_manifest_id"] = (
+                forged_manifest_id
+            )
+        if comparison["subject_metric_id"] == metric_id:
+            comparison["subject_reproduction_manifest_id"] = (
+                forged_manifest_id
+            )
+    monkeypatch.setattr(
+        application,
+        "diagnostic_evidence_status",
+        lambda _package_id: _PayloadOverride(package, payload),
+    )
+
+    result = adapter.read_evidence(resolved.value)
+
+    assert result.availability is ApplicationReadAvailability.FAILED
+    assert result.error is not None
+    assert result.error.code == "strategy_diagnostics_integrity_failed"
+    assert not result.error.retryable
+    engine.dispose()
+
+
+def test_live_adapter_rejects_breakpoint_relations_not_selected_by_curve(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    application, engine, campaign, selected_run, package, manifest = (
+        _persist_formal_v1(
+            tmp_path / "diagnostics.sqlite3",
+            tmp_path / "artifacts",
+        )
+    )
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+        clock=lambda: NOW,
+    )
+    resolved = adapter.resolve_journey(
+        V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(campaign.campaign_id),
+            run_id=StrategyRunId(selected_run.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                package.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(manifest.manifest_id),
+        )
+    )
+    assert resolved.value is not None
+
+    payload = deepcopy(package.sealed_payload())
+    breakpoint = payload["sensitivity_breakpoints"][0]
+    relation_count = len(breakpoint["case_ids"])
+    breakpoint["case_ids"] = ["forged-case"] * relation_count
+    breakpoint["run_ids"] = ["forged-run"] * relation_count
+    breakpoint["run_artifact_hashes"] = ["f" * 64] * relation_count
+    breakpoint["reproduction_manifest_ids"] = [
+        "reproduction-manifest-forged"
+    ] * relation_count
+    monkeypatch.setattr(
+        application,
+        "diagnostic_evidence_status",
+        lambda _package_id: _PayloadOverride(package, payload),
+    )
+
+    result = adapter.read_evidence(resolved.value)
+
+    assert result.availability is ApplicationReadAvailability.FAILED
+    assert result.error is not None
+    assert result.error.code == "strategy_diagnostics_integrity_failed"
+    assert not result.error.retryable
+    engine.dispose()
+
+
+def test_live_adapter_rejects_unrelated_valid_breakpoint_comparison(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    application, engine, campaign, selected_run, package, manifest = (
+        _persist_formal_v1(
+            tmp_path / "diagnostics.sqlite3",
+            tmp_path / "artifacts",
+        )
+    )
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+        clock=lambda: NOW,
+    )
+    resolved = adapter.resolve_journey(
+        V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(campaign.campaign_id),
+            run_id=StrategyRunId(selected_run.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                package.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(manifest.manifest_id),
+        )
+    )
+    assert resolved.value is not None
+
+    payload = deepcopy(package.sealed_payload())
+    breakpoint = payload["sensitivity_breakpoints"][0]
+    related_ids = set(breakpoint["comparison_ids"])
+    unrelated = next(
+        comparison["comparison_id"]
+        for comparison in payload["comparisons"]
+        if comparison["comparison_id"] not in related_ids
+    )
+    breakpoint["comparison_ids"] = [unrelated]
+    monkeypatch.setattr(
+        application,
+        "diagnostic_evidence_status",
+        lambda _package_id: _PayloadOverride(package, payload),
+    )
+
+    result = adapter.read_evidence(resolved.value)
+
+    assert result.availability is ApplicationReadAvailability.FAILED
+    assert result.error is not None
+    assert result.error.code == "strategy_diagnostics_integrity_failed"
+    assert not result.error.retryable
     engine.dispose()
 
 

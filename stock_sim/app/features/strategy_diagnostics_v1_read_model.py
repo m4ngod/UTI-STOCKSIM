@@ -101,6 +101,7 @@ class ApplicationReadAvailability(str, Enum):
 
 class ApplicationReadErrorCode(str, Enum):
     EVIDENCE_PENDING = "diagnostic_evidence_pending"
+    EVIDENCE_PARTIAL = "diagnostic_evidence_partial"
     EVIDENCE_SELECTION_AMBIGUOUS = "diagnostic_evidence_selection_ambiguous"
     EVIDENCE_MAPPING_FAILED = "diagnostic_evidence_mapping_failed"
     CONTRACT_INCOMPATIBLE = "strategy_diagnostics_contract_incompatible"

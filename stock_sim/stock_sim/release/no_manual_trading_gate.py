@@ -111,9 +111,10 @@ RUNTIME_GATEWAY_CALL_ALLOWLIST: Mapping[str, frozenset[str]] = (
             # Strategy Diagnostics V1 read model. Any RuntimeGateway call is
             # now unapproved for this adapter.
             "LiveRunMonitoringAdapter": frozenset(),
-            "LiveEvidenceAndFindingsAdapter": frozenset(
-                {"get_evidence_and_findings_snapshot"}
-            ),
+            # Issue #51 moved Evidence & Findings onto the same typed
+            # read-model boundary. The legacy dictionary RuntimeGateway is no
+            # longer an approved authority for this adapter either.
+            "LiveEvidenceAndFindingsAdapter": frozenset(),
         }
     )
 )

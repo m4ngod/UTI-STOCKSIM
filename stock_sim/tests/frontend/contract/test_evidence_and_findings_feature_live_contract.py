@@ -31,12 +31,14 @@ from app.features import (
     ViewPhase,
     ApprovedScenarioRecipeId,
 )
-from app.runtime_gateway import RuntimeGateway
 from stock_sim.persistence.models_agent_binding import AgentBinding
 from stock_sim.persistence.models_imports import Base
 from stock_sim.persistence.models_simulation_run import SimulationRun
-from stock_sim.services import runtime_query_service
+import stock_sim.services.runtime_query_service as runtime_query_service
 from stock_sim.services.runtime_query_service import RuntimeQueryService
+from tests.frontend.strategy_diagnostics_v1_test_support import (
+    DictionaryFixtureApplicationReadModel,
+)
 
 
 UTC = timezone.utc
@@ -308,11 +310,12 @@ class _EvidenceQueries:
 
 def _live_adapter():
     queries = _EvidenceQueries()
-    gateway = RuntimeGateway()
-    gateway._queries = queries
     bridge = EventBridge(subscribe_backend=False)
     adapter = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=_selected_context(),
+        ),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -321,7 +324,7 @@ def _live_adapter():
 
 
 def test_live_adapter_maps_explicit_chart_source_without_mutating_payload():
-    adapter, bridge, queries = _live_adapter()
+    adapter, _bridge, queries = _live_adapter()
     values = [100.0, 101.5, 99.25, 103.0]
     queries.record["candidates"][0]["chart"] = {
         "identity": "LIVE-B17-diagnostic-series",
@@ -405,7 +408,7 @@ def test_live_adapter_reuses_digest_identified_immutable_evidence_payload():
     bridge.flush(force=True)
     unchanged = adapter.snapshot(context)
 
-    assert unchanged.revision == initial.revision + 1
+    assert unchanged.revision == initial.revision
     assert unchanged.last_reliable_data is initial_data
 
     queries.record["revision"] = 9
@@ -434,7 +437,7 @@ def test_live_adapter_rejects_malformed_content_digest():
     assert state.presentation is EvidenceAndFindingsPresentationState.FAILED
     assert state.last_reliable_data is None
     assert state.error is not None
-    assert state.error.code == "evidence_and_findings_mapping_failed"
+    assert state.error.code == "diagnostic_evidence_mapping_failed"
     adapter.close()
 
 
@@ -448,7 +451,7 @@ def test_live_adapter_rejects_malformed_explicit_chart_payload():
     assert state.presentation is EvidenceAndFindingsPresentationState.FAILED
     assert state.last_reliable_data is None
     assert state.error is not None
-    assert state.error.code == "evidence_and_findings_mapping_failed"
+    assert state.error.code == "diagnostic_evidence_mapping_failed"
     adapter.close()
 
 
@@ -474,11 +477,12 @@ class _EvidenceContractDriver:
             "updated_at": NOW.isoformat(),
             "status": "loading",
         }
-        gateway = RuntimeGateway()
-        gateway._queries = self.queries
         self.bridge = EventBridge(subscribe_backend=False)
         self.adapter = LiveEvidenceAndFindingsAdapter(
-            runtime_gateway=gateway,
+            application_read_model=DictionaryFixtureApplicationReadModel(
+                self.queries,
+                evidence_context=self.context,
+            ),
             event_bridge=self.bridge,
             clock=lambda: self.current_time[0],
             freshness_threshold=timedelta(seconds=5),
@@ -571,8 +575,8 @@ class _EvidenceContractDriver:
     def no_prior_failed(self):
         if self.mode == "fake":
             return self.adapter.advance_to_disconnected(self.context)
-        assert self.queries is not None
-        self.queries.error = RuntimeError("source unavailable")
+        assert self.bridge is not None
+        self.bridge.mark_disconnected()
         return self.adapter.snapshot(self.context)
 
     def rejection_and_recovery_sequence(self):
@@ -911,7 +915,7 @@ def test_live_and_fake_adapters_isolate_a_failing_observer_from_future_updates(
     assert partial.revision > completed.revision
 
 
-def test_live_adapter_retains_evidence_and_rejects_old_generations_and_revisions():
+def test_live_adapter_accepts_semantic_changes_and_rejects_old_generations():
     adapter, bridge, queries = _live_adapter()
     context = _selected_context()
     completed = adapter.snapshot(context)
@@ -939,18 +943,21 @@ def test_live_adapter_retains_evidence_and_rejects_old_generations_and_revisions
     queries.record["candidates"][0]["evidence"][0]["value"] = "999"
     bridge.on_snapshot({"run_id": "RUN-001"})
     bridge.flush(force=True)
-    assert adapter.snapshot(context) == partial
+    changed = adapter.snapshot(context)
+    assert changed.revision == partial.revision + 1
+    assert changed.last_reliable_data is not None
+    assert changed.last_reliable_data.candidates[0].evidence[0].value == "999"
 
     bridge.mark_disconnected()
     disconnected = adapter.snapshot(context)
     assert disconnected.freshness is Freshness.DISCONNECTED
     assert disconnected.phase is ViewPhase.DEGRADED
-    assert disconnected.last_reliable_data == partial.last_reliable_data
+    assert disconnected.last_reliable_data == changed.last_reliable_data
 
     reconnected = bridge.mark_reconnected()
     awaiting_current = adapter.snapshot(context)
     assert awaiting_current.freshness is Freshness.STALE
-    assert awaiting_current.last_reliable_data == partial.last_reliable_data
+    assert awaiting_current.last_reliable_data == changed.last_reliable_data
 
     queries.record = _live_record()
     queries.record["revision"] = 8
@@ -986,7 +993,7 @@ def test_live_adapter_retains_evidence_and_rejects_old_generations_and_revisions
     assert degraded.freshness is Freshness.STALE
     assert degraded.last_reliable_data == recovered.last_reliable_data
     assert degraded.error is not None
-    assert degraded.error.code == "evidence_and_findings_query_failed"
+    assert degraded.error.code == "strategy_diagnostics_read_failed"
     assert "SECRET" not in degraded.error.message
     adapter.close()
 
@@ -994,11 +1001,12 @@ def test_live_adapter_retains_evidence_and_rejects_old_generations_and_revisions
 def test_live_adapter_retries_an_authoritative_refresh_after_local_revision_contention():
     current_time = [NOW]
     queries = _EvidenceQueries()
-    gateway = RuntimeGateway()
-    gateway._queries = queries
     bridge = EventBridge(subscribe_backend=False)
     adapter = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=_selected_context(),
+        ),
         event_bridge=bridge,
         clock=lambda: current_time[0],
         freshness_threshold=timedelta(seconds=1),
@@ -1030,7 +1038,7 @@ def test_live_adapter_retries_an_authoritative_refresh_after_local_revision_cont
     adapter.close()
 
 
-def test_live_adapter_does_not_let_an_unversioned_payload_rewind_reliable_evidence():
+def test_live_adapter_accepts_unversioned_semantic_evidence_changes():
     adapter, bridge, queries = _live_adapter()
     context = _selected_context()
     accepted = adapter.snapshot(context)
@@ -1040,11 +1048,14 @@ def test_live_adapter_does_not_let_an_unversioned_payload_rewind_reliable_eviden
     bridge.on_snapshot({"run_id": "RUN-001"})
     bridge.flush(force=True)
 
-    assert adapter.snapshot(context) == accepted
+    changed = adapter.snapshot(context)
+    assert changed.revision == accepted.revision + 1
+    assert changed.last_reliable_data is not None
+    assert changed.last_reliable_data.candidates[0].evidence[0].value == "999"
     adapter.close()
 
 
-def test_live_adapter_orders_hash_versioned_aggregate_updates_by_created_at():
+def test_live_adapter_uses_aggregate_content_identity_not_legacy_source_order():
     adapter, bridge, queries = _live_adapter()
     context = _selected_context()
     queries.record.pop("revision")
@@ -1071,7 +1082,10 @@ def test_live_adapter_orders_hash_versioned_aggregate_updates_by_created_at():
     queries.record["candidates"][0]["evidence"][0]["value"] = "999"
     bridge.on_snapshot({"run_id": "RUN-001"})
     bridge.flush(force=True)
-    assert adapter.snapshot(context) == updated
+    changed = adapter.snapshot(context)
+    assert changed.revision == updated.revision + 1
+    assert changed.last_reliable_data is not None
+    assert changed.last_reliable_data.candidates[0].evidence[0].value == "999"
     adapter.close()
 
 
@@ -1101,10 +1115,11 @@ def test_initial_read_retries_when_connection_generation_changes_in_flight():
             return json.loads(json.dumps(self.current_record))
 
     queries = _GenerationRacingQueries()
-    gateway = RuntimeGateway()
-    gateway._queries = queries
     adapter = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=_selected_context(),
+        ),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -1147,8 +1162,63 @@ def test_live_adapter_recovers_from_a_transient_query_failure_at_the_same_revisi
     adapter.close()
 
 
-@pytest.mark.parametrize("status", ("partial", "failed"))
-def test_live_adapter_rejects_equal_revision_status_reinterpretation(status):
+def test_live_adapter_aging_preserves_authoritative_error_semantics():
+    current_time = [NOW]
+    queries = _EvidenceQueries()
+    bridge = EventBridge(subscribe_backend=False)
+    adapter = LiveEvidenceAndFindingsAdapter(
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=_selected_context(),
+        ),
+        event_bridge=bridge,
+        clock=lambda: current_time[0],
+        freshness_threshold=timedelta(seconds=5),
+        executor=_DirectExecutor(),
+    )
+    context = _selected_context()
+    accepted = adapter.snapshot(context)
+
+    queries.error = RuntimeError("transient source failure")
+    bridge.on_snapshot({"run_id": "RUN-001"})
+    bridge.flush(force=True)
+    degraded = adapter.snapshot(context)
+    assert degraded.freshness is Freshness.STALE
+    assert degraded.error is not None
+
+    current_time[0] += timedelta(milliseconds=500)
+    aged = adapter.snapshot(context)
+    assert aged.revision == degraded.revision + 1
+    assert aged.phase is ViewPhase.DEGRADED
+    assert aged.freshness is Freshness.STALE
+    assert aged.last_reliable_data == accepted.last_reliable_data
+    assert aged.error == degraded.error
+    adapter.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "phase", "presentation", "error_code"),
+    (
+        (
+            "partial",
+            ViewPhase.DEGRADED,
+            EvidenceAndFindingsPresentationState.READY,
+            "diagnostic_evidence_partial",
+        ),
+        (
+            "failed",
+            ViewPhase.FAILED,
+            EvidenceAndFindingsPresentationState.FAILED,
+            "diagnostic_evidence_mapping_failed",
+        ),
+    ),
+)
+def test_live_adapter_accepts_semantic_status_changes(
+    status,
+    phase,
+    presentation,
+    error_code,
+):
     adapter, bridge, queries = _live_adapter()
     context = _selected_context()
     accepted = adapter.snapshot(context)
@@ -1164,7 +1234,13 @@ def test_live_adapter_rejects_equal_revision_status_reinterpretation(status):
     bridge.on_snapshot({"run_id": "RUN-001"})
     bridge.flush(force=True)
 
-    assert adapter.snapshot(context) == degraded
+    changed = adapter.snapshot(context)
+    assert changed.revision == degraded.revision + 1
+    assert changed.phase is phase
+    assert changed.presentation is presentation
+    assert changed.last_reliable_data == accepted.last_reliable_data
+    assert changed.error is not None
+    assert changed.error.code == error_code
     adapter.close()
 
 
@@ -1220,7 +1296,7 @@ def test_live_adapter_never_reports_incomplete_formal_campaigns_as_complete(
     assert state.completeness is Completeness.PARTIAL
     assert state.phase is ViewPhase.DEGRADED
     assert state.error is not None
-    assert state.error.code == "evidence_and_findings_partial"
+    assert state.error.code == "diagnostic_evidence_partial"
     adapter.close()
 
 
@@ -1257,7 +1333,7 @@ def test_live_adapter_rejects_dangling_typed_evidence_references(mutation):
     assert state.presentation is EvidenceAndFindingsPresentationState.FAILED
     assert state.last_reliable_data is None
     assert state.error is not None
-    assert state.error.code == "evidence_and_findings_mapping_failed"
+    assert state.error.code == "diagnostic_evidence_mapping_failed"
     adapter.close()
 
 
@@ -1298,44 +1374,52 @@ def test_live_adapter_validates_nested_identity_and_boolean_semantics():
     )
     assert rejected.last_reliable_data is None
     assert rejected.error is not None
-    assert rejected.error.code == "evidence_and_findings_mapping_failed"
+    assert rejected.error.code == "diagnostic_evidence_mapping_failed"
     mismatched.close()
 
 
-def test_live_adapter_distinguishes_empty_from_unavailable_query_source():
-    gateway = RuntimeGateway()
+def test_live_adapter_distinguishes_pending_from_failed_authoritative_read():
     queries = _EvidenceQueries()
     queries.record["run_id"] = "OTHER-RUN"
-    gateway._queries = queries
-    empty = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+    pending = LiveEvidenceAndFindingsAdapter(
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=_selected_context(),
+        ),
         event_bridge=EventBridge(subscribe_backend=False),
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
-    empty_state = empty.snapshot(_selected_context())
-    assert empty_state.presentation is (
-        EvidenceAndFindingsPresentationState.EMPTY
+    pending_state = pending.snapshot(_selected_context())
+    assert pending_state.presentation is (
+        EvidenceAndFindingsPresentationState.LOADING
     )
-    assert empty_state.completeness is Completeness.EMPTY
-    assert empty_state.last_reliable_data is None
-    empty.close()
+    assert pending_state.phase is ViewPhase.LOADING
+    assert pending_state.freshness is Freshness.AWAITING_FIRST_STATE
+    assert pending_state.completeness is Completeness.UNKNOWN
+    assert pending_state.last_reliable_data is None
+    assert pending_state.error is not None
+    assert pending_state.error.code == "diagnostic_evidence_pending"
+    pending.close()
 
-    gateway._queries = None
     unavailable = LiveEvidenceAndFindingsAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            None,
+            evidence_context=_selected_context(),
+        ),
         event_bridge=EventBridge(subscribe_backend=False),
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
     unavailable_state = unavailable.snapshot(_selected_context())
     assert unavailable_state.presentation is (
-        EvidenceAndFindingsPresentationState.DISCONNECTED
+        EvidenceAndFindingsPresentationState.FAILED
     )
     assert unavailable_state.phase is ViewPhase.FAILED
-    assert unavailable_state.freshness is Freshness.DISCONNECTED
+    assert unavailable_state.freshness is Freshness.FRESH
     assert unavailable_state.last_reliable_data is None
     assert unavailable_state.error is not None
+    assert unavailable_state.error.code == "strategy_diagnostics_read_failed"
     unavailable.close()
 
 
