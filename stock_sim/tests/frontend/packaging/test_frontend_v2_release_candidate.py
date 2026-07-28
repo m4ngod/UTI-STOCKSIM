@@ -1074,11 +1074,20 @@ def test_compiled_entry_uses_its_dedicated_ptrade_worker_mode(monkeypatch):
         "-m",
         "strategy_diagnostics.ptrade_host_worker",
     )
+    assert package_entry._ptrade_worker_executable() == sys.executable
 
     monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(
+        package_entry.sys,
+        "argv",
+        [r"C:\Release\UTI-Frontend-V2.exe"],
+    )
 
     assert package_entry._ptrade_worker_arguments() == (
         "--ptrade-host-worker",
+    )
+    assert package_entry._ptrade_worker_executable() == (
+        r"C:\Release\UTI-Frontend-V2.exe"
     )
 
 

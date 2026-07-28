@@ -35,6 +35,12 @@ def _ptrade_worker_arguments() -> tuple[str, ...]:
     return ("-m", _PTRADE_WORKER_MODULE)
 
 
+def _ptrade_worker_executable() -> str:
+    if "__compiled__" in globals():
+        return str(Path(sys.argv[0]).resolve())
+    return sys.executable
+
+
 def _run_ptrade_host_worker() -> int:
     from strategy_diagnostics.ptrade_host_worker import main as worker_main
 
@@ -725,7 +731,7 @@ def _run_smoke_journey(
         database_path=persistence_root / "strategy-diagnostics-v1.sqlite3",
         artifact_root=persistence_root / "artifacts",
         ptrade_host=SubprocessPTradeStrategyHost(
-            python_executable=sys.executable,
+            python_executable=_ptrade_worker_executable(),
             worker_arguments=_ptrade_worker_arguments(),
         ),
     )
