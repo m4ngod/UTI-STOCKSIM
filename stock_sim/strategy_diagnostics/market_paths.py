@@ -447,7 +447,7 @@ class ParquetMarketPathArtifactStore:
         destination = self._artifact_directory(path.artifact_hash)
         if destination.is_dir():
             existing = self.get(path.artifact_hash)
-            if existing != path:
+            if _materialized_content(existing) != _materialized_content(path):
                 raise ValueError("immutable Materialized Market Path identity collision")
             return existing
         staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=self._root))

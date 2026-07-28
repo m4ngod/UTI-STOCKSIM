@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -43,10 +43,14 @@ from app.features.live_evidence_and_findings import (
     _candidate_rows,
     _content_digest,
     _evidence_payload,
-    _map_record as _map_evidence_record,
-    _optional_aware as _optional_evidence_time,
     _status_token,
     _validate_record_selection,
+)
+from app.features.live_evidence_and_findings import (
+    _map_record as _map_evidence_record,
+)
+from app.features.live_evidence_and_findings import (
+    _optional_aware as _optional_evidence_time,
 )
 
 
@@ -171,9 +175,7 @@ class DictionaryFixtureApplicationReadModel:
                 else _token(_evidence_semantic_payload(record_dict, payload))
             )
             candidate_rows = _candidate_rows(payload)
-            status = _status_token(
-                payload.get("status") or record.get("status")
-            )
+            status = _status_token(payload.get("status") or record.get("status"))
             if not candidate_rows:
                 return _evidence_failure(
                     ApplicationReadErrorCode.EVIDENCE_PENDING,
@@ -234,6 +236,154 @@ class DictionaryFixtureApplicationReadModel:
         )
 
 
+class TypedScriptedApplicationReadModel:
+    """Mutable typed producer for exercising the production live adapters.
+
+    All externally visible values are immutable Application read-model DTOs.
+    Real persistence certification uses the production
+    ``LiveStrategyDiagnosticsV1ApplicationAdapter`` instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        run_context: RunMonitoringContext,
+        evidence_context: EvidenceAndFindingsContext,
+        run_data: RunMonitoringData,
+        evidence_data: EvidenceAndFindingsData,
+        clock: Callable[[], datetime],
+    ) -> None:
+        run_selection = run_context.selection
+        evidence_selection = evidence_context.selection
+        if run_selection is None or run_selection.run_id is None:
+            raise ValueError("typed fixture requires a selected run")
+        if evidence_selection is None:
+            raise ValueError("typed fixture requires selected evidence")
+        if (
+            run_selection.campaign_id != evidence_selection.campaign_id
+            or run_selection.run_id != evidence_selection.run_id
+        ):
+            raise ValueError("typed fixture contexts must identify one journey")
+        if run_data.selection != run_selection:
+            raise ValueError("typed fixture run data must match its context")
+        if evidence_data.selection != evidence_selection:
+            raise ValueError("typed fixture evidence must match its context")
+        self._clock = clock
+        self._journey = ResolvedV1Journey(
+            run_context=run_context,
+            evidence_context=evidence_context,
+            evidence_package_id=evidence_data.evidence_package_id,
+            campaign_case_id=evidence_selection.market_scenario_id,
+            campaign_layer=EvidenceCoverage.BASELINE,
+        )
+        self._run_data = run_data
+        self._evidence_data = evidence_data
+        self._run_availability = ApplicationReadAvailability.READY
+        self._evidence_availability = ApplicationReadAvailability.READY
+        self._run_error: ApplicationReadError | None = None
+        self._evidence_error: ApplicationReadError | None = None
+        self._run_revision = 1
+        self._evidence_revision = 1
+
+    @property
+    def interface_version(self) -> ApplicationReadModelVersion:
+        return APPLICATION_READ_MODEL_INTERFACE_VERSION
+
+    def resolve_journey(
+        self,
+        selector: V1JourneySelector,
+    ) -> ApplicationReadResult[ResolvedV1Journey]:
+        selection = self._journey.run_context.selection
+        assert selection is not None
+        if (
+            selector.campaign_id != selection.campaign_id
+            or selector.run_id != selection.run_id
+        ):
+            return ApplicationReadResult(
+                availability=ApplicationReadAvailability.NOT_FOUND,
+                source_token=None,
+                source_observed_at=self._clock(),
+                value=None,
+                error=ApplicationReadError(
+                    code=ApplicationReadErrorCode.SELECTION_NOT_FOUND,
+                    message="The typed fixture journey is not selected.",
+                    retryable=False,
+                ),
+            )
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=self._source_token("journey", 1),
+            source_observed_at=self._clock(),
+            value=self._journey,
+            error=None,
+        )
+
+    def read_run(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[RunMonitoringData]:
+        if journey != self._journey:
+            raise ValueError("typed fixture journey mismatch")
+        return ApplicationReadResult(
+            availability=self._run_availability,
+            source_token=self._source_token("run", self._run_revision),
+            source_observed_at=self._clock(),
+            value=self._run_data,
+            error=self._run_error,
+        )
+
+    def read_evidence(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[EvidenceAndFindingsData]:
+        if journey != self._journey:
+            raise ValueError("typed fixture journey mismatch")
+        return ApplicationReadResult(
+            availability=self._evidence_availability,
+            source_token=self._source_token(
+                "evidence",
+                self._evidence_revision,
+            ),
+            source_observed_at=self._clock(),
+            value=self._evidence_data,
+            error=self._evidence_error,
+        )
+
+    def set_run(
+        self,
+        value: RunMonitoringData,
+        *,
+        availability: ApplicationReadAvailability = (ApplicationReadAvailability.READY),
+        error: ApplicationReadError | None = None,
+    ) -> None:
+        if value.selection != self._run_data.selection:
+            raise ValueError("typed fixture run selection cannot change")
+        self._run_data = value
+        self._run_availability = availability
+        self._run_error = error
+        self._run_revision += 1
+
+    def set_evidence(
+        self,
+        value: EvidenceAndFindingsData,
+        *,
+        availability: ApplicationReadAvailability = (ApplicationReadAvailability.READY),
+        error: ApplicationReadError | None = None,
+    ) -> None:
+        if value.selection != self._evidence_data.selection:
+            raise ValueError("typed fixture evidence selection cannot change")
+        self._evidence_data = value
+        self._evidence_availability = availability
+        self._evidence_error = error
+        self._evidence_revision += 1
+
+    @staticmethod
+    def _source_token(kind: str, revision: int) -> SourceRevisionToken:
+        return SourceRevisionToken(
+            hashlib.sha256(f"{kind}:{revision}".encode("ascii")).hexdigest()
+        )
+
+
 def _failure(code: str) -> ApplicationReadResult[RunMonitoringData]:
     error_code = (
         ApplicationReadErrorCode.SELECTION_NOT_FOUND
@@ -257,9 +407,7 @@ def _evidence_failure(
     code: ApplicationReadErrorCode,
     *,
     retryable: bool,
-    availability: ApplicationReadAvailability = (
-        ApplicationReadAvailability.FAILED
-    ),
+    availability: ApplicationReadAvailability = (ApplicationReadAvailability.FAILED),
     token: SourceRevisionToken | None = None,
 ) -> ApplicationReadResult[EvidenceAndFindingsData]:
     return ApplicationReadResult(
@@ -403,9 +551,7 @@ def _evidence_semantic_payload(
             if key not in transient and key != "evidence_and_findings"
         },
         "payload": {
-            str(key): value
-            for key, value in payload.items()
-            if key not in transient
+            str(key): value for key, value in payload.items() if key not in transient
         },
     }
 
@@ -496,4 +642,7 @@ def _alert_severity(value: object) -> AlertSeverity:
     }.get(normalized, AlertSeverity.INFO)
 
 
-__all__ = ["DictionaryFixtureApplicationReadModel"]
+__all__ = [
+    "DictionaryFixtureApplicationReadModel",
+    "TypedScriptedApplicationReadModel",
+]

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from time import monotonic, sleep
 
+import pytest
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
 from sqlalchemy import create_engine, text
@@ -26,7 +28,7 @@ from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
-from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from strategy_diagnostics.market_paths import ParquetMarketPathArtifactStore
 from tests.frontend.contract.test_strategy_diagnostics_v1_application_read_model_live_contract import (
     NOW,
 )
@@ -40,10 +42,12 @@ def _persist_real_formal_v1_through_application(
     artifact_root: Path,
     *,
     seal_evidence: bool,
+    register_cleanup: Callable[[Callable[[], None]], None],
 ):
     engine = create_engine(f"sqlite:///{database_path}", future=True)
+    register_cleanup(engine.dispose)
     source = _MarketStructureWorkspaceSource()
-    paths = InMemoryMarketPathArtifactStore()
+    paths = ParquetMarketPathArtifactStore(artifact_root / "market-paths")
     evidence_store = JsonDiagnosticEvidenceArtifactStore(artifact_root)
     application = create_diagnostics_application(
         historical_source=source,
@@ -186,13 +190,16 @@ def _persist_real_formal_v1_through_application(
         if seal_evidence
         else None
     )
-    manifest = (
-        application.reproduction_manifests(
-            package.evidence_package_id
-        )[0]
+    manifests = (
+        tuple(
+            application.reproduction_manifests(
+                package.evidence_package_id
+            )
+        )
         if package is not None
-        else None
+        else ()
     )
+    manifest = manifests[0] if manifests else None
     if manifest is not None:
         selected_run = application.strategy_run_status(manifest.run_id)
     else:
@@ -217,11 +224,23 @@ def _persist_real_formal_v1_through_application(
         f"sqlite:///{database_path}",
         future=True,
     )
+    register_cleanup(reopened_engine.dispose)
+    reopened_paths = ParquetMarketPathArtifactStore(
+        artifact_root / "market-paths"
+    )
+    assert (
+        reopened_paths.get(
+            selected_run.specification.materialization_hash
+        ).artifact_hash
+        == selected_run.specification.materialization_hash
+    )
     reopened = create_diagnostics_application(
         historical_source=source,
         market_data_source=source,
-        artifact_store=paths,
-        evidence_artifact_store=evidence_store,
+        artifact_store=reopened_paths,
+        evidence_artifact_store=JsonDiagnosticEvidenceArtifactStore(
+            artifact_root
+        ),
         recipe_clock=lambda: NOW,
     )
     reopened.start()
@@ -234,11 +253,13 @@ def _persist_real_formal_v1_through_application(
         selected_run,
         package,
         manifest,
+        manifests,
     )
 
 
 def test_real_sealed_v1_evidence_is_visible_in_production_qml(
     tmp_path,
+    request: pytest.FixtureRequest,
 ) -> None:
     (
         application,
@@ -247,10 +268,12 @@ def test_real_sealed_v1_evidence_is_visible_in_production_qml(
         selected_run,
         package,
         manifest,
+        _manifests,
     ) = _persist_real_formal_v1_through_application(
         tmp_path / "diagnostics.sqlite3",
         tmp_path / "artifacts",
         seal_evidence=True,
+        register_cleanup=request.addfinalizer,
     )
     assert package is not None
     assert manifest is not None
@@ -650,6 +673,7 @@ def test_real_sealed_v1_evidence_is_visible_in_production_qml(
 
 def test_real_v1_run_without_sealed_evidence_stays_honestly_pending_in_qml(
     tmp_path,
+    request: pytest.FixtureRequest,
 ) -> None:
     (
         application,
@@ -658,10 +682,12 @@ def test_real_v1_run_without_sealed_evidence_stays_honestly_pending_in_qml(
         selected_run,
         _package,
         _manifest,
+        _manifests,
     ) = _persist_real_formal_v1_through_application(
         tmp_path / "diagnostics-pending.sqlite3",
         tmp_path / "artifacts-pending",
         seal_evidence=False,
+        register_cleanup=request.addfinalizer,
     )
 
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(

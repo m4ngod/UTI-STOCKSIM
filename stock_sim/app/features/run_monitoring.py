@@ -742,7 +742,7 @@ class DeterministicFakeRunMonitoringAdapter:
                 message="Some Run Monitoring identity data is unavailable.",
                 retryable=True,
             ),
-            data=replace(data, reproduction_manifest_id=None),
+            data=data,
         )
 
     def advance_to_reconnected(
@@ -884,6 +884,25 @@ class DeterministicFakeRunMonitoringAdapter:
             previous = self._states.get(context)
             if previous is None:
                 previous = self._loading_state(context)
+            previous_data = previous.last_reliable_data
+            if (
+                previous_data is not None
+                and previous_data.terminal_outcome is not None
+                and data is not None
+                and data != previous_data
+            ):
+                data = previous_data
+                phase = ViewPhase.FAILED
+                presentation = RunMonitoringPresentationState.TERMINAL
+                completeness = previous.completeness
+                error = StructuredFeatureError(
+                    code="strategy_diagnostics_integrity_failed",
+                    message=(
+                        "The terminal Strategy Run conflicts with its last "
+                        "verified artifact."
+                    ),
+                    retryable=False,
+                )
             state = RunMonitoringViewState(
                 interface_version=self.interface_version,
                 revision=previous.revision + 1,

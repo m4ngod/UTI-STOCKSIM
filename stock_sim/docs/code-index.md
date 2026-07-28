@@ -10,6 +10,19 @@
 - Dock host: `app/ui/docking.py`
 - Panel registry: `app/panels/__init__.py`, `app/panels/registry.py`
 
+## Strategy Diagnostics V1 + Frontend V2 Wave 1
+
+- Typed Application read-model Interface: `app/features/strategy_diagnostics_v1_read_model.py`
+- Persisted V1 Application adapter: `app/features/live_strategy_diagnostics_v1_application.py`
+- Run Monitoring live adapter: `app/features/live_run_monitoring.py`
+- Evidence & Findings live adapter: `app/features/live_evidence_and_findings.py`
+- QML Journey host and Qt adapters: `app/ui/journey_workspace.py`
+- Integration contract: `docs/contracts/integration/strategy-diagnostics-v1-frontend-v2-contract.md`
+- Integration quality-gate runbook: `docs/testing/integration/strategy-diagnostics-v1-frontend-v2-runbook.md`
+- Executable union gate: `stock_sim/release/strategy_diagnostics_v1_frontend_v2_gate.py`
+- Shared fake/live conformance: `tests/frontend/contract/test_strategy_diagnostics_v1_feature_pair_conformance.py`
+- File-backed Application-to-QML tracer: `tests/frontend/integration/test_live_run_to_evidence_journey.py`
+
 ## Market frontend
 
 - Controller: `app/controllers/market_controller.py`

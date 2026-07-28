@@ -764,6 +764,28 @@ def test_content_addressed_path_survives_artifact_store_restart(tmp_path: Path) 
     assert restored.to_preview_dict() == materialized.to_preview_dict()
 
 
+def test_parquet_store_idempotently_accepts_equivalent_feature_map_order(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(root),
+    ).materialize_baseline(_segment(), seed=17)
+    reordered = replace(
+        materialized,
+        nodes=tuple(
+            replace(node, features=tuple(reversed(node.features)))
+            for node in materialized.nodes
+        ),
+    )
+
+    restored = ParquetMarketPathArtifactStore(root).put(reordered)
+
+    assert restored.artifact_hash == materialized.artifact_hash
+    assert restored.to_preview_dict() == materialized.to_preview_dict()
+
+
 def test_materializer_rejects_source_bars_outside_a_share_sessions() -> None:
     invalid_world = replace(
         _world(),

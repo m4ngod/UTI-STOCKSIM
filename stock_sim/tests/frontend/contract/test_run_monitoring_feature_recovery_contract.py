@@ -272,14 +272,22 @@ def test_fake_recovery_sequences_are_deterministic_and_honest():
     assert stale.freshness is Freshness.STALE
     assert stale.last_reliable_data == running.last_reliable_data
     assert partial.completeness is Completeness.PARTIAL
+    assert partial.last_reliable_data == running.last_reliable_data
     assert disconnected.last_reliable_data is not None
     assert failed.phase is ViewPhase.FAILED
     assert failed.last_reliable_data is not None
     assert failed.last_reliable_data.lifecycle is RunLifecyclePhase.FAILED
     assert failed.last_reliable_data.terminal_outcome is TerminalOutcome.FAILED
+    assert rerunning.presentation is RunMonitoringPresentationState.TERMINAL
+    assert rerunning.last_reliable_data == failed.last_reliable_data
+    assert rerunning.error is not None
+    assert rerunning.error.code == "strategy_diagnostics_integrity_failed"
     assert completed.presentation is RunMonitoringPresentationState.TERMINAL
+    assert completed.last_reliable_data == failed.last_reliable_data
     assert completed.last_reliable_data is not None
-    assert completed.last_reliable_data.terminal_outcome is (TerminalOutcome.COMPLETED)
+    assert completed.last_reliable_data.terminal_outcome is TerminalOutcome.FAILED
+    assert completed.error is not None
+    assert completed.error.code == "strategy_diagnostics_integrity_failed"
     adapter.close()
 
 
