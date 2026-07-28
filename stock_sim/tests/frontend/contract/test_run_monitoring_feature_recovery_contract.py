@@ -1,6 +1,6 @@
+import os
 from dataclasses import replace
 from datetime import timedelta
-import os
 from threading import Event, Thread
 
 import pytest
@@ -21,31 +21,26 @@ from app.features import (
     Completeness,
     DeterministicFakeRunMonitoringAdapter,
     DiagnosticCommandRejectionReason,
+    DiagnosticTaskId,
     Freshness,
     LiveRunMonitoringAdapter,
     PauseDiagnosticTask,
     RunLifecyclePhase,
     RunMonitoringContext,
     RunMonitoringPresentationState,
-    SourceGenerationId,
-    TaskPhase,
     TerminalOutcome,
     ViewPhase,
-)
-from app.runtime_gateway import RuntimeGateway
-from app.services.training_arena_service import (
-    ArenaModelSpec,
-    TrainingArenaConfig,
-    TrainingArenaService,
 )
 from app.ui.journey_workspace import RunMonitoringQtAdapter
 from tests.frontend.contract.test_run_monitoring_feature_wave1_contract import (
     NOW,
-    _AgentService,
     _DelayedExecutor,
     _DirectExecutor,
     _RunQueries,
     _selected_context,
+)
+from tests.frontend.strategy_diagnostics_v1_test_support import (
+    DictionaryFixtureApplicationReadModel,
 )
 
 
@@ -64,30 +59,10 @@ class _TrackingExecutor(_DirectExecutor):
 
 def _live_adapter(*, executor=None, use_owned_executor=False):
     queries = _RunQueries()
-    gateway = RuntimeGateway()
-    gateway._queries = queries
     bridge = EventBridge(subscribe_backend=False)
-    agents = _AgentService()
-    tasks = TrainingArenaService(
-        agent_service=agents,
-        session_factory=None,
-    )
-    tasks.create_arena(
-        TrainingArenaConfig(
-            arena_id="ARENA-001",
-            model_specs=[
-                ArenaModelSpec(
-                    agent_id="MODEL-B17",
-                    model_id="momentum-v1",
-                )
-            ],
-        )
-    )
-    tasks.start_arena("ARENA-001", episode_id="EP-001")
     adapter_options = {
-        "runtime_gateway": gateway,
+        "application_read_model": DictionaryFixtureApplicationReadModel(queries),
         "event_bridge": bridge,
-        "diagnostic_tasks": tasks,
         "clock": lambda: NOW,
     }
     if not use_owned_executor:
@@ -236,9 +211,7 @@ def test_fake_disconnect_without_prior_data_is_typed_failed():
 
     assert loading.last_reliable_data is None
     assert disconnected.phase is ViewPhase.FAILED
-    assert disconnected.presentation is (
-        RunMonitoringPresentationState.DISCONNECTED
-    )
+    assert disconnected.presentation is (RunMonitoringPresentationState.DISCONNECTED)
     assert disconnected.last_reliable_data is None
     assert disconnected.error is not None
     adapter.close()
@@ -261,9 +234,7 @@ def test_no_selection_disconnect_reconnect_returns_to_typed_empty(kind):
         recovered = adapter.snapshot(context)
 
     assert initial.presentation is RunMonitoringPresentationState.EMPTY
-    assert disconnected.presentation is (
-        RunMonitoringPresentationState.DISCONNECTED
-    )
+    assert disconnected.presentation is (RunMonitoringPresentationState.DISCONNECTED)
     assert recovered.revision > disconnected.revision
     assert recovered.phase is ViewPhase.READY
     assert recovered.freshness is Freshness.FRESH
@@ -297,9 +268,7 @@ def test_fake_recovery_sequences_are_deterministic_and_honest():
         rerunning,
         completed,
     )
-    assert [state.revision for state in states] == list(
-        range(1, len(states) + 1)
-    )
+    assert [state.revision for state in states] == list(range(1, len(states) + 1))
     assert stale.freshness is Freshness.STALE
     assert stale.last_reliable_data == running.last_reliable_data
     assert partial.completeness is Completeness.PARTIAL
@@ -310,9 +279,7 @@ def test_fake_recovery_sequences_are_deterministic_and_honest():
     assert failed.last_reliable_data.terminal_outcome is TerminalOutcome.FAILED
     assert completed.presentation is RunMonitoringPresentationState.TERMINAL
     assert completed.last_reliable_data is not None
-    assert completed.last_reliable_data.terminal_outcome is (
-        TerminalOutcome.COMPLETED
-    )
+    assert completed.last_reliable_data.terminal_outcome is (TerminalOutcome.COMPLETED)
     adapter.close()
 
 
@@ -343,10 +310,7 @@ def test_live_adapter_quarantines_delayed_batches_from_an_old_generation():
     assert new_generation.value > old_generation.value
     assert accepted.revision > first.revision
     assert accepted.last_reliable_data is not None
-    assert (
-        accepted.last_reliable_data.progress.current_node_id
-        == "NODE-NEW-GENERATION"
-    )
+    assert accepted.last_reliable_data.progress.current_node_id == "NODE-NEW-GENERATION"
     assert after_old == accepted
     adapter.close()
 
@@ -396,8 +360,7 @@ def test_live_adapter_drops_a_refresh_queued_before_disconnect():
     assert after_late_refresh.freshness is Freshness.DISCONNECTED
     assert after_late_refresh.last_reliable_data is not None
     assert (
-        after_late_refresh.last_reliable_data.progress.current_node_id
-        == initial_node
+        after_late_refresh.last_reliable_data.progress.current_node_id == initial_node
     )
     adapter.close()
 
@@ -520,12 +483,12 @@ def test_live_snapshot_opened_while_disconnected_is_typed_not_fresh_or_empty():
     adapter.close()
 
 
-def test_task_command_rejects_the_connection_phase_before_view_publish():
+def test_task_command_stays_unavailable_during_connection_publish():
     adapter, bridge, _queries = _live_adapter()
     context = _selected_context()
     state = adapter.snapshot(context)
     assert state.last_reliable_data is not None
-    assert state.last_reliable_data.task_id is not None
+    assert state.last_reliable_data.task_id is None
     publish_entered = Event()
     release_publish = Event()
     original_publish = adapter._publish_connection_state
@@ -542,7 +505,7 @@ def test_task_command_rejects_the_connection_phase_before_view_publish():
 
     result = adapter.pause_diagnostic_task(
         PauseDiagnosticTask(
-            target_id=state.last_reliable_data.task_id,
+            target_id=DiagnosticTaskId("READ-ONLY-V1"),
             expected_revision=state.revision,
         )
     )
@@ -551,7 +514,7 @@ def test_task_command_rejects_the_connection_phase_before_view_publish():
 
     assert result.accepted is False
     assert result.rejection_reason is (
-        DiagnosticCommandRejectionReason.DISCONNECTED_SOURCE
+        DiagnosticCommandRejectionReason.UNAVAILABLE_CAPABILITY
     )
     adapter.close()
 
@@ -635,9 +598,7 @@ def test_live_adapter_coalesces_intermediate_batches_without_losing_terminal(
         bridge.flush(force=True)
     queries.record["status"] = terminal_status
     queries.record["failure_reason"] = (
-        "runtime-confirmed failure"
-        if terminal_status == "failed"
-        else None
+        "runtime-confirmed failure" if terminal_status == "failed" else None
     )
     queries.record["current_node_id"] = "NODE-COMPLETED"
     bridge.on_snapshot(
@@ -757,7 +718,7 @@ def test_qt_adapter_rejects_duplicate_and_lower_revisions():
         replace(
             running,
             last_reliable_data=terminal_data,
-        )
+        ),
     )
     adapter._accept_state(
         adapter.mountGeneration,
@@ -765,7 +726,7 @@ def test_qt_adapter_rejects_duplicate_and_lower_revisions():
             running,
             revision=running.revision - 1,
             last_reliable_data=terminal_data,
-        )
+        ),
     )
 
     assert adapter.lifecycle == original_lifecycle
@@ -902,9 +863,7 @@ def test_subscribe_never_delivers_initial_state_after_a_newer_revision(kind):
             newer_delivered.set()
 
     subscribe_thread = Thread(
-        target=lambda: subscriptions.append(
-            adapter.subscribe(context, observer)
-        )
+        target=lambda: subscriptions.append(adapter.subscribe(context, observer))
     )
     subscribe_thread.start()
     assert initial_entered.wait(1)
@@ -950,9 +909,7 @@ def test_live_subscribe_recaptures_state_updated_before_registration():
 
     adapter.snapshot = blocked_snapshot
     subscribe_thread = Thread(
-        target=lambda: subscriptions.append(
-            adapter.subscribe(context, observed.append)
-        )
+        target=lambda: subscriptions.append(adapter.subscribe(context, observed.append))
     )
     subscribe_thread.start()
     assert snapshot_captured.wait(1)
@@ -1019,7 +976,7 @@ def test_observer_can_close_owned_executor_without_self_joining():
             return
         try:
             adapter.close()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - exercising close races
             errors.append(error)
         finally:
             close_returned.set()
@@ -1052,8 +1009,7 @@ def test_close_cancels_pending_terminal_confirmation_timers():
     )
     bridge.flush(force=True)
     pending_timers = tuple(
-        timer
-        for _, timer in adapter._terminal_confirmation_timers.values()
+        timer for _, timer in adapter._terminal_confirmation_timers.values()
     )
     assert len(pending_timers) == 1
 

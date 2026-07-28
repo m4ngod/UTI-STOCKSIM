@@ -1,6 +1,6 @@
+import os
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
-import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -28,7 +28,9 @@ from app.features import (
 )
 from app.runtime_gateway import RuntimeGateway
 from app.ui.main_window import MainWindow
-
+from tests.frontend.strategy_diagnostics_v1_test_support import (
+    DictionaryFixtureApplicationReadModel,
+)
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 2, 12, 0, tzinfo=UTC)
@@ -39,7 +41,7 @@ class _DirectExecutor:
         future = Future()
         try:
             future.set_result(fn(*args, **kwargs))
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - Future semantics
             future.set_exception(error)
         return future
 
@@ -72,17 +74,13 @@ class _LiveJourneyQueries:
             "last_sim_dt": NOW - timedelta(days=1),
             "completed_nodes": 5 if terminal else 2,
             "total_nodes": 5,
-            "current_node_id": (
-                "NODE-COMPLETE" if terminal else "NODE-RUNNING"
-            ),
+            "current_node_id": ("NODE-COMPLETE" if terminal else "NODE-RUNNING"),
             "current_node_label": (
                 "Evidence ready" if terminal else "Running scenario"
             ),
             "requested_execution": {"fee_multiplier": "1.0x"},
             "effective_execution": {"fee_multiplier": "1.6x"},
-            "execution_override_reasons": {
-                "fee_multiplier": "Recipe override"
-            },
+            "execution_override_reasons": {"fee_multiplier": "Recipe override"},
             "alerts": [],
             "market_context": ["600519.SH"],
             "account_context": ["MODEL-LIVE-41"],
@@ -260,7 +258,7 @@ def test_live_monitored_run_navigates_to_matching_evidence_and_back():
         )
     )
     run_feature = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(gateway._queries),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -279,9 +277,7 @@ def test_live_monitored_run_navigates_to_matching_evidence_and_back():
         frontend_v2_enabled=True,
     )
     root = window.centralWidget().rootObject()
-    evidence_revision = evidence_feature.snapshot(
-        evidence_context
-    ).revision
+    evidence_revision = evidence_feature.snapshot(evidence_context).revision
 
     root.setProperty("activeRoute", "evidence_and_findings")
     app.processEvents()
@@ -309,19 +305,11 @@ def test_live_monitored_run_navigates_to_matching_evidence_and_back():
     run_text = _visible_text(root)
     assert "RUN-LIVE-41" in run_text
     assert "STRATEGY-LIVE-41" in run_text
-    assert evidence_feature.snapshot(evidence_context).revision == (
-        evidence_revision
-    )
+    assert evidence_feature.snapshot(evidence_context).revision == (evidence_revision)
     assert run_context.selection is not None
     assert evidence_context.selection is not None
-    assert (
-        run_context.selection.campaign_id
-        == evidence_context.selection.campaign_id
-    )
-    assert (
-        run_context.selection.run_id
-        == evidence_context.selection.run_id
-    )
+    assert run_context.selection.campaign_id == evidence_context.selection.campaign_id
+    assert run_context.selection.run_id == evidence_context.selection.run_id
     normalized = f"{evidence_text} {run_text}".casefold()
     for forbidden in (
         "buy",
@@ -362,9 +350,8 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
         )
     )
     run_feature = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
-        diagnostic_tasks=_LiveDiagnosticTasks(queries),
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
@@ -403,26 +390,21 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
     assert status_interface is not None
     assert progress_interface is not None
     assert status_interface.role() == QAccessible.Role.StatusBar
-    assert "active" in status_interface.text(
-        QAccessible.Text.Name
-    ).casefold()
-    assert "fresh" in status_interface.text(
-        QAccessible.Text.Description
-    ).casefold()
+    assert "active" in status_interface.text(QAccessible.Text.Name).casefold()
+    assert "fresh" in status_interface.text(QAccessible.Text.Description).casefold()
     assert progress_interface.role() == QAccessible.Role.StaticText
-    assert "2 / 5" in progress_interface.text(
-        QAccessible.Text.Description
-    )
+    assert "2 / 5" in progress_interface.text(QAccessible.Text.Description)
     assert pause is not None
-    assert pause.property("enabled") is True
-    assert pause.property("activeFocus") is True
+    assert pause.property("enabled") is False
+    assert pause.property("activeFocus") is False
+    assert run_route.property("activeFocus") is True
 
     bridge.mark_disconnected()
     app.processEvents()
     app.processEvents()
-    assert "disconnected" in status_interface.text(
-        QAccessible.Text.Description
-    ).casefold()
+    assert (
+        "disconnected" in status_interface.text(QAccessible.Text.Description).casefold()
+    )
     assert pause.property("enabled") is False
     assert run_route.property("activeFocus") is True
 
@@ -438,9 +420,7 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
     bridge.flush(force=True)
     app.processEvents()
     app.processEvents()
-    assert "fresh" in status_interface.text(
-        QAccessible.Text.Description
-    ).casefold()
+    assert "fresh" in status_interface.text(QAccessible.Text.Description).casefold()
     assert evidence_route.property("activeFocus") is True
 
     queries.complete_run()
@@ -454,17 +434,11 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
     bridge.flush(force=True)
     app.processEvents()
     app.processEvents()
-    assert "terminal" in status_interface.text(
-        QAccessible.Text.Name
-    ).casefold()
-    assert "5 / 5" in progress_interface.text(
-        QAccessible.Text.Description
-    )
+    assert "terminal" in status_interface.text(QAccessible.Text.Name).casefold()
+    assert "5 / 5" in progress_interface.text(QAccessible.Text.Description)
     assert evidence_route.property("activeFocus") is True
     run_revision = run_feature.snapshot(run_context).revision
-    live_evidence_revision = evidence_feature.snapshot(
-        evidence_context
-    ).revision
+    live_evidence_revision = evidence_feature.snapshot(evidence_context).revision
 
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
@@ -484,9 +458,10 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
     assert finding_interface is not None
     assert narrative_interface is not None
     assert table_interface is not None
-    assert candidate_interface.text(
-        QAccessible.Text.Name
-    ) == "Select candidate MODEL-LIVE-41"
+    assert (
+        candidate_interface.text(QAccessible.Text.Name)
+        == "Select candidate MODEL-LIVE-41"
+    )
     assert "F-LIVE-41" in finding_interface.text(QAccessible.Text.Name)
     assert bool(finding_interface.state().selected) is True
     narrative_name = narrative_interface.text(QAccessible.Text.Name)
@@ -498,9 +473,7 @@ def test_live_journey_certifies_keyboard_narrator_terminal_and_remount():
     run_route.forceActiveFocus()
     run_action = QAccessible.queryAccessibleInterface(run_route)
     assert run_action is not None
-    run_action.actionInterface().doAction(
-        QAccessibleActionInterface.pressAction()
-    )
+    run_action.actionInterface().doAction(QAccessibleActionInterface.pressAction())
     app.processEvents()
     app.processEvents()
     assert root.property("activeRoute") == "run_monitoring"

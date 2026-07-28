@@ -7,28 +7,29 @@ Adapters, internal Qt Adapters, and centralized Journey Workspace.
 
 from __future__ import annotations
 
-from array import array
-from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
 import ctypes
 import gc
 import hashlib
 import json
-from math import ceil, sin
 import os
-from pathlib import Path
 import platform
+from array import array
+from collections.abc import Callable, Mapping
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from math import ceil, sin
+from pathlib import Path
 from threading import RLock, local
 from time import perf_counter_ns
-from typing import Any, Callable, Mapping, cast
+from typing import Any, cast
 
 from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
     QObject,
-    Signal,
-    QTimer,
     Qt,
+    QTimer,
+    Signal,
     Slot,
 )
 from PySide6.QtGui import QKeyEvent
@@ -37,18 +38,39 @@ from PySide6.QtWidgets import QApplication
 
 from app.event_bridge import EventBridge, EventBridgeBatch
 from app.features import (
+    APPLICATION_READ_MODEL_INTERFACE_VERSION,
+    ApplicationReadAvailability,
+    ApplicationReadError,
+    ApplicationReadErrorCode,
+    ApplicationReadModelVersion,
+    ApplicationReadResult,
     ApprovedScenarioRecipeId,
+    DiagnosticTaskCapabilities,
     EvidenceAndFindingsContext,
+    EvidenceAndFindingsData,
     EvidenceAndFindingsSelection,
+    EvidenceCoverage,
+    ExecutionAssumption,
     FormalDiagnosticCampaignId,
     LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
     MarketScenarioId,
+    ReadOnlyDiagnosticContext,
     ReproductionManifestId,
+    ResolvedV1Journey,
+    RunLifecyclePhase,
     RunMonitoringContext,
+    RunMonitoringData,
     RunMonitoringSelection,
+    RunProgress,
+    ScenarioSetId,
+    SimulationTime,
+    SourceRevisionToken,
     StrategyRunId,
     StrategyUnderTestId,
+    TerminalOutcome,
+    V1JourneySelector,
+    WallTime,
 )
 from app.ui.journey_workspace import JourneyWorkspaceHost
 
@@ -65,7 +87,6 @@ from .frontend_v2_performance import (
     validate_performance_lane,
 )
 from .no_manual_trading_gate import audit_qml_text
-
 
 UTC = timezone.utc
 RUN_ID = "RUN-PERF-001"
@@ -119,9 +140,7 @@ _PSAPI.GetProcessMemoryInfo.argtypes = (
 _PSAPI.GetProcessMemoryInfo.restype = ctypes.c_int
 _PSAPI.EmptyWorkingSet.argtypes = (ctypes.c_void_p,)
 _PSAPI.EmptyWorkingSet.restype = ctypes.c_int
-_KERNEL32.GlobalMemoryStatusEx.argtypes = (
-    ctypes.POINTER(_MemoryStatusEx),
-)
+_KERNEL32.GlobalMemoryStatusEx.argtypes = (ctypes.POINTER(_MemoryStatusEx),)
 _KERNEL32.GlobalMemoryStatusEx.restype = ctypes.c_int
 
 
@@ -132,7 +151,7 @@ def _trim_process_working_set() -> None:
 
 
 class _PerformanceRuntimeQueries:
-    """Thread-safe fixed fixture behind the two production live Adapters."""
+    """Thread-safe typed Run fixture plus the pre-#51 Evidence query fixture."""
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -179,50 +198,170 @@ class _PerformanceRuntimeQueries:
             self._updated_at = datetime.now(UTC)
             return self._revision
 
-    def get_run_monitoring_snapshot(
+    @property
+    def interface_version(self) -> ApplicationReadModelVersion:
+        return APPLICATION_READ_MODEL_INTERFACE_VERSION
+
+    def resolve_journey(
         self,
-        run_id: str,
-    ) -> dict[str, Any] | None:
-        if run_id != RUN_ID:
-            return None
+        selector: V1JourneySelector,
+    ) -> ApplicationReadResult[ResolvedV1Journey]:
+        if (
+            selector.campaign_id.value != CAMPAIGN_ID
+            or selector.run_id.value != RUN_ID
+            or (
+                selector.manifest_id is not None
+                and selector.manifest_id.value != MANIFEST_ID
+            )
+        ):
+            return self._read_failure(
+                code=ApplicationReadErrorCode.SELECTION_NOT_FOUND,
+                message="The performance certification journey was not found.",
+                retryable=False,
+            )
+        journey = ResolvedV1Journey(
+            run_context=_run_context(),
+            evidence_context=_evidence_context(),
+            evidence_package_id=selector.evidence_package_id,
+            campaign_case_id=MarketScenarioId(SCENARIO_ID),
+            campaign_layer=EvidenceCoverage.COMPOUND_SCENARIO,
+        )
+        revision, status, updated_at = self._run_source_state()
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=self._run_source_token(revision, status, updated_at),
+            source_observed_at=updated_at,
+            value=journey,
+            error=None,
+        )
+
+    def read_run(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[RunMonitoringData]:
+        selection = journey.run_context.selection
+        if (
+            selection is None
+            or selection.run_id is None
+            or selection.campaign_id.value != CAMPAIGN_ID
+            or selection.run_id.value != RUN_ID
+        ):
+            return self._read_failure(
+                code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
+                message="The performance Run identity does not match its journey.",
+                retryable=False,
+            )
+        revision, status, updated_at = self._run_source_state()
+        lifecycle = {
+            "running": RunLifecyclePhase.RUNNING,
+            "completed": RunLifecyclePhase.COMPLETED,
+            "failed": RunLifecyclePhase.FAILED,
+            "canceled": RunLifecyclePhase.CANCELED,
+        }.get(status, RunLifecyclePhase.QUEUED)
+        terminal_outcome = {
+            RunLifecyclePhase.COMPLETED: TerminalOutcome.COMPLETED,
+            RunLifecyclePhase.FAILED: TerminalOutcome.FAILED,
+            RunLifecyclePhase.CANCELED: TerminalOutcome.CANCELED,
+        }.get(lifecycle)
+        terminal = terminal_outcome is not None
+        started_at = updated_at - timedelta(minutes=5)
+        data = RunMonitoringData(
+            selection=selection,
+            strategy_id=StrategyUnderTestId(STRATEGY_ID),
+            market_scenario_id=MarketScenarioId(SCENARIO_ID),
+            scenario_set_id=ScenarioSetId("SET-PERF-001"),
+            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
+            task_id=None,
+            lifecycle=lifecycle,
+            terminal_outcome=terminal_outcome,
+            progress=RunProgress(
+                current_node_id=(
+                    "NODE-PERF-TERMINAL" if terminal else "NODE-PERF-RUNNING"
+                ),
+                current_node_label=(
+                    "Evidence ready" if terminal else "Running fixed fixture"
+                ),
+                completed=5 if terminal else 3,
+                total=5,
+            ),
+            simulation_time=SimulationTime(
+                sim_day=5 if terminal else 3,
+                instant=updated_at - timedelta(days=1),
+            ),
+            wall_time=WallTime(
+                started_at=started_at,
+                observed_at=updated_at,
+                elapsed=updated_at - started_at,
+            ),
+            execution_assumptions=(
+                ExecutionAssumption(
+                    name="fee_multiplier",
+                    requested_value="1.0x",
+                    effective_value="1.6x",
+                    override_reason="Approved Scenario Recipe override",
+                ),
+            ),
+            alerts=(),
+            context=ReadOnlyDiagnosticContext(
+                market=("600519.SH · diagnostic market context",),
+                account=("MODEL-PERF-00 · research account",),
+                positions=("600519.SH · +100 · evidence snapshot",),
+                orders=("ORD-PERF-001 · read-only evidence trace",),
+                fills=("FILL-PERF-001 · read-only evidence trace",),
+            ),
+            capabilities=DiagnosticTaskCapabilities(False, False, False),
+            active_task=None,
+        )
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=self._run_source_token(revision, status, updated_at),
+            source_observed_at=updated_at,
+            value=data,
+            error=None,
+        )
+
+    def read_evidence(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[EvidenceAndFindingsData]:
+        del journey
+        return self._read_failure(
+            code=ApplicationReadErrorCode.READ_FAILED,
+            message="Typed Evidence reads are introduced by Issue #51.",
+            retryable=False,
+        )
+
+    def _run_source_state(self) -> tuple[int, str, datetime]:
         with self._lock:
-            revision = self._revision
-            status = self._status
-            updated_at = self._updated_at
-        terminal = status in {"completed", "failed"}
-        return {
-            "run_id": RUN_ID,
-            "revision": revision,
-            "scenario_name": SCENARIO_ID,
-            "scenario_set_id": "SET-PERF-001",
-            "strategy_id": STRATEGY_ID,
-            "reproduction_manifest_id": MANIFEST_ID,
-            "task_id": "TASK-PERF-001",
-            "status": status,
-            "started_at": updated_at - timedelta(minutes=5),
-            "updated_at": updated_at,
-            "last_sim_day": 5 if terminal else 3,
-            "last_sim_dt": updated_at - timedelta(days=1),
-            "completed_nodes": 5 if terminal else 3,
-            "total_nodes": 5,
-            "current_node_id": (
-                "NODE-PERF-TERMINAL" if terminal else "NODE-PERF-RUNNING"
+            return self._revision, self._status, self._updated_at
+
+    @staticmethod
+    def _run_source_token(
+        revision: int,
+        status: str,
+        updated_at: datetime,
+    ) -> SourceRevisionToken:
+        payload = f"{CAMPAIGN_ID}|{RUN_ID}|{revision}|{status}|{updated_at.isoformat()}"
+        return SourceRevisionToken(hashlib.sha256(payload.encode("utf-8")).hexdigest())
+
+    @staticmethod
+    def _read_failure(
+        *,
+        code: ApplicationReadErrorCode,
+        message: str,
+        retryable: bool,
+    ) -> ApplicationReadResult[Any]:
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.FAILED,
+            source_token=None,
+            source_observed_at=None,
+            value=None,
+            error=ApplicationReadError(
+                code=code,
+                message=message,
+                retryable=retryable,
             ),
-            "current_node_label": (
-                "Evidence ready" if terminal else "Running fixed fixture"
-            ),
-            "requested_execution": {"fee_multiplier": "1.0x"},
-            "effective_execution": {"fee_multiplier": "1.6x"},
-            "execution_override_reasons": {
-                "fee_multiplier": "Approved Scenario Recipe override"
-            },
-            "alerts": [],
-            "market_context": ["600519.SH · diagnostic market context"],
-            "account_context": ["MODEL-PERF-00 · research account"],
-            "position_context": ["600519.SH · +100 · evidence snapshot"],
-            "order_context": ["ORD-PERF-001 · read-only evidence trace"],
-            "fill_context": ["FILL-PERF-001 · read-only evidence trace"],
-        }
+        )
 
     def get_evidence_and_findings_snapshot(
         self,
@@ -443,10 +582,7 @@ class _MetricRecorder:
 
     def record_visible_revision(self, view_revision: int, visible_ns: int) -> None:
         with self._lock:
-            if (
-                self.accepted_revisions
-                and view_revision <= self.accepted_revisions[-1]
-            ):
+            if self.accepted_revisions and view_revision <= self.accepted_revisions[-1]:
                 return
             self.accepted_revisions.append(view_revision)
             source_revision = self.view_to_source_revision.get(view_revision)
@@ -456,17 +592,13 @@ class _MetricRecorder:
                 else self.batch_acceptance_ns.get(source_revision)
             )
             if accepted_ns is not None:
-                self.event_to_visible_ms.append(
-                    (visible_ns - accepted_ns) / 1_000_000
-                )
+                self.event_to_visible_ms.append((visible_ns - accepted_ns) / 1_000_000)
             if (
                 source_revision == self.terminal_source_revision
                 and accepted_ns is not None
             ):
                 self.terminal_visible_revision = view_revision
-                self.terminal_visible_ms = (
-                    visible_ns - accepted_ns
-                ) / 1_000_000
+                self.terminal_visible_ms = (visible_ns - accepted_ns) / 1_000_000
 
 
 class _QtPerformanceProbe(QObject):
@@ -492,9 +624,7 @@ class _QtPerformanceProbe(QObject):
         if self._root is None or self._adapter is None:
             raise RuntimeError("Evidence & Findings QML Adapter is unavailable")
         self._renderer = self._required_item("productionEvidenceChart")
-        self._candidate_repeater = self._required_object(
-            "evidenceCandidateRepeater"
-        )
+        self._candidate_repeater = self._required_object("evidenceCandidateRepeater")
         self._context_panel = self._required_item("evidenceContextPanel")
         loader = self._required_item("evidenceAndFindingsPageLoader")
         page = loader.property("item")
@@ -502,9 +632,8 @@ class _QtPerformanceProbe(QObject):
             raise RuntimeError("Evidence & Findings QML page is unavailable")
         self._tab_findings = page.property("firstTabControl")
         self._tab_assumptions = page.property("secondTabControl")
-        if (
-            not isinstance(self._tab_findings, QQuickItem)
-            or not isinstance(self._tab_assumptions, QQuickItem)
+        if not isinstance(self._tab_findings, QQuickItem) or not isinstance(
+            self._tab_assumptions, QQuickItem
         ):
             raise RuntimeError("Evidence QML tab controls are unavailable")
         self._recorder = recorder
@@ -565,10 +694,7 @@ class _QtPerformanceProbe(QObject):
 
     @property
     def duration_seconds(self) -> float:
-        if (
-            self._measurement_started_ns is None
-            or self._measurement_ended_ns is None
-        ):
+        if self._measurement_started_ns is None or self._measurement_ended_ns is None:
             return 0.0
         return (
             self._measurement_ended_ns - self._measurement_started_ns
@@ -590,19 +716,11 @@ class _QtPerformanceProbe(QObject):
     def observed_fixture(self) -> dict[str, int]:
         return {
             "source_points": self._adapter.chartSourcePointCount,
-            "visible_points": int(
-                self._renderer.property("samplePointCount") or 0
-            ),
-            "overlay_count": int(
-                self._renderer.property("overlayCount") or 0
-            ),
-            "candidate_rows": int(
-                self._candidate_repeater.property("count") or 0
-            ),
+            "visible_points": int(self._renderer.property("samplePointCount") or 0),
+            "overlay_count": int(self._renderer.property("overlayCount") or 0),
+            "candidate_rows": int(self._candidate_repeater.property("count") or 0),
             "source_cadence_ms": self._source_timer.interval(),
-            "paint_cap_fps": (
-                self._adapter._chart_frame_gate.max_frames_per_second
-            ),
+            "paint_cap_fps": (self._adapter._chart_frame_gate.max_frames_per_second),
         }
 
     @property
@@ -641,13 +759,10 @@ class _QtPerformanceProbe(QObject):
         if revision > 0:
             self._recorder.record_visible_revision(revision, visible_ns)
         if self._usable_state_ms is None and self._fixture_is_usable():
-            self._usable_state_ms = (
-                visible_ns - self._process_started_ns
-            ) / 1_000_000
+            self._usable_state_ms = (visible_ns - self._process_started_ns) / 1_000_000
             self.read_only_context_visible = bool(
                 self._context_panel.property("visible")
-                and "read-only"
-                in self._adapter.readOnlyContextText.lower()
+                and "read-only" in self._adapter.readOnlyContextText.lower()
             )
             self._adapter.setActiveTab("findings")
             QTimer.singleShot(0, self._start_measurement)
@@ -711,9 +826,8 @@ class _QtPerformanceProbe(QObject):
         if self._measurement_started_ns is None:
             return
         now_ns = perf_counter_ns()
-        measurement_deadline_ns = (
-            self._measurement_started_ns
-            + ceil(self._duration_seconds * 1_000_000_000)
+        measurement_deadline_ns = self._measurement_started_ns + ceil(
+            self._duration_seconds * 1_000_000_000
         )
         remaining_ns = measurement_deadline_ns - now_ns
         if remaining_ns > 0:
@@ -752,9 +866,7 @@ class _QtPerformanceProbe(QObject):
         previous = self._last_stall_tick_ns
         self._last_stall_tick_ns = now_ns
         if previous is not None:
-            self._recorder.main_thread_gaps_ms.append(
-                (now_ns - previous) / 1_000_000
-            )
+            self._recorder.main_thread_gaps_ms.append((now_ns - previous) / 1_000_000)
 
     @Slot()
     def _sample_memory(self) -> None:
@@ -856,7 +968,7 @@ def run_performance_lane(
     )
     dispose_batch_probe = bridge.subscribe_batches(recorder.record_batch)
     run_feature = LiveRunMonitoringAdapter(
-        runtime_gateway=queries,
+        application_read_model=queries,
         event_bridge=bridge,
     )
     evidence_feature = LiveEvidenceAndFindingsAdapter(
@@ -969,8 +1081,7 @@ def _build_report(
     peak_memory_mib = max(recorder.memory_mib, default=0.0)
     revisions = list(recorder.accepted_revisions)
     monotonic = bool(revisions) and all(
-        current > previous
-        for previous, current in zip(revisions, revisions[1:])
+        current > previous for previous, current in zip(revisions, revisions[1:])
     )
     expected_api = "Direct3D11" if lane == "hardware" else "Software"
     runtime_errors = list(dict.fromkeys(probe.errors))
@@ -1030,17 +1141,13 @@ def _build_report(
             "source_revision": recorder.terminal_source_revision,
             "visible_revision": recorder.terminal_visible_revision,
             "visible_ms": (
-                None
-                if terminal_visible_ms is None
-                else round(terminal_visible_ms, 6)
+                None if terminal_visible_ms is None else round(terminal_visible_ms, 6)
             ),
             "observed": terminal_visible_ms is not None,
         },
         "safety": {
             "manual_trading_action_count": probe.manual_action_count,
-            "read_only_context_visible": (
-                probe.read_only_context_visible
-            ),
+            "read_only_context_visible": (probe.read_only_context_visible),
         },
         "errors": runtime_errors,
     }
@@ -1048,9 +1155,7 @@ def _build_report(
         local_failures = _runtime_threshold_failures(report)
         if local_failures:
             report["status"] = "failed"
-            report["errors"] = list(
-                dict.fromkeys([*runtime_errors, *local_failures])
-            )
+            report["errors"] = list(dict.fromkeys([*runtime_errors, *local_failures]))
     return report
 
 
@@ -1103,9 +1208,7 @@ def _process_working_set_bytes() -> int:
 def _total_physical_memory_bytes() -> int:
     status = _MemoryStatusEx()
     status.dwLength = ctypes.sizeof(status)
-    if not _KERNEL32.GlobalMemoryStatusEx(
-        ctypes.byref(status)
-    ):
+    if not _KERNEL32.GlobalMemoryStatusEx(ctypes.byref(status)):
         raise OSError("GlobalMemoryStatusEx failed")
     return int(status.ullTotalPhys)
 

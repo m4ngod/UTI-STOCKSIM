@@ -107,9 +107,10 @@ TELEMETRY_EVENT_ALLOWLIST: frozenset[str] = frozenset()
 RUNTIME_GATEWAY_CALL_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
-            "LiveRunMonitoringAdapter": frozenset(
-                {"get_run_monitoring_snapshot"}
-            ),
+            # Issue #50 moved Run Monitoring to the typed in-process
+            # Strategy Diagnostics V1 read model. Any RuntimeGateway call is
+            # now unapproved for this adapter.
+            "LiveRunMonitoringAdapter": frozenset(),
             "LiveEvidenceAndFindingsAdapter": frozenset(
                 {"get_evidence_and_findings_snapshot"}
             ),

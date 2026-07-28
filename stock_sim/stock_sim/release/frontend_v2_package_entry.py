@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-import json
-import os
 from pathlib import Path
-import re
 from time import monotonic, sleep
-from typing import Any, Callable, Sequence
-
+from typing import Any
 
 UTC = timezone.utc
 RUN_ID = "RUN-RC-001"
@@ -155,7 +156,7 @@ class PackageSmokeResult:
 
 
 class _ReleaseCandidateRuntimeQueries:
-    """Fixed runtime data read through the production live Feature Adapters."""
+    """Typed Run fixture plus the pre-#51 Evidence query fixture."""
 
     def __init__(self) -> None:
         self._revision = 1
@@ -176,46 +177,211 @@ class _ReleaseCandidateRuntimeQueries:
         self._updated_at = datetime.now(UTC)
         return self._revision
 
-    def get_run_monitoring_snapshot(
+    @property
+    def interface_version(self) -> Any:
+        from app.features import APPLICATION_READ_MODEL_INTERFACE_VERSION
+
+        return APPLICATION_READ_MODEL_INTERFACE_VERSION
+
+    def resolve_journey(
         self,
-        run_id: str,
-    ) -> dict[str, Any] | None:
-        if run_id != RUN_ID:
-            return None
-        terminal = self._status == "completed"
-        return {
-            "run_id": RUN_ID,
-            "revision": self._revision,
-            "scenario_name": SCENARIO_ID,
-            "scenario_set_id": "SET-RC-001",
-            "strategy_id": STRATEGY_ID,
-            "reproduction_manifest_id": MANIFEST_ID,
-            "task_id": "TASK-RC-001",
-            "status": self._status,
-            "started_at": self._updated_at - timedelta(minutes=3),
-            "updated_at": self._updated_at,
-            "last_sim_day": 5 if terminal else 2,
-            "last_sim_dt": self._updated_at - timedelta(days=1),
-            "completed_nodes": 5 if terminal else 2,
-            "total_nodes": 5,
-            "current_node_id": (
-                "NODE-RC-COMPLETE" if terminal else "NODE-RC-RUNNING"
+        selector: Any,
+    ) -> Any:
+        from app.features import (
+            ApplicationReadAvailability,
+            ApplicationReadErrorCode,
+            ApplicationReadResult,
+            ApprovedScenarioRecipeId,
+            EvidenceAndFindingsContext,
+            EvidenceAndFindingsSelection,
+            EvidenceCoverage,
+            FormalDiagnosticCampaignId,
+            MarketScenarioId,
+            ReproductionManifestId,
+            ResolvedV1Journey,
+            RunMonitoringContext,
+            RunMonitoringSelection,
+            StrategyRunId,
+            StrategyUnderTestId,
+        )
+
+        if (
+            selector.campaign_id.value != CAMPAIGN_ID
+            or selector.run_id.value != RUN_ID
+            or (
+                selector.manifest_id is not None
+                and selector.manifest_id.value != MANIFEST_ID
+            )
+        ):
+            return self._read_failure(
+                code=ApplicationReadErrorCode.SELECTION_NOT_FOUND,
+                message="The release-candidate journey was not found.",
+                retryable=False,
+            )
+        run_selection = RunMonitoringSelection(
+            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
+            run_id=StrategyRunId(RUN_ID),
+        )
+        evidence_selection = EvidenceAndFindingsSelection(
+            campaign_id=run_selection.campaign_id,
+            run_id=run_selection.run_id,
+            strategy_id=StrategyUnderTestId(STRATEGY_ID),
+            market_scenario_id=MarketScenarioId(SCENARIO_ID),
+            approved_recipe_id=ApprovedScenarioRecipeId(RECIPE_ID),
+            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
+        )
+        journey = ResolvedV1Journey(
+            run_context=RunMonitoringContext.for_run(run_selection),
+            evidence_context=EvidenceAndFindingsContext.for_selection(
+                evidence_selection
             ),
-            "current_node_label": (
-                "Evidence ready" if terminal else "Running scenario"
+            evidence_package_id=selector.evidence_package_id,
+            campaign_case_id=MarketScenarioId(SCENARIO_ID),
+            campaign_layer=EvidenceCoverage.COMPOUND_SCENARIO,
+        )
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=self._run_source_token(),
+            source_observed_at=self._updated_at,
+            value=journey,
+            error=None,
+        )
+
+    def read_run(self, journey: Any) -> Any:
+        from app.features import (
+            ApplicationReadAvailability,
+            ApplicationReadErrorCode,
+            ApplicationReadResult,
+            DiagnosticTaskCapabilities,
+            ExecutionAssumption,
+            MarketScenarioId,
+            ReadOnlyDiagnosticContext,
+            ReproductionManifestId,
+            RunLifecyclePhase,
+            RunMonitoringData,
+            RunProgress,
+            ScenarioSetId,
+            SimulationTime,
+            StrategyUnderTestId,
+            TerminalOutcome,
+            WallTime,
+        )
+
+        selection = journey.run_context.selection
+        if (
+            selection is None
+            or selection.run_id is None
+            or selection.campaign_id.value != CAMPAIGN_ID
+            or selection.run_id.value != RUN_ID
+        ):
+            return self._read_failure(
+                code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
+                message="The release-candidate Run identity does not match.",
+                retryable=False,
+            )
+        lifecycle = (
+            RunLifecyclePhase.COMPLETED
+            if self._status == "completed"
+            else RunLifecyclePhase.RUNNING
+        )
+        terminal = lifecycle is RunLifecyclePhase.COMPLETED
+        started_at = self._updated_at - timedelta(minutes=3)
+        data = RunMonitoringData(
+            selection=selection,
+            strategy_id=StrategyUnderTestId(STRATEGY_ID),
+            market_scenario_id=MarketScenarioId(SCENARIO_ID),
+            scenario_set_id=ScenarioSetId("SET-RC-001"),
+            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
+            task_id=None,
+            lifecycle=lifecycle,
+            terminal_outcome=TerminalOutcome.COMPLETED if terminal else None,
+            progress=RunProgress(
+                current_node_id=("NODE-RC-COMPLETE" if terminal else "NODE-RC-RUNNING"),
+                current_node_label=(
+                    "Evidence ready" if terminal else "Running scenario"
+                ),
+                completed=5 if terminal else 2,
+                total=5,
             ),
-            "requested_execution": {"fee_multiplier": "1.0x"},
-            "effective_execution": {"fee_multiplier": "1.6x"},
-            "execution_override_reasons": {
-                "fee_multiplier": "Approved Scenario Recipe override"
-            },
-            "alerts": [],
-            "market_context": ["600519.SH · diagnostic market context"],
-            "account_context": ["MODEL-RC-001 · research account"],
-            "position_context": ["600519.SH · +100 · evidence snapshot"],
-            "order_context": ["ORD-RC-001 · filled · read-only trace"],
-            "fill_context": ["FILL-RC-001 · 100 @ 1500 · read-only trace"],
-        }
+            simulation_time=SimulationTime(
+                sim_day=5 if terminal else 2,
+                instant=self._updated_at - timedelta(days=1),
+            ),
+            wall_time=WallTime(
+                started_at=started_at,
+                observed_at=self._updated_at,
+                elapsed=self._updated_at - started_at,
+            ),
+            execution_assumptions=(
+                ExecutionAssumption(
+                    name="fee_multiplier",
+                    requested_value="1.0x",
+                    effective_value="1.6x",
+                    override_reason="Approved Scenario Recipe override",
+                ),
+            ),
+            alerts=(),
+            context=ReadOnlyDiagnosticContext(
+                market=("600519.SH · diagnostic market context",),
+                account=("MODEL-RC-001 · research account",),
+                positions=("600519.SH · +100 · evidence snapshot",),
+                orders=("ORD-RC-001 · filled · read-only trace",),
+                fills=("FILL-RC-001 · 100 @ 1500 · read-only trace",),
+            ),
+            capabilities=DiagnosticTaskCapabilities(False, False, False),
+            active_task=None,
+        )
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.READY,
+            source_token=self._run_source_token(),
+            source_observed_at=self._updated_at,
+            value=data,
+            error=None,
+        )
+
+    def read_evidence(self, journey: Any) -> Any:
+        from app.features import ApplicationReadErrorCode
+
+        del journey
+        return self._read_failure(
+            code=ApplicationReadErrorCode.READ_FAILED,
+            message="Typed Evidence reads are introduced by Issue #51.",
+            retryable=False,
+        )
+
+    def _run_source_token(self) -> Any:
+        from app.features import SourceRevisionToken
+
+        payload = (
+            f"{CAMPAIGN_ID}|{RUN_ID}|{self._revision}|{self._status}|"
+            f"{self._updated_at.isoformat()}"
+        )
+        return SourceRevisionToken(hashlib.sha256(payload.encode("utf-8")).hexdigest())
+
+    @staticmethod
+    def _read_failure(
+        *,
+        code: Any,
+        message: str,
+        retryable: bool,
+    ) -> Any:
+        from app.features import (
+            ApplicationReadAvailability,
+            ApplicationReadError,
+            ApplicationReadResult,
+        )
+
+        return ApplicationReadResult(
+            availability=ApplicationReadAvailability.FAILED,
+            source_token=None,
+            source_observed_at=None,
+            value=None,
+            error=ApplicationReadError(
+                code=code,
+                message=message,
+                retryable=retryable,
+            ),
+        )
 
     def get_evidence_and_findings_snapshot(
         self,
@@ -398,10 +564,7 @@ def _configure_smoke_route_identity() -> dict[str, str | None]:
         "STOCKSIM_FRONTEND_V2_APPROVED_RECIPE_ID": RECIPE_ID,
         "STOCKSIM_FRONTEND_V2_REPRODUCTION_MANIFEST_ID": MANIFEST_ID,
     }
-    previous = {
-        name: os.environ.get(name)
-        for name in route_identity
-    }
+    previous = {name: os.environ.get(name) for name in route_identity}
     os.environ.update(route_identity)
     return previous
 
@@ -419,6 +582,7 @@ def _create_production_window(
     event_bridge: Any,
     settings_path: Path,
     runtime_gateway: Any | None = None,
+    strategy_diagnostics_read_model: Any | None = None,
 ) -> tuple[Any, Any, Any]:
     from app.app_context import build_app_context
     from app.ui.main_window import MainWindow
@@ -428,22 +592,17 @@ def _create_production_window(
         run_monitoring_mode="live",
         event_bridge=event_bridge,
         runtime_gateway=runtime_gateway,
+        strategy_diagnostics_read_model=strategy_diagnostics_read_model,
     )
     window = MainWindow(
         run_monitoring_feature=context.run_monitoring_feature,
         run_monitoring_context=context.run_monitoring_context,
-        evidence_and_findings_feature=(
-            context.evidence_and_findings_feature
-        ),
-        evidence_and_findings_context=(
-            context.evidence_and_findings_context
-        ),
+        evidence_and_findings_feature=(context.evidence_and_findings_feature),
+        evidence_and_findings_context=(context.evidence_and_findings_context),
         frontend_v2_enabled=True,
     )
     if not window.journey_workspace_active:
-        raise RuntimeError(
-            "Production AppContext did not mount the Journey Workspace"
-        )
+        raise RuntimeError("Production AppContext did not mount the Journey Workspace")
     host = window._journey_workspace
     return context, window, host
 
@@ -468,6 +627,7 @@ def run_smoke_journey(
         context, window, host = _create_production_window(
             event_bridge=bridge,
             runtime_gateway=queries,
+            strategy_diagnostics_read_model=queries,
             settings_path=report_dir / "frontend-v2-settings.json",
         )
     except BaseException:
@@ -505,12 +665,9 @@ def run_smoke_journey(
                 lambda: (
                     root.property("activeRoute") == route
                     and root.property("screenState") == run_state
-                    and root.property("evidenceScreenState")
-                    == evidence_state
-                    and run_adapter.property("freshness")
-                    == run_freshness
-                    and evidence_adapter.property("freshness")
-                    == evidence_freshness
+                    and root.property("evidenceScreenState") == evidence_state
+                    and run_adapter.property("freshness") == run_freshness
+                    and evidence_adapter.property("freshness") == evidence_freshness
                 ),
                 (
                     f"{stage}: expected {route}/{run_state}/"
@@ -659,13 +816,10 @@ def _observe_state(
         )
         if observed_after_capture != observed:
             changed_fields = ", ".join(
-                key
-                for key in observed
-                if observed[key] != observed_after_capture[key]
+                key for key in observed if observed[key] != observed_after_capture[key]
             )
             raise RuntimeError(
-                f"{stage}: state changed during frame capture "
-                f"({changed_fields})"
+                f"{stage}: state changed during frame capture ({changed_fields})"
             )
     return SmokeStateObservation(
         stage=stage,
@@ -700,9 +854,7 @@ def _snapshot_observed_state(
         "evidence_phase": str(evidence_adapter.property("phase")),
         "run_revision": str(run_adapter.property("revisionText")),
         "evidence_revision": str(evidence_adapter.property("revisionText")),
-        "source_generation": str(
-            run_adapter.property("sourceGenerationText")
-        ),
+        "source_generation": str(run_adapter.property("sourceGenerationText")),
         "headline": str(root.property("headline")),
         "detail": str(root.property("detail")),
     }
@@ -729,9 +881,7 @@ def _unapproved_interactive_action_count(root: Any) -> int:
 
 
 def _read_only_context_visible(host: Any) -> bool:
-    run_text = str(
-        host._run_monitoring.property("diagnosticContextText")
-    )
+    run_text = str(host._run_monitoring.property("diagnosticContextText"))
     evidence_adapter = host._evidence_and_findings
     if evidence_adapter is None:
         return False

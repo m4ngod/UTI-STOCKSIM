@@ -1,11 +1,15 @@
+import json
 from concurrent.futures import Future
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timedelta, timezone
-import json
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from stock_sim.persistence.models_agent_binding import AgentBinding
+from stock_sim.persistence.models_imports import Base
+from stock_sim.persistence.models_simulation_run import SimulationRun
+from stock_sim.services.runtime_query_service import RuntimeQueryService
 
 from app.app_context import build_app_context
 from app.event_bridge import EventBridge
@@ -15,6 +19,7 @@ from app.features import (
     DeterministicFakeRunMonitoringAdapter,
     DiagnosticCommandRejectionReason,
     DiagnosticTaskId,
+    FormalDiagnosticCampaignId,
     Freshness,
     LiveRunMonitoringAdapter,
     PauseDiagnosticTask,
@@ -26,7 +31,6 @@ from app.features import (
     RunMonitoringSelection,
     SourceKind,
     StrategyRunId,
-    FormalDiagnosticCampaignId,
     TaskPhase,
     ViewPhase,
 )
@@ -36,12 +40,10 @@ from app.services.training_arena_service import (
     TrainingArenaConfig,
     TrainingArenaService,
 )
-from stock_sim.persistence.models_agent_binding import AgentBinding
-from stock_sim.persistence.models_imports import Base
-from stock_sim.persistence.models_simulation_run import SimulationRun
 from stock_sim.services import runtime_query_service
-from stock_sim.services.runtime_query_service import RuntimeQueryService
-
+from tests.frontend.strategy_diagnostics_v1_test_support import (
+    DictionaryFixtureApplicationReadModel,
+)
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 2, 12, 0, tzinfo=UTC)
@@ -52,7 +54,7 @@ class _DirectExecutor:
         future = Future()
         try:
             future.set_result(fn(*args, **kwargs))
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - Future semantics
             future.set_exception(error)
         return future
 
@@ -76,7 +78,7 @@ class _DelayedExecutor:
         future, fn, args, kwargs = self.pending.pop(index)
         try:
             future.set_result(fn(*args, **kwargs))
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - Future semantics
             future.set_exception(error)
 
     def shutdown(self, wait=True, *, cancel_futures=False):
@@ -211,9 +213,8 @@ def _live_adapter():
     )
     tasks.start_arena("ARENA-001", episode_id="EP-001")
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
-        diagnostic_tasks=tasks,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
@@ -265,25 +266,29 @@ def test_fake_and_live_adapters_share_the_complete_wave1_contract(
     assert data.progress.total == 10
     assert data.simulation_time.instant != data.wall_time.observed_at
     assert data.execution_assumptions[0].requested_value
-    assert any(
-        assumption.override_reason
-        for assumption in data.execution_assumptions
-    )
+    assert any(assumption.override_reason for assumption in data.execution_assumptions)
     assert data.alerts[0].code == "spread_widening"
     assert data.context.market
     assert data.context.account
     assert data.context.positions
     assert data.context.orders
     assert data.context.fills
-    assert data.capabilities.can_pause is True
-    assert data.capabilities.can_resume is False
-    assert data.capabilities.can_cancel is True
+    if state.source.kind is SourceKind.LIVE_RUNTIME:
+        assert data.task_id is None
+        assert data.capabilities.can_pause is False
+        assert data.capabilities.can_resume is False
+        assert data.capabilities.can_cancel is False
+    else:
+        assert data.capabilities.can_pause is True
+        assert data.capabilities.can_resume is False
+        assert data.capabilities.can_cancel is True
 
     values = list(_walk_values(state))
     assert not any(isinstance(value, (dict, list, set, bytearray)) for value in values)
     assert not any(
         type(value).__module__.startswith("PySide6")
-        or type(value).__name__ in {
+        or type(value).__name__
+        in {
             "RuntimeGateway",
             "EventBridge",
             "SimulationRun",
@@ -299,21 +304,32 @@ def test_fake_and_live_adapters_apply_revision_checked_diagnostic_commands(
     state = adapter.snapshot(context)
     data = state.last_reliable_data
     assert data is not None
+    target_id = data.task_id or DiagnosticTaskId("READ-ONLY-V1")
 
     stale = adapter.pause_diagnostic_task(
         PauseDiagnosticTask(
-            target_id=data.task_id,
+            target_id=target_id,
             expected_revision=state.revision + 10,
         )
     )
     accepted = adapter.pause_diagnostic_task(
         PauseDiagnosticTask(
-            target_id=data.task_id,
+            target_id=target_id,
             expected_revision=state.revision,
         )
     )
 
     assert stale.accepted is False
+    if state.source.kind is SourceKind.LIVE_RUNTIME:
+        assert stale.rejection_reason is (
+            DiagnosticCommandRejectionReason.UNAVAILABLE_CAPABILITY
+        )
+        assert accepted.accepted is False
+        assert accepted.rejection_reason is (
+            DiagnosticCommandRejectionReason.UNAVAILABLE_CAPABILITY
+        )
+        assert adapter.snapshot(context) == state
+        return
     assert (
         stale.rejection_reason
         is DiagnosticCommandRejectionReason.STALE_EXPECTED_REVISION
@@ -457,7 +473,7 @@ def test_live_adapter_derives_freshness_and_retains_data_on_query_failure():
     assert degraded.last_reliable_data == fresh.last_reliable_data
     assert degraded.presentation is RunMonitoringPresentationState.ACTIVE
     assert degraded.error is not None
-    assert degraded.error.code == "run_monitoring_query_failed"
+    assert degraded.error.code == "strategy_diagnostics_read_failed"
     adapter.close()
 
 
@@ -494,7 +510,7 @@ def test_live_adapter_maps_the_real_runtime_query_persistence_implementation(
                 sim_start_day=1,
                 last_sim_day=4,
                 sim_end_day=12,
-                last_sim_dt=datetime(2029, 1, 4, 10, 30),
+                last_sim_dt=datetime(2029, 1, 4, 10, 30, tzinfo=UTC),
                 config_version="RM-PERSISTED",
                 environment_tag="SCENARIO-SET-PERSISTED",
             )
@@ -552,9 +568,8 @@ def test_live_adapter_maps_the_real_runtime_query_persistence_implementation(
     )
     tasks.start_arena("ARENA-001", episode_id="EP-001")
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(gateway._queries),
         event_bridge=bridge,
-        diagnostic_tasks=tasks,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
@@ -564,18 +579,9 @@ def test_live_adapter_maps_the_real_runtime_query_persistence_implementation(
     assert state.source.kind is SourceKind.LIVE_RUNTIME
     assert state.presentation is RunMonitoringPresentationState.ACTIVE
     assert state.last_reliable_data is not None
-    assert (
-        state.last_reliable_data.strategy_id.value
-        == "STRATEGY-PERSISTED"
-    )
-    assert (
-        state.last_reliable_data.market_scenario_id.value
-        == "SCENARIO-PERSISTED"
-    )
-    assert (
-        state.last_reliable_data.reproduction_manifest_id.value
-        == "RM-PERSISTED"
-    )
+    assert state.last_reliable_data.strategy_id.value == "STRATEGY-PERSISTED"
+    assert state.last_reliable_data.market_scenario_id.value == "SCENARIO-PERSISTED"
+    assert state.last_reliable_data.reproduction_manifest_id.value == "RM-PERSISTED"
     assert state.last_reliable_data.progress.current_node_id == "NODE-04"
     assert state.last_reliable_data.simulation_time.sim_day == 4
     assert state.last_reliable_data.context.account == (
@@ -600,7 +606,7 @@ def test_missing_live_identities_and_task_are_explicitly_partial():
     gateway._queries = queries
     bridge = EventBridge(subscribe_backend=False)
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -621,15 +627,14 @@ def test_missing_live_identities_and_task_are_explicitly_partial():
     adapter.close()
 
 
-def test_live_adapter_reports_async_command_failure_without_leaking_details():
+def test_live_adapter_rejects_task_commands_at_the_read_only_boundary():
     queries = _RunQueries()
     gateway = RuntimeGateway()
     gateway._queries = queries
     bridge = EventBridge(subscribe_backend=False)
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
-        diagnostic_tasks=_FailingDiagnosticTasks(),
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
@@ -638,61 +643,29 @@ def test_live_adapter_reports_async_command_failure_without_leaking_details():
     data = running.last_reliable_data
     assert data is not None
 
-    accepted = adapter.pause_diagnostic_task(
+    result = adapter.pause_diagnostic_task(
         PauseDiagnosticTask(
-            target_id=data.task_id,
+            target_id=DiagnosticTaskId("READ-ONLY-V1"),
             expected_revision=running.revision,
         )
     )
-    failed = adapter.snapshot(context)
 
-    assert accepted.accepted is True
-    assert accepted.task is not None
-    assert accepted.task.identity.value.startswith("LIVE-TASK-")
-    assert failed.phase is ViewPhase.DEGRADED
-    assert failed.last_reliable_data is not None
-    task = failed.last_reliable_data.active_task
-    assert task is not None
-    assert task.identity == accepted.task.identity
-    assert task.target_id == data.task_id
-    assert task.phase is TaskPhase.FAILED
-    assert task.progress == 1.0
-    assert task.result is None
-    assert task.cancelable is False
-    assert task.error is not None
-    assert task.error.code == "diagnostic_task_pause_failed"
-    assert task.error.message == "The diagnostic task action failed."
-    assert "SECRET" not in task.error.message
+    assert result.accepted is False
+    assert result.rejection_reason is (
+        DiagnosticCommandRejectionReason.UNAVAILABLE_CAPABILITY
+    )
+    assert result.task is None
+    assert adapter.snapshot(context) == running
     adapter.close()
 
 
-def test_live_adapter_rejects_a_second_command_while_task_handle_is_in_flight():
+def test_live_adapter_never_queues_a_task_handle_for_read_only_commands():
     queries = _RunQueries()
-    gateway = RuntimeGateway()
-    gateway._queries = queries
     bridge = EventBridge(subscribe_backend=False)
-    agents = _AgentService()
-    tasks = TrainingArenaService(
-        agent_service=agents,
-        session_factory=None,
-    )
-    tasks.create_arena(
-        TrainingArenaConfig(
-            arena_id="ARENA-001",
-            model_specs=[
-                ArenaModelSpec(
-                    agent_id="MODEL-B17",
-                    model_id="momentum-v1",
-                )
-            ],
-        )
-    )
-    tasks.start_arena("ARENA-001", episode_id="EP-001")
     executor = _DelayedExecutor()
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
-        diagnostic_tasks=tasks,
         clock=lambda: NOW,
         executor=executor,
     )
@@ -700,52 +673,27 @@ def test_live_adapter_rejects_a_second_command_while_task_handle_is_in_flight():
     running = adapter.snapshot(context)
     data = running.last_reliable_data
     assert data is not None
-    assert data.task_id is not None
-
-    first = adapter.pause_diagnostic_task(
-        PauseDiagnosticTask(
-            target_id=data.task_id,
-            expected_revision=running.revision,
-        )
-    )
-    queued = adapter.snapshot(context)
-    second = adapter.pause_diagnostic_task(
-        PauseDiagnosticTask(
-            target_id=data.task_id,
-            expected_revision=queued.revision,
-        )
+    target_id = DiagnosticTaskId("READ-ONLY-V1")
+    results = (
+        adapter.pause_diagnostic_task(PauseDiagnosticTask(target_id, running.revision)),
+        adapter.resume_diagnostic_task(
+            ResumeDiagnosticTask(target_id, running.revision)
+        ),
+        adapter.cancel_diagnostic_task(
+            CancelDiagnosticTask(target_id, running.revision)
+        ),
     )
 
-    assert first.accepted is True
-    assert first.task is not None
-    assert queued.last_reliable_data is not None
-    assert queued.last_reliable_data.active_task == first.task
-    assert queued.last_reliable_data.capabilities.can_pause is False
-    assert queued.last_reliable_data.capabilities.can_resume is False
-    assert queued.last_reliable_data.capabilities.can_cancel is False
-    assert second.accepted is False
-    assert second.rejection_reason is (
-        DiagnosticCommandRejectionReason.UNAVAILABLE_CAPABILITY
+    assert data.task_id is None
+    assert data.active_task is None
+    assert executor.pending == []
+    assert all(result.accepted is False for result in results)
+    assert all(
+        result.rejection_reason
+        is DiagnosticCommandRejectionReason.UNAVAILABLE_CAPABILITY
+        for result in results
     )
-    queries.record["current_node_id"] = "NODE-DURING-TASK"
-    bridge.on_snapshot({"run_id": "RUN-001", "symbol": "600519.SH"})
-    bridge.flush(force=True)
-    executor.run_at(1)
-    refreshed = adapter.snapshot(context)
-    assert refreshed.last_reliable_data is not None
-    assert refreshed.last_reliable_data.active_task == first.task
-    assert refreshed.last_reliable_data.capabilities.can_pause is False
-    assert refreshed.last_reliable_data.capabilities.can_resume is False
-    assert refreshed.last_reliable_data.capabilities.can_cancel is False
-    executor.run_next()
-    completed = adapter.snapshot(context)
-    assert completed.last_reliable_data is not None
-    assert completed.last_reliable_data.active_task is not None
-    assert (
-        completed.last_reliable_data.active_task.identity
-        == first.task.identity
-    )
-    assert completed.last_reliable_data.active_task.phase is TaskPhase.COMPLETED
+    assert adapter.snapshot(context) == running
     adapter.close()
 
 
@@ -758,7 +706,7 @@ def test_snapshot_returns_the_canonical_runtime_state_when_age_refresh_races(
     bridge = EventBridge(subscribe_backend=False)
     clock = [NOW]
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
         clock=lambda: clock[0],
         executor=_DirectExecutor(),
@@ -777,7 +725,11 @@ def test_snapshot_returns_the_canonical_runtime_state_when_age_refresh_races(
             queries.record["updated_at"] = clock[0]
             queries.record["current_node_id"] = "NODE-TERMINAL"
             terminal = adapter._read_state(target_context, revision=2)
-            original_store(target_context, terminal)
+            original_store(
+                target_context,
+                terminal.state,
+                source_token=terminal.source_token,
+            )
         return original_store(target_context, aged_candidate)
 
     monkeypatch.setattr(
@@ -836,7 +788,7 @@ def test_campaign_only_context_is_valid_and_never_queries_or_launches_a_run(
     gateway = RuntimeGateway()
     gateway._queries = queries
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=EventBridge(subscribe_backend=False),
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -868,7 +820,7 @@ def test_live_adapter_never_normalizes_an_unavailable_query_source_to_empty():
     gateway._queries = None
     bridge = EventBridge(subscribe_backend=False)
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(None),
         event_bridge=bridge,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
@@ -881,15 +833,13 @@ def test_live_adapter_never_normalizes_an_unavailable_query_source_to_empty():
     assert state.freshness is Freshness.DISCONNECTED
     assert state.last_reliable_data is None
     assert state.error is not None
-    assert state.error.code == "run_monitoring_query_failed"
+    assert state.error.code == "strategy_diagnostics_read_failed"
     adapter.close()
 
 
 def test_external_interface_has_no_launch_manual_order_or_generic_dispatch():
     public_interface = {
-        name
-        for name in RunMonitoringFeature.__dict__
-        if not name.startswith("_")
+        name for name in RunMonitoringFeature.__dict__ if not name.startswith("_")
     }
 
     assert public_interface == {
@@ -939,6 +889,9 @@ def test_app_context_selects_live_or_fake_and_preserves_existing_route_identity(
         settings_path=str(tmp_path / "live-settings.json"),
         run_monitoring_mode="live",
         event_bridge=bridge,
+        strategy_diagnostics_read_model=(
+            DictionaryFixtureApplicationReadModel(_RunQueries())
+        ),
     )
 
     assert isinstance(
@@ -949,18 +902,9 @@ def test_app_context_selects_live_or_fake_and_preserves_existing_route_identity(
         live_context.run_monitoring_feature,
         LiveRunMonitoringAdapter,
     )
-    assert (
-        fake_context.run_monitoring_context.selection.campaign_id.value
-        == "FDC-001"
-    )
-    assert (
-        fake_context.run_monitoring_context.selection.run_id.value
-        == "RUN-001"
-    )
-    assert (
-        live_context.run_monitoring_context
-        == fake_context.run_monitoring_context
-    )
+    assert fake_context.run_monitoring_context.selection.campaign_id.value == "FDC-001"
+    assert fake_context.run_monitoring_context.selection.run_id.value == "RUN-001"
+    assert live_context.run_monitoring_context == fake_context.run_monitoring_context
 
     fake_context.run_monitoring_feature.close()
     live_context.run_monitoring_feature.close()

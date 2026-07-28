@@ -164,20 +164,17 @@ _EXECUTION_METRICS = frozenset(
         "execution_erosion_bps",
     }
 )
-_RATIO_METRICS = (
-    _RETURN_METRICS
-    | {
-        "maximum_drawdown",
-        "return_volatility",
-        "loss_period_fraction",
-        "worst_period_return",
-        "turnover",
-        "average_cash_utilization",
-        "instrument_concentration",
-        "industry_concentration",
-        "fill_rate",
-    }
-)
+_RATIO_METRICS = _RETURN_METRICS | {
+    "maximum_drawdown",
+    "return_volatility",
+    "loss_period_fraction",
+    "worst_period_return",
+    "turnover",
+    "average_cash_utilization",
+    "instrument_concentration",
+    "industry_concentration",
+    "fill_rate",
+}
 _DURATION_METRICS = frozenset(
     {"maximum_recovery_duration_minutes", "average_holding_duration_minutes"}
 )
@@ -408,8 +405,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         campaign = self._application.diagnostic_campaign_status(campaign_id)
         if (
             campaign.campaign_id != campaign_id
-            or campaign.specification.campaign_type
-            != "formal_diagnostic_campaign"
+            or campaign.specification.campaign_type != "formal_diagnostic_campaign"
         ):
             raise _identity_failure("campaign")
 
@@ -437,7 +433,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         package = self._resolve_package(selector, campaign)
         manifest = self._resolve_manifest(selector, package, case, run)
         typed = self._typed_journey(campaign, case, run, package, manifest)
-        observed_at = self._observed_at(run, package, manifest)
+        observed_at = self._observed_at(run)
         return _ResolvedBackendJourney(
             campaign=campaign,
             case=case,
@@ -449,9 +445,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         )
 
     def _validate_contract(self) -> None:
-        if not APPLICATION_READ_MODEL_INTERFACE_VERSION.accepts(
-            self.interface_version
-        ):
+        if not APPLICATION_READ_MODEL_INTERFACE_VERSION.accepts(self.interface_version):
             raise _ReadFailure(
                 code=ApplicationReadErrorCode.CONTRACT_INCOMPATIBLE,
                 message="The Strategy Diagnostics read-model version is incompatible.",
@@ -491,9 +485,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         DiagnosticCampaignCaseSnapshot | None,
         Mapping[str, object] | None,
     ]:
-        matches: list[
-            tuple[DiagnosticCampaignCaseSnapshot, Mapping[str, object]]
-        ] = []
+        matches: list[tuple[DiagnosticCampaignCaseSnapshot, Mapping[str, object]]] = []
         for case in campaign.cases:
             if not case.attempts:
                 continue
@@ -649,9 +641,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             )
         )
         reference = tuple(
-            item
-            for item in references
-            if item.get("run_id") == run.run_id
+            item for item in references if item.get("run_id") == run.run_id
         )
         if (
             len(reference) != 1
@@ -733,9 +723,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             or run.run_artifact_hash is None
         ):
             raise ValueError("Completed Strategy Run integrity failed")
-        if run.status == "failed" and (
-            not run.failure_code or not run.failure_message
-        ):
+        if run.status == "failed" and (not run.failure_code or not run.failure_message):
             raise ValueError("Failed Strategy Run lacks a stable failure")
         if run.status == "cancelled" and run.run_artifact_hash is not None:
             raise ValueError("Canceled Strategy Run cannot claim a completed artifact")
@@ -803,9 +791,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             lifecycle=lifecycle,
             terminal_outcome=_TERMINAL_BY_STATUS.get(run.status),
             progress=RunProgress(
-                current_node_id=(
-                    f"{resolved.case.case_id}:{run.processed_node_count}"
-                ),
+                current_node_id=(f"{resolved.case.case_id}:{run.processed_node_count}"),
                 current_node_label=(
                     f"{resolved.case.layer} · "
                     f"{run.processed_node_count}/{run.total_node_count}"
@@ -825,16 +811,34 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             execution_assumptions=assumptions,
             alerts=alerts,
             context=ReadOnlyDiagnosticContext(
-                market=(
-                    f"case {resolved.case.case_id}",
-                    f"materialization {specification.materialization_hash}",
-                    f"Simulation Time {_aware(current).isoformat()}",
+                market=tuple(
+                    item
+                    for item in (
+                        f"case {resolved.case.case_id}",
+                        (
+                            f"strategy {specification.strategy_id}"
+                            f"@{specification.strategy_version}"
+                        ),
+                        f"approved recipe {specification.recipe_version_id}",
+                        (
+                            f"manifest {resolved.manifest.manifest_id}"
+                            if resolved.manifest is not None
+                            else None
+                        ),
+                        f"materialization {specification.materialization_hash}",
+                        (
+                            f"run artifact {run.run_artifact_hash}"
+                            if run.run_artifact_hash is not None
+                            else None
+                        ),
+                        f"Simulation Time {_aware(current).isoformat()}",
+                    )
+                    if item is not None
                 ),
                 account=(
                     f"cash {_decimal_text(run.cash)}",
                     (
-                        "equity "
-                        f"{_decimal_text(run.equity_curve[-1].equity)}"
+                        f"equity {_decimal_text(run.equity_curve[-1].equity)}"
                         if run.equity_curve
                         else "equity unavailable"
                     ),
@@ -856,15 +860,11 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         resolved: _ResolvedBackendJourney,
     ) -> ScenarioSetId:
         if resolved.case.layer == "isolated_sensitivity":
-            sensitivity = (
-                resolved.campaign.specification.isolated_sensitivity_set
-            )
+            sensitivity = resolved.campaign.specification.isolated_sensitivity_set
             if sensitivity is None:
                 raise ValueError("Isolated case lacks its sensitivity set")
             return ScenarioSetId(sensitivity.sensitivity_set_id)
-        return ScenarioSetId(
-            f"{resolved.campaign.campaign_id}:{resolved.case.layer}"
-        )
+        return ScenarioSetId(f"{resolved.campaign.campaign_id}:{resolved.case.layer}")
 
     def _map_evidence(
         self,
@@ -990,8 +990,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                     item
                     for item in graph.comparisons
                     if item.get("subject_strategy_id") == strategy_id
-                    and item.get("subject_strategy_version")
-                    == strategy_version
+                    and item.get("subject_strategy_version") == strategy_version
                 ),
                 key=lambda item: str(item["comparison_id"]),
             )
@@ -1030,12 +1029,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         )
         run_ids = tuple(
             StrategyRunId(value)
-            for value in sorted(
-                {
-                    str(item["run_id"])
-                    for item in selected_metrics
-                }
-            )
+            for value in sorted({str(item["run_id"]) for item in selected_metrics})
         )
         artifact_hashes = {
             package.artifact_hash,
@@ -1054,11 +1048,9 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             )
         assumptions = ()
         if relevant_manifests:
-            resolved_conditions = (
-                relevant_manifests[0]
-                .specification
-                .resolved_execution_conditions
-            )
+            resolved_conditions = relevant_manifests[
+                0
+            ].specification.resolved_execution_conditions
             if resolved_conditions is not None:
                 assumptions = tuple(
                     ExecutionAssumption(
@@ -1072,9 +1064,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         if not metric_ids or not relevant_manifests:
             raise ValueError("Evidence candidate is missing authoritative V1 facts")
         return CandidateEvidence(
-            identity=DiagnosticCandidateId(
-                f"{strategy_id}@{strategy_version}"
-            ),
+            identity=DiagnosticCandidateId(f"{strategy_id}@{strategy_version}"),
             label=f"{strategy_id} · {strategy_version}",
             evidence=mapped_records,
             comparisons=mapped_comparisons,
@@ -1086,16 +1076,12 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                 ),
                 source_run_ids=run_ids,
                 runner_version="strategy-diagnostics-v1",
-                build_version=(
-                    relevant_manifests[0].specification.code_identity
-                ),
+                build_version=(relevant_manifests[0].specification.code_identity),
                 dependencies=tuple(
                     DependencyProvenance(
                         name="reproduction-manifest",
                         version=item.manifest_id,
-                        artifact_hash=(
-                            f"sha256:{item.manifest_content_hash}"
-                        ),
+                        artifact_hash=(f"sha256:{item.manifest_content_hash}"),
                     )
                     for item in sorted(
                         relevant_manifests,
@@ -1111,12 +1097,8 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         run: StrategyRunSnapshot,
     ) -> ReadOnlyEvidenceContext:
         return ReadOnlyEvidenceContext(
-            market=(
-                f"materialization {run.specification.materialization_hash}",
-            ),
-            account=(
-                f"cash {_decimal_text(run.cash)}",
-            ),
+            market=(f"materialization {run.specification.materialization_hash}",),
+            account=(f"cash {_decimal_text(run.cash)}",),
             positions=tuple(
                 (
                     f"{item.instrument} · {item.shares} shares · "
@@ -1148,14 +1130,8 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
     def _observed_at(
         self,
         run: StrategyRunSnapshot,
-        package: DiagnosticEvidencePackage | None,
-        manifest: ReproductionManifest | None,
     ) -> datetime:
-        if (
-            run.status in _TERMINAL_BY_STATUS
-            or package is not None
-            or manifest is not None
-        ):
+        if run.status in _TERMINAL_BY_STATUS:
             return _aware(self._clock())
         with self._engine.connect() as connection:
             value = connection.execute(
@@ -1239,9 +1215,9 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             code=code,
             message=message,
             retryable=retryable,
-            correlation_id=hashlib.sha256(
-                f"{code}:{episode}".encode()
-            ).hexdigest()[:24],
+            correlation_id=hashlib.sha256(f"{code}:{episode}".encode()).hexdigest()[
+                :24
+            ],
         )
 
 
@@ -1255,8 +1231,7 @@ def _selector_from(journey: ResolvedV1Journey) -> V1JourneySelector:
     if (
         evidence_selection.campaign_id != run_selection.campaign_id
         or evidence_selection.run_id != run_selection.run_id
-        or evidence_selection.market_scenario_id
-        != journey.campaign_case_id
+        or evidence_selection.market_scenario_id != journey.campaign_case_id
     ):
         raise _identity_failure("resolved-journey")
     return V1JourneySelector(
@@ -1297,9 +1272,7 @@ def _selector_episode(selector: V1JourneySelector) -> str:
 def _not_found(kind: str, identity: str) -> _ReadFailure:
     return _ReadFailure(
         code=ApplicationReadErrorCode.SELECTION_NOT_FOUND,
-        message=(
-            f"The selected Strategy Diagnostics {kind} identity was not found."
-        ),
+        message=(f"The selected Strategy Diagnostics {kind} identity was not found."),
         retryable=False,
         availability=ApplicationReadAvailability.NOT_FOUND,
         episode=f"{kind}:{identity}",
@@ -1443,12 +1416,8 @@ def _map_comparison(payload: Mapping[str, object]) -> EvidenceComparison:
             f"{payload['kind']} · {payload['metric_name']} · "
             f"{payload['control_case_id']} → {payload['subject_case_id']}"
         ),
-        reference_evidence_id=EvidenceRecordId(
-            str(payload["control_metric_id"])
-        ),
-        observed_evidence_id=EvidenceRecordId(
-            str(payload["subject_metric_id"])
-        ),
+        reference_evidence_id=EvidenceRecordId(str(payload["control_metric_id"])),
+        observed_evidence_id=EvidenceRecordId(str(payload["subject_metric_id"])),
         interpretation=(
             f"Persisted V1 delta {payload['delta']} between control run "
             f"{payload['control_run_id']} and subject run "
@@ -1466,14 +1435,9 @@ def _map_finding(
         EvidenceComparisonId(value)
         for value in sorted(_string_set(payload, "comparison_ids"))
     )
-    comparison_by_id = {
-        str(item["comparison_id"]): item for item in comparisons
-    }
+    comparison_by_id = {str(item["comparison_id"]): item for item in comparisons}
     summaries = tuple(
-        (
-            f"{value}: delta "
-            f"{comparison_by_id[value]['delta']}"
-        )
+        (f"{value}: delta {comparison_by_id[value]['delta']}")
         for value in sorted(_string_set(payload, "comparison_ids"))
     )
     breakpoints = tuple(
@@ -1494,9 +1458,7 @@ def _map_finding(
         title=str(payload["statement"]),
         disposition=disposition,
         comparison_summary=(
-            "; ".join(summaries)
-            if summaries
-            else "No comparison edge is cited."
+            "; ".join(summaries) if summaries else "No comparison edge is cited."
         ),
         failure_reason=(
             f"Persisted threshold identities: {', '.join(threshold_ids)}"
@@ -1528,9 +1490,7 @@ def _map_breakpoint(
     return SensitivityBreakpoint(
         identity=SensitivityBreakpointId(str(payload["breakpoint_id"])),
         assumption_name=str(payload["transformation_family"]),
-        threshold=(
-            f"{threshold.get('operator')} {threshold.get('value')}"
-        ),
+        threshold=(f"{threshold.get('operator')} {threshold.get('value')}"),
         outcome=outcome,
         evidence_ids=tuple(
             EvidenceRecordId(value)
@@ -1572,9 +1532,7 @@ def _semantic_token_value(value: object) -> object:
             raise TypeError("Run Monitoring Wall Time must be an object")
         canonical = dict(canonical)
         canonical["wall_time"] = {
-            key: child
-            for key, child in wall_time.items()
-            if key != "observed_at"
+            key: child for key, child in wall_time.items() if key != "observed_at"
         }
     return canonical
 

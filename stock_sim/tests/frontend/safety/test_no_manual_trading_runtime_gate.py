@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from concurrent.futures import Future
-from datetime import datetime, timedelta, timezone
 import gc
 import os
 import re
+from concurrent.futures import Future
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject
-from PySide6.QtGui import QAction, QAccessible
+from PySide6.QtGui import QAccessible, QAction
 from PySide6.QtWidgets import QApplication
 
 from app.event_bridge import EventBridge
@@ -36,7 +36,9 @@ from app.features import (
 from app.runtime_gateway import RuntimeGateway
 from app.ui.main_window import MainWindow
 from stock_sim.release.no_manual_trading_gate import audit_qml_text
-
+from tests.frontend.strategy_diagnostics_v1_test_support import (
+    DictionaryFixtureApplicationReadModel,
+)
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 3, 9, 30, tzinfo=UTC)
@@ -75,7 +77,7 @@ class _DirectExecutor:
         future = Future()
         try:
             future.set_result(fn(*args, **kwargs))
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - Future semantics
             future.set_exception(error)
         return future
 
@@ -282,12 +284,8 @@ def _evidence_context():
             run_id=StrategyRunId("RUN-SAFETY-44"),
             strategy_id=StrategyUnderTestId("STRATEGY-SAFETY-44"),
             market_scenario_id=MarketScenarioId("SCENARIO-SAFETY-44"),
-            approved_recipe_id=ApprovedScenarioRecipeId(
-                "RECIPE-SAFETY-44"
-            ),
-            reproduction_manifest_id=ReproductionManifestId(
-                "RM-SAFETY-44"
-            ),
+            approved_recipe_id=ApprovedScenarioRecipeId("RECIPE-SAFETY-44"),
+            reproduction_manifest_id=ReproductionManifestId("RM-SAFETY-44"),
         )
     )
 
@@ -319,9 +317,10 @@ def mounted_v2_mode(request):
         gateway._queries = _LiveQueries()
         bridge = EventBridge(subscribe_backend=False)
         run_feature = LiveRunMonitoringAdapter(
-            runtime_gateway=gateway,
+            application_read_model=DictionaryFixtureApplicationReadModel(
+                gateway._queries
+            ),
             event_bridge=bridge,
-            diagnostic_tasks=controller,
             clock=lambda: NOW,
             executor=_DirectExecutor(),
         )
@@ -390,9 +389,7 @@ def _runtime_surface_text(root):
 def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
     mounted_v2_mode,
 ):
-    mode, window, run_feature, evidence_feature, _controller = (
-        mounted_v2_mode
-    )
+    mode, window, run_feature, evidence_feature, _controller = mounted_v2_mode
     app = QApplication.instance()
     assert app is not None
     host = window.centralWidget()
@@ -412,16 +409,17 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
     finding_interface = QAccessible.queryAccessibleInterface(finding)
     assert candidate_interface is not None
     assert finding_interface is not None
-    assert candidate_interface.text(
-        QAccessible.Text.Name
-    ).startswith("Select candidate ")
-    assert finding_interface.text(
-        QAccessible.Text.Name
-    ).startswith("Select finding ")
-    assert audit_qml_text(
-        f"{mode}-runtime-object-tree",
-        _runtime_surface_text(root),
-    ) == ()
+    assert candidate_interface.text(QAccessible.Text.Name).startswith(
+        "Select candidate "
+    )
+    assert finding_interface.text(QAccessible.Text.Name).startswith("Select finding ")
+    assert (
+        audit_qml_text(
+            f"{mode}-runtime-object-tree",
+            _runtime_surface_text(root),
+        )
+        == ()
+    )
 
     route_objects = {
         item.objectName()
@@ -455,9 +453,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
 def test_order_and_fill_evidence_renders_only_as_non_editable_context(
     mounted_v2_mode,
 ):
-    _mode, window, _run_feature, _evidence_feature, _controller = (
-        mounted_v2_mode
-    )
+    _mode, window, _run_feature, _evidence_feature, _controller = mounted_v2_mode
     app = QApplication.instance()
     assert app is not None
     root = window.centralWidget().rootObject()
@@ -470,8 +466,7 @@ def test_order_and_fill_evidence_renders_only_as_non_editable_context(
     context_text = " ".join(
         str(item.property("text"))
         for item in context_panel.findChildren(QObject)
-        if item.metaObject().indexOfProperty("text") >= 0
-        and item.property("text")
+        if item.metaObject().indexOfProperty("text") >= 0 and item.property("text")
     )
     assert "ORD-" in context_text
     assert "FILL-" in context_text
@@ -494,27 +489,25 @@ def test_live_cancel_diagnostic_task_cannot_reach_order_cancellation():
     bridge = EventBridge(subscribe_backend=False)
     controller = _DiagnosticTasks()
     adapter = LiveRunMonitoringAdapter(
-        runtime_gateway=gateway,
+        application_read_model=DictionaryFixtureApplicationReadModel(queries),
         event_bridge=bridge,
-        diagnostic_tasks=controller,
         clock=lambda: NOW,
         executor=_DirectExecutor(),
     )
     state = adapter.snapshot(_run_context())
     data = state.last_reliable_data
     assert data is not None
-    assert data.task_id == DiagnosticTaskId("TASK-SAFETY-44")
+    assert data.task_id is None
 
     result = adapter.cancel_diagnostic_task(
         CancelDiagnosticTask(
-            target_id=data.task_id,
+            target_id=DiagnosticTaskId("TASK-SAFETY-44"),
             expected_revision=state.revision,
         )
     )
 
-    assert result.accepted is True
-    assert controller.calls == [
-        ("cancel_diagnostic_task", "TASK-SAFETY-44")
-    ]
+    assert result.accepted is False
+    assert result.task is None
+    assert controller.calls == []
     adapter.close()
     bridge.stop()
