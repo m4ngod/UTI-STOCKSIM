@@ -94,6 +94,135 @@ def test_probe_factory_closes_fixture_when_probe_construction_fails(
     assert storage_roots and not storage_roots[0].exists()
 
 
+def test_real_v1_preflight_closes_and_releases_before_renderer_clock(
+    monkeypatch,
+):
+    events = []
+
+    class Probe:
+        def run_preflight(self, *, sample_count):
+            events.append(("preflight", sample_count))
+
+        def close(self):
+            events.append(("close", None))
+
+        def evidence(self):
+            events.append(("evidence", None))
+            return {
+                "execution_phase": (
+                    "same-process-preflight-before-renderer-clock"
+                ),
+                "clean_exit": True,
+            }
+
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "prepare_real_v1_performance_probe",
+        Probe,
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime.gc,
+        "collect",
+        lambda: events.append(("gc", None)),
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "_trim_process_working_set",
+        lambda: events.append(("trim", None)),
+    )
+
+    evidence = (
+        frontend_v2_performance_runtime
+        .capture_real_v1_performance_preflight()
+    )
+
+    assert evidence["clean_exit"] is True
+    assert events == [
+        ("preflight", 2),
+        ("close", None),
+        ("evidence", None),
+        ("gc", None),
+        ("trim", None),
+    ]
+
+
+def test_certifying_cli_finishes_real_v1_preflight_before_renderer_clock(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_performance
+
+    events = []
+    evidence = {
+        "execution_phase": "same-process-preflight-before-renderer-clock",
+        "clean_exit": True,
+    }
+
+    monkeypatch.setattr(
+        frontend_v2_performance,
+        "validate_measurement_source_checkout",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance,
+        "_configure_renderer_environment",
+        lambda lane: events.append(("renderer", lane)),
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "prepare_real_v1_performance_probe",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("legacy in-window probe path was used")
+        ),
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "capture_real_v1_performance_preflight",
+        lambda: events.append(("preflight", None)) or evidence,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance,
+        "perf_counter_ns",
+        lambda: events.append(("clock", None)) or 123,
+    )
+
+    def run_lane(**kwargs):
+        events.append(("lane", kwargs))
+        return {"status": "passed", "errors": []}
+
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "run_performance_lane",
+        run_lane,
+    )
+    output = tmp_path / "hardware.json"
+
+    result = frontend_v2_performance.main(
+        (
+            "run-lane",
+            "--lane",
+            "hardware",
+            "--duration-seconds",
+            "60",
+            "--source-commit",
+            "a" * 40,
+            "--output",
+            str(output),
+        )
+    )
+
+    assert result == 0
+    assert events[:3] == [
+        ("renderer", "hardware"),
+        ("preflight", None),
+        ("clock", None),
+    ]
+    assert events[3][0] == "lane"
+    assert events[3][1]["integrated_v1_evidence"] is evidence
+    assert "real_v1_probe" not in events[3][1]
+
+
 def test_lane_closes_first_feature_when_second_constructor_fails(
     monkeypatch,
 ):

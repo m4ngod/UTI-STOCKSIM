@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -305,6 +306,7 @@ def validate_performance_lane(
         _validate_real_v1_performance_probe(
             report.get("integrated_v1_probe"),
             expected_lane=expected_lane,
+            renderer_started_at=report.get("started_at"),
         )
     )
 
@@ -627,6 +629,7 @@ def _validate_real_v1_performance_probe(
     value: Any,
     *,
     expected_lane: str,
+    renderer_started_at: Any,
 ) -> tuple[str, ...]:
     probe = _mapping(value)
     failures: list[str] = []
@@ -686,7 +689,16 @@ def _validate_real_v1_performance_probe(
     ):
         fail("artifact hashes are unavailable or invalid")
 
-    for phase in ("initial", "measurement"):
+    if (
+        probe.get("execution_phase")
+        != "same-process-preflight-before-renderer-clock"
+    ):
+        fail(
+            "execution phase does not prove same-process preflight before "
+            "the renderer clock"
+        )
+
+    for phase in ("initial", "preflight"):
         counts = _mapping(probe.get(f"{phase}_read_counts"))
         minimum = 1 if phase == "initial" else 2
         if any(
@@ -704,10 +716,10 @@ def _validate_real_v1_performance_probe(
             )
 
     scheduled = _positive_count(
-        probe.get("measurement_samples_scheduled")
+        probe.get("preflight_samples_scheduled")
     )
     completed = _positive_count(
-        probe.get("measurement_samples_completed")
+        probe.get("preflight_samples_completed")
     )
     if (
         scheduled is None
@@ -715,23 +727,50 @@ def _validate_real_v1_performance_probe(
         or scheduled < 2
         or completed != scheduled
     ):
-        fail("measurement samples are incomplete")
-    measurement_window = _mapping(probe.get("measurement_window"))
+        fail("preflight samples are incomplete")
+    preflight_window = _mapping(probe.get("preflight_window"))
     if (
-        not measurement_window.get("started_at")
-        or not measurement_window.get("ended_at")
+        not preflight_window.get("started_at")
+        or not preflight_window.get("ended_at")
     ):
-        fail("measurement window is unavailable")
+        fail("preflight window is unavailable")
+    preflight_started = _aware_datetime(
+        preflight_window.get("started_at")
+    )
+    preflight_ended = _aware_datetime(preflight_window.get("ended_at"))
+    renderer_started = _aware_datetime(renderer_started_at)
+    if (
+        preflight_started is None
+        or preflight_ended is None
+        or renderer_started is None
+    ):
+        fail("preflight timestamps are invalid or timezone-naive")
+    elif preflight_started > preflight_ended:
+        fail("preflight window order is invalid")
+    elif preflight_ended > renderer_started:
+        fail("preflight window overlaps renderer measurement")
     if (
         probe.get("fixture_closed") is not True
         or probe.get("fixture_storage_removed") is not True
         or probe.get("clean_exit") is not True
     ):
-        fail("did not close its worker and persistence cleanly")
+        fail("did not close persistence cleanly")
     errors = probe.get("errors")
     if not isinstance(errors, list) or errors:
         fail("reported runtime errors")
     return tuple(failures)
+
+
+def _aware_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
 
 
 def _real_v1_workload_identity(value: Any) -> tuple[Any, ...]:
@@ -956,29 +995,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("; ".join(source_failures))
     _configure_renderer_environment(arguments.lane)
     from .frontend_v2_performance_runtime import (
-        prepare_real_v1_performance_probe,
+        capture_real_v1_performance_preflight,
         run_performance_lane,
     )
 
-    real_v1_probe = (
+    integrated_v1_evidence = (
         None
         if arguments.smoke
-        else prepare_real_v1_performance_probe()
+        else capture_real_v1_performance_preflight()
     )
-    try:
-        process_started_ns = perf_counter_ns()
-        report = run_performance_lane(
-            lane=arguments.lane,
-            duration_seconds=arguments.duration_seconds,
-            source_commit=arguments.source_commit,
-            smoke=arguments.smoke,
-            process_started_ns=process_started_ns,
-            real_v1_probe=real_v1_probe,
-        )
-    except BaseException:
-        if real_v1_probe is not None:
-            real_v1_probe.close()
-        raise
+    process_started_ns = perf_counter_ns()
+    report = run_performance_lane(
+        lane=arguments.lane,
+        duration_seconds=arguments.duration_seconds,
+        source_commit=arguments.source_commit,
+        smoke=arguments.smoke,
+        process_started_ns=process_started_ns,
+        integrated_v1_evidence=integrated_v1_evidence,
+    )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",

@@ -47,10 +47,14 @@ Nuitka 2.6.8 toolchain identify every T08, T09, T10, package, Sandbox, and
 rollback artifact.
 
 - T10 combines the fixed 100,000-point/50-candidate QML load projection with
-  an independently retained real V1 probe. During each 60-second renderer
-  window, that probe repeatedly reads the reopened Formal Campaign, Run, and
-  sealed Evidence through `DiagnosticsApplication`,
+  an independently retained real V1 preflight in the same lane process.
+  Before the renderer startup clock begins, that preflight repeatedly reads
+  the reopened Formal Campaign, Run, and sealed Evidence through
+  `DiagnosticsApplication`,
   `LiveStrategyDiagnosticsV1ApplicationAdapter`, and SQLite/JSON/Parquet.
+  It then closes persistence and removes its temporary storage so the
+  continuous 60-second renderer window measures only the locked T10 fixture
+  and is not distorted by certification setup work.
 - The installed QML executable must retain the exact typed Feature identity
   graph at every launch, disconnected, stale reconnect, fresh reconnect, and
   remount checkpoint through the rendered QML/QAccessible object graph.

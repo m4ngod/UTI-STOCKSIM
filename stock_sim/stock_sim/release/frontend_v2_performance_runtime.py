@@ -15,7 +15,6 @@ import os
 import platform
 from array import array
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from math import ceil, sin
@@ -615,7 +614,7 @@ class _PerformanceLoadProjectionReadModel:
 
 
 class _RealV1PerformanceProbe:
-    """Exercise the reopened V1 product during the measured 60-second lane."""
+    """Verify the reopened V1 product before the renderer clock starts."""
 
     def __init__(
         self,
@@ -666,29 +665,23 @@ class _RealV1PerformanceProbe:
             fixture.expected_identity_graph
         )
         self._lock = RLock()
-        self._executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="performance-real-v1",
-        )
-        self._future: Future[None] | None = None
         self._initial_read_counts = {
             "resolve_journey": 0,
             "read_run": 0,
             "read_evidence": 0,
         }
-        self._measurement_read_counts = {
+        self._preflight_read_counts = {
             "resolve_journey": 0,
             "read_run": 0,
             "read_evidence": 0,
         }
-        self._measurement_samples_scheduled = 0
-        self._measurement_samples_completed = 0
-        self._measurement_started_at: datetime | None = None
-        self._measurement_ended_at: datetime | None = None
+        self._preflight_samples_scheduled = 0
+        self._preflight_samples_completed = 0
+        self._preflight_started_at: datetime | None = None
+        self._preflight_ended_at: datetime | None = None
         self._errors: list[str] = []
         self._closed = False
-        self._executor_closed = False
-        self._sample(measurement=False)
+        self._sample(preflight=False)
         if self._errors:
             errors = "; ".join(self._errors)
             self.close()
@@ -697,56 +690,29 @@ class _RealV1PerformanceProbe:
                 f"{errors}"
             )
 
-    def begin_measurement(self) -> None:
+    def run_preflight(self, *, sample_count: int = 2) -> None:
+        if sample_count < 2:
+            raise ValueError(
+                "Real V1 preflight requires at least two complete samples"
+            )
         with self._lock:
-            if self._measurement_started_at is None:
-                self._measurement_started_at = datetime.now(UTC)
-        self.sample_async()
-
-    def sample_async(self) -> bool:
+            if self._closed:
+                raise RuntimeError("Real V1 preflight is already closed")
+            if self._preflight_started_at is not None:
+                raise RuntimeError("Real V1 preflight already ran")
+            self._preflight_started_at = datetime.now(UTC)
+        for _ in range(sample_count):
+            with self._lock:
+                self._preflight_samples_scheduled += 1
+            self._sample(preflight=True)
         with self._lock:
-            if (
-                self._closed
-                or self._measurement_started_at is None
-                or self._measurement_ended_at is not None
-                or (
-                    self._future is not None
-                    and not self._future.done()
-                )
-            ):
-                return False
-            self._measurement_samples_scheduled += 1
-            try:
-                future = self._executor.submit(
-                    self._sample,
-                    measurement=True,
-                )
-            except RuntimeError as error:
-                self._measurement_samples_scheduled -= 1
-                self._errors.append(
-                    "Real V1 measurement scheduling failed: "
-                    f"{type(error).__name__}"
-                )
-                return False
-            self._future = future
-            future.add_done_callback(self._clear_future)
-            return True
-
-    def end_measurement(self) -> None:
-        with self._lock:
-            if (
-                self._measurement_started_at is not None
-                and self._measurement_ended_at is None
-            ):
-                self._measurement_ended_at = datetime.now(UTC)
+            self._preflight_ended_at = datetime.now(UTC)
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-        self._executor.shutdown(wait=True, cancel_futures=False)
-        self._executor_closed = True
         try:
             self._fixture.close()
         except Exception as error:
@@ -768,15 +734,14 @@ class _RealV1PerformanceProbe:
         with self._lock:
             errors = tuple(self._errors)
             initial_counts = dict(self._initial_read_counts)
-            measurement_counts = dict(self._measurement_read_counts)
-            scheduled = self._measurement_samples_scheduled
-            completed = self._measurement_samples_completed
-            started_at = self._measurement_started_at
-            ended_at = self._measurement_ended_at
+            preflight_counts = dict(self._preflight_read_counts)
+            scheduled = self._preflight_samples_scheduled
+            completed = self._preflight_samples_completed
+            started_at = self._preflight_started_at
+            ended_at = self._preflight_ended_at
         storage_removed = not self._storage_root.exists()
         clean_exit = bool(
             self._closed
-            and self._executor_closed
             and self._fixture.closed
             and storage_removed
             and not errors
@@ -797,10 +762,13 @@ class _RealV1PerformanceProbe:
                 self._expected_identity_graph
             ),
             "initial_read_counts": initial_counts,
-            "measurement_read_counts": measurement_counts,
-            "measurement_samples_scheduled": scheduled,
-            "measurement_samples_completed": completed,
-            "measurement_window": {
+            "execution_phase": (
+                "same-process-preflight-before-renderer-clock"
+            ),
+            "preflight_read_counts": preflight_counts,
+            "preflight_samples_scheduled": scheduled,
+            "preflight_samples_completed": completed,
+            "preflight_window": {
                 "started_at": (
                     None if started_at is None else started_at.isoformat()
                 ),
@@ -814,15 +782,10 @@ class _RealV1PerformanceProbe:
             "clean_exit": clean_exit,
         }
 
-    def _clear_future(self, future: Future[None]) -> None:
-        with self._lock:
-            if self._future is future:
-                self._future = None
-
-    def _sample(self, *, measurement: bool) -> None:
+    def _sample(self, *, preflight: bool) -> None:
         counts = (
-            self._measurement_read_counts
-            if measurement
+            self._preflight_read_counts
+            if preflight
             else self._initial_read_counts
         )
         try:
@@ -852,9 +815,9 @@ class _RealV1PerformanceProbe:
                     f"{type(error).__name__}"
                 )
         finally:
-            if measurement:
+            if preflight:
                 with self._lock:
-                    self._measurement_samples_completed += 1
+                    self._preflight_samples_completed += 1
 
     def _validate_identity(
         self,
@@ -944,6 +907,21 @@ def prepare_real_v1_performance_probe() -> _RealV1PerformanceProbe:
         raise
 
 
+def capture_real_v1_performance_preflight() -> dict[str, Any]:
+    """Capture and release real V1 evidence before timing the renderer."""
+
+    probe = prepare_real_v1_performance_probe()
+    try:
+        probe.run_preflight(sample_count=2)
+    finally:
+        probe.close()
+    evidence = probe.evidence()
+    probe = None
+    gc.collect()
+    _trim_process_working_set()
+    return evidence
+
+
 class _MetricRecorder:
     def __init__(
         self,
@@ -1010,7 +988,6 @@ class _QtPerformanceProbe(QObject):
         recorder: _MetricRecorder,
         queries: _PerformanceLoadProjectionReadModel,
         bridge: EventBridge,
-        real_v1_probe: _RealV1PerformanceProbe | None,
         duration_seconds: float,
         process_started_ns: int,
         on_finished: Callable[[], None],
@@ -1038,7 +1015,6 @@ class _QtPerformanceProbe(QObject):
         self._recorder = recorder
         self._queries = queries
         self._bridge = bridge
-        self._real_v1_probe = real_v1_probe
         self._duration_seconds = duration_seconds
         self._process_started_ns = process_started_ns
         self._on_finished = on_finished
@@ -1087,14 +1063,6 @@ class _QtPerformanceProbe(QObject):
         self._input_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._input_timer.setInterval(250)
         self._input_timer.timeout.connect(self._send_input)
-
-        self._real_v1_timer = QTimer(self)
-        self._real_v1_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._real_v1_timer.setInterval(20_000)
-        if self._real_v1_probe is not None:
-            self._real_v1_timer.timeout.connect(
-                self._real_v1_probe.sample_async
-            )
 
         self._terminal_timeout = QTimer(self)
         self._terminal_timeout.setSingleShot(True)
@@ -1208,9 +1176,6 @@ class _QtPerformanceProbe(QObject):
         self._stall_timer.start()
         self._memory_timer.start()
         self._input_timer.start()
-        if self._real_v1_probe is not None:
-            self._real_v1_probe.begin_measurement()
-            self._real_v1_timer.start()
         QTimer.singleShot(
             max(1, ceil(self._duration_seconds * 1_000)),
             self._publish_terminal,
@@ -1249,9 +1214,6 @@ class _QtPerformanceProbe(QObject):
             return
         self._source_timer.stop()
         self._input_timer.stop()
-        self._real_v1_timer.stop()
-        if self._real_v1_probe is not None:
-            self._real_v1_probe.end_measurement()
         self._measurement_ended_ns = now_ns
         self._ended_at = datetime.now(UTC)
         revision = self._queries.advance(terminal="completed")
@@ -1344,9 +1306,6 @@ class _QtPerformanceProbe(QObject):
         self._stall_timer.stop()
         self._memory_timer.stop()
         self._input_timer.stop()
-        self._real_v1_timer.stop()
-        if self._real_v1_probe is not None:
-            self._real_v1_probe.end_measurement()
         self._sample_memory()
         for error in self._host.errors():
             self.errors.append(error.toString())
@@ -1372,13 +1331,14 @@ def run_performance_lane(
     source_commit: str,
     smoke: bool,
     process_started_ns: int,
-    real_v1_probe: _RealV1PerformanceProbe | None = None,
+    integrated_v1_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one isolated renderer lane and return its retained report."""
 
-    if not smoke and real_v1_probe is None:
+    if not smoke and integrated_v1_evidence is None:
         raise RuntimeError(
-            "A certifying performance lane requires the real V1 probe"
+            "A certifying performance lane requires real V1 preflight "
+            "evidence"
         )
     app = QApplication.instance() or QApplication([])
     queries = _PerformanceLoadProjectionReadModel()
@@ -1454,7 +1414,6 @@ def run_performance_lane(
             recorder=recorder,
             queries=queries,
             bridge=bridge,
-            real_v1_probe=real_v1_probe,
             duration_seconds=duration_seconds,
             process_started_ns=process_started_ns,
             on_finished=quit_app,
@@ -1478,8 +1437,6 @@ def run_performance_lane(
             probe.errors.append("Performance lane watchdog expired")
         observed_fixture = probe.observed_fixture
     finally:
-        if real_v1_probe is not None:
-            real_v1_probe.end_measurement()
         cleanup_actions: tuple[
             tuple[str, Callable[[], None]],
             ...,
@@ -1537,23 +1494,10 @@ def run_performance_lane(
                 cleanup_errors.append(
                     f"{label} cleanup failed: {type(error).__name__}"
                 )
-        if real_v1_probe is not None:
-            try:
-                real_v1_probe.close()
-            except BaseException as error:
-                cleanup_errors.append(
-                    "Real V1 performance probe cleanup failed: "
-                    f"{type(error).__name__}"
-                )
 
     if probe is None or observed_fixture is None:
         raise RuntimeError("Performance lane did not produce a report")
     probe.errors.extend(cleanup_errors)
-    real_v1_evidence = (
-        None
-        if real_v1_probe is None
-        else real_v1_probe.evidence()
-    )
 
     report = _build_report(
         lane=lane,
@@ -1562,7 +1506,7 @@ def run_performance_lane(
         probe=probe,
         recorder=recorder,
         observed_fixture=observed_fixture,
-        real_v1_evidence=real_v1_evidence,
+        real_v1_evidence=integrated_v1_evidence,
     )
     return report
 

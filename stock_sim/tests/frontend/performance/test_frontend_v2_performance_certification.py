@@ -60,16 +60,19 @@ def _passing_real_v1_probe() -> dict[str, object]:
             "read_run": 1,
             "read_evidence": 1,
         },
-        "measurement_read_counts": {
-            "resolve_journey": 3,
-            "read_run": 3,
-            "read_evidence": 3,
+        "execution_phase": (
+            "same-process-preflight-before-renderer-clock"
+        ),
+        "preflight_read_counts": {
+            "resolve_journey": 2,
+            "read_run": 2,
+            "read_evidence": 2,
         },
-        "measurement_samples_scheduled": 3,
-        "measurement_samples_completed": 3,
-        "measurement_window": {
-            "started_at": "2026-07-26T12:00:00+00:00",
-            "ended_at": "2026-07-26T12:01:00+00:00",
+        "preflight_samples_scheduled": 2,
+        "preflight_samples_completed": 2,
+        "preflight_window": {
+            "started_at": "2000-01-01T00:00:00+00:00",
+            "ended_at": "2000-01-01T00:00:05+00:00",
         },
         "fixture_closed": True,
         "fixture_storage_removed": True,
@@ -502,11 +505,44 @@ def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
         ),
         (
             lambda report: report["integrated_v1_probe"][
-                "measurement_read_counts"
+                "preflight_read_counts"
             ].update(read_evidence=1),
             (
-                "hardware real V1 probe measurement typed read counts "
+                "hardware real V1 probe preflight typed read counts "
                 "do not prove 2 complete sample(s)"
+            ),
+        ),
+        (
+            lambda report: report["integrated_v1_probe"].update(
+                execution_phase="during-renderer-window"
+            ),
+            (
+                "hardware real V1 probe execution phase does not prove "
+                "same-process preflight before the renderer clock"
+            ),
+        ),
+        (
+            lambda report: report["integrated_v1_probe"].update(
+                preflight_window={
+                    "started_at": "2099-01-01T00:00:00+00:00",
+                    "ended_at": "2099-01-01T00:00:05+00:00",
+                }
+            ),
+            (
+                "hardware real V1 probe preflight window overlaps "
+                "renderer measurement"
+            ),
+        ),
+        (
+            lambda report: report["integrated_v1_probe"].update(
+                preflight_window={
+                    "started_at": "2026-07-26T11:59:50",
+                    "ended_at": "2026-07-26T11:59:55",
+                }
+            ),
+            (
+                "hardware real V1 probe preflight timestamps are invalid "
+                "or timezone-naive"
             ),
         ),
         (
@@ -514,8 +550,7 @@ def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
                 clean_exit=False
             ),
             (
-                "hardware real V1 probe did not close its worker and "
-                "persistence cleanly"
+                "hardware real V1 probe did not close persistence cleanly"
             ),
         ),
         (

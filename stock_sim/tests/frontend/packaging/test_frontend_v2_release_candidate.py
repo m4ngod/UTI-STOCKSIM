@@ -162,16 +162,19 @@ def _passing_real_v1_performance_probe():
             "read_run": 1,
             "read_evidence": 1,
         },
-        "measurement_read_counts": {
-            "resolve_journey": 3,
-            "read_run": 3,
-            "read_evidence": 3,
+        "execution_phase": (
+            "same-process-preflight-before-renderer-clock"
+        ),
+        "preflight_read_counts": {
+            "resolve_journey": 2,
+            "read_run": 2,
+            "read_evidence": 2,
         },
-        "measurement_samples_scheduled": 3,
-        "measurement_samples_completed": 3,
-        "measurement_window": {
-            "started_at": "2026-07-26T12:00:00+00:00",
-            "ended_at": "2026-07-26T12:01:00+00:00",
+        "preflight_samples_scheduled": 2,
+        "preflight_samples_completed": 2,
+        "preflight_window": {
+            "started_at": "2000-01-01T00:00:00+00:00",
+            "ended_at": "2000-01-01T00:00:05+00:00",
         },
         "fixture_closed": True,
         "fixture_storage_removed": True,
