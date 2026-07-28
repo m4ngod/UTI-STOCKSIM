@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 from time import perf_counter_ns
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,52 @@ from stock_sim.release import strategy_diagnostics_v1_release_fixture
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_release_fixture_pins_recipe_identity_to_fixture_name():
+    recipe_ids = []
+
+    class Application:
+        def create_manual_recipe_draft(
+            self,
+            _payload,
+            *,
+            author,
+            recipe_id,
+        ):
+            assert author == "release-certifier"
+            recipe_ids.append(recipe_id)
+            return SimpleNamespace(draft_id=f"draft-{len(recipe_ids)}")
+
+        def validate_recipe_draft(self, _draft_id):
+            return SimpleNamespace(is_valid=True)
+
+        def approve_recipe_draft(self, draft_id, *, actor):
+            assert actor == "release-owner"
+            return SimpleNamespace(version_id=f"version-{draft_id}")
+
+        def materialize_reference_path(self, version_id):
+            return SimpleNamespace(artifact_hash=f"hash-{version_id}")
+
+    application = Application()
+    for name in (
+        "Integrated release baseline",
+        "Integrated release baseline",
+        "Integrated release compound",
+    ):
+        strategy_diagnostics_v1_release_fixture._approve_and_materialize(
+            application,
+            segment_id="segment-release",
+            name=name,
+            transformations=(),
+        )
+
+    assert recipe_ids[0] == recipe_ids[1]
+    assert recipe_ids[0] != recipe_ids[2]
+    assert all(
+        recipe_id.startswith("release_recipe_")
+        for recipe_id in recipe_ids
+    )
 
 
 def test_runtime_release_decision_delegates_to_central_validator(monkeypatch):

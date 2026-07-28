@@ -9,6 +9,7 @@ store reopen the same durable state.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -638,6 +639,7 @@ def _approve_and_materialize(
             "market_rule_profile": "a-share-cash-equity.v1",
         },
         author="release-certifier",
+        recipe_id=_release_recipe_id(name),
     )
     validation = application.validate_recipe_draft(draft.draft_id)
     _require(
@@ -652,6 +654,16 @@ def _approve_and_materialize(
         approved.version_id
     )
     return approved, materialized
+
+
+def _release_recipe_id(name: str) -> str:
+    identity = hashlib.sha256(
+        (
+            "strategy-diagnostics-v1-frontend-v2-release-fixture|"
+            f"{name}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"release_recipe_{identity}"
 
 
 def _sensitivity_recipe_inputs(
