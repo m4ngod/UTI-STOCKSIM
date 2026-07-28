@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
+from threading import RLock
 from typing import Any, cast
 
 from sqlalchemy import text
@@ -276,12 +277,20 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         self._engine = engine
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._provider_version = provider_version
+        self._read_lock = RLock()
 
     @property
     def interface_version(self) -> ApplicationReadModelVersion:
         return self._provider_version
 
     def resolve_journey(
+        self,
+        selector: V1JourneySelector,
+    ) -> ApplicationReadResult[ResolvedV1Journey]:
+        with self._read_lock:
+            return self._resolve_journey(selector)
+
+    def _resolve_journey(
         self,
         selector: V1JourneySelector,
     ) -> ApplicationReadResult[ResolvedV1Journey]:
@@ -319,6 +328,13 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             return self._failure_result(_integrity_failure("resolve_journey"))
 
     def read_run(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[RunMonitoringData]:
+        with self._read_lock:
+            return self._read_run(journey)
+
+    def _read_run(
         self,
         journey: ResolvedV1Journey,
     ) -> ApplicationReadResult[RunMonitoringData]:
@@ -366,6 +382,13 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             return self._failure_result(_integrity_failure("read_run"))
 
     def read_evidence(
+        self,
+        journey: ResolvedV1Journey,
+    ) -> ApplicationReadResult[EvidenceAndFindingsData]:
+        with self._read_lock:
+            return self._read_evidence(journey)
+
+    def _read_evidence(
         self,
         journey: ResolvedV1Journey,
     ) -> ApplicationReadResult[EvidenceAndFindingsData]:

@@ -15,11 +15,13 @@ import os
 import platform
 from array import array
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from math import ceil, sin
 from pathlib import Path
 from threading import RLock, local
+from tempfile import TemporaryDirectory
 from time import perf_counter_ns
 from typing import Any, cast
 
@@ -45,6 +47,7 @@ from app.features import (
     ApplicationReadModelVersion,
     ApplicationReadResult,
     ApprovedScenarioRecipeId,
+    DiagnosticEvidencePackageId,
     DiagnosticTaskCapabilities,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsData,
@@ -54,6 +57,7 @@ from app.features import (
     FormalDiagnosticCampaignId,
     LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
+    LiveStrategyDiagnosticsV1ApplicationAdapter,
     MarketScenarioId,
     ReadOnlyDiagnosticContext,
     ReproductionManifestId,
@@ -80,6 +84,7 @@ from .frontend_v2_packaging import (
 )
 from .frontend_v2_performance import (
     PERFORMANCE_THRESHOLDS,
+    REAL_V1_PERFORMANCE_PRODUCTION_PATH,
     REFERENCE_FIXTURE,
     REFERENCE_MEASUREMENT_PROTOCOL,
     build_performance_metric,
@@ -150,8 +155,8 @@ def _trim_process_working_set() -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-class _PerformanceRuntimeQueries:
-    """Thread-safe typed Run and Evidence read-model fixture."""
+class _PerformanceLoadProjectionReadModel:
+    """Thread-safe fixed-load projection used only for SLA measurement."""
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -609,8 +614,341 @@ class _PerformanceRuntimeQueries:
         return row
 
 
+class _RealV1PerformanceProbe:
+    """Exercise the reopened V1 product during the measured 60-second lane."""
+
+    def __init__(
+        self,
+        *,
+        temporary_directory: TemporaryDirectory[str],
+        fixture: Any,
+    ) -> None:
+        self._temporary_directory = temporary_directory
+        self._storage_root = Path(temporary_directory.name)
+        self._fixture = fixture
+        self._adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+            fixture.application,
+            fixture.engine,
+        )
+        self._selector = V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(
+                fixture.campaign.campaign_id
+            ),
+            run_id=StrategyRunId(fixture.selected_run.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                fixture.evidence_package.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(
+                fixture.selected_manifest.manifest_id
+            ),
+        )
+        specification = fixture.selected_run.specification
+        self._identity = {
+            "campaign_identity": fixture.campaign.campaign_id,
+            "case_identity": fixture.selected_manifest.case_id,
+            "run_identity": fixture.selected_run.run_id,
+            "strategy_identity": specification.strategy_id,
+            "approved_recipe_identity": specification.recipe_version_id,
+            "evidence_package_identity": (
+                fixture.evidence_package.evidence_package_id
+            ),
+            "reproduction_manifest_identity": (
+                fixture.selected_manifest.manifest_id
+            ),
+        }
+        interface_version = self._adapter.interface_version
+        self._application_interface = (
+            "StrategyDiagnosticsV1ApplicationReadModel/"
+            f"{interface_version.major}.{interface_version.minor}"
+        )
+        self._artifact_hashes = tuple(fixture.artifact_hashes)
+        self._expected_identity_graph = tuple(
+            fixture.expected_identity_graph
+        )
+        self._lock = RLock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="performance-real-v1",
+        )
+        self._future: Future[None] | None = None
+        self._initial_read_counts = {
+            "resolve_journey": 0,
+            "read_run": 0,
+            "read_evidence": 0,
+        }
+        self._measurement_read_counts = {
+            "resolve_journey": 0,
+            "read_run": 0,
+            "read_evidence": 0,
+        }
+        self._measurement_samples_scheduled = 0
+        self._measurement_samples_completed = 0
+        self._measurement_started_at: datetime | None = None
+        self._measurement_ended_at: datetime | None = None
+        self._errors: list[str] = []
+        self._closed = False
+        self._executor_closed = False
+        self._sample(measurement=False)
+        if self._errors:
+            errors = "; ".join(self._errors)
+            self.close()
+            raise RuntimeError(
+                "Real V1 performance probe preparation failed: "
+                f"{errors}"
+            )
+
+    def begin_measurement(self) -> None:
+        with self._lock:
+            if self._measurement_started_at is None:
+                self._measurement_started_at = datetime.now(UTC)
+        self.sample_async()
+
+    def sample_async(self) -> bool:
+        with self._lock:
+            if (
+                self._closed
+                or self._measurement_started_at is None
+                or self._measurement_ended_at is not None
+                or (
+                    self._future is not None
+                    and not self._future.done()
+                )
+            ):
+                return False
+            self._measurement_samples_scheduled += 1
+            try:
+                future = self._executor.submit(
+                    self._sample,
+                    measurement=True,
+                )
+            except RuntimeError as error:
+                self._measurement_samples_scheduled -= 1
+                self._errors.append(
+                    "Real V1 measurement scheduling failed: "
+                    f"{type(error).__name__}"
+                )
+                return False
+            self._future = future
+            future.add_done_callback(self._clear_future)
+            return True
+
+    def end_measurement(self) -> None:
+        with self._lock:
+            if (
+                self._measurement_started_at is not None
+                and self._measurement_ended_at is None
+            ):
+                self._measurement_ended_at = datetime.now(UTC)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._executor.shutdown(wait=True, cancel_futures=False)
+        self._executor_closed = True
+        try:
+            self._fixture.close()
+        except Exception as error:
+            with self._lock:
+                self._errors.append(
+                    "Real V1 fixture cleanup failed: "
+                    f"{type(error).__name__}"
+                )
+        try:
+            self._temporary_directory.cleanup()
+        except Exception as error:
+            with self._lock:
+                self._errors.append(
+                    "Real V1 temporary storage cleanup failed: "
+                    f"{type(error).__name__}"
+                )
+
+    def evidence(self) -> dict[str, Any]:
+        with self._lock:
+            errors = tuple(self._errors)
+            initial_counts = dict(self._initial_read_counts)
+            measurement_counts = dict(self._measurement_read_counts)
+            scheduled = self._measurement_samples_scheduled
+            completed = self._measurement_samples_completed
+            started_at = self._measurement_started_at
+            ended_at = self._measurement_ended_at
+        storage_removed = not self._storage_root.exists()
+        clean_exit = bool(
+            self._closed
+            and self._executor_closed
+            and self._fixture.closed
+            and storage_removed
+            and not errors
+        )
+        return {
+            "schema_version": 1,
+            "production_path": list(
+                REAL_V1_PERFORMANCE_PRODUCTION_PATH
+            ),
+            "persistence_kind": "sqlite+json+parquet",
+            "persistence_reopened": True,
+            "application_read_model_interface": (
+                self._application_interface
+            ),
+            **self._identity,
+            "artifact_hashes": list(self._artifact_hashes),
+            "expected_identity_graph": list(
+                self._expected_identity_graph
+            ),
+            "initial_read_counts": initial_counts,
+            "measurement_read_counts": measurement_counts,
+            "measurement_samples_scheduled": scheduled,
+            "measurement_samples_completed": completed,
+            "measurement_window": {
+                "started_at": (
+                    None if started_at is None else started_at.isoformat()
+                ),
+                "ended_at": (
+                    None if ended_at is None else ended_at.isoformat()
+                ),
+            },
+            "fixture_closed": self._fixture.closed,
+            "fixture_storage_removed": storage_removed,
+            "errors": list(errors),
+            "clean_exit": clean_exit,
+        }
+
+    def _clear_future(self, future: Future[None]) -> None:
+        with self._lock:
+            if self._future is future:
+                self._future = None
+
+    def _sample(self, *, measurement: bool) -> None:
+        counts = (
+            self._measurement_read_counts
+            if measurement
+            else self._initial_read_counts
+        )
+        try:
+            journey_result = self._adapter.resolve_journey(self._selector)
+            journey = _require_ready_v1_value(
+                journey_result,
+                "resolve_journey",
+            )
+            run_result = self._adapter.read_run(journey)
+            run_data = _require_ready_v1_value(
+                run_result,
+                "read_run",
+            )
+            evidence_result = self._adapter.read_evidence(journey)
+            evidence_data = _require_ready_v1_value(
+                evidence_result,
+                "read_evidence",
+            )
+            self._validate_identity(journey, run_data, evidence_data)
+            with self._lock:
+                for name in counts:
+                    counts[name] += 1
+        except Exception as error:
+            with self._lock:
+                self._errors.append(
+                    "Real V1 performance read failed: "
+                    f"{type(error).__name__}"
+                )
+        finally:
+            if measurement:
+                with self._lock:
+                    self._measurement_samples_completed += 1
+
+    def _validate_identity(
+        self,
+        journey: Any,
+        run_data: Any,
+        evidence_data: Any,
+    ) -> None:
+        run_selection = journey.run_context.selection
+        evidence_selection = journey.evidence_context.selection
+        if run_selection is None or evidence_selection is None:
+            raise RuntimeError("Real V1 journey selection is unavailable")
+        observed = {
+            "campaign_identity": run_selection.campaign_id.value,
+            "case_identity": journey.campaign_case_id.value,
+            "run_identity": run_selection.run_id.value,
+            "strategy_identity": evidence_selection.strategy_id.value,
+            "approved_recipe_identity": (
+                evidence_selection.approved_recipe_id.value
+            ),
+            "evidence_package_identity": (
+                journey.evidence_package_id.value
+            ),
+            "reproduction_manifest_identity": (
+                evidence_selection.reproduction_manifest_id.value
+            ),
+        }
+        if observed != self._identity:
+            raise RuntimeError("Real V1 journey identity changed")
+        if (
+            run_data.selection != run_selection
+            or evidence_data.selection != evidence_selection
+        ):
+            raise RuntimeError(
+                "Real V1 typed read identity does not match its journey"
+            )
+        if not set(self._identity.values()).issubset(
+            self._expected_identity_graph
+        ):
+            raise RuntimeError(
+                "Real V1 fixture identity graph is incomplete"
+            )
+
+
+def _require_ready_v1_value(
+    result: ApplicationReadResult[Any],
+    operation: str,
+) -> Any:
+    if (
+        result.availability is not ApplicationReadAvailability.READY
+        or result.value is None
+        or result.error is not None
+    ):
+        raise RuntimeError(
+            f"Real V1 {operation} did not return authoritative data"
+        )
+    return result.value
+
+
+def prepare_real_v1_performance_probe() -> _RealV1PerformanceProbe:
+    """Build and reopen the real V1 fixture before the startup clock begins."""
+
+    from .strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_formal_v1_release_fixture,
+    )
+
+    temporary_directory = TemporaryDirectory(
+        prefix="uti-stocksim-performance-real-v1-"
+    )
+    storage_root = Path(temporary_directory.name)
+    fixture = None
+    try:
+        fixture = create_file_backed_formal_v1_release_fixture(
+            database_path=storage_root / "strategy-diagnostics-v1.sqlite3",
+            artifact_root=storage_root / "artifacts",
+        )
+        return _RealV1PerformanceProbe(
+            temporary_directory=temporary_directory,
+            fixture=fixture,
+        )
+    except BaseException:
+        if fixture is not None and not fixture.closed:
+            try:
+                fixture.close()
+            except BaseException:
+                pass
+        temporary_directory.cleanup()
+        raise
+
+
 class _MetricRecorder:
-    def __init__(self, queries: _PerformanceRuntimeQueries) -> None:
+    def __init__(
+        self,
+        queries: _PerformanceLoadProjectionReadModel,
+    ) -> None:
         self._queries = queries
         self._lock = RLock()
         self.batch_acceptance_ns: dict[int, int] = {}
@@ -670,8 +1008,9 @@ class _QtPerformanceProbe(QObject):
         app: QApplication,
         host: JourneyWorkspaceHost,
         recorder: _MetricRecorder,
-        queries: _PerformanceRuntimeQueries,
+        queries: _PerformanceLoadProjectionReadModel,
         bridge: EventBridge,
+        real_v1_probe: _RealV1PerformanceProbe | None,
         duration_seconds: float,
         process_started_ns: int,
         on_finished: Callable[[], None],
@@ -699,6 +1038,7 @@ class _QtPerformanceProbe(QObject):
         self._recorder = recorder
         self._queries = queries
         self._bridge = bridge
+        self._real_v1_probe = real_v1_probe
         self._duration_seconds = duration_seconds
         self._process_started_ns = process_started_ns
         self._on_finished = on_finished
@@ -747,6 +1087,14 @@ class _QtPerformanceProbe(QObject):
         self._input_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._input_timer.setInterval(250)
         self._input_timer.timeout.connect(self._send_input)
+
+        self._real_v1_timer = QTimer(self)
+        self._real_v1_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._real_v1_timer.setInterval(20_000)
+        if self._real_v1_probe is not None:
+            self._real_v1_timer.timeout.connect(
+                self._real_v1_probe.sample_async
+            )
 
         self._terminal_timeout = QTimer(self)
         self._terminal_timeout.setSingleShot(True)
@@ -860,6 +1208,9 @@ class _QtPerformanceProbe(QObject):
         self._stall_timer.start()
         self._memory_timer.start()
         self._input_timer.start()
+        if self._real_v1_probe is not None:
+            self._real_v1_probe.begin_measurement()
+            self._real_v1_timer.start()
         QTimer.singleShot(
             max(1, ceil(self._duration_seconds * 1_000)),
             self._publish_terminal,
@@ -898,6 +1249,9 @@ class _QtPerformanceProbe(QObject):
             return
         self._source_timer.stop()
         self._input_timer.stop()
+        self._real_v1_timer.stop()
+        if self._real_v1_probe is not None:
+            self._real_v1_probe.end_measurement()
         self._measurement_ended_ns = now_ns
         self._ended_at = datetime.now(UTC)
         revision = self._queries.advance(terminal="completed")
@@ -990,6 +1344,9 @@ class _QtPerformanceProbe(QObject):
         self._stall_timer.stop()
         self._memory_timer.stop()
         self._input_timer.stop()
+        self._real_v1_timer.stop()
+        if self._real_v1_probe is not None:
+            self._real_v1_probe.end_measurement()
         self._sample_memory()
         for error in self._host.errors():
             self.errors.append(error.toString())
@@ -1015,98 +1372,188 @@ def run_performance_lane(
     source_commit: str,
     smoke: bool,
     process_started_ns: int,
+    real_v1_probe: _RealV1PerformanceProbe | None = None,
 ) -> dict[str, Any]:
     """Execute one isolated renderer lane and return its retained report."""
 
+    if not smoke and real_v1_probe is None:
+        raise RuntimeError(
+            "A certifying performance lane requires the real V1 probe"
+        )
     app = QApplication.instance() or QApplication([])
-    queries = _PerformanceRuntimeQueries()
+    queries = _PerformanceLoadProjectionReadModel()
     recorder = _MetricRecorder(queries)
     bridge = EventBridge(
         flush_interval_ms=REFERENCE_FIXTURE.source_cadence_ms,
         max_batch_size=500,
         subscribe_backend=False,
     )
-    dispose_batch_probe = bridge.subscribe_batches(recorder.record_batch)
-    run_feature = LiveRunMonitoringAdapter(
-        application_read_model=queries,
-        event_bridge=bridge,
-    )
-    evidence_feature = LiveEvidenceAndFindingsAdapter(
-        application_read_model=queries,
-        event_bridge=bridge,
-    )
-    evidence_context = _evidence_context()
-    performance_subscription = evidence_feature.subscribe(
-        evidence_context,
-        recorder.record_feature_state,
-    )
-    host = JourneyWorkspaceHost(
-        run_feature,
-        context=_run_context(),
-        evidence_feature=evidence_feature,
-        evidence_context=evidence_context,
-    )
-    root = host.rootObject()
-    if root is None:
-        raise RuntimeError("Journey Workspace QML did not load")
-    root.setProperty("activeRoute", "evidence_and_findings")
-    evidence_qt_adapter = host._evidence_and_findings
-    if evidence_qt_adapter is None:
-        raise RuntimeError("Evidence & Findings Qt Adapter is unavailable")
-    evidence_qt_adapter.setActiveTab("context")
-
-    bridge.start()
+    run_feature: LiveRunMonitoringAdapter | None = None
+    evidence_feature: LiveEvidenceAndFindingsAdapter | None = None
+    dispose_batch_probe: Callable[[], None] | None = None
+    performance_subscription: Any | None = None
+    host: JourneyWorkspaceHost | None = None
+    probe: _QtPerformanceProbe | None = None
+    observed_fixture: Mapping[str, int] | None = None
+    cleanup_errors: list[str] = []
     finished = [False]
 
     def quit_app() -> None:
         finished[0] = True
         app.quit()
 
-    host.resize(
-        REFERENCE_MEASUREMENT_PROTOCOL.window_width,
-        REFERENCE_MEASUREMENT_PROTOCOL.window_height,
-    )
-    host.move(-10_000, -10_000)
-    host.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-    host.show()
-    app.processEvents()
-    probe = _QtPerformanceProbe(
-        app=app,
-        host=host,
-        recorder=recorder,
-        queries=queries,
-        bridge=bridge,
-        duration_seconds=duration_seconds,
-        process_started_ns=process_started_ns,
-        on_finished=quit_app,
-    )
-    host.quickWindow().beforeSynchronizing.connect(
-        probe.before_synchronize,
-        Qt.ConnectionType.DirectConnection,
-    )
-    host.quickWindow().afterRendering.connect(
-        probe.after_render,
-        Qt.ConnectionType.DirectConnection,
-    )
-    host.update()
-    host.quickWindow().update()
-    QTimer.singleShot(
-        max(5_000, ceil((duration_seconds + 5.0) * 1_000)),
-        app.quit,
-    )
-    app.exec()
-    if not finished[0]:
-        probe.errors.append("Performance lane watchdog expired")
-    observed_fixture = probe.observed_fixture
+    try:
+        run_feature = LiveRunMonitoringAdapter(
+            application_read_model=queries,
+            event_bridge=bridge,
+        )
+        evidence_feature = LiveEvidenceAndFindingsAdapter(
+            application_read_model=queries,
+            event_bridge=bridge,
+        )
+        dispose_batch_probe = bridge.subscribe_batches(
+            recorder.record_batch
+        )
+        evidence_context = _evidence_context()
+        performance_subscription = evidence_feature.subscribe(
+            evidence_context,
+            recorder.record_feature_state,
+        )
+        host = JourneyWorkspaceHost(
+            run_feature,
+            context=_run_context(),
+            evidence_feature=evidence_feature,
+            evidence_context=evidence_context,
+        )
+        root = host.rootObject()
+        if root is None:
+            raise RuntimeError("Journey Workspace QML did not load")
+        root.setProperty("activeRoute", "evidence_and_findings")
+        evidence_qt_adapter = host._evidence_and_findings
+        if evidence_qt_adapter is None:
+            raise RuntimeError(
+                "Evidence & Findings Qt Adapter is unavailable"
+            )
+        evidence_qt_adapter.setActiveTab("context")
 
-    performance_subscription.dispose()
-    host.close_adapter()
-    host.close()
-    run_feature.close()
-    evidence_feature.close()
-    dispose_batch_probe()
-    bridge.stop()
-    app.processEvents()
+        bridge.start()
+        host.resize(
+            REFERENCE_MEASUREMENT_PROTOCOL.window_width,
+            REFERENCE_MEASUREMENT_PROTOCOL.window_height,
+        )
+        host.move(-10_000, -10_000)
+        host.setAttribute(
+            Qt.WidgetAttribute.WA_DontShowOnScreen,
+            True,
+        )
+        host.show()
+        app.processEvents()
+        probe = _QtPerformanceProbe(
+            app=app,
+            host=host,
+            recorder=recorder,
+            queries=queries,
+            bridge=bridge,
+            real_v1_probe=real_v1_probe,
+            duration_seconds=duration_seconds,
+            process_started_ns=process_started_ns,
+            on_finished=quit_app,
+        )
+        host.quickWindow().beforeSynchronizing.connect(
+            probe.before_synchronize,
+            Qt.ConnectionType.DirectConnection,
+        )
+        host.quickWindow().afterRendering.connect(
+            probe.after_render,
+            Qt.ConnectionType.DirectConnection,
+        )
+        host.update()
+        host.quickWindow().update()
+        QTimer.singleShot(
+            max(5_000, ceil((duration_seconds + 5.0) * 1_000)),
+            app.quit,
+        )
+        app.exec()
+        if not finished[0]:
+            probe.errors.append("Performance lane watchdog expired")
+        observed_fixture = probe.observed_fixture
+    finally:
+        if real_v1_probe is not None:
+            real_v1_probe.end_measurement()
+        cleanup_actions: tuple[
+            tuple[str, Callable[[], None]],
+            ...,
+        ] = tuple(
+            item
+            for item in (
+                (
+                    "performance subscription",
+                    (
+                        performance_subscription.dispose
+                        if performance_subscription is not None
+                        else None
+                    ),
+                ),
+                (
+                    "Journey Workspace adapter",
+                    host.close_adapter if host is not None else None,
+                ),
+                (
+                    "Journey Workspace host",
+                    host.close if host is not None else None,
+                ),
+                (
+                    "Run Monitoring Feature",
+                    (
+                        run_feature.close
+                        if run_feature is not None
+                        else None
+                    ),
+                ),
+                (
+                    "Evidence and Findings Feature",
+                    (
+                        evidence_feature.close
+                        if evidence_feature is not None
+                        else None
+                    ),
+                ),
+                (
+                    "EventBridge batch probe",
+                    dispose_batch_probe,
+                ),
+                (
+                    "EventBridge",
+                    bridge.stop,
+                ),
+                ("Qt event drain", app.processEvents),
+            )
+            if item[1] is not None
+        )
+        for label, action in cleanup_actions:
+            try:
+                action()
+            except BaseException as error:
+                cleanup_errors.append(
+                    f"{label} cleanup failed: {type(error).__name__}"
+                )
+        if real_v1_probe is not None:
+            try:
+                real_v1_probe.close()
+            except BaseException as error:
+                cleanup_errors.append(
+                    "Real V1 performance probe cleanup failed: "
+                    f"{type(error).__name__}"
+                )
+
+    if probe is None or observed_fixture is None:
+        raise RuntimeError("Performance lane did not produce a report")
+    probe.errors.extend(cleanup_errors)
+    real_v1_evidence = (
+        None
+        if real_v1_probe is None
+        else real_v1_probe.evidence()
+    )
 
     report = _build_report(
         lane=lane,
@@ -1115,6 +1562,7 @@ def run_performance_lane(
         probe=probe,
         recorder=recorder,
         observed_fixture=observed_fixture,
+        real_v1_evidence=real_v1_evidence,
     )
     return report
 
@@ -1127,6 +1575,7 @@ def _build_report(
     probe: _QtPerformanceProbe,
     recorder: _MetricRecorder,
     observed_fixture: Mapping[str, int],
+    real_v1_evidence: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     event_metric = build_performance_metric(recorder.event_to_visible_ms)
     input_metric = build_performance_metric(recorder.input_response_ms)
@@ -1163,12 +1612,18 @@ def _build_report(
         "observed_fixture": dict(observed_fixture),
         "sampling_policy": "uniform_endpoints_v1",
         "production_path": [
+            "PerformanceLoadProjectionReadModel",
             "EventBridge",
             "LiveRunMonitoringAdapter",
             "LiveEvidenceAndFindingsAdapter",
             "JourneyWorkspaceHost",
             "EvidenceChart.qml",
         ],
+        "integrated_v1_probe": (
+            None
+            if real_v1_evidence is None
+            else dict(real_v1_evidence)
+        ),
         "start_marker": SOURCE_MARKER,
         "end_marker": END_MARKER,
         "started_at": probe.started_at.isoformat(),

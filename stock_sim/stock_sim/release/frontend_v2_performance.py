@@ -115,6 +115,12 @@ REFERENCE_MEASUREMENT_PROTOCOL = PerformanceMeasurementProtocol(
     window_height=800,
 )
 
+REAL_V1_PERFORMANCE_PRODUCTION_PATH = (
+    "DiagnosticsApplication",
+    "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1ApplicationAdapter",
+)
+
 
 def reference_fixture_digest() -> str:
     payload = json.dumps(
@@ -295,6 +301,12 @@ def validate_performance_lane(
         failures.append(
             f"{expected_lane} wall-clock start/end metadata is unavailable"
         )
+    failures.extend(
+        _validate_real_v1_performance_probe(
+            report.get("integrated_v1_probe"),
+            expected_lane=expected_lane,
+        )
+    )
 
     machine = _mapping(report.get("machine"))
     if (
@@ -538,6 +550,15 @@ def certify_performance_evidence(
         failures.append(
             "hardware and software reports are not independent artifacts"
         )
+    if _real_v1_workload_identity(
+        hardware_report.get("integrated_v1_probe")
+    ) != _real_v1_workload_identity(
+        software_report.get("integrated_v1_probe")
+    ):
+        failures.append(
+            "hardware and software real V1 probes do not identify the "
+            "same persisted workload"
+        )
     failures.extend(
         verify_safety_gate_payload(
             {"safety": safety_report},
@@ -600,6 +621,149 @@ def _load_report(path: Path) -> Mapping[str, Any]:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _validate_real_v1_performance_probe(
+    value: Any,
+    *,
+    expected_lane: str,
+) -> tuple[str, ...]:
+    probe = _mapping(value)
+    failures: list[str] = []
+
+    def fail(message: str) -> None:
+        failures.append(f"{expected_lane} real V1 probe {message}")
+
+    if probe.get("schema_version") != 1:
+        fail("schema version is invalid")
+    if probe.get("production_path") != list(
+        REAL_V1_PERFORMANCE_PRODUCTION_PATH
+    ):
+        fail("production path does not match")
+    if (
+        probe.get("persistence_kind") != "sqlite+json+parquet"
+        or probe.get("persistence_reopened") is not True
+    ):
+        fail("did not reopen SQLite, JSON, and Parquet persistence")
+    if (
+        probe.get("application_read_model_interface")
+        != "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+    ):
+        fail("typed Application interface does not match")
+
+    identity_names = (
+        "campaign_identity",
+        "case_identity",
+        "run_identity",
+        "strategy_identity",
+        "approved_recipe_identity",
+        "evidence_package_identity",
+        "reproduction_manifest_identity",
+    )
+    identities = tuple(probe.get(name) for name in identity_names)
+    if any(
+        not isinstance(identity, str) or not identity
+        for identity in identities
+    ):
+        fail("identity tuple is incomplete")
+    identity_graph = probe.get("expected_identity_graph")
+    if (
+        not isinstance(identity_graph, list)
+        or len(identity_graph) <= len(identity_names)
+        or identity_graph != sorted(set(identity_graph))
+        or not set(identities).issubset(identity_graph)
+    ):
+        fail("identity graph is incomplete or non-canonical")
+
+    artifact_hashes = probe.get("artifact_hashes")
+    if (
+        not isinstance(artifact_hashes, list)
+        or not artifact_hashes
+        or any(
+            not _is_sha256_digest(artifact_hash)
+            for artifact_hash in artifact_hashes
+        )
+    ):
+        fail("artifact hashes are unavailable or invalid")
+
+    for phase in ("initial", "measurement"):
+        counts = _mapping(probe.get(f"{phase}_read_counts"))
+        minimum = 1 if phase == "initial" else 2
+        if any(
+            _positive_count(counts.get(operation)) is None
+            or int(counts[operation]) < minimum
+            for operation in (
+                "resolve_journey",
+                "read_run",
+                "read_evidence",
+            )
+        ):
+            fail(
+                f"{phase} typed read counts do not prove "
+                f"{minimum} complete sample(s)"
+            )
+
+    scheduled = _positive_count(
+        probe.get("measurement_samples_scheduled")
+    )
+    completed = _positive_count(
+        probe.get("measurement_samples_completed")
+    )
+    if (
+        scheduled is None
+        or completed is None
+        or scheduled < 2
+        or completed != scheduled
+    ):
+        fail("measurement samples are incomplete")
+    measurement_window = _mapping(probe.get("measurement_window"))
+    if (
+        not measurement_window.get("started_at")
+        or not measurement_window.get("ended_at")
+    ):
+        fail("measurement window is unavailable")
+    if (
+        probe.get("fixture_closed") is not True
+        or probe.get("fixture_storage_removed") is not True
+        or probe.get("clean_exit") is not True
+    ):
+        fail("did not close its worker and persistence cleanly")
+    errors = probe.get("errors")
+    if not isinstance(errors, list) or errors:
+        fail("reported runtime errors")
+    return tuple(failures)
+
+
+def _real_v1_workload_identity(value: Any) -> tuple[Any, ...]:
+    probe = _mapping(value)
+    return (
+        probe.get("production_path"),
+        probe.get("persistence_kind"),
+        probe.get("application_read_model_interface"),
+        *(
+            probe.get(name)
+            for name in (
+                "campaign_identity",
+                "case_identity",
+                "run_identity",
+                "strategy_identity",
+                "approved_recipe_identity",
+                "evidence_package_identity",
+                "reproduction_manifest_identity",
+            )
+        ),
+        probe.get("artifact_hashes"),
+        probe.get("expected_identity_graph"),
+    )
+
+
+def _is_sha256_digest(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
 
 
 def _number(value: Any) -> float | None:
@@ -791,16 +955,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         if source_failures:
             parser.error("; ".join(source_failures))
     _configure_renderer_environment(arguments.lane)
-    from .frontend_v2_performance_runtime import run_performance_lane
-
-    process_started_ns = perf_counter_ns()
-    report = run_performance_lane(
-        lane=arguments.lane,
-        duration_seconds=arguments.duration_seconds,
-        source_commit=arguments.source_commit,
-        smoke=arguments.smoke,
-        process_started_ns=process_started_ns,
+    from .frontend_v2_performance_runtime import (
+        prepare_real_v1_performance_probe,
+        run_performance_lane,
     )
+
+    real_v1_probe = (
+        None
+        if arguments.smoke
+        else prepare_real_v1_performance_probe()
+    )
+    try:
+        process_started_ns = perf_counter_ns()
+        report = run_performance_lane(
+            lane=arguments.lane,
+            duration_seconds=arguments.duration_seconds,
+            source_commit=arguments.source_commit,
+            smoke=arguments.smoke,
+            process_started_ns=process_started_ns,
+            real_v1_probe=real_v1_probe,
+        )
+    except BaseException:
+        if real_v1_probe is not None:
+            real_v1_probe.close()
+        raise
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",

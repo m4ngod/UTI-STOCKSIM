@@ -4,6 +4,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ExpectedArchiveSha256,
     [Parameter(Mandatory = $true)]
+    [string]$WidgetsPackageArchive,
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedWidgetsArchiveSha256,
+    [Parameter(Mandatory = $true)]
     [string]$SourceCommit,
     [Parameter(Mandatory = $true)]
     [string]$EvidenceDir
@@ -54,29 +58,56 @@ if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
 if ($ExpectedArchiveSha256 -cnotmatch '^sha256:[0-9a-f]{64}$') {
     throw "ExpectedArchiveSha256 must be a lowercase sha256 digest."
 }
+if ($ExpectedWidgetsArchiveSha256 -cnotmatch '^sha256:[0-9a-f]{64}$') {
+    throw "ExpectedWidgetsArchiveSha256 must be a lowercase sha256 digest."
+}
 $packageArchiveName = Split-Path -Leaf $PackageArchive
 if ($packageArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
     throw "Package archive name contains unsafe characters."
+}
+$widgetsArchiveName = Split-Path -Leaf $WidgetsPackageArchive
+if ($widgetsArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "Widgets archive name contains unsafe characters."
 }
 
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDir)
 $installDir = Join-Path $resolvedEvidence "installed"
 $resolvedInstall = [IO.Path]::GetFullPath($installDir)
+$widgetsInstallDir = Join-Path $resolvedEvidence "widgets-installed"
+$resolvedWidgetsInstall = [IO.Path]::GetFullPath($widgetsInstallDir)
 if (-not $resolvedInstall.StartsWith(
     $resolvedEvidence + [IO.Path]::DirectorySeparatorChar,
     [StringComparison]::OrdinalIgnoreCase
 )) {
     throw "Refusing to install outside the evidence directory."
 }
+if (-not $resolvedWidgetsInstall.StartsWith(
+    $resolvedEvidence + [IO.Path]::DirectorySeparatorChar,
+    [StringComparison]::OrdinalIgnoreCase
+)) {
+    throw "Refusing to install Widgets outside the evidence directory."
+}
 New-Item -ItemType Directory -Force -Path $resolvedEvidence | Out-Null
 if (Test-Path -LiteralPath $resolvedInstall) {
     Remove-Item -LiteralPath $resolvedInstall -Recurse -Force
+}
+if (Test-Path -LiteralPath $resolvedWidgetsInstall) {
+    Remove-Item -LiteralPath $resolvedWidgetsInstall -Recurse -Force
 }
 
 $archiveHash = (Get-FileHash -LiteralPath $PackageArchive -Algorithm SHA256).Hash.ToLowerInvariant()
 $normalizedExpected = $ExpectedArchiveSha256.ToLowerInvariant().Replace("sha256:", "")
 if ($archiveHash -ne $normalizedExpected) {
     throw "Package archive checksum does not match the expected SHA-256."
+}
+$widgetsArchiveHash = (
+    Get-FileHash -LiteralPath $WidgetsPackageArchive -Algorithm SHA256
+).Hash.ToLowerInvariant()
+$normalizedWidgetsExpected = (
+    $ExpectedWidgetsArchiveSha256.ToLowerInvariant().Replace("sha256:", "")
+)
+if ($widgetsArchiveHash -ne $normalizedWidgetsExpected) {
+    throw "Widgets archive checksum does not match the expected SHA-256."
 }
 
 $os = Get-CimInstance Win32_OperatingSystem
@@ -170,24 +201,93 @@ $dependencyCachePaths = @(
 $dependencyCachePresent = $dependencyCachePaths.Count -gt 0
 
 Expand-Archive -LiteralPath $PackageArchive -DestinationPath $resolvedInstall
+Expand-Archive `
+    -LiteralPath $WidgetsPackageArchive `
+    -DestinationPath $resolvedWidgetsInstall
 $executable = Get-ChildItem -LiteralPath $resolvedInstall -Recurse -File |
     Where-Object { $_.Name -eq "UTI-Frontend-V2.exe" } |
     Select-Object -First 1
 $installSucceeded = [bool]$executable
+$widgetsExecutable = (
+    Get-ChildItem -LiteralPath $resolvedWidgetsInstall -Recurse -File |
+        Where-Object { $_.Name -eq "UTI-Widgets-Rollback.exe" } |
+        Select-Object -First 1
+)
+$widgetsInstallSucceeded = [bool]$widgetsExecutable
+$widgetsRollback = [ordered]@{
+    exit_code = -1
+    source_commit = ""
+    source_commit_matches = $false
+    mode = ""
+    placeholder_panels = @()
+    real_panel_count = 0
+    manual_trading_action_count = -1
+    opened_panels = @()
+    clean_exit = $false
+    errors = @("Widgets rollback smoke was not run")
+}
+if ($widgetsInstallSucceeded) {
+    $widgetsSmokeDir = Join-Path $resolvedEvidence "widgets-smoke"
+    if (Test-Path -LiteralPath $widgetsSmokeDir) {
+        Remove-Item -LiteralPath $widgetsSmokeDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $widgetsSmokeDir | Out-Null
+    & $widgetsExecutable.FullName `
+        "--source-commit=$SourceCommit" `
+        "--smoke-report-dir=$widgetsSmokeDir"
+    $widgetsExitCode = $LASTEXITCODE
+    $widgetsSmokePath = Join-Path $widgetsSmokeDir "smoke-report.json"
+    if (Test-Path -LiteralPath $widgetsSmokePath -PathType Leaf) {
+        $widgetsSmoke = (
+            Get-Content -LiteralPath $widgetsSmokePath -Raw -Encoding utf8 |
+                ConvertFrom-Json
+        )
+        $widgetsCleanExit = (
+            $widgetsSmoke.clean_exit -is [bool] -and
+            $widgetsSmoke.clean_exit -eq $true
+        )
+        $widgetsRollback = [ordered]@{
+            exit_code = $widgetsExitCode
+            source_commit = [string]$widgetsSmoke.source_commit
+            source_commit_matches = (
+                [string]$widgetsSmoke.source_commit -eq $SourceCommit
+            )
+            mode = [string]$widgetsSmoke.mode
+            placeholder_panels = @($widgetsSmoke.placeholder_panels)
+            real_panel_count = [int]$widgetsSmoke.real_panel_count
+            manual_trading_action_count = (
+                [int]$widgetsSmoke.manual_trading_action_count
+            )
+            opened_panels = @($widgetsSmoke.opened_panels)
+            clean_exit = $widgetsCleanExit
+            errors = @($widgetsSmoke.errors)
+        }
+    }
+    else {
+        $widgetsRollback.exit_code = $widgetsExitCode
+        $widgetsRollback.errors = @(
+            "Widgets smoke-report.json was not produced"
+        )
+    }
+}
 $rendererLanes = [ordered]@{}
 if ($installSucceeded) {
     $expectedJourneySignatures = @(
-        "launched_active_run|run_monitoring|active|ready|fresh|fresh",
-        "active_evidence|evidence_and_findings|active|ready|fresh|fresh",
-        "disconnected_run|run_monitoring|active|ready|disconnected|disconnected",
-        "disconnected_evidence|evidence_and_findings|active|ready|disconnected|disconnected",
-        "reconnected_run|run_monitoring|active|ready|fresh|fresh",
-        "reconnected_evidence|evidence_and_findings|active|ready|fresh|fresh",
-        "completed_run|run_monitoring|terminal|ready|fresh|fresh",
-        "completed_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
+        "launched_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
+        "terminal_evidence|evidence_and_findings|terminal|ready|fresh|fresh",
+        "disconnected_run|run_monitoring|terminal|ready|disconnected|disconnected",
+        "disconnected_evidence|evidence_and_findings|terminal|ready|disconnected|disconnected",
+        "reconnected_pending_run|run_monitoring|terminal|ready|stale|stale",
+        "reconnected_pending_evidence|evidence_and_findings|terminal|ready|stale|stale",
+        "reconnected_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
+        "reconnected_evidence|evidence_and_findings|terminal|ready|fresh|fresh",
+        "remounted_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
+        "remounted_terminal_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
     )
     $expectedProductionPath = @(
-        "AppContext",
+        "DiagnosticsApplication",
+        "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
@@ -198,18 +298,17 @@ if ($installSucceeded) {
         "connected",
         "disconnected",
         "reconnected",
-        "completed"
+        "remounted",
+        "closed"
     )
     $requiredVisualGroups = @(
         @(
-            "launched_active_run",
-            "disconnected_run",
-            "completed_run"
+            "launched_terminal_run",
+            "disconnected_run"
         ),
         @(
-            "active_evidence",
-            "disconnected_evidence",
-            "completed_evidence"
+            "terminal_evidence",
+            "disconnected_evidence"
         )
     )
     foreach ($lane in @("hardware", "software")) {
@@ -322,6 +421,137 @@ if ($installSucceeded) {
                 ($connectionTransitions -join "|") -eq
                     ($expectedTransitions -join "|")
             )
+            $artifactHashes = @($smoke.artifact_hashes)
+            $artifactHashesValid = (
+                $artifactHashes.Count -gt 0 -and
+                @(
+                    $artifactHashes |
+                        Where-Object {
+                            [string]$_ -notmatch "^sha256:[0-9a-f]{64}$"
+                        }
+                ).Count -eq 0
+            )
+            $activeFeatureInterfaces = @(
+                $smoke.active_feature_interfaces
+            )
+            $identityValues = @(
+                [string]$smoke.campaign_identity,
+                [string]$smoke.case_identity,
+                [string]$smoke.run_identity,
+                [string]$smoke.strategy_identity,
+                [string]$smoke.approved_recipe_identity,
+                [string]$smoke.evidence_package_identity,
+                [string]$smoke.reproduction_manifest_identity
+            )
+            $persistenceReopened = (
+                $smoke.persistence_reopened -is [bool] -and
+                $smoke.persistence_reopened -eq $true
+            )
+            $readOnlyContextVisible = (
+                $smoke.read_only_context_visible -is [bool] -and
+                $smoke.read_only_context_visible -eq $true
+            )
+            $cleanExit = (
+                $smoke.clean_exit -is [bool] -and
+                $smoke.clean_exit -eq $true
+            )
+            $expectedIdentityGraph = @($smoke.expected_identity_graph)
+            $featureIdentityGraph = @($smoke.feature_identity_graph)
+            $featureIdentityGraphMatches = (
+                $expectedIdentityGraph.Count -gt 0 -and
+                ($featureIdentityGraph -join "|") -eq
+                    ($expectedIdentityGraph -join "|")
+            )
+            $identitySetNames = @(
+                "candidates",
+                "metrics",
+                "comparisons",
+                "curves",
+                "breakpoints",
+                "findings"
+            )
+            $identitySetsValid = $true
+            $flattenedIdentityGraph = @($identityValues)
+            foreach ($identitySetName in $identitySetNames) {
+                $identityProperty = (
+                    $smoke.evidence_identity_sets.PSObject.Properties |
+                        Where-Object { $_.Name -eq $identitySetName }
+                )
+                if (-not $identityProperty) {
+                    $identitySetsValid = $false
+                    continue
+                }
+                $identitySetValues = @($identityProperty.Value)
+                if (
+                    $identitySetName -ne "breakpoints" -and
+                    $identitySetValues.Count -eq 0
+                ) {
+                    $identitySetsValid = $false
+                }
+                $flattenedIdentityGraph += $identitySetValues
+            }
+            $flattenedIdentityGraph = @(
+                $flattenedIdentityGraph | Sort-Object -Unique
+            )
+            $expectedSortedIdentityGraph = @(
+                $expectedIdentityGraph | Sort-Object -Unique
+            )
+            $identitySetsValid = (
+                $identitySetsValid -and
+                ($flattenedIdentityGraph -join "|") -eq
+                    ($expectedSortedIdentityGraph -join "|")
+            )
+            $identityCheckpoints = (
+                $smoke.qml_identity_graph_checkpoints.PSObject.Properties
+            )
+            $identityCheckpointsValid = (
+                @($identityCheckpoints).Count -eq
+                    $expectedJourneySignatures.Count
+            )
+            foreach ($checkpoint in $identityCheckpoints) {
+                if (
+                    (@($checkpoint.Value) -join "|") -ne
+                    ($expectedIdentityGraph -join "|")
+                ) {
+                    $identityCheckpointsValid = $false
+                }
+            }
+            $announcementText = (
+                @($smoke.accessibility_announcements) -join " "
+            ).ToLowerInvariant()
+            $releaseBehaviorValid = (
+                $smoke.keyboard_navigation_verified -is [bool] -and
+                $smoke.keyboard_navigation_verified -eq $true -and
+                $smoke.accessibility_preferences_verified -is [bool] -and
+                $smoke.accessibility_preferences_verified -eq $true -and
+                $smoke.old_generation_rejected -is [bool] -and
+                $smoke.old_generation_rejected -eq $true -and
+                $smoke.authoritative_reconnect_verified -is [bool] -and
+                $smoke.authoritative_reconnect_verified -eq $true -and
+                $announcementText.Contains("disconnected") -and
+                $announcementText.Contains("fresh")
+            )
+            $realV1IdentityValid = (
+                @(
+                    $identityValues |
+                        Where-Object { [string]::IsNullOrWhiteSpace($_) }
+                ).Count -eq 0 -and
+                $artifactHashesValid -and
+                [string]$smoke.persistence_kind -eq
+                    "sqlite+json+parquet" -and
+                $persistenceReopened -and
+                [string]$smoke.application_read_model_interface -eq
+                    "StrategyDiagnosticsV1ApplicationReadModel/1.0" -and
+                ($activeFeatureInterfaces -join "|") -eq
+                    "RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1" -and
+                [string]$smoke.campaign_status -eq "completed" -and
+                [string]$smoke.run_status -eq "completed" -and
+                [string]$smoke.evidence_status -eq "sealed" -and
+                $featureIdentityGraphMatches -and
+                $identitySetsValid -and
+                $identityCheckpointsValid -and
+                $releaseBehaviorValid
+            )
             $rendererLanes[$lane] = [ordered]@{
                 exit_code = $exitCode
                 graphics_api = $smoke.graphics_api
@@ -331,7 +561,57 @@ if ($installSucceeded) {
                 source_commit = [string]$smoke.source_commit
                 production_path = $productionPath
                 production_path_matches = $productionPathMatches
+                campaign_identity = [string]$smoke.campaign_identity
+                case_identity = [string]$smoke.case_identity
                 run_identity = [string]$smoke.run_identity
+                strategy_identity = [string]$smoke.strategy_identity
+                approved_recipe_identity = (
+                    [string]$smoke.approved_recipe_identity
+                )
+                evidence_package_identity = (
+                    [string]$smoke.evidence_package_identity
+                )
+                reproduction_manifest_identity = (
+                    [string]$smoke.reproduction_manifest_identity
+                )
+                artifact_hashes = $artifactHashes
+                persistence_kind = [string]$smoke.persistence_kind
+                persistence_reopened = (
+                    $persistenceReopened
+                )
+                application_read_model_interface = (
+                    [string]$smoke.application_read_model_interface
+                )
+                active_feature_interfaces = $activeFeatureInterfaces
+                campaign_status = [string]$smoke.campaign_status
+                run_status = [string]$smoke.run_status
+                evidence_status = [string]$smoke.evidence_status
+                expected_identity_graph = $expectedIdentityGraph
+                feature_identity_graph = $featureIdentityGraph
+                qml_identity_graph_checkpoints = (
+                    $smoke.qml_identity_graph_checkpoints
+                )
+                evidence_identity_sets = $smoke.evidence_identity_sets
+                keyboard_navigation_verified = (
+                    $smoke.keyboard_navigation_verified -is [bool] -and
+                    $smoke.keyboard_navigation_verified -eq $true
+                )
+                accessibility_preferences_verified = (
+                    $smoke.accessibility_preferences_verified -is [bool] -and
+                    $smoke.accessibility_preferences_verified -eq $true
+                )
+                accessibility_announcements = @(
+                    $smoke.accessibility_announcements
+                )
+                old_generation_rejected = (
+                    $smoke.old_generation_rejected -is [bool] -and
+                    $smoke.old_generation_rejected -eq $true
+                )
+                authoritative_reconnect_verified = (
+                    $smoke.authoritative_reconnect_verified -is [bool] -and
+                    $smoke.authoritative_reconnect_verified -eq $true
+                )
+                real_v1_identity_valid = $realV1IdentityValid
                 routes_rendered = $routesRendered
                 routes_match = $routesMatch
                 connection_transitions = $connectionTransitions
@@ -369,9 +649,9 @@ if ($installSucceeded) {
                     [int]$smoke.manual_trading_action_count
                 )
                 read_only_context_visible = (
-                    [bool]$smoke.read_only_context_visible
+                    $readOnlyContextVisible
                 )
-                clean_exit = $smoke.clean_exit
+                clean_exit = $cleanExit
                 errors = @($smoke.errors)
             }
         }
@@ -383,7 +663,31 @@ if ($installSucceeded) {
                 source_commit = ""
                 production_path = @()
                 production_path_matches = $false
+                campaign_identity = ""
+                case_identity = ""
                 run_identity = ""
+                strategy_identity = ""
+                approved_recipe_identity = ""
+                evidence_package_identity = ""
+                reproduction_manifest_identity = ""
+                artifact_hashes = @()
+                persistence_kind = ""
+                persistence_reopened = $false
+                application_read_model_interface = ""
+                active_feature_interfaces = @()
+                campaign_status = ""
+                run_status = ""
+                evidence_status = ""
+                expected_identity_graph = @()
+                feature_identity_graph = @()
+                qml_identity_graph_checkpoints = [ordered]@{}
+                evidence_identity_sets = [ordered]@{}
+                keyboard_navigation_verified = $false
+                accessibility_preferences_verified = $false
+                accessibility_announcements = @()
+                old_generation_rejected = $false
+                authoritative_reconnect_verified = $false
+                real_v1_identity_valid = $false
                 routes_rendered = @()
                 routes_match = $false
                 connection_transitions = @()
@@ -405,6 +709,7 @@ $report = [ordered]@{
     schema_version = 3
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
+    widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
     operating_system = $operatingSystem
     architecture = $architecture
     user_name = $userName
@@ -418,10 +723,12 @@ $report = [ordered]@{
     dependency_cache_present = $dependencyCachePresent
     dependency_cache_paths = $dependencyCachePaths
     install_succeeded = $installSucceeded
+    widgets_install_succeeded = $widgetsInstallSucceeded
+    widgets_rollback = $widgetsRollback
     renderer_lanes = $rendererLanes
 }
 $reportPath = Join-Path $resolvedEvidence "clean-room-report.json"
-$reportJson = $report | ConvertTo-Json -Depth 8
+$reportJson = $report | ConvertTo-Json -Depth 12
 [IO.File]::WriteAllText(
     $reportPath,
     $reportJson,
@@ -441,11 +748,25 @@ $gatePassed = (
     -not $dependencyCachePresent -and
     $dependencyCachePaths.Count -eq 0 -and
     $installSucceeded -and
+    $widgetsInstallSucceeded -and
+    $widgetsRollback.exit_code -eq 0 -and
+    $widgetsRollback.source_commit_matches -and
+    $widgetsRollback.mode -eq "read-only" -and
+    $widgetsRollback.placeholder_panels.Count -eq 0 -and
+    $widgetsRollback.real_panel_count -ge 3 -and
+    $widgetsRollback.manual_trading_action_count -eq 0 -and
+    @(
+        $widgetsRollback.opened_panels |
+            Where-Object { $_ -in @("diagnostics", "market", "orders") } |
+            Sort-Object -Unique
+    ).Count -eq 3 -and
+    $widgetsRollback.clean_exit -and
+    $widgetsRollback.errors.Count -eq 0 -and
     $rendererLanes.hardware.exit_code -eq 0 -and
     $rendererLanes.hardware.graphics_api -eq "Direct3D11" -and
     $rendererLanes.hardware.source_commit_matches -and
     $rendererLanes.hardware.production_path_matches -and
-    $rendererLanes.hardware.run_identity -eq "RUN-RC-001" -and
+    $rendererLanes.hardware.real_v1_identity_valid -and
     $rendererLanes.hardware.routes_match -and
     $rendererLanes.hardware.connection_transitions_match -and
     $rendererLanes.hardware.states_match -and
@@ -458,7 +779,7 @@ $gatePassed = (
     $rendererLanes.software.graphics_api -eq "Software" -and
     $rendererLanes.software.source_commit_matches -and
     $rendererLanes.software.production_path_matches -and
-    $rendererLanes.software.run_identity -eq "RUN-RC-001" -and
+    $rendererLanes.software.real_v1_identity_valid -and
     $rendererLanes.software.routes_match -and
     $rendererLanes.software.connection_transitions_match -and
     $rendererLanes.software.states_match -and
@@ -466,7 +787,23 @@ $gatePassed = (
     $rendererLanes.software.manual_trading_action_count -eq 0 -and
     $rendererLanes.software.read_only_context_visible -and
     $rendererLanes.software.clean_exit -and
-    $rendererLanes.software.errors.Count -eq 0
+    $rendererLanes.software.errors.Count -eq 0 -and
+    $rendererLanes.hardware.campaign_identity -eq
+        $rendererLanes.software.campaign_identity -and
+    $rendererLanes.hardware.case_identity -eq
+        $rendererLanes.software.case_identity -and
+    $rendererLanes.hardware.run_identity -eq
+        $rendererLanes.software.run_identity -and
+    $rendererLanes.hardware.strategy_identity -eq
+        $rendererLanes.software.strategy_identity -and
+    $rendererLanes.hardware.approved_recipe_identity -eq
+        $rendererLanes.software.approved_recipe_identity -and
+    $rendererLanes.hardware.evidence_package_identity -eq
+        $rendererLanes.software.evidence_package_identity -and
+    $rendererLanes.hardware.reproduction_manifest_identity -eq
+        $rendererLanes.software.reproduction_manifest_identity -and
+    ($rendererLanes.hardware.artifact_hashes -join "|") -eq
+        ($rendererLanes.software.artifact_hashes -join "|")
 )
 if (-not $gatePassed) {
     exit 1

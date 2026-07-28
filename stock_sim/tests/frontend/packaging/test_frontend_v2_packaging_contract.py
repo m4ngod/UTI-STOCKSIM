@@ -44,12 +44,26 @@ from stock_sim.release.no_manual_trading_gate import (
 
 
 _CLEAN_ROOM_JOURNEY = (
-    ("launched_active_run", "run_monitoring", "active", "ready", "fresh", "fresh"),
-    ("active_evidence", "evidence_and_findings", "active", "ready", "fresh", "fresh"),
+    (
+        "launched_terminal_run",
+        "run_monitoring",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "terminal_evidence",
+        "evidence_and_findings",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
     (
         "disconnected_run",
         "run_monitoring",
-        "active",
+        "terminal",
         "ready",
         "disconnected",
         "disconnected",
@@ -57,23 +71,53 @@ _CLEAN_ROOM_JOURNEY = (
     (
         "disconnected_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "disconnected",
         "disconnected",
     ),
-    ("reconnected_run", "run_monitoring", "active", "ready", "fresh", "fresh"),
+    (
+        "reconnected_pending_run",
+        "run_monitoring",
+        "terminal",
+        "ready",
+        "stale",
+        "stale",
+    ),
+    (
+        "reconnected_pending_evidence",
+        "evidence_and_findings",
+        "terminal",
+        "ready",
+        "stale",
+        "stale",
+    ),
+    (
+        "reconnected_terminal_run",
+        "run_monitoring",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
     (
         "reconnected_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
     ),
-    ("completed_run", "run_monitoring", "terminal", "ready", "fresh", "fresh"),
     (
-        "completed_evidence",
+        "remounted_terminal_run",
+        "run_monitoring",
+        "terminal",
+        "ready",
+        "fresh",
+        "fresh",
+    ),
+    (
+        "remounted_terminal_evidence",
         "evidence_and_findings",
         "terminal",
         "ready",
@@ -81,6 +125,53 @@ _CLEAN_ROOM_JOURNEY = (
         "fresh",
     ),
 )
+_CLEAN_ROOM_IDENTITY_SETS = {
+    "candidates": ["candidate-1"],
+    "metrics": ["metric-1"],
+    "comparisons": ["comparison-1"],
+    "curves": ["curve-1"],
+    "breakpoints": ["breakpoint-1"],
+    "findings": ["finding-1"],
+}
+_CLEAN_ROOM_IDENTITY_GRAPH = sorted(
+    {
+        "FDC-RC-001",
+        "CASE-RC-001",
+        "RUN-RC-001",
+        "STRATEGY-RC-001",
+        "RECIPE-RC-001",
+        "EVIDENCE-RC-001",
+        "RM-RC-001",
+        *(
+            identity
+            for identities in _CLEAN_ROOM_IDENTITY_SETS.values()
+            for identity in identities
+        ),
+    }
+)
+_REQUIRED_QML_DEPENDENCY_MODULES = (
+    "_duckdb",
+    "app.features.live_strategy_diagnostics_v1_application",
+    "duckdb",
+    "persistence.models_training",
+    "sqlalchemy.dialects.sqlite.pysqlite",
+    "stock_sim.release.strategy_diagnostics_v1_release_fixture",
+    "strategy_diagnostics.application",
+    "strategy_diagnostics.diagnostic_evidence_storage",
+    "strategy_diagnostics.market_paths",
+    "strategy_diagnostics.persistence",
+)
+
+
+def _nuitka_report_xml(*module_names):
+    modules = "".join(
+        f'<module name="{module_name}" />'
+        for module_name in module_names
+    )
+    return (
+        '<nuitka-compilation-report mode="standalone" completion="yes">'
+        f"{modules}</nuitka-compilation-report>"
+    )
 
 
 def _write_clean_room_screenshots(root, lane):
@@ -110,13 +201,51 @@ def _clean_room_lane(root, lane, graphics_api):
         "graphics_api": graphics_api,
         "source_commit": "abc123",
         "production_path": [
-            "AppContext",
+            "DiagnosticsApplication",
+            "FileBackedV1Persistence",
+            "LiveStrategyDiagnosticsV1ApplicationAdapter",
             "EventBridge",
             "LiveRunMonitoringAdapter",
             "LiveEvidenceAndFindingsAdapter",
             "JourneyWorkspaceHost",
         ],
+        "campaign_identity": "FDC-RC-001",
+        "case_identity": "CASE-RC-001",
         "run_identity": "RUN-RC-001",
+        "strategy_identity": "STRATEGY-RC-001",
+        "approved_recipe_identity": "RECIPE-RC-001",
+        "evidence_package_identity": "EVIDENCE-RC-001",
+        "reproduction_manifest_identity": "RM-RC-001",
+        "artifact_hashes": ["sha256:" + "a" * 64],
+        "persistence_kind": "sqlite+json+parquet",
+        "persistence_reopened": True,
+        "application_read_model_interface": (
+            "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+        ),
+        "active_feature_interfaces": [
+            "RunMonitoringFeature/1.2",
+            "EvidenceAndFindingsFeature/1.1",
+        ],
+        "campaign_status": "completed",
+        "run_status": "completed",
+        "evidence_status": "sealed",
+        "expected_identity_graph": _CLEAN_ROOM_IDENTITY_GRAPH,
+        "feature_identity_graph": _CLEAN_ROOM_IDENTITY_GRAPH,
+        "qml_identity_graph_checkpoints": {
+            stage: _CLEAN_ROOM_IDENTITY_GRAPH
+            for stage, *_ in _CLEAN_ROOM_JOURNEY
+        },
+        "evidence_identity_sets": _CLEAN_ROOM_IDENTITY_SETS,
+        "keyboard_navigation_verified": True,
+        "accessibility_preferences_verified": True,
+        "accessibility_announcements": [
+            "Run Monitoring disconnected",
+            "Evidence and Findings disconnected",
+            "Run Monitoring fresh",
+            "Evidence and Findings fresh",
+        ],
+        "old_generation_rejected": True,
+        "authoritative_reconnect_verified": True,
         "routes_rendered": [
             "run_monitoring",
             "evidence_and_findings",
@@ -125,7 +254,8 @@ def _clean_room_lane(root, lane, graphics_api):
             "connected",
             "disconnected",
             "reconnected",
-            "completed",
+            "remounted",
+            "closed",
         ],
         "observations": [
             {
@@ -207,6 +337,28 @@ def test_toolchain_lock_is_included_in_installed_release_package_data():
     assert metadata["tool"]["setuptools"]["package-data"][
         "stock_sim.release"
     ] == ["*.json"]
+
+
+def test_integration_release_notes_keep_later_modules_and_waves_incomplete():
+    release_notes = (
+        PROJECT_ROOT
+        / "docs"
+        / "testing"
+        / "frontend"
+        / "strategy-diagnostics-v1-frontend-v2-integration-release.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Integration Contract Vertical Slice" in release_notes
+    assert "`RunMonitoringFeature` 1.2" in release_notes
+    assert "`EvidenceAndFindingsFeature` 1.1" in release_notes
+    assert "Diagnostic Tasks creation and launch are not complete" in release_notes
+    assert "Strategy Library is not complete" in release_notes
+    assert "Scenario Lab is not complete" in release_notes
+    assert "System Health is not complete" in release_notes
+    assert "Waves 2–4 are not complete" in release_notes
+    assert "manual trading" in release_notes.casefold()
+    assert "HTTP" in release_notes
+    assert "Widgets rollback" in release_notes
 
 
 def test_qml_dependencies_are_discovered_from_source_imports_not_a_handwritten_list(
@@ -313,12 +465,25 @@ def test_minimal_package_smoke_captures_distinct_software_frames(
     )
 
     screenshot_digests = {
-        hashlib.sha256((tmp_path / observation.screenshot).read_bytes()).digest()
+        observation.stage: hashlib.sha256(
+            (tmp_path / observation.screenshot).read_bytes()
+        ).digest()
         for observation in result.observations
         if observation.screenshot is not None
     }
-    assert len(result.observations) == 8
-    assert len(screenshot_digests) == 6
+    assert len(result.observations) == len(_CLEAN_ROOM_JOURNEY)
+    # A sealed Formal Campaign is terminal from launch. Reconnect and remount
+    # must reproduce the same trustworthy view, while each route still proves
+    # a visually distinct connected and disconnected state.
+    assert len(screenshot_digests) == len(_CLEAN_ROOM_JOURNEY)
+    assert (
+        screenshot_digests["launched_terminal_run"]
+        != screenshot_digests["disconnected_run"]
+    )
+    assert (
+        screenshot_digests["terminal_evidence"]
+        != screenshot_digests["disconnected_evidence"]
+    )
 
 
 def test_qml_smoke_capture_renders_the_quick_framebuffer(tmp_path):
@@ -381,6 +546,17 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
         argument.startswith("--include-data-dir=")
         for argument in qml_plan.nuitka_command
     )
+    assert {
+        "--include-module=stock_sim.release.strategy_diagnostics_v1_release_fixture",
+        "--include-module=app.features.live_strategy_diagnostics_v1_application",
+        "--include-module=strategy_diagnostics.application",
+        "--include-module=strategy_diagnostics.persistence",
+        "--include-module=strategy_diagnostics.market_paths",
+        "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
+        "--include-module=sqlalchemy.dialects.sqlite.pysqlite",
+        "--include-package=duckdb",
+        "--include-module=_duckdb",
+    } <= set(qml_plan.nuitka_command)
     assert not any(
         "webengine" in argument.casefold()
         for plan in plans
@@ -460,13 +636,11 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
         (plan.distribution_dir / plan.executable_name).write_bytes(
             plan.kind.value.encode("utf-8")
         )
+        report_modules = ["app.features.run_monitoring"]
+        if plan.kind is PackageKind.QML_JOURNEY:
+            report_modules.extend(_REQUIRED_QML_DEPENDENCY_MODULES)
         plan.nuitka_report.write_text(
-            (
-                '<nuitka-compilation-report mode="standalone" '
-                'completion="yes">'
-                '<module name="app.features.run_monitoring" />'
-                "</nuitka-compilation-report>"
-            ),
+            _nuitka_report_xml(*report_modules),
             encoding="utf-8",
         )
     qml_marker = (
@@ -700,11 +874,9 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
             '<module name="frontend_widgets_rollback_entry" />'
             "</nuitka-compilation-report>"
         ),
-        "qml-journey": (
-            '<nuitka-compilation-report mode="standalone" '
-            'completion="yes">'
-            '<module name="app.features.run_monitoring" />'
-            "</nuitka-compilation-report>"
+        "qml-journey": _nuitka_report_xml(
+            "app.features.run_monitoring",
+            *_REQUIRED_QML_DEPENDENCY_MODULES,
         ),
     }
     for kind in ("widgets-rollback", "qml-journey"):
@@ -765,6 +937,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "schema_version": 3,
                 "source_commit": "abc123",
                 "archive_sha256": qml_sha256,
+                "widgets_archive_sha256": widgets_sha256,
                 "operating_system": "Microsoft Windows 11 Pro",
                     "architecture": "AMD64",
                     "user_name": "WDAGUtilityAccount",
@@ -778,6 +951,22 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "dependency_cache_present": False,
                 "dependency_cache_paths": [],
                 "install_succeeded": True,
+                "widgets_install_succeeded": True,
+                "widgets_rollback": {
+                    "exit_code": 0,
+                    "source_commit": "abc123",
+                    "mode": "read-only",
+                    "placeholder_panels": [],
+                    "real_panel_count": 8,
+                    "manual_trading_action_count": 0,
+                    "opened_panels": [
+                        "diagnostics",
+                        "market",
+                        "orders",
+                    ],
+                    "clean_exit": True,
+                    "errors": [],
+                },
                 "renderer_lanes": {
                     lane: _clean_room_lane(
                         tmp_path,
@@ -938,13 +1127,57 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "renderer_lane": lane,
                     "graphics_api": graphics_api,
                     "production_path": [
-                        "AppContext",
+                        "DiagnosticsApplication",
+                        "FileBackedV1Persistence",
+                        "LiveStrategyDiagnosticsV1ApplicationAdapter",
                         "EventBridge",
                         "LiveRunMonitoringAdapter",
                         "LiveEvidenceAndFindingsAdapter",
                         "JourneyWorkspaceHost",
                     ],
+                    "campaign_identity": "FDC-RC-001",
+                    "case_identity": "CASE-RC-001",
                     "run_identity": "RUN-RC-001",
+                    "strategy_identity": "STRATEGY-RC-001",
+                    "approved_recipe_identity": "RECIPE-RC-001",
+                    "evidence_package_identity": "EVIDENCE-RC-001",
+                    "reproduction_manifest_identity": "RM-RC-001",
+                    "artifact_hashes": ["sha256:" + "a" * 64],
+                    "persistence_kind": "sqlite+json+parquet",
+                    "persistence_reopened": True,
+                    "application_read_model_interface": (
+                        "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+                    ),
+                    "active_feature_interfaces": [
+                        "RunMonitoringFeature/1.2",
+                        "EvidenceAndFindingsFeature/1.1",
+                    ],
+                    "campaign_status": "completed",
+                    "run_status": "completed",
+                    "evidence_status": "sealed",
+                    "expected_identity_graph": (
+                        _CLEAN_ROOM_IDENTITY_GRAPH
+                    ),
+                    "feature_identity_graph": (
+                        _CLEAN_ROOM_IDENTITY_GRAPH
+                    ),
+                    "qml_identity_graph_checkpoints": {
+                        stage: _CLEAN_ROOM_IDENTITY_GRAPH
+                        for stage, *_ in _CLEAN_ROOM_JOURNEY
+                    },
+                    "evidence_identity_sets": (
+                        _CLEAN_ROOM_IDENTITY_SETS
+                    ),
+                    "keyboard_navigation_verified": True,
+                    "accessibility_preferences_verified": True,
+                    "accessibility_announcements": [
+                        "Run Monitoring disconnected",
+                        "Evidence and Findings disconnected",
+                        "Run Monitoring fresh",
+                        "Evidence and Findings fresh",
+                    ],
+                    "old_generation_rejected": True,
+                    "authoritative_reconnect_verified": True,
                     "routes_rendered": [
                         "run_monitoring",
                         "evidence_and_findings",
@@ -953,7 +1186,8 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                         "connected",
                         "disconnected",
                         "reconnected",
-                        "completed",
+                        "remounted",
+                        "closed",
                     ],
                     "observations": [
                         {
@@ -995,14 +1229,16 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
     assert evidence.hardware.graphics_api == "Direct3D11"
     assert evidence.software.graphics_api == "Software"
     assert evidence.hardware.journey_stages == (
-        "launched_active_run",
-        "active_evidence",
+        "launched_terminal_run",
+        "terminal_evidence",
         "disconnected_run",
         "disconnected_evidence",
-        "reconnected_run",
+        "reconnected_pending_run",
+        "reconnected_pending_evidence",
+        "reconnected_terminal_run",
         "reconnected_evidence",
-        "completed_run",
-        "completed_evidence",
+        "remounted_terminal_run",
+        "remounted_terminal_evidence",
     )
     assert evidence.environment_identity
     assert (
@@ -1024,9 +1260,18 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="app.ui.evidence_chart" />
           <module name="app.event_bridge" />
           <module name="app.core_dto.snapshot" />
-          <module name="app.services.redis_subscriber" />
           <module name="infra.event_bus" />
           <module name="observability.metrics" />
+          <module name="_duckdb" />
+          <module name="app.features.live_strategy_diagnostics_v1_application" />
+          <module name="duckdb" />
+          <module name="persistence.models_training" />
+          <module name="sqlalchemy.dialects.sqlite.pysqlite" />
+          <module name="stock_sim.release.strategy_diagnostics_v1_release_fixture" />
+          <module name="strategy_diagnostics.application" />
+          <module name="strategy_diagnostics.diagnostic_evidence_storage" />
+          <module name="strategy_diagnostics.market_paths" />
+          <module name="strategy_diagnostics.persistence" />
           <data-file name="app/ui/qml/JourneyWorkspace.qml" />
         </nuitka-compilation-report>
         """,
@@ -1040,6 +1285,7 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="app.services.trading_service" />
           <module name="services.order_service" />
           <module name="stock_sim.persistence.models_order" />
+          <module name="redis.client" />
           <module name="PySide6.QtWebEngineCore" />
         </nuitka-compilation-report>
         """,
@@ -1068,6 +1314,7 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
         for finding in unsafe_findings
     )
     assert any("QtWebEngineCore" in finding for finding in unsafe_findings)
+    assert any("redis.client" in finding for finding in unsafe_findings)
     assert audit_frontend_v2_surface() == ()
 
 
@@ -1088,6 +1335,16 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="app.ui.main_window" />
           <module name="app.ui.ui_refresh" />
           <module name="app.ui.journey_workspace" />
+          <module name="_duckdb" />
+          <module name="app.features.live_strategy_diagnostics_v1_application" />
+          <module name="duckdb" />
+          <module name="persistence.models_training" />
+          <module name="sqlalchemy.dialects.sqlite.pysqlite" />
+          <module name="stock_sim.release.strategy_diagnostics_v1_release_fixture" />
+          <module name="strategy_diagnostics.application" />
+          <module name="strategy_diagnostics.diagnostic_evidence_storage" />
+          <module name="strategy_diagnostics.market_paths" />
+          <module name="strategy_diagnostics.persistence" />
         </nuitka-compilation-report>
         """,
         encoding="utf-8",
@@ -1124,6 +1381,39 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
         assert any(
             module_name in finding for finding in command_findings
         )
+
+
+def test_qml_dependency_audit_requires_complete_real_v1_closure(tmp_path):
+    complete_report = tmp_path / "complete-real-v1.xml"
+    complete_report.write_text(
+        _nuitka_report_xml(*_REQUIRED_QML_DEPENDENCY_MODULES),
+        encoding="utf-8",
+    )
+    assert audit_nuitka_dependency_report(
+        complete_report,
+        package_kind=PackageKind.QML_JOURNEY,
+    ) == ()
+
+    missing_module = "_duckdb"
+    incomplete_report = tmp_path / "incomplete-real-v1.xml"
+    incomplete_report.write_text(
+        _nuitka_report_xml(
+            *(
+                module_name
+                for module_name in _REQUIRED_QML_DEPENDENCY_MODULES
+                if module_name != missing_module
+            ),
+        ),
+        encoding="utf-8",
+    )
+    findings = audit_nuitka_dependency_report(
+        incomplete_report,
+        package_kind=PackageKind.QML_JOURNEY,
+    )
+    assert findings == (
+        "Required real V1 module is absent from the QML "
+        f"dependency closure: {missing_module}",
+    )
 
 
 def test_widgets_dependency_audit_allows_read_only_trade_context_only(
@@ -1445,11 +1735,35 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "schema_version = 3" in script
     assert '"--source-commit=$SourceCommit"' in script
     assert "production_path" in script
+    assert "real_v1_identity_valid" in script
+    assert "campaign_identity" in script
+    assert "evidence_package_identity" in script
+    assert "application_read_model_interface" in script
+    assert "active_feature_interfaces" in script
+    assert "persistence_reopened" in script
     assert "routes_rendered" in script
     assert "connection_transitions" in script
     assert "observations" in script
     assert "manual_trading_action_count" in script
     assert "read_only_context_visible" in script
+    assert "WidgetsPackageArchive" in script
+    assert "ExpectedWidgetsArchiveSha256" in script
+    assert "UTI-Widgets-Rollback.exe" in script
+    assert "widgets_archive_sha256" in script
+    assert "widgets_rollback" in script
+    assert "expected_identity_graph" in script
+    assert "feature_identity_graph" in script
+    assert "qml_identity_graph_checkpoints" in script
+    assert "evidence_identity_sets" in script
+    assert "keyboard_navigation_verified" in script
+    assert "accessibility_preferences_verified" in script
+    assert "old_generation_rejected" in script
+    assert "authoritative_reconnect_verified" in script
+    assert "$smoke.persistence_reopened -is [bool]" in script
+    assert "$smoke.read_only_context_visible -is [bool]" in script
+    assert "$smoke.clean_exit -is [bool]" in script
+    assert "[bool]$smoke.persistence_reopened" not in script
+    assert "[bool]$smoke.read_only_context_visible" not in script
     assert "$requiredVisualGroups" in script
     assert re.search(
         r"""

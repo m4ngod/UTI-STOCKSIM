@@ -317,6 +317,13 @@ def test_state_changes_remain_distinguishable_and_repair_focus_without_color():
     root.setProperty("activeRoute", "evidence_and_findings")
     app.processEvents()
     evidence_status = root.findChild(QObject, "evidenceAccessibleStatus")
+    evidence_route_status = root.findChild(
+        QObject,
+        "evidenceRouteFreshnessStatus",
+    )
+    assert _interface(evidence_route_status).role() == (
+        QAccessible.Role.StatusBar
+    )
     finding = root.property("evidenceFindingFocusItem")
     evidence_route.forceActiveFocus()
 
@@ -336,10 +343,15 @@ def test_state_changes_remain_distinguishable_and_repair_focus_without_color():
     assert "stale" in _interface(evidence_status).text(
         QAccessible.Text.Description
     ).casefold()
+    assert "stale" in _accessible_name(evidence_route_status).casefold()
 
     evidence_feature.advance_to_disconnected(_evidence_context())
     _settle(app)
     assert "disconnected" in _accessible_name(evidence_status).casefold()
+    assert (
+        "disconnected"
+        in _accessible_name(evidence_route_status).casefold()
+    )
 
     evidence_feature.advance_to_failed(_evidence_context())
     _settle(app)

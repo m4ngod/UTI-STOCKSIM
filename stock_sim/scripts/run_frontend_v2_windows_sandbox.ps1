@@ -4,11 +4,15 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ExpectedArchiveSha256,
     [Parameter(Mandatory = $true)]
+    [string]$WidgetsPackageArchive,
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedWidgetsArchiveSha256,
+    [Parameter(Mandatory = $true)]
     [string]$SourceCommit,
     [Parameter(Mandatory = $true)]
     [string]$EvidenceDir,
-    [ValidateRange(60, 1800)]
-    [int]$TimeoutSeconds = 600
+    [ValidateRange(60, 3600)]
+    [int]$TimeoutSeconds = 1200
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,11 +26,21 @@ if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
 if ($ExpectedArchiveSha256 -cnotmatch '^sha256:[0-9a-f]{64}$') {
     throw "ExpectedArchiveSha256 must be a lowercase sha256 digest."
 }
+if ($ExpectedWidgetsArchiveSha256 -cnotmatch '^sha256:[0-9a-f]{64}$') {
+    throw "ExpectedWidgetsArchiveSha256 must be a lowercase sha256 digest."
+}
 
 $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
 $archiveItem = Get-Item -LiteralPath $resolvedArchive
 if (-not $archiveItem.Exists) {
     throw "Release archive is unavailable."
+}
+$resolvedWidgetsArchive = (
+    Resolve-Path -LiteralPath $WidgetsPackageArchive
+).Path
+$widgetsArchiveItem = Get-Item -LiteralPath $resolvedWidgetsArchive
+if (-not $widgetsArchiveItem.Exists) {
+    throw "Widgets release archive is unavailable."
 }
 $cleanRoomScript = Join-Path $PSScriptRoot "run_frontend_v2_clean_room.ps1"
 $resolvedCleanRoomScript = (
@@ -48,6 +62,11 @@ $archiveName = Split-Path -Leaf $resolvedArchive
 if ($archiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
     throw "Package archive name contains unsafe characters."
 }
+$widgetsArchiveDirectory = Split-Path -Parent $resolvedWidgetsArchive
+$widgetsArchiveName = Split-Path -Leaf $resolvedWidgetsArchive
+if ($widgetsArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "Widgets archive name contains unsafe characters."
+}
 $scriptDirectory = Split-Path -Parent $resolvedCleanRoomScript
 $runnerPath = Join-Path $resolvedEvidence "sandbox-runner.ps1"
 $configurationPath = Join-Path $resolvedEvidence "frontend-v2-offline.wsb"
@@ -67,8 +86,10 @@ try {
         -NoProfile `
         -ExecutionPolicy Bypass `
         -File "C:\ReleaseScripts\run_frontend_v2_clean_room.ps1" `
-        -PackageArchive "C:\ReleaseInput\__ARCHIVE_NAME__" `
+        -PackageArchive "C:\ReleaseInputQml\__ARCHIVE_NAME__" `
         -ExpectedArchiveSha256 "__ARCHIVE_SHA256__" `
+        -WidgetsPackageArchive "C:\ReleaseInputWidgets\__WIDGETS_ARCHIVE_NAME__" `
+        -ExpectedWidgetsArchiveSha256 "__WIDGETS_ARCHIVE_SHA256__" `
         -SourceCommit "__SOURCE_COMMIT__" `
         -EvidenceDir "C:\ReleaseEvidence"
     $exitCode = $LASTEXITCODE
@@ -96,6 +117,14 @@ $runner = $runner.Replace(
     $ExpectedArchiveSha256.Replace('"', '""')
 )
 $runner = $runner.Replace(
+    "__WIDGETS_ARCHIVE_NAME__",
+    $widgetsArchiveName.Replace('"', '""')
+)
+$runner = $runner.Replace(
+    "__WIDGETS_ARCHIVE_SHA256__",
+    $ExpectedWidgetsArchiveSha256.Replace('"', '""')
+)
+$runner = $runner.Replace(
     "__SOURCE_COMMIT__",
     $SourceCommit.Replace('"', '""')
 )
@@ -107,6 +136,9 @@ $runner = $runner.Replace(
 
 $archiveDirectoryXml = [Security.SecurityElement]::Escape(
     $archiveDirectory
+)
+$widgetsArchiveDirectoryXml = [Security.SecurityElement]::Escape(
+    $widgetsArchiveDirectory
 )
 $scriptDirectoryXml = [Security.SecurityElement]::Escape(
     $scriptDirectory
@@ -125,7 +157,12 @@ $configuration = @"
   <MappedFolders>
     <MappedFolder>
       <HostFolder>$archiveDirectoryXml</HostFolder>
-      <SandboxFolder>C:\ReleaseInput</SandboxFolder>
+      <SandboxFolder>C:\ReleaseInputQml</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>$widgetsArchiveDirectoryXml</HostFolder>
+      <SandboxFolder>C:\ReleaseInputWidgets</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
     <MappedFolder>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -16,21 +17,24 @@ from stock_sim.release.frontend_v2_packaging import (
     verify_clean_room_report,
     write_mandatory_release_gate_evidence,
 )
+from stock_sim.release.frontend_v2_performance import (
+    certify_performance_evidence,
+)
 
 
 EXPECTED_JOURNEY = (
     (
-        "launched_active_run",
+        "launched_terminal_run",
         "run_monitoring",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
     ),
     (
-        "active_evidence",
+        "terminal_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
@@ -38,7 +42,7 @@ EXPECTED_JOURNEY = (
     (
         "disconnected_run",
         "run_monitoring",
-        "active",
+        "terminal",
         "ready",
         "disconnected",
         "disconnected",
@@ -46,15 +50,31 @@ EXPECTED_JOURNEY = (
     (
         "disconnected_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "disconnected",
         "disconnected",
     ),
     (
-        "reconnected_run",
+        "reconnected_pending_run",
         "run_monitoring",
-        "active",
+        "terminal",
+        "ready",
+        "stale",
+        "stale",
+    ),
+    (
+        "reconnected_pending_evidence",
+        "evidence_and_findings",
+        "terminal",
+        "ready",
+        "stale",
+        "stale",
+    ),
+    (
+        "reconnected_terminal_run",
+        "run_monitoring",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
@@ -62,13 +82,13 @@ EXPECTED_JOURNEY = (
     (
         "reconnected_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
     ),
     (
-        "completed_run",
+        "remounted_terminal_run",
         "run_monitoring",
         "terminal",
         "ready",
@@ -76,7 +96,7 @@ EXPECTED_JOURNEY = (
         "fresh",
     ),
     (
-        "completed_evidence",
+        "remounted_terminal_evidence",
         "evidence_and_findings",
         "terminal",
         "ready",
@@ -84,6 +104,80 @@ EXPECTED_JOURNEY = (
         "fresh",
     ),
 )
+_IDENTITY_SETS = {
+    "candidates": ["candidate-1"],
+    "metrics": ["metric-1"],
+    "comparisons": ["comparison-1"],
+    "curves": ["curve-1"],
+    "breakpoints": ["breakpoint-1"],
+    "findings": ["finding-1"],
+}
+_IDENTITY_GRAPH = sorted(
+    {
+        "FDC-RC-001",
+        "CASE-RC-001",
+        "RUN-RC-001",
+        "STRATEGY-RC-001",
+        "RECIPE-RC-001",
+        "EVIDENCE-RC-001",
+        "RM-RC-001",
+        *(
+            identity
+            for identities in _IDENTITY_SETS.values()
+            for identity in identities
+        ),
+    }
+)
+
+
+def _passing_real_v1_performance_probe():
+    identities = {
+        "campaign_identity": "FDC-REAL-001",
+        "case_identity": "CASE-REAL-001",
+        "run_identity": "RUN-REAL-001",
+        "strategy_identity": "STRATEGY-REAL-001",
+        "approved_recipe_identity": "RECIPE-REAL-001",
+        "evidence_package_identity": "EVIDENCE-REAL-001",
+        "reproduction_manifest_identity": "RM-REAL-001",
+    }
+    return {
+        "schema_version": 1,
+        "production_path": [
+            "DiagnosticsApplication",
+            "FileBackedV1Persistence",
+            "LiveStrategyDiagnosticsV1ApplicationAdapter",
+        ],
+        "persistence_kind": "sqlite+json+parquet",
+        "persistence_reopened": True,
+        "application_read_model_interface": (
+            "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+        ),
+        **identities,
+        "artifact_hashes": ["sha256:" + "c" * 64],
+        "expected_identity_graph": sorted(
+            {*identities.values(), "METRIC-REAL-001"}
+        ),
+        "initial_read_counts": {
+            "resolve_journey": 1,
+            "read_run": 1,
+            "read_evidence": 1,
+        },
+        "measurement_read_counts": {
+            "resolve_journey": 3,
+            "read_run": 3,
+            "read_evidence": 3,
+        },
+        "measurement_samples_scheduled": 3,
+        "measurement_samples_completed": 3,
+        "measurement_window": {
+            "started_at": "2026-07-26T12:00:00+00:00",
+            "ended_at": "2026-07-26T12:01:00+00:00",
+        },
+        "fixture_closed": True,
+        "fixture_storage_removed": True,
+        "errors": [],
+        "clean_exit": True,
+    }
 
 
 def _write_journey_screenshots(root, lane):
@@ -138,7 +232,9 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     )
 
     assert result.production_path == (
-        "AppContext",
+        "DiagnosticsApplication",
+        "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
@@ -155,7 +251,51 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         )
         for observation in result.observations
     ) == EXPECTED_JOURNEY
-    assert result.run_identity == "RUN-RC-001"
+    assert result.campaign_identity
+    assert result.case_identity
+    assert result.run_identity
+    assert result.strategy_identity
+    assert result.approved_recipe_identity
+    assert result.evidence_package_identity
+    assert result.reproduction_manifest_identity
+    assert result.artifact_hashes
+    assert result.persistence_kind == "sqlite+json+parquet"
+    assert result.persistence_reopened is True
+    assert (
+        result.application_read_model_interface
+        == "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+    )
+    assert result.active_feature_interfaces == (
+        "RunMonitoringFeature/1.2",
+        "EvidenceAndFindingsFeature/1.1",
+    )
+    assert result.campaign_status == "completed"
+    assert result.run_status == "completed"
+    assert result.evidence_status == "sealed"
+    assert result.expected_identity_graph
+    assert (
+        result.feature_identity_graph
+        == result.expected_identity_graph
+    )
+    assert set(result.qml_identity_graph_checkpoints) == {
+        stage for stage, *_ in EXPECTED_JOURNEY
+    }
+    assert all(
+        checkpoint == result.expected_identity_graph
+        for checkpoint in result.qml_identity_graph_checkpoints.values()
+    )
+    assert set(result.evidence_identity_sets) == {
+        "candidates",
+        "metrics",
+        "comparisons",
+        "curves",
+        "breakpoints",
+        "findings",
+    }
+    assert result.keyboard_navigation_verified is True
+    assert result.accessibility_preferences_verified is True
+    assert result.old_generation_rejected is True
+    assert result.authoritative_reconnect_verified is True
     assert result.routes_rendered == (
         "run_monitoring",
         "evidence_and_findings",
@@ -164,7 +304,8 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "connected",
         "disconnected",
         "reconnected",
-        "completed",
+        "remounted",
+        "closed",
     )
     assert result.manual_trading_action_count == 0
     assert result.read_only_context_visible is True
@@ -207,7 +348,7 @@ def test_smoke_observation_snapshots_state_before_frame_capture(
     host._run_monitoring = run_adapter
     host._evidence_and_findings = evidence_adapter
 
-    def capture_after_freshness_timer_fires(_host, _path):
+    def capture_after_freshness_timer_fires(_host, _path, **_kwargs):
         run_adapter.properties["freshness"] = "stale"
         run_adapter.properties["revisionText"] = "r2"
 
@@ -222,6 +363,7 @@ def test_smoke_observation_snapshots_state_before_frame_capture(
         match="state changed during frame capture",
     ):
         package_entry._observe_state(
+            app=object(),
             root=root,
             host=host,
             report_dir=tmp_path,
@@ -293,7 +435,9 @@ result = run_smoke_journey(
     capture_images=False,
 )
 assert result.production_path == (
-    "AppContext",
+    "DiagnosticsApplication",
+    "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1ApplicationAdapter",
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
@@ -312,7 +456,7 @@ assert result.clean_exit is True
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=30,
+        timeout=120,
         check=False,
     )
 
@@ -402,13 +546,51 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "graphics_api": graphics_api,
             "source_commit": "abc123",
             "production_path": [
-                "AppContext",
+                "DiagnosticsApplication",
+                "FileBackedV1Persistence",
+                "LiveStrategyDiagnosticsV1ApplicationAdapter",
                 "EventBridge",
                 "LiveRunMonitoringAdapter",
                 "LiveEvidenceAndFindingsAdapter",
                 "JourneyWorkspaceHost",
             ],
+            "campaign_identity": "FDC-RC-001",
+            "case_identity": "CASE-RC-001",
             "run_identity": "RUN-RC-001",
+            "strategy_identity": "STRATEGY-RC-001",
+            "approved_recipe_identity": "RECIPE-RC-001",
+            "evidence_package_identity": "EVIDENCE-RC-001",
+            "reproduction_manifest_identity": "RM-RC-001",
+            "artifact_hashes": ["sha256:" + "a" * 64],
+            "persistence_kind": "sqlite+json+parquet",
+            "persistence_reopened": True,
+            "application_read_model_interface": (
+                "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+            ),
+            "active_feature_interfaces": [
+                "RunMonitoringFeature/1.2",
+                "EvidenceAndFindingsFeature/1.1",
+            ],
+            "campaign_status": "completed",
+            "run_status": "completed",
+            "evidence_status": "sealed",
+            "expected_identity_graph": _IDENTITY_GRAPH,
+            "feature_identity_graph": _IDENTITY_GRAPH,
+            "qml_identity_graph_checkpoints": {
+                stage: _IDENTITY_GRAPH
+                for stage, *_ in EXPECTED_JOURNEY
+            },
+            "evidence_identity_sets": _IDENTITY_SETS,
+            "keyboard_navigation_verified": True,
+            "accessibility_preferences_verified": True,
+            "accessibility_announcements": [
+                "Run Monitoring disconnected",
+                "Evidence and Findings disconnected",
+                "Run Monitoring fresh",
+                "Evidence and Findings fresh",
+            ],
+            "old_generation_rejected": True,
+            "authoritative_reconnect_verified": True,
             "routes_rendered": [
                 "run_monitoring",
                 "evidence_and_findings",
@@ -417,7 +599,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "connected",
                 "disconnected",
                 "reconnected",
-                "completed",
+                "remounted",
+                "closed",
             ],
             "observations": [
                 {
@@ -484,7 +667,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
     ]
     report_path.write_text(json.dumps(compromised), encoding="utf-8")
     assert (
-        "software renderer did not use the production EventBridge path"
+        "software renderer did not use the real V1 "
+        "Application-to-Feature path"
         in verify_clean_room_report(
             report_path,
             expected_source_commit="abc123",
@@ -493,7 +677,9 @@ def test_clean_room_report_requires_the_complete_production_journey(
     )
 
     compromised["renderer_lanes"]["software"]["production_path"] = [
-        "AppContext",
+        "DiagnosticsApplication",
+        "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
@@ -527,7 +713,10 @@ REQUIRED_ACCESSIBILITY_TESTS = (
         "test_accessible_journey_renders_at_200_percent_in_supported_lanes"
         "[hardware-Direct3D11]"
     ),
-    "test_live_journey_certifies_keyboard_narrator_terminal_and_remount",
+    (
+        "test_file_backed_formal_campaign_reopens_and_traces_exact_ids_"
+        "through_qml"
+    ),
     "test_release_evidence_records_verified_source_and_toolchain",
 )
 
@@ -601,9 +790,42 @@ def _copy_performance_evidence(root):
         "hardware.json",
         "software.json",
         "no-manual-trading.json",
-        "certification.json",
     ):
         copy2(source / name, target / name)
+    hardware_path = target / "hardware.json"
+    software_path = target / "software.json"
+    hardware = json.loads(hardware_path.read_text(encoding="utf-8"))
+    software = json.loads(software_path.read_text(encoding="utf-8"))
+    for report in (hardware, software):
+        report["integrated_v1_probe"] = (
+            _passing_real_v1_performance_probe()
+        )
+    hardware_path.write_text(
+        json.dumps(hardware),
+        encoding="utf-8",
+    )
+    software_path.write_text(
+        json.dumps(software),
+        encoding="utf-8",
+    )
+    safety = json.loads(
+        (target / "no-manual-trading.json").read_text(encoding="utf-8")
+    )
+    toolchain_digest = (
+        "sha256:"
+        + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
+    )
+    certification = certify_performance_evidence(
+        hardware,
+        software,
+        safety,
+        expected_source_commit=source_commit,
+        expected_toolchain_digest=toolchain_digest,
+    )
+    (target / "certification.json").write_text(
+        json.dumps(asdict(certification)),
+        encoding="utf-8",
+    )
     return source_commit, target
 
 
@@ -802,6 +1024,10 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "<VGpu>Enable</VGpu>" in script
     assert "<ReadOnly>true</ReadOnly>" in script
     assert "run_frontend_v2_clean_room.ps1" in script
+    assert "WidgetsPackageArchive" in script
+    assert "ExpectedWidgetsArchiveSha256" in script
+    assert "C:\\ReleaseInputWidgets" in script
+    assert "1200" in script
     assert "sandbox-exit-code.txt" in script
     assert "shutdown.exe /s /t 0" in script
     assert "Test-Path -LiteralPath $exitCodePath" in script
@@ -825,7 +1051,61 @@ def test_default_installed_entry_uses_the_production_app_context():
     ).read_text(encoding="utf-8")
 
     assert "DeterministicFake" not in source
+    assert "_ReleaseCandidateRuntimeQueries" not in source
+    assert "get_evidence_and_findings_snapshot" not in source
+    assert "create_file_backed_formal_v1_release_fixture" in source
+    assert "LiveStrategyDiagnosticsV1ApplicationAdapter" in source
     assert "from app.app_context import build_app_context" in source
     assert "from app.ui.main_window import MainWindow" in source
     assert "_UnavailableRuntimeQueries" not in source
     assert "window = QMainWindow()" not in source
+    assert source.index(
+        '"EventBridge",\n        bridge.stop,'
+    ) < source.index("    bridge.start()")
+
+
+def test_production_window_factory_closes_features_when_window_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from app import app_context
+    from app.ui import main_window
+    from stock_sim.release.frontend_v2_package_entry import (
+        _create_production_window,
+    )
+
+    class Resource:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    run_feature = Resource()
+    evidence_feature = Resource()
+
+    class Context:
+        run_monitoring_feature = run_feature
+        run_monitoring_context = object()
+        evidence_and_findings_feature = evidence_feature
+        evidence_and_findings_context = object()
+
+    monkeypatch.setattr(
+        app_context,
+        "build_app_context",
+        lambda **_kwargs: Context(),
+    )
+
+    def fail_window(**_kwargs):
+        raise RuntimeError("injected window failure")
+
+    monkeypatch.setattr(main_window, "MainWindow", fail_window)
+
+    with pytest.raises(RuntimeError, match="injected window failure"):
+        _create_production_window(
+            event_bridge=object(),
+            settings_path=tmp_path / "settings.json",
+        )
+
+    assert run_feature.closed is True
+    assert evidence_feature.closed is True

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier, Lock
+from time import sleep
 
 from sqlalchemy import create_engine, text
 
@@ -51,6 +54,49 @@ class _PayloadOverride:
 
     def sealed_payload(self):
         return self._payload
+
+
+def test_live_adapter_serializes_reads_across_feature_consumers(
+    monkeypatch,
+) -> None:
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(None, None)
+    barrier = Barrier(4)
+    active = 0
+    maximum_active = 0
+    counter_lock = Lock()
+    sentinel = object()
+
+    def tracked_read(_value):
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        sleep(0.05)
+        with counter_lock:
+            active -= 1
+        return sentinel
+
+    monkeypatch.setattr(adapter, "_resolve_journey", tracked_read)
+    monkeypatch.setattr(adapter, "_read_run", tracked_read)
+    monkeypatch.setattr(adapter, "_read_evidence", tracked_read)
+
+    def invoke(method):
+        barrier.wait()
+        return method(object())
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = (
+            executor.submit(invoke, adapter.resolve_journey),
+            executor.submit(invoke, adapter.read_run),
+            executor.submit(invoke, adapter.read_evidence),
+        )
+        barrier.wait()
+        assert tuple(future.result() for future in futures) == (
+            sentinel,
+            sentinel,
+            sentinel,
+        )
+    assert maximum_active == 1
 
 
 def _persist_formal_v1(database_path: Path, artifact_root: Path):

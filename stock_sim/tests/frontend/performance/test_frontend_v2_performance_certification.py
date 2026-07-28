@@ -28,6 +28,56 @@ TOOLCHAIN_DIGEST = f"sha256:{'b' * 64}"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _passing_real_v1_probe() -> dict[str, object]:
+    identities = {
+        "campaign_identity": "FDC-REAL-001",
+        "case_identity": "CASE-REAL-001",
+        "run_identity": "RUN-REAL-001",
+        "strategy_identity": "STRATEGY-REAL-001",
+        "approved_recipe_identity": "RECIPE-REAL-001",
+        "evidence_package_identity": "EVIDENCE-REAL-001",
+        "reproduction_manifest_identity": "RM-REAL-001",
+    }
+    return {
+        "schema_version": 1,
+        "production_path": [
+            "DiagnosticsApplication",
+            "FileBackedV1Persistence",
+            "LiveStrategyDiagnosticsV1ApplicationAdapter",
+        ],
+        "persistence_kind": "sqlite+json+parquet",
+        "persistence_reopened": True,
+        "application_read_model_interface": (
+            "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+        ),
+        **identities,
+        "artifact_hashes": [f"sha256:{'c' * 64}"],
+        "expected_identity_graph": sorted(
+            {*identities.values(), "METRIC-REAL-001"}
+        ),
+        "initial_read_counts": {
+            "resolve_journey": 1,
+            "read_run": 1,
+            "read_evidence": 1,
+        },
+        "measurement_read_counts": {
+            "resolve_journey": 3,
+            "read_run": 3,
+            "read_evidence": 3,
+        },
+        "measurement_samples_scheduled": 3,
+        "measurement_samples_completed": 3,
+        "measurement_window": {
+            "started_at": "2026-07-26T12:00:00+00:00",
+            "ended_at": "2026-07-26T12:01:00+00:00",
+        },
+        "fixture_closed": True,
+        "fixture_storage_removed": True,
+        "errors": [],
+        "clean_exit": True,
+    }
+
+
 def _sample_metric(
     *,
     p50_ms: float,
@@ -82,6 +132,7 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         "started_at": "2026-07-26T12:00:00+00:00",
         "ended_at": "2026-07-26T12:01:00+00:00",
         "duration_seconds": 60.0,
+        "integrated_v1_probe": _passing_real_v1_probe(),
         "machine": {
             "operating_system": "Windows 11",
             "operating_system_version": "10.0.26100",
@@ -446,6 +497,28 @@ def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
             "hardware measurement protocol does not match",
         ),
         (
+            lambda report: report.pop("integrated_v1_probe"),
+            "hardware real V1 probe schema version is invalid",
+        ),
+        (
+            lambda report: report["integrated_v1_probe"][
+                "measurement_read_counts"
+            ].update(read_evidence=1),
+            (
+                "hardware real V1 probe measurement typed read counts "
+                "do not prove 2 complete sample(s)"
+            ),
+        ),
+        (
+            lambda report: report["integrated_v1_probe"].update(
+                clean_exit=False
+            ),
+            (
+                "hardware real V1 probe did not close its worker and "
+                "persistence cleanly"
+            ),
+        ),
+        (
             lambda report: report["build"].update(qt="6.9.2"),
             "hardware measured build does not match the locked toolchain",
         ),
@@ -505,6 +578,36 @@ def test_certification_requires_two_independent_lanes_and_the_safety_gate():
         "hardware and software reports are not independent artifacts"
         in invalid.failures
     )
+
+    mismatched_workload = deepcopy(software)
+    mismatched_workload["integrated_v1_probe"][
+        "run_identity"
+    ] = "RUN-REAL-OTHER"
+    mismatched_workload["integrated_v1_probe"][
+        "expected_identity_graph"
+    ] = sorted(
+        (
+            set(
+                mismatched_workload["integrated_v1_probe"][
+                    "expected_identity_graph"
+                ]
+            )
+            - {"RUN-REAL-001"}
+        )
+        | {"RUN-REAL-OTHER"}
+    )
+    mismatched = certify_performance_evidence(
+        hardware,
+        mismatched_workload,
+        safety,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+    assert mismatched.status == "blocked"
+    assert (
+        "hardware and software real V1 probes do not identify the "
+        "same persisted workload"
+    ) in mismatched.failures
 
 
 def test_report_file_certification_retains_the_bound_aggregate(tmp_path):

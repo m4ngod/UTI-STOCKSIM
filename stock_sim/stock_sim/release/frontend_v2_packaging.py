@@ -43,7 +43,16 @@ _QML_IMPORT_PATTERN = re.compile(
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
     {
+        "_duckdb",
+        "app.features.live_strategy_diagnostics_v1_application",
+        "duckdb",
         "persistence.models_training",
+        "sqlalchemy.dialects.sqlite.pysqlite",
+        "stock_sim.release.strategy_diagnostics_v1_release_fixture",
+        "strategy_diagnostics.application",
+        "strategy_diagnostics.diagnostic_evidence_storage",
+        "strategy_diagnostics.market_paths",
+        "strategy_diagnostics.persistence",
     }
 )
 _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
@@ -57,6 +66,15 @@ _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
     "stock_sim.core.order",
     "stock_sim.services.order_service",
     "stock_sim.services.runtime_command_service",
+)
+_QML_FORBIDDEN_NETWORK_MODULE_PREFIXES = (
+    "aiohttp",
+    "app.services.redis_subscriber",
+    "httpx",
+    "redis",
+    "requests",
+    "urllib3",
+    "websockets",
 )
 _QML_NUITKA_EXCLUDED_MODULE_PREFIXES = (
     "app.controllers",
@@ -78,7 +96,6 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
     "app.event_bridge",
     "app.features",
     "app.i18n",
-    "app.services.redis_subscriber",
     "app.state",
     "app.ui.accessibility",
     "app.ui.docking",
@@ -88,7 +105,9 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
     "app.ui.ui_refresh",
 )
 _PRODUCTION_JOURNEY_PATH = (
-    "AppContext",
+    "DiagnosticsApplication",
+    "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1ApplicationAdapter",
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
@@ -96,17 +115,17 @@ _PRODUCTION_JOURNEY_PATH = (
 )
 _EXPECTED_CLEAN_ROOM_JOURNEY = (
     (
-        "launched_active_run",
+        "launched_terminal_run",
         "run_monitoring",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
     ),
     (
-        "active_evidence",
+        "terminal_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
@@ -114,7 +133,7 @@ _EXPECTED_CLEAN_ROOM_JOURNEY = (
     (
         "disconnected_run",
         "run_monitoring",
-        "active",
+        "terminal",
         "ready",
         "disconnected",
         "disconnected",
@@ -122,15 +141,31 @@ _EXPECTED_CLEAN_ROOM_JOURNEY = (
     (
         "disconnected_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "disconnected",
         "disconnected",
     ),
     (
-        "reconnected_run",
+        "reconnected_pending_run",
         "run_monitoring",
-        "active",
+        "terminal",
+        "ready",
+        "stale",
+        "stale",
+    ),
+    (
+        "reconnected_pending_evidence",
+        "evidence_and_findings",
+        "terminal",
+        "ready",
+        "stale",
+        "stale",
+    ),
+    (
+        "reconnected_terminal_run",
+        "run_monitoring",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
@@ -138,13 +173,13 @@ _EXPECTED_CLEAN_ROOM_JOURNEY = (
     (
         "reconnected_evidence",
         "evidence_and_findings",
-        "active",
+        "terminal",
         "ready",
         "fresh",
         "fresh",
     ),
     (
-        "completed_run",
+        "remounted_terminal_run",
         "run_monitoring",
         "terminal",
         "ready",
@@ -152,13 +187,36 @@ _EXPECTED_CLEAN_ROOM_JOURNEY = (
         "fresh",
     ),
     (
-        "completed_evidence",
+        "remounted_terminal_evidence",
         "evidence_and_findings",
         "terminal",
         "ready",
         "fresh",
         "fresh",
     ),
+)
+_EXPECTED_CONNECTION_TRANSITIONS = (
+    "connected",
+    "disconnected",
+    "reconnected",
+    "remounted",
+    "closed",
+)
+_EXPECTED_APPLICATION_READ_MODEL_INTERFACE = (
+    "StrategyDiagnosticsV1ApplicationReadModel/1.0"
+)
+_EXPECTED_ACTIVE_FEATURE_INTERFACES = (
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1",
+)
+_REAL_V1_IDENTITY_FIELDS = (
+    "campaign_identity",
+    "case_identity",
+    "run_identity",
+    "strategy_identity",
+    "approved_recipe_identity",
+    "evidence_package_identity",
+    "reproduction_manifest_identity",
 )
 
 
@@ -278,6 +336,30 @@ class RendererLaneEvidence:
     journey_stages: tuple[str, ...]
     routes_rendered: tuple[str, ...]
     production_path: tuple[str, ...]
+    campaign_identity: str
+    case_identity: str
+    run_identity: str
+    strategy_identity: str
+    approved_recipe_identity: str
+    evidence_package_identity: str
+    reproduction_manifest_identity: str
+    artifact_hashes: tuple[str, ...]
+    persistence_kind: str
+    persistence_reopened: bool
+    application_read_model_interface: str
+    active_feature_interfaces: tuple[str, ...]
+    campaign_status: str
+    run_status: str
+    evidence_status: str
+    expected_identity_graph: tuple[str, ...]
+    feature_identity_graph: tuple[str, ...]
+    qml_identity_graph_checkpoints: dict[str, tuple[str, ...]]
+    evidence_identity_sets: dict[str, tuple[str, ...]]
+    keyboard_navigation_verified: bool
+    accessibility_preferences_verified: bool
+    accessibility_announcements: tuple[str, ...]
+    old_generation_rejected: bool
+    authoritative_reconnect_verified: bool
     connection_transitions: tuple[str, ...]
     manual_trading_action_count: int
     read_only_context_visible: bool
@@ -309,6 +391,7 @@ class ReleaseBuildResult:
 class CleanRoomCertification:
     source_commit: str
     qml_archive_sha256: str
+    widgets_archive_sha256: str
     clean_room_report_sha256: str
     mandatory_release_gates_sha256: str
     operating_system: str
@@ -403,8 +486,8 @@ _REQUIRED_ACCESSIBILITY_TESTS = frozenset(
             "supported_lanes[hardware-Direct3D11]"
         ),
         (
-            "test_live_journey_certifies_keyboard_narrator_terminal_"
-            "and_remount"
+            "test_file_backed_formal_campaign_reopens_and_traces_exact_"
+            "ids_through_qml"
         ),
         (
             "test_release_evidence_records_verified_source_and_"
@@ -719,6 +802,18 @@ def create_package_build_plans(
         resolved_qml_dependencies=resolved_dependencies,
         extra_arguments=(
             f"--include-data-dir={PROJECT_QML_ROOT}=app/ui/qml",
+            (
+                "--include-module=stock_sim.release."
+                "strategy_diagnostics_v1_release_fixture"
+            ),
+            "--include-module=app.features.live_strategy_diagnostics_v1_application",
+            "--include-module=strategy_diagnostics.application",
+            "--include-module=strategy_diagnostics.persistence",
+            "--include-module=strategy_diagnostics.market_paths",
+            "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
+            "--include-module=sqlalchemy.dialects.sqlite.pysqlite",
+            "--include-package=duckdb",
+            "--include-module=_duckdb",
             *(
                 f"--nofollow-import-to={module_prefix}"
                 for module_prefix in _QML_NUITKA_EXCLUDED_MODULE_PREFIXES
@@ -1070,11 +1165,156 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
+def _real_v1_smoke_failures(
+    payload: Mapping[str, Any],
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    for field_name in _REAL_V1_IDENTITY_FIELDS:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            failures.append(
+                f"real V1 {field_name.replace('_', ' ')} is unavailable"
+            )
+    artifact_hashes = payload.get("artifact_hashes")
+    if (
+        not isinstance(artifact_hashes, (list, tuple))
+        or not artifact_hashes
+        or any(
+            not isinstance(value, str)
+            or _SHA256_DIGEST_PATTERN.fullmatch(value) is None
+            for value in artifact_hashes
+        )
+    ):
+        failures.append("real V1 artifact hashes are invalid")
+    if payload.get("persistence_kind") != "sqlite+json+parquet":
+        failures.append("real V1 persistence kind is invalid")
+    if payload.get("persistence_reopened") is not True:
+        failures.append("real V1 persistence was not reopened")
+    if (
+        payload.get("application_read_model_interface")
+        != _EXPECTED_APPLICATION_READ_MODEL_INTERFACE
+    ):
+        failures.append("real V1 Application read-model interface changed")
+    if tuple(payload.get("active_feature_interfaces", ())) != (
+        _EXPECTED_ACTIVE_FEATURE_INTERFACES
+    ):
+        failures.append("active Frontend V2 Feature Interfaces changed")
+    if payload.get("campaign_status") != "completed":
+        failures.append("Formal Diagnostic Campaign is not completed")
+    if payload.get("run_status") != "completed":
+        failures.append("selected real V1 Strategy Run is not completed")
+    if payload.get("evidence_status") != "sealed":
+        failures.append("real V1 Diagnostic Evidence is not sealed")
+    expected_graph = payload.get("expected_identity_graph")
+    feature_graph = payload.get("feature_identity_graph")
+    if (
+        not isinstance(expected_graph, (list, tuple))
+        or not expected_graph
+        or any(
+            not isinstance(identity, str) or not identity.strip()
+            for identity in expected_graph
+        )
+    ):
+        failures.append("real V1 expected identity graph is invalid")
+        expected_graph = ()
+    if tuple(feature_graph or ()) != tuple(expected_graph):
+        failures.append(
+            "typed Feature identity graph changed from the real V1 graph"
+        )
+    identity_sets = payload.get("evidence_identity_sets")
+    required_identity_sets = {
+        "candidates",
+        "metrics",
+        "comparisons",
+        "curves",
+        "breakpoints",
+        "findings",
+    }
+    if (
+        not isinstance(identity_sets, dict)
+        or set(identity_sets) != required_identity_sets
+        or any(
+            not isinstance(values, (list, tuple))
+            or any(
+                not isinstance(identity, str) or not identity.strip()
+                for identity in values
+            )
+            for values in identity_sets.values()
+        )
+        or any(
+            not identity_sets.get(name)
+            for name in required_identity_sets - {"breakpoints"}
+        )
+    ):
+        failures.append("real V1 evidence identity sets are invalid")
+    else:
+        flattened_identity_graph = {
+            str(payload[field_name])
+            for field_name in _REAL_V1_IDENTITY_FIELDS
+        } | {
+            str(identity)
+            for identities in identity_sets.values()
+            for identity in identities
+        }
+        if flattened_identity_graph != set(expected_graph):
+            failures.append(
+                "real V1 evidence identity sets do not form the expected graph"
+            )
+    checkpoints = payload.get("qml_identity_graph_checkpoints")
+    expected_stages = {
+        stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
+    }
+    if (
+        not isinstance(checkpoints, dict)
+        or set(checkpoints) != expected_stages
+        or any(
+            tuple(checkpoint) != tuple(expected_graph)
+            for checkpoint in checkpoints.values()
+            if isinstance(checkpoint, (list, tuple))
+        )
+        or any(
+            not isinstance(checkpoint, (list, tuple))
+            for checkpoint in checkpoints.values()
+        )
+    ):
+        failures.append(
+            "QML/QAccessible identity graph checkpoints are incomplete"
+        )
+    for field_name, label in (
+        ("keyboard_navigation_verified", "keyboard navigation"),
+        (
+            "accessibility_preferences_verified",
+            "200 percent/reduced-motion/high-contrast preferences",
+        ),
+        ("old_generation_rejected", "old EventBridge generation rejection"),
+        (
+            "authoritative_reconnect_verified",
+            "authoritative reconnect",
+        ),
+    ):
+        if payload.get(field_name) is not True:
+            failures.append(f"{label} was not verified")
+    announcements = payload.get("accessibility_announcements")
+    announcement_text = " ".join(
+        str(value) for value in announcements or ()
+    ).casefold()
+    if (
+        not isinstance(announcements, (list, tuple))
+        or "disconnected" not in announcement_text
+        or "fresh" not in announcement_text
+    ):
+        failures.append(
+            "accessible disconnect and fresh announcements are incomplete"
+        )
+    return tuple(failures)
+
+
 def verify_clean_room_report(
     report_path: Path,
     *,
     expected_source_commit: str,
     expected_archive_sha256: str,
+    expected_widgets_archive_sha256: str | None = None,
 ) -> tuple[str, ...]:
     payload: dict[str, Any] = json.loads(
         report_path.read_text(encoding="utf-8-sig")
@@ -1086,6 +1326,14 @@ def verify_clean_room_report(
         failures.append("Clean-room source commit does not match")
     if payload.get("archive_sha256") != expected_archive_sha256:
         failures.append("Clean-room archive checksum does not match")
+    if (
+        expected_widgets_archive_sha256 is not None
+        and payload.get("widgets_archive_sha256")
+        != expected_widgets_archive_sha256
+    ):
+        failures.append(
+            "Clean-room Widgets archive checksum does not match"
+        )
     if "windows 11" not in str(
         payload.get("operating_system", "")
     ).casefold():
@@ -1119,7 +1367,12 @@ def verify_clean_room_report(
     if payload.get("dependency_cache_paths") != []:
         failures.append("Dependency cache paths are present")
     if payload.get("install_succeeded") is not True:
-        failures.append("Package installation did not succeed")
+        failures.append("QML package installation did not succeed")
+    if (
+        expected_widgets_archive_sha256 is not None
+        and payload.get("widgets_install_succeeded") is not True
+    ):
+        failures.append("Widgets rollback installation did not succeed")
 
     lanes = payload.get("renderer_lanes")
     if not isinstance(lanes, dict):
@@ -1146,16 +1399,23 @@ def verify_clean_room_report(
             _PRODUCTION_JOURNEY_PATH
         ):
             failures.append(
-                f"{lane_name} renderer did not use the production "
-                "EventBridge path"
+                f"{lane_name} renderer did not use the real V1 "
+                "Application-to-Feature path"
             )
-        if lane.get("run_identity") != "RUN-RC-001":
-            failures.append(
-                f"{lane_name} renderer did not open the existing active run"
-            )
+        failures.extend(
+            f"{lane_name} renderer {failure}"
+            for failure in _real_v1_smoke_failures(lane)
+        )
         if lane.get("source_commit") != expected_source_commit:
             failures.append(
                 f"{lane_name} renderer source commit does not match"
+            )
+        if tuple(lane.get("connection_transitions", ())) != (
+            _EXPECTED_CONNECTION_TRANSITIONS
+        ):
+            failures.append(
+                f"{lane_name} renderer did not complete the connection, "
+                "remount, and close journey"
             )
         if tuple(lane.get("routes_rendered", ())) != (
             "run_monitoring",
@@ -1163,16 +1423,6 @@ def verify_clean_room_report(
         ):
             failures.append(
                 f"{lane_name} renderer did not render both Wave 1 routes"
-            )
-        if tuple(lane.get("connection_transitions", ())) != (
-            "connected",
-            "disconnected",
-            "reconnected",
-            "completed",
-        ):
-            failures.append(
-                f"{lane_name} renderer did not complete the connection "
-                "and terminal journey"
             )
         observations = lane.get("observations")
         observed_journey = (
@@ -1216,6 +1466,68 @@ def verify_clean_room_report(
             failures.append(f"{lane_name} renderer did not exit cleanly")
         if lane.get("errors"):
             failures.append(f"{lane_name} renderer reported errors")
+    hardware_lane = lanes.get("hardware")
+    software_lane = lanes.get("software")
+    if isinstance(hardware_lane, dict) and isinstance(
+        software_lane,
+        dict,
+    ):
+        for field_name in (
+            *_REAL_V1_IDENTITY_FIELDS,
+            "artifact_hashes",
+            "application_read_model_interface",
+            "active_feature_interfaces",
+            "expected_identity_graph",
+            "feature_identity_graph",
+            "evidence_identity_sets",
+            "keyboard_navigation_verified",
+            "accessibility_preferences_verified",
+            "old_generation_rejected",
+            "authoritative_reconnect_verified",
+        ):
+            if hardware_lane.get(field_name) != software_lane.get(
+                field_name
+            ):
+                failures.append(
+                    "Renderer lanes did not certify the same real V1 "
+                    f"{field_name.replace('_', ' ')}"
+                )
+    if expected_widgets_archive_sha256 is not None:
+        widgets = payload.get("widgets_rollback")
+        if not isinstance(widgets, dict):
+            failures.append("Widgets rollback smoke evidence is unavailable")
+        else:
+            if widgets.get("exit_code") != 0:
+                failures.append("Widgets rollback smoke failed")
+            if widgets.get("source_commit") != expected_source_commit:
+                failures.append(
+                    "Widgets rollback source commit does not match"
+                )
+            if widgets.get("mode") != "read-only":
+                failures.append("Widgets rollback is not read-only")
+            if widgets.get("manual_trading_action_count") != 0:
+                failures.append(
+                    "Widgets rollback exposed a manual trading action"
+                )
+            if widgets.get("real_panel_count", 0) < 3:
+                failures.append(
+                    "Widgets rollback did not mount its real read-only panels"
+                )
+            if widgets.get("placeholder_panels") not in ([], ()):
+                failures.append(
+                    "Widgets rollback retained placeholder panels"
+                )
+            opened = set(widgets.get("opened_panels", ()))
+            if not {"diagnostics", "market", "orders"}.issubset(opened):
+                failures.append(
+                    "Widgets rollback did not open all required panels"
+                )
+            if widgets.get("clean_exit") is not True:
+                failures.append(
+                    "Widgets rollback did not exit cleanly"
+                )
+            if widgets.get("errors"):
+                failures.append("Widgets rollback reported errors")
     return tuple(failures)
 
 
@@ -1303,14 +1615,12 @@ def _inspect_clean_room_screenshots(
     }
     route_state_groups = (
         (
-            "launched_active_run",
+            "launched_terminal_run",
             "disconnected_run",
-            "completed_run",
         ),
         (
-            "active_evidence",
+            "terminal_evidence",
             "disconnected_evidence",
-            "completed_evidence",
         ),
     )
     major_states_are_distinct = all(
@@ -1405,6 +1715,20 @@ def write_renderer_evidence(
         expected_graphics_api="Software",
         expected_source_commit=source_commit,
     )
+    for field_name in (
+        *_REAL_V1_IDENTITY_FIELDS,
+        "artifact_hashes",
+        "application_read_model_interface",
+        "active_feature_interfaces",
+    ):
+        if getattr(hardware, field_name) != getattr(
+            software,
+            field_name,
+        ):
+            raise RuntimeError(
+                "Renderer lanes did not certify the same real V1 "
+                f"{field_name.replace('_', ' ')}"
+            )
     lock = load_toolchain_lock()
     evidence = RendererGateEvidence(
         source_commit=source_commit,
@@ -1480,19 +1804,27 @@ def _load_renderer_lane(
     connection_transitions = tuple(
         payload.get("connection_transitions", ())
     )
+    real_v1_failures = _real_v1_smoke_failures(payload)
     if (
         routes_rendered
         != ("run_monitoring", "evidence_and_findings")
         or production_path != _PRODUCTION_JOURNEY_PATH
         or connection_transitions
-        != ("connected", "disconnected", "reconnected", "completed")
-        or payload.get("run_identity") != "RUN-RC-001"
+        != _EXPECTED_CONNECTION_TRANSITIONS
+        or real_v1_failures
         or payload.get("manual_trading_action_count") != 0
         or payload.get("read_only_context_visible") is not True
         or errors
         or payload.get("clean_exit") is not True
     ):
-        raise RuntimeError(f"{expected_lane} renderer smoke failed")
+        detail = (
+            ": " + "; ".join(real_v1_failures)
+            if real_v1_failures
+            else ""
+        )
+        raise RuntimeError(
+            f"{expected_lane} renderer smoke failed{detail}"
+        )
     return RendererLaneEvidence(
         lane=expected_lane,
         graphics_api=expected_graphics_api,
@@ -1501,6 +1833,58 @@ def _load_renderer_lane(
         ),
         routes_rendered=routes_rendered,
         production_path=production_path,
+        campaign_identity=str(payload["campaign_identity"]),
+        case_identity=str(payload["case_identity"]),
+        run_identity=str(payload["run_identity"]),
+        strategy_identity=str(payload["strategy_identity"]),
+        approved_recipe_identity=str(
+            payload["approved_recipe_identity"]
+        ),
+        evidence_package_identity=str(
+            payload["evidence_package_identity"]
+        ),
+        reproduction_manifest_identity=str(
+            payload["reproduction_manifest_identity"]
+        ),
+        artifact_hashes=tuple(
+            str(value) for value in payload["artifact_hashes"]
+        ),
+        persistence_kind=str(payload["persistence_kind"]),
+        persistence_reopened=True,
+        application_read_model_interface=str(
+            payload["application_read_model_interface"]
+        ),
+        active_feature_interfaces=tuple(
+            str(value)
+            for value in payload["active_feature_interfaces"]
+        ),
+        campaign_status=str(payload["campaign_status"]),
+        run_status=str(payload["run_status"]),
+        evidence_status=str(payload["evidence_status"]),
+        expected_identity_graph=tuple(
+            str(value) for value in payload["expected_identity_graph"]
+        ),
+        feature_identity_graph=tuple(
+            str(value) for value in payload["feature_identity_graph"]
+        ),
+        qml_identity_graph_checkpoints={
+            str(stage): tuple(str(value) for value in values)
+            for stage, values in payload[
+                "qml_identity_graph_checkpoints"
+            ].items()
+        },
+        evidence_identity_sets={
+            str(name): tuple(str(value) for value in values)
+            for name, values in payload["evidence_identity_sets"].items()
+        },
+        keyboard_navigation_verified=True,
+        accessibility_preferences_verified=True,
+        accessibility_announcements=tuple(
+            str(value)
+            for value in payload["accessibility_announcements"]
+        ),
+        old_generation_rejected=True,
+        authoritative_reconnect_verified=True,
         connection_transitions=connection_transitions,
         manual_trading_action_count=0,
         read_only_context_visible=True,
@@ -1525,6 +1909,14 @@ def audit_nuitka_dependency_report(
         for element in root.findall(".//module")
         if element.attrib.get("name")
     )
+    if package_kind is PackageKind.QML_JOURNEY:
+        observed_modules = {name.casefold() for name in module_names}
+        for module_name in sorted(_REQUIRED_PROJECT_DEPENDENCY_MODULES):
+            if module_name.casefold() not in observed_modules:
+                findings.append(
+                    "Required real V1 module is absent from the QML "
+                    f"dependency closure: {module_name}"
+                )
     for usage in root.findall(".//module_usage"):
         module_name = usage.attrib.get("name", "")
         if (
@@ -1555,6 +1947,17 @@ def audit_nuitka_dependency_report(
                     "Forbidden non-V2 application module in dependency graph: "
                     f"{module_name}"
                 )
+        if (
+            package_kind is PackageKind.QML_JOURNEY
+            and any(
+                folded == prefix or folded.startswith(prefix + ".")
+                for prefix in _QML_FORBIDDEN_NETWORK_MODULE_PREFIXES
+            )
+        ):
+            findings.append(
+                "Forbidden network module in QML dependency graph: "
+                f"{module_name}"
+            )
         if (
             package_kind is PackageKind.QML_JOURNEY
             and any(
@@ -2010,10 +2413,14 @@ def certify_frontend_v2_release(
             "Release candidate must retain exactly one Widgets archive"
         )
     qml_archive_sha256 = str(qml_archives[0].get("sha256", ""))
+    widgets_archive_sha256 = str(
+        widgets_archives[0].get("sha256", "")
+    )
     failures = verify_clean_room_report(
         clean_room_report,
         expected_source_commit=source_commit,
         expected_archive_sha256=qml_archive_sha256,
+        expected_widgets_archive_sha256=widgets_archive_sha256,
     )
     if failures:
         raise RuntimeError(
@@ -2050,6 +2457,7 @@ def certify_frontend_v2_release(
     certification = CleanRoomCertification(
         source_commit=source_commit,
         qml_archive_sha256=qml_archive_sha256,
+        widgets_archive_sha256=widgets_archive_sha256,
         clean_room_report_sha256=report_checksum.sha256,
         mandatory_release_gates_sha256=mandatory_gates_sha256,
         operating_system=str(report_payload["operating_system"]),

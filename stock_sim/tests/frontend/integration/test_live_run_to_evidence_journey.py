@@ -1129,6 +1129,13 @@ def test_real_persisted_run_advances_running_to_completed_at_feature_seam(
     host.show()
     _settle(app)
     root = host.rootObject()
+    assert host.errors() == []
+    freshness_status = root.findChild(
+        QObject,
+        "evidenceRouteFreshnessStatus",
+    )
+    assert freshness_status is not None
+    assert freshness_status.property("visible") is False
     assert running.run_id in _visible_text(root)
 
     completed = application.complete_strategy_run(running.run_id)

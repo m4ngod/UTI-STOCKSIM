@@ -324,6 +324,55 @@ Rectangle {
                     }
                 }
 
+                Rectangle {
+                    id: evidenceRouteFreshnessStatus
+                    objectName: "evidenceRouteFreshnessStatus"
+                    visible: workspace.evidenceAvailable
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: Math.max(
+                        32,
+                        tokens.labelSize + tokens.spaceSm * 2
+                    )
+                    radius: tokens.radiusSm
+                    color: tokens.surface
+                    border.color: (
+                        workspace.evidenceAvailable
+                        && evidenceAndFindings.freshness === "fresh"
+                    )
+                        ? tokens.accent
+                        : tokens.focus
+                    Accessible.role: Accessible.StatusBar
+                    Accessible.name: "Evidence freshness "
+                        + (workspace.evidenceAvailable
+                            ? evidenceAndFindings.freshness
+                            : "unavailable")
+                    Accessible.description: workspace.evidenceAvailable
+                        ? evidenceAndFindings.statusText
+                        : "Evidence and Findings is unavailable"
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: tokens.spaceMd
+                        anchors.rightMargin: tokens.spaceSm
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Evidence · "
+                            + (workspace.evidenceAvailable
+                                ? evidenceAndFindings.freshness
+                                : "unavailable")
+                        color: (
+                            workspace.evidenceAvailable
+                            && evidenceAndFindings.freshness === "fresh"
+                        )
+                            ? tokens.accent
+                            : tokens.textPrimary
+                        font.pixelSize: tokens.labelSize
+                        font.bold: true
+                        wrapMode: Text.WrapAnywhere
+                    }
+                }
+
                 Item {
                     Layout.fillHeight: true
                 }
