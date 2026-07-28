@@ -1318,6 +1318,28 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
     assert audit_frontend_v2_surface() == ()
 
 
+def test_dependency_audit_accepts_nuitka_utf8_alias_with_non_ascii_path(
+    tmp_path,
+):
+    report = tmp_path / "nuitka-utf8-alias.xml"
+    report.write_bytes(
+        (
+            "<?xml version='1.0' encoding='utf8'?>\n"
+            '<nuitka-compilation-report mode="standalone" '
+            'completion="yes">\n'
+            "  <python><search_path>"
+            '<path value="T:\\文档\\release-input" />'
+            "</search_path></python>\n"
+            "</nuitka-compilation-report>\n"
+        ).encode("utf-8")
+    )
+
+    assert audit_nuitka_dependency_report(
+        report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    ) == ()
+
+
 def test_qml_dependency_audit_allows_production_main_window_host_only(
     tmp_path,
 ):

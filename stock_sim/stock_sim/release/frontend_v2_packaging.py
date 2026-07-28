@@ -1898,7 +1898,7 @@ def audit_nuitka_dependency_report(
     *,
     package_kind: PackageKind,
 ) -> tuple[str, ...]:
-    root = ET.parse(report_path).getroot()
+    root = _parse_nuitka_dependency_report(report_path)
     findings = []
     if root.attrib.get("mode") != "standalone":
         findings.append("Nuitka report is not a standalone build")
@@ -1997,6 +1997,19 @@ def audit_nuitka_dependency_report(
                     f"Forbidden web payload in Nuitka report: {value}"
                 )
     return tuple(dict.fromkeys(findings))
+
+
+def _parse_nuitka_dependency_report(report_path: Path) -> ET.Element:
+    payload = report_path.read_bytes()
+    declaration = payload[:128]
+    for alias, standard in (
+        (b"encoding='utf8'", b"encoding='utf-8'"),
+        (b'encoding="utf8"', b'encoding="utf-8"'),
+    ):
+        if alias in declaration:
+            payload = payload.replace(alias, standard, 1)
+            break
+    return ET.fromstring(payload)
 
 
 def audit_frontend_v2_surface(
