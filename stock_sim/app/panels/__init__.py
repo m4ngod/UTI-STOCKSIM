@@ -9,7 +9,6 @@
 - 为 MainWindow （后续）提供基础名称集合
 """
 from __future__ import annotations
-from app.app_context import get_app_context
 from .registry import (
     register_panel,
     get_panel,
@@ -64,13 +63,18 @@ def register_ui_adapters(
     read_only: bool = False,
     diagnostics_engine=None,
     diagnostics_application_factory=None,
+    context=None,
 ):
     """
     将占位面板替换为“逻辑面板 + Qt 适配器”实例。
     - 若缺少依赖/GUI 不可用，静默忽略，保留占位面板。
     - 仅在首次启动时调用一次（建议在 run_frontend 预加载前）。
     """
-    ctx = get_app_context()
+    if context is None:
+        from app.app_context import get_app_context
+
+        context = get_app_context()
+    ctx = context
     # diagnostics
     try:
         from app.panels.diagnostics.panel import DiagnosticsPanel as _DiagnosticsLogic

@@ -15,7 +15,11 @@ from math import ceil
 from time import perf_counter_ns
 from typing import Any, Mapping, Sequence
 
-from .frontend_v2_packaging import TOOLCHAIN_LOCK_PATH, load_toolchain_lock
+from .frontend_v2_packaging import (
+    REAL_V1_IDENTITY_FIELDS,
+    TOOLCHAIN_LOCK_PATH,
+    load_toolchain_lock,
+)
 from .no_manual_trading_gate import (
     audit_no_manual_trading_gate,
     verify_safety_gate_payload,
@@ -654,16 +658,9 @@ def _validate_real_v1_performance_probe(
     ):
         fail("typed Application interface does not match")
 
-    identity_names = (
-        "campaign_identity",
-        "case_identity",
-        "run_identity",
-        "strategy_identity",
-        "approved_recipe_identity",
-        "evidence_package_identity",
-        "reproduction_manifest_identity",
+    identities = tuple(
+        probe.get(name) for name in REAL_V1_IDENTITY_FIELDS
     )
-    identities = tuple(probe.get(name) for name in identity_names)
     if any(
         not isinstance(identity, str) or not identity
         for identity in identities
@@ -672,7 +669,7 @@ def _validate_real_v1_performance_probe(
     identity_graph = probe.get("expected_identity_graph")
     if (
         not isinstance(identity_graph, list)
-        or len(identity_graph) <= len(identity_names)
+        or len(identity_graph) <= len(REAL_V1_IDENTITY_FIELDS)
         or identity_graph != sorted(set(identity_graph))
         or not set(identities).issubset(identity_graph)
     ):
@@ -781,15 +778,7 @@ def _real_v1_workload_identity(value: Any) -> tuple[Any, ...]:
         probe.get("application_read_model_interface"),
         *(
             probe.get(name)
-            for name in (
-                "campaign_identity",
-                "case_identity",
-                "run_identity",
-                "strategy_identity",
-                "approved_recipe_identity",
-                "evidence_package_identity",
-                "reproduction_manifest_identity",
-            )
+            for name in REAL_V1_IDENTITY_FIELDS
         ),
         probe.get("artifact_hashes"),
         probe.get("expected_identity_graph"),

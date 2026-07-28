@@ -30,6 +30,7 @@ from app.features import (
     StrategyUnderTestId,
     V1JourneySelector,
 )
+from app.legacy_panel_context import build_legacy_panel_context
 from app.state.settings_store import SettingsStore
 
 if TYPE_CHECKING:
@@ -127,73 +128,26 @@ def build_app_context(
         arena_experiment_runner = None
     else:
         _start_market_persistence_services()
-        from app.controllers.account_controller import AccountController
-        from app.controllers.agent_controller import AgentController
-        from app.controllers.clock_controller import ClockController
-        from app.controllers.leaderboard_controller import (
-            LeaderboardController,
-        )
-        from app.controllers.market_controller import MarketController
-        from app.services.account_service import AccountService
-        from app.services.agent_service import AgentService
-        from app.services.arena_experiment_runner import (
-            ArenaExperimentRunner,
-        )
-        from app.services.clock_service import ClockService
-        from app.services.leaderboard_service import LeaderboardService
-        from app.services.market_data_service import MarketDataService
-        from app.services.rollback_service import RollbackService
-        from app.services.training_arena_service import TrainingArenaService
-
-        market_data_service = MarketDataService(
-            enable_runtime_holdings=True,
-            allow_synthetic_fallback=False,
+        legacy_context = build_legacy_panel_context(
+            settings_store=settings_store,
             runtime_gateway=runtime_gateway,
+            include_trading=not legacy_read_only,
         )
-        market_controller = MarketController(
-            market_data_service,
-            runtime_gateway=runtime_gateway,
-        )
-        account_service = AccountService(
-            allow_synthetic_fallback=False,
-            runtime_gateway=runtime_gateway,
-        )
-        account_controller = AccountController(account_service)
-        if legacy_read_only:
-            trading_service = None
-            trading_controller = None
-        else:
-            from app.controllers.trading_controller import (
-                TradingController,
-            )
-            from app.services.trading_service import TradingService
-
-            trading_service = TradingService(runtime_gateway=runtime_gateway)
-            trading_controller = TradingController(trading_service)
-        agent_service = AgentService(runtime_gateway=runtime_gateway)
-        agent_controller = AgentController(agent_service)
-        clock_service = ClockService(runtime_gateway=runtime_gateway)
-        rollback_service = RollbackService(
-            clock_service,
-            account_service=account_service,
-            agent_service=agent_service,
-        )
-        clock_controller = ClockController(
-            clock_service,
-            rollback_service,
-        )
-        leaderboard_service = LeaderboardService(
-            use_runtime=True,
-            runtime_gateway=runtime_gateway,
-        )
-        leaderboard_controller = LeaderboardController(leaderboard_service)
-        training_arena_service = TrainingArenaService(agent_service=agent_service)
-        arena_experiment_runner = ArenaExperimentRunner(
-            arena_service=training_arena_service,
-            clock_service=clock_service,
-            agent_service=agent_service,
-            runtime_gateway=runtime_gateway,
-        )
+        market_data_service = legacy_context.market_data_service
+        market_controller = legacy_context.market_controller
+        account_service = legacy_context.account_service
+        account_controller = legacy_context.account_controller
+        trading_service = legacy_context.trading_service
+        trading_controller = legacy_context.trading_controller
+        agent_service = legacy_context.agent_service
+        agent_controller = legacy_context.agent_controller
+        clock_service = legacy_context.clock_service
+        rollback_service = legacy_context.rollback_service
+        clock_controller = legacy_context.clock_controller
+        leaderboard_service = legacy_context.leaderboard_service
+        leaderboard_controller = legacy_context.leaderboard_controller
+        training_arena_service = legacy_context.training_arena_service
+        arena_experiment_runner = legacy_context.arena_experiment_runner
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
     if resolved_mode == "fake":

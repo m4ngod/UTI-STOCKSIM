@@ -78,6 +78,7 @@ from app.features import (
 from app.ui.journey_workspace import JourneyWorkspaceHost
 
 from .frontend_v2_packaging import (
+    REAL_V1_IDENTITY_FIELDS,
     TOOLCHAIN_LOCK_PATH,
     running_toolchain,
 )
@@ -655,6 +656,11 @@ class _RealV1PerformanceProbe:
                 fixture.selected_manifest.manifest_id
             ),
         }
+        if tuple(self._identity) != REAL_V1_IDENTITY_FIELDS:
+            raise RuntimeError(
+                "Real V1 probe identity fields do not match the release "
+                "contract"
+            )
         interface_version = self._adapter.interface_version
         self._application_interface = (
             "StrategyDiagnosticsV1ApplicationReadModel/"

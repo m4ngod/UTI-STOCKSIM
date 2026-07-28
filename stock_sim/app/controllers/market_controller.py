@@ -20,7 +20,6 @@ from threading import RLock
 import time
 
 from app.core_dto.snapshot import SnapshotDTO
-from app.event_bridge import publish_instrument_created
 from app.services.market_data_service import MarketDataService, Timeframe
 from app.indicators.executor import indicator_executor
 from observability.metrics import metrics
@@ -34,6 +33,15 @@ __all__ = ["MarketController"]
 
 IndicatorCallback = Callable[[Any, Any], None]  # (result, meta)
 _DETAIL_SNAPSHOT_STALE_MS = 15_000
+
+
+def _publish_instrument_created(payload: dict[str, Any]) -> None:
+    try:
+        from app.event_bridge import publish_instrument_created
+    except ImportError:
+        return
+    publish_instrument_created(payload)
+
 
 class MarketController:
     def __init__(self, service: MarketDataService, runtime_gateway: RuntimeGateway | None = None):
@@ -320,7 +328,7 @@ class MarketController:
         # Runtime instrument creation and IPO bootstrap now route through RuntimeGateway.
         # 事件广播（统一为 instrument-created）
         try:
-            publish_instrument_created(payload)
+            _publish_instrument_created(payload)
         except Exception as e:
             # 广播失败不影响创建返回，但记录日志
             logger.log("instrument.broadcast_failed", topic="instrument-created", name=name, symbol=symbol, error=str(e))

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -592,6 +593,34 @@ def test_qml_build_plan_keeps_app_context_but_excludes_transaction_namespaces(
         "stock_sim.core.order",
         "stock_sim.services.order_service",
         "stock_sim.services.runtime_command_service",
+    } <= excluded
+
+
+def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
+    tmp_path,
+):
+    widgets_plan = create_package_build_plans(
+        output_root=tmp_path,
+        source_commit="abc123",
+    )[0]
+
+    excluded = {
+        argument.removeprefix("--nofollow-import-to=")
+        for argument in widgets_plan.nuitka_command
+        if argument.startswith("--nofollow-import-to=")
+    }
+
+    assert {
+        "app.app_context",
+        "app.event_bridge",
+        "app.features",
+        "app.services.redis_subscriber",
+        "aiohttp",
+        "httpx",
+        "redis",
+        "requests",
+        "urllib3",
+        "websockets",
     } <= excluded
 
 
@@ -1485,6 +1514,38 @@ def test_widgets_dependency_audit_allows_read_only_trade_context_only(
     )
 
 
+def test_widgets_dependency_audit_rejects_new_v1_seam_and_network_stack(
+    tmp_path,
+):
+    report = tmp_path / "widgets-coupled.xml"
+    report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="app.app_context" />
+          <module name="app.event_bridge" />
+          <module name="app.features.live_strategy_diagnostics_v1_application" />
+          <module name="redis.client" />
+          <module name="requests.sessions" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+
+    findings = audit_nuitka_dependency_report(
+        report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    )
+
+    for module_name in (
+        "app.app_context",
+        "app.event_bridge",
+        "app.features.live_strategy_diagnostics_v1_application",
+        "redis.client",
+        "requests.sessions",
+    ):
+        assert any(module_name in finding for finding in findings)
+
+
 def test_dependency_audit_rejects_missing_project_modules_only(tmp_path):
     report = tmp_path / "missing-project-module.xml"
     report.write_text(
@@ -1536,8 +1597,80 @@ def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
     assert "register_ui_adapters" in rollback_source
     assert "rollback_read_only=True" in rollback_source
     assert "layout_store=layout_store" in rollback_source
+    assert "from app.app_context" not in rollback_source
+    assert "from app.event_bridge" not in rollback_source
+    assert (
+        "from app.legacy_panel_context import build_legacy_panel_context"
+        in rollback_source
+    )
+    app_context_source = (
+        PROJECT_ROOT / "app" / "app_context.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        "from app.legacy_panel_context import build_legacy_panel_context"
+        in app_context_source
+    )
     assert "QMainWindow()" not in rollback_source
     assert "QLabel(" not in rollback_source
+
+
+def test_widgets_rollback_smoke_needs_no_frontend_v2_seam_modules(
+    tmp_path,
+):
+    script = r"""
+import importlib.abc
+import sys
+
+blocked = ("app.app_context", "app.event_bridge", "app.features")
+
+class BlockedFrontendV2Seam(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(
+            fullname == prefix or fullname.startswith(prefix + ".")
+            for prefix in blocked
+        ):
+            raise ModuleNotFoundError(fullname)
+        return None
+
+sys.meta_path.insert(0, BlockedFrontendV2Seam())
+
+from stock_sim.release.frontend_widgets_rollback_entry import main
+
+raise SystemExit(
+    main(
+        [
+            "--source-commit",
+            "abc123",
+            "--smoke-report-dir",
+            sys.argv[1],
+        ]
+    )
+)
+"""
+    environment = os.environ.copy()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment["STOCKSIM_ENABLE_REAL_UI"] = "1"
+    report_dir = tmp_path / "widgets-no-seam"
+
+    completed = subprocess.run(
+        (sys.executable, "-c", script, str(report_dir)),
+        cwd=PROJECT_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(
+        (report_dir / "smoke-report.json").read_text(encoding="utf-8")
+    )
+    assert report["placeholder_panels"] == []
+    assert report["real_panel_count"] == 8
+    assert report["manual_trading_action_count"] == 0
+    assert report["clean_exit"] is True
 
 
 def test_widgets_rollback_smoke_records_the_source_commit(

@@ -67,7 +67,7 @@ _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
     "stock_sim.services.order_service",
     "stock_sim.services.runtime_command_service",
 )
-_QML_FORBIDDEN_NETWORK_MODULE_PREFIXES = (
+_FORBIDDEN_NETWORK_MODULE_PREFIXES = (
     "aiohttp",
     "app.services.redis_subscriber",
     "httpx",
@@ -75,6 +75,11 @@ _QML_FORBIDDEN_NETWORK_MODULE_PREFIXES = (
     "requests",
     "urllib3",
     "websockets",
+)
+_WIDGETS_FORBIDDEN_SEAM_MODULE_PREFIXES = (
+    "app.app_context",
+    "app.event_bridge",
+    "app.features",
 )
 _QML_NUITKA_EXCLUDED_MODULE_PREFIXES = (
     "app.controllers",
@@ -209,7 +214,7 @@ _EXPECTED_ACTIVE_FEATURE_INTERFACES = (
     "RunMonitoringFeature/1.2",
     "EvidenceAndFindingsFeature/1.1",
 )
-_REAL_V1_IDENTITY_FIELDS = (
+REAL_V1_IDENTITY_FIELDS = (
     "campaign_identity",
     "case_identity",
     "run_identity",
@@ -778,6 +783,13 @@ def create_package_build_plans(
         source_imports=None,
         resolved_qml_dependencies=None,
         extra_arguments=(
+            *(
+                f"--nofollow-import-to={module_prefix}"
+                for module_prefix in (
+                    *_WIDGETS_FORBIDDEN_SEAM_MODULE_PREFIXES,
+                    *_FORBIDDEN_NETWORK_MODULE_PREFIXES,
+                )
+            ),
             "--nofollow-import-to=app.runtime_gateway",
             "--nofollow-import-to=app.ui.journey_workspace",
             "--nofollow-import-to=app.ui.ui_refresh",
@@ -1169,7 +1181,7 @@ def _real_v1_smoke_failures(
     payload: Mapping[str, Any],
 ) -> tuple[str, ...]:
     failures: list[str] = []
-    for field_name in _REAL_V1_IDENTITY_FIELDS:
+    for field_name in REAL_V1_IDENTITY_FIELDS:
         value = payload.get(field_name)
         if not isinstance(value, str) or not value.strip():
             failures.append(
@@ -1250,7 +1262,7 @@ def _real_v1_smoke_failures(
     else:
         flattened_identity_graph = {
             str(payload[field_name])
-            for field_name in _REAL_V1_IDENTITY_FIELDS
+            for field_name in REAL_V1_IDENTITY_FIELDS
         } | {
             str(identity)
             for identities in identity_sets.values()
@@ -1473,7 +1485,7 @@ def verify_clean_room_report(
         dict,
     ):
         for field_name in (
-            *_REAL_V1_IDENTITY_FIELDS,
+            *REAL_V1_IDENTITY_FIELDS,
             "artifact_hashes",
             "application_read_model_interface",
             "active_feature_interfaces",
@@ -1716,7 +1728,7 @@ def write_renderer_evidence(
         expected_source_commit=source_commit,
     )
     for field_name in (
-        *_REAL_V1_IDENTITY_FIELDS,
+        *REAL_V1_IDENTITY_FIELDS,
         "artifact_hashes",
         "application_read_model_interface",
         "active_feature_interfaces",
@@ -1947,15 +1959,12 @@ def audit_nuitka_dependency_report(
                     "Forbidden non-V2 application module in dependency graph: "
                     f"{module_name}"
                 )
-        if (
-            package_kind is PackageKind.QML_JOURNEY
-            and any(
-                folded == prefix or folded.startswith(prefix + ".")
-                for prefix in _QML_FORBIDDEN_NETWORK_MODULE_PREFIXES
-            )
+        if any(
+            folded == prefix or folded.startswith(prefix + ".")
+            for prefix in _FORBIDDEN_NETWORK_MODULE_PREFIXES
         ):
             findings.append(
-                "Forbidden network module in QML dependency graph: "
+                "Forbidden network module in dependency graph: "
                 f"{module_name}"
             )
         if (
@@ -1968,6 +1977,17 @@ def audit_nuitka_dependency_report(
             findings.append(
                 "Forbidden backend transaction module in QML dependency "
                 f"graph: {module_name}"
+            )
+        if (
+            package_kind is PackageKind.WIDGETS_ROLLBACK
+            and any(
+                folded == prefix or folded.startswith(prefix + ".")
+                for prefix in _WIDGETS_FORBIDDEN_SEAM_MODULE_PREFIXES
+            )
+        ):
+            findings.append(
+                "Rollback baseline is coupled to the Frontend V2/V1 Seam: "
+                f"{module_name}"
             )
         if package_kind is PackageKind.WIDGETS_ROLLBACK and folded.startswith(
             (

@@ -8,6 +8,9 @@ import subprocess
 import pytest
 
 from stock_sim.release import frontend_v2_performance
+from stock_sim.release.frontend_v2_packaging import (
+    REAL_V1_IDENTITY_FIELDS,
+)
 from stock_sim.release.no_manual_trading_gate import (
     audit_python_imports,
     audit_python_text,
@@ -643,6 +646,40 @@ def test_certification_requires_two_independent_lanes_and_the_safety_gate():
         "hardware and software real V1 probes do not identify the "
         "same persisted workload"
     ) in mismatched.failures
+
+
+@pytest.mark.parametrize("identity_field", REAL_V1_IDENTITY_FIELDS)
+def test_performance_certification_blocks_every_real_v1_identity_drift(
+    identity_field,
+):
+    hardware = _passing_lane_report("hardware")
+    software = _passing_lane_report("software")
+    safety = _passing_safety_report()
+    probe = software["integrated_v1_probe"]
+    original_identity = probe[identity_field]
+    drifted_identity = f"{original_identity}-OTHER"
+    probe[identity_field] = drifted_identity
+    probe["expected_identity_graph"] = sorted(
+        (
+            set(probe["expected_identity_graph"])
+            - {original_identity}
+        )
+        | {drifted_identity}
+    )
+
+    certification = certify_performance_evidence(
+        hardware,
+        software,
+        safety,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert (
+        "hardware and software real V1 probes do not identify the "
+        "same persisted workload"
+    ) in certification.failures
 
 
 def test_report_file_certification_retains_the_bound_aggregate(tmp_path):

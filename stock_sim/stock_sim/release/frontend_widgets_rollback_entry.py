@@ -68,8 +68,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         QApplication,
     )
 
-    from app.app_context import reset_app_context
-    from app.event_bridge import EventBridge
     from app.panels import (
         get_panel,
         list_panels,
@@ -77,23 +75,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         register_ui_adapters,
         reset_registry,
     )
+    from app.diagnostics_runtime_gateway import DiagnosticsRuntimeGateway
+    from app.legacy_panel_context import build_legacy_panel_context
+    from app.state.settings_store import SettingsStore
     from app.ui.main_window import MainWindow
 
     os.environ.pop("STOCKSIM_FRONTEND_V2", None)
     app = QApplication.instance() or QApplication([])
     layout_path = _layout_path(arguments.smoke_report_dir)
     layout_path.parent.mkdir(parents=True, exist_ok=True)
-    bridge = EventBridge(subscribe_backend=False)
-    bridge.mark_disconnected()
-    context = reset_app_context(
-        settings_path=str(layout_path.with_name("frontend-settings.json")),
-        run_monitoring_mode="live",
-        event_bridge=bridge,
-        legacy_read_only=True,
+    context = build_legacy_panel_context(
+        settings_store=SettingsStore(
+            path=str(layout_path.with_name("frontend-settings.json")),
+            auto_save=False,
+        ),
+        runtime_gateway=DiagnosticsRuntimeGateway(),
+        include_trading=False,
     )
     reset_registry()
     register_builtin_panels()
-    register_ui_adapters(read_only=True)
+    register_ui_adapters(read_only=True, context=context)
     layout_store = ReadOnlyLayoutStore(layout_path)
     window = MainWindow(
         frontend_v2_enabled=False,
@@ -155,9 +156,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         encoding="utf-8",
     )
     window.close()
-    context.run_monitoring_feature.close()
-    context.evidence_and_findings_feature.close()
-    bridge.stop()
     app.processEvents()
     return 0
 

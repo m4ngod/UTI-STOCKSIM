@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.app_context import get_app_context
 from infra.event_bus import event_bus
 
 from .base_adapter import PanelAdapter
@@ -254,6 +253,8 @@ class AccountPanelAdapter(PanelAdapter):
 
     def _discover_runtime_accounts(self) -> List[str]:
         try:
+            from app.app_context import get_app_context
+
             return get_app_context().runtime_gateway.list_account_ids()
         except Exception:
             return []

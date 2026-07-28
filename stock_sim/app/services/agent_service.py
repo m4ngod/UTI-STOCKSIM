@@ -22,7 +22,6 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional
 
 from app.core_dto.agent import AgentMetaDTO
-from app.event_bridge import publish_account_created, publish_agent_status_changed
 from infra.event_bus import event_bus
 from observability.metrics import metrics
 
@@ -56,6 +55,22 @@ except Exception:  # pragma: no cover
 ActionType = Literal["start", "pause", "stop"]
 BATCH_ALLOWED_TYPES = {"Retail", "MultiStrategyRetail"}
 DEFAULT_MODEL_INITIAL_CASH = 50_000_000.0
+
+
+def _publish_account_created(payload: dict[str, Any]) -> None:
+    try:
+        from app.event_bridge import publish_account_created
+    except ImportError:
+        return
+    publish_account_created(payload)
+
+
+def _publish_agent_status_changed(payload: dict[str, Any]) -> None:
+    try:
+        from app.event_bridge import publish_agent_status_changed
+    except ImportError:
+        return
+    publish_agent_status_changed(payload)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -479,7 +494,12 @@ class AgentService:
                     pass
         for account_id in pending_account_bootstrap:
             try:
-                publish_account_created({"account_id": account_id, "initial_cash": initial_cash})
+                _publish_account_created(
+                    {
+                        "account_id": account_id,
+                        "initial_cash": initial_cash,
+                    }
+                )
             except Exception:
                 pass
 
@@ -533,7 +553,12 @@ class AgentService:
             self._agents[agent_id] = meta
         try:
             self._account_bootstrapper(agent_id, float(initial_cash))
-            publish_account_created({"account_id": agent_id, "initial_cash": float(initial_cash)})
+            _publish_account_created(
+                {
+                    "account_id": agent_id,
+                    "initial_cash": float(initial_cash),
+                }
+            )
         except Exception:
             pass
         self._persist_runtime_agent_meta(
@@ -952,7 +977,7 @@ class AgentService:
                 }
         if payload is not None:
             try:
-                publish_agent_status_changed(payload)
+                _publish_agent_status_changed(payload)
             except Exception:
                 pass
         if persist and persist_state:

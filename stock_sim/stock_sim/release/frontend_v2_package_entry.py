@@ -808,7 +808,6 @@ def _run_smoke_journey(
         context: Any,
         window: Any,
         host: Any,
-        label: str,
     ) -> Callable[[], None]:
         state = {"closed": False}
 
@@ -842,7 +841,6 @@ def _run_smoke_journey(
         context=context,
         window=window,
         host=host,
-        label="initial Journey Workspace mount",
     )
     window.setObjectName("frontendV2PackageWindow")
     window.resize(1280, 720)
@@ -1037,7 +1035,6 @@ def _run_smoke_journey(
         context=context,
         window=window,
         host=host,
-        label="remounted Journey Workspace",
     )
     window.setObjectName("frontendV2PackageRemountWindow")
     window.resize(1280, 720)
