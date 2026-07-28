@@ -785,6 +785,8 @@ def create_package_build_plans(
         source_imports=None,
         resolved_qml_dependencies=None,
         extra_arguments=(
+            "--include-package=psycopg",
+            "--include-package=psycopg_binary",
             *(
                 f"--nofollow-import-to={module_prefix}"
                 for module_prefix in (

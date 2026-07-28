@@ -340,6 +340,16 @@ def test_toolchain_lock_is_included_in_installed_release_package_data():
     ] == ["*.json"]
 
 
+def test_windows_offline_package_declares_binary_postgresql_driver():
+    import tomllib
+
+    metadata = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert "psycopg[binary]>=3.1" in metadata["project"]["dependencies"]
+
+
 def test_integration_release_notes_keep_later_modules_and_waves_incomplete():
     release_notes = (
         PROJECT_ROOT
@@ -564,6 +574,10 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
         for argument in plan.nuitka_command
     )
     assert widgets_plan.resolved_qml_dependencies is None
+    assert {
+        "--include-package=psycopg",
+        "--include-package=psycopg_binary",
+    } <= set(widgets_plan.nuitka_command)
 
 
 def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namespaces(
