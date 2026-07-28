@@ -30,7 +30,6 @@ from app.features import (
     StrategyUnderTestId,
     V1JourneySelector,
 )
-from app.legacy_panel_context import build_legacy_panel_context
 from app.state.settings_store import SettingsStore
 
 if TYPE_CHECKING:
@@ -127,6 +126,8 @@ def build_app_context(
         training_arena_service = None
         arena_experiment_runner = None
     else:
+        from app.legacy_panel_context import build_legacy_panel_context
+
         _start_market_persistence_services()
         legacy_context = build_legacy_panel_context(
             settings_store=settings_store,

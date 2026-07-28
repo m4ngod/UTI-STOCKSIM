@@ -82,11 +82,13 @@ _WIDGETS_FORBIDDEN_SEAM_MODULE_PREFIXES = (
     "app.features",
 )
 _QML_NUITKA_EXCLUDED_MODULE_PREFIXES = (
+    "app.legacy_panel_context",
     "app.controllers",
     "app.panels",
     "app.runtime_gateway",
     "app.services",
     "app.ui.adapters",
+    *_FORBIDDEN_NETWORK_MODULE_PREFIXES,
     "core.order",
     "services.order_service",
     "services.runtime_command_service",

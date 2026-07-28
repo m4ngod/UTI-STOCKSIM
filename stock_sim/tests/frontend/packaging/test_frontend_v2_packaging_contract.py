@@ -566,7 +566,7 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
     assert widgets_plan.resolved_qml_dependencies is None
 
 
-def test_qml_build_plan_keeps_app_context_but_excludes_transaction_namespaces(
+def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namespaces(
     tmp_path,
 ):
     qml_plan = create_package_build_plans(
@@ -582,17 +582,25 @@ def test_qml_build_plan_keeps_app_context_but_excludes_transaction_namespaces(
 
     assert "app.app_context" not in excluded
     assert {
+        "app.legacy_panel_context",
         "app.controllers",
         "app.panels",
         "app.runtime_gateway",
         "app.services",
         "app.ui.adapters",
+        "app.services.redis_subscriber",
+        "aiohttp",
         "core.order",
+        "httpx",
+        "redis",
+        "requests",
         "services.order_service",
         "services.runtime_command_service",
         "stock_sim.core.order",
         "stock_sim.services.order_service",
         "stock_sim.services.runtime_command_service",
+        "urllib3",
+        "websockets",
     } <= excluded
 
 
@@ -1606,6 +1614,14 @@ def test_widgets_rollback_entry_uses_the_real_read_only_migration_host():
     app_context_source = (
         PROJECT_ROOT / "app" / "app_context.py"
     ).read_text(encoding="utf-8")
+    app_context_import_prefix = app_context_source.split(
+        "def build_app_context",
+        maxsplit=1,
+    )[0]
+    assert (
+        "from app.legacy_panel_context import build_legacy_panel_context"
+        not in app_context_import_prefix
+    )
     assert (
         "from app.legacy_panel_context import build_legacy_panel_context"
         in app_context_source
