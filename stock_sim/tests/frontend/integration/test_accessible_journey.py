@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QObject, QPointF, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt
 from PySide6.QtGui import QAccessible, QAccessibleActionInterface
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
@@ -101,10 +101,18 @@ def _close(
     run_feature: DeterministicFakeRunMonitoringAdapter,
     evidence_feature: DeterministicFakeEvidenceAndFindingsAdapter,
 ) -> None:
-    host.close_adapter()
-    host.close()
+    _close_host(host)
     run_feature.close()
     evidence_feature.close()
+
+
+def _close_host(host: JourneyWorkspaceHost) -> None:
+    app = _app()
+    host.close_adapter()
+    host.close()
+    host.deleteLater()
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
@@ -377,8 +385,7 @@ def test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation(
     _settle(app)
     assert first_finding.property("activeFocus") is True
 
-    first.close_adapter()
-    first.close()
+    _close_host(first)
     _settle(app)
     assert run_feature.snapshot(_run_context()).revision == run_revision
     assert (
@@ -411,10 +418,7 @@ def test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation(
         == evidence_revision
     )
 
-    second.close_adapter()
-    second.close()
-    run_feature.close()
-    evidence_feature.close()
+    _close(second, run_feature, evidence_feature)
 
 
 def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
