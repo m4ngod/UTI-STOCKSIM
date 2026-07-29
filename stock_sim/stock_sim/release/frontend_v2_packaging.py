@@ -16,6 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
 import zipfile
@@ -23,11 +24,23 @@ import zipfile
 from strategy_diagnostics.formal_strategy_sources import (
     FORMAL_STRATEGY_SOURCE_BINDINGS,
 )
+from strategy_diagnostics.ptrade_host import (
+    PTradeStrategyHost,
+    SubprocessPTradeStrategyHost,
+)
 from stock_sim.release.no_manual_trading_gate import (
     NoManualTradingGateReport,
     audit_no_manual_trading_gate,
     qml_source_inventory,
     verify_safety_gate_payload,
+)
+from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+    FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    FORMAL_V1_RELEASE_FIXTURE_DIRNAME,
+    SealedFormalV1ReleaseFixtureManifest,
+    create_sealed_formal_v1_release_fixture,
+    extract_sealed_formal_v1_release_fixture_archive,
+    write_sealed_formal_v1_release_fixture_archive,
 )
 
 
@@ -2259,6 +2272,7 @@ def build_frontend_v2_release(
         if plan.kind is PackageKind.WIDGETS_ROLLBACK
     )
     deploy_scanned_qml_runtime(qml_plan)
+    stage_packaged_formal_v1_release_fixture(qml_plan)
 
     smoke_root = output_root / "evidence" / "smoke"
     _run_packaged_smoke(
@@ -2313,6 +2327,62 @@ def build_frontend_v2_release(
         encoding="utf-8",
     )
     return result
+
+
+def stage_packaged_formal_v1_release_fixture(
+    plan: PackageBuildPlan,
+    *,
+    ptrade_host: PTradeStrategyHost | None = None,
+) -> SealedFormalV1ReleaseFixtureManifest:
+    """Create the immutable real V1 state consumed by packaged QML smoke."""
+
+    if plan.kind is not PackageKind.QML_JOURNEY:
+        raise ValueError(
+            "A sealed Strategy Diagnostics V1 fixture belongs only "
+            "to the QML journey package"
+        )
+    destination = (
+        plan.distribution_dir / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+    if destination.exists():
+        raise RuntimeError(
+            f"Packaged V1 release fixture already exists: {destination}"
+        )
+    host = (
+        ptrade_host
+        if ptrade_host is not None
+        else SubprocessPTradeStrategyHost(
+            python_executable=sys.executable,
+        )
+    )
+    # DuckDB's Windows native writer still observes the traditional path
+    # limit.  Build the immutable fixture beside the checkout, where the
+    # staging path is short, then copy and re-verify the relative file seal.
+    with tempfile.TemporaryDirectory(
+        prefix="uti-v1-release-",
+        dir=PROJECT_ROOT.parent,
+    ) as temporary_root:
+        staged = (
+            Path(temporary_root) / FORMAL_V1_RELEASE_FIXTURE_DIRNAME
+        )
+        manifest = create_sealed_formal_v1_release_fixture(
+            bundle_root=staged,
+            source_commit=plan.source_commit,
+            ptrade_host=host,
+        )
+        write_sealed_formal_v1_release_fixture_archive(
+            bundle_root=staged,
+            archive_path=destination,
+        )
+        verified = extract_sealed_formal_v1_release_fixture_archive(
+            archive_path=destination,
+            bundle_root=Path(temporary_root) / "verified",
+        )
+        if verified != manifest:
+            raise RuntimeError(
+                "Packaged V1 release fixture changed during archive staging"
+            )
+    return verified
 
 
 def verify_release_source(
@@ -3082,6 +3152,7 @@ __all__ = [
     "certify_frontend_v2_release",
     "load_toolchain_lock",
     "main",
+    "stage_packaged_formal_v1_release_fixture",
     "toolchain_evidence_identity",
     "verify_safety_gate_evidence",
     "verify_clean_room_report",

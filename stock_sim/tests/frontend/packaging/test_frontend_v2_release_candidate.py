@@ -216,6 +216,155 @@ def _write_journey_screenshots(root, lane):
     return screenshots
 
 
+def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from strategy_diagnostics import SubprocessPTradeStrategyHost
+    from stock_sim.release import (
+        strategy_diagnostics_v1_release_fixture as fixture_module,
+    )
+    from stock_sim.release.frontend_v2_package_entry import (
+        RendererLane,
+        run_smoke_journey,
+    )
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_formal_v1_release_fixture,
+    )
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    source_commit = "a" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    manifest = stage_packaged_formal_v1_release_fixture(
+        qml_plan,
+        ptrade_host=SubprocessPTradeStrategyHost(
+            python_executable=sys.executable,
+        ),
+    )
+    fixture_archive = (
+        qml_plan.distribution_dir / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+    original_archive_hash = hashlib.sha256(
+        fixture_archive.read_bytes()
+    ).hexdigest()
+
+    def reject_runtime_generation(**_kwargs):
+        raise AssertionError(
+            "Installed smoke must not regenerate the Formal Campaign"
+        )
+
+    monkeypatch.setattr(
+        fixture_module,
+        "create_file_backed_formal_v1_release_fixture",
+        reject_runtime_generation,
+    )
+    report_dir = tmp_path / "installed-smoke"
+    result = run_smoke_journey(
+        report_dir=report_dir,
+        renderer_lane=RendererLane.SOFTWARE,
+        source_commit=source_commit,
+        capture_images=False,
+        fixture_archive_path=fixture_archive,
+    )
+
+    assert manifest.source_commit == source_commit
+    assert result.source_commit == source_commit
+    assert result.campaign_identity == manifest.campaign_id
+    assert result.evidence_package_identity == manifest.evidence_package_id
+    assert result.reproduction_manifest_identity == (
+        manifest.selected_manifest_id
+    )
+    assert result.persistence_reopened is True
+    assert result.errors == ()
+    assert result.clean_exit is True
+    assert hashlib.sha256(fixture_archive.read_bytes()).hexdigest() == (
+        original_archive_hash
+    )
+    assert not tuple(
+        path
+        for path in report_dir.rglob("*")
+        if path.name == "strategy-diagnostics-v1.sqlite3"
+    )
+
+
+def test_sealed_v1_fixture_manifest_rejects_storage_tampering(tmp_path):
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_MANIFEST,
+        load_sealed_formal_v1_release_fixture_manifest,
+    )
+
+    bundle_root = tmp_path / "fixture"
+    bundle_root.mkdir()
+    retained_file = bundle_root / "v1.sqlite3"
+    retained_file.write_bytes(b"sealed")
+    retained_hash = hashlib.sha256(retained_file.read_bytes()).hexdigest()
+    (bundle_root / FORMAL_V1_RELEASE_FIXTURE_MANIFEST).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": "a" * 40,
+                "campaign_id": "campaign-1",
+                "selected_run_id": "run-1",
+                "evidence_package_id": "evidence-1",
+                "selected_manifest_id": "manifest-1",
+                "artifact_hashes": ["sha256:" + "b" * 64],
+                "expected_identity_graph": [
+                    "campaign-1",
+                    "evidence-1",
+                    "manifest-1",
+                    "run-1",
+                ],
+                "files": [
+                    {
+                        "relative_path": "v1.sqlite3",
+                        "size_bytes": retained_file.stat().st_size,
+                        "sha256": f"sha256:{retained_hash}",
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_sealed_formal_v1_release_fixture_manifest(
+        bundle_root
+    )
+    assert manifest.campaign_id == "campaign-1"
+
+    retained_file.write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="inventory does not match"):
+        load_sealed_formal_v1_release_fixture_manifest(bundle_root)
+
+
+def test_sealed_v1_fixture_archive_rejects_path_traversal(tmp_path):
+    import zipfile
+
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        extract_sealed_formal_v1_release_fixture_archive,
+    )
+
+    archive_path = tmp_path / "unsafe.zip"
+    escaped_path = tmp_path / "escaped.txt"
+    with zipfile.ZipFile(archive_path, mode="w") as archive:
+        archive.writestr("../escaped.txt", b"unsafe")
+
+    with pytest.raises(RuntimeError, match="path is unsafe"):
+        extract_sealed_formal_v1_release_fixture_archive(
+            archive_path=archive_path,
+            bundle_root=tmp_path / "extracted",
+        )
+    assert not escaped_path.exists()
+
+
 def test_installed_smoke_uses_the_production_event_bridge_journey(
     tmp_path,
     monkeypatch,
@@ -1057,6 +1206,8 @@ def test_default_installed_entry_uses_the_production_app_context():
     assert "_ReleaseCandidateRuntimeQueries" not in source
     assert "get_evidence_and_findings_snapshot" not in source
     assert "create_file_backed_formal_v1_release_fixture" in source
+    assert "open_sealed_formal_v1_release_fixture" in source
+    assert "_installed_fixture_archive_path" in source
     assert "LiveStrategyDiagnosticsV1ApplicationAdapter" in source
     assert "from app.app_context import build_app_context" in source
     assert "from app.ui.main_window import MainWindow" in source
@@ -1088,6 +1239,47 @@ def test_compiled_entry_uses_its_dedicated_ptrade_worker_mode(monkeypatch):
     )
     assert package_entry._ptrade_worker_executable() == (
         r"C:\Release\UTI-Frontend-V2.exe"
+    )
+
+
+def test_compiled_smoke_defaults_to_the_packaged_sealed_v1_fixture(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "installed" / "UTI-Frontend-V2.exe"
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    observed = {}
+
+    class PassingSmoke:
+        errors = ()
+        clean_exit = True
+        manual_trading_action_count = 0
+        read_only_context_visible = True
+
+    def record_smoke(**arguments):
+        observed.update(arguments)
+        return PassingSmoke()
+
+    monkeypatch.setattr(package_entry, "run_smoke_journey", record_smoke)
+
+    exit_code = package_entry.main(
+        (
+            "--renderer-lane=software",
+            f"--smoke-report-dir={tmp_path / 'report'}",
+            f"--source-commit={'a' * 40}",
+            "--no-images",
+        )
+    )
+
+    assert exit_code == 0
+    assert observed["fixture_archive_path"] == (
+        executable.parent / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
     )
 
 

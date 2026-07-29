@@ -58,6 +58,13 @@ rollback artifact.
 - The installed QML executable must retain the exact typed Feature identity
   graph at every launch, disconnected, stale reconnect, fresh reconnect, and
   remount checkpoint through the rendered QML/QAccessible object graph.
+- The build creates the Formal Campaign through the real public
+  `DiagnosticsApplication`, closes and reopens its SQLite/JSON/Parquet state,
+  seals every retained file and backend identity into
+  `strategy-diagnostics-v1-fixture.zip`, and binds that archive to the same
+  source commit. The installed executable verifies and extracts a temporary
+  copy, reopens it through the real Application and live adapter, and removes
+  the copy on exit. It never regenerates the campaign during installed smoke.
 - The offline Windows Sandbox must install both same-source archives, run the
   QML journey in hardware and software renderer lanes, and launch the real
   read-only legacy Widgets rollback executable.

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -670,6 +671,7 @@ def run_smoke_journey(
     renderer_lane: RendererLane,
     source_commit: str = "development-smoke",
     capture_images: bool = True,
+    fixture_archive_path: Path | None = None,
 ) -> PackageSmokeResult:
     cleanup_errors: list[str] = []
     lifecycle_checks: list[Callable[[], bool]] = []
@@ -679,6 +681,7 @@ def run_smoke_journey(
             renderer_lane=renderer_lane,
             source_commit=source_commit,
             capture_images=capture_images,
+            fixture_archive_path=fixture_archive_path,
             cleanup=cleanup,
             cleanup_errors=cleanup_errors,
             lifecycle_checks=lifecycle_checks,
@@ -709,6 +712,7 @@ def _run_smoke_journey(
     renderer_lane: RendererLane,
     source_commit: str,
     capture_images: bool,
+    fixture_archive_path: Path | None,
     cleanup: ExitStack,
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
@@ -723,18 +727,41 @@ def _run_smoke_journey(
     from strategy_diagnostics import SubprocessPTradeStrategyHost
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         create_file_backed_formal_v1_release_fixture,
+        extract_sealed_formal_v1_release_fixture_archive,
+        open_sealed_formal_v1_release_fixture,
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
-    persistence_root = report_dir / "v1-persistence"
-    fixture = create_file_backed_formal_v1_release_fixture(
-        database_path=persistence_root / "strategy-diagnostics-v1.sqlite3",
-        artifact_root=persistence_root / "artifacts",
-        ptrade_host=SubprocessPTradeStrategyHost(
-            python_executable=_ptrade_worker_executable(),
-            worker_arguments=_ptrade_worker_arguments(),
-        ),
-    )
+    if fixture_archive_path is None:
+        persistence_root = report_dir / "v1-persistence"
+        fixture = create_file_backed_formal_v1_release_fixture(
+            database_path=(
+                persistence_root / "strategy-diagnostics-v1.sqlite3"
+            ),
+            artifact_root=persistence_root / "artifacts",
+            ptrade_host=SubprocessPTradeStrategyHost(
+                python_executable=_ptrade_worker_executable(),
+                worker_arguments=_ptrade_worker_arguments(),
+            ),
+        )
+    else:
+        runtime_root = Path(
+            cleanup.enter_context(
+                tempfile.TemporaryDirectory(prefix="uti-v1-runtime-")
+            )
+        )
+        lifecycle_checks.append(
+            lambda runtime_root=runtime_root: not runtime_root.exists()
+        )
+        persistence_root = runtime_root / "v1-persistence"
+        extract_sealed_formal_v1_release_fixture_archive(
+            archive_path=fixture_archive_path,
+            bundle_root=persistence_root,
+        )
+        fixture = open_sealed_formal_v1_release_fixture(
+            bundle_root=persistence_root,
+            expected_source_commit=source_commit,
+        )
     cleanup.callback(
         _record_cleanup,
         cleanup_errors,
@@ -1427,6 +1454,17 @@ def _run_interactive() -> int:
     return int(app.exec())
 
 
+def _installed_fixture_archive_path() -> Path:
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    return (
+        Path(sys.argv[0]).resolve().parent
+        / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
     if raw_arguments == ("--ptrade-host-worker",):
@@ -1438,17 +1476,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=RendererLane.HARDWARE.value,
     )
     parser.add_argument("--smoke-report-dir", type=Path)
+    parser.add_argument("--fixture-archive", type=Path)
     parser.add_argument("--source-commit", default="unbound")
     parser.add_argument("--no-images", action="store_true")
     arguments = parser.parse_args(raw_arguments)
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
     if arguments.smoke_report_dir is not None:
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and "__compiled__" in globals():
+            fixture_archive_path = _installed_fixture_archive_path()
         result = run_smoke_journey(
             report_dir=arguments.smoke_report_dir,
             renderer_lane=renderer_lane,
             source_commit=arguments.source_commit,
             capture_images=not arguments.no_images,
+            fixture_archive_path=fixture_archive_path,
         )
         return (
             0
