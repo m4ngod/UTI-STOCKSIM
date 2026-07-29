@@ -21,7 +21,9 @@ WebEngine, or Widgets chart is permitted.
 
 ## Locked fixture and gates
 
-Each independent process uses:
+Both independent renderer processes reopen the same sealed, source-bound
+Strategy Diagnostics V1 archive. The archive is created once before either
+lane starts; neither lane regenerates backend state. Each process then uses:
 
 - 100,000 source points;
 - 4,000 visible points;
@@ -77,19 +79,30 @@ index change, and any untracked file other than the four named evidence
 artifacts passed to the command. This check runs before either renderer or the
 aggregate safety audit.
 
-Run the renderer processes separately:
+Create the shared persisted V1 workload once:
+
+```powershell
+python -m stock_sim.release.frontend_v2_performance prepare-v1-fixture `
+  --project-root . `
+  --source-commit <source-commit> `
+  --output <evidence-directory>\strategy-diagnostics-v1-fixture.zip
+```
+
+Run the renderer processes separately against that exact archive:
 
 ```powershell
 python -m stock_sim.release.frontend_v2_performance run-lane `
   --lane hardware `
   --duration-seconds 60 `
   --source-commit <source-commit> `
+  --fixture-archive <evidence-directory>\strategy-diagnostics-v1-fixture.zip `
   --output <evidence-directory>\hardware.json
 
 python -m stock_sim.release.frontend_v2_performance run-lane `
   --lane software `
   --duration-seconds 60 `
   --source-commit <source-commit> `
+  --fixture-archive <evidence-directory>\strategy-diagnostics-v1-fixture.zip `
   --output <evidence-directory>\software.json
 ```
 
@@ -101,15 +114,17 @@ python -m stock_sim.release.frontend_v2_performance certify `
   --source-commit <source-commit> `
   --hardware-report <evidence-directory>\hardware.json `
   --software-report <evidence-directory>\software.json `
+  --fixture-archive <evidence-directory>\strategy-diagnostics-v1-fixture.zip `
   --safety-output <evidence-directory>\no-manual-trading.json `
   --output <evidence-directory>\certification.json
 ```
 
 The aggregate is certified only when both lane files are independent,
-checksum-bound to the same source and exact dependency lock, all thresholds
-pass, every raw timing sample reproduces its stored digest and
-count/p50/p95/max summary, and the fresh safety report passes. Retain all four
-JSON files under:
+checksum-bound to the same source and exact dependency lock, identify the
+same complete persisted V1 workload, all thresholds pass, every raw timing
+sample reproduces its stored digest and count/p50/p95/max summary, and the
+fresh safety report passes. Retain the sealed V1 archive with all four JSON
+files under:
 
 `docs/testing/frontend/evidence/issue-45/<source-commit>/`
 

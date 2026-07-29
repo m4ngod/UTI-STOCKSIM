@@ -46,7 +46,11 @@ from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
 from strategy_diagnostics.market_paths import ParquetMarketPathArtifactStore
-from strategy_diagnostics.ptrade_host import PTradeStrategyHost
+from strategy_diagnostics.ptrade_host import (
+    InProcessPTradeStrategyHost,
+    PTradeStrategyHost,
+    SubprocessPTradeStrategyHost,
+)
 
 
 UTC = timezone.utc
@@ -327,6 +331,9 @@ class FileBackedFormalV1ReleaseFixture:
             specification.recipe_version_id,
             self.evidence_package.evidence_package_id,
             self.selected_manifest.manifest_id,
+            *(manifest.manifest_id for manifest in self.manifests),
+            *(manifest.run_id for manifest in self.manifests),
+            *self.raw_artifact_hashes,
             *(
                 identity
                 for identities in self.evidence_identity_sets.values()
@@ -448,7 +455,6 @@ def create_sealed_formal_v1_release_fixture(
     *,
     bundle_root: Path,
     source_commit: str,
-    ptrade_host: PTradeStrategyHost | None = None,
 ) -> SealedFormalV1ReleaseFixtureManifest:
     """Create and seal a real Formal Campaign for packaged read-only use."""
 
@@ -461,7 +467,10 @@ def create_sealed_formal_v1_release_fixture(
     fixture = create_file_backed_formal_v1_release_fixture(
         database_path=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_DATABASE,
         artifact_root=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_ARTIFACTS,
-        ptrade_host=ptrade_host,
+        # A Formal Campaign owns this backend execution policy: PTrade
+        # strategies must run through the production isolation boundary.
+        # Consumers of the sealed fixture reopen it read-only in-process.
+        ptrade_host=SubprocessPTradeStrategyHost(),
     )
     try:
         manifest = SealedFormalV1ReleaseFixtureManifest(
@@ -576,7 +585,7 @@ def open_sealed_formal_v1_release_fixture(
         campaign_id=manifest.campaign_id,
         evidence_package_id=manifest.evidence_package_id,
         selected_manifest_id=manifest.selected_manifest_id,
-        ptrade_host=None,
+        ptrade_host=InProcessPTradeStrategyHost(),
     )
     try:
         _require(
@@ -1045,7 +1054,6 @@ def _approve_and_materialize(
             "market_rule_profile": "a-share-cash-equity.v1",
         },
         author="release-certifier",
-        recipe_id=_release_recipe_id(name),
     )
     validation = application.validate_recipe_draft(draft.draft_id)
     _require(
@@ -1060,16 +1068,6 @@ def _approve_and_materialize(
         approved.version_id
     )
     return approved, materialized
-
-
-def _release_recipe_id(name: str) -> str:
-    identity = hashlib.sha256(
-        (
-            "strategy-diagnostics-v1-frontend-v2-release-fixture|"
-            f"{name}"
-        ).encode("utf-8")
-    ).hexdigest()
-    return f"release_recipe_{identity}"
 
 
 def _sensitivity_recipe_inputs(

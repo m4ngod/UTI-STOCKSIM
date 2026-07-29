@@ -225,6 +225,7 @@ def run_integration_gate(
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     environment.setdefault("QT_QUICK_BACKEND", "software")
+    temporary_parent = _worktree_sibling_temporary_parent(root)
     executions: list[IntegrationGateExecution] = []
     for group_index, group in enumerate(INTEGRATION_GATE_GROUPS, start=1):
         if selected and group.name not in selected:
@@ -238,7 +239,7 @@ def run_integration_gate(
         # checkout instead of under the much deeper user TEMP hierarchy.
         with TemporaryDirectory(
             prefix=f"uti-g{group_index:02d}-",
-            dir=root.parent,
+            dir=temporary_parent,
         ) as temporary_root:
             group_root = Path(temporary_root).resolve()
             command = (
@@ -275,6 +276,16 @@ def run_integration_gate(
         if completed.returncode:
             break
     return tuple(executions)
+
+
+def _worktree_sibling_temporary_parent(project_root: Path) -> Path:
+    for candidate in (project_root, *project_root.parents):
+        if (candidate / ".git").exists():
+            return candidate.parent
+    raise RuntimeError(
+        "Cannot place integration-gate temporary files outside the Git "
+        f"worktree containing {project_root}"
+    )
 
 
 def _interpreter_command(

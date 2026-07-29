@@ -187,7 +187,7 @@ def test_gate_neutralizes_external_pytest_configuration(
     )
     assert len(basetemp_arguments) == 1
     basetemp = Path(basetemp_arguments[0].split("=", maxsplit=1)[1])
-    assert basetemp.parent.parent == PROJECT_ROOT.parent
+    assert basetemp.parent.parent == PROJECT_ROOT.parent.parent
     environment = captured["env"]
     assert isinstance(environment, dict)
     assert "PYTEST_ADDOPTS" not in environment

@@ -1518,14 +1518,9 @@ class DiagnosticsApplication:
         payload: Mapping[str, object],
         *,
         author: str,
-        recipe_id: str | None = None,
     ) -> ScenarioRecipeDraft:
         self.status()
-        return self._recipe_workbench.create_draft(
-            payload,
-            author=author,
-            recipe_id=recipe_id,
-        )
+        return self._recipe_workbench.create_draft(payload, author=author)
 
     def author_recipe_with_ai(
         self,

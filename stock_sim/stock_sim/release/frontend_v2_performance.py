@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 from math import ceil
+from tempfile import TemporaryDirectory
 from time import perf_counter_ns
 from typing import Any, Mapping, Sequence
 
@@ -78,6 +79,7 @@ class PerformanceCertification:
     source_commit: str
     toolchain_lock_digest: str
     fixture_digest: str
+    v1_fixture_archive_digest: str
     hardware_report_digest: str
     software_report_digest: str
     safety_report_digest: str
@@ -530,12 +532,18 @@ def certify_performance_evidence(
     *,
     expected_source_commit: str,
     expected_toolchain_digest: str,
+    expected_fixture_archive_digest: str | None = None,
 ) -> PerformanceCertification:
     """Bind both retained lanes and the #44 safety gate to one source."""
 
     hardware_digest = _payload_digest(hardware_report)
     software_digest = _payload_digest(software_report)
     safety_digest = _payload_digest(safety_report)
+    observed_fixture_archive_digest = str(
+        _mapping(
+            hardware_report.get("integrated_v1_probe")
+        ).get("fixture_archive_digest", "")
+    )
     failures = list(
         validate_performance_lane(
             hardware_report,
@@ -565,6 +573,15 @@ def certify_performance_evidence(
             "hardware and software real V1 probes do not identify the "
             "same persisted workload"
         )
+    if (
+        expected_fixture_archive_digest is not None
+        and observed_fixture_archive_digest
+        != expected_fixture_archive_digest
+    ):
+        failures.append(
+            "hardware and software real V1 probes do not match the "
+            "retained fixture archive checksum"
+        )
     failures.extend(
         verify_safety_gate_payload(
             {"safety": safety_report},
@@ -578,6 +595,7 @@ def certify_performance_evidence(
         source_commit=expected_source_commit,
         toolchain_lock_digest=expected_toolchain_digest,
         fixture_digest=reference_fixture_digest(),
+        v1_fixture_archive_digest=observed_fixture_archive_digest,
         hardware_report_digest=hardware_digest,
         software_report_digest=software_digest,
         safety_report_digest=safety_digest,
@@ -592,6 +610,7 @@ def certify_performance_report_files(
     *,
     expected_source_commit: str,
     expected_toolchain_digest: str,
+    expected_fixture_archive_digest: str | None = None,
     output_path: Path,
 ) -> PerformanceCertification:
     """Validate retained lane files and write their bound certification."""
@@ -609,6 +628,9 @@ def certify_performance_report_files(
         normalized_safety,
         expected_source_commit=expected_source_commit,
         expected_toolchain_digest=expected_toolchain_digest,
+        expected_fixture_archive_digest=(
+            expected_fixture_archive_digest
+        ),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -652,6 +674,8 @@ def _validate_real_v1_performance_probe(
         or probe.get("persistence_reopened") is not True
     ):
         fail("did not reopen SQLite, JSON, and Parquet persistence")
+    if not _is_sha256_digest(probe.get("fixture_archive_digest")):
+        fail("fixture archive checksum is unavailable or invalid")
     if (
         probe.get("application_read_model_interface")
         != "StrategyDiagnosticsV1ApplicationReadModel/1.0"
@@ -776,6 +800,7 @@ def _real_v1_workload_identity(value: Any) -> tuple[Any, ...]:
         probe.get("production_path"),
         probe.get("persistence_kind"),
         probe.get("application_read_model_interface"),
+        probe.get("fixture_archive_digest"),
         *(
             probe.get(name)
             for name in REAL_V1_IDENTITY_FIELDS
@@ -849,6 +874,69 @@ def _file_digest(path: Path) -> str:
     return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
 
+def prepare_sealed_v1_performance_fixture(
+    *,
+    project_root: Path,
+    source_commit: str,
+    output_path: Path,
+) -> Mapping[str, Any]:
+    """Create the one sealed V1 workload shared by both T10 lanes."""
+
+    source_failures = validate_measurement_source_checkout(
+        project_root,
+        expected_source_commit=source_commit,
+        allowed_untracked_paths=(output_path.resolve(),),
+    )
+    if source_failures:
+        raise RuntimeError("; ".join(source_failures))
+    if output_path.exists():
+        raise RuntimeError(
+            f"Performance V1 fixture archive already exists: {output_path}"
+        )
+    repository_result = _run_git(
+        project_root.resolve(),
+        "rev-parse",
+        "--show-toplevel",
+    )
+    if repository_result.returncode:
+        raise RuntimeError("measurement source is not inside a Git checkout")
+    repository_root = Path(repository_result.stdout.strip()).resolve()
+
+    from .strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_DIRNAME,
+        create_sealed_formal_v1_release_fixture,
+        write_sealed_formal_v1_release_fixture_archive,
+    )
+
+    with TemporaryDirectory(
+        prefix="uti-v1-t10-",
+        dir=repository_root.parent,
+    ) as temporary_root:
+        bundle_root = (
+            Path(temporary_root) / FORMAL_V1_RELEASE_FIXTURE_DIRNAME
+        )
+        manifest = create_sealed_formal_v1_release_fixture(
+            bundle_root=bundle_root,
+            source_commit=source_commit,
+        )
+        archive_digest = write_sealed_formal_v1_release_fixture_archive(
+            bundle_root=bundle_root,
+            archive_path=output_path.resolve(),
+        )
+    return {
+        "schema_version": 1,
+        "source_commit": source_commit,
+        "archive_path": str(output_path.resolve()),
+        "archive_digest": archive_digest,
+        "campaign_identity": manifest.campaign_id,
+        "selected_run_identity": manifest.selected_run_id,
+        "evidence_package_identity": manifest.evidence_package_id,
+        "reproduction_manifest_identity": manifest.selected_manifest_id,
+        "artifact_hashes": list(manifest.artifact_hashes),
+        "expected_identity_graph": list(manifest.expected_identity_graph),
+    }
+
+
 def _configure_renderer_environment(lane: str) -> None:
     if lane == "software":
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -871,6 +959,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Certify Frontend V2 live-QML performance."
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    fixture_parser = commands.add_parser(
+        "prepare-v1-fixture",
+        help="Seal the single persisted V1 workload shared by both lanes.",
+    )
+    fixture_parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[2],
+    )
+    fixture_parser.add_argument("--source-commit", required=True)
+    fixture_parser.add_argument("--output", type=Path, required=True)
     lane_parser = commands.add_parser(
         "run-lane",
         help="Run one isolated hardware or software renderer lane.",
@@ -887,6 +986,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     lane_parser.add_argument("--source-commit", required=True)
     lane_parser.add_argument("--output", type=Path, required=True)
+    lane_parser.add_argument(
+        "--fixture-archive",
+        type=Path,
+        help=(
+            "Sealed persisted V1 workload; required for certifying lanes "
+            "and shared unchanged by hardware and software."
+        ),
+    )
     lane_parser.add_argument(
         "--smoke",
         action="store_true",
@@ -913,12 +1020,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
     )
     certify_parser.add_argument(
+        "--fixture-archive",
+        type=Path,
+        required=True,
+    )
+    certify_parser.add_argument(
         "--safety-output",
         type=Path,
         required=True,
     )
     certify_parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
+    if arguments.command == "prepare-v1-fixture":
+        try:
+            result = prepare_sealed_v1_performance_fixture(
+                project_root=arguments.project_root,
+                source_commit=arguments.source_commit,
+                output_path=arguments.output,
+            )
+        except RuntimeError as error:
+            parser.error(str(error))
+        print(json.dumps(result, sort_keys=True))
+        return 0
     if arguments.command == "certify":
         source_failures = validate_measurement_source_checkout(
             arguments.project_root,
@@ -926,12 +1049,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             allowed_untracked_paths=(
                 arguments.hardware_report.resolve(),
                 arguments.software_report.resolve(),
+                arguments.fixture_archive.resolve(),
                 arguments.safety_output.resolve(),
                 arguments.output.resolve(),
             ),
         )
         if source_failures:
             parser.error("; ".join(source_failures))
+        fixture_archive = arguments.fixture_archive.resolve()
+        if not fixture_archive.is_file():
+            parser.error(
+                f"Sealed V1 fixture archive is unavailable: "
+                f"{fixture_archive}"
+            )
+        fixture_archive_digest = _file_digest(fixture_archive)
         safety_report = audit_no_manual_trading_gate(
             arguments.project_root,
             source_commit=arguments.source_commit,
@@ -948,6 +1079,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             safety_payload,
             expected_source_commit=arguments.source_commit,
             expected_toolchain_digest=_file_digest(TOOLCHAIN_LOCK_PATH),
+            expected_fixture_archive_digest=fixture_archive_digest,
             output_path=arguments.output,
         )
         print(json.dumps(asdict(certification), sort_keys=True))
@@ -962,6 +1094,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "A certifying lane must run continuously for at least 60 seconds"
         )
     if not arguments.smoke:
+        if arguments.fixture_archive is None:
+            parser.error(
+                "--fixture-archive is required for a certifying lane"
+            )
+        fixture_archive = arguments.fixture_archive.resolve()
+        if not fixture_archive.is_file():
+            parser.error(
+                f"Sealed V1 fixture archive is unavailable: "
+                f"{fixture_archive}"
+            )
         output_path = arguments.output.resolve()
         permitted_artifacts = tuple(
             output_path.parent / name
@@ -977,6 +1119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_source_commit=arguments.source_commit,
             allowed_untracked_paths=(
                 output_path,
+                fixture_archive,
                 *permitted_artifacts,
             ),
         )
@@ -991,7 +1134,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     integrated_v1_evidence = (
         None
         if arguments.smoke
-        else capture_real_v1_performance_preflight()
+        else capture_real_v1_performance_preflight(
+            fixture_archive_path=arguments.fixture_archive,
+            expected_source_commit=arguments.source_commit,
+        )
     )
     process_started_ns = perf_counter_ns()
     report = run_performance_lane(
@@ -1024,6 +1170,7 @@ __all__ = [
     "build_performance_metric",
     "certify_performance_evidence",
     "certify_performance_report_files",
+    "prepare_sealed_v1_performance_fixture",
     "reference_fixture_digest",
     "validate_measurement_source_checkout",
     "validate_performance_lane",

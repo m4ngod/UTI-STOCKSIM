@@ -1,5 +1,5 @@
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -50,6 +50,7 @@ def _passing_real_v1_probe() -> dict[str, object]:
         ],
         "persistence_kind": "sqlite+json+parquet",
         "persistence_reopened": True,
+        "fixture_archive_digest": f"sha256:{'d' * 64}",
         "application_read_model_interface": (
             "StrategyDiagnosticsV1ApplicationReadModel/1.0"
         ),
@@ -741,3 +742,86 @@ def test_report_file_certification_normalizes_dataclass_tuple_fields(tmp_path):
 
     assert certification.status == "certified"
     assert certification.failures == ()
+
+
+def test_certify_cli_rehashes_and_allows_the_retained_v1_archive(
+    tmp_path,
+    monkeypatch,
+):
+    hardware_path = tmp_path / "hardware.json"
+    software_path = tmp_path / "software.json"
+    fixture_path = tmp_path / "strategy-diagnostics-v1-fixture.zip"
+    safety_path = tmp_path / "no-manual-trading.json"
+    output_path = tmp_path / "certification.json"
+    hardware_path.write_text("{}", encoding="utf-8")
+    software_path.write_text("{}", encoding="utf-8")
+    fixture_path.write_bytes(b"shared-v1-fixture")
+    expected_fixture_digest = (
+        "sha256:" + hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+    )
+    captured = {}
+
+    def validate_source(_root, **kwargs):
+        captured["allowed"] = kwargs["allowed_untracked_paths"]
+        return ()
+
+    @dataclass(frozen=True)
+    class Safety:
+        status: str = "passed"
+
+    def certify_files(*_args, **kwargs):
+        captured["fixture_digest"] = kwargs[
+            "expected_fixture_archive_digest"
+        ]
+        return frontend_v2_performance.PerformanceCertification(
+            schema_version=1,
+            status="certified",
+            source_commit=SOURCE_COMMIT,
+            toolchain_lock_digest=TOOLCHAIN_DIGEST,
+            fixture_digest=reference_fixture_digest(),
+            v1_fixture_archive_digest=expected_fixture_digest,
+            hardware_report_digest=f"sha256:{'1' * 64}",
+            software_report_digest=f"sha256:{'2' * 64}",
+            safety_report_digest=f"sha256:{'3' * 64}",
+            failures=(),
+        )
+
+    monkeypatch.setattr(
+        frontend_v2_performance,
+        "validate_measurement_source_checkout",
+        validate_source,
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance,
+        "audit_no_manual_trading_gate",
+        lambda *_args, **_kwargs: Safety(),
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance,
+        "certify_performance_report_files",
+        certify_files,
+    )
+
+    result = frontend_v2_performance.main(
+        (
+            "certify",
+            "--project-root",
+            str(tmp_path),
+            "--source-commit",
+            SOURCE_COMMIT,
+            "--hardware-report",
+            str(hardware_path),
+            "--software-report",
+            str(software_path),
+            "--fixture-archive",
+            str(fixture_path),
+            "--safety-output",
+            str(safety_path),
+            "--output",
+            str(output_path),
+        )
+    )
+
+    assert result == 0
+    assert fixture_path.resolve() in captured["allowed"]
+    assert captured["fixture_digest"] == expected_fixture_digest

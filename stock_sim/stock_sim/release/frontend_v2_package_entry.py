@@ -27,27 +27,6 @@ PRODUCTION_PATH = (
     "JourneyWorkspaceHost",
 )
 
-_PTRADE_WORKER_MODULE = "strategy_diagnostics.ptrade_host_worker"
-
-
-def _ptrade_worker_arguments() -> tuple[str, ...]:
-    if "__compiled__" in globals():
-        return ("--ptrade-host-worker",)
-    return ("-m", _PTRADE_WORKER_MODULE)
-
-
-def _ptrade_worker_executable() -> str:
-    if "__compiled__" in globals():
-        return str(Path(sys.argv[0]).resolve())
-    return sys.executable
-
-
-def _run_ptrade_host_worker() -> int:
-    from strategy_diagnostics.ptrade_host_worker import main as worker_main
-
-    return worker_main()
-
-
 EXPECTED_JOURNEY = (
     (
         "launched_terminal_run",
@@ -199,6 +178,9 @@ class PackageSmokeResult:
     feature_identity_graph: tuple[str, ...]
     qml_identity_graph_checkpoints: dict[str, tuple[str, ...]]
     evidence_identity_sets: dict[str, tuple[str, ...]]
+    persisted_manifest_identities: tuple[str, ...]
+    persisted_run_identities: tuple[str, ...]
+    raw_artifact_hashes: tuple[str, ...]
     keyboard_navigation_verified: bool
     accessibility_preferences_verified: bool
     accessibility_announcements: tuple[str, ...]
@@ -724,7 +706,6 @@ def _run_smoke_journey(
         ACTIVE_FEATURE_INTERFACES,
         LiveStrategyDiagnosticsV1ApplicationAdapter,
     )
-    from strategy_diagnostics import SubprocessPTradeStrategyHost
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         create_file_backed_formal_v1_release_fixture,
         extract_sealed_formal_v1_release_fixture_archive,
@@ -739,10 +720,6 @@ def _run_smoke_journey(
                 persistence_root / "strategy-diagnostics-v1.sqlite3"
             ),
             artifact_root=persistence_root / "artifacts",
-            ptrade_host=SubprocessPTradeStrategyHost(
-                python_executable=_ptrade_worker_executable(),
-                worker_arguments=_ptrade_worker_arguments(),
-            ),
         )
     else:
         runtime_root = Path(
@@ -1144,6 +1121,13 @@ def _run_smoke_journey(
         feature_identity_graph=feature_identity_graph,
         qml_identity_graph_checkpoints=qml_identity_graph_checkpoints,
         evidence_identity_sets=fixture.evidence_identity_sets,
+        persisted_manifest_identities=tuple(
+            sorted(manifest.manifest_id for manifest in fixture.manifests)
+        ),
+        persisted_run_identities=tuple(
+            sorted(manifest.run_id for manifest in fixture.manifests)
+        ),
+        raw_artifact_hashes=fixture.raw_artifact_hashes,
         keyboard_navigation_verified=keyboard_routes == {
             "run_monitoring",
             "evidence_and_findings",
@@ -1467,8 +1451,6 @@ def _installed_fixture_archive_path() -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
-    if raw_arguments == ("--ptrade-host-worker",):
-        return _run_ptrade_host_worker()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--renderer-lane",

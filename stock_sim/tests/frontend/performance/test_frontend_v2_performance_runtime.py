@@ -15,52 +15,6 @@ from stock_sim.release import strategy_diagnostics_v1_release_fixture
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_release_fixture_pins_recipe_identity_to_fixture_name():
-    recipe_ids = []
-
-    class Application:
-        def create_manual_recipe_draft(
-            self,
-            _payload,
-            *,
-            author,
-            recipe_id,
-        ):
-            assert author == "release-certifier"
-            recipe_ids.append(recipe_id)
-            return SimpleNamespace(draft_id=f"draft-{len(recipe_ids)}")
-
-        def validate_recipe_draft(self, _draft_id):
-            return SimpleNamespace(is_valid=True)
-
-        def approve_recipe_draft(self, draft_id, *, actor):
-            assert actor == "release-owner"
-            return SimpleNamespace(version_id=f"version-{draft_id}")
-
-        def materialize_reference_path(self, version_id):
-            return SimpleNamespace(artifact_hash=f"hash-{version_id}")
-
-    application = Application()
-    for name in (
-        "Integrated release baseline",
-        "Integrated release baseline",
-        "Integrated release compound",
-    ):
-        strategy_diagnostics_v1_release_fixture._approve_and_materialize(
-            application,
-            segment_id="segment-release",
-            name=name,
-            transformations=(),
-        )
-
-    assert recipe_ids[0] == recipe_ids[1]
-    assert recipe_ids[0] != recipe_ids[2]
-    assert all(
-        recipe_id.startswith("release_recipe_")
-        for recipe_id in recipe_ids
-    )
-
-
 def test_runtime_release_decision_delegates_to_central_validator(monkeypatch):
     report = {
         "lane": "hardware",
@@ -141,6 +95,68 @@ def test_probe_factory_closes_fixture_when_probe_construction_fails(
     assert storage_roots and not storage_roots[0].exists()
 
 
+def test_probe_factory_reopens_the_supplied_sealed_fixture_without_execution(
+    tmp_path,
+    monkeypatch,
+):
+    archive_path = tmp_path / "shared-v1-fixture.zip"
+    archive_path.write_bytes(b"sealed")
+    fixture = SimpleNamespace()
+    calls = []
+
+    def extract_fixture(*, archive_path, bundle_root):
+        calls.append(("extract", archive_path, bundle_root))
+
+    def open_fixture(*, bundle_root, expected_source_commit):
+        calls.append(("open", bundle_root, expected_source_commit))
+        return fixture
+
+    monkeypatch.setattr(
+        strategy_diagnostics_v1_release_fixture,
+        "create_file_backed_formal_v1_release_fixture",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a certifying lane regenerated V1 state")
+        ),
+    )
+    monkeypatch.setattr(
+        strategy_diagnostics_v1_release_fixture,
+        "extract_sealed_formal_v1_release_fixture_archive",
+        extract_fixture,
+    )
+    monkeypatch.setattr(
+        strategy_diagnostics_v1_release_fixture,
+        "open_sealed_formal_v1_release_fixture",
+        open_fixture,
+    )
+    monkeypatch.setattr(
+        frontend_v2_performance_runtime,
+        "_RealV1PerformanceProbe",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    probe = (
+        frontend_v2_performance_runtime.prepare_real_v1_performance_probe(
+            fixture_archive_path=archive_path,
+            expected_source_commit="a" * 40,
+        )
+    )
+    try:
+        assert probe.fixture is fixture
+        assert probe.fixture_archive_digest == (
+            "sha256:"
+            "c9d0036bed6744bcdf692fc980d8717d7e5f5a"
+            "4f4e8266b4a84982602fb1cd09"
+        )
+        assert calls[0][0:2] == ("extract", archive_path.resolve())
+        assert calls[1] == (
+            "open",
+            calls[0][2],
+            "a" * 40,
+        )
+    finally:
+        probe.temporary_directory.cleanup()
+
+
 def test_real_v1_preflight_closes_and_releases_before_renderer_clock(
     monkeypatch,
 ):
@@ -165,7 +181,7 @@ def test_real_v1_preflight_closes_and_releases_before_renderer_clock(
     monkeypatch.setattr(
         frontend_v2_performance_runtime,
         "prepare_real_v1_performance_probe",
-        Probe,
+        lambda **_kwargs: Probe(),
     )
     monkeypatch.setattr(
         frontend_v2_performance_runtime.gc,
@@ -225,7 +241,7 @@ def test_certifying_cli_finishes_real_v1_preflight_before_renderer_clock(
     monkeypatch.setattr(
         frontend_v2_performance_runtime,
         "capture_real_v1_performance_preflight",
-        lambda: events.append(("preflight", None)) or evidence,
+        lambda **kwargs: events.append(("preflight", kwargs)) or evidence,
         raising=False,
     )
     monkeypatch.setattr(
@@ -244,6 +260,8 @@ def test_certifying_cli_finishes_real_v1_preflight_before_renderer_clock(
         run_lane,
     )
     output = tmp_path / "hardware.json"
+    fixture_archive = tmp_path / "shared-v1-fixture.zip"
+    fixture_archive.write_bytes(b"sealed")
 
     result = frontend_v2_performance.main(
         (
@@ -256,13 +274,21 @@ def test_certifying_cli_finishes_real_v1_preflight_before_renderer_clock(
             "a" * 40,
             "--output",
             str(output),
+            "--fixture-archive",
+            str(fixture_archive),
         )
     )
 
     assert result == 0
     assert events[:3] == [
         ("renderer", "hardware"),
-        ("preflight", None),
+        (
+            "preflight",
+            {
+                "fixture_archive_path": fixture_archive,
+                "expected_source_commit": "a" * 40,
+            },
+        ),
         ("clock", None),
     ]
     assert events[3][0] == "lane"

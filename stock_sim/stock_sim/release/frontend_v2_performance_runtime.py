@@ -622,10 +622,12 @@ class _RealV1PerformanceProbe:
         *,
         temporary_directory: TemporaryDirectory[str],
         fixture: Any,
+        fixture_archive_digest: str | None = None,
     ) -> None:
         self._temporary_directory = temporary_directory
         self._storage_root = Path(temporary_directory.name)
         self._fixture = fixture
+        self._fixture_archive_digest = fixture_archive_digest
         self._adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
             fixture.application,
             fixture.engine,
@@ -759,6 +761,7 @@ class _RealV1PerformanceProbe:
             ),
             "persistence_kind": "sqlite+json+parquet",
             "persistence_reopened": True,
+            "fixture_archive_digest": self._fixture_archive_digest,
             "application_read_model_interface": (
                 self._application_interface
             ),
@@ -882,26 +885,61 @@ def _require_ready_v1_value(
     return result.value
 
 
-def prepare_real_v1_performance_probe() -> _RealV1PerformanceProbe:
-    """Build and reopen the real V1 fixture before the startup clock begins."""
+def prepare_real_v1_performance_probe(
+    *,
+    fixture_archive_path: Path | None = None,
+    expected_source_commit: str | None = None,
+) -> _RealV1PerformanceProbe:
+    """Open the real V1 fixture before the startup clock begins."""
 
     from .strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_DIRNAME,
         create_file_backed_formal_v1_release_fixture,
+        extract_sealed_formal_v1_release_fixture_archive,
+        open_sealed_formal_v1_release_fixture,
     )
 
+    if (fixture_archive_path is None) != (expected_source_commit is None):
+        raise ValueError(
+            "fixture_archive_path and expected_source_commit must be "
+            "provided together"
+        )
     temporary_directory = TemporaryDirectory(
         prefix="uti-stocksim-performance-real-v1-"
     )
     storage_root = Path(temporary_directory.name)
     fixture = None
+    fixture_archive_digest = None
     try:
-        fixture = create_file_backed_formal_v1_release_fixture(
-            database_path=storage_root / "strategy-diagnostics-v1.sqlite3",
-            artifact_root=storage_root / "artifacts",
-        )
+        if fixture_archive_path is None:
+            fixture = create_file_backed_formal_v1_release_fixture(
+                database_path=(
+                    storage_root / "strategy-diagnostics-v1.sqlite3"
+                ),
+                artifact_root=storage_root / "artifacts",
+            )
+        else:
+            fixture_archive_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    fixture_archive_path.resolve().read_bytes()
+                ).hexdigest()
+            )
+            bundle_root = (
+                storage_root / FORMAL_V1_RELEASE_FIXTURE_DIRNAME
+            )
+            extract_sealed_formal_v1_release_fixture_archive(
+                archive_path=fixture_archive_path.resolve(),
+                bundle_root=bundle_root,
+            )
+            fixture = open_sealed_formal_v1_release_fixture(
+                bundle_root=bundle_root,
+                expected_source_commit=expected_source_commit,
+            )
         return _RealV1PerformanceProbe(
             temporary_directory=temporary_directory,
             fixture=fixture,
+            fixture_archive_digest=fixture_archive_digest,
         )
     except BaseException:
         if fixture is not None and not fixture.closed:
@@ -913,10 +951,17 @@ def prepare_real_v1_performance_probe() -> _RealV1PerformanceProbe:
         raise
 
 
-def capture_real_v1_performance_preflight() -> dict[str, Any]:
+def capture_real_v1_performance_preflight(
+    *,
+    fixture_archive_path: Path | None = None,
+    expected_source_commit: str | None = None,
+) -> dict[str, Any]:
     """Capture and release real V1 evidence before timing the renderer."""
 
-    probe = prepare_real_v1_performance_probe()
+    probe = prepare_real_v1_performance_probe(
+        fixture_archive_path=fixture_archive_path,
+        expected_source_commit=expected_source_commit,
+    )
     try:
         probe.run_preflight(sample_count=2)
     finally:

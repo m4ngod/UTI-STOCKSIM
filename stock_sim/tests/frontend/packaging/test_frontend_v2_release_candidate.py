@@ -20,6 +20,9 @@ from stock_sim.release.frontend_v2_packaging import (
 from stock_sim.release.frontend_v2_performance import (
     certify_performance_evidence,
 )
+from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+    FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+)
 
 
 EXPECTED_JOURNEY = (
@@ -112,6 +115,9 @@ _IDENTITY_SETS = {
     "breakpoints": ["breakpoint-1"],
     "findings": ["finding-1"],
 }
+_PERSISTED_MANIFEST_IDENTITIES = ["RM-RC-001", "RM-RC-002"]
+_PERSISTED_RUN_IDENTITIES = ["RUN-RC-001", "RUN-RC-002"]
+_RAW_ARTIFACT_HASHES = ["a" * 64, "b" * 64]
 _IDENTITY_GRAPH = sorted(
     {
         "FDC-RC-001",
@@ -121,6 +127,9 @@ _IDENTITY_GRAPH = sorted(
         "RECIPE-RC-001",
         "EVIDENCE-RC-001",
         "RM-RC-001",
+        *_PERSISTED_MANIFEST_IDENTITIES,
+        *_PERSISTED_RUN_IDENTITIES,
+        *_RAW_ARTIFACT_HASHES,
         *(
             identity
             for identities in _IDENTITY_SETS.values()
@@ -149,6 +158,7 @@ def _passing_real_v1_performance_probe():
         ],
         "persistence_kind": "sqlite+json+parquet",
         "persistence_reopened": True,
+        "fixture_archive_digest": "sha256:" + "d" * 64,
         "application_read_model_interface": (
             "StrategyDiagnosticsV1ApplicationReadModel/1.0"
         ),
@@ -222,7 +232,6 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
 ):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
-    from strategy_diagnostics import SubprocessPTradeStrategyHost
     from stock_sim.release import (
         strategy_diagnostics_v1_release_fixture as fixture_module,
     )
@@ -243,12 +252,7 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
         output_root=tmp_path / "packages",
         source_commit=source_commit,
     )[1]
-    manifest = stage_packaged_formal_v1_release_fixture(
-        qml_plan,
-        ptrade_host=SubprocessPTradeStrategyHost(
-            python_executable=sys.executable,
-        ),
-    )
+    manifest = stage_packaged_formal_v1_release_fixture(qml_plan)
     fixture_archive = (
         qml_plan.distribution_dir / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
     )
@@ -343,6 +347,101 @@ def test_sealed_v1_fixture_manifest_rejects_storage_tampering(tmp_path):
     retained_file.write_bytes(b"tampered")
     with pytest.raises(RuntimeError, match="inventory does not match"):
         load_sealed_formal_v1_release_fixture_manifest(bundle_root)
+
+
+def test_release_fixture_identity_graph_matches_the_full_persisted_scope():
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FileBackedFormalV1ReleaseFixture,
+    )
+
+    selected_specification = SimpleNamespace(
+        strategy_id="strategy-selected",
+        recipe_version_id="recipe-selected",
+        materialization_hash="1" * 64,
+        recipe_content_hash="2" * 64,
+    )
+    sibling_specification = SimpleNamespace(
+        materialization_hash="7" * 64,
+        recipe_content_hash="8" * 64,
+    )
+    selected_manifest = SimpleNamespace(
+        manifest_id="manifest-selected",
+        case_id="case-selected",
+        run_id="run-selected",
+        run_artifact_hash="3" * 64,
+        evidence_artifact_hash="4" * 64,
+        measurement_artifact_hash="5" * 64,
+        manifest_content_hash="6" * 64,
+        specification=selected_specification,
+    )
+    sibling_manifest = SimpleNamespace(
+        manifest_id="manifest-sibling",
+        case_id="case-sibling",
+        run_id="run-sibling",
+        run_artifact_hash="9" * 64,
+        evidence_artifact_hash="a" * 64,
+        measurement_artifact_hash="b" * 64,
+        manifest_content_hash="c" * 64,
+        specification=sibling_specification,
+    )
+    evidence_payload = {
+        "status": "sealed",
+        "measurement_artifact_hash": "d" * 64,
+        "metrics": [
+            {
+                "strategy_id": "candidate",
+                "strategy_version": "v1",
+                "metric_id": "metric-1",
+            }
+        ],
+        "comparisons": [{"comparison_id": "comparison-1"}],
+        "sensitivity_curves": [{"curve_id": "curve-1"}],
+        "sensitivity_breakpoints": [
+            {"breakpoint_id": "breakpoint-1"}
+        ],
+        "diagnostic_findings": [{"finding_id": "finding-1"}],
+    }
+    fixture = FileBackedFormalV1ReleaseFixture(
+        application=SimpleNamespace(),
+        engine=SimpleNamespace(),
+        campaign=SimpleNamespace(campaign_id="campaign-1"),
+        selected_run=SimpleNamespace(
+            run_id="run-selected",
+            specification=selected_specification,
+        ),
+        evidence_package=SimpleNamespace(
+            evidence_package_id="evidence-1",
+            artifact_hash="e" * 64,
+            sealed_payload=lambda: evidence_payload,
+        ),
+        selected_manifest=selected_manifest,
+        manifests=(selected_manifest, sibling_manifest),
+        database_path=Path("v1.sqlite3"),
+        artifact_root=Path("artifacts"),
+    )
+
+    expected = {
+        "campaign-1",
+        "case-selected",
+        "run-selected",
+        "run-sibling",
+        "strategy-selected",
+        "recipe-selected",
+        "evidence-1",
+        "manifest-selected",
+        "manifest-sibling",
+        "candidate@v1",
+        "metric-1",
+        "comparison-1",
+        "curve-1",
+        "breakpoint-1",
+        "finding-1",
+        *fixture.raw_artifact_hashes,
+    }
+    assert set(fixture.expected_identity_graph) == expected
 
 
 def test_sealed_v1_fixture_archive_rejects_path_traversal(tmp_path):
@@ -444,6 +543,24 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "breakpoints",
         "findings",
     }
+    assert len(result.persisted_manifest_identities) > 1
+    assert (
+        result.reproduction_manifest_identity
+        in result.persisted_manifest_identities
+    )
+    assert len(result.persisted_run_identities) > 1
+    assert result.run_identity in result.persisted_run_identities
+    assert set(result.raw_artifact_hashes) == {
+        value.removeprefix("sha256:")
+        for value in result.artifact_hashes
+    }
+    assert set(
+        (
+            *result.persisted_manifest_identities,
+            *result.persisted_run_identities,
+            *result.raw_artifact_hashes,
+        )
+    ).issubset(result.expected_identity_graph)
     assert result.keyboard_navigation_verified is True
     assert result.accessibility_preferences_verified is True
     assert result.old_generation_rejected is True
@@ -733,6 +850,11 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 for stage, *_ in EXPECTED_JOURNEY
             },
             "evidence_identity_sets": _IDENTITY_SETS,
+            "persisted_manifest_identities": (
+                _PERSISTED_MANIFEST_IDENTITIES
+            ),
+            "persisted_run_identities": _PERSISTED_RUN_IDENTITIES,
+            "raw_artifact_hashes": _RAW_ARTIFACT_HASHES,
             "keyboard_navigation_verified": True,
             "accessibility_preferences_verified": True,
             "accessibility_announcements": [
@@ -938,6 +1060,12 @@ def _copy_performance_evidence(root):
     )
     target = root / "performance"
     target.mkdir()
+    fixture_archive = target / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    fixture_archive.write_bytes(b"sealed-v1-fixture")
+    fixture_archive_digest = (
+        "sha256:"
+        + hashlib.sha256(fixture_archive.read_bytes()).hexdigest()
+    )
     for name in (
         "hardware.json",
         "software.json",
@@ -952,6 +1080,9 @@ def _copy_performance_evidence(root):
         report["integrated_v1_probe"] = (
             _passing_real_v1_performance_probe()
         )
+        report["integrated_v1_probe"][
+            "fixture_archive_digest"
+        ] = fixture_archive_digest
     hardware_path.write_text(
         json.dumps(hardware),
         encoding="utf-8",
@@ -1014,6 +1145,7 @@ def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
     assert evidence.safety.issue_number == 44
     assert evidence.performance.status == "certified"
     assert evidence.performance.issue_number == 45
+    assert evidence.performance.fixture_archive_sha256.startswith("sha256:")
     assert evidence.performance.hardware_report_sha256.startswith("sha256:")
     assert evidence.performance.software_report_sha256.startswith("sha256:")
     assert (
@@ -1026,6 +1158,13 @@ def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
         / "accessibility"
         / "junit.xml"
     ).is_file()
+    assert (
+        tmp_path
+        / "release-evidence"
+        / "gates"
+        / "performance"
+        / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    ).read_bytes() == b"sealed-v1-fixture"
 
 
 def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
@@ -1135,6 +1274,37 @@ def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
         raise AssertionError("Tampered performance evidence was accepted")
 
 
+def test_mandatory_release_gates_reject_a_tampered_v1_fixture_archive(
+    tmp_path,
+):
+    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    accessibility_junit = tmp_path / "accessibility.xml"
+    _write_accessibility_junit(
+        accessibility_junit,
+        source_commit=source_commit,
+    )
+    safety = json.loads(
+        (performance_dir / "no-manual-trading.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    (
+        performance_dir / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    ).write_bytes(b"tampered-v1-fixture")
+
+    with pytest.raises(
+        RuntimeError,
+        match="does not match the retained fixture archive checksum",
+    ):
+        write_mandatory_release_gate_evidence(
+            accessibility_junit=accessibility_junit,
+            performance_evidence_dir=performance_dir,
+            candidate={"safety": safety},
+            source_commit=source_commit,
+            evidence_dir=tmp_path / "release-evidence",
+        )
+
+
 def test_mandatory_release_gates_reject_unbound_accessibility_evidence(
     tmp_path,
 ):
@@ -1208,6 +1378,8 @@ def test_default_installed_entry_uses_the_production_app_context():
     assert "create_file_backed_formal_v1_release_fixture" in source
     assert "open_sealed_formal_v1_release_fixture" in source
     assert "_installed_fixture_archive_path" in source
+    assert "--ptrade-host-worker" not in source
+    assert "SubprocessPTradeStrategyHost" not in source
     assert "LiveStrategyDiagnosticsV1ApplicationAdapter" in source
     assert "from app.app_context import build_app_context" in source
     assert "from app.ui.main_window import MainWindow" in source
@@ -1218,28 +1390,27 @@ def test_default_installed_entry_uses_the_production_app_context():
     ) < source.index("    bridge.start()")
 
 
-def test_compiled_entry_uses_its_dedicated_ptrade_worker_mode(monkeypatch):
-    from stock_sim.release import frontend_v2_package_entry as package_entry
+def test_release_certification_does_not_expand_the_application_command_api():
+    import inspect
 
-    assert package_entry._ptrade_worker_arguments() == (
-        "-m",
-        "strategy_diagnostics.ptrade_host_worker",
-    )
-    assert package_entry._ptrade_worker_executable() == sys.executable
+    from strategy_diagnostics.application import DiagnosticsApplication
 
-    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
-    monkeypatch.setattr(
-        package_entry.sys,
-        "argv",
-        [r"C:\Release\UTI-Frontend-V2.exe"],
-    )
+    parameters = inspect.signature(
+        DiagnosticsApplication.create_manual_recipe_draft
+    ).parameters
 
-    assert package_entry._ptrade_worker_arguments() == (
-        "--ptrade-host-worker",
-    )
-    assert package_entry._ptrade_worker_executable() == (
-        r"C:\Release\UTI-Frontend-V2.exe"
-    )
+    assert "recipe_id" not in parameters
+
+
+def test_release_packaging_has_no_secondary_process_fixture_path():
+    source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_packaging.py"
+    ).read_text(encoding="utf-8")
+
+    assert "SubprocessPTradeStrategyHost" not in source
 
 
 def test_compiled_smoke_defaults_to_the_packaged_sealed_v1_fixture(
@@ -1281,16 +1452,6 @@ def test_compiled_smoke_defaults_to_the_packaged_sealed_v1_fixture(
     assert observed["fixture_archive_path"] == (
         executable.parent / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
     )
-
-
-def test_installed_entry_dispatches_the_ptrade_worker_before_qml(
-    monkeypatch,
-):
-    from stock_sim.release import frontend_v2_package_entry as package_entry
-
-    monkeypatch.setattr(package_entry, "_run_ptrade_host_worker", lambda: 37)
-
-    assert package_entry.main(["--ptrade-host-worker"]) == 37
 
 
 def test_release_smoke_joins_live_features_before_deleting_qt_mount(

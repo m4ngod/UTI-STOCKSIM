@@ -25,7 +25,9 @@ Application read-model boundary.
 Orders, fills, positions, and account details remain read-only diagnostic
 context. This release includes no manual trading, order entry, cancel,
 replace, bulk-order, Buy, or Sell capability. It introduces no HTTP, REST,
-OpenAPI, WebSocket, IPC, queue, second process, or generic frontend façade.
+OpenAPI, WebSocket, IPC, queue, second frontend process, or generic frontend
+façade. The installed QML executable has no PTrade worker entry and only
+reopens sealed backend state in-process.
 
 ## Explicitly not included
 
@@ -47,7 +49,9 @@ Nuitka 2.6.8 toolchain identify every T08, T09, T10, package, Sandbox, and
 rollback artifact.
 
 - T10 combines the fixed 100,000-point/50-candidate QML load projection with
-  an independently retained real V1 preflight in the same lane process.
+  a retained real V1 preflight in the same lane process. Hardware and software
+  reopen the exact same source-bound sealed fixture archive rather than
+  generating separate Campaign identities.
   Before the renderer startup clock begins, that preflight repeatedly reads
   the reopened Formal Campaign, Run, and sealed Evidence through
   `DiagnosticsApplication`,
@@ -62,9 +66,13 @@ rollback artifact.
   `DiagnosticsApplication`, closes and reopens its SQLite/JSON/Parquet state,
   seals every retained file and backend identity into
   `strategy-diagnostics-v1-fixture.zip`, and binds that archive to the same
-  source commit. The installed executable verifies and extracts a temporary
-  copy, reopens it through the real Application and live adapter, and removes
-  the copy on exit. It never regenerates the campaign during installed smoke.
+  source commit. Formal Campaign creation preserves the V1 backend's existing
+  mandatory isolated PTrade execution policy; this is build-time domain
+  execution, not an installed frontend service or integration façade. The
+  installed executable verifies and extracts a temporary copy, reopens it
+  read-only through the real Application and live adapter, and removes the
+  copy on exit. It never ships a worker entry or regenerates the campaign
+  during installed smoke.
 - The offline Windows Sandbox must install both same-source archives, run the
   QML journey in hardware and software renderer lanes, and launch the real
   read-only legacy Widgets rollback executable.

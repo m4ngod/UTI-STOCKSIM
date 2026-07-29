@@ -215,10 +215,8 @@ def test_manual_recipe_requires_validation_and_approval_before_materialization()
     draft = application.create_manual_recipe_draft(
         _baseline_payload(admission.segment.segment_id),
         author="researcher",
-        recipe_id="recipe-release-baseline",
     )
     assert draft.status == "untrusted"
-    assert draft.recipe_id == "recipe-release-baseline"
 
     with pytest.raises(UnapprovedScenarioRecipeError, match="approved"):
         application.materialize_baseline_reference_path(draft.draft_id)

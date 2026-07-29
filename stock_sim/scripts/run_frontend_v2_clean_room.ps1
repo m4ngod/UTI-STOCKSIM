@@ -457,6 +457,33 @@ if ($installSucceeded) {
             )
             $expectedIdentityGraph = @($smoke.expected_identity_graph)
             $featureIdentityGraph = @($smoke.feature_identity_graph)
+            $persistedManifestIdentities = @(
+                $smoke.persisted_manifest_identities
+            )
+            $persistedRunIdentities = @(
+                $smoke.persisted_run_identities
+            )
+            $rawArtifactHashes = @($smoke.raw_artifact_hashes)
+            $persistedIdentitySetsValid = (
+                $persistedManifestIdentities.Count -gt 0 -and
+                $persistedRunIdentities.Count -gt 0 -and
+                $rawArtifactHashes.Count -gt 0 -and
+                @(
+                    @(
+                        $persistedManifestIdentities +
+                            $persistedRunIdentities
+                    ) |
+                        Where-Object {
+                            [string]::IsNullOrWhiteSpace([string]$_)
+                        }
+                ).Count -eq 0 -and
+                @(
+                    $rawArtifactHashes |
+                        Where-Object {
+                            [string]$_ -notmatch "^[0-9a-f]{64}$"
+                        }
+                ).Count -eq 0
+            )
             $featureIdentityGraphMatches = (
                 $expectedIdentityGraph.Count -gt 0 -and
                 ($featureIdentityGraph -join "|") -eq
@@ -471,7 +498,12 @@ if ($installSucceeded) {
                 "findings"
             )
             $identitySetsValid = $true
-            $flattenedIdentityGraph = @($identityValues)
+            $flattenedIdentityGraph = @(
+                $identityValues +
+                    $persistedManifestIdentities +
+                    $persistedRunIdentities +
+                    $rawArtifactHashes
+            )
             foreach ($identitySetName in $identitySetNames) {
                 $identityProperty = (
                     $smoke.evidence_identity_sets.PSObject.Properties |
@@ -498,6 +530,7 @@ if ($installSucceeded) {
             )
             $identitySetsValid = (
                 $identitySetsValid -and
+                $persistedIdentitySetsValid -and
                 ($flattenedIdentityGraph -join "|") -eq
                     ($expectedSortedIdentityGraph -join "|")
             )
@@ -592,6 +625,11 @@ if ($installSucceeded) {
                     $smoke.qml_identity_graph_checkpoints
                 )
                 evidence_identity_sets = $smoke.evidence_identity_sets
+                persisted_manifest_identities = (
+                    $persistedManifestIdentities
+                )
+                persisted_run_identities = $persistedRunIdentities
+                raw_artifact_hashes = $rawArtifactHashes
                 keyboard_navigation_verified = (
                     $smoke.keyboard_navigation_verified -is [bool] -and
                     $smoke.keyboard_navigation_verified -eq $true
@@ -682,6 +720,9 @@ if ($installSucceeded) {
                 feature_identity_graph = @()
                 qml_identity_graph_checkpoints = [ordered]@{}
                 evidence_identity_sets = [ordered]@{}
+                persisted_manifest_identities = @()
+                persisted_run_identities = @()
+                raw_artifact_hashes = @()
                 keyboard_navigation_verified = $false
                 accessibility_preferences_verified = $false
                 accessibility_announcements = @()

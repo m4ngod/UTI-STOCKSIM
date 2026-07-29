@@ -138,6 +138,9 @@ _CLEAN_ROOM_IDENTITY_SETS = {
     "breakpoints": ["breakpoint-1"],
     "findings": ["finding-1"],
 }
+_CLEAN_ROOM_MANIFEST_IDENTITIES = ["RM-RC-001", "RM-RC-002"]
+_CLEAN_ROOM_RUN_IDENTITIES = ["RUN-RC-001", "RUN-RC-002"]
+_CLEAN_ROOM_RAW_ARTIFACT_HASHES = ["a" * 64, "b" * 64]
 _CLEAN_ROOM_IDENTITY_GRAPH = sorted(
     {
         "FDC-RC-001",
@@ -147,6 +150,9 @@ _CLEAN_ROOM_IDENTITY_GRAPH = sorted(
         "RECIPE-RC-001",
         "EVIDENCE-RC-001",
         "RM-RC-001",
+        *_CLEAN_ROOM_MANIFEST_IDENTITIES,
+        *_CLEAN_ROOM_RUN_IDENTITIES,
+        *_CLEAN_ROOM_RAW_ARTIFACT_HASHES,
         *(
             identity
             for identities in _CLEAN_ROOM_IDENTITY_SETS.values()
@@ -272,6 +278,11 @@ def _clean_room_lane(root, lane, graphics_api):
             for stage, *_ in _CLEAN_ROOM_JOURNEY
         },
         "evidence_identity_sets": _CLEAN_ROOM_IDENTITY_SETS,
+        "persisted_manifest_identities": (
+            _CLEAN_ROOM_MANIFEST_IDENTITIES
+        ),
+        "persisted_run_identities": _CLEAN_ROOM_RUN_IDENTITIES,
+        "raw_artifact_hashes": _CLEAN_ROOM_RAW_ARTIFACT_HASHES,
         "keyboard_navigation_verified": True,
         "accessibility_preferences_verified": True,
         "accessibility_announcements": [
@@ -1261,6 +1272,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 issue_url="https://example.invalid/45",
                 source_commit="abc123",
                 status="certified",
+                fixture_archive_sha256="sha256:" + "7" * 64,
                 certification_sha256="sha256:" + "4" * 64,
                 hardware_report_sha256="sha256:" + "5" * 64,
                 software_report_sha256="sha256:" + "6" * 64,
@@ -1354,6 +1366,15 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "evidence_identity_sets": (
                         _CLEAN_ROOM_IDENTITY_SETS
                     ),
+                    "persisted_manifest_identities": (
+                        _CLEAN_ROOM_MANIFEST_IDENTITIES
+                    ),
+                    "persisted_run_identities": (
+                        _CLEAN_ROOM_RUN_IDENTITIES
+                    ),
+                    "raw_artifact_hashes": (
+                        _CLEAN_ROOM_RAW_ARTIFACT_HASHES
+                    ),
                     "keyboard_navigation_verified": True,
                     "accessibility_preferences_verified": True,
                     "accessibility_announcements": [
@@ -1430,6 +1451,41 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
     assert (
         tmp_path / "evidence" / "renderer-gate-report.json"
     ).is_file()
+
+    software_payload = json.loads(
+        reports["software"].read_text(encoding="utf-8")
+    )
+    software_payload["persisted_run_identities"] = [
+        "RUN-RC-001",
+        "RUN-RC-OTHER",
+    ]
+    drifted_graph = sorted(
+        (
+            set(software_payload["expected_identity_graph"])
+            - {"RUN-RC-002"}
+        )
+        | {"RUN-RC-OTHER"}
+    )
+    software_payload["expected_identity_graph"] = drifted_graph
+    software_payload["feature_identity_graph"] = drifted_graph
+    software_payload["qml_identity_graph_checkpoints"] = {
+        stage: drifted_graph for stage, *_ in _CLEAN_ROOM_JOURNEY
+    }
+    reports["software"].write_text(
+        json.dumps(software_payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="same real V1 persisted run identities",
+    ):
+        write_renderer_evidence(
+            hardware_report=reports["hardware"],
+            software_report=reports["software"],
+            source_commit="abc123",
+            evidence_dir=tmp_path / "drifted-evidence",
+        )
 
 
 def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
@@ -1574,6 +1630,7 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="app.services.trading_service" />
           <module name="services.order_service" />
           <module name="services.runtime_command_service" />
+          <module name="strategy_diagnostics.ptrade_host_worker" />
         </nuitka-compilation-report>
         """,
         encoding="utf-8",
@@ -1593,6 +1650,7 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
         "app.services.trading_service",
         "services.order_service",
         "services.runtime_command_service",
+        "strategy_diagnostics.ptrade_host_worker",
     ):
         assert any(
             module_name in finding for finding in command_findings
@@ -2109,6 +2167,9 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "application_read_model_interface" in script
     assert "active_feature_interfaces" in script
     assert "persistence_reopened" in script
+    assert "persisted_manifest_identities" in script
+    assert "persisted_run_identities" in script
+    assert "raw_artifact_hashes" in script
     assert "routes_rendered" in script
     assert "connection_transitions" in script
     assert "observations" in script

@@ -24,10 +24,6 @@ import zipfile
 from strategy_diagnostics.formal_strategy_sources import (
     FORMAL_STRATEGY_SOURCE_BINDINGS,
 )
-from strategy_diagnostics.ptrade_host import (
-    PTradeStrategyHost,
-    SubprocessPTradeStrategyHost,
-)
 from stock_sim.release.no_manual_trading_gate import (
     NoManualTradingGateReport,
     audit_no_manual_trading_gate,
@@ -97,6 +93,7 @@ _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
     "stock_sim.core.order",
     "stock_sim.services.order_service",
     "stock_sim.services.runtime_command_service",
+    "strategy_diagnostics.ptrade_host_worker",
 )
 _FORBIDDEN_NETWORK_MODULE_PREFIXES = (
     "aiohttp",
@@ -394,6 +391,9 @@ class RendererLaneEvidence:
     feature_identity_graph: tuple[str, ...]
     qml_identity_graph_checkpoints: dict[str, tuple[str, ...]]
     evidence_identity_sets: dict[str, tuple[str, ...]]
+    persisted_manifest_identities: tuple[str, ...]
+    persisted_run_identities: tuple[str, ...]
+    raw_artifact_hashes: tuple[str, ...]
     keyboard_navigation_verified: bool
     accessibility_preferences_verified: bool
     accessibility_announcements: tuple[str, ...]
@@ -463,6 +463,7 @@ class PerformanceGateEvidence:
     issue_url: str
     source_commit: str
     status: str
+    fixture_archive_sha256: str
     certification_sha256: str
     hardware_report_sha256: str
     software_report_sha256: str
@@ -1317,6 +1318,42 @@ def _real_v1_smoke_failures(
     ):
         failures.append("real V1 evidence identity sets are invalid")
     else:
+        persisted_manifest_identities = payload.get(
+            "persisted_manifest_identities"
+        )
+        persisted_run_identities = payload.get(
+            "persisted_run_identities"
+        )
+        raw_artifact_hashes = payload.get("raw_artifact_hashes")
+        persisted_identity_sets_valid = bool(
+            isinstance(persisted_manifest_identities, (list, tuple))
+            and persisted_manifest_identities
+            and isinstance(persisted_run_identities, (list, tuple))
+            and persisted_run_identities
+            and isinstance(raw_artifact_hashes, (list, tuple))
+            and raw_artifact_hashes
+            and all(
+                isinstance(identity, str) and identity.strip()
+                for identity in (
+                    *persisted_manifest_identities,
+                    *persisted_run_identities,
+                )
+            )
+            and all(
+                isinstance(identity, str)
+                and len(identity) == 64
+                and all(
+                    character in "0123456789abcdef"
+                    for character in identity
+                )
+                for identity in raw_artifact_hashes
+            )
+        )
+        if not persisted_identity_sets_valid:
+            failures.append(
+                "real V1 persisted manifest, run, or raw artifact "
+                "identities are invalid"
+            )
         flattened_identity_graph = {
             str(payload[field_name])
             for field_name in REAL_V1_IDENTITY_FIELDS
@@ -1325,7 +1362,19 @@ def _real_v1_smoke_failures(
             for identities in identity_sets.values()
             for identity in identities
         }
-        if flattened_identity_graph != set(expected_graph):
+        if persisted_identity_sets_valid:
+            flattened_identity_graph.update(
+                str(identity)
+                for identity in (
+                    *persisted_manifest_identities,
+                    *persisted_run_identities,
+                    *raw_artifact_hashes,
+                )
+            )
+        if (
+            persisted_identity_sets_valid
+            and flattened_identity_graph != set(expected_graph)
+        ):
             failures.append(
                 "real V1 evidence identity sets do not form the expected graph"
             )
@@ -1549,6 +1598,9 @@ def verify_clean_room_report(
             "expected_identity_graph",
             "feature_identity_graph",
             "evidence_identity_sets",
+            "persisted_manifest_identities",
+            "persisted_run_identities",
+            "raw_artifact_hashes",
             "keyboard_navigation_verified",
             "accessibility_preferences_verified",
             "old_generation_rejected",
@@ -1789,6 +1841,12 @@ def write_renderer_evidence(
         "artifact_hashes",
         "application_read_model_interface",
         "active_feature_interfaces",
+        "evidence_identity_sets",
+        "persisted_manifest_identities",
+        "persisted_run_identities",
+        "raw_artifact_hashes",
+        "expected_identity_graph",
+        "feature_identity_graph",
     ):
         if getattr(hardware, field_name) != getattr(
             software,
@@ -1946,6 +2004,17 @@ def _load_renderer_lane(
             str(name): tuple(str(value) for value in values)
             for name, values in payload["evidence_identity_sets"].items()
         },
+        persisted_manifest_identities=tuple(
+            str(value)
+            for value in payload["persisted_manifest_identities"]
+        ),
+        persisted_run_identities=tuple(
+            str(value)
+            for value in payload["persisted_run_identities"]
+        ),
+        raw_artifact_hashes=tuple(
+            str(value) for value in payload["raw_artifact_hashes"]
+        ),
         keyboard_navigation_verified=True,
         accessibility_preferences_verified=True,
         accessibility_announcements=tuple(
@@ -2331,8 +2400,6 @@ def build_frontend_v2_release(
 
 def stage_packaged_formal_v1_release_fixture(
     plan: PackageBuildPlan,
-    *,
-    ptrade_host: PTradeStrategyHost | None = None,
 ) -> SealedFormalV1ReleaseFixtureManifest:
     """Create the immutable real V1 state consumed by packaged QML smoke."""
 
@@ -2348,13 +2415,6 @@ def stage_packaged_formal_v1_release_fixture(
         raise RuntimeError(
             f"Packaged V1 release fixture already exists: {destination}"
         )
-    host = (
-        ptrade_host
-        if ptrade_host is not None
-        else SubprocessPTradeStrategyHost(
-            python_executable=sys.executable,
-        )
-    )
     # DuckDB's Windows native writer still observes the traditional path
     # limit.  Build the immutable fixture beside the checkout, where the
     # staging path is short, then copy and re-verify the relative file seal.
@@ -2368,7 +2428,6 @@ def stage_packaged_formal_v1_release_fixture(
         manifest = create_sealed_formal_v1_release_fixture(
             bundle_root=staged,
             source_commit=plan.source_commit,
-            ptrade_host=host,
         )
         write_sealed_formal_v1_release_fixture_archive(
             bundle_root=staged,
@@ -2862,6 +2921,7 @@ def write_mandatory_release_gate_evidence(
             "software.json",
             "no-manual-trading.json",
             "certification.json",
+            FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
         )
     }
     missing_performance_files = tuple(
@@ -2882,6 +2942,24 @@ def write_mandatory_release_gate_evidence(
     stored_performance = _load_json_mapping(
         performance_paths["certification.json"]
     )
+    fixture_archive_sha256 = _sha256_path(
+        performance_paths[FORMAL_V1_RELEASE_FIXTURE_ARCHIVE]
+    )
+    for lane_name, lane_report in (
+        ("hardware", hardware),
+        ("software", software),
+    ):
+        probe = lane_report.get("integrated_v1_probe")
+        observed_digest = (
+            probe.get("fixture_archive_digest")
+            if isinstance(probe, Mapping)
+            else None
+        )
+        if observed_digest != fixture_archive_sha256:
+            raise RuntimeError(
+                f"T10 {lane_name} report does not match the retained "
+                "fixture archive checksum"
+            )
     candidate_safety = candidate.get("safety")
     if not isinstance(candidate_safety, Mapping):
         raise RuntimeError("T09 candidate safety evidence is unavailable")
@@ -2913,6 +2991,7 @@ def write_mandatory_release_gate_evidence(
         normalized_safety,
         expected_source_commit=source_commit,
         expected_toolchain_digest=toolchain_lock_digest,
+        expected_fixture_archive_digest=fixture_archive_sha256,
     )
     recomputed_payload = json.loads(
         json.dumps(asdict(recomputed_performance), sort_keys=True)
@@ -2939,6 +3018,7 @@ def write_mandatory_release_gate_evidence(
             "hardware.json",
             "software.json",
             "certification.json",
+            FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
         )
     }
     accessibility_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2975,6 +3055,9 @@ def write_mandatory_release_gate_evidence(
         issue_url="https://github.com/m4ngod/UTI-STOCKSIM/issues/45",
         source_commit=source_commit,
         status="certified",
+        fixture_archive_sha256=_sha256_path(
+            performance_targets[FORMAL_V1_RELEASE_FIXTURE_ARCHIVE]
+        ),
         certification_sha256=_sha256_path(
             performance_targets["certification.json"]
         ),
