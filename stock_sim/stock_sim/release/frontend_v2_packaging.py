@@ -51,8 +51,10 @@ _REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
         "stock_sim.release.strategy_diagnostics_v1_release_fixture",
         "strategy_diagnostics.application",
         "strategy_diagnostics.diagnostic_evidence_storage",
+        "strategy_diagnostics.live_minute_scenario_native_strategy",
         "strategy_diagnostics.market_paths",
         "strategy_diagnostics.persistence",
+        "strategy_diagnostics.quentx_scenario_native_strategy",
     }
 )
 _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
@@ -827,6 +829,8 @@ def create_package_build_plans(
             "--include-module=strategy_diagnostics.persistence",
             "--include-module=strategy_diagnostics.market_paths",
             "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
+            "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
+            "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
             "--include-module=sqlalchemy.dialects.sqlite.pysqlite",
             "--include-package=duckdb",
             "--include-module=_duckdb",

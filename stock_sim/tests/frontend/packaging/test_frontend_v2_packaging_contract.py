@@ -159,8 +159,10 @@ _REQUIRED_QML_DEPENDENCY_MODULES = (
     "stock_sim.release.strategy_diagnostics_v1_release_fixture",
     "strategy_diagnostics.application",
     "strategy_diagnostics.diagnostic_evidence_storage",
+    "strategy_diagnostics.live_minute_scenario_native_strategy",
     "strategy_diagnostics.market_paths",
     "strategy_diagnostics.persistence",
+    "strategy_diagnostics.quentx_scenario_native_strategy",
 )
 
 
@@ -564,6 +566,8 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
         "--include-module=strategy_diagnostics.persistence",
         "--include-module=strategy_diagnostics.market_paths",
         "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
+        "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
+        "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
         "--include-module=sqlalchemy.dialects.sqlite.pysqlite",
         "--include-package=duckdb",
         "--include-module=_duckdb",
@@ -1321,8 +1325,10 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="stock_sim.release.strategy_diagnostics_v1_release_fixture" />
           <module name="strategy_diagnostics.application" />
           <module name="strategy_diagnostics.diagnostic_evidence_storage" />
+          <module name="strategy_diagnostics.live_minute_scenario_native_strategy" />
           <module name="strategy_diagnostics.market_paths" />
           <module name="strategy_diagnostics.persistence" />
+          <module name="strategy_diagnostics.quentx_scenario_native_strategy" />
           <data-file name="app/ui/qml/JourneyWorkspace.qml" />
         </nuitka-compilation-report>
         """,
@@ -1416,8 +1422,10 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="stock_sim.release.strategy_diagnostics_v1_release_fixture" />
           <module name="strategy_diagnostics.application" />
           <module name="strategy_diagnostics.diagnostic_evidence_storage" />
+          <module name="strategy_diagnostics.live_minute_scenario_native_strategy" />
           <module name="strategy_diagnostics.market_paths" />
           <module name="strategy_diagnostics.persistence" />
+          <module name="strategy_diagnostics.quentx_scenario_native_strategy" />
         </nuitka-compilation-report>
         """,
         encoding="utf-8",
@@ -1456,7 +1464,18 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
         )
 
 
-def test_qml_dependency_audit_requires_complete_real_v1_closure(tmp_path):
+@pytest.mark.parametrize(
+    "missing_module",
+    (
+        "_duckdb",
+        "strategy_diagnostics.quentx_scenario_native_strategy",
+        "strategy_diagnostics.live_minute_scenario_native_strategy",
+    ),
+)
+def test_qml_dependency_audit_requires_complete_real_v1_closure(
+    tmp_path,
+    missing_module,
+):
     complete_report = tmp_path / "complete-real-v1.xml"
     complete_report.write_text(
         _nuitka_report_xml(*_REQUIRED_QML_DEPENDENCY_MODULES),
@@ -1467,7 +1486,6 @@ def test_qml_dependency_audit_requires_complete_real_v1_closure(tmp_path):
         package_kind=PackageKind.QML_JOURNEY,
     ) == ()
 
-    missing_module = "_duckdb"
     incomplete_report = tmp_path / "incomplete-real-v1.xml"
     incomplete_report.write_text(
         _nuitka_report_xml(
