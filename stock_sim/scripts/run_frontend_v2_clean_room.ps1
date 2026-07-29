@@ -47,6 +47,20 @@ function Reset-RendererLaneEvidence {
     New-Item -ItemType Directory -Path $resolvedLane | Out-Null
 }
 
+function ConvertTo-ReleaseErrorList {
+    param(
+        [AllowNull()]
+        [object]$Errors
+    )
+
+    foreach ($errorValue in @($Errors)) {
+        $message = [string]$errorValue
+        if (-not [string]::IsNullOrWhiteSpace($message)) {
+            $message
+        }
+    }
+}
+
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -260,7 +274,9 @@ if ($widgetsInstallSucceeded) {
             )
             opened_panels = @($widgetsSmoke.opened_panels)
             clean_exit = $widgetsCleanExit
-            errors = @($widgetsSmoke.errors)
+            errors = @(
+                ConvertTo-ReleaseErrorList -Errors $widgetsSmoke.errors
+            )
         }
     }
     else {
@@ -690,7 +706,9 @@ if ($installSucceeded) {
                     $readOnlyContextVisible
                 )
                 clean_exit = $cleanExit
-                errors = @($smoke.errors)
+                errors = @(
+                    ConvertTo-ReleaseErrorList -Errors $smoke.errors
+                )
             }
         }
         else {

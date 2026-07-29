@@ -2212,6 +2212,73 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "$dependencyCachePaths = @(" in script
 
 
+def test_clean_room_error_normalizer_ignores_blank_json_error_values(
+    monkeypatch,
+):
+    powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell is required for the Windows gate")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    script = script_path.read_text(encoding="utf-8")
+    assert script.count("ConvertTo-ReleaseErrorList -Errors") >= 2
+    monkeypatch.setenv("ISSUE53_CLEAN_ROOM_SCRIPT", str(script_path))
+    command = r"""
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $env:ISSUE53_CLEAN_ROOM_SCRIPT,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw "Clean-room script did not parse."
+    }
+    $normalizer = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "ConvertTo-ReleaseErrorList"
+    }, $true)
+    if ($null -eq $normalizer) {
+        throw "ConvertTo-ReleaseErrorList is unavailable."
+    }
+    Invoke-Expression $normalizer.Extent.Text
+    $blank = @(ConvertTo-ReleaseErrorList -Errors "")
+    $whitespace = @(ConvertTo-ReleaseErrorList -Errors @(" ", "`t"))
+    $missing = @(ConvertTo-ReleaseErrorList -Errors $null)
+    $real = @(
+        ConvertTo-ReleaseErrorList -Errors @("first", "", "second")
+    )
+    if (
+        $blank.Count -ne 0 -or
+        $whitespace.Count -ne 0 -or
+        $missing.Count -ne 0 -or
+        $real.Count -ne 2 -or
+        $real[0] -ne "first" -or
+        $real[1] -ne "second"
+    ) {
+        throw "Release error normalization is incorrect."
+    }
+    """
+
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            command,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_clean_room_renderer_lane_reset_removes_stale_evidence(
     tmp_path,
     monkeypatch,
