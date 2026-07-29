@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -211,7 +210,8 @@ def run_integration_gate(
 ) -> tuple[IntegrationGateExecution, ...]:
     """Run the checked-in groups in isolation and stop on the first failure."""
 
-    validation = validate_integration_gate(project_root)
+    root = project_root.resolve()
+    validation = validate_integration_gate(root)
     if not validation.ok:
         raise RuntimeError("; ".join(validation.errors))
     selected = set(group_names)
@@ -226,40 +226,43 @@ def run_integration_gate(
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     environment.setdefault("QT_QUICK_BACKEND", "software")
     executions: list[IntegrationGateExecution] = []
-    for group in INTEGRATION_GATE_GROUPS:
+    for group_index, group in enumerate(INTEGRATION_GATE_GROUPS, start=1):
         if selected and group.name not in selected:
             continue
         interpreter = _interpreter_command(
             python_executable,
             clean_python=group.clean_python,
         )
-        command = (
-            *interpreter,
-            "-m",
-            "pytest",
-            *group.pytest_targets,
-            *group.pytest_args,
-            "-o",
-            "addopts=",
-            "-p",
-            "no:cacheprovider",
-            "-q",
-        )
-        temporary_database = (
-            TemporaryDirectory(prefix="stocksim-integration-gate-")
-            if group.fresh_sqlite
-            else nullcontext(None)
-        )
-        with temporary_database as database_root:
+        # Native DuckDB Parquet writes still observe the traditional Windows
+        # path limit. Keep every pytest and SQLite temporary path beside the
+        # checkout instead of under the much deeper user TEMP hierarchy.
+        with TemporaryDirectory(
+            prefix=f"uti-g{group_index:02d}-",
+            dir=root.parent,
+        ) as temporary_root:
+            group_root = Path(temporary_root).resolve()
+            command = (
+                *interpreter,
+                "-m",
+                "pytest",
+                *group.pytest_targets,
+                *group.pytest_args,
+                f"--basetemp={group_root / 'pytest'}",
+                "-o",
+                "addopts=",
+                "-p",
+                "no:cacheprovider",
+                "-q",
+            )
             group_environment = environment.copy()
-            if database_root is not None:
-                database_path = Path(database_root).resolve() / "stock_sim_test.db"
+            if group.fresh_sqlite:
+                database_path = group_root / "stock_sim_test.db"
                 group_environment["STOCKSIM_DB_URL"] = (
                     f"sqlite:///{database_path.as_posix()}"
                 )
             completed = subprocess.run(
                 command,
-                cwd=project_root,
+                cwd=root,
                 env=group_environment,
                 check=False,
             )

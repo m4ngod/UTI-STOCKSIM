@@ -179,6 +179,15 @@ def test_gate_neutralizes_external_pytest_configuration(
     assert ("-p", "no:cacheprovider") == command[
         command.index("-p") : command.index("-p") + 2
     ]
+    basetemp_arguments = tuple(
+        argument
+        for argument in command
+        if isinstance(argument, str)
+        and argument.startswith("--basetemp=")
+    )
+    assert len(basetemp_arguments) == 1
+    basetemp = Path(basetemp_arguments[0].split("=", maxsplit=1)[1])
+    assert basetemp.parent.parent == PROJECT_ROOT.parent
     environment = captured["env"]
     assert isinstance(environment, dict)
     assert "PYTEST_ADDOPTS" not in environment
