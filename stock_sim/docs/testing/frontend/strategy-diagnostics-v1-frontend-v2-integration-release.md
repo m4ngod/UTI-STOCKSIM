@@ -80,3 +80,50 @@ rollback artifact.
 Source changes alone do not certify the candidate. Certification exists only
 after the retained issue-53 evidence and GitHub release bind the immutable
 source commit to the checksums of both offline archives.
+
+## Certified candidate
+
+Issue #53 certified the following immutable prerelease on 2026-07-30:
+
+- Source commit:
+  `3359bce1eb14c10ecbbc2fd1cab17a17db31e5a4`
+- Release tag:
+  `strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14`
+- GitHub prerelease:
+  <https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14>
+- Retained evidence:
+  `docs/testing/frontend/evidence/issue-53/3359bce1eb14c10ecbbc2fd1cab17a17db31e5a4/`
+
+The final gates passed on the same source commit:
+
+- T08: 12 accessibility tests passed.
+- T09/T10: the aggregate certification status is `certified`; both the
+  Direct3D 11 and Software renderer lanes completed 60 continuous seconds
+  with zero stalls and zero manual-trading actions.
+- Hardware p95 visible latency was 7.2405 ms, p95 input latency was
+  0.6411 ms, and peak RSS was 78.386719 MiB.
+- Software p95 visible latency was 9.3986 ms, p95 input latency was
+  0.6252 ms, and peak RSS was 38.335938 MiB.
+- Windows Sandbox reported exit code 0 with zero network adapters up, no
+  Python, compiler, or dependency cache available, successful installation
+  of both archives, clean hardware/software QML journeys, and a clean real
+  Widgets rollback launch.
+- Raw packaging and Sandbox launch logs are retained alongside their sizes and
+  SHA-256 checksums in `retained-log-checksums.json`.
+
+The published offline archives are:
+
+- `qml-journey-3359bce1eb14.zip`
+  (`sha256:bb625996e569807de258547797621c6149f5d8b757dda4e754ea714e3fdb4b1e`,
+  208341173 bytes)
+- `widgets-rollback-3359bce1eb14.zip`
+  (`sha256:8d8b2507ac1614363b2f4c758121bf788bedd1aca7bfa239ef7d47c81be4eaa5`,
+  199829115 bytes)
+
+GitHub server digests, local digests, sizes, and distributed start, middle,
+and tail byte ranges were independently matched for both assets. The retained
+`release-asset-verification.json` records those checks.
+
+This certification remains limited to the two active Feature Interfaces named
+above. It does not certify Diagnostic Tasks, Strategy Library, Scenario Lab,
+System Health, or any other Wave 2–4 scope.
