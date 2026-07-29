@@ -1,4 +1,5 @@
 import os
+from time import monotonic, sleep
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -94,6 +95,16 @@ def _accessible_name(item: QObject) -> str:
 def _settle(app: QApplication) -> None:
     app.processEvents()
     app.processEvents()
+
+
+def _wait_for(predicate, app: QApplication, message: str) -> None:
+    deadline = monotonic() + 8
+    while monotonic() < deadline:
+        _settle(app)
+        if predicate():
+            return
+        sleep(0.01)
+    raise AssertionError(message)
 
 
 def _close(
@@ -247,6 +258,11 @@ def test_evidence_semantics_keep_chart_narrative_and_table_on_one_revision():
     assert adapter.selectedFindingIdentity == "F-MODEL-B17-02"
     assert bool(alternate_interface.state().selected) is True
     assert "F-MODEL-B17-02" in _accessible_name(narrative)
+    _wait_for(
+        lambda: adapter.chartInteractionEnabled,
+        app,
+        "chart interaction did not re-enable after finding selection",
+    )
 
     chart.forceActiveFocus()
     app.processEvents()
@@ -263,9 +279,11 @@ def test_evidence_semantics_keep_chart_narrative_and_table_on_one_revision():
     chart_interface.actionInterface().doAction(
         QAccessibleActionInterface.decreaseAction()
     )
-    QTest.qWait(60)
-    app.processEvents()
-    assert adapter.selectedChartPointIndex < before
+    _wait_for(
+        lambda: adapter.selectedChartPointIndex < before,
+        app,
+        "accessible decrease action did not select the previous chart point",
+    )
     assert revision in _accessible_name(narrative)
     assert revision in _accessible_name(table)
     assert f"#{adapter.selectedChartPointIndex}" in _accessible_name(narrative)
