@@ -20,6 +20,9 @@ from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
 import zipfile
 
+from strategy_diagnostics.formal_strategy_sources import (
+    FORMAL_STRATEGY_SOURCE_BINDINGS,
+)
 from stock_sim.release.no_manual_trading_gate import (
     NoManualTradingGateReport,
     audit_no_manual_trading_gate,
@@ -32,6 +35,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_QML_ROOT = PROJECT_ROOT / "app" / "ui" / "qml"
 TOOLCHAIN_LOCK_PATH = Path(__file__).with_name(
     "frontend_v2_toolchain.lock.json"
+)
+_FORMAL_STRATEGY_SOURCE_DATA_FILES = (
+    *(
+        (
+            PROJECT_ROOT / binding.source_relative_path,
+            binding.packaged_relative_path,
+        )
+        for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values()
+    ),
+)
+_REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
+    destination
+    for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
 _QML_IMPORT_PATTERN = re.compile(
@@ -336,6 +352,7 @@ class PackageEvidence:
     qml_delta_limit_bytes: int
     webengine_files: tuple[str, ...]
     dependency_reports: tuple[ArtifactChecksum, ...]
+    formal_strategy_sources: tuple[ArtifactChecksum, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -831,6 +848,11 @@ def create_package_build_plans(
             "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
             "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
             "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
+            *(
+                f"--include-data-files={source}={destination}"
+                for source, destination
+                in _FORMAL_STRATEGY_SOURCE_DATA_FILES
+            ),
             "--include-module=sqlalchemy.dialects.sqlite.pysqlite",
             "--include-package=duckdb",
             "--include-module=_duckdb",
@@ -1075,6 +1097,16 @@ def write_package_evidence(
         _checksum_file(plan.nuitka_report, packages_root)
         for plan in sorted(plans, key=lambda item: item.kind.value)
     )
+    qml_distribution = plans_by_kind[
+        PackageKind.QML_JOURNEY
+    ].distribution_dir
+    formal_strategy_sources = tuple(
+        _checksum_file(
+            qml_distribution / binding.packaged_relative_path,
+            packages_root,
+        )
+        for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values()
+    )
     evidence = PackageEvidence(
         source_commit=source_commit,
         toolchain_identity=toolchain_evidence_identity(lock),
@@ -1084,6 +1116,7 @@ def write_package_evidence(
         qml_delta_limit_bytes=MAX_QML_DELTA_BYTES,
         webengine_files=webengine_files,
         dependency_reports=dependency_reports,
+        formal_strategy_sources=formal_strategy_sources,
     )
     evidence_dir.mkdir(parents=True, exist_ok=True)
     manifest_payload = {
@@ -1102,6 +1135,9 @@ def write_package_evidence(
         "webengine_files": webengine_files,
         "dependency_reports": tuple(
             asdict(report) for report in dependency_reports
+        ),
+        "formal_strategy_sources": tuple(
+            asdict(source) for source in formal_strategy_sources
         ),
     }
     (evidence_dir / "dependency-manifest.json").write_text(
@@ -1937,6 +1973,19 @@ def audit_nuitka_dependency_report(
                     "Required real V1 module is absent from the QML "
                     f"dependency closure: {module_name}"
                 )
+        observed_data_files = {
+            element.attrib["name"].replace("\\", "/").casefold()
+            for element in root.findall(".//data_file")
+            if element.attrib.get("name")
+        }
+        for source_path in sorted(
+            _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES
+        ):
+            if source_path.casefold() not in observed_data_files:
+                findings.append(
+                    "Required audited formal strategy source is absent from "
+                    f"the QML package: {source_path}"
+                )
     for usage in root.findall(".//module_usage"):
         module_name = usage.attrib.get("name", "")
         if (
@@ -2053,6 +2102,45 @@ def audit_frontend_v2_surface(
     return tuple(dict.fromkeys(findings))
 
 
+def audit_packaged_formal_strategy_sources(
+    distribution_dir: Path,
+    *,
+    source_root: Path = PROJECT_ROOT,
+) -> tuple[str, ...]:
+    """Verify retained strategy text against immutable compiled digests."""
+
+    findings: list[str] = []
+    for module_name, binding in FORMAL_STRATEGY_SOURCE_BINDINGS.items():
+        paths = (
+            (
+                "source",
+                source_root / binding.source_relative_path,
+            ),
+            (
+                "packaged",
+                distribution_dir / binding.packaged_relative_path,
+            ),
+        )
+        for location, path in paths:
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                findings.append(
+                    f"{location.capitalize()} audited formal strategy "
+                    f"source is unavailable: {module_name}"
+                )
+                continue
+            observed = hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest()
+            if observed != binding.normalized_sha256:
+                findings.append(
+                    f"{location.capitalize()} audited formal strategy "
+                    f"source digest does not match: {module_name}"
+                )
+    return tuple(findings)
+
+
 def create_deterministic_package_archive(
     plan: PackageBuildPlan,
     *,
@@ -2152,6 +2240,15 @@ def build_frontend_v2_release(
                 f"{plan.kind.value} dependency audit failed: "
                 + "; ".join(dependency_findings)
             )
+        if plan.kind is PackageKind.QML_JOURNEY:
+            source_findings = audit_packaged_formal_strategy_sources(
+                plan.distribution_dir
+            )
+            if source_findings:
+                raise RuntimeError(
+                    "qml-journey formal strategy source audit failed: "
+                    + "; ".join(source_findings)
+                )
 
     qml_plan = next(
         plan for plan in plans if plan.kind is PackageKind.QML_JOURNEY
@@ -2353,6 +2450,69 @@ def verify_packaged_dependency_evidence(
             f"release pair: expected {sorted(expected_paths)!r}, "
             f"observed {sorted(observed_paths)!r}"
         )
+    retained_sources = packages.get("formal_strategy_sources")
+    expected_source_paths = {
+        (
+            "qml-journey/frontend_v2_package_entry.dist/"
+            + binding.packaged_relative_path
+        )
+        for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values()
+    }
+    observed_source_paths: set[str] = set()
+    if not isinstance(retained_sources, list):
+        findings.append(
+            "Packaged formal strategy source inventory is unavailable"
+        )
+    else:
+        for retained_source in retained_sources:
+            if not isinstance(retained_source, dict):
+                findings.append(
+                    "Packaged formal strategy source inventory is invalid"
+                )
+                continue
+            relative_path = str(
+                retained_source.get("relative_path", "")
+            )
+            observed_source_paths.add(relative_path)
+            source_path = (packages_root / relative_path).resolve()
+            try:
+                source_path.relative_to(packages_root)
+            except ValueError:
+                findings.append(
+                    "Packaged formal strategy source escapes package root: "
+                    f"{relative_path}"
+                )
+                continue
+            if not source_path.is_file():
+                findings.append(
+                    "Packaged formal strategy source is unavailable: "
+                    f"{relative_path}"
+                )
+                continue
+            observed = _checksum_file(source_path, packages_root)
+            if (
+                observed.sha256 != retained_source.get("sha256")
+                or observed.size_bytes
+                != retained_source.get("size_bytes")
+            ):
+                findings.append(
+                    "Packaged formal strategy source checksum does not "
+                    f"match candidate evidence: {relative_path}"
+                )
+        if observed_source_paths != expected_source_paths:
+            findings.append(
+                "Packaged formal strategy source inventory does not match "
+                f"the registered bindings: expected "
+                f"{sorted(expected_source_paths)!r}, observed "
+                f"{sorted(observed_source_paths)!r}"
+            )
+    findings.extend(
+        audit_packaged_formal_strategy_sources(
+            packages_root
+            / "qml-journey"
+            / "frontend_v2_package_entry.dist"
+        )
+    )
     return tuple(dict.fromkeys(findings))
 
 
@@ -2917,6 +3077,7 @@ __all__ = [
     "RendererGateEvidence",
     "ReleaseBuildResult",
     "SafetyGateEvidence",
+    "audit_packaged_formal_strategy_sources",
     "build_frontend_v2_release",
     "certify_frontend_v2_release",
     "load_toolchain_lock",

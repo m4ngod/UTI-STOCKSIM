@@ -9,6 +9,9 @@ from dataclasses import asdict, replace
 
 import pytest
 
+from strategy_diagnostics.formal_strategy_sources import (
+    FORMAL_STRATEGY_SOURCE_BINDINGS,
+)
 from stock_sim.release.frontend_v2_packaging import (
     AccessibilityGateEvidence,
     EXPECTED_TOOLCHAIN,
@@ -20,6 +23,7 @@ from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
     audit_frontend_v2_surface,
     audit_nuitka_dependency_report,
+    audit_packaged_formal_strategy_sources,
     certify_frontend_v2_release,
     classify_windows_operating_system,
     create_package_build_plans,
@@ -164,17 +168,46 @@ _REQUIRED_QML_DEPENDENCY_MODULES = (
     "strategy_diagnostics.persistence",
     "strategy_diagnostics.quentx_scenario_native_strategy",
 )
+_REQUIRED_QML_FORMAL_STRATEGY_SOURCE_FILES = (
+    (
+        "strategy_diagnostics/formal_sources/"
+        "live_minute_scenario_native_strategy.py.txt"
+    ),
+    (
+        "strategy_diagnostics/formal_sources/"
+        "quentx_scenario_native_strategy.py.txt"
+    ),
+)
 
 
-def _nuitka_report_xml(*module_names):
+def _nuitka_report_xml(
+    *module_names,
+    data_files=_REQUIRED_QML_FORMAL_STRATEGY_SOURCE_FILES,
+):
     modules = "".join(
         f'<module name="{module_name}" />'
         for module_name in module_names
     )
+    retained_data_files = "".join(
+        f'<data_file name="{relative_path}" />'
+        for relative_path in data_files
+    )
     return (
         '<nuitka-compilation-report mode="standalone" completion="yes">'
-        f"{modules}</nuitka-compilation-report>"
+        f"{modules}{retained_data_files}</nuitka-compilation-report>"
     )
+
+
+def _write_bound_formal_strategy_sources(distribution_dir):
+    for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values():
+        destination = distribution_dir / binding.packaged_relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            (PROJECT_ROOT / binding.source_relative_path).read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
 
 
 def _write_clean_room_screenshots(root, lane):
@@ -568,6 +601,18 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
         "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
         "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
         "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
+        (
+            "--include-data-files="
+            f"{PROJECT_ROOT / 'strategy_diagnostics' / 'quentx_scenario_native_strategy.py'}"
+            "=strategy_diagnostics/formal_sources/"
+            "quentx_scenario_native_strategy.py.txt"
+        ),
+        (
+            "--include-data-files="
+            f"{PROJECT_ROOT / 'strategy_diagnostics' / 'live_minute_scenario_native_strategy.py'}"
+            "=strategy_diagnostics/formal_sources/"
+            "live_minute_scenario_native_strategy.py.txt"
+        ),
         "--include-module=sqlalchemy.dialects.sqlite.pysqlite",
         "--include-package=duckdb",
         "--include-module=_duckdb",
@@ -707,6 +752,7 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
     )
     qml_marker.parent.mkdir(parents=True)
     qml_marker.write_text("module QtQuick\n", encoding="utf-8")
+    _write_bound_formal_strategy_sources(plans[1].distribution_dir)
 
     evidence = write_package_evidence(
         plans=plans,
@@ -727,6 +773,16 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
         "qml-journey/nuitka-report.xml",
         "widgets-rollback/nuitka-report.xml",
     }
+    assert {
+        source.relative_path
+        for source in evidence.formal_strategy_sources
+    } == {
+        (
+            "qml-journey/frontend_v2_package_entry.dist/"
+            + binding.packaged_relative_path
+        )
+        for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values()
+    }
     manifest = tmp_path / "evidence" / "dependency-manifest.json"
     checksums = tmp_path / "evidence" / "SHA256SUMS.txt"
     assert manifest.is_file()
@@ -736,6 +792,27 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
     )
     assert "UTI-Frontend-V2.exe" in checksums.read_text(
         encoding="utf-8"
+    )
+
+
+def test_packaged_formal_strategy_source_audit_rejects_ast_clean_tampering(
+    tmp_path,
+):
+    distribution_dir = tmp_path / "frontend_v2_package_entry.dist"
+    _write_bound_formal_strategy_sources(distribution_dir)
+    assert audit_packaged_formal_strategy_sources(distribution_dir) == ()
+
+    binding = next(iter(FORMAL_STRATEGY_SOURCE_BINDINGS.values()))
+    (distribution_dir / binding.packaged_relative_path).write_text(
+        "SOURCE_KIND = 'ast-clean-but-tampered'\n",
+        encoding="utf-8",
+    )
+
+    assert audit_packaged_formal_strategy_sources(
+        distribution_dir
+    ) == (
+        "Packaged audited formal strategy source digest does not match: "
+        "strategy_diagnostics.quentx_scenario_native_strategy",
     )
 
 
@@ -921,6 +998,31 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
         + hashlib.sha256(widgets_archive.read_bytes()).hexdigest()
     )
     packages_dir = tmp_path / "packages"
+    qml_distribution = (
+        packages_dir
+        / "qml-journey"
+        / "frontend_v2_package_entry.dist"
+    )
+    _write_bound_formal_strategy_sources(qml_distribution)
+    formal_strategy_sources = []
+    for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values():
+        retained_source = (
+            qml_distribution / binding.packaged_relative_path
+        )
+        formal_strategy_sources.append(
+            {
+                "relative_path": (
+                    retained_source.relative_to(packages_dir).as_posix()
+                ),
+                "size_bytes": retained_source.stat().st_size,
+                "sha256": (
+                    "sha256:"
+                    + hashlib.sha256(
+                        retained_source.read_bytes()
+                    ).hexdigest()
+                ),
+            }
+        )
     dependency_reports = []
     safe_dependency_xml_by_kind = {
         "widgets-rollback": (
@@ -936,7 +1038,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     }
     for kind in ("widgets-rollback", "qml-journey"):
         dependency_report = packages_dir / kind / "nuitka-report.xml"
-        dependency_report.parent.mkdir(parents=True)
+        dependency_report.parent.mkdir(parents=True, exist_ok=True)
         dependency_report.write_text(
             safe_dependency_xml_by_kind[kind],
             encoding="utf-8",
@@ -968,6 +1070,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "safety": safety_evidence,
                 "packages": {
                     "dependency_reports": dependency_reports,
+                    "formal_strategy_sources": formal_strategy_sources,
                 },
                 "archives": [
                     {
@@ -1082,6 +1185,34 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
         safe_dependency_xml_by_kind["qml-journey"],
         encoding="utf-8",
     )
+
+    retained_source = (
+        qml_distribution
+        / next(
+            iter(FORMAL_STRATEGY_SOURCE_BINDINGS.values())
+        ).packaged_relative_path
+    )
+    expected_source_bytes = retained_source.read_bytes()
+    retained_source.write_text(
+        "SOURCE_KIND = 'ast-clean-but-tampered'\n",
+        encoding="utf-8",
+    )
+    try:
+        certify_frontend_v2_release(
+            output_root=tmp_path,
+            source_commit="abc123",
+            clean_room_report=report,
+        )
+    except RuntimeError as error:
+        assert (
+            "formal strategy source checksum does not match"
+            in str(error)
+        )
+    else:
+        raise AssertionError(
+            "Tampered audited formal strategy source was accepted"
+        )
+    retained_source.write_bytes(expected_source_bytes)
 
     qml_archive.write_bytes(b"tampered")
     try:
@@ -1329,7 +1460,9 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="strategy_diagnostics.market_paths" />
           <module name="strategy_diagnostics.persistence" />
           <module name="strategy_diagnostics.quentx_scenario_native_strategy" />
-          <data-file name="app/ui/qml/JourneyWorkspace.qml" />
+          <data_file name="app/ui/qml/JourneyWorkspace.qml" />
+          <data_file name="strategy_diagnostics/formal_sources/live_minute_scenario_native_strategy.py.txt" />
+          <data_file name="strategy_diagnostics/formal_sources/quentx_scenario_native_strategy.py.txt" />
         </nuitka-compilation-report>
         """,
         encoding="utf-8",
@@ -1426,6 +1559,8 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="strategy_diagnostics.market_paths" />
           <module name="strategy_diagnostics.persistence" />
           <module name="strategy_diagnostics.quentx_scenario_native_strategy" />
+          <data_file name="strategy_diagnostics/formal_sources/live_minute_scenario_native_strategy.py.txt" />
+          <data_file name="strategy_diagnostics/formal_sources/quentx_scenario_native_strategy.py.txt" />
         </nuitka-compilation-report>
         """,
         encoding="utf-8",
@@ -1504,6 +1639,36 @@ def test_qml_dependency_audit_requires_complete_real_v1_closure(
     assert findings == (
         "Required real V1 module is absent from the QML "
         f"dependency closure: {missing_module}",
+    )
+
+
+@pytest.mark.parametrize(
+    "missing_source",
+    _REQUIRED_QML_FORMAL_STRATEGY_SOURCE_FILES,
+)
+def test_qml_dependency_audit_requires_auditable_strategy_sources(
+    tmp_path,
+    missing_source,
+):
+    report = tmp_path / "missing-formal-strategy-source.xml"
+    report.write_text(
+        _nuitka_report_xml(
+            *_REQUIRED_QML_DEPENDENCY_MODULES,
+            data_files=(
+                source
+                for source in _REQUIRED_QML_FORMAL_STRATEGY_SOURCE_FILES
+                if source != missing_source
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    assert audit_nuitka_dependency_report(
+        report,
+        package_kind=PackageKind.QML_JOURNEY,
+    ) == (
+        "Required audited formal strategy source is absent from the QML "
+        f"package: {missing_source}",
     )
 
 

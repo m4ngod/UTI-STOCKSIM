@@ -20,6 +20,7 @@ from types import MappingProxyType, ModuleType
 from typing import Callable, Final, Literal, Mapping, Protocol, Sequence, cast
 
 from .execution_conditions import ResolvedExecutionConditions
+from .formal_strategy_sources import FORMAL_STRATEGY_SOURCE_BINDINGS
 from .market_paths import InstrumentState, MarketPathNode, ScenarioMarketSnapshot
 
 
@@ -1595,20 +1596,28 @@ def _load_strategy_module(
             f"strategy_module:{manifest.strategy_module}",
             detail="registered strategy module cannot be loaded",
         )
-    if specification.origin is None:
+    source, source_path = _read_formal_strategy_source(
+        manifest.strategy_module,
+        origin=specification.origin,
+    )
+    binding = FORMAL_STRATEGY_SOURCE_BINDINGS.get(
+        manifest.strategy_module
+    )
+    if (
+        binding is not None
+        and hashlib.sha256(source.encode("utf-8")).hexdigest()
+        != binding.normalized_sha256
+    ):
         raise PTradeCompatibilityError(
             f"strategy_module:{manifest.strategy_module}",
-            detail="registered formal strategy must have auditable source",
+            detail="registered formal strategy source integrity mismatch",
         )
-    try:
-        source = Path(specification.origin).read_text(encoding="utf-8")
-    except OSError as error:
-        raise PTradeCompatibilityError(
-            f"strategy_module:{manifest.strategy_module}",
-            detail="registered formal strategy source cannot be audited",
-        ) from error
     _audit_formal_strategy_source(source, module_name=manifest.strategy_module)
-    module = importlib.util.module_from_spec(specification)
+    module = ModuleType(manifest.strategy_module)
+    module.__file__ = str(source_path)
+    module.__loader__ = specification.loader
+    module.__package__ = manifest.strategy_module.rpartition(".")[0]
+    module.__spec__ = specification
     # Install the restricted builtins before executing module-level code.  This
     # prevents aliases such as ``reader = open`` from capturing the real file
     # API before the PTrade surface is injected.
@@ -1616,13 +1625,46 @@ def _load_strategy_module(
     previous = sys.modules.get(manifest.strategy_module)
     sys.modules[manifest.strategy_module] = module
     try:
-        specification.loader.exec_module(module)
+        code = compile(source, str(source_path), "exec")
+        exec(code, module.__dict__)
     finally:
         if previous is None:
             sys.modules.pop(manifest.strategy_module, None)
         else:
             sys.modules[manifest.strategy_module] = previous
     return module
+
+
+def _read_formal_strategy_source(
+    module_name: str,
+    *,
+    origin: str | None,
+) -> tuple[str, Path]:
+    candidates: list[Path] = []
+    if origin is not None:
+        candidates.append(Path(origin))
+    binding = FORMAL_STRATEGY_SOURCE_BINDINGS.get(module_name)
+    if binding is not None:
+        executable = Path(sys.argv[0] if sys.argv else sys.executable)
+        candidates.append(
+            executable.resolve().parent
+            / Path(binding.packaged_relative_path)
+        )
+    last_error: OSError | UnicodeError | None = None
+    for candidate in dict.fromkeys(candidates):
+        try:
+            return candidate.read_text(encoding="utf-8"), candidate
+        except (OSError, UnicodeError) as error:
+            last_error = error
+    detail = (
+        "registered formal strategy must have auditable source"
+        if not candidates
+        else "registered formal strategy source cannot be audited"
+    )
+    raise PTradeCompatibilityError(
+        f"strategy_module:{module_name}",
+        detail=detail,
+    ) from last_error
 
 
 def _audit_formal_strategy_source(source: str, *, module_name: str) -> None:

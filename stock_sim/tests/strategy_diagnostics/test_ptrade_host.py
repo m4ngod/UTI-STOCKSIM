@@ -241,6 +241,125 @@ def test_real_loader_context_reflection_cannot_recover_undeclared_fields(
         InProcessPTradeStrategyHost().invoke(invocation)
 
 
+def test_registered_strategy_loader_uses_packaged_auditable_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = QUENTX_SCENARIO_NATIVE_MANIFEST.strategy_module
+    compiled_origin = tmp_path / "compiled-module.pyd"
+    specification = importlib.util.spec_from_file_location(
+        module_name,
+        compiled_origin,
+    )
+    assert specification is not None
+    source_path = (
+        tmp_path
+        / "strategy_diagnostics"
+        / "formal_sources"
+        / "quentx_scenario_native_strategy.py.txt"
+    )
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        Path(ptrade_host_module.__file__)
+        .with_name("quentx_scenario_native_strategy.py")
+        .read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda _name: specification,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(tmp_path / "UTI-Frontend-V2.exe")],
+    )
+
+    module = ptrade_host_module._load_strategy_module(
+        QUENTX_SCENARIO_NATIVE_MANIFEST
+    )
+
+    assert (
+        module.STRATEGY_LINEAGE
+        == "QuentX5_2_3_retest_soft_promoted_v20260721"
+    )
+
+
+def test_strategy_loader_audits_source_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "strategy_diagnostics.formal_strategy_audit_probe"
+    source_path = tmp_path / "formal_strategy_audit_probe.py"
+    source_path.write_text(
+        "open('external-market-path.parquet')\n",
+        encoding="utf-8",
+    )
+    specification = importlib.util.spec_from_file_location(
+        module_name,
+        source_path,
+    )
+    assert specification is not None
+    manifest = replace(
+        REFERENCE_PTRADE_COMPATIBILITY_MANIFEST,
+        strategy_module=module_name,
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda _name: specification,
+    )
+
+    with pytest.raises(
+        PTradeCompatibilityError,
+        match=r"external_market_path",
+    ):
+        ptrade_host_module._load_strategy_module(manifest)
+
+
+def test_registered_packaged_strategy_rejects_ast_clean_source_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = QUENTX_SCENARIO_NATIVE_MANIFEST.strategy_module
+    compiled_origin = tmp_path / "compiled-module.pyd"
+    specification = importlib.util.spec_from_file_location(
+        module_name,
+        compiled_origin,
+    )
+    assert specification is not None
+    source_path = (
+        tmp_path
+        / "strategy_diagnostics"
+        / "formal_sources"
+        / "quentx_scenario_native_strategy.py.txt"
+    )
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "SOURCE_KIND = 'ast-clean-but-tampered'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda _name: specification,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(tmp_path / "UTI-Frontend-V2.exe")],
+    )
+
+    with pytest.raises(
+        PTradeCompatibilityError,
+        match=r"source integrity mismatch",
+    ):
+        ptrade_host_module._load_strategy_module(
+            QUENTX_SCENARIO_NATIVE_MANIFEST
+        )
+
+
 def test_reference_manifest_rejects_undeclared_history_units(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
