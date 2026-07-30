@@ -26,6 +26,7 @@ from app.services.agent_service import (
     AgentServiceError,
     BATCH_ALLOWED_TYPES,
     BatchCreateConfig,
+    DEFAULT_MODEL_INITIAL_CASH,
 )
 from app.core_dto.agent import AgentMetaDTO
 from threading import RLock
@@ -43,6 +44,9 @@ class AgentController:
 
     def control(self, agent_id: str, action: ActionType) -> AgentMetaDTO:  # R3 AC2
         return self._service.control(agent_id, action)
+
+    def control_many(self, agent_ids: List[str], action: ActionType) -> Dict[str, Any]:
+        return self._service.control_many(agent_ids, action)
 
     def tail_logs(self, agent_id: str, n: int = 100) -> List[str]:  # R3 AC4
         return self._service.tail_logs(agent_id, n)
@@ -63,4 +67,23 @@ class AgentController:
             raise AgentServiceError("AGENT_BATCH_UNSUPPORTED", f"type {agent_type} not allowed for batch")
         cfg = BatchCreateConfig(count=count, agent_type=agent_type, name_prefix=name_prefix)
         return self._service.batch_create_retail(cfg)
+
+    def create_model_agent(
+        self,
+        *,
+        agent_id: str | None = None,
+        model_id: str = "hold_model_v1",
+        name: str | None = None,
+        mode: str = "inference",
+        initial_cash: float = DEFAULT_MODEL_INITIAL_CASH,
+        episode_id: str | None = None,
+    ) -> AgentMetaDTO:
+        return self._service.create_model_agent(
+            agent_id=agent_id,
+            model_id=model_id,
+            name=name,
+            mode=mode,
+            initial_cash=initial_cash,
+            episode_id=episode_id,
+        )
 

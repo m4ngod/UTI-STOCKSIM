@@ -1,5 +1,17 @@
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from app.panels import register_panel, get_panel, list_panels, dispose_panel, reset_registry, register_builtin_panels
 from app.ui.main_window import MainWindow
+
+
+def _ensure_qapp():
+    try:
+        from PySide6.QtWidgets import QApplication  # type: ignore
+    except Exception:
+        return None
+    return QApplication.instance() or QApplication([])
 
 
 def test_panel_registry_lazy_creation():
@@ -23,9 +35,10 @@ def test_panel_registry_lazy_creation():
 def test_mainwindow_registered_panels_open():
     reset_registry()
     register_builtin_panels()
+    _ensure_qapp()
     mw = MainWindow()
     avail = set(mw.list_registered())
-    for name in {"account", "market", "agents", "leaderboard", "clock", "orders"}:
+    for name in {"account", "market", "agents", "arena", "leaderboard", "clock", "orders"}:
         assert name in avail
     acc_panel = mw.open_panel('account')
     assert acc_panel is not None

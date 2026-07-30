@@ -1,0 +1,521 @@
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from app.services.model_registry_service import ExternalPolicyAdapter, HoldModel, ModelRegistryService
+from app.services.runtime_model_agent import RuntimeModelAgent
+
+
+class _Gateway:
+    def __init__(self):
+        self.orders = []
+
+    def list_instruments(self, *, active_only=True):
+        return [{"symbol": "001", "initial_price": 10.0}]
+
+    def get_recent_trades(self, symbol, *, limit=1):
+        return []
+
+    def get_bars(self, symbol, timeframe, *, limit):
+        return [{"close": 10.0}]
+
+    def get_account_snapshot(self, account_id):
+        return {"account_id": account_id, "cash": 100_000.0, "equity": 100_000.0, "positions": []}
+
+    def get_current_run_id(self):
+        return "run-external-policy"
+
+    def get_current_sim_day(self):
+        return 7
+
+    def clock_snapshot(self):
+        return {"running": True}
+
+    def submit_order(self, **kwargs):
+        self.orders.append(kwargs)
+        return {"ok": True, "order_id": f"order-{len(self.orders)}"}
+
+
+class _TrainableStub:
+    def __init__(self, model_id):
+        self.model_id = model_id
+        self.learn_calls = []
+
+    def act(self, observation):
+        return {
+            "contract_version": "act.v1",
+            "action_type": "target_weight",
+            "target": {"symbols": ["001"]},
+            "payload": {"weights": {"001": 0.2}},
+            "constraints": {"clip_to_limits": True},
+            "meta": {"source": "trainable_stub"},
+        }
+
+    def learn(self, transition):
+        self.learn_calls.append(transition)
+        return {"ok": True, "loss": 0.123}
+
+    def save_checkpoint(self, path):
+        return {"ok": True, "path": path, "kind": "stub"}
+
+
+class _OrderPolicy:
+    def act(self, observation):
+        return {
+            "contract_version": "act.v1",
+            "action_type": "order",
+            "target": {"account_id": "MODEL_ORDER", "symbol": "001"},
+            "payload": {
+                "symbol": "001",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "tif": "GFD",
+                "quantity": 10,
+                "price": 10.01,
+            },
+            "constraints": {},
+            "meta": {"policy": "order_stub"},
+        }
+
+
+class _PolicyHandler(BaseHTTPRequestHandler):
+    requests = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8")
+        payload = json.loads(body or "{}")
+        self.__class__.requests.append({"path": self.path, "payload": payload})
+        if self.path == "/act":
+            response = {
+                "action": {
+                    "contract_version": "act.v1",
+                    "action_type": "target_weight",
+                    "payload": {"weights": {"001": 0.35}},
+                    "meta": {"remote": True},
+                }
+            }
+        elif self.path == "/learn":
+            response = {"ok": True, "loss": 0.456}
+        elif self.path == "/checkpoint":
+            response = {"ok": True, "remote_path": payload.get("path")}
+        else:
+            response = {"ok": False, "error": "unknown path"}
+        data = json.dumps(response).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args):
+        return
+
+
+class _PolicyServer:
+    def __enter__(self):
+        _PolicyHandler.requests = []
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _PolicyHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.base_url = f"http://{host}:{port}"
+        return self
+
+    def __exit__(self, *_exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2.0)
+
+
+def test_registry_persists_and_loads_static_external_policy(tmp_path):
+    registry_path = tmp_path / "policies.json"
+    registry = ModelRegistryService(session_factory=None, registry_path=registry_path)
+    registry.register_external_policy(
+        "external_static_v1",
+        adapter_type="static_action",
+        config={
+            "action": {
+                "contract_version": "act.v1",
+                "action_type": "target_weight",
+                "target": {"symbols": ["001"]},
+                "payload": {"weights": {"001": 0.25}},
+            }
+        },
+    )
+
+    reloaded = ModelRegistryService(session_factory=None, registry_path=registry_path)
+    policy = reloaded.create_policy("external_static_v1")
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_EXT"}})
+
+    assert registry_path.exists()
+    assert "external_static_v1" in {spec.model_id for spec in reloaded.list_models()}
+    assert isinstance(policy, ExternalPolicyAdapter)
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_EXT"
+    assert action["meta"]["model_id"] == "external_static_v1"
+    assert action["meta"]["policy_type"] == "external"
+
+
+def test_hold_model_randomizes_top_of_book_order_when_liquidity_exists():
+    policy = HoldModel(seed=7)
+
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_HOLD", "symbol_universe": ["001"]},
+            "account": {
+                "cash": 50_000_000.0,
+                "equity": 50_000_000.0,
+                "positions": [{"symbol": "001", "quantity": 1000, "frozen_qty": 0}],
+            },
+            "market": {"order_books": {"001": {"best_bid": 19.99, "best_ask": 20.01}}},
+        }
+    )
+
+    assert action["action_type"] == "order"
+    assert action["payload"]["symbol"] == "001"
+    assert action["payload"]["side"] in {"BUY", "SELL"}
+    if action["payload"]["side"] == "BUY":
+        assert action["payload"]["price"] == 20.01
+    else:
+        assert action["payload"]["price"] == 19.99
+
+
+def test_hold_model_can_choose_bid_side_before_inventory_and_let_executor_clip():
+    policy = HoldModel(seed=0)
+
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_HOLD", "symbol_universe": ["001"]},
+            "account": {"cash": 50_000_000.0, "equity": 50_000_000.0, "positions": []},
+            "market": {"order_books": {"001": {"best_bid": 19.99, "best_ask": 20.01}}},
+        }
+    )
+
+    assert action["action_type"] == "order"
+    assert action["payload"]["side"] == "SELL"
+    assert action["payload"]["price"] == 19.99
+    assert action["constraints"]["clip_to_limits"] is True
+
+
+def test_runtime_model_agent_executes_order_action():
+    gateway = _Gateway()
+    agent = RuntimeModelAgent(
+        agent_id="MODEL_ORDER",
+        model_id="hold_model_v1",
+        runtime_gateway=gateway,
+        policy=_OrderPolicy(),
+        persist_transitions=False,
+    )
+
+    transition = agent.step_once()
+
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_ORDER"
+    assert gateway.orders[0]["side"] == "buy"
+
+
+def test_registry_exposes_target_weight_naive_rebalance_baseline(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+
+    policy = registry.create_policy("target_weight_naive_rebalance_v1")
+    action = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_NAIVE", "symbol_universe": ["001", "002", "003"]},
+        }
+    )
+
+    assert "target_weight_naive_rebalance_v1" in {spec.model_id for spec in registry.list_models()}
+    assert action["contract_version"] == "act.v1"
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_NAIVE"
+    assert action["target"]["symbols"] == ["001", "002", "003"]
+    assert round(sum(action["payload"]["weights"].values()), 6) == 0.6
+    assert set(action["payload"]["weights"].values()) == {0.2}
+    assert action["constraints"]["allow_short"] is False
+    assert action["meta"]["baseline_kind"] == "target_weight_naive_rebalance"
+
+
+def test_registry_exposes_twap_and_vwap_execution_baselines(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+
+    twap = registry.create_policy("twap_execution_v1")
+    vwap = registry.create_policy("vwap_execution_v1")
+    observation = {
+        "contract_version": "obs.v1",
+        "context": {"agent_id": "MODEL_EXEC", "symbol_universe": ["001", "002"], "step_index": 4},
+    }
+    twap_action = twap.act(observation)
+    vwap_action = vwap.act(observation)
+
+    assert {"twap_execution_v1", "vwap_execution_v1"}.issubset({spec.model_id for spec in registry.list_models()})
+    assert twap_action["contract_version"] == "act.v1"
+    assert twap_action["action_type"] == "target_weight"
+    assert twap_action["payload"]["rebalance_mode"] == "twap"
+    assert twap_action["payload"]["schedule"]["progress"] == 0.5
+    assert round(sum(twap_action["payload"]["weights"].values()), 6) == 0.3
+    assert twap_action["meta"]["baseline_kind"] == "twap"
+    assert vwap_action["payload"]["rebalance_mode"] == "vwap"
+    assert vwap_action["payload"]["schedule"]["progress"] != twap_action["payload"]["schedule"]["progress"]
+    assert vwap_action["meta"]["baseline_kind"] == "vwap"
+
+
+def test_registry_exposes_ac_lite_execution_baseline(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+
+    policy = registry.create_policy("ac_lite_execution_v1")
+    early = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_AC", "symbol_universe": ["001", "002"], "step_index": 0},
+        }
+    )
+    later = policy.act(
+        {
+            "contract_version": "obs.v1",
+            "context": {"agent_id": "MODEL_AC", "symbol_universe": ["001", "002"], "step_index": 4},
+        }
+    )
+
+    assert "ac_lite_execution_v1" in {spec.model_id for spec in registry.list_models()}
+    assert early["contract_version"] == "act.v1"
+    assert early["action_type"] == "target_weight"
+    assert early["payload"]["rebalance_mode"] == "ac_lite"
+    assert early["meta"]["baseline_kind"] == "ac_lite"
+    assert early["payload"]["schedule"]["sigma"] == 0.02
+    assert early["payload"]["schedule"]["eta"] == 0.01
+    assert early["payload"]["schedule"]["risk_aversion"] == 1.0
+    assert 0.0 < early["payload"]["schedule"]["progress"] < later["payload"]["schedule"]["progress"] < 1.0
+    assert sum(later["payload"]["weights"].values()) > sum(early["payload"]["weights"].values())
+
+
+def test_registry_wraps_injected_trainable_policy(tmp_path):
+    created = {}
+
+    def _factory(*, model_id, config, spec):
+        created["policy"] = _TrainableStub(model_id)
+        return created["policy"]
+
+    registry = ModelRegistryService(
+        session_factory=None,
+        registry_path=tmp_path / "policies.json",
+        external_policy_factories={"trainable_stub": _factory},
+    )
+    registry.register_external_policy(
+        "trainable_stub_v1",
+        adapter_type="callable",
+        config={"factory": "trainable_stub"},
+    )
+
+    policy = registry.create_policy("trainable_stub_v1")
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_TRAIN"}})
+    learn_result = policy.learn({"reward": {"step_reward": 0.1}})
+    checkpoint_result = policy.save_checkpoint(str(tmp_path / "stub.json"))
+
+    assert action["meta"]["adapter_type"] == "callable"
+    assert action["meta"]["source"] == "trainable_stub"
+    assert learn_result["loss"] == 0.123
+    assert checkpoint_result["kind"] == "stub"
+    assert created["policy"].learn_calls
+
+
+def test_external_policy_adapter_can_materialize_checkpoint(tmp_path):
+    policy = ExternalPolicyAdapter(
+        model_id="external_static_v1",
+        adapter_type="static_action",
+        config={"action": {"contract_version": "act.v1", "action_type": "hold"}},
+    )
+    result = policy.save_checkpoint(str(tmp_path / "external.json"))
+    payload = json.loads((tmp_path / "external.json").read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert payload["schema"] == "stock_sim.external_policy_checkpoint.v1"
+    assert payload["model_id"] == "external_static_v1"
+
+
+def test_runtime_model_agent_runs_registered_external_policy(tmp_path):
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+    registry.register_external_policy(
+        "external_runtime_v1",
+        adapter_type="static_action",
+        config={
+            "action": {
+                "contract_version": "act.v1",
+                "action_type": "target_weight",
+                "payload": {"weights": {"001": 0.15}},
+            }
+        },
+    )
+    gateway = _Gateway()
+    agent = RuntimeModelAgent(
+        agent_id="MODEL_EXT",
+        model_id="external_runtime_v1",
+        runtime_gateway=gateway,
+        registry=registry,
+        persist_transitions=False,
+    )
+
+    transition = agent.step_once()
+
+    assert transition["action"]["meta"]["policy_type"] == "external"
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_EXT"
+
+
+def test_http_policy_adapter_calls_remote_act_learn_and_checkpoint(tmp_path):
+    with _PolicyServer() as server:
+        policy = ExternalPolicyAdapter(
+            model_id="remote_policy_v1",
+            adapter_type="http",
+            config={"base_url": server.base_url, "timeout_s": 1.0},
+        )
+        action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_HTTP"}})
+        learn_result = policy.learn({"reward": {"step_reward": 0.2}})
+        checkpoint_result = policy.save_checkpoint(str(tmp_path / "remote.json"))
+
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_HTTP"
+    assert action["meta"]["model_id"] == "remote_policy_v1"
+    assert action["meta"]["adapter_type"] == "http"
+    assert action["meta"]["remote"] is True
+    assert learn_result["loss"] == 0.456
+    assert checkpoint_result["remote_path"].endswith("remote.json")
+    assert [item["path"] for item in _PolicyHandler.requests] == ["/act", "/learn", "/checkpoint"]
+
+
+def test_runtime_model_agent_runs_registered_http_policy(tmp_path):
+    with _PolicyServer() as server:
+        registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+        registry.register_external_policy(
+            "remote_runtime_v1",
+            adapter_type="http",
+            config={"base_url": server.base_url, "timeout_s": 1.0},
+        )
+        gateway = _Gateway()
+        agent = RuntimeModelAgent(
+            agent_id="MODEL_HTTP",
+            model_id="remote_runtime_v1",
+            runtime_gateway=gateway,
+            registry=registry,
+            persist_transitions=False,
+        )
+        transition = agent.step_once()
+
+    assert transition["action"]["meta"]["adapter_type"] == "http"
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_HTTP"
+
+
+def test_http_policy_adapter_falls_back_to_hold_on_remote_error():
+    policy = ExternalPolicyAdapter(
+        model_id="remote_down_v1",
+        adapter_type="http",
+        config={"endpoint": "http://127.0.0.1:1/act", "timeout_s": 0.1},
+    )
+
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_DOWN"}})
+
+    assert action["action_type"] == "hold"
+    assert action["target"]["account_id"] == "MODEL_DOWN"
+    assert action["meta"]["fallback"] == "hold"
+
+
+def _write_process_policy(tmp_path):
+    script = tmp_path / "process_policy.py"
+    script.write_text(
+        """
+import json
+import pathlib
+import sys
+
+payload = json.loads(sys.stdin.read() or "{}")
+op = payload.get("op")
+if op == "act":
+    print(json.dumps({
+        "action": {
+            "contract_version": "act.v1",
+            "action_type": "target_weight",
+            "payload": {"weights": {"001": 0.4}},
+            "meta": {"process": True}
+        }
+    }))
+elif op == "learn":
+    print(json.dumps({"ok": True, "loss": 0.789}))
+elif op == "checkpoint":
+    path = pathlib.Path(payload["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"model_id": payload["model_id"], "source": "process"}), encoding="utf-8")
+    print(json.dumps({"ok": True, "path": str(path)}))
+else:
+    print(json.dumps({"ok": False, "error": "unknown op"}))
+""".strip(),
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_subprocess_policy_adapter_calls_process_act_learn_and_checkpoint(tmp_path):
+    script = _write_process_policy(tmp_path)
+    command = [sys.executable, str(script)]
+    policy = ExternalPolicyAdapter(
+        model_id="process_policy_v1",
+        adapter_type="subprocess",
+        config={"command": command, "timeout_s": 2.0},
+    )
+
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_PROC"}})
+    learn_result = policy.learn({"reward": {"step_reward": 0.3}})
+    checkpoint_path = tmp_path / "process-checkpoint.json"
+    checkpoint_result = policy.save_checkpoint(str(checkpoint_path))
+
+    assert action["action_type"] == "target_weight"
+    assert action["target"]["account_id"] == "MODEL_PROC"
+    assert action["meta"]["adapter_type"] == "subprocess"
+    assert action["meta"]["process"] is True
+    assert learn_result["loss"] == 0.789
+    assert checkpoint_result["ok"] is True
+    assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["source"] == "process"
+
+
+def test_runtime_model_agent_runs_registered_subprocess_policy(tmp_path):
+    script = _write_process_policy(tmp_path)
+    registry = ModelRegistryService(session_factory=None, registry_path=tmp_path / "policies.json")
+    registry.register_external_policy(
+        "process_runtime_v1",
+        adapter_type="subprocess",
+        config={"command": [sys.executable, str(script)], "timeout_s": 2.0},
+    )
+    gateway = _Gateway()
+    agent = RuntimeModelAgent(
+        agent_id="MODEL_PROC",
+        model_id="process_runtime_v1",
+        runtime_gateway=gateway,
+        registry=registry,
+        persist_transitions=False,
+    )
+
+    transition = agent.step_once()
+
+    assert transition["action"]["meta"]["adapter_type"] == "subprocess"
+    assert transition["execution_result"]["status"] == "EXECUTED"
+    assert gateway.orders[0]["account_id"] == "MODEL_PROC"
+
+
+def test_subprocess_policy_adapter_falls_back_to_hold_on_process_error(tmp_path):
+    script = tmp_path / "bad_policy.py"
+    script.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    policy = ExternalPolicyAdapter(
+        model_id="process_down_v1",
+        adapter_type="subprocess",
+        config={"command": [sys.executable, str(script)], "timeout_s": 1.0},
+    )
+
+    action = policy.act({"contract_version": "obs.v1", "context": {"agent_id": "MODEL_BAD_PROC"}})
+
+    assert action["action_type"] == "hold"
+    assert action["target"]["account_id"] == "MODEL_BAD_PROC"
+    assert action["meta"]["fallback"] == "hold"

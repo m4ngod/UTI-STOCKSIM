@@ -1,0 +1,86 @@
+{
+  "schema_version": "calibration_target_bands.v0",
+  "target_source": "engineering_default_v0",
+  "pass_level": "engineering_pass",
+  "research_pass": false,
+  "description": "Engineering calibration bands for Evidence Runner v0. These bands validate metric completeness, stability, and obvious runtime abnormalities; they are not market-research acceptance targets.",
+  "target_bands": {
+    "spread": {
+      "target_min": 0.0,
+      "target_max": 10.0,
+      "severity_on_breach": "severe",
+      "required": true,
+      "description": "Mean bid/ask spread or derived snapshot price gap."
+    },
+    "depth": {
+      "target_min": 1.0,
+      "target_max": 1000000000.0,
+      "severity_on_breach": "severe",
+      "required": true,
+      "description": "Mean visible bid plus ask depth from order book snapshots."
+    },
+    "turnover": {
+      "target_min": 0.0,
+      "target_max": 1000000000000.0,
+      "severity_on_breach": "warning",
+      "required": true,
+      "description": "Executed trade value aggregated over the calibration run."
+    },
+    "volatility": {
+      "target_min": 0.0,
+      "target_max": 1.0,
+      "severity_on_breach": "severe",
+      "required": true,
+      "description": "Population standard deviation of one-step bar returns."
+    },
+    "return_autocorrelation": {
+      "target_min": -1.0,
+      "target_max": 1.0,
+      "severity_on_breach": "severe",
+      "required": true,
+      "description": "Lag-1 autocorrelation of bar returns."
+    },
+    "fill_rate": {
+      "target_min": 0.0,
+      "target_max": 1.0,
+      "severity_on_breach": "severe",
+      "required": true,
+      "description": "Filled or partially filled order count divided by status-observed orders."
+    },
+    "cancel_rate": {
+      "target_min": 0.0,
+      "target_max": 1.0,
+      "severity_on_breach": "severe",
+      "required": true,
+      "description": "Cancelled order count divided by status-observed orders."
+    },
+    "buy_sell_ratio": {
+      "target_min": 0.0,
+      "target_max": 10.0,
+      "severity_on_breach": "warning",
+      "required": true,
+      "description": "Buy order count divided by sell order count."
+    },
+    "holding_period": {
+      "target_min": 0.0,
+      "target_max": 1000000.0,
+      "severity_on_breach": "warning",
+      "required": true,
+      "description": "Mean observed retail holding period in bars."
+    },
+    "retail_family_mix": {
+      "target_min": 0.0,
+      "target_max": 1.0,
+      "severity_on_breach": "warning",
+      "required": true,
+      "description": "Observed retail family diversity proxy, normalized to 0-1."
+    },
+    "order_lifespan": {
+      "target_min": 0.0,
+      "target_max": 1000000.0,
+      "severity_on_breach": "warning",
+      "required": true,
+      "description": "Mean order lifespan from creation to fill, cancel, or expiry."
+    }
+  }
+}

@@ -1,7 +1,9 @@
 """Agent parameter versioning DTO."""
 from __future__ import annotations
-from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
+from pydantic import Field
+
+from ._compat import BaseModel
 
 class AgentVersionDTO(BaseModel):
     version: int = Field(ge=0)

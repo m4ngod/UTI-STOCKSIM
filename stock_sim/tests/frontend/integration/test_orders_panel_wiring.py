@@ -22,6 +22,16 @@ def test_orders_panel_adapter_headless_flow():
     _ = adapter.widget()  # init stubs if headless
 
     # publish events
+    event_bus.publish('frontend.order.submitted', {
+        'order_id': 'O0',
+        'symbol': 'AAA',
+        'price': 10.0,
+        'qty': 5,
+        'side': 'buy',
+        'status': 'NEW',
+        'account_id': 'ACC0',
+        'ts': 0,
+    })
     event_bus.publish('Trade', {'trade': {'symbol': 'AAA', 'price': 10.5, 'qty': 2, 'side': 'buy', 'ts': 1}})
     event_bus.publish('OrderRejected', {
         'order': {'order_id': 'O1', 'symbol': 'AAA', 'price': 10.5, 'qty': 1, 'side': 'buy', 'status': 'REJECTED'},
@@ -34,9 +44,9 @@ def test_orders_panel_adapter_headless_flow():
     time.sleep(0.05)
 
     items = adapter.get_items()
-    assert len(items) >= 3
+    assert len(items) >= 4
     kinds = {it.get('type') for it in items}
-    assert {'Trade', 'OrderRejected', 'OrderCanceled'}.issubset(kinds)
+    assert {'OrderSubmitted', 'Trade', 'OrderRejected', 'OrderCanceled'}.issubset(kinds)
 
     # filters: symbol
     adapter.set_symbol_filter('aa')  # lowercase should match 'AAA'
@@ -90,4 +100,41 @@ def test_market_adapter_trade_pass_through():
             break
         time.sleep(0.02)
     assert got, "trade not passed through to MarketPanel.detail_view()"
+
+
+class _HistoryGateway:
+    def list_order_events(self, *, limit=500, include_all_runs=True):
+        return [
+            {
+                "ts": 1000,
+                "type": "OrderSubmitted",
+                "order_id": "O-HIST-1",
+                "symbol": "AAA",
+                "side": "buy",
+                "price": 10.0,
+                "qty": 100,
+                "status": "NEW",
+                "account_id": "retail001",
+            },
+            {
+                "ts": 2000,
+                "type": "Trade",
+                "order_id": "O-HIST-1",
+                "symbol": "AAA",
+                "side": "buy",
+                "price": 10.1,
+                "qty": 20,
+                "status": "TRADE",
+                "account_id": "retail001",
+            },
+        ]
+
+
+def test_orders_panel_loads_persisted_history_on_first_view():
+    logic = OrdersPanel(capacity=10, runtime_gateway=_HistoryGateway())
+
+    view = logic.get_view()
+
+    assert [item["type"] for item in view["items"]] == ["OrderSubmitted", "Trade"]
+    assert view["items"][0]["order_id"] == "O-HIST-1"
 

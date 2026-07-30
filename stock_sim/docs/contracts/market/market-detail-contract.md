@@ -201,6 +201,12 @@ UI 至少应在内部 contract 与 debug/status 层面体现：
 - `missing`：当前未拿到该 symbol 快照
 - `degraded`：存在但 freshness 或字段完整性不足（后续可扩展）
 
+**freshness contract**
+- `snapshot_meta.freshness_model = snapshot-ts-age`
+- `snapshot_meta.timestamp_ms = snapshot.ts`
+- `snapshot_meta.age_ms = now_ms - snapshot.ts`
+- `snapshot_meta.stale_after_ms` 定义 detail 页认为 quote 已经变旧的阈值
+
 **UI 规则**
 - snapshot 应被视为 detail 中盘口/最新价的主来源
 - 但要明确它是 event-cache authoritative，而非全系统唯一数据真相
@@ -232,6 +238,12 @@ UI 至少应在内部 contract 与 debug/status 层面体现：
 - `missing`：snapshot 缺失
 - `partial`：仅有部分字段（后续可扩展）
 
+**freshness contract**
+- `order_book_meta.freshness_model = inherit-snapshot-age`
+- `order_book_meta.derived_from = snapshot`
+- `order_book_meta.age_ms` 与 `snapshot_meta.age_ms` 保持一致
+- `order_book_meta.stale_after_ms` 与 snapshot block 共享同一阈值
+
 **UI 规则**
 - order book 的状态不能脱离 snapshot 单独宣称“最新”
 - 若 snapshot 缺失，盘口应显式视为 unavailable，而不是显示伪空表
@@ -244,30 +256,36 @@ UI 至少应在内部 contract 与 debug/status 层面体现：
 - 当前 symbol 的最近逐笔/成交带视图
 
 **当前来源**
-- `SymbolDetailPanel` 本地 ring buffer
+- runtime trade query
+- `SymbolDetailPanel` 本地 ring buffer overlay
 - 由 Trade 事件驱动 append
 
 **权威性**
-- **非后端历史成交权威查询**
-- 当前只是“本地近期事件视图”
+- **runtime trade log 是当前 detail tape 的权威底层来源**
+- 本地 ring buffer 只是 recent local overlay
 
 **刷新方式**
-- event append
-- 切换 symbol 时会重新初始化/清空本地缓冲
+- runtime query
+- event append overlay
+- 切换 symbol 时会重新初始化/清空本地 overlay 缓冲
 
 **可能变旧或不完整的原因**
-- 页面切换后历史不回放
-- 仅记录当前订阅期内的局部事件
-- 不是数据库历史查询
+- runtime query 当前只取 recent window，而不是完整历史
+- 页面内 overlay 只覆盖当前订阅期内收到的最新局部事件
+- runtime query 不可用时会退化成 local-only tape
 
 **状态定义**
-- `available`：本地缓冲内有数据
-- `empty`：当前无缓冲数据
-- `unavailable`：事件链路不可用（后续可扩展）
+- `available`：runtime trade log 或 local overlay 至少一条可用
+- `empty`：runtime trade log 当前为空，且无本地 overlay
+- `error`：runtime trade query 失败
 
 **UI 规则**
 - trades 不能被表达成“完整成交历史”
-- 应被视为“recent local tape”而不是 authoritative trade history
+- 应被视为“recent runtime tape with local overlay”
+- `trades_meta.source` 至少区分：
+  - `runtime-trade-log`
+  - `runtime-trade-log+local-overlay`
+  - `local-symbol-detail-ring-buffer`
 
 ---
 

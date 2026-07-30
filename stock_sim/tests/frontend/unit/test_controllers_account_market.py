@@ -88,3 +88,32 @@ def test_market_controller_indicator_request_ma():
     # 结果长度应与 closes 一致或 >= window (ma 实现通常输出同长度)
     assert hasattr(res, 'shape') and res.shape[0] > 0
 
+
+def test_market_controller_create_instrument_registers_runtime():
+    msvc = MarketDataService()
+    calls = []
+
+    class _FakeRuntimeGateway:
+        def create_instrument(self, **kwargs):
+            calls.append(kwargs)
+            return True
+
+    mctl = MarketController(msvc, runtime_gateway=_FakeRuntimeGateway())
+
+    payload = mctl.create_instrument(
+        name="Runtime Corp",
+        symbol="RTC",
+        initial_price=None,
+        float_shares=1_000_000,
+        market_cap=50_000_000,
+    )
+
+    assert calls
+    call = calls[0]
+    assert call["symbol"] == "RTC"
+    assert call["name"] == "Runtime Corp"
+    assert call["initial_price"] == payload["initial_price"]
+    assert payload["runtime_registered"] is True
+    assert payload["ipo_opened"] is True
+    assert payload["settlement_cycle"] == 1
+

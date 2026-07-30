@@ -22,3 +22,61 @@ def test_frontend_entry_headless(monkeypatch):
     assert rc == 0
     assert called['headless'] is True
 
+
+def test_frontend_entry_check_db_exits_without_starting_frontend(monkeypatch):
+    called = {}
+
+    def _fake_check(*, ensure_schema, require_postgres=False):
+        called['checked'] = {'ensure_schema': ensure_schema, 'require_postgres': require_postgres}
+        return 0
+
+    monkeypatch.setattr(entry, '_run_database_check', _fake_check)
+    monkeypatch.setattr(entry, '_start_frontend', lambda *, headless: called.setdefault('started', True))
+
+    rc = main(["--check-db"])
+
+    assert rc == 0
+    assert called == {'checked': {'ensure_schema': True, 'require_postgres': False}}
+
+
+def test_frontend_entry_check_db_can_require_postgres(monkeypatch):
+    called = {}
+
+    def _fake_check(*, ensure_schema, require_postgres=False):
+        called['checked'] = require_postgres
+        return 0
+
+    monkeypatch.setattr(entry, '_run_database_check', _fake_check)
+
+    rc = main(["--check-db", "--require-postgres"])
+
+    assert rc == 0
+    assert called == {'checked': True}
+
+
+def test_frontend_entry_gui_start_fails_fast_on_db_check(monkeypatch):
+    called = {}
+
+    monkeypatch.setattr(entry, '_run_database_check', lambda *, ensure_schema, require_postgres=False: 3)
+    monkeypatch.setattr(entry, '_start_frontend', lambda *, headless: called.setdefault('started', True))
+
+    rc = main(["--lang", "en_US"])
+
+    assert rc == 3
+    assert called == {}
+
+
+def test_frontend_entry_can_skip_startup_db_check(monkeypatch):
+    called = {}
+
+    class _MW:
+        opened_panels = {}
+
+    monkeypatch.setattr(entry, '_run_database_check', lambda *, ensure_schema, require_postgres=False: called.setdefault('checked', True))
+    monkeypatch.setattr(entry, '_start_frontend', lambda *, headless: called.setdefault('started', True) or _MW())
+
+    rc = main(["--skip-db-check"])
+
+    assert rc == 0
+    assert called == {'started': True}
+

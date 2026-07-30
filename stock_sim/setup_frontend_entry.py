@@ -15,10 +15,14 @@ import argparse
 from typing import Optional
 
 try:
+    from app.app_context import reset_app_context
     from app.headless import run_headless_frontend
+    from app.event_bridge import start_frontend_bridge, stop_frontend_bridge
     from app.state.settings_store import SettingsStore
     from app.panels import register_builtin_panels, register_ui_adapters
+    from app.runtime_bootstrap import start_runtime_support_services
     from app.ui.main_window import DEFAULT_PRELOAD_PANELS, MainWindow
+    from stock_sim.persistence.db_health import check_database_health, format_database_health
     try:
         from PySide6.QtWidgets import QApplication  # type: ignore
     except Exception:  # pragma: no cover
@@ -43,9 +47,38 @@ def _init_settings(lang: str, theme: str):
 def parse_args(argv: Optional[list[str]] = None):
     p = argparse.ArgumentParser(prog="frontend-trading-ui", add_help=True)
     p.add_argument("--headless", action="store_true", help="run without GUI event loop")
+    p.add_argument("--check-db", action="store_true", help="check database connectivity and schema, then exit")
+    p.add_argument("--skip-db-check", action="store_true", help="skip startup database health check")
+    p.add_argument("--require-postgres", action="store_true", help="fail unless the configured database is PostgreSQL")
     p.add_argument("--lang", default="zh_CN", help="initial language")
     p.add_argument("--theme", default="light", help="initial theme")
     return p.parse_args(argv)
+
+
+def _database_check_enabled(*, headless: bool, skip: bool) -> bool:
+    if skip:
+        return False
+    flag = os.environ.get("STOCKSIM_DB_CHECK_ON_START", "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return not headless
+
+
+def _require_postgres_enabled(cli_value: bool = False) -> bool:
+    if cli_value:
+        return True
+    return os.environ.get("STOCKSIM_REQUIRE_POSTGRES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _run_database_check(*, ensure_schema: bool = True, require_postgres: bool = False) -> int:
+    health = check_database_health(
+        ensure_schema=ensure_schema,
+        required_dialect="postgresql" if require_postgres else None,
+    )
+    print(f"database {format_database_health(health)}", file=sys.stderr)
+    return 0 if health.ok else 3
 
 def _start_frontend(*, headless: bool):
     """Entry-local startup wrapper.
@@ -63,6 +96,9 @@ def _start_frontend(*, headless: bool):
 
     # Real GUI path must explicitly opt into real Qt widgets.
     os.environ.setdefault("STOCKSIM_ENABLE_REAL_UI", "1")
+    event_bridge = start_frontend_bridge()
+    context = reset_app_context(event_bridge=event_bridge)
+    start_runtime_support_services()
 
     register_builtin_panels()
     try:
@@ -72,20 +108,50 @@ def _start_frontend(*, headless: bool):
             print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
         raise
     app = QApplication.instance() or QApplication([])
-    mw = MainWindow()
+    try:
+        app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
+        app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
+        evidence_feature = getattr(
+            context,
+            "evidence_and_findings_feature",
+            None,
+        )
+        if evidence_feature is not None:
+            app.aboutToQuit.connect(evidence_feature.close)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    mw = MainWindow(
+        run_monitoring_feature=context.run_monitoring_feature,
+        run_monitoring_context=getattr(
+            context,
+            "run_monitoring_context",
+            None,
+        ),
+        evidence_and_findings_feature=getattr(
+            context,
+            "evidence_and_findings_feature",
+            None,
+        ),
+        evidence_and_findings_context=getattr(
+            context,
+            "evidence_and_findings_context",
+            None,
+        ),
+    )
     try:
         from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore
         _ui_register_main_window(mw)
     except Exception:
         pass
-    for name in DEFAULT_PRELOAD_PANELS:
-        try:
-            mw.open_panel(name)
-            if _DEBUG_GUI_START:
-                print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
-        except Exception as e:
-            if _DEBUG_GUI_START:
-                print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
+    if not mw.journey_workspace_active:
+        for name in DEFAULT_PRELOAD_PANELS:
+            try:
+                mw.open_panel(name)
+                if _DEBUG_GUI_START:
+                    print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
+            except Exception as e:
+                if _DEBUG_GUI_START:
+                    print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
     try:
         mw.show()
         app.exec()
@@ -96,6 +162,13 @@ def _start_frontend(*, headless: bool):
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    require_postgres = _require_postgres_enabled(args.require_postgres)
+    if args.check_db:
+        return _run_database_check(ensure_schema=True, require_postgres=require_postgres)
+    if _database_check_enabled(headless=args.headless, skip=args.skip_db_check):
+        rc = _run_database_check(ensure_schema=True, require_postgres=require_postgres)
+        if rc != 0:
+            return rc
     store, changes = _init_settings(args.lang, args.theme)
     mw = _start_frontend(headless=args.headless)
     # 注意：GUI 路径已在 _start_frontend() 内完成默认预加载。

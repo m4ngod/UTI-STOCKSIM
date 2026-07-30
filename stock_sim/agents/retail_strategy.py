@@ -1,81 +1,104 @@
 from __future__ import annotations
-"""零售(散户)策略抽象与注册中心。
 
-提供最小可插拔接口, 便于在不修改 RetailClient 主类的情况下扩展与热切换:
-  IRetailStrategy.decide(price_window: list[float], last_price: float | None, lot_size: int) -> (OrderSide, int) | None
+"""Retail strategy registry and population helpers."""
 
-默认内置: MomentumChaseStrategy (等价原 retail_client.decide_action 追涨杀跌示例)。
-"""
-from typing import Protocol, Callable, Dict, Tuple, Optional, List
+from dataclasses import dataclass
+import random
+import statistics
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
+
 from stock_sim.core.const import OrderSide
-import random, statistics
+
+
+Decision = Optional[Tuple[OrderSide, int]]
+
 
 class IRetailStrategy(Protocol):
     name: str
-    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Optional[Tuple[OrderSide, int]]: ...
 
-# ---- 具体策略 ----
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
+        ...
+
+
+def _safe_dev(last_price: float | None, ref: float) -> float:
+    if not last_price or ref <= 0:
+        return 0.0
+    return (last_price - ref) / ref
+
+
 class MomentumChaseStrategy:
     name = "momentum_chase"
-    def decide(self, price_window: List[float], last_price: float | None, lot_size: int):
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
         if len(price_window) < 3:
             return None
         p1, p2, p3 = price_window[-3:]
-        if p1 < p2 < p3:  # 上升 -> 买
+        if p1 < p2 < p3:
             return OrderSide.BUY, lot_size
-        if p1 > p2 > p3:  # 下跌 -> 卖
+        if p1 > p2 > p3:
             return OrderSide.SELL, lot_size
-        # 低概率噪声
         if random.random() < 0.03:
-            return (OrderSide.BUY if random.random() < 0.5 else OrderSide.SELL, lot_size)
+            side = OrderSide.BUY if random.random() < 0.5 else OrderSide.SELL
+            return side, lot_size
         return None
+
 
 class MeanRevertStrategy:
     name = "mean_revert"
-    def decide(self, price_window: List[float], last_price: float | None, lot_size: int):
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
         if len(price_window) < 10 or not last_price:
             return None
         ma = sum(price_window[-10:]) / 10
-        dev = (last_price - ma) / ma if ma > 0 else 0
-        # 偏高卖, 偏低买, 阈值 0.3% 以上才动作
+        dev = _safe_dev(last_price, ma)
         if dev > 0.003:
             return OrderSide.SELL, lot_size
         if dev < -0.003:
             return OrderSide.BUY, lot_size
         return None
 
+
 class BreakoutStrategy:
     name = "breakout"
-    def decide(self, price_window: List[float], last_price: float | None, lot_size: int):
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
         if len(price_window) < 25 or not last_price:
             return None
         recent = price_window[-25:]
-        hi = max(recent); lo = min(recent)
+        hi = max(recent)
+        lo = min(recent)
         if last_price >= hi and random.random() < 0.7:
             return OrderSide.BUY, lot_size
         if last_price <= lo and random.random() < 0.7:
             return OrderSide.SELL, lot_size
         return None
 
+
 class VolatilityScalingStrategy:
     name = "vol_scaling"
-    def decide(self, price_window: List[float], last_price: float | None, lot_size: int):
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
         if len(price_window) < 15 or not last_price:
             return None
-        rets = [ (price_window[i]-price_window[i-1])/price_window[i-1] for i in range(1,len(price_window)) if price_window[i-1]>0]
-        if len(rets) < 5:
+        returns = [
+            (price_window[i] - price_window[i - 1]) / price_window[i - 1]
+            for i in range(1, len(price_window))
+            if price_window[i - 1] > 0
+        ]
+        if len(returns) < 5:
             return None
-        vol = statistics.pstdev(rets[-15:]) if len(rets) >= 15 else statistics.pstdev(rets)
-        # 低波动 -> 做突破 (买); 高波动 -> 反向 (卖)
+        vol = statistics.pstdev(returns[-15:]) if len(returns) >= 15 else statistics.pstdev(returns)
         if vol < 0.0008 and random.random() < 0.5:
             return OrderSide.BUY, lot_size
         if vol > 0.002 and random.random() < 0.5:
             return OrderSide.SELL, lot_size
         return None
 
+
 class RandomNoiseStrategy:
     name = "noise"
-    def decide(self, price_window: List[float], last_price: float | None, lot_size: int):
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
         if not last_price or len(price_window) < 3:
             return None
         r = random.random()
@@ -85,29 +108,220 @@ class RandomNoiseStrategy:
             return OrderSide.SELL, lot_size
         return None
 
-# ---- 注册中心 ----
+
+class BuyTheDipStrategy:
+    name = "buy_the_dip"
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
+        if len(price_window) < 6 or not last_price:
+            return None
+        short_ma = sum(price_window[-3:]) / 3
+        long_ma = sum(price_window[-6:]) / 6
+        dev = _safe_dev(last_price, long_ma)
+        if dev < -0.01 and last_price <= short_ma and random.random() < 0.75:
+            return OrderSide.BUY, lot_size
+        if dev > 0.012 and random.random() < 0.45:
+            return OrderSide.SELL, lot_size
+        return None
+
+
+class ProfitTakingStrategy:
+    name = "profit_taking"
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
+        if len(price_window) < 8 or not last_price:
+            return None
+        anchor = sum(price_window[-8:]) / 8
+        dev = _safe_dev(last_price, anchor)
+        if dev > 0.009 and random.random() < 0.65:
+            return OrderSide.SELL, lot_size
+        if dev < -0.006 and random.random() < 0.25:
+            return OrderSide.BUY, lot_size
+        return None
+
+
+class LiquidityNoiseStrategy:
+    name = "liquidity_noise"
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
+        if not last_price:
+            return None
+        window_len = len(price_window)
+        if window_len < 4:
+            if random.random() < 0.18:
+                side = OrderSide.BUY if random.random() < 0.55 else OrderSide.SELL
+                return side, lot_size
+            return None
+        recent = price_window[-4:]
+        drift = recent[-1] - recent[0]
+        r = random.random()
+        if abs(drift) < 0.003 * max(last_price, 1.0):
+            if r < 0.12:
+                return OrderSide.BUY, lot_size
+            if r < 0.24:
+                return OrderSide.SELL, lot_size
+            return None
+        if drift > 0 and r < 0.08:
+            return OrderSide.SELL, lot_size
+        if drift < 0 and r < 0.08:
+            return OrderSide.BUY, lot_size
+        return None
+
+
+class SlowFundamentalAllocatorStrategy:
+    name = "slow_fundamental_allocator"
+
+    def decide(self, price_window: List[float], last_price: float | None, lot_size: int) -> Decision:
+        if len(price_window) < 12 or not last_price:
+            return None
+        slow_anchor = sum(price_window[-12:]) / 12
+        deviation = _safe_dev(last_price, slow_anchor)
+        if deviation < -0.02 and random.random() < 0.7:
+            return OrderSide.BUY, lot_size
+        if deviation > 0.025 and random.random() < 0.45:
+            return OrderSide.SELL, lot_size
+        return None
+
+
 class StrategyRegistry:
     def __init__(self):
         self._factories: Dict[str, Callable[[], IRetailStrategy]] = {}
+
     def register(self, name: str, factory: Callable[[], IRetailStrategy]):
         self._factories[name] = factory
+
     def create(self, name: str) -> IRetailStrategy:
         if name not in self._factories:
-            raise KeyError(f"strategy '{name}' 未注册")
+            raise KeyError(f"strategy '{name}' not registered")
         return self._factories[name]()
-    def list(self):
+
+    def list(self) -> List[str]:
         return list(self._factories.keys())
 
-strategy_registry = StrategyRegistry()
-strategy_registry.register(MomentumChaseStrategy.name, MomentumChaseStrategy)
-strategy_registry.register(MeanRevertStrategy.name, MeanRevertStrategy)
-strategy_registry.register(BreakoutStrategy.name, BreakoutStrategy)
-strategy_registry.register(VolatilityScalingStrategy.name, VolatilityScalingStrategy)
-strategy_registry.register(RandomNoiseStrategy.name, RandomNoiseStrategy)
 
-# 便于 UI 获取列表
-try:
-    def list_registered_retail_strategies():
-        return strategy_registry.list()
-except Exception:
-    pass
+strategy_registry = StrategyRegistry()
+for _strategy in (
+    MomentumChaseStrategy,
+    MeanRevertStrategy,
+    BreakoutStrategy,
+    VolatilityScalingStrategy,
+    RandomNoiseStrategy,
+    BuyTheDipStrategy,
+    ProfitTakingStrategy,
+    LiquidityNoiseStrategy,
+    SlowFundamentalAllocatorStrategy,
+):
+    strategy_registry.register(_strategy.name, _strategy)
+
+
+@dataclass(frozen=True)
+class WeightedStrategy:
+    name: str
+    weight: int
+
+
+DEFAULT_RETAIL_NOISE_MIX = (
+    WeightedStrategy("mean_revert", 3),
+    WeightedStrategy("momentum_chase", 2),
+    WeightedStrategy("buy_the_dip", 2),
+    WeightedStrategy("profit_taking", 1),
+    WeightedStrategy("liquidity_noise", 2),
+    WeightedStrategy("noise", 1),
+    WeightedStrategy("slow_fundamental_allocator", 1),
+)
+
+
+POST_IPO_COLD_START_MIX = (
+    WeightedStrategy("mean_revert", 4),
+    WeightedStrategy("momentum_chase", 4),
+    WeightedStrategy("slow_fundamental_allocator", 3),
+    WeightedStrategy("liquidity_noise", 3),
+    WeightedStrategy("buy_the_dip", 2),
+    WeightedStrategy("profit_taking", 2),
+    WeightedStrategy("noise", 1),
+)
+
+POST_IPO_BOOTSTRAP_TEMPLATE = (
+    "mean_revert",
+    "momentum_chase",
+    "liquidity_noise",
+    "buy_the_dip",
+    "slow_fundamental_allocator",
+    "profit_taking",
+    "noise",
+)
+
+
+def list_registered_retail_strategies() -> List[str]:
+    return strategy_registry.list()
+
+
+def allocate_retail_strategies(
+    count: int,
+    preferred: Optional[List[str]] = None,
+    *,
+    seed: int | None = None,
+    mode: str = "normal",
+) -> List[str]:
+    if count <= 0:
+        return []
+
+    clean_preferred = [item.strip() for item in (preferred or []) if item and item.strip()]
+    if clean_preferred:
+        return [clean_preferred[i % len(clean_preferred)] for i in range(count)]
+
+    if mode == "post_ipo_cold_start":
+        bootstrap = list(POST_IPO_BOOTSTRAP_TEMPLATE[: min(count, len(POST_IPO_BOOTSTRAP_TEMPLATE))])
+        if len(bootstrap) >= count:
+            return bootstrap[:count]
+    else:
+        bootstrap = []
+
+    mix = POST_IPO_COLD_START_MIX if mode == "post_ipo_cold_start" else DEFAULT_RETAIL_NOISE_MIX
+    bag: List[str] = []
+    for item in mix:
+        bag.extend([item.name] * max(1, int(item.weight)))
+    rng = random.Random(seed if seed is not None else count)
+    rng.shuffle(bag)
+    out = list(bootstrap)
+    while len(out) < count:
+        idx = len(out) - len(bootstrap)
+        out.append(bag[idx % len(bag)])
+    return out
+
+
+def cold_start_profile() -> Dict[str, object]:
+    return {
+        "mode": "post_ipo_cold_start",
+        "strategy_mix": [item.name for item in POST_IPO_COLD_START_MIX],
+        "bootstrap_template": list(POST_IPO_BOOTSTRAP_TEMPLATE),
+        "ideas": [
+            "keep trend-follow and mean-revert families as the largest post-IPO retail blocks",
+            "seed small batches with every calibrated family before repeating weighted families",
+            "let slow_fundamental_allocator provide a slower valuation anchor than purely technical retail",
+            "keep liquidity_noise present without letting it dominate large populations",
+            "limit profit_taking and pure noise so inventory release does not overwhelm buy interest",
+        ],
+    }
+
+
+__all__ = [
+    "IRetailStrategy",
+    "MomentumChaseStrategy",
+    "MeanRevertStrategy",
+    "BreakoutStrategy",
+    "VolatilityScalingStrategy",
+    "RandomNoiseStrategy",
+    "BuyTheDipStrategy",
+    "ProfitTakingStrategy",
+    "LiquidityNoiseStrategy",
+    "SlowFundamentalAllocatorStrategy",
+    "WeightedStrategy",
+    "DEFAULT_RETAIL_NOISE_MIX",
+    "POST_IPO_COLD_START_MIX",
+    "POST_IPO_BOOTSTRAP_TEMPLATE",
+    "strategy_registry",
+    "list_registered_retail_strategies",
+    "allocate_retail_strategies",
+    "cold_start_profile",
+]

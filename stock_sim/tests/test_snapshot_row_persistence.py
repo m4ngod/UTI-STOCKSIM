@@ -38,3 +38,38 @@ def test_snapshot_listener_writes_snapshot_row_for_symbol():
         assert row.volume == 100
     finally:
         s.close()
+
+
+def test_snapshot_listener_uses_payload_ts_ms_for_snapshot_row_second():
+    models_init.init_models()
+    listener = SnapshotPersistenceListener()
+    payload = {
+        "symbol": "BBB",
+        "run_id": "RUN-SNAP-ROW-TS-001",
+        "ts_ms": 1704067204321,
+        "snapshot": {
+            "symbol": "BBB",
+            "last": 12.0,
+            "vol": 10,
+            "turnover": 120.0,
+            "bid1": 11.9,
+            "ask1": 12.1,
+            "bid1_qty": 10,
+            "ask1_qty": 12,
+        },
+    }
+
+    listener._on_snapshot("SnapshotUpdated", payload)
+
+    s = SessionLocal()
+    try:
+        row = (
+            s.query(Snapshot1s)
+            .filter(Snapshot1s.symbol == "BBB", Snapshot1s.run_id == "RUN-SNAP-ROW-TS-001")
+            .order_by(Snapshot1s.id.desc())
+            .first()
+        )
+        assert row is not None
+        assert row.ts == datetime(2024, 1, 1, 0, 0, 4)
+    finally:
+        s.close()

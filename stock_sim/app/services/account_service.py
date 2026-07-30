@@ -19,27 +19,20 @@
 
 """
 from __future__ import annotations
-from typing import Callable, Tuple, Optional, List
+from typing import TYPE_CHECKING, Callable, Tuple, Optional, List
 import time
 import math
 import threading
 
 from observability.metrics import metrics
 from app.core_dto.account import AccountDTO, PositionDTO
+from app.services.account_runtime_store import (
+    AccountRuntimeStore,
+    account_dto_from_runtime_payload,
+)
 
-try:
-    from stock_sim.persistence.models_imports import SessionLocal  # type: ignore
-    from stock_sim.persistence.models_account import Account as RuntimeAccount  # type: ignore
-    from stock_sim.persistence.models_position import Position as RuntimePosition  # type: ignore
-except Exception:  # pragma: no cover
-    try:
-        from persistence.models_imports import SessionLocal  # type: ignore
-        from persistence.models_account import Account as RuntimeAccount  # type: ignore
-        from persistence.models_position import Position as RuntimePosition  # type: ignore
-    except Exception:  # pragma: no cover
-        SessionLocal = None  # type: ignore
-        RuntimeAccount = None  # type: ignore
-        RuntimePosition = None  # type: ignore
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 # ---------------- Fetcher 协议 ----------------
 Fetcher = Callable[[str], AccountDTO]
@@ -52,22 +45,35 @@ class AccountService:
     - check_consistency(local: AccountDTO) -> (remote, diff_ratio, exceeded)
     - get_cached() -> Optional[AccountDTO]
     """
-    def __init__(self, *, fetcher: Optional[Fetcher] = None, diff_threshold: float = 0.005):
+    def __init__(
+        self,
+        *,
+        fetcher: Optional[Fetcher] = None,
+        diff_threshold: float = 0.005,
+        allow_synthetic_fallback: bool = True,
+        runtime_gateway: RuntimeGateway | None = None,
+        runtime_store: AccountRuntimeStore | None = None,
+    ):
         self._fetcher: Fetcher = fetcher or _synthetic_fetcher
         self._diff_threshold = diff_threshold
+        self._allow_synthetic_fallback = allow_synthetic_fallback
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
+
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
+        self._runtime_store = runtime_store or AccountRuntimeStore(self._runtime_gateway)
         self._last_account: Optional[AccountDTO] = None
         self._lock = threading.RLock()
 
     # ---------------- Public API ----------------
     def load_account(self, account_id: str) -> AccountDTO:
         start = time.perf_counter()
-        acc: AccountDTO | None = None
-        try:
-            acc = _runtime_fetcher(account_id)
-        except Exception:
-            acc = None
-        if acc is None:
+        acc = self._runtime_store.get_or_fetch(account_id)
+        if acc is None and self._allow_synthetic_fallback:
             acc = self._fetcher(account_id)
+        if acc is None:
+            acc = _empty_runtime_account(account_id)
         with self._lock:
             self._last_account = acc
         dur_ms = (time.perf_counter() - start) * 1000
@@ -78,13 +84,45 @@ class AccountService:
         with self._lock:
             return self._last_account
 
+    def get_account(self, account_id: str | None = None, *, refresh: bool = False) -> Optional[AccountDTO]:
+        target_id = str(account_id or "").strip()
+        if not target_id:
+            with self._lock:
+                last = self._last_account
+            if last is None:
+                return None
+            target_id = last.account_id
+        dto = self._runtime_store.get_or_fetch(target_id) if refresh else self._runtime_store.get(target_id)
+        if dto is not None:
+            with self._lock:
+                self._last_account = dto
+            return dto
+        with self._lock:
+            last = self._last_account
+        if last is not None and last.account_id == target_id:
+            return last
+        if refresh:
+            return self.load_account(target_id)
+        return None
+
+    def list_account_ids(self) -> List[str]:
+        ids = self._runtime_store.list_account_ids()
+        with self._lock:
+            last = self._last_account
+        if last is not None and last.account_id not in ids:
+            ids.append(last.account_id)
+        return ids
+
+    def is_runtime_authoritative(self) -> bool:
+        return not self._allow_synthetic_fallback
+
     def check_consistency(self, local: AccountDTO) -> Tuple[AccountDTO, float, bool]:
         """拉取最新远端账户并与本地快照对比净值差异.
         返回: (remote_account, diff_ratio, exceeded)
         diff_ratio = abs(remote.equity-local.equity)/max(remote.equity,1)
         exceeded 为 True 表示超过阈值 (记录 metrics & 供上层触发告警)
         """
-        remote = self._fetcher(local.account_id)
+        remote = self.load_account(local.account_id)
         diff_ratio = abs(remote.equity - local.equity) / max(remote.equity, 1.0)
         exceeded = diff_ratio > self._diff_threshold
         if exceeded:
@@ -95,64 +133,19 @@ class AccountService:
             self._last_account = remote
         return remote, diff_ratio, exceeded
 
-# ---------------- Runtime Fetcher (preferred when local runtime DB is available) ----------------
-
-def _runtime_fetcher(account_id: str) -> AccountDTO | None:
-    if SessionLocal is None or RuntimeAccount is None or RuntimePosition is None:
-        return None
-    sess = SessionLocal()
-    try:
-        acc = sess.get(RuntimeAccount, account_id)
-        if acc is None:
-            return None
-        positions = (
-            sess.query(RuntimePosition)
-            .filter(RuntimePosition.account_id == account_id)
-            .order_by(RuntimePosition.symbol.asc())
-            .all()
-        )
-        pos_dtos: List[PositionDTO] = []
-        unreal_total = 0.0
-        market_value = 0.0
-        for p in positions:
-            qty = int(getattr(p, 'quantity', 0) or 0)
-            avg_price = float(getattr(p, 'avg_price', 0.0) or 0.0)
-            borrowed_qty = int(getattr(p, 'borrowed_qty', 0) or 0)
-            frozen_qty = int(getattr(p, 'frozen_qty', 0) or 0)
-            pnl_unreal = 0.0
-            market_value += qty * avg_price
-            pos_dtos.append(PositionDTO(
-                symbol=p.symbol,
-                quantity=qty,
-                frozen_qty=frozen_qty,
-                avg_price=avg_price,
-                borrowed_qty=borrowed_qty,
-                pnl_unreal=pnl_unreal,
-            ))
-        cash = float(getattr(acc, 'cash', 0.0) or 0.0)
-        frozen_cash = float(getattr(acc, 'frozen_cash', 0.0) or 0.0)
-        frozen_fee = float(getattr(acc, 'frozen_fee', 0.0) or 0.0)
-        equity = max(0.0, cash + frozen_cash + market_value)
-        utilization = 0.0
-        gross_locked = frozen_cash + frozen_fee
-        if equity > 0:
-            utilization = min(max(gross_locked / equity, 0.0), 1.0)
-        sim_day = getattr(acc, 'sim_day', None)
-        sim_day = str(sim_day) if sim_day is not None else time.strftime('%Y-%m-%d')
-        return AccountDTO(
-            account_id=account_id,
-            cash=cash,
-            frozen_cash=frozen_cash,
-            positions=pos_dtos,
-            realized_pnl=0.0,
-            unrealized_pnl=unreal_total,
-            equity=equity,
-            utilization=utilization,
-            snapshot_id=f"runtime-{account_id}-{int(time.time()*1000)}",
-            sim_day=sim_day,
-        )
-    finally:
-        sess.close()
+def _empty_runtime_account(account_id: str) -> AccountDTO:
+    return AccountDTO(
+        account_id=account_id,
+        cash=0.0,
+        frozen_cash=0.0,
+        positions=[],
+        realized_pnl=0.0,
+        unrealized_pnl=0.0,
+        equity=0.0,
+        utilization=0.0,
+        snapshot_id=f"runtime-empty-{account_id}-{int(time.time()*1000)}",
+        sim_day=time.strftime("%Y-%m-%d"),
+    )
 
 
 # ---------------- Synthetic Fetcher (Deterministic, No IO) ----------------
@@ -214,5 +207,6 @@ def _synthetic_fetcher(account_id: str) -> AccountDTO:
 __all__ = [
     "AccountService",
     "_synthetic_fetcher",
+    "account_dto_from_runtime_payload",
 ]
 

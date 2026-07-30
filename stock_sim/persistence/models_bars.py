@@ -12,7 +12,8 @@ class Bar1m(Base, SimTimeMixin):
     volume = Column(Integer, default=0)
     turnover = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
-Index("idx_bars1m_symbol_ts", Bar1m.symbol, Bar1m.ts, unique=True)
+Index("idx_bars1m_symbol_ts", Bar1m.symbol, Bar1m.ts)
+Index("idx_bars1m_run_symbol_ts_unique", Bar1m.run_id, Bar1m.symbol, Bar1m.ts, unique=True)
 
 class Bar1h(Base, SimTimeMixin):
     __tablename__ = "bars_1h"
@@ -24,7 +25,8 @@ class Bar1h(Base, SimTimeMixin):
     volume = Column(Integer, default=0)
     turnover = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
-Index("idx_bars1h_symbol_ts", Bar1h.symbol, Bar1h.ts, unique=True)
+Index("idx_bars1h_symbol_ts", Bar1h.symbol, Bar1h.ts)
+Index("idx_bars1h_run_symbol_ts_unique", Bar1h.run_id, Bar1h.symbol, Bar1h.ts, unique=True)
 
 class Bar1d(Base, SimTimeMixin):
     __tablename__ = "bars_1d"
@@ -36,4 +38,5 @@ class Bar1d(Base, SimTimeMixin):
     volume = Column(Integer, default=0)
     turnover = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
-Index("idx_bars1d_symbol_ts", Bar1d.symbol, Bar1d.ts, unique=True)
+Index("idx_bars1d_symbol_ts", Bar1d.symbol, Bar1d.ts)
+Index("idx_bars1d_run_symbol_ts_unique", Bar1d.run_id, Bar1d.symbol, Bar1d.ts, unique=True)

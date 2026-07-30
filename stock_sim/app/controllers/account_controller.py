@@ -48,7 +48,23 @@ class AccountController:
 
     def get_account(self) -> Optional[AccountDTO]:
         with self._lock:
+            acc_id = self._last_account_id
+        if acc_id:
+            latest = getattr(self._service, "get_account", lambda *_a, **_k: None)(acc_id)
+            if latest is not None:
+                with self._lock:
+                    self._account = latest
+        with self._lock:
             return self._account
+
+    def list_account_ids(self) -> List[str]:
+        fn = getattr(self._service, "list_account_ids", None)
+        if callable(fn):
+            try:
+                return list(fn())
+            except Exception:
+                return []
+        return []
 
     def get_positions(self, *, page: int = 1, page_size: int = 20, symbol_filter: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
@@ -80,4 +96,9 @@ class AccountController:
             acc_id = self._last_account_id
         if not acc_id:
             return None
-        return self.load_account(acc_id)
+        latest = getattr(self._service, "get_account", lambda *_a, **_k: None)(acc_id, refresh=True)
+        if latest is None:
+            return self.load_account(acc_id)
+        with self._lock:
+            self._account = latest
+        return latest

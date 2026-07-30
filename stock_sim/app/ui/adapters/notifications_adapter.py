@@ -12,6 +12,7 @@
 - set_filter(levels|None) / clear_filter()
 """
 from __future__ import annotations
+import time
 from typing import Any, Dict, List, Optional, Iterable
 from .base_adapter import PanelAdapter
 from infra.event_bus import event_bus
@@ -63,6 +64,8 @@ class NotificationsPanelAdapter(PanelAdapter):
         self._btns: Dict[str, Any] = {}
         self._active_levels: Optional[set[str]] = None  # None=全部
         self._items: List[Dict[str, Any]] = []  # 缓存最近显示的数据
+        self._last_refresh_ts: float = 0.0
+        self._refresh_interval_s: float = 0.3
         # 订阅通知事件
         event_bus.subscribe('ui.notification', self._on_notification, async_mode=False)
 
@@ -81,6 +84,30 @@ class NotificationsPanelAdapter(PanelAdapter):
     # ---- Event handler ----
     def _on_notification(self, _topic: str, _payload: dict):  # noqa: ANN001
         # 来新通知时刷新 (依赖逻辑层 get_view)
+        self._schedule_refresh()
+
+    def _post_to_ui(self, cb) -> bool:
+        try:
+            from PySide6.QtCore import QTimer  # type: ignore
+            if getattr(self, "_root", None) is not None:
+                try:
+                    QTimer.singleShot(0, self._root, cb)  # type: ignore[arg-type]
+                except Exception:
+                    QTimer.singleShot(0, cb)
+            else:
+                QTimer.singleShot(0, cb)
+            return True
+        except Exception:
+            return False
+
+    def _schedule_refresh(self) -> None:
+        if self._root is None:
+            self.refresh()
+            return
+        now = time.time()
+        if now - self._last_refresh_ts < self._refresh_interval_s:
+            return
+        self._last_refresh_ts = now
         self.refresh()
 
     # ---- Overrides ----
@@ -109,6 +136,15 @@ class NotificationsPanelAdapter(PanelAdapter):
             pass
         self._root = root
         return root
+
+    def refresh(self):  # type: ignore[override]
+        def _do():
+            try:
+                PanelAdapter.refresh(self)
+            except Exception:
+                pass
+        if self._root is None or not self._post_to_ui(_do):
+            _do()
 
     def _make_toggle_handler(self, level: str):  # 返回闭包
         def _handler():  # toggle -> 重算 active_levels

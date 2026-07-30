@@ -7,10 +7,27 @@ from app.panels import reset_registry, register_builtin_panels, get_panel
 from app.ui.agent_creation_modal import AgentCreationModal, MAX_COUNT
 
 
+class _FakeRuntimeRetailAgent:
+    def __init__(self, **_kwargs):
+        pass
+
+    def start(self):
+        return None
+
+    def pause(self):
+        return None
+
+    def stop(self):
+        return None
+
+
 def _build_agents_panel():
     reset_registry()
     register_builtin_panels()
-    svc = AgentService()
+    svc = AgentService(
+        retail_agent_factory=lambda **kwargs: _FakeRuntimeRetailAgent(**kwargs),
+        account_bootstrapper=lambda *_args, **_kwargs: None,
+    )
     ctl = AgentController(svc)
     register_agents_panel(ctl, svc)
     panel = get_panel('agents')
@@ -70,7 +87,7 @@ def test_agent_creation_modal_validation_and_progress():
     assert set(v_done['strategies']) == {'mean_rev', 'momentum'}
 
     # 再次提交 batch (快速第二次, 第一次已完成, 应可成功)
-    ok6 = modal.submit(agent_type='Retail', count=2, name_prefix='retx')
+    ok6 = modal.submit(agent_type='Retail', count=2, strategies=['mean_revert'])
     assert ok6
     # 在 batch 过程中再次提交 -> BATCH_IN_PROGRESS
     ok7 = modal.submit(agent_type='Retail', count=1)
@@ -80,4 +97,7 @@ def test_agent_creation_modal_validation_and_progress():
     _wait_batch_done(panel)
     # 总 agent 数量 = 3 + 2 = 5
     assert len(svc.list_agents()) == 5
+    retail_agents = [agent for agent in svc.list_agents() if agent.type == 'Retail']
+    assert [agent.name for agent in retail_agents] == ['mean_revert001', 'mean_revert002']
+    assert modal.get_view()['input']['name_prefix'] is None
 

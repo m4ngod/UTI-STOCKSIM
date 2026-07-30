@@ -74,8 +74,6 @@ class IndicatorExecutor:
     # ---------- 缓存辅助 ----------
     def _build_cache_key(self, name: str, data_arr: List[float], params: Dict[str, Any], symbol: Optional[str]) -> str:
         # 数据哈希: 控制大小 (取前 16 hex) 防止不同数据同长度冲突
-        if data_arr:
-            mv = memoryview((b"" if isinstance(data_arr, bytes) else bytes()))  # 占位避免 mypy 报错
         arr_bytes = memoryview(bytearray())  # 默认空
         try:
             import numpy as _np  # 局部导入

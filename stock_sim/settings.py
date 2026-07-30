@@ -1,14 +1,22 @@
 # python
 # file: settings.py
+from __future__ import annotations
+
+import os
+
+try:
+    from stock_sim.persistence.db_config import POSTGRES_DEFAULT_URL, normalize_database_url  # type: ignore
+except Exception:
+    from persistence.db_config import POSTGRES_DEFAULT_URL, normalize_database_url  # type: ignore
 
 class Settings:
     # 数据库配置
-    DB_HOST: str = "localhost"
-    DB_PORT: int = 3308
-    DB_USER: str = "root"
-    DB_PASSWORD: str = "yu20010402"
+    DB_HOST: str = "127.0.0.1"
+    DB_PORT: int = 5432
+    DB_USER: str = "stock_sim"
+    DB_PASSWORD: str = "stock_sim"
     DB_NAME: str = "stock_sim"
-    DB_URL: str | None = None  # 若为空使用内置 sqlite 回退
+    DB_URL: str | None = None  # empty means use the built-in PostgreSQL default
     ECHO_SQL: bool = False
 
     # 账户/系统参数
@@ -16,6 +24,8 @@ class Settings:
 
     # Redis / 功能开关
     REDIS_ENABLED: bool = False
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_CONN_TIMEOUT: float = 1.0
 
     # 借券 / 费用
     BORROW_FEE_ENABLED: bool = True
@@ -65,9 +75,10 @@ class Settings:
     JSON_LOG_PATH: str = "logs/struct.log"
 
     def build_db_url(self) -> str:
-        if self.DB_URL:
-            return self.DB_URL
-        return "sqlite:///stock_sim_test.db"
+        raw = os.environ.get("STOCKSIM_DB_URL") or os.environ.get("DB_URL") or self.DB_URL
+        if raw:
+            return normalize_database_url(raw)
+        return POSTGRES_DEFAULT_URL
 
     # 兼容旧代码
     def assembled_db_url(self) -> str:  # noqa: D401

@@ -1,35 +1,29 @@
-"""ClockService (Spec Task 12 Part 1)
+"""Frontend clock service.
 
-职责 (R5 AC1/2/5):
-- 启动(start) / 暂停(pause) / 恢复(resume) / 停止(stop)
-- 设置加速比(set_speed) (speed > 0)
-- 维护当前 sim_day、状态、时间戳 (epoch ms)
-- 线程安全; 提供 get_state()
-
-扩展 (R5 AC3/4/6 后续由 RollbackService/Controller/Panel 驱动):
-- 回滚与一致性校验不在此类实现, 仅暴露状态
-- TODO: 后续对接真实事件推进 (撮合/回放) 时钟驱动
-
-指标:
-- clock_start / clock_pause / clock_resume / clock_stop / clock_speed_set / clock_tick / clock_simday_switch
-- clock_state_change_ms 记录状态切换耗时 (极小, 仅供观测)
-
+Maintains app-visible clock state and, when available, drives the runtime
+simulation day loop so one `sim_day` advances every configured real-time window.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
 from threading import RLock
+import os
 import time
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from observability.metrics import metrics
 from app.core_dto.clock import ClockStateDTO
-# 新增: 事件发布
-try:  # 运行期可选
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
+
+try:
     from infra.event_bus import event_bus  # type: ignore
 except Exception:  # pragma: no cover
     event_bus = None  # type: ignore
 
 ClockStatus = Literal["RUNNING", "PAUSED", "STOPPED"]
+
 
 class ClockServiceError(RuntimeError):
     def __init__(self, code: str, message: str):
@@ -37,19 +31,26 @@ class ClockServiceError(RuntimeError):
         self.code = code
         self.message = message
 
+
 @dataclass
 class _ClockInternal:
     status: ClockStatus = "STOPPED"
-    sim_day: str = time.strftime("%Y-%m-%d")
+    sim_day: str = "0"
     speed: float = 1.0
-    ts_ms: int = int(time.time()*1000)
+    ts_ms: int = int(time.time() * 1000)
+
 
 class ClockService:
-    def __init__(self):
+    def __init__(self, *, runtime_gateway: RuntimeGateway | None = None):
         self._lock = RLock()
         self._state = _ClockInternal()
+        self._runtime_day_seconds = max(1.0, float(os.environ.get("STOCKSIM_SIM_DAY_SECONDS", "120")))
+        if runtime_gateway is None:
+            from app.runtime_gateway import RuntimeGateway
 
-    # ---------------- Internal helpers ----------------
+            runtime_gateway = RuntimeGateway()
+        self._runtime_gateway = runtime_gateway
+
     def _now_ms(self) -> int:
         return int(time.time() * 1000)
 
@@ -65,36 +66,68 @@ class ClockService:
         self._state.status = status
         self._state.ts_ms = self._now_ms()
 
-    def _publish_state(self):  # 新增：统一发布当前状态
+    def _publish_state(self):
         if event_bus is None:
             return
         try:
             event_bus.publish("clock.state", self._to_dto().model_dump())
-        except Exception:  # pragma: no cover
+        except Exception:
             pass
 
-    # ---------------- Public API ----------------
+    def _try_parse_runtime_day(self, sim_day: str | None) -> int | None:
+        if sim_day is None:
+            return None
+        text = str(sim_day).strip()
+        if not text.isdigit():
+            return None
+        try:
+            return max(0, int(text))
+        except Exception:
+            return None
+
+    def _sync_runtime(self, action: str):
+        parsed_day = self._try_parse_runtime_day(self._state.sim_day)
+        try:
+            if action == "start":
+                self._runtime_gateway.start_clock(
+                    sim_day=parsed_day,
+                    day_seconds=self._runtime_day_seconds,
+                    speed=self._state.speed,
+                    allocate_pending_ipo=True,
+                )
+            elif action == "pause":
+                self._runtime_gateway.pause_clock()
+            elif action == "resume":
+                self._runtime_gateway.resume_clock(
+                    day_seconds=self._runtime_day_seconds,
+                    speed=self._state.speed,
+                )
+            elif action == "stop":
+                self._runtime_gateway.stop_clock()
+            elif action == "speed":
+                self._runtime_gateway.set_clock_speed(self._state.speed)
+        except Exception:
+            pass
+
     def start(self, sim_day: str | None = None) -> ClockStateDTO:
         t0 = time.perf_counter()
         with self._lock:
-            # 若已经 RUNNING 但提供新的 sim_day -> 切换交易日 (支持回滚/读档)
             if self._state.status == "RUNNING":
                 if sim_day and sim_day != self._state.sim_day:
                     self._state.sim_day = sim_day
                     self._state.ts_ms = self._now_ms()
                     metrics.inc("clock_simday_switch")
-                    # 发布状态（交易日切换）
                     self._publish_state()
                 return self._to_dto()
             if sim_day:
                 self._state.sim_day = sim_day
-            else:
-                self._state.sim_day = time.strftime("%Y-%m-%d")
+            elif not str(self._state.sim_day).strip().isdigit():
+                self._state.sim_day = "0"
             self._set_status("RUNNING")
             metrics.inc("clock_start")
-            # 发布状态
+            self._sync_runtime("start")
             self._publish_state()
-        metrics.add_timing("clock_state_change_ms", (time.perf_counter()-t0)*1000)
+        metrics.add_timing("clock_state_change_ms", (time.perf_counter() - t0) * 1000)
         return self.get_state()
 
     def pause(self) -> ClockStateDTO:
@@ -104,9 +137,9 @@ class ClockService:
                 raise ClockServiceError("INVALID_STATE", "only RUNNING can pause")
             self._set_status("PAUSED")
             metrics.inc("clock_pause")
-            # 发布状态
+            self._sync_runtime("pause")
             self._publish_state()
-        metrics.add_timing("clock_state_change_ms", (time.perf_counter()-t0)*1000)
+        metrics.add_timing("clock_state_change_ms", (time.perf_counter() - t0) * 1000)
         return self.get_state()
 
     def resume(self) -> ClockStateDTO:
@@ -116,9 +149,9 @@ class ClockService:
                 raise ClockServiceError("INVALID_STATE", "only PAUSED can resume")
             self._set_status("RUNNING")
             metrics.inc("clock_resume")
-            # 发布状态
+            self._sync_runtime("resume")
             self._publish_state()
-        metrics.add_timing("clock_state_change_ms", (time.perf_counter()-t0)*1000)
+        metrics.add_timing("clock_state_change_ms", (time.perf_counter() - t0) * 1000)
         return self.get_state()
 
     def stop(self) -> ClockStateDTO:
@@ -128,9 +161,9 @@ class ClockService:
                 return self._to_dto()
             self._set_status("STOPPED")
             metrics.inc("clock_stop")
-            # 发布状态
+            self._sync_runtime("stop")
             self._publish_state()
-        metrics.add_timing("clock_state_change_ms", (time.perf_counter()-t0)*1000)
+        metrics.add_timing("clock_state_change_ms", (time.perf_counter() - t0) * 1000)
         return self.get_state()
 
     def set_speed(self, speed: float) -> ClockStateDTO:
@@ -139,7 +172,7 @@ class ClockService:
         with self._lock:
             self._state.speed = speed
             metrics.inc("clock_speed_set")
-            # 发布状态（速度变更）
+            self._sync_runtime("speed")
             self._publish_state()
         return self.get_state()
 
@@ -147,16 +180,16 @@ class ClockService:
         with self._lock:
             self._state.ts_ms = self._now_ms()
             metrics.inc("clock_tick")
-            # 发布 tick（轻量）
             if event_bus is not None:
                 try:
                     event_bus.publish("clock.tick", self._to_dto().model_dump())
-                except Exception:  # pragma: no cover
+                except Exception:
                     pass
             return self._to_dto()
 
     def get_state(self) -> ClockStateDTO:
         with self._lock:
             return self._to_dto()
+
 
 __all__ = ["ClockService", "ClockServiceError"]

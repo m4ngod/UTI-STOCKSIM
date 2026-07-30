@@ -6,7 +6,7 @@
 - 幂等: 多次调用 wire_playback_speed 不重复注册
 """
 from __future__ import annotations
-from typing import Any, Callable
+from typing import Any
 
 try:  # 通知中心可选
     from app.panels.shared.notifications import notification_center  # type: ignore

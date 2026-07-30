@@ -21,7 +21,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import Callable, Dict, Any, List, Optional
-from stock_sim.observability.metrics import metrics
+try:
+    from observability.metrics import metrics
+except ModuleNotFoundError as exc:  # pragma: no cover - installed layout fallback
+    if exc.name not in {"observability", "observability.metrics"}:
+        raise
+    from stock_sim.observability.metrics import metrics
 try:
     from app.i18n.loader import t  # 动态翻译面板标题
 except Exception:  # pragma: no cover

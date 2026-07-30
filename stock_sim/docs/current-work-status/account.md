@@ -327,6 +327,30 @@ Start Phase-1 backend platform work by making account-side runtime facts traceab
 - Later separate snapshot writing into a dedicated service if account service becomes too crowded.
 - Keep account-side run-context wiring aligned with replay / recovery design.
 
+## Task 2026-03-25-account-06
+- **time**: 2026-03-25
+- **status**: done
+- **goal**: repair real-GUI mounting for Account and Orders so workspace pages are backed by actual Qt widgets instead of headless placeholders
+- **files involved**:
+  - `app/ui/adapters/account_adapter.py`
+  - `app/ui/adapters/orders_adapter.py`
+  - `app/ui/main_window.py`
+- **change summary**:
+  - Replaced the previous headless-only `AccountPanelAdapter` widget path with a dual-mode adapter that creates a real `QWidget` tree when `STOCKSIM_ENABLE_REAL_UI=1`.
+  - Restored a real `QComboBox` / summary labels / positions table composition for the Account page while preserving headless-safe fallbacks for tests.
+  - Replaced the previous headless-only `OrdersPanelAdapter` root with a real `QWidget` composition for GUI mode, including filter controls and the orders table.
+  - Verified offscreen that `MainWindow.open_panel("account")` and `MainWindow.open_panel("orders")` now mount successfully and appear in workspace page state.
+- **purpose**:
+  - Remove the current GUI blocker where Account / Orders were registered but could not be mounted into the real workspace stack.
+  - Keep headless/integration paths intact without forcing GUI dependencies into non-UI runs.
+- **impact / risk**:
+  - Positive: default workspace preload can now include Account and Orders again without `QStackedWidget.addWidget(...)` type errors.
+  - Positive: panel registration and actual visible workspace state are aligned more honestly.
+  - Risk: Account combo event-driven switching is now active in GUI mode and should be rechecked later against real multi-account creation flows.
+- **next actions**:
+  - Re-run a live GUI smoke check covering account creation, account switching, and order-event table updates.
+  - If future adapter work changes runtime-mode ownership again, keep the GUI branch and headless branch explicit instead of silently returning fake widget objects.
+
 ## Outstanding work
 
 - Define whether the account panel will remain DTO-led for now or later be connected more tightly to runtime events/state.
@@ -336,3 +360,131 @@ Start Phase-1 backend platform work by making account-side runtime facts traceab
   - `frozen_qty`
   - `borrowed_qty`
 - Decide when to revisit the unstable `OrdersPanelAdapter` headless/integration path as a dedicated adapter problem rather than part of semantic contract convergence.
+
+## Task 2026-03-26-account-07
+- **time**: 2026-03-26
+- **status**: done
+- **goal**: make desktop Account panel default to runtime-backed account data instead of silently falling back to synthetic placeholder accounts when runtime lookup misses
+- **files involved**:
+  - `app/services/account_service.py`
+  - `app/panels/account/panel.py`
+  - `app/panels/__init__.py`
+- **change summary**:
+  - Added an explicit `allow_synthetic_fallback` switch to the app-layer `AccountService`.
+  - Wired desktop panel registration to instantiate `AccountService(allow_synthetic_fallback=False)`.
+  - Added an empty runtime DTO fallback so the GUI shows an honest zero-state account instead of fabricated synthetic holdings when runtime has no record yet.
+  - Propagated panel metadata so desktop Account summaries/positions now mark themselves as runtime-authoritative when synthetic fallback is disabled.
+- **purpose**:
+  - Stop desktop Account from presenting made-up balances or positions as if they were real runtime state.
+  - Preserve the previous synthetic default only for tests and isolated non-runtime paths.
+- **impact / risk**:
+  - Positive: Account panel is now much more honest in the real desktop app.
+  - Positive: runtime-vs-synthetic semantics are explicit instead of being hidden behind constructor defaults.
+  - Risk: empty runtime accounts now surface more often during early bootstrap, so UX polish may later want a clearer first-run message.
+## Account runtime discovery note (2026-03-26)
+
+### status
+done
+
+### goal
+修复 Account 面板在“先创建 retail / 后打开 Account 面板”场景下看不到任何账户与持仓的问题。
+
+### files involved
+- `app/ui/adapters/account_adapter.py`
+
+### change summary
+- Account 面板现在会在创建时主动从 runtime `accounts` 表补发现已有账户，而不再只依赖面板打开后的增量事件。
+- 新增对 `AccountUpdated` 的订阅；当前选中账户收到 runtime 更新后会自动刷新。
+- `account.created` 到达时会直接切换并加载对应账户，避免只把账号塞进下拉框但视图仍为空。
+
+### impact / risk
+- Positive: Account 面板不再要求“必须先打开再创建账户”才能看到数据。
+- Risk: 当前默认选择的是 runtime 发现到的最后一个账户；后续若要更明确，可再加“最近活跃账户”策略。
+## Task 2026-04-08-account-08
+- **time**: 2026-04-08
+- **status**: done
+- **goal**: move desktop Account one step closer to a runtime-backed store instead of treating it as a purely pull-based DTO view
+- **files involved**:
+  - `app/services/account_runtime_store.py`
+  - `app/services/account_service.py`
+  - `app/event_bridge.py`
+  - `app/ui/adapters/account_adapter.py`
+  - `tests/frontend/unit/test_account_runtime_store.py`
+  - `tests/frontend/unit/test_event_bridge_trade_publish.py`
+- **change summary**:
+  - added a lightweight `AccountRuntimeStore` that can cache runtime account state from both:
+    - `RuntimeGateway.get_account_snapshot(...)`
+    - live `AccountUpdated` event payloads
+  - `AccountService.load_account()` now prefers the runtime store/cache path before falling back to synthetic data
+  - introduced canonical account event helpers in `app.event_bridge` so app-side code can subscribe to account updates without hardcoding only the legacy backend topic string
+  - Account adapter now consumes the canonical account-update helper rather than directly subscribing only to `"AccountUpdated"`
+- **impact / risk**:
+  - Positive: Account is less dependent on manual reloads and direct query-only semantics
+  - Positive: app-side account state is now closer to the same runtime event flow used by the backend
+  - Risk: this is still a lightweight store layered on top of DTOs, not yet a full dedicated runtime authority model for every account lifecycle detail
+
+## Task 2026-04-08-account-09
+- **time**: 2026-04-08
+- **status**: done
+- **goal**: make the Account controller read through the runtime-backed store path instead of holding on to a stale one-shot DTO cache
+- **files involved**:
+  - `app/services/account_service.py`
+  - `app/controllers/account_controller.py`
+  - `tests/frontend/unit/test_account_controller_runtime_store.py`
+- **change summary**:
+  - `AccountService` now exposes `get_account(...)` and `list_account_ids()`
+  - `AccountController.get_account()` now asks the service for the latest selected-account state before returning its cached DTO
+  - `AccountController.refresh()` now prefers the service/store refresh path instead of always doing a full reload roundtrip
+- **impact / risk**:
+  - Positive: the selected account view can track fresher runtime-backed state with less dependence on explicit full reloads
+  - Positive: controller semantics now align better with the new `AccountRuntimeStore`
+  - Risk: the controller is still DTO-facing and not yet a full reactive store façade for every account lifecycle event
+
+## Task 2026-04-09-account-10
+- **time**: 2026-04-09
+- **status**: done
+- **goal**: unify the account creation event path so Account consumers no longer depend only on the legacy `"account.created"` topic string
+- **files involved**:
+  - `app/event_bridge.py`
+  - `app/services/account_runtime_store.py`
+  - `app/ui/adapters/account_adapter.py`
+  - `app/services/agent_service.py`
+  - `tests/frontend/unit/test_event_bridge_trade_publish.py`
+- **change summary**:
+  - added canonical account-created helpers in `app.event_bridge`
+  - account runtime store and account adapter now subscribe through the canonical helper
+  - agent creation now publishes account-created payloads through the same helper while keeping legacy topic compatibility
+- **impact / risk**:
+  - Positive: account event semantics are cleaner and more aligned with the same contract-cleanup work already done for trade/order/instrument updates
+  - Positive: future Account UI/store work can depend on a stable app-side hook instead of mixing raw topic strings everywhere
+  - Risk: canonical account-created semantics still wrap the old payload shape; a richer dedicated account lifecycle contract may still be useful later
+
+## Task 2026-04-09-account-11
+- **time**: 2026-04-09
+- **status**: done
+- **goal**: fix the two most likely causes behind "Account panel looks abnormal after creating/starting retail" in the live desktop flow
+- **files involved**:
+  - `services/runtime_query_service.py`
+  - `app/ui/adapters/account_adapter.py`
+- **change summary**:
+  - `RuntimeQueryService.list_account_ids()` now prefers runtime `agent_bindings` ordered by recent `updated_at/created_at` before appending any remaining raw account ids
+  - `AccountPanelAdapter._prefill_accounts()` now treats the runtime list as newest-first and auto-selects the first discovered current-session account instead of the alphabetically last account in the whole database
+- **impact / risk**:
+  - Positive: opening Account after older historical sessions no longer tends to land on a stale unrelated account
+  - Positive: the Account panel is more likely to show the retail accounts created in the current runtime session without manual combo-box switching
+  - Risk: this is still a heuristic based on recent bindings, not yet a fully explicit "active session accounts" query model
+
+## Task 2026-04-09-account-12
+- **time**: 2026-04-09
+- **status**: done
+- **goal**: make the Account summary area read like a real desktop account grid instead of a vertical stack of raw labels
+- **files involved**:
+  - `app/ui/adapters/account_adapter.py`
+- **change summary**:
+  - replaced the visible Account summary stack with a dedicated two-column summary table
+  - added per-field formatting for money and utilization so runtime values are easier to read in the GUI
+  - kept the semantic-gap note below the table so the panel still explains that account/order lifecycle semantics may be richer than the summary block
+- **impact / risk**:
+  - Positive: the Account panel is easier to scan during live trading and debugging
+  - Positive: large cash/equity values and utilization now render in a more desktop-friendly way
+  - Risk: this is still a summary block, not a full ledger/account-exposure workspace yet

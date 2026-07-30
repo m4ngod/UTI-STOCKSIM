@@ -77,7 +77,7 @@ Partial:
 Partial:
 - replay is event-based, not state-rebuild-based
 - not yet validating rebuilt state vs persisted facts
-- `sim_dt` filter not yet added
+- `sim_dt` filtering exists for datetime and ISO-string bounds; richer rebuilt-state validation is still pending
 
 ### D. Equity snapshot policy
 Partial:
@@ -133,7 +133,7 @@ Files likely:
 
 ### BL-203 replay verification upgrade
 Goal:
-- add `sim_dt` filtering
+- keep `sim_dt` filtering covered and extend it into operator-facing validation
 - compare replay summary against persisted facts
 - add run-level verification report
 

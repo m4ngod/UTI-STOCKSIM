@@ -18,8 +18,11 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
 from .base_adapter import PanelAdapter
+from .runtime_mode import ui_runtime_enabled
+from app.ui.widgets.mini_charts import AgentInsightsWidget, HeadlessAgentInsightsWidget
 
 # 新增: 事件与节流/线程
+import os
 import threading
 import time
 from infra.event_bus import event_bus
@@ -56,14 +59,23 @@ except Exception:  # pragma: no cover
         return lambda: event_bus.unsubscribe(topic, h)
 
 try:
+    from agents.retail_strategy import list_registered_retail_strategies
+except Exception:  # pragma: no cover
+    def list_registered_retail_strategies():  # type: ignore
+        return ["mean_revert", "momentum_chase", "buy_the_dip", "profit_taking", "liquidity_noise", "noise"]
+
+try:
+    if not ui_runtime_enabled():
+        raise ImportError("real Qt UI disabled")
     from PySide6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
         QPushButton, QLabel, QListWidget, QListWidgetItem, QTextEdit,
-        QDialog, QLineEdit, QComboBox
+        QDialog, QLineEdit, QComboBox, QAbstractItemView
     )  # type: ignore
-    from PySide6.QtGui import QColor  # type: ignore
+    from PySide6.QtGui import QColor, QBrush  # type: ignore
 except Exception:  # pragma: no cover - headless fallback
-    QWidget = object  # type: ignore
+    class QWidget:  # type: ignore
+        def __init__(self, *_, **__): pass
     class QVBoxLayout:  # type: ignore
         def __init__(self, *_, **__): pass
         def addWidget(self, *_): pass
@@ -72,11 +84,11 @@ except Exception:  # pragma: no cover - headless fallback
         def __init__(self, *_, **__): pass
         def addWidget(self, *_): pass
     class QTableWidget:  # type: ignore
-        def __init__(self, *_, **__): self._rows=[]
-        def setColumnCount(self, n): pass
+        def __init__(self, *_, **__): self._rows=[]; self._cols=0
+        def setColumnCount(self, n): self._cols=int(n)
         def setHorizontalHeaderLabels(self, labels): pass
         def rowCount(self): return len(self._rows)
-        def insertRow(self, r): self._rows.insert(r, [None]*5)
+        def insertRow(self, r): self._rows.insert(r, [None]*max(self._cols, 1))
         def removeRow(self, r): self._rows.pop(r)
         def setItem(self, r,c,item): self._rows[r][c]=item
         def item(self, r,c):
@@ -89,6 +101,7 @@ except Exception:  # pragma: no cover - headless fallback
         def setText(self,t): self._text=t
         def text(self): return self._text
         def setBackground(self, *_): pass
+        def setForeground(self, *_): pass
     class QPushButton:  # type: ignore
         def __init__(self, text=""): self._text=text; self.clicked=_DummySig()
     class QLabel:  # type: ignore
@@ -108,10 +121,14 @@ except Exception:  # pragma: no cover - headless fallback
         def text(self): return self._text
         def setText(self, t): self._text=t
     class QComboBox:  # type: ignore
-        def __init__(self): self._items=["Retail","MultiStrategyRetail"]; self._idx=0
+        def __init__(self): self._items=["Retail","MultiStrategyRetail"]; self._idx=0; self.currentIndexChanged=_DummySig()
         def addItems(self, items): self._items=list(items)
         def currentText(self): return self._items[self._idx] if self._items else "Retail"
+    class QAbstractItemView:  # type: ignore
+        SelectRows = 1
+        ExtendedSelection = 2
     QColor = lambda *a, **k: None  # type: ignore
+    QBrush = lambda *a, **k: None  # type: ignore
 
 _ROW_COLOR_STALE = QColor(255, 240, 240) if callable(getattr(QColor, '__call__', None)) else QColor(255, 240, 240)  # type: ignore
 
@@ -120,8 +137,31 @@ _AGENT_PROGRESS_TOPIC = "agent.batch.create.progress"
 _AGENT_COMPLETED_TOPIC = "agent.batch.create.completed"
 _AGENT_STATUS_CHANGED = "agent-status-changed"  # 预留：若后端发布状态事件，将自动接入
 
+def _has_qt_app() -> bool:
+    if not ui_runtime_enabled():
+        return False
+    try:
+        from PySide6.QtWidgets import QApplication  # type: ignore
+
+        return QApplication.instance() is not None
+    except Exception:
+        return False
+
+
 class AgentsPanelAdapter(PanelAdapter):
-    COLS = ["agent_id", "name", "type", "status", "params_version", "heartbeat_stale"]
+    COLS = [
+        "agent_id",
+        "type",
+        "family_model",
+        "status",
+        "mode",
+        "episode_id",
+        "last_reward",
+        "equity",
+        "pnl",
+        "last_action",
+        "heartbeat_stale",
+    ]
 
     def __init__(self):
         super().__init__()
@@ -132,10 +172,12 @@ class AgentsPanelAdapter(PanelAdapter):
         self._btn_start: Optional[Any] = None
         self._btn_pause: Optional[Any] = None
         self._btn_stop: Optional[Any] = None
+        self._filter_combo: Optional[Any] = None
         # 新增：批量创建按钮
         self._btn_batch: Optional[Any] = None
         self._progress_label: Optional[Any] = None
         self._log_view: Optional[Any] = None
+        self._insights_widget: Optional[Any] = None
         # 事件/轮询状态
         self._started = False
         self._lock = threading.RLock()
@@ -149,6 +191,9 @@ class AgentsPanelAdapter(PanelAdapter):
         self._refresh_throttle = Throttle(200, self._do_refresh, metrics_prefix="agents_adapter_refresh")
         # 新增: 取消订阅函数集合
         self._cancel_subs: List[callable] = []
+        self._order_events_cache: List[Dict[str, Any]] = []
+        self._order_events_cache_ts = 0.0
+        self._order_events_cache_ttl_s = 2.0
 
     # ---------- PanelAdapter overrides ----------
         # PyTest 环境：直接执行，保证测试无需事件循环即可观察到 UI 状态变化
@@ -166,18 +211,48 @@ class AgentsPanelAdapter(PanelAdapter):
         root = QWidget()  # type: ignore
         try:
             main_v = QVBoxLayout(root)  # type: ignore
+            filter_h = QHBoxLayout()  # type: ignore
+            filter_h.addWidget(QLabel("View"))  # type: ignore
+            self._filter_combo = QComboBox()  # type: ignore
+            try:
+                self._filter_combo.addItems(["All", "Retail", "Model"])  # type: ignore[attr-defined]
+                self._filter_combo.currentIndexChanged.connect(lambda *_: self._on_filter_changed())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            filter_h.addWidget(self._filter_combo)  # type: ignore
+            main_v.addLayout(filter_h)  # type: ignore
             self._table = QTableWidget(0, len(self.COLS))  # type: ignore
             self._table.setColumnCount(len(self.COLS))  # type: ignore
             self._table.setHorizontalHeaderLabels(self.COLS)  # type: ignore
+            try:
+                select_rows = getattr(QAbstractItemView, "SelectRows", None)
+                if select_rows is None:
+                    select_rows = getattr(getattr(QAbstractItemView, "SelectionBehavior", object), "SelectRows", None)
+                extended = getattr(QAbstractItemView, "ExtendedSelection", None)
+                if extended is None:
+                    extended = getattr(getattr(QAbstractItemView, "SelectionMode", object), "ExtendedSelection", None)
+                if select_rows is not None:
+                    self._table.setSelectionBehavior(select_rows)  # type: ignore[attr-defined]
+                if extended is not None:
+                    self._table.setSelectionMode(extended)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                if hasattr(self._table, "setDragEnabled"):
+                    self._table.setDragEnabled(False)  # type: ignore[attr-defined]
+                if hasattr(self._table, "setAlternatingRowColors"):
+                    self._table.setAlternatingRowColors(True)  # type: ignore[attr-defined]
+            except Exception:
+                pass
             main_v.addWidget(self._table)  # type: ignore
             # 控制区
             ctrl_h = QHBoxLayout()  # type: ignore
             self._btn_start = QPushButton("Start")  # type: ignore
-            self._btn_pause = QPushButton("Pause")  # type: ignore
+            self._btn_pause = None
             self._btn_stop = QPushButton("Stop")  # type: ignore
             # 新增：批量创建按钮
-            self._btn_batch = QPushButton("Batch Create…")  # type: ignore
-            for b, act in ((self._btn_start, 'start'), (self._btn_pause, 'pause'), (self._btn_stop, 'stop')):
+            self._btn_batch = QPushButton("Batch Create")  # type: ignore
+            for b, act in ((self._btn_start, 'start'), (self._btn_stop, 'stop')):
                 if b is not None:
                     def _make_handler(a):
                         def _h():
@@ -200,12 +275,9 @@ class AgentsPanelAdapter(PanelAdapter):
             ctrl_h.addWidget(self._progress_label)  # type: ignore
             main_v.addLayout(ctrl_h)  # type: ignore
             # 日志视图
-            self._log_view = QTextEdit()  # type: ignore
-            try:
-                self._log_view.setReadOnly(True)  # type: ignore
-            except Exception:  # pragma: no cover
-                pass
-            main_v.addWidget(self._log_view)  # type: ignore
+            chart_cls = AgentInsightsWidget if _has_qt_app() else HeadlessAgentInsightsWidget
+            self._insights_widget = chart_cls()  # type: ignore
+            main_v.addWidget(self._insights_widget)  # type: ignore
         except Exception:  # pragma: no cover
             pass
         self._root = root
@@ -215,6 +287,10 @@ class AgentsPanelAdapter(PanelAdapter):
 
     # 新增：统一的 UI 线程投递方法（无 Qt 环境下返回 False）
     def _post_to_ui(self, cb) -> bool:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
+        if not ui_runtime_enabled():
+            return False
         try:
             from PySide6.QtCore import QTimer  # type: ignore
             # 若已有根部件，则将回调排入其所属线程；否则退化为全局 singleShot
@@ -246,7 +322,19 @@ class AgentsPanelAdapter(PanelAdapter):
         self._update_progress(batch)
         # Diff 行
         self._sync_rows(items)
-        self._refresh_log_tail()
+        self._refresh_insights(items)
+
+    def _on_filter_changed(self):
+        logic = self._logic
+        if logic is None or self._filter_combo is None:
+            return
+        setter = getattr(logic, "set_agent_type_filter", None)
+        if callable(setter):
+            try:
+                setter(self._filter_combo.currentText())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        self.refresh()
 
     # ---------- Public lifecycle ----------
     def stop(self):
@@ -382,11 +470,13 @@ class AgentsPanelAdapter(PanelAdapter):
                 item = table.item(row, col_i)  # type: ignore
                 if item is None:
                     continue
-                text_new = str(val)
+                text_new = self._format_cell(col_key, val)
                 try:
                     if getattr(item, 'text', lambda: None)() != text_new:  # type: ignore
                         item.setText(text_new)  # type: ignore
                 except Exception: pass
+                if col_key == "status":
+                    self._apply_status_style(item, val)
             # heartbeat_stale 着色
             self._apply_row_stale(row, it.get('heartbeat_stale'))
         # 若未选中 -> 默认第一行
@@ -417,6 +507,53 @@ class AgentsPanelAdapter(PanelAdapter):
             except Exception:  # pragma: no cover
                 pass
 
+    @staticmethod
+    def _format_cell(col_key: str, value: Any) -> str:
+        if col_key == "status":
+            status = str(value or "STOPPED").upper()
+            return f"● {status}"
+        return str(value)
+
+    @staticmethod
+    def _apply_status_style(item: Any, value: Any) -> None:
+        status = str(value or "").upper()
+        color_map = {
+            "RUNNING": (34, 164, 92),
+            "STOPPED": (220, 65, 58),
+            "PAUSED": (220, 65, 58),
+            "INACTIVE": (140, 150, 160),
+        }
+        try:
+            item.setForeground(QBrush(QColor(*color_map.get(status, (140, 150, 160)))))  # type: ignore[misc]
+        except Exception:
+            pass
+
+    def _refresh_insights(self, items: List[Dict[str, Any]]):
+        widget = self._insights_widget
+        if widget is None:
+            return
+        events = self._cached_order_events()
+        try:
+            widget.set_data(items, order_events=events)
+        except Exception:
+            pass
+
+    def _cached_order_events(self) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        with self._lock:
+            if (now - self._order_events_cache_ts) < self._order_events_cache_ttl_s:
+                return list(self._order_events_cache)
+        try:
+            from app.runtime_gateway import RuntimeGateway  # type: ignore
+
+            events = RuntimeGateway().list_order_events(limit=300, include_all_runs=True)
+        except Exception:
+            events = []
+        with self._lock:
+            self._order_events_cache = list(events or [])
+            self._order_events_cache_ts = now
+            return list(self._order_events_cache)
+
     def _reindex(self):
         table = self._table
         if table is None: return
@@ -438,7 +575,6 @@ class AgentsPanelAdapter(PanelAdapter):
         ctl_fn = getattr(self._logic, 'control', None)
         if not callable(ctl_fn):
             return
-        # 优先: 选中行；若无选中，则对所有可见行执行
         targets: List[str] = []
         try:
             table = self._table
@@ -450,13 +586,25 @@ class AgentsPanelAdapter(PanelAdapter):
                         selected_rows = [idx.row() for idx in sel_model.selectedRows()]  # type: ignore[attr-defined]
                     except Exception:
                         selected_rows = []
-                if not selected_rows:
-                    # 回退：全部行
+                if not selected_rows and table is not None:
                     try:
-                        rc = table.rowCount()  # type: ignore[attr-defined]
+                        selected_items = getattr(table, "selectedItems", lambda: [])()
+                        selected_rows = sorted(
+                            {
+                                int(getattr(item, "row", lambda: -1)())
+                                for item in selected_items
+                                if int(getattr(item, "row", lambda: -1)()) >= 0
+                            }
+                        )
                     except Exception:
-                        rc = 0
-                    selected_rows = list(range(rc))
+                        selected_rows = []
+                if not selected_rows:
+                    try:
+                        current_row = table.currentRow()  # type: ignore[attr-defined]
+                    except Exception:
+                        current_row = -1
+                    if isinstance(current_row, int) and current_row >= 0:
+                        selected_rows = [current_row]
                 # 从第一列取 agent_id
                 for r in selected_rows:
                     try:
@@ -471,6 +619,39 @@ class AgentsPanelAdapter(PanelAdapter):
         # 若仍没有目标，使用当前选择的单个智能体（兼容旧逻辑）
         if not targets and getattr(self, '_selected_agent', None):
             targets = [self._selected_agent]  # type: ignore[attr-defined]
+        if not targets:
+            return
+        many_fn = getattr(self._logic, "control_many", None)
+        if callable(many_fn) and len(targets) > 1:
+            def _run_many():
+                try:
+                    many_fn(targets, action)
+                except Exception:
+                    pass
+                self.refresh()
+            if ui_runtime_enabled() and not os.environ.get("PYTEST_CURRENT_TEST"):
+                threading.Thread(
+                    target=_run_many,
+                    name=f"AgentsAdapter-ControlMany-{action}",
+                    daemon=True,
+                ).start()
+            else:
+                _run_many()
+            return
+        if ui_runtime_enabled() and not os.environ.get("PYTEST_CURRENT_TEST"):
+            def _worker():
+                for target_id in targets:
+                    try:
+                        ctl_fn(target_id, action)
+                    except Exception:
+                        pass
+                self.refresh()
+            threading.Thread(
+                target=_worker,
+                name=f"AgentsAdapter-Control-{action}",
+                daemon=True,
+            ).start()
+            return
         # 执行动作
         for aid in targets:
             try:
@@ -551,12 +732,16 @@ class AgentsPanelAdapter(PanelAdapter):
                 pass
             layout.addWidget(type_combo)  # type: ignore
             # Name Prefix (hidden/disabled when MSR)
-            name_label = QLabel("Name Prefix")  # type: ignore
-            name_edit = QLineEdit("agent")  # type: ignore
-            layout.addWidget(name_label)  # type: ignore
-            layout.addWidget(name_edit)  # type: ignore
-            # Strategies
-            layout.addWidget(QLabel("Strategies (one per line, for MultiStrategyRetail)"))  # type: ignore
+            retail_strategy_label = QLabel("Retail Strategy")  # type: ignore
+            retail_strategy_combo = QComboBox()  # type: ignore
+            try:
+                retail_strategy_combo.addItems(["Auto (cold-start mix)"] + list_registered_retail_strategies())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            layout.addWidget(retail_strategy_label)  # type: ignore
+            layout.addWidget(retail_strategy_combo)  # type: ignore
+            msr_strategies_label = QLabel("Strategies (one per line, for MultiStrategyRetail)")  # type: ignore
+            layout.addWidget(msr_strategies_label)  # type: ignore
             try:
                 strategies_edit = QTextEdit()  # type: ignore
             except Exception:
@@ -586,15 +771,17 @@ class AgentsPanelAdapter(PanelAdapter):
                 is_msr = (t == 'MultiStrategyRetail')
                 try:
                     # MSR: 隐藏/禁用 name prefix；显示 initial cash
-                    name_label.setVisible(not is_msr)  # type: ignore[attr-defined]
-                    name_edit.setVisible(not is_msr)  # type: ignore[attr-defined]
+                    retail_strategy_label.setVisible(not is_msr)  # type: ignore[attr-defined]
+                    retail_strategy_combo.setVisible(not is_msr)  # type: ignore[attr-defined]
                 except Exception:
                     try:
                         # 降级：禁用
-                        name_edit.setEnabled(not is_msr)  # type: ignore[attr-defined]
+                        pass
                     except Exception:
                         pass
                 try:
+                    msr_strategies_label.setVisible(is_msr)  # type: ignore[attr-defined]
+                    strategies_edit.setVisible(is_msr)  # type: ignore[attr-defined]
                     init_cash_label.setVisible(is_msr)  # type: ignore[attr-defined]
                     init_cash_edit.setVisible(is_msr)  # type: ignore[attr-defined]
                 except Exception:
@@ -612,19 +799,23 @@ class AgentsPanelAdapter(PanelAdapter):
                     except Exception:
                         cnt = 0
                     agent_type = getattr(type_combo, 'currentText', lambda: 'Retail')()
-                    name_prefix = getattr(name_edit, 'text', lambda: 'agent')()
-                    if hasattr(strategies_edit, 'toPlainText'):
-                        raw = strategies_edit.toPlainText()  # type: ignore[attr-defined]
-                    else:
-                        raw = getattr(strategies_edit, 'text', lambda: '')()
-                    strategies = [s.strip() for s in (raw.splitlines() if raw else []) if s.strip()]
                     initial_cash = None
+                    strategies = None
+                    if agent_type == 'Retail':
+                        selected = getattr(retail_strategy_combo, 'currentText', lambda: 'Auto (cold-start mix)')()
+                        strategies = None if not selected or str(selected).startswith('Auto') else [str(selected)]
+                    else:
+                        if hasattr(strategies_edit, 'toPlainText'):
+                            raw = strategies_edit.toPlainText()  # type: ignore[attr-defined]
+                        else:
+                            raw = getattr(strategies_edit, 'text', lambda: '')()
+                        strategies = [s.strip() for s in (raw.splitlines() if raw else []) if s.strip()]
                     if agent_type == 'MultiStrategyRetail':
                         try:
                             initial_cash = float(getattr(init_cash_edit, 'text', lambda: '100000')())
                         except Exception:
                             initial_cash = 100000.0
-                    ok = modal.submit(agent_type=agent_type, count=cnt, name_prefix=name_prefix, strategies=strategies, initial_cash=initial_cash)
+                    ok = modal.submit(agent_type=agent_type, count=cnt, strategies=strategies, initial_cash=initial_cash)
                     if not ok:
                         v = modal.get_view()
                         code = v.get('error')

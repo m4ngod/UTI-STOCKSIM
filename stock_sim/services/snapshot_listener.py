@@ -5,7 +5,7 @@
  - 需要 instruments 表中 free_float_shares / lot_size（lot_size 通过 InstrumentService 已存）
 """
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import RLock
 from sqlalchemy.orm import Session
 from stock_sim.infra.event_bus import event_bus
@@ -107,7 +107,7 @@ class SnapshotPersistenceListener:
         ask1 = (snap or {}).get("ask1")
         bid1_qty = (snap or {}).get("bid1_qty")
         ask1_qty = (snap or {}).get("ask1_qty")
-        now = datetime.utcnow().replace(microsecond=0)
+        now = self._event_second(payload, snap)
         # 计算派生
         with self._lock:
             self._ensure_meta(symbol_u)
@@ -219,6 +219,29 @@ class SnapshotPersistenceListener:
             return dt.replace(microsecond=0, tzinfo=None)
         except Exception:
             return None
+
+    @classmethod
+    def _event_second(cls, payload: dict | None, snapshot: dict | None) -> datetime:
+        if isinstance(payload, dict):
+            for candidate in (
+                payload.get("ts_ms"),
+                payload.get("ts"),
+                snapshot.get("ts_ms") if isinstance(snapshot, dict) else None,
+                snapshot.get("ts") if isinstance(snapshot, dict) else None,
+            ):
+                if candidate is None:
+                    continue
+                try:
+                    return datetime.fromtimestamp(
+                        int(candidate) / 1000.0,
+                        tz=timezone.utc,
+                    ).replace(microsecond=0, tzinfo=None)
+                except Exception:
+                    pass
+            sim_dt = cls._second_ts(payload.get("sim_dt"))
+            if sim_dt is not None:
+                return sim_dt
+        return datetime.utcnow().replace(microsecond=0)
 
 # 全局实例函数
 listener_singleton: SnapshotPersistenceListener | None = None

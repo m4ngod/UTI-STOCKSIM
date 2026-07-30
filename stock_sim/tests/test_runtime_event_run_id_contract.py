@@ -9,7 +9,8 @@ from stock_sim.persistence import models_init
 from stock_sim.persistence.models_imports import SessionLocal
 from stock_sim.persistence.models_snapshot import Snapshot1s
 from stock_sim.persistence.models_bars import Bar1m
-from datetime import datetime
+from datetime import datetime, timedelta
+import uuid
 
 
 def test_sim_day_event_can_carry_run_id():
@@ -87,3 +88,158 @@ def test_bar_updated_event_carries_run_id_from_snapshot_rows():
     assert captured
     assert captured[-1]['run_id'] == 'RUN-BAR-001'
     assert captured[-1]['symbol'] == 'BAR1'
+
+
+def test_bar_aggregator_keeps_same_symbol_timestamp_separate_by_run():
+    models_init.init_models()
+    minute_start = datetime.utcnow().replace(second=0, microsecond=0)
+    s = SessionLocal()
+    try:
+        for run_id, base_price in (('RUN-BAR-A', 10.0), ('RUN-BAR-B', 20.0)):
+            s.add(
+                Snapshot1s(
+                    symbol='BARX',
+                    run_id=run_id,
+                    ts=minute_start,
+                    last_price=base_price,
+                    volume=100,
+                    turnover=base_price * 100,
+                    sim_day=4,
+                )
+            )
+            s.add(
+                Snapshot1s(
+                    symbol='BARX',
+                    run_id=run_id,
+                    ts=minute_start.replace(second=30),
+                    last_price=base_price + 0.5,
+                    volume=150,
+                    turnover=(base_price + 0.5) * 150,
+                    sim_day=4,
+                )
+            )
+        s.commit()
+    finally:
+        s.close()
+
+    agg = BarAggregator()
+    agg._build_minute_bars(minute_start)
+
+    s = SessionLocal()
+    try:
+        rows = (
+            s.query(Bar1m)
+            .filter(Bar1m.symbol == 'BARX', Bar1m.ts == minute_start)
+            .order_by(Bar1m.run_id.asc())
+            .all()
+        )
+        assert [row.run_id for row in rows] == ['RUN-BAR-A', 'RUN-BAR-B']
+        assert [row.close for row in rows] == [10.5, 20.5]
+    finally:
+        s.close()
+
+
+def test_bar_aggregator_backfills_completed_snapshot_minutes():
+    models_init.init_models()
+    first_minute = (datetime.utcnow() - timedelta(minutes=6)).replace(second=0, microsecond=0)
+    second_minute = first_minute + timedelta(minutes=1)
+    run_id = 'RUN-BAR-BACKFILL-001'
+    s = SessionLocal()
+    try:
+        for minute_start, first_price, second_price in (
+            (first_minute, 10.0, 10.2),
+            (second_minute, 10.2, 10.4),
+        ):
+            s.add(
+                Snapshot1s(
+                    symbol='BARBF',
+                    run_id=run_id,
+                    ts=minute_start,
+                    last_price=first_price,
+                    volume=100,
+                    turnover=first_price * 100,
+                    sim_day=5,
+                )
+            )
+            s.add(
+                Snapshot1s(
+                    symbol='BARBF',
+                    run_id=run_id,
+                    ts=minute_start + timedelta(seconds=30),
+                    last_price=second_price,
+                    volume=150,
+                    turnover=second_price * 150,
+                    sim_day=5,
+                )
+            )
+        s.commit()
+    finally:
+        s.close()
+
+    agg = BarAggregator(backfill_lookback_minutes=30, max_backfill_minutes=10)
+    agg._aggregate_pending_minutes()
+
+    s = SessionLocal()
+    try:
+        rows = (
+            s.query(Bar1m)
+            .filter(Bar1m.symbol == 'BARBF', Bar1m.run_id == run_id)
+            .order_by(Bar1m.ts.asc())
+            .all()
+        )
+        assert [row.ts for row in rows] == [first_minute, second_minute]
+        assert [row.close for row in rows] == [10.2, 10.4]
+    finally:
+        s.close()
+
+
+def test_bar_aggregator_flush_all_respects_run_scope():
+    models_init.init_models()
+    symbol = f"FLUSH{uuid.uuid4().hex[:6].upper()}"
+    run_a = f"RUN-FLUSH-A-{uuid.uuid4().hex[:8].upper()}"
+    run_b = f"RUN-FLUSH-B-{uuid.uuid4().hex[:8].upper()}"
+    minute_start = (datetime.utcnow() - timedelta(minutes=10)).replace(second=0, microsecond=0)
+    s = SessionLocal()
+    try:
+        for run_id, base_price in ((run_a, 10.0), (run_b, 20.0)):
+            s.add(
+                Snapshot1s(
+                    symbol=symbol,
+                    run_id=run_id,
+                    ts=minute_start,
+                    last_price=base_price,
+                    volume=100,
+                    turnover=base_price * 100,
+                    sim_day=6,
+                )
+            )
+            s.add(
+                Snapshot1s(
+                    symbol=symbol,
+                    run_id=run_id,
+                    ts=minute_start + timedelta(seconds=30),
+                    last_price=base_price + 0.5,
+                    volume=150,
+                    turnover=(base_price + 0.5) * 150,
+                    sim_day=6,
+                )
+            )
+        s.commit()
+    finally:
+        s.close()
+
+    result = BarAggregator().flush_all(run_ids=[run_a])
+
+    assert result["processed_minute_count"] == 1
+    s = SessionLocal()
+    try:
+        rows = (
+            s.query(Bar1m)
+            .filter(Bar1m.symbol == symbol)
+            .order_by(Bar1m.run_id.asc())
+            .all()
+        )
+        assert [row.run_id for row in rows] == [run_a]
+        assert rows[0].close == 10.5
+    finally:
+        s.close()

@@ -80,10 +80,15 @@ class SimulationRunService:
         summary = (report or {}).get('summary', {}) or {}
         validation = (report or {}).get('validation', {}) or {}
         sim_day_range = summary.get('sim_day_range')
+        sim_dt_range = summary.get('sim_dt_range')
         if isinstance(sim_day_range, (list, tuple)) and sim_day_range:
             row.last_sim_day = sim_day_range[-1]
             if row.sim_start_day is None:
                 row.sim_start_day = sim_day_range[0]
+        if isinstance(sim_dt_range, (list, tuple)) and sim_dt_range:
+            last_sim_dt = sim_dt_range[-1]
+            if isinstance(last_sim_dt, datetime):
+                row.last_sim_dt = last_sim_dt
         persisted = validation.get('persisted', {}) or {}
         if 'trades' in persisted:
             row.trade_count = int(persisted.get('trades') or 0)

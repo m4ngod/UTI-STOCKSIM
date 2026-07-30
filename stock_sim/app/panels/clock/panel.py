@@ -20,12 +20,11 @@
 """
 from __future__ import annotations
 from threading import RLock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import time
 
 from app.controllers.clock_controller import ClockController
 from app.services.rollback_service import RollbackServiceError
-from app.services.clock_service import ClockServiceError
 from app.core_dto.clock import ClockStateDTO
 
 __all__ = ["ClockPanel"]

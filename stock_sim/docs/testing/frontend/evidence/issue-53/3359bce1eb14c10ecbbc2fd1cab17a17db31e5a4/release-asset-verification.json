@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "status": "verified",
+  "verification_method": "github_server_digest_plus_distributed_content_ranges_v1",
+  "verified_at": "2026-07-29T23:12:39.7328040+00:00",
+  "repository": "m4ngod/UTI-STOCKSIM",
+  "release_tag": "strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14",
+  "release_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14",
+  "is_prerelease": true,
+  "target_commitish": "3359bce1eb14c10ecbbc2fd1cab17a17db31e5a4",
+  "source_commit": "3359bce1eb14c10ecbbc2fd1cab17a17db31e5a4",
+  "assets": [
+    {
+      "asset_id": "494625704",
+      "asset_node_id": "RA_kwDOQs7Qds4de2Oo",
+      "name": "qml-journey-3359bce1eb14.zip",
+      "stable_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/download/strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14/qml-journey-3359bce1eb14.zip",
+      "state": "uploaded",
+      "server_size": 208341173,
+      "server_sha256": "sha256:bb625996e569807de258547797621c6149f5d8b757dda4e754ea714e3fdb4b1e",
+      "local_size": 208341173,
+      "local_sha256": "sha256:bb625996e569807de258547797621c6149f5d8b757dda4e754ea714e3fdb4b1e",
+      "full_size_match": true,
+      "full_sha256_match": true,
+      "probes": [
+        {
+          "position": "start",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 0-1023/208341173",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:e6062eee8a1dde9931b787369efa7259dacc8c4e43e2907e4ad7fb3ca6f372ae",
+          "local_range_sha256": "sha256:e6062eee8a1dde9931b787369efa7259dacc8c4e43e2907e4ad7fb3ca6f372ae",
+          "bytes_match": true
+        },
+        {
+          "position": "middle",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 104170586-104171609/208341173",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:b8807a95d5b4fbe0f20a2409de8ce176afca8757182eed707c35ce089c049f4e",
+          "local_range_sha256": "sha256:b8807a95d5b4fbe0f20a2409de8ce176afca8757182eed707c35ce089c049f4e",
+          "bytes_match": true
+        },
+        {
+          "position": "tail",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 208340149-208341172/208341173",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:5f8a62c0bfc33a6500a258b37c3fc7e41f061bb3f1da3c2a7114ed1371413464",
+          "local_range_sha256": "sha256:5f8a62c0bfc33a6500a258b37c3fc7e41f061bb3f1da3c2a7114ed1371413464",
+          "bytes_match": true
+        }
+      ]
+    },
+    {
+      "asset_id": "494625705",
+      "asset_node_id": "RA_kwDOQs7Qds4de2Op",
+      "name": "widgets-rollback-3359bce1eb14.zip",
+      "stable_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/download/strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14/widgets-rollback-3359bce1eb14.zip",
+      "state": "uploaded",
+      "server_size": 199829115,
+      "server_sha256": "sha256:8d8b2507ac1614363b2f4c758121bf788bedd1aca7bfa239ef7d47c81be4eaa5",
+      "local_size": 199829115,
+      "local_sha256": "sha256:8d8b2507ac1614363b2f4c758121bf788bedd1aca7bfa239ef7d47c81be4eaa5",
+      "full_size_match": true,
+      "full_sha256_match": true,
+      "probes": [
+        {
+          "position": "start",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 0-1023/199829115",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:4a93481a3c7d5289bcbc7ed22fd1a5bcd5bb8fccfe577eb860b1ee0078339f5b",
+          "local_range_sha256": "sha256:4a93481a3c7d5289bcbc7ed22fd1a5bcd5bb8fccfe577eb860b1ee0078339f5b",
+          "bytes_match": true
+        },
+        {
+          "position": "middle",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 99914557-99915580/199829115",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:4d53c9c02dfb0fbe84b42c1f2288492cefd7c2152632b09b0c844c823e7cb486",
+          "local_range_sha256": "sha256:4d53c9c02dfb0fbe84b42c1f2288492cefd7c2152632b09b0c844c823e7cb486",
+          "bytes_match": true
+        },
+        {
+          "position": "tail",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 199828091-199829114/199829115",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:5684a936c1eefea4438cc1058daa3b8ffbe3afec59b5e833cd04c6f7d8a400f8",
+          "local_range_sha256": "sha256:5684a936c1eefea4438cc1058daa3b8ffbe3afec59b5e833cd04c6f7d8a400f8",
+          "bytes_match": true
+        }
+      ]
+    }
+  ]
+}

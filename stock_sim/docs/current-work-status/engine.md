@@ -180,6 +180,46 @@ Add a narrower, more stable IPO minimum-path regression that locks the core open
 - If needed, add a separate explicit test for instrument-level IPO-open synchronization once ownership of that guarantee is clarified.
 - Continue using the runtime test matrix to distinguish stable guarantees from implementation-detail assumptions.
 
+## Runtime clock note (2026-03-26)
+
+### status
+in-progress
+
+### goal
+Begin converging desktop clock control with runtime `sim_day` ownership so settlement/T+1 semantics stop depending on a purely app-local notion of time.
+
+### files involved
+- `services/sim_clock.py`
+- `app/services/clock_service.py`
+- `tests/test_clock_and_rollback_service.py`
+
+### change summary
+- Extended runtime `sim_clock` from a manual day counter into a lightweight loop-capable singleton with:
+  - `start_loop`
+  - `pause_loop`
+  - `stop_loop`
+  - `set_day`
+  - `set_speed`
+  - `snapshot`
+- Wired frontend `ClockService` to start/pause/resume/stop that runtime loop when available.
+- Current default compression is now configurable through `STOCKSIM_SIM_DAY_SECONDS`, with the desktop target set to `120` seconds per `sim_day`.
+- Added module-alias unification so `services.sim_clock` and `stock_sim.services.sim_clock` resolve to the same singleton instead of splitting runtime day state.
+
+### current conclusion
+- Runtime now has a real process-level day-advance mechanism, which is necessary for:
+  - T+1 “same day” gating
+  - daily reset hooks
+  - fee/day-boundary jobs
+- Frontend/app clock semantics are still not fully unified with runtime display semantics:
+  - the app clock DTO still exposes a string `sim_day`
+  - runtime settlement still trusts integer runtime `sim_day`
+- So this is a structural convergence step, not the final time-model cleanup.
+
+### impact / risk
+- Positive: runtime day-dependent behavior no longer has to remain permanently stuck on day `1` during desktop sessions.
+- Positive: later `sim_day/sim_dt/run_id` cleanup now has a real backend clock to anchor against.
+- Risk: the clock panel still does not surface runtime intraday progress directly, so user-visible time semantics are only partially aligned today.
+
 ## Runtime run-context wiring note (2026-03-24)
 
 ### status
@@ -983,3 +1023,115 @@ Lock the new run-scoped report shape with a focused contract test so later repla
 
 - Add future notes if symbol-page creation or market-controller construction changes engine assumptions.
 - Track any later work that changes engine registration, symbol routing, or multi-symbol ownership behavior.
+
+## Desktop app-context convergence note (2026-03-26)
+
+### status
+in-progress
+
+### goal
+Reduce frontend state fragmentation by introducing a shared desktop composition root and a small runtime access boundary, so workspace panels and dynamic symbol pages stop constructing parallel service graphs.
+
+### files involved
+- `app/app_context.py`
+- `app/runtime_gateway.py`
+- `app/panels/__init__.py`
+- `app/ui/ui_refresh.py`
+- `app/ui/adapters/account_adapter.py`
+- `setup_frontend_entry.py`
+- `app/headless.py`
+
+### change summary
+- Added `AppContext` as the desktop composition root for shared controllers/services.
+- Added `RuntimeGateway` as a first-pass runtime access seam for app-layer consumers.
+- Switched panel registration to consume a shared `AppContext` instead of constructing fresh per-panel services.
+- Switched dynamic symbol detail page opening to reuse the shared market controller/service instead of creating fallback instances.
+- Moved account prefill discovery away from direct adapter-owned ORM access and into `RuntimeGateway`.
+- Moved `reset_app_context()` to GUI/headless startup so the context is reset once per frontend session rather than inside panel registration.
+
+### impact / risk
+- Positive: Market main page and symbol detail pages now share the same market service/controller graph.
+- Positive: the frontend has a clearer place to continue collecting runtime reads instead of letting adapters query persistence ad hoc.
+- Positive: startup semantics are cleaner because context reset happens at entry, not during adapter registration.
+- Risk: this is only the first slice; some services still keep app-local caches or dual-bus assumptions, so architectural convergence is not complete yet.
+
+### next actions
+- Keep moving direct runtime reads from adapters/services into `RuntimeGateway`.
+- Decide whether `TradingService` / `AgentService` should eventually sit behind a fuller runtime gateway boundary.
+- Later introduce a stronger event contract so shared context does not still depend on loosely duplicated topic names.
+
+### follow-up update
+- `ClockService` runtime sync is now routed through `RuntimeGateway` instead of importing runtime clock/IPO sidecars directly.
+- `AgentService` runtime account bootstrap and IPO allocation trigger are now routed through `RuntimeGateway`.
+- `LeaderboardService` runtime ranking reads are now routed through `RuntimeGateway`.
+- Remaining obvious gap: `TradingService` still talks to runtime ORM/services directly and remains the next cleanup candidate on this boundary.
+
+### follow-up update 2
+- `TradingService` is now routed through `RuntimeGateway` for runtime submit/cancel operations instead of owning direct runtime ORM/service imports itself.
+- Shared desktop `AppContext` now injects the shared `RuntimeGateway` into `TradingService`, aligning it with `ClockService / AgentService / LeaderboardService`.
+- Safe cleanup performed:
+  - removed old direct-runtime implementation from `app/services/trading_service.py`
+  - removed the redundant local dual-bus subscription helper from `app/ui/adapters/orders_adapter.py` in favor of `app.event_bridge.subscribe_topic()`
+  - removed the now-unused `_DETAIL_ENABLE_PIE` feature switch from `app/ui/adapters/market_adapter.py`; the pie render path remains structurally dead and can be fully deleted in a later focused cleanup
+
+### follow-up update 3
+- `TradingService` trade-event fanout is now routed through `app.event_bridge.publish_trade_payload()` instead of duplicating dual-bus publish logic locally.
+- `app/ui/adapters/market_adapter.py` now imports `subscribe_topic()` from `app.event_bridge` instead of maintaining its own runtime/app dual-subscription implementation.
+- The old Market pie-chart branch has been reduced to a dead stub path, which lowers maintenance noise without changing live UI behavior.
+
+### follow-up update 4
+- Added a focused regression for `publish_trade_payload()` so the centralized trade-event bridge now has a direct frontend-side contract test.
+- Chose not to keep pushing on a couple of low-value encoded comment remnants in `market_adapter.py` during this pass; functional cleanup is in place and syntax remains clean, so later cleanup can safely be done as a dedicated cosmetic pass.
+
+## Runtime support bootstrap note (2026-03-26)
+
+### status
+done
+
+### goal
+Make the desktop frontend standard startup path bring up the runtime persistence sidecars needed for snapshot and bar history instead of leaving them as manually started backend helpers.
+
+### files involved
+- `app/runtime_bootstrap.py`
+- `setup_frontend_entry.py`
+- `app/headless.py`
+- `services/snapshot_listener.py`
+- `services/bar_aggregator.py`
+
+### change summary
+- Added a frontend-owned runtime bootstrap helper that starts:
+  - `ensure_snapshot_listener_started()`
+  - `ensure_bar_aggregator_started()`
+- Wired both GUI and headless frontend entry paths to call that helper during startup.
+- Replaced the previous broken placeholder-heavy `bar_aggregator.py` with a working persisted OHLCV aggregation path.
+
+### impact / risk
+- Positive: runtime snapshots/bars now have a standard path to come alive in desktop sessions.
+- Positive: later Market/detail history work can build on a startup chain that already launches the required sidecars.
+- Risk: because these sidecars now come up by default, any future SQLite locking or startup ordering issue should be diagnosed against the new standard chain first.
+
+## Legacy runtime cleanup note (2026-03-26)
+
+### status
+done
+
+### goal
+清理已脱离当前桌面前后端主链的 IPO / agent 遗留文件，减少后续误读与误接线风险。
+
+### files removed
+- `agents/multi_strategy_retail.py`
+- `services/ipo_grant_queue.py`
+- `services/ipo_poller.py`
+- `services/strategy_supervisor.py`
+- `services/agent_meta_listener.py`
+- `services/ipo_listener.py`
+
+### removal basis
+- 代码侧已不再被当前 GUI/headless 启动链、面板注册链、runtime support bootstrap 链引用。
+- 搜索确认当前 `app/`, `services/`, `tests/`, `scripts/` 中没有主链硬引用。
+- 这些文件保留的主要是旧版 MultiStrategy/IPO grant/poller/listener 方案，与当前 runtime retail + clock + event bridge 主链已脱钩。
+
+### impact / risk
+- Positive: 后续排查时不会再把旧的 IPO grant / poller / listener 路径误当成现行链路。
+- Positive: 当前桌面主链更聚焦在 `MarketController / AgentService / RuntimeRetailAgent / sim_clock / runtime bootstrap`。
+- Risk: 文档和结构说明里仍会暂时保留历史提及，后续如需可再做一次纯文档清理。

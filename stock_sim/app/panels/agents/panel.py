@@ -33,7 +33,7 @@ from threading import RLock, Thread
 import time
 
 from app.controllers.agent_controller import AgentController
-from app.services.agent_service import AgentService, BatchCreateConfig, AgentServiceError, BATCH_ALLOWED_TYPES
+from app.services.agent_service import AgentService, BatchCreateConfig, AgentServiceError
 from app.core_dto.agent import AgentMetaDTO
 # 新增: 通知中心 (可选)
 try:  # pragma: no cover
@@ -73,6 +73,7 @@ class AgentsPanel:
         self._batch_strategies: Optional[List[str]] = None
         # 可选：记录最近一次初始资金（仅调试/查看）
         self._batch_initial_cash: Optional[float] = None
+        self._agent_type_filter = "All"
 
     # -------------- 批量创建 --------------
     def start_batch_create(self, *, count: int, agent_type: str, name_prefix: str = "agent", strategies: Optional[List[str]] = None, initial_cash: Optional[float] = None) -> bool:
@@ -95,24 +96,29 @@ class AgentsPanel:
     def _run_batch(self, count: int, agent_type: str, name_prefix: str, strategies: Optional[List[str]], initial_cash: Optional[float]):  # noqa: D401
         start = time.perf_counter()
         try:
-            # 逐个调用以展示进度
-            for i in range(count):
-                try:
-                    cfg = BatchCreateConfig(count=1, agent_type=agent_type, name_prefix=name_prefix, strategies=strategies, initial_cash=(initial_cash if initial_cash is not None else 100_000.0))
-                    self._svc.batch_create_retail(cfg)
-                    with self._lock:
-                        self._batch_created += 1
-                except AgentServiceError as e:  # 捕获不允许类型错误
-                    with self._lock:
-                        self._batch_error = e.code
-                        self._batch_failed += 1
-                        # 不可用类型直接终止后续
-                        break
-                except Exception:  # 其他错误统计 failed
-                    with self._lock:
-                        self._batch_failed += 1
-                # 模拟轻微延迟 (避免测试过快无法看到进度; 可选)
-                time.sleep(0.005)
+            time.sleep(0.005)
+            cfg = BatchCreateConfig(
+                count=count,
+                agent_type=agent_type,
+                name_prefix=name_prefix,
+                strategies=strategies,
+                initial_cash=(initial_cash if initial_cash is not None else 100_000.0),
+            )
+            res = self._svc.batch_create_retail(cfg)
+            with self._lock:
+                self._batch_created += len(res.get("success_ids", []))
+                self._batch_failed += len(res.get("failed", []))
+                returned_strategies = res.get("strategies")
+                if returned_strategies:
+                    self._batch_strategies = list(returned_strategies)
+            return
+        except AgentServiceError as e:
+            with self._lock:
+                self._batch_error = e.code
+                self._batch_failed = max(self._batch_failed, count)
+        except Exception:
+            with self._lock:
+                self._batch_failed = max(self._batch_failed, count)
         finally:
             dur_ms = (time.perf_counter() - start) * 1000
             metrics.add_timing("agents_panel_batch_ms", dur_ms)
@@ -124,11 +130,26 @@ class AgentsPanel:
         ag = self._ctl.control(agent_id, action)  # action 校验由 service 完成
         return ag
 
+    def control_many(self, agent_ids: List[str], action: str) -> Dict[str, Any]:
+        ctrl = getattr(self._ctl, "control_many", None)
+        if callable(ctrl):
+            return ctrl(agent_ids, action)  # type: ignore[arg-type]
+        success: List[str] = []
+        failed: List[Dict[str, str]] = []
+        for agent_id in agent_ids:
+            try:
+                self.control(agent_id, action)
+                success.append(agent_id)
+            except Exception as exc:
+                failed.append({"agent_id": agent_id, "error": str(exc)})
+        return {"success_ids": success, "failed": failed, "action": action}
+
     # -------------- 视图 --------------
     def get_view(self) -> Dict[str, Any]:
         agents = self._ctl.list_agents()
         now_ms = int(time.time()*1000)
-        items = [self._agent_view(a, now_ms) for a in agents]
+        items_all = [self._agent_view(a, now_ms) for a in agents]
+        items = [it for it in items_all if self._matches_filter(it)]
         with self._lock:
             batch = {
                 'in_progress': self._batch_in_progress,
@@ -143,6 +164,8 @@ class AgentsPanel:
         return {
             'agents': {
                 'total': len(items),
+                'unfiltered_total': len(items_all),
+                'filter': self._agent_type_filter,
                 'items': items,
             },
             'batch': batch,
@@ -163,12 +186,39 @@ class AgentsPanel:
             'agent_id': a.agent_id,
             'name': a.name,
             'type': a.type,
+            'strategy': getattr(a, 'strategy', None),
+            'model_id': getattr(a, 'model_id', None),
+            'family_model': getattr(a, 'model_id', None) or getattr(a, 'strategy', None),
             'status': a.status,
             'start_time': a.start_time,
             'last_heartbeat': a.last_heartbeat,
             'params_version': a.params_version,
             'heartbeat_stale': stale,
+            'mode': getattr(a, 'mode', None) or ('retail' if a.type == 'Retail' else None),
+            'episode_id': getattr(a, 'episode_id', None),
+            'last_reward': getattr(a, 'last_reward', None),
+            'equity': getattr(a, 'equity', None),
+            'pnl': getattr(a, 'pnl', None),
+            'last_action': getattr(a, 'last_action', None),
         }
+
+    def set_agent_type_filter(self, value: str) -> None:
+        normalized = str(value or "All").strip().lower()
+        if normalized == "retail":
+            selected = "Retail"
+        elif normalized == "model":
+            selected = "Model"
+        else:
+            selected = "All"
+        with self._lock:
+            self._agent_type_filter = selected
+
+    def _matches_filter(self, item: Dict[str, Any]) -> bool:
+        with self._lock:
+            selected = self._agent_type_filter
+        if selected == "All":
+            return True
+        return str(item.get("type") or "") == selected
 
     def _notify_stale_once(self, agent_id: str):  # 去重通知
         try:

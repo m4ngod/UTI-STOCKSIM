@@ -23,6 +23,7 @@ except Exception:  # noqa
     AdaptiveSnapshotPolicyManager = None  # 占位
 
 import os  # 调试
+import time
 TRACE_ME = os.environ.get('DEBUG_TRACE_ME') == '1'
 
 class MatchingEngine:
@@ -385,6 +386,7 @@ class MatchingEngine:
         book.snapshot.update_book(bids, asks, levels)
         bid1_px, bid1_qty = (book.snapshot.best_bid_price, book.snapshot.best_bid_qty)
         ask1_px, ask1_qty = (book.snapshot.best_ask_price, book.snapshot.best_ask_qty)
+        ts_ms = int(time.time() * 1000)
         sim_day = current_sim_day()
         sim_dt = virtual_datetime(sim_day) if sim_day is not None else None
         run_id = None
@@ -397,6 +399,7 @@ class MatchingEngine:
         event_bus.publish(EventType.SNAPSHOT_UPDATED, {
             'symbol': book.symbol,
             'run_id': run_id,
+            'ts_ms': ts_ms,
             'sim_day': sim_day,
             'sim_dt': sim_dt.isoformat() if sim_dt else None,
             'snapshot': {
@@ -410,6 +413,7 @@ class MatchingEngine:
                 'ask1': ask1_px,
                 'bid1_qty': bid1_qty,
                 'ask1_qty': ask1_qty,
+                'ts_ms': ts_ms,
             }
         })
 

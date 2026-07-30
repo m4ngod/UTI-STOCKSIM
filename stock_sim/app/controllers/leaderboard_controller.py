@@ -70,3 +70,6 @@ class LeaderboardController:
     def get_cached(self, window: str) -> Optional[List[LeaderboardRowDTO]]:
         with self._lock:
             return self._cache.get(window)
+
+    def get_curves(self, agent_id: str, *, window: str, points: int = 50) -> Optional[Dict[str, object]]:
+        return self._service.get_agent_curves(agent_id, window, points=points)

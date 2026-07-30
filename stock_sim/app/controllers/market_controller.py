@@ -15,24 +15,38 @@ Future Hooks (Task50):
 - TODO: 自适应批大小调优 Hook (基于延迟反馈)
 """
 from __future__ import annotations
-from typing import Dict, List, Optional, Any, Callable
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable
 from threading import RLock
+import time
 
 from app.core_dto.snapshot import SnapshotDTO
 from app.services.market_data_service import MarketDataService, Timeframe
 from app.indicators.executor import indicator_executor
 from observability.metrics import metrics
-from infra.event_bus import event_bus
 from app.utils.validators import safe_float, safe_int, derive_third_value, round_to_price_step
 from observability.struct_logger import logger  # 新增结构化日志
+
+if TYPE_CHECKING:
+    from app.runtime_gateway import RuntimeGateway
 
 __all__ = ["MarketController"]
 
 IndicatorCallback = Callable[[Any, Any], None]  # (result, meta)
+_DETAIL_SNAPSHOT_STALE_MS = 15_000
+
+
+def _publish_instrument_created(payload: dict[str, Any]) -> None:
+    try:
+        from app.event_bridge import publish_instrument_created
+    except ImportError:
+        return
+    publish_instrument_created(payload)
+
 
 class MarketController:
-    def __init__(self, service: MarketDataService):
+    def __init__(self, service: MarketDataService, runtime_gateway: RuntimeGateway | None = None):
         self._service = service
+        self._runtime_gateway = runtime_gateway
         self._lock = RLock()
         self._snapshots: Dict[str, SnapshotDTO] = {}
         self._batch_count = 0
@@ -59,6 +73,57 @@ class MarketController:
         with self._lock:
             return self._snapshots.get(symbol)
 
+    def get_detail_snapshot(self, symbol: str, *, stale_after_ms: int = _DETAIL_SNAPSHOT_STALE_MS) -> Dict[str, Any]:
+        snapshot = self.get_snapshot(symbol)
+        snapshot_status = "missing"
+        snapshot_age_ms: int | None = None
+        timestamp_ms: int | None = None
+        if snapshot is not None:
+            try:
+                timestamp_ms = int(snapshot.ts)
+                snapshot_age_ms = max(0, int(time.time() * 1000) - timestamp_ms)
+            except Exception:
+                snapshot_age_ms = None
+                timestamp_ms = None
+            snapshot_status = (
+                "stale"
+                if snapshot_age_ms is not None and snapshot_age_ms > int(stale_after_ms)
+                else "available"
+            )
+        snapshot_meta = {
+            "source": "market-controller-merged-snapshot-cache",
+            "authoritative": True,
+            "status": snapshot_status,
+            "refresh": "event-batch",
+            "freshness_model": "snapshot-ts-age",
+            "timestamp_ms": timestamp_ms,
+            "age_ms": snapshot_age_ms,
+            "stale_after_ms": int(stale_after_ms),
+        }
+        order_book = None
+        order_book_meta = {
+            "source": "snapshot-derived-order-book-view",
+            "authoritative": True,
+            "status": "missing",
+            "refresh": "snapshot-update",
+            "freshness_model": "inherit-snapshot-age",
+            "derived_from": "snapshot",
+            "age_ms": snapshot_age_ms,
+            "stale_after_ms": int(stale_after_ms),
+        }
+        if snapshot is not None:
+            order_book = {
+                "bids": snapshot.bid_levels,
+                "asks": snapshot.ask_levels,
+            }
+            order_book_meta["status"] = "stale" if snapshot_status == "stale" else "available"
+        return {
+            "snapshot": None if snapshot is None else snapshot.model_dump(),
+            "snapshot_meta": snapshot_meta,
+            "order_book": order_book,
+            "order_book_meta": order_book_meta,
+        }
+
     def list_snapshots(self, *, page: int = 1, page_size: int = 50, symbol_filter: Optional[str] = None,
                        sort_by: str = "symbol") -> Dict[str, Any]:
         with self._lock:
@@ -79,6 +144,64 @@ class MarketController:
         else:
             paged = items[start:start + page_size]
         return {"total": total, "page": page, "page_size": page_size, "items": paged}
+
+    def load_persisted_instruments(self) -> List[str]:
+        gateway = self._runtime_gateway
+        if gateway is None or not hasattr(gateway, "list_instruments"):
+            return []
+        try:
+            rows = gateway.list_instruments(active_only=True)
+        except Exception:
+            return []
+        snapshots: List[SnapshotDTO] = []
+        symbols: List[str] = []
+        now_ms = int(time.time() * 1000)
+        for row in rows or []:
+            symbol = str((row or {}).get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            symbols.append(symbol)
+            price_raw = (row or {}).get("initial_price")
+            try:
+                reference_price = float(price_raw)
+            except Exception:
+                reference_price = 0.0
+            if reference_price <= 0:
+                reference_price = 0.0
+            step_raw = (row or {}).get("tick_size")
+            try:
+                price_step = float(step_raw)
+            except Exception:
+                price_step = 0.01
+            try:
+                self._service.ensure_symbol(symbol)
+                self._service.register_symbol_meta(
+                    symbol,
+                    reference_price=reference_price if reference_price > 0 else None,
+                    price_step=price_step if price_step > 0 else 0.01,
+                    limit_pct=0.10,
+                )
+            except Exception:
+                pass
+            with self._lock:
+                exists = symbol in self._snapshots
+            if exists:
+                continue
+            snapshots.append(
+                SnapshotDTO(
+                    symbol=symbol,
+                    last=reference_price,
+                    bid_levels=[],
+                    ask_levels=[],
+                    volume=0,
+                    turnover=0.0,
+                    ts=now_ms,
+                    snapshot_id=f"{symbol}-instrument-bootstrap-{now_ms}",
+                )
+            )
+        if snapshots:
+            self.merge_batch(snapshots)
+        return symbols
 
     # ---------------- Indicator Requests ---------------
     def request_indicator(self, *, symbol: str, timeframe: Timeframe, name: str, callback: Optional[IndicatorCallback] = None, **params):
@@ -179,12 +302,47 @@ class MarketController:
             "total_shares": ts,
             "price_step": price_step,
         }
+        try:
+            self._service.register_symbol_meta(symbol, reference_price=price, price_step=price_step, limit_pct=0.10)
+        except Exception:
+            pass
+        runtime_registered = False
+        if self._runtime_gateway is not None:
+            try:
+                runtime_registered = bool(
+                    self._runtime_gateway.create_instrument(
+                        symbol=symbol,
+                        name=name,
+                        price_step=price_step,
+                        initial_price=price,
+                        float_shares=fs,
+                        market_cap=mcap,
+                        total_shares=ts,
+                    )
+                )
+            except Exception:
+                runtime_registered = False
+        payload["settlement_cycle"] = 1
+        payload["ipo_opened"] = True
+        payload["runtime_registered"] = runtime_registered
+        # Runtime instrument creation and IPO bootstrap now route through RuntimeGateway.
         # 事件广播（统一为 instrument-created）
         try:
-            event_bus.publish("instrument-created", payload)
+            _publish_instrument_created(payload)
         except Exception as e:
             # 广播失败不影响创建返回，但记录日志
             logger.log("instrument.broadcast_failed", topic="instrument-created", name=name, symbol=symbol, error=str(e))
-        logger.log("instrument.created", topic="instrument-created", name=name, symbol=symbol, float_shares=fs, market_cap=mcap, initial_price=price)
+        logger.log(
+            "instrument.created",
+            topic="instrument-created",
+            name=name,
+            symbol=symbol,
+            float_shares=fs,
+            market_cap=mcap,
+            initial_price=price,
+            runtime_registered=runtime_registered,
+            ipo_opened=True,
+            settlement_cycle=1,
+        )
         metrics.inc("instrument_created")
         return payload

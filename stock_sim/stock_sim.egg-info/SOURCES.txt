@@ -1,8 +1,0 @@
-pyproject.toml
-README.md
-setup_frontend_entry.py
-stock_sim.egg-info/PKG-INFO
-stock_sim.egg-info/SOURCES.txt
-stock_sim.egg-info/dependency_links.txt
-stock_sim.egg-info/requires.txt
-stock_sim.egg-info/top_level.txt

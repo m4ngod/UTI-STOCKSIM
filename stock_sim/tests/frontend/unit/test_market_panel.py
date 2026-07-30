@@ -87,3 +87,49 @@ def test_market_panel_sort_and_detail():
     # snapshot 字段包含 symbol
     assert detail['snapshot'] is None or detail['snapshot']['symbol'] == 'AAA'
 
+
+def test_market_panel_get_view_uses_lightweight_selected_symbol():
+    panel, _, svc = _build_market_panel()
+    panel.add_symbol('AAA')
+    panel.select_symbol('AAA')
+
+    def _fail_detail_fetch(*_args, **_kwargs):
+        raise AssertionError("get_view should not build the full detail view")
+
+    svc.get_trades_detail = _fail_detail_fetch  # type: ignore[method-assign]
+    svc.get_holdings_detail = _fail_detail_fetch  # type: ignore[method-assign]
+
+    view = panel.get_view()
+
+    assert view["selected"] == "AAA"
+
+
+class _InstrumentGateway:
+    def list_instruments(self, *, active_only=True):
+        assert active_only is True
+        return [
+            {
+                "symbol": "PST1",
+                "name": "Persisted 1",
+                "initial_price": 12.34,
+                "tick_size": 0.01,
+                "is_active": True,
+                "ipo_opened": True,
+            }
+        ]
+
+
+def test_market_panel_loads_persisted_instruments_into_watchlist_and_snapshots():
+    svc = MarketDataService(allow_synthetic_fallback=False, runtime_gateway=_InstrumentGateway())
+    ctl = MarketController(svc, runtime_gateway=_InstrumentGateway())
+    panel = __import__("app.panels.market.panel", fromlist=["MarketPanel"]).MarketPanel(ctl, svc)
+
+    loaded = panel.load_persisted_instruments()
+    view = panel.get_view()
+    items = view["watchlist"]["snapshots"]["items"]
+
+    assert loaded == ["PST1"]
+    assert view["watchlist"]["symbols"] == ["PST1"]
+    assert items[0]["symbol"] == "PST1"
+    assert items[0]["last"] == 12.34
+

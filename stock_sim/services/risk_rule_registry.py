@@ -68,6 +68,11 @@ class TPlusOneSellRestrictionRule:
         context = kwargs.get('context') or {}
         settlement_cycle = int(context.get('settlement_cycle') or 0)
         risk_engine = context.get('risk_engine')
+        if context.get("tplus_applies") is False:
+            return None
+        agent_type = str(context.get("agent_type") or "").strip().upper()
+        if agent_type and agent_type != "RETAIL":
+            return None
 
         if qty <= 0 or settlement_cycle < 1 or risk_engine is None:
             return None
@@ -80,7 +85,13 @@ class TPlusOneSellRestrictionRule:
         pos = next((p for p in positions if getattr(p, 'symbol', None) == symbol), None)
         long_qty = max(0, int(getattr(pos, 'quantity', 0) or 0)) if pos is not None else 0
         frozen_qty = max(0, int(getattr(pos, 'frozen_qty', 0) or 0)) if pos is not None else 0
-        same_day_buy_qty = int(risk_engine.get_tplus(account_id, symbol, OrderSide.BUY) or 0)
+        memory_same_day_buy_qty = int(risk_engine.get_tplus(account_id, symbol, OrderSide.BUY) or 0)
+        persisted_same_day_buy_qty = (
+            int(context.get("same_day_buy_qty") or 0)
+            if "same_day_buy_qty" in context
+            else 0
+        )
+        same_day_buy_qty = max(memory_same_day_buy_qty, persisted_same_day_buy_qty)
 
         sellable_qty = max(0, long_qty - same_day_buy_qty - frozen_qty)
         if qty > sellable_qty:

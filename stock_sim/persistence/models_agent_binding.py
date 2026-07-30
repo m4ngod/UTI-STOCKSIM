@@ -8,6 +8,7 @@ class AgentBinding(Base, SimTimeMixin):
     agent_name = Column(String(128), primary_key=True)  # 智能体 / 散户名称（唯一）
     agent_type = Column(String(32), default="GENERIC", index=True)  # ALT / RETAIL / OTHER
     account_id = Column(String(64), unique=True, index=True)  # 一账户只允许被一个绑定占用
+    run_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, index=True)
     meta = Column(String(4096), nullable=True)  # 新增: 持久化智能体配置 (JSON 字符串)
@@ -25,3 +26,4 @@ class AgentBinding(Base, SimTimeMixin):
             pass
 
 Index("idx_agent_bindings_account", AgentBinding.account_id)
+Index("idx_agent_bindings_run_type", AgentBinding.run_id, AgentBinding.agent_type)

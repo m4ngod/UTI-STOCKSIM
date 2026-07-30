@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.app_context import reset_app_context
+from app.event_bridge import start_frontend_bridge
+from app.runtime_bootstrap import start_runtime_support_services
 from app.panels import register_builtin_panels, register_ui_adapters, get_panel, list_panels
 
 
@@ -36,6 +39,9 @@ def run_headless_frontend() -> HeadlessMainWindow:
     If adapter registration fails, the placeholder registry remains available as a
     safe fallback.
     """
+    reset_app_context()
+    start_frontend_bridge()
+    start_runtime_support_services()
     register_builtin_panels()
     try:
         register_ui_adapters()

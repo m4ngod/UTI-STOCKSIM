@@ -1,0 +1,1687 @@
+"""Versioned Scenario Transformation Catalog contracts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import TYPE_CHECKING, Callable, Final, Iterable, Literal, Mapping, Protocol
+
+if TYPE_CHECKING:
+    from .market_paths import (
+        FiveMinuteBar,
+        InstrumentState,
+        ScenarioDataWorldInput,
+        SessionPriceLimitReference,
+    )
+
+
+ParameterValueType = Literal["decimal", "enum", "integer"]
+TransformationPhase = Literal["gap", "shock", "persistence", "recovery"]
+SCENARIO_TRANSFORMATION_CATALOG_VERSION: Final = (
+    "scenario-transformation-catalog.v1"
+)
+
+
+def _decimal_text(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
+
+
+class TransformationRequest(Protocol):
+    @property
+    def transformation_id(self) -> str: ...
+
+    @property
+    def parameters(self) -> Mapping[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TransformationParameterDefinition:
+    name: str
+    value_type: ParameterValueType
+    required: bool
+    minimum: Decimal | None = None
+    maximum: Decimal | None = None
+    choices: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        view: dict[str, object] = {
+            "name": self.name,
+            "value_type": self.value_type,
+            "required": self.required,
+        }
+        if self.choices:
+            view["choices"] = list(self.choices)
+        if self.minimum is not None:
+            view["minimum"] = _decimal_text(self.minimum)
+        if self.maximum is not None:
+            view["maximum"] = _decimal_text(self.maximum)
+        return view
+
+
+@dataclass(frozen=True, slots=True)
+class TransformationCatalogEntry:
+    transformation_id: str
+    family: str
+    implementation_version: str
+    parameters: tuple[TransformationParameterDefinition, ...]
+    compatibility_rules: tuple[str, ...]
+    causality_constraints: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "transformation_id": self.transformation_id,
+            "family": self.family,
+            "implementation_version": self.implementation_version,
+            "parameters": [parameter.to_dict() for parameter in self.parameters],
+            "compatibility_rules": list(self.compatibility_rules),
+            "causality_constraints": list(self.causality_constraints),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TransformationCatalogIssue:
+    path: str
+    rule: str
+    message: str
+    correction: str
+
+
+@dataclass(frozen=True, slots=True)
+class TransformationPhaseMarker:
+    phase: TransformationPhase
+    start_source_bar_end_time: datetime
+    end_source_bar_end_time: datetime
+    source_time_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.start_source_bar_end_time.tzinfo is not None
+            or self.end_source_bar_end_time.tzinfo is not None
+        ):
+            raise ValueError("Transformation phase times must be market-local")
+        if self.end_source_bar_end_time < self.start_source_bar_end_time:
+            raise ValueError("Transformation phase end cannot precede its start")
+        if self.source_time_count <= 0:
+            raise ValueError("Transformation phases require source times")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "phase": self.phase,
+            "start_source_bar_end_time": (
+                self.start_source_bar_end_time.isoformat()
+            ),
+            "end_source_bar_end_time": self.end_source_bar_end_time.isoformat(),
+            "source_time_count": self.source_time_count,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, object],
+    ) -> TransformationPhaseMarker:
+        phase = payload.get("phase")
+        if phase not in ("gap", "shock", "persistence", "recovery"):
+            raise ValueError("Stored transformation phase is invalid")
+        try:
+            start_time = datetime.fromisoformat(
+                str(payload["start_source_bar_end_time"])
+            )
+            end_time = datetime.fromisoformat(
+                str(payload["end_source_bar_end_time"])
+            )
+            source_time_count = int(str(payload["source_time_count"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Stored transformation phase marker is invalid") from exc
+        return cls(
+            phase=phase,
+            start_source_bar_end_time=start_time,
+            end_source_bar_end_time=end_time,
+            source_time_count=source_time_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedTransformation:
+    transformation_id: str
+    family: str
+    catalog_version: str
+    implementation_version: str
+    parameters: tuple[tuple[str, str], ...]
+    phase_markers: tuple[TransformationPhaseMarker, ...] = ()
+    statistics: tuple[tuple[str, str], ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        view: dict[str, object] = {
+            "transformation_id": self.transformation_id,
+            "family": self.family,
+            "catalog_version": self.catalog_version,
+            "implementation_version": self.implementation_version,
+            "parameters": dict(self.parameters),
+        }
+        if self.phase_markers:
+            view["phase_markers"] = [
+                marker.to_dict() for marker in self.phase_markers
+            ]
+        if self.statistics:
+            view["statistics"] = dict(self.statistics)
+        return view
+
+
+@dataclass(frozen=True, slots=True)
+class _TransformationApplication:
+    world: ScenarioDataWorldInput
+    phase_markers: tuple[TransformationPhaseMarker, ...] = ()
+    statistics: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ShockRecoveryPlan:
+    direction: str
+    displacement_by_time: tuple[tuple[datetime, Decimal], ...]
+    phase_windows: tuple[
+        tuple[TransformationPhase, tuple[datetime, ...]], ...
+    ]
+    peak_displacement: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class _MarketStructurePlan:
+    desired_factors: tuple[tuple[datetime, str, Decimal], ...]
+
+
+class ScenarioTransformationCatalog:
+    """Immutable registry of reviewed deterministic transformations."""
+
+    def __init__(
+        self,
+        *,
+        catalog_version: str,
+        entries: Iterable[TransformationCatalogEntry],
+    ) -> None:
+        ordered = tuple(entries)
+        by_id = {entry.transformation_id: entry for entry in ordered}
+        if len(by_id) != len(ordered):
+            raise ValueError("Transformation Catalog identifiers must be unique")
+        self._catalog_version = catalog_version
+        self._entries = tuple(sorted(ordered, key=lambda item: item.transformation_id))
+        self._by_id = by_id
+
+    @property
+    def catalog_version(self) -> str:
+        return self._catalog_version
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "catalog_version": self.catalog_version,
+            "transformations": [entry.to_dict() for entry in self._entries],
+        }
+
+    def get_entry(self, transformation_id: str) -> TransformationCatalogEntry:
+        try:
+            return self._by_id[transformation_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"Transformation {transformation_id!r} is not registered"
+            ) from exc
+
+    def canonical_parameters(
+        self,
+        transformation_id: str,
+        values: Mapping[str, object],
+    ) -> tuple[tuple[str, str], ...]:
+        """Return the catalog-defined stable representation of valid parameters."""
+
+        entry = self.get_entry(transformation_id)
+        issues = self._validate_parameters(
+            "transformation",
+            entry,
+            values,
+        )
+        if issues:
+            raise ValueError(
+                "Cannot canonicalize invalid transformation parameters: "
+                + "; ".join(issue.message for issue in issues)
+            )
+        return _canonical_parameters(entry, values)
+
+    def validate_requests(
+        self,
+        requests: Iterable[TransformationRequest],
+        *,
+        market_rule_profile: str,
+        data_policy: str,
+    ) -> tuple[TransformationCatalogIssue, ...]:
+        issues: list[TransformationCatalogIssue] = []
+        seen_families: set[str] = set()
+        for index, request in enumerate(requests):
+            base_path = f"transformations.{index}"
+            entry = self._by_id.get(request.transformation_id)
+            if entry is None:
+                issues.append(
+                    TransformationCatalogIssue(
+                        path=f"{base_path}.transformation_id",
+                        rule="transformation.not-registered",
+                        message=(
+                            f"Transformation {request.transformation_id!r} is not registered."
+                        ),
+                        correction=(
+                            "Remove it or choose a registered Transformation Catalog entry."
+                        ),
+                    )
+                )
+                continue
+            if "a-share-cash-equity.v1" in entry.compatibility_rules and (
+                market_rule_profile != "a-share-cash-equity.v1"
+            ):
+                issues.append(
+                    TransformationCatalogIssue(
+                        path="market_rule_profile",
+                        rule="transformation.incompatible-market-profile",
+                        message="The transformation is incompatible with the market profile.",
+                        correction="Use market_rule_profile='a-share-cash-equity.v1'.",
+                    )
+                )
+            if "point-in-time-inputs-only" in entry.causality_constraints and (
+                data_policy != "point-in-time"
+            ):
+                issues.append(
+                    TransformationCatalogIssue(
+                        path="data_policy",
+                        rule="causality.point-in-time-required",
+                        message="The transformation requires point-in-time inputs.",
+                        correction="Use data_policy='point-in-time'.",
+                    )
+                )
+            if (
+                "one-transform-per-family" in entry.compatibility_rules
+                and entry.family in seen_families
+            ):
+                issues.append(
+                    TransformationCatalogIssue(
+                        path=f"{base_path}.transformation_id",
+                        rule="transformation.incompatible-combination",
+                        message=f"Transformation family {entry.family!r} is already present.",
+                        correction="Keep only one transformation from this family.",
+                    )
+                )
+            seen_families.add(entry.family)
+            issues.extend(self._validate_parameters(base_path, entry, request.parameters))
+        return tuple(issues)
+
+    @staticmethod
+    def _validate_parameters(
+        base_path: str,
+        entry: TransformationCatalogEntry,
+        values: Mapping[str, object],
+    ) -> tuple[TransformationCatalogIssue, ...]:
+        issues: list[TransformationCatalogIssue] = []
+        definitions = {parameter.name: parameter for parameter in entry.parameters}
+        for name in sorted(set(values) - set(definitions)):
+            forbidden_issue = _forbidden_parameter_issue(base_path, name)
+            if forbidden_issue is not None:
+                issues.append(forbidden_issue)
+                continue
+            issues.append(
+                TransformationCatalogIssue(
+                    path=f"{base_path}.parameters.{name}",
+                    rule="transformation.parameter-unknown",
+                    message=f"Parameter {name!r} is not declared by the catalog entry.",
+                    correction="Remove the unsupported parameter.",
+                )
+            )
+        for name, definition in definitions.items():
+            path = f"{base_path}.parameters.{name}"
+            if name not in values:
+                if definition.required:
+                    issues.append(
+                        TransformationCatalogIssue(
+                            path=path,
+                            rule="transformation.parameter-required",
+                            message=f"Parameter {name!r} is required.",
+                            correction="Provide the parameter using the published type and bounds.",
+                        )
+                    )
+                continue
+            value = values[name]
+            if definition.value_type == "enum":
+                if not isinstance(value, str) or value not in definition.choices:
+                    issues.append(
+                        TransformationCatalogIssue(
+                            path=path,
+                            rule="transformation.parameter-type",
+                            message=f"Parameter {name!r} must be one of {definition.choices!r}.",
+                            correction="Choose one of the published values.",
+                        )
+                    )
+                continue
+            try:
+                if isinstance(value, bool):
+                    raise InvalidOperation
+                decimal_value = Decimal(str(value))
+                if not decimal_value.is_finite():
+                    raise InvalidOperation
+                if (
+                    definition.value_type == "integer"
+                    and decimal_value != decimal_value.to_integral_value()
+                ):
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                expected_type = (
+                    "an integer value"
+                    if definition.value_type == "integer"
+                    else "a decimal value"
+                )
+                correction = (
+                    "Provide an integer string or number."
+                    if definition.value_type == "integer"
+                    else "Provide a decimal string or number."
+                )
+                issues.append(
+                    TransformationCatalogIssue(
+                        path=path,
+                        rule="transformation.parameter-type",
+                        message=f"Parameter {name!r} must be {expected_type}.",
+                        correction=correction,
+                    )
+                )
+                continue
+            if (
+                definition.minimum is not None
+                and decimal_value < definition.minimum
+            ) or (
+                definition.maximum is not None
+                and decimal_value > definition.maximum
+            ):
+                issues.append(
+                    TransformationCatalogIssue(
+                        path=path,
+                        rule="transformation.parameter-bounds",
+                        message=f"Parameter {name!r} is outside the published bounds.",
+                        correction=(
+                            f"Choose a value from {_decimal_text(definition.minimum or Decimal(0))} "
+                            f"through {_decimal_text(definition.maximum or Decimal(0))}."
+                        ),
+                    )
+                )
+        return tuple(issues)
+
+
+def _forbidden_parameter_issue(
+    base_path: str,
+    name: str,
+) -> TransformationCatalogIssue | None:
+    normalized = name.lower().replace("-", "_")
+    path = f"{base_path}.parameters.{name}"
+    if any(token in normalized for token in ("python", "code", "script", "executable")):
+        return TransformationCatalogIssue(
+            path=path,
+            rule="transformation.executable-code-forbidden",
+            message="Scenario Recipes cannot contain executable transformation code.",
+            correction="Choose a reviewed registered transformation and declared parameters.",
+        )
+    if any(token in normalized for token in ("expression", "formula", "expr")):
+        return TransformationCatalogIssue(
+            path=path,
+            rule="transformation.expression-forbidden",
+            message="Scenario Recipes cannot contain arbitrary expressions or formulas.",
+            correction="Use only parameters declared by the Transformation Catalog.",
+        )
+    if "final" in normalized and any(
+        token in normalized for token in ("price", "close", "ohlc", "market_data")
+    ):
+        return TransformationCatalogIssue(
+            path=path,
+            rule="transformation.final-price-edit-forbidden",
+            message="Scenario Recipes cannot edit final market prices directly.",
+            correction="Describe the condition through a registered transformation.",
+        )
+    if any(token in normalized for token in ("path", "file", "directory", "folder")):
+        return TransformationCatalogIssue(
+            path=path,
+            rule="transformation.path-forbidden",
+            message="Scenario Recipes cannot contain filesystem paths.",
+            correction="Select admitted data and catalog capabilities by durable identity.",
+        )
+    return None
+
+
+def apply_registered_transformations(
+    world: ScenarioDataWorldInput,
+    requests: Iterable[TransformationRequest],
+    *,
+    catalog: ScenarioTransformationCatalog,
+    market_rule_profile: str = "a-share-cash-equity.v1",
+    data_policy: str = "point-in-time",
+) -> tuple[ScenarioDataWorldInput, tuple[AppliedTransformation, ...]]:
+    ordered_requests = tuple(requests)
+    issues = catalog.validate_requests(
+        ordered_requests,
+        market_rule_profile=market_rule_profile,
+        data_policy=data_policy,
+    )
+    if issues:
+        raise ValueError(
+            "Invalid Scenario Transformation request: "
+            + "; ".join(f"{issue.path}: {issue.message}" for issue in issues)
+        )
+    transformed = world
+    applied: list[AppliedTransformation] = []
+    for request in ordered_requests:
+        entry = catalog.get_entry(request.transformation_id)
+        implementation = _TRANSFORMATION_IMPLEMENTATIONS.get(
+            entry.transformation_id
+        )
+        if implementation is None:  # pragma: no cover - registration stays atomic
+            raise ValueError(
+                f"No implementation exists for {entry.transformation_id!r}"
+            )
+        outcome = implementation(transformed, request.parameters)
+        transformed = outcome.world
+        applied.append(
+            AppliedTransformation(
+                transformation_id=entry.transformation_id,
+                family=entry.family,
+                catalog_version=catalog.catalog_version,
+                implementation_version=entry.implementation_version,
+                parameters=_canonical_parameters(entry, request.parameters),
+                phase_markers=outcome.phase_markers,
+                statistics=outcome.statistics,
+            )
+        )
+    return transformed, tuple(applied)
+
+
+def _canonical_parameters(
+    entry: TransformationCatalogEntry,
+    values: Mapping[str, object],
+) -> tuple[tuple[str, str], ...]:
+    definitions = {parameter.name: parameter for parameter in entry.parameters}
+    canonical: list[tuple[str, str]] = []
+    for name in sorted(values):
+        definition = definitions[name]
+        value = values[name]
+        if definition.value_type == "decimal":
+            canonical.append((name, _decimal_text(Decimal(str(value)))))
+        elif definition.value_type == "integer":
+            canonical.append((name, str(int(Decimal(str(value))))))
+        else:
+            canonical.append((name, str(value)))
+    return tuple(canonical)
+
+
+def _apply_trend_regime(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    direction = str(parameters["direction"])
+    strength = Decimal(str(parameters["strength"]))
+    sign = Decimal("1") if direction == "bullish" else Decimal("-1")
+    maximum_session_shift = Decimal("0.04")
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+
+    transformed_bars: list[FiveMinuteBar] = []
+    for end_time in sorted(bars_by_time):
+        bars = bars_by_time[end_time]
+        desired_factor = Decimal("1") + (
+            sign * strength * maximum_session_shift * _session_progress(end_time)
+        )
+        factor = _price_limit_safe_factor(
+            desired_factor,
+            bars,
+            world,
+            bullish=direction == "bullish",
+        )
+        transformed_bars.extend(_scale_bar(bar, factor) for bar in bars)
+    return _TransformationApplication(
+        world=replace(
+            world,
+            bars=tuple(
+                sorted(
+                    transformed_bars,
+                    key=lambda item: (item.end_time, item.instrument),
+                )
+            ),
+        )
+    )
+
+
+def _apply_volatility_scaling(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    multiplier = Decimal(str(parameters["multiplier"]))
+    transformed_bars: list[FiveMinuteBar] = []
+    for bar in sorted(
+        world.bars,
+        key=lambda item: (item.end_time, item.instrument),
+    ):
+        reference, lower_bound, upper_bound = _validated_bar_price_limit_bounds(
+            world,
+            bar,
+        )
+
+        def scale(price: Decimal) -> Decimal:
+            scaled = reference.previous_close + multiplier * (
+                price - reference.previous_close
+            )
+            if lower_bound is not None:
+                scaled = max(lower_bound, scaled)
+            if upper_bound is not None:
+                scaled = min(upper_bound, scaled)
+            if scaled <= 0:
+                raise ValueError(
+                    "Volatility scaling produced a nonpositive market price"
+                )
+            return scaled
+
+        transformed_open = scale(bar.open)
+        transformed_high = scale(bar.high)
+        transformed_low = scale(bar.low)
+        transformed_close = scale(bar.close)
+        transformed_bars.append(
+            replace(
+                bar,
+                open=transformed_open,
+                high=transformed_high,
+                low=transformed_low,
+                close=transformed_close,
+                amount=bar.amount * transformed_close / bar.close,
+            )
+        )
+    return _TransformationApplication(
+        world=replace(world, bars=tuple(transformed_bars))
+    )
+
+
+def _apply_shock_recovery(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+    source_times = tuple(sorted(bars_by_time))
+    plan = _build_shock_recovery_plan(parameters, source_times)
+    transformed_bars, effective_displacements = _apply_shock_recovery_plan(
+        world,
+        bars_by_time,
+        plan,
+    )
+    return _TransformationApplication(
+        world=replace(world, bars=transformed_bars),
+        phase_markers=_shock_recovery_phase_markers(plan),
+        statistics=_shock_recovery_statistics(
+            world,
+            bars_by_time,
+            effective_displacements,
+            requested_peak_displacement=plan.peak_displacement,
+        ),
+    )
+
+
+def _build_shock_recovery_plan(
+    parameters: Mapping[str, object],
+    source_times: tuple[datetime, ...],
+) -> _ShockRecoveryPlan:
+    direction = str(parameters["direction"])
+    gap_fraction = Decimal(str(parameters["gap_fraction"]))
+    shock_fraction = Decimal(str(parameters["shock_fraction"]))
+    shock_duration = int(Decimal(str(parameters["shock_duration_bars"])))
+    persistence_duration = int(
+        Decimal(str(parameters["persistence_duration_bars"]))
+    )
+    recovery_duration = int(Decimal(str(parameters["recovery_duration_bars"])))
+    required_source_times = (
+        1 + shock_duration + persistence_duration + recovery_duration
+    )
+    if len(source_times) < required_source_times:
+        raise ValueError(
+            "Shock/recovery phase composition requires at least "
+            f"{required_source_times} distinct source bar times"
+        )
+
+    phase_windows: list[tuple[TransformationPhase, tuple[datetime, ...]]] = []
+    displacement_by_time = dict.fromkeys(source_times, Decimal("0"))
+    cursor = 0
+
+    gap_times = source_times[cursor : cursor + 1]
+    phase_windows.append(("gap", gap_times))
+    displacement_by_time[gap_times[0]] = gap_fraction
+    cursor += 1
+
+    shock_times = source_times[cursor : cursor + shock_duration]
+    phase_windows.append(("shock", shock_times))
+    for step, end_time in enumerate(shock_times, start=1):
+        displacement_by_time[end_time] = gap_fraction + (
+            shock_fraction * Decimal(step) / Decimal(shock_duration)
+        )
+    cursor += shock_duration
+
+    peak_displacement = gap_fraction + shock_fraction
+    if persistence_duration:
+        persistence_times = source_times[cursor : cursor + persistence_duration]
+        phase_windows.append(("persistence", persistence_times))
+        for end_time in persistence_times:
+            displacement_by_time[end_time] = peak_displacement
+        cursor += persistence_duration
+
+    recovery_times = source_times[cursor : cursor + recovery_duration]
+    phase_windows.append(("recovery", recovery_times))
+    for step, end_time in enumerate(recovery_times, start=1):
+        displacement_by_time[end_time] = peak_displacement * (
+            Decimal("1") - Decimal(step) / Decimal(recovery_duration)
+        )
+
+    return _ShockRecoveryPlan(
+        direction=direction,
+        displacement_by_time=tuple(
+            (end_time, displacement_by_time[end_time])
+            for end_time in source_times
+        ),
+        phase_windows=tuple(phase_windows),
+        peak_displacement=peak_displacement,
+    )
+
+
+def _apply_shock_recovery_plan(
+    world: ScenarioDataWorldInput,
+    bars_by_time: Mapping[datetime, list[FiveMinuteBar]],
+    plan: _ShockRecoveryPlan,
+) -> tuple[tuple[FiveMinuteBar, ...], tuple[tuple[datetime, Decimal], ...]]:
+    sign = Decimal("1") if plan.direction == "bullish" else Decimal("-1")
+
+    transformed_bars: list[FiveMinuteBar] = []
+    effective_displacements: list[tuple[datetime, Decimal]] = []
+    for end_time, displacement in plan.displacement_by_time:
+        bars = bars_by_time[end_time]
+        desired_factor = Decimal("1") + sign * displacement
+        effective_factor = _price_limit_safe_factor(
+            desired_factor,
+            bars,
+            world,
+            bullish=plan.direction == "bullish",
+        )
+        effective_displacements.append(
+            (end_time, abs(effective_factor - Decimal("1")))
+        )
+        transformed_bars.extend(
+            _scale_bar(bar, effective_factor) for bar in bars
+        )
+    return (
+        tuple(
+            sorted(
+                transformed_bars,
+                key=lambda item: (item.end_time, item.instrument),
+            )
+        ),
+        tuple(effective_displacements),
+    )
+
+
+def _shock_recovery_phase_markers(
+    plan: _ShockRecoveryPlan,
+) -> tuple[TransformationPhaseMarker, ...]:
+    return tuple(
+        TransformationPhaseMarker(
+            phase=phase,
+            start_source_bar_end_time=times[0],
+            end_source_bar_end_time=times[-1],
+            source_time_count=len(times),
+        )
+        for phase, times in plan.phase_windows
+    )
+
+
+def _shock_recovery_statistics(
+    world: ScenarioDataWorldInput,
+    bars_by_time: Mapping[datetime, list[FiveMinuteBar]],
+    effective_displacements: tuple[tuple[datetime, Decimal], ...],
+    *,
+    requested_peak_displacement: Decimal,
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted(
+            {
+                "affected_source_bar_count": str(
+                    sum(
+                        len(bars_by_time[end_time])
+                        for end_time, displacement in effective_displacements
+                        if displacement != 0
+                    )
+                ),
+                "effective_peak_displacement_fraction": _decimal_text(
+                    max(
+                        displacement
+                        for _, displacement in effective_displacements
+                    )
+                ),
+                "requested_peak_displacement_fraction": _decimal_text(
+                    requested_peak_displacement
+                ),
+                "source_bar_count": str(len(world.bars)),
+                "source_time_count": str(len(effective_displacements)),
+            }.items()
+        )
+    )
+
+
+def _apply_liquidity_stress(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    volume_multiplier = Decimal(str(parameters["volume_multiplier"]))
+    concentration = Decimal(
+        str(parameters["cross_sectional_concentration"])
+    )
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+
+    transformed_bars: list[FiveMinuteBar] = []
+    declared_scaled_volume = 0
+    for end_time in sorted(bars_by_time):
+        bars = tuple(sorted(bars_by_time[end_time], key=lambda bar: bar.instrument))
+        recipients = tuple(
+            bar
+            for bar in bars
+            if bar.volume > 0
+            and (
+                (state := _state_at(
+                    world.instrument_states,
+                    bar.instrument,
+                    end_time,
+                )).eligible
+                and state.trading_status == "trading"
+            )
+        )
+        if len(recipients) < 2:
+            raise ValueError(
+                "Liquidity transformation requires multiple positive-volume "
+                "eligible instruments at every source bar time"
+            )
+        source_volume = sum(bar.volume for bar in recipients)
+        target_volume = max(
+            1,
+            int(
+                (Decimal(source_volume) * volume_multiplier).to_integral_value(
+                    rounding=ROUND_HALF_UP
+                )
+            ),
+        )
+        recipient_instruments = {bar.instrument for bar in recipients}
+        declared_scaled_volume += target_volume + sum(
+            bar.volume
+            for bar in bars
+            if bar.instrument not in recipient_instruments
+        )
+        allocation = _liquidity_volume_allocation(
+            recipients,
+            target_volume=target_volume,
+            concentration=concentration,
+        )
+        for bar in bars:
+            allocated_volume = allocation.get(bar.instrument)
+            if allocated_volume is None:
+                transformed_bars.append(bar)
+                continue
+            transformed_bars.append(
+                replace(
+                    bar,
+                    volume=allocated_volume,
+                    amount=(
+                        bar.amount
+                        * Decimal(allocated_volume)
+                        / Decimal(bar.volume)
+                    ),
+                )
+            )
+    transformed_world = replace(world, bars=tuple(transformed_bars))
+    return _TransformationApplication(
+        world=transformed_world,
+        statistics=_liquidity_statistics(
+            world,
+            transformed_world,
+            declared_scaled_volume=declared_scaled_volume,
+        ),
+    )
+
+
+def _liquidity_volume_allocation(
+    bars: tuple[FiveMinuteBar, ...],
+    *,
+    target_volume: int,
+    concentration: Decimal,
+) -> dict[str, int]:
+    source_total = sum(bar.volume for bar in bars)
+    ordered_by_volume = tuple(
+        sorted(bars, key=lambda bar: (-bar.volume, bar.instrument))
+    )
+    rank_weight_by_instrument = {
+        bar.instrument: Decimal(len(ordered_by_volume) - rank)
+        for rank, bar in enumerate(ordered_by_volume)
+    }
+    rank_weight_total = sum(
+        rank_weight_by_instrument.values(),
+        Decimal("0"),
+    )
+    raw_allocations = {
+        bar.instrument: Decimal(target_volume)
+        * (
+            (Decimal("1") - concentration)
+            * Decimal(bar.volume)
+            / Decimal(source_total)
+            + concentration
+            * rank_weight_by_instrument[bar.instrument]
+            / rank_weight_total
+        )
+        for bar in bars
+    }
+    allocations = {
+        instrument: int(value)
+        for instrument, value in raw_allocations.items()
+    }
+    remainder = target_volume - sum(allocations.values())
+    remainder_order = tuple(
+        sorted(
+            raw_allocations,
+            key=lambda instrument: (
+                -(raw_allocations[instrument] - allocations[instrument]),
+                instrument,
+            ),
+        )
+    )
+    for instrument in remainder_order[:remainder]:
+        allocations[instrument] += 1
+    if sum(allocations.values()) != target_volume:  # pragma: no cover
+        raise AssertionError("Liquidity volume allocation must conserve target")
+    return allocations
+
+
+def _liquidity_statistics(
+    source_world: ScenarioDataWorldInput,
+    transformed_world: ScenarioDataWorldInput,
+    *,
+    declared_scaled_volume: int,
+) -> tuple[tuple[str, str], ...]:
+    source_volume_total = sum(bar.volume for bar in source_world.bars)
+    transformed_volume_total = sum(bar.volume for bar in transformed_world.bars)
+    transformed_by_key = {
+        (bar.end_time, bar.instrument): bar for bar in transformed_world.bars
+    }
+    affected_count = sum(
+        transformed_by_key[(bar.end_time, bar.instrument)].volume != bar.volume
+        or transformed_by_key[(bar.end_time, bar.instrument)].amount != bar.amount
+        for bar in source_world.bars
+    )
+    final_time = max(bar.end_time for bar in transformed_world.bars)
+    final_bars = tuple(
+        bar for bar in transformed_world.bars if bar.end_time == final_time
+    )
+    final_volume_total = sum(bar.volume for bar in final_bars)
+    top_volume_share = (
+        Decimal(max(bar.volume for bar in final_bars))
+        / Decimal(final_volume_total)
+        if final_volume_total
+        else Decimal("0")
+    )
+    return tuple(
+        sorted(
+            {
+                "affected_source_bar_count": str(affected_count),
+                "effective_top_volume_share": _decimal_text(top_volume_share),
+                "effective_volume_multiplier": _decimal_text(
+                    Decimal(transformed_volume_total)
+                    / Decimal(source_volume_total)
+                ),
+                "scaled_volume_conservation_error": str(
+                    transformed_volume_total - declared_scaled_volume
+                ),
+                "source_bar_count": str(len(source_world.bars)),
+                "source_time_count": str(
+                    len({bar.end_time for bar in source_world.bars})
+                ),
+                "source_volume_total": str(source_volume_total),
+                "transformed_volume_total": str(transformed_volume_total),
+            }.items()
+        )
+    )
+
+
+def _apply_market_structure(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    bars_by_time: dict[datetime, list[FiveMinuteBar]] = {}
+    for bar in world.bars:
+        bars_by_time.setdefault(bar.end_time, []).append(bar)
+    plan = _build_market_structure_plan(world, bars_by_time, parameters)
+    transformed_world, effective_factors = _apply_market_structure_plan(
+        world,
+        plan,
+    )
+    return _TransformationApplication(
+        world=transformed_world,
+        statistics=_market_structure_statistics(
+            world,
+            transformed_world,
+            effective_factors,
+        ),
+    )
+
+
+def _build_market_structure_plan(
+    world: ScenarioDataWorldInput,
+    bars_by_time: Mapping[datetime, list[FiveMinuteBar]],
+    parameters: Mapping[str, object],
+) -> _MarketStructurePlan:
+    breadth_target = Decimal(str(parameters["breadth_target"]))
+    dispersion_fraction = Decimal(str(parameters["dispersion_fraction"]))
+    sector_concentration = Decimal(str(parameters["sector_concentration"]))
+    times_by_session: dict[object, list[datetime]] = {}
+    for end_time in bars_by_time:
+        times_by_session.setdefault(end_time.date(), []).append(end_time)
+    if any(len(times) < 2 for times in times_by_session.values()):
+        raise ValueError(
+            "Market structure transformation requires at least two source "
+            "bar times per session"
+        )
+
+    session_anchors: dict[tuple[object, str], Decimal] = {}
+    seen_sessions: set[object] = set()
+    desired_factors: list[tuple[datetime, str, Decimal]] = []
+    for end_time in sorted(bars_by_time):
+        active = _active_market_structure_bars(
+            world,
+            bars_by_time[end_time],
+            end_time,
+        )
+        industries = {state.industry for _bar, state in active}
+        if len(active) < 2:
+            raise ValueError(
+                "Market structure transformation requires multiple eligible "
+                "point-in-time instruments"
+            )
+        if len(industries) < 2:
+            raise ValueError(
+                "Market structure transformation requires multiple "
+                "point-in-time industries"
+            )
+        session_date = end_time.date()
+        for bar, _state in active:
+            session_anchors.setdefault(
+                (session_date, bar.instrument),
+                bar.open,
+            )
+        if session_date not in seen_sessions:
+            desired_factors.extend(
+                (end_time, bar.instrument, Decimal("1"))
+                for bar, _state in active
+            )
+            seen_sessions.add(session_date)
+            continue
+        target_returns = _market_structure_target_returns(
+            active,
+            session_anchors,
+            breadth_target=breadth_target,
+            dispersion_fraction=dispersion_fraction,
+            sector_concentration=sector_concentration,
+        )
+        for bar, _state in active:
+            target_close = session_anchors[(session_date, bar.instrument)] * (
+                Decimal("1") + target_returns[bar.instrument]
+            )
+            desired_factors.append(
+                (end_time, bar.instrument, target_close / bar.close)
+            )
+    return _MarketStructurePlan(desired_factors=tuple(desired_factors))
+
+
+def _active_market_structure_bars(
+    world: ScenarioDataWorldInput,
+    bars: Iterable[FiveMinuteBar],
+    at_time: datetime,
+) -> tuple[tuple[FiveMinuteBar, InstrumentState], ...]:
+    active: list[tuple[FiveMinuteBar, InstrumentState]] = []
+    for bar in bars:
+        state = _state_at(world.instrument_states, bar.instrument, at_time)
+        if state.eligible and state.trading_status == "trading":
+            active.append((bar, state))
+    return tuple(sorted(active, key=lambda item: item[0].instrument))
+
+
+def _market_structure_target_returns(
+    active: tuple[tuple[FiveMinuteBar, InstrumentState], ...],
+    session_anchors: Mapping[tuple[object, str], Decimal],
+    *,
+    breadth_target: Decimal,
+    dispersion_fraction: Decimal,
+    sector_concentration: Decimal,
+) -> dict[str, Decimal]:
+    session_date = active[0][0].end_time.date()
+    source_returns = {
+        bar.instrument: (
+            bar.close / session_anchors[(session_date, bar.instrument)]
+            - Decimal("1")
+        )
+        for bar, _state in active
+    }
+    industry_by_instrument = {
+        bar.instrument: state.industry for bar, state in active
+    }
+    instruments_by_industry: dict[str, list[str]] = {}
+    for instrument, industry in industry_by_instrument.items():
+        instruments_by_industry.setdefault(industry, []).append(instrument)
+    sector_returns = {
+        industry: sum(
+            (source_returns[instrument] for instrument in instruments),
+            Decimal("0"),
+        )
+        / Decimal(len(instruments))
+        for industry, instruments in instruments_by_industry.items()
+    }
+    instrument_scores = _normalized_rank_scores(source_returns)
+    sector_scores = _normalized_rank_scores(sector_returns)
+    blended_scores = {
+        instrument: (
+            (Decimal("1") - sector_concentration)
+            * instrument_scores[instrument]
+            + sector_concentration
+            * sector_scores[industry_by_instrument[instrument]]
+        )
+        for instrument in source_returns
+    }
+    ordered = tuple(
+        sorted(
+            source_returns,
+            key=lambda instrument: (
+                -blended_scores[instrument],
+                -source_returns[instrument],
+                instrument,
+            ),
+        )
+    )
+    instrument_count = len(ordered)
+    requested_winner_count = int(
+        (breadth_target * Decimal(instrument_count)).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    winner_count = min(
+        instrument_count - 1,
+        max(1, requested_winner_count),
+    )
+    winners = frozenset(ordered[:winner_count])
+    loser_count = instrument_count - winner_count
+    winner_return = (
+        dispersion_fraction
+        * Decimal(loser_count)
+        / Decimal(instrument_count)
+    )
+    loser_return = (
+        -dispersion_fraction
+        * Decimal(winner_count)
+        / Decimal(instrument_count)
+    )
+    return {
+        instrument: winner_return if instrument in winners else loser_return
+        for instrument in ordered
+    }
+
+
+def _normalized_rank_scores(
+    values: Mapping[str, Decimal],
+) -> dict[str, Decimal]:
+    ordered = tuple(sorted(values, key=lambda key: (-values[key], key)))
+    if len(ordered) == 1:
+        return {ordered[0]: Decimal("1")}
+    denominator = Decimal(len(ordered) - 1)
+    return {
+        key: Decimal(len(ordered) - rank - 1) / denominator
+        for rank, key in enumerate(ordered)
+    }
+
+
+def _apply_market_structure_plan(
+    world: ScenarioDataWorldInput,
+    plan: _MarketStructurePlan,
+) -> tuple[ScenarioDataWorldInput, tuple[tuple[datetime, str, Decimal], ...]]:
+    desired_by_bar = {
+        (end_time, instrument): factor
+        for end_time, instrument, factor in plan.desired_factors
+    }
+    transformed_bars: list[FiveMinuteBar] = []
+    effective_factors: list[tuple[datetime, str, Decimal]] = []
+    for bar in sorted(
+        world.bars,
+        key=lambda item: (item.end_time, item.instrument),
+    ):
+        desired_factor = desired_by_bar.get((bar.end_time, bar.instrument))
+        if desired_factor is None:
+            transformed_bars.append(bar)
+            continue
+        effective_factor = _price_limit_safe_factor(
+            desired_factor,
+            (bar,),
+            world,
+            bullish=desired_factor >= Decimal("1"),
+        )
+        transformed_bars.append(_scale_bar(bar, effective_factor))
+        effective_factors.append(
+            (bar.end_time, bar.instrument, effective_factor)
+        )
+    return (
+        replace(world, bars=tuple(transformed_bars)),
+        tuple(effective_factors),
+    )
+
+
+def _market_structure_statistics(
+    source_world: ScenarioDataWorldInput,
+    transformed_world: ScenarioDataWorldInput,
+    effective_factors: tuple[tuple[datetime, str, Decimal], ...],
+) -> tuple[tuple[str, str], ...]:
+    final_time = max(end_time for end_time, _instrument, _factor in effective_factors)
+    final_bars = tuple(
+        bar for bar in transformed_world.bars if bar.end_time == final_time
+    )
+    active = _active_market_structure_bars(
+        transformed_world,
+        final_bars,
+        final_time,
+    )
+    session_anchors: dict[str, Decimal] = {}
+    for bar in transformed_world.bars:
+        if bar.end_time.date() == final_time.date():
+            session_anchors.setdefault(bar.instrument, bar.open)
+    final_returns = {
+        bar.instrument: bar.close / session_anchors[bar.instrument] - Decimal("1")
+        for bar, _state in active
+    }
+    winner_instruments = tuple(
+        instrument
+        for instrument, value in final_returns.items()
+        if value > 0
+    )
+    breadth = Decimal(len(winner_instruments)) / Decimal(len(final_returns))
+    sector_by_instrument = {
+        bar.instrument: state.industry for bar, state in active
+    }
+    winner_counts_by_sector: dict[str, int] = {}
+    for instrument in winner_instruments:
+        industry = sector_by_instrument[instrument]
+        winner_counts_by_sector[industry] = (
+            winner_counts_by_sector.get(industry, 0) + 1
+        )
+    sector_winner_concentration = (
+        Decimal(max(winner_counts_by_sector.values()))
+        / Decimal(len(winner_instruments))
+        if winner_instruments
+        else Decimal("0")
+    )
+    statistics = {
+        "affected_source_bar_count": str(
+            sum(factor != Decimal("1") for _time, _instrument, factor in effective_factors)
+        ),
+        "effective_final_breadth": _decimal_text(breadth),
+        "effective_final_return_spread_fraction": _decimal_text(
+            max(final_returns.values()) - min(final_returns.values())
+        ),
+        "effective_final_sector_winner_concentration": _decimal_text(
+            sector_winner_concentration
+        ),
+        "source_bar_count": str(len(source_world.bars)),
+        "source_time_count": str(
+            len({bar.end_time for bar in source_world.bars})
+        ),
+    }
+    return tuple(sorted(statistics.items()))
+
+
+def _scale_bar(bar: FiveMinuteBar, factor: Decimal) -> FiveMinuteBar:
+    return replace(
+        bar,
+        open=bar.open * factor,
+        high=bar.high * factor,
+        low=bar.low * factor,
+        close=bar.close * factor,
+        amount=bar.amount * factor,
+    )
+
+
+def _apply_execution_stress(
+    world: ScenarioDataWorldInput,
+    parameters: Mapping[str, object],
+) -> _TransformationApplication:
+    if not parameters:
+        raise ValueError(
+            "execution-stress.v1 requires at least one scenario override"
+        )
+    return _TransformationApplication(
+        world=world,
+        statistics=(("reference_market_path_changed", "false"),),
+    )
+
+
+_TRANSFORMATION_IMPLEMENTATIONS: Mapping[
+    str,
+    Callable[
+        ["ScenarioDataWorldInput", Mapping[str, object]],
+        _TransformationApplication,
+    ],
+] = {
+    "execution-stress.v1": _apply_execution_stress,
+    "liquidity-stress.v1": _apply_liquidity_stress,
+    "market-structure.v1": _apply_market_structure,
+    "shock-recovery.v1": _apply_shock_recovery,
+    "trend-regime.v1": _apply_trend_regime,
+    "volatility-scaling.v1": _apply_volatility_scaling,
+}
+
+
+def _session_progress(end_time: datetime) -> Decimal:
+    minute = end_time.hour * 60 + end_time.minute
+    if minute <= 11 * 60 + 30:
+        elapsed = minute - (9 * 60 + 30)
+    else:
+        elapsed = 120 + minute - 13 * 60
+    bounded = min(240, max(0, elapsed))
+    return Decimal(bounded) / Decimal(240)
+
+
+def _price_limit_safe_factor(
+    desired_factor: Decimal,
+    bars: Iterable[FiveMinuteBar],
+    world: ScenarioDataWorldInput,
+    *,
+    bullish: bool,
+) -> Decimal:
+    safe_factors: list[Decimal] = []
+    for bar in bars:
+        reference, lower_bound, upper_bound = _validated_bar_price_limit_bounds(
+            world,
+            bar,
+        )
+        if reference.limit_fraction is None:
+            continue
+        if lower_bound is None or upper_bound is None:  # pragma: no cover
+            raise AssertionError("bounded price-limit reference requires bounds")
+        safe_factors.append(
+            (upper_bound if bullish else lower_bound)
+            / (bar.high if bullish else bar.low)
+        )
+    if not safe_factors:
+        return desired_factor
+    if bullish:
+        if min(safe_factors) < Decimal("1"):
+            raise ValueError(
+                "Admitted source data already exceeds its point-in-time upper price limit"
+            )
+        return max(Decimal("1"), min(desired_factor, *safe_factors))
+    if max(safe_factors) > Decimal("1"):
+        raise ValueError(
+            "Admitted source data already exceeds its point-in-time lower price limit"
+        )
+    return min(Decimal("1"), max(desired_factor, *safe_factors))
+
+
+def _price_limit_reference_at(
+    references: Iterable[SessionPriceLimitReference],
+    instrument: str,
+    at_time: datetime,
+) -> SessionPriceLimitReference:
+    candidates = tuple(
+        reference
+        for reference in references
+        if reference.instrument == instrument
+        and reference.session_date == at_time.date()
+        and reference.effective_at <= at_time
+    )
+    if not candidates:
+        raise ValueError(
+            f"No point-in-time previous-close reference exists for {instrument!r} "
+            f"on {at_time.date().isoformat()}"
+        )
+    return max(candidates, key=lambda reference: reference.effective_at)
+
+
+def _validated_price_limit_reference_at(
+    world: ScenarioDataWorldInput,
+    instrument: str,
+    at_time: datetime,
+) -> SessionPriceLimitReference:
+    state = _state_at(
+        world.instrument_states,
+        instrument,
+        at_time,
+    )
+    reference = _price_limit_reference_at(
+        world.price_limit_references,
+        instrument,
+        at_time,
+    )
+    if reference.is_st is not state.is_st:
+        raise ValueError(
+            "Point-in-time price-limit rule and Instrument State disagree "
+            f"for {instrument!r}"
+        )
+    return reference
+
+
+def _validated_bar_price_limit_bounds(
+    world: ScenarioDataWorldInput,
+    bar: FiveMinuteBar,
+) -> tuple[
+    SessionPriceLimitReference,
+    Decimal | None,
+    Decimal | None,
+]:
+    reference = _validated_price_limit_reference_at(
+        world,
+        bar.instrument,
+        bar.end_time,
+    )
+    if reference.limit_fraction is None:
+        return reference, None, None
+    lower_bound = _daily_price_limit_bound(
+        reference.previous_close,
+        reference.limit_fraction,
+        bullish=False,
+    )
+    upper_bound = _daily_price_limit_bound(
+        reference.previous_close,
+        reference.limit_fraction,
+        bullish=True,
+    )
+    if bar.low < lower_bound or bar.high > upper_bound:
+        raise ValueError(
+            "Admitted source data already exceeds its point-in-time price limits"
+        )
+    return reference, lower_bound, upper_bound
+
+
+def _daily_price_limit_bound(
+    previous_close: Decimal,
+    limit: Decimal,
+    *,
+    bullish: bool,
+) -> Decimal:
+    direction = Decimal("1") if bullish else Decimal("-1")
+    return (previous_close * (Decimal("1") + direction * limit)).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def _state_at(
+    states: Iterable[InstrumentState],
+    instrument: str,
+    at_time: datetime,
+) -> InstrumentState:
+    candidates = tuple(
+        state
+        for state in states
+        if state.instrument == instrument
+        and state.effective_at <= at_time
+    )
+    if not candidates:
+        raise ValueError(
+            f"No point-in-time Instrument State exists for {instrument!r}"
+        )
+    return max(candidates, key=lambda state: state.effective_at)
+
+
+def create_initial_transformation_catalog() -> ScenarioTransformationCatalog:
+    return ScenarioTransformationCatalog(
+        catalog_version=SCENARIO_TRANSFORMATION_CATALOG_VERSION,
+        entries=(
+            TransformationCatalogEntry(
+                transformation_id="execution-stress.v1",
+                family="execution-stress",
+                implementation_version="execution-stress.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="commission_bps",
+                        value_type="decimal",
+                        required=False,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("100"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="slippage_bps",
+                        value_type="decimal",
+                        required=False,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1000"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="latency_nodes",
+                        value_type="integer",
+                        required=False,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("120"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="max_fill_fraction",
+                        value_type="decimal",
+                        required=False,
+                        minimum=Decimal("0.01"),
+                        maximum=Decimal("1"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="allow_partial_fills",
+                        value_type="enum",
+                        required=False,
+                        choices=("false", "true"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="rejection_mode",
+                        value_type="enum",
+                        required=False,
+                        choices=("none", "reject-all"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "execution-only-reference-path-identity",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                    "private-portfolio-effects-only",
+                ),
+            ),
+            TransformationCatalogEntry(
+                transformation_id="liquidity-stress.v1",
+                family="liquidity",
+                implementation_version="liquidity-stress.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="volume_multiplier",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.25"),
+                        maximum=Decimal("2"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="cross_sectional_concentration",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "conserve-declared-scaled-volume-per-source-time",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
+            TransformationCatalogEntry(
+                transformation_id="market-structure.v1",
+                family="market-structure",
+                implementation_version="market-structure.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="breadth_target",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.1"),
+                        maximum=Decimal("0.9"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="dispersion_fraction",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.01"),
+                        maximum=Decimal("0.1"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="sector_concentration",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "cross-sectional-world-with-multiple-industries",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
+            TransformationCatalogEntry(
+                transformation_id="shock-recovery.v1",
+                family="shock-recovery",
+                implementation_version="shock-recovery.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="direction",
+                        value_type="enum",
+                        required=True,
+                        choices=("bearish", "bullish"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="gap_fraction",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("0.1"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="shock_fraction",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.01"),
+                        maximum=Decimal("0.2"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="shock_duration_bars",
+                        value_type="integer",
+                        required=True,
+                        minimum=Decimal("1"),
+                        maximum=Decimal("12"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="persistence_duration_bars",
+                        value_type="integer",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("24"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="recovery_duration_bars",
+                        value_type="integer",
+                        required=True,
+                        minimum=Decimal("1"),
+                        maximum=Decimal("24"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                    "ordered-gap-shock-persistence-recovery",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
+            TransformationCatalogEntry(
+                transformation_id="volatility-scaling.v1",
+                family="volatility",
+                implementation_version="volatility-scaling.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="multiplier",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0.5"),
+                        maximum=Decimal("2"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
+            TransformationCatalogEntry(
+                transformation_id="trend-regime.v1",
+                family="trend-regime",
+                implementation_version="trend-regime.v1",
+                parameters=(
+                    TransformationParameterDefinition(
+                        name="direction",
+                        value_type="enum",
+                        required=True,
+                        choices=("bearish", "bullish"),
+                    ),
+                    TransformationParameterDefinition(
+                        name="strength",
+                        value_type="decimal",
+                        required=True,
+                        minimum=Decimal("0"),
+                        maximum=Decimal("1"),
+                    ),
+                ),
+                compatibility_rules=(
+                    "a-share-cash-equity.v1",
+                    "one-transform-per-family",
+                ),
+                causality_constraints=(
+                    "point-in-time-inputs-only",
+                    "deterministic-no-future-reads",
+                ),
+            ),
+        ),
+    )
+
+
+__all__ = [
+    "AppliedTransformation",
+    "SCENARIO_TRANSFORMATION_CATALOG_VERSION",
+    "ScenarioTransformationCatalog",
+    "TransformationCatalogEntry",
+    "TransformationCatalogIssue",
+    "TransformationParameterDefinition",
+    "TransformationPhaseMarker",
+    "apply_registered_transformations",
+    "create_initial_transformation_catalog",
+]

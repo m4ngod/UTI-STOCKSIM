@@ -18,7 +18,6 @@ from typing import Iterable, Any
 try:
     from stock_sim.persistence.models_account import Account  # type: ignore
     from stock_sim.persistence.models_position import Position  # type: ignore
-    from stock_sim.persistence.models_ledger import Ledger  # type: ignore
     from stock_sim.observability.metrics import metrics  # type: ignore
     from stock_sim.infra.event_bus import event_bus  # type: ignore
     from stock_sim.core.const import EventType, OrderSide  # type: ignore
@@ -27,7 +26,6 @@ try:
 except Exception:  # noqa
     from persistence.models_account import Account  # type: ignore
     from persistence.models_position import Position  # type: ignore
-    from persistence.models_ledger import Ledger  # type: ignore
     from observability.metrics import metrics  # type: ignore
     from infra.event_bus import event_bus  # type: ignore
     from core.const import EventType, OrderSide  # type: ignore
@@ -38,10 +36,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 try:
-    from stock_sim.persistence.models_account_equity_snapshot import AccountEquitySnapshot  # type: ignore
+    from stock_sim.services.account_persistence_service import AccountPersistenceService  # type: ignore
     from stock_sim.services.run_context import RunContext  # type: ignore
 except Exception:  # noqa
-    from persistence.models_account_equity_snapshot import AccountEquitySnapshot  # type: ignore
+    from services.account_persistence_service import AccountPersistenceService  # type: ignore
     from services.run_context import RunContext  # type: ignore
 
 
@@ -49,6 +47,7 @@ class AccountService:
     def __init__(self, session: Session, run_context: RunContext | None = None):
         self.s = session
         self.run_context = run_context
+        self.persistence = AccountPersistenceService(session)
 
     # ---- Public API ----
     def get_or_create(self, account_id: str, *, cash: float | None = None) -> Account:
@@ -182,8 +181,9 @@ class AccountService:
         - 买方：释放对应冻结现金；增加持仓；若在回补空头则优先减少 borrowed_qty/空头仓
         - 卖方：减少/释放多头；若卖超出已有多头则形成净空头并提高 borrowed_qty；增加卖出现金净额
         - 双方都写 Ledger
-        - 每笔成交后发布 ACCOUNT_UPDATED
+        - 同一批撮合只为每个受影响账户发布一次 ACCOUNT_UPDATED / equity snapshot
         """
+        touched_accounts: dict[str, Account] = {}
         for idx, entry in enumerate(batch_entries):
             buy_acc, sell_acc, symbol, price, qty, buy_oid, sell_oid = entry
             fee_buy, fee_sell, tax_sell = fee_entries[idx]
@@ -200,7 +200,9 @@ class AccountService:
                     order_id=buy_oid,
                     fee_buy=float(fee_buy or 0.0),
                     frozen_notional=notional,
+                    publish_account=False,
                 )
+                touched_accounts[buy_acc.id] = buy_acc
 
             if sell_acc is not None:
                 self._settle_sell_leg(
@@ -212,17 +214,20 @@ class AccountService:
                     fee_sell=float(fee_sell or 0.0),
                     tax_sell=float(tax_sell or 0.0),
                     gross_notional=notional,
+                    publish_account=False,
                 )
+                touched_accounts[sell_acc.id] = sell_acc
 
             metrics.inc("trades_settled")
-            if buy_acc is not None:
-                self.write_equity_snapshot(buy_acc)
-            if sell_acc is not None and sell_acc is not buy_acc:
-                self.write_equity_snapshot(sell_acc)
+
+        for acc in touched_accounts.values():
+            self.write_equity_snapshot(acc)
+            self._publish_account(acc)
 
     # ---- Internal settlement helpers ----
     def _settle_buy_leg(self, *, buy_acc: Account, symbol: str, price: float, qty: int,
-                        order_id: str | None, fee_buy: float, frozen_notional: float):
+                        order_id: str | None, fee_buy: float, frozen_notional: float,
+                        publish_account: bool = True):
         if frozen_notional > 0:
             reduce = min(frozen_notional, float(buy_acc.frozen_cash or 0.0))
             buy_acc.frozen_cash -= reduce
@@ -274,10 +279,12 @@ class AccountService:
             order_id=order_id,
             extra_json=None,
         )
-        self._publish_account(buy_acc)
+        if publish_account:
+            self._publish_account(buy_acc)
 
     def _settle_sell_leg(self, *, sell_acc: Account, symbol: str, price: float, qty: int,
-                         order_id: str | None, fee_sell: float, tax_sell: float, gross_notional: float):
+                         order_id: str | None, fee_sell: float, tax_sell: float, gross_notional: float,
+                         publish_account: bool = True):
         pos = self.get_position(sell_acc, symbol)
         old_qty = int(pos.quantity or 0)
         old_borrowed = int(pos.borrowed_qty or 0)
@@ -317,13 +324,14 @@ class AccountService:
             order_id=order_id,
             extra_json=None,
         )
-        self._publish_account(sell_acc)
+        if publish_account:
+            self._publish_account(sell_acc)
 
     # ---- Internal helpers ----
     def _write_ledger(self, account_id: str, symbol: str, side: str, price: float, qty: int,
                       cash_delta: float, pnl_real: float, fee: float, tax: float,
                       order_id: str | None = None, extra_json: str | None = None):
-        led = Ledger(
+        self.persistence.write_ledger(
             account_id=account_id,
             symbol=symbol,
             side=side,
@@ -336,9 +344,8 @@ class AccountService:
             order_id=order_id,
             extra_json=extra_json,
             run_id=self._get_run_id(),
+            stamp_fn=self._stamp,
         )
-        self._stamp(led)
-        self.s.add(led)
 
     def _get_run_id(self) -> str | None:
         return None if self.run_context is None else self.run_context.run_id
@@ -362,7 +369,7 @@ class AccountService:
         cash = float(getattr(acc, "cash", 0.0) or 0.0)
         frozen_cash = float(getattr(acc, "frozen_cash", 0.0) or 0.0)
         equity = cash + frozen_cash + market_value
-        snap = AccountEquitySnapshot(
+        self.persistence.write_equity_snapshot(
             run_id=self._get_run_id(),
             account_id=acc.id,
             sim_day=getattr(acc, "sim_day", 0) or 0,
@@ -376,7 +383,6 @@ class AccountService:
             drawdown=0.0,
             borrowed_notional=borrowed_notional,
         )
-        self.s.add(snap)
 
     def _account_payload(self, acc: Account) -> dict[str, Any]:
         positions = []

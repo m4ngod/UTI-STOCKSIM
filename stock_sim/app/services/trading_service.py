@@ -2,24 +2,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Literal
+from typing import Dict, Any, Literal
 
+from app.event_bridge import publish_order_submitted, publish_trade_payload
+from app.runtime_gateway import RuntimeGateway
 from infra.event_bus import event_bus
-try:
-    from stock_sim.infra.event_bus import event_bus as runtime_event_bus  # type: ignore
-except Exception:  # pragma: no cover
-    runtime_event_bus = event_bus  # type: ignore
-
-from stock_sim.persistence import models_init
-from stock_sim.persistence.models_imports import SessionLocal
-from stock_sim.services.instrument_service import InstrumentService
-from stock_sim.services.order_service import OrderService
-from stock_sim.services.account_service import AccountService as RuntimeAccountService
-from stock_sim.services.engine_registry import engine_registry
-from stock_sim.core.matching_engine import MatchingEngine
-from stock_sim.core.instruments import create_instrument
-from stock_sim.core.order import Order
-from stock_sim.core.const import OrderSide, EventType
 
 try:
     from observability.metrics import metrics
@@ -43,143 +30,46 @@ class SubmitOrderRequest:
 
 
 class TradingService:
-    """Thin app-layer bridge that exposes runtime order placement to the frontend.
+    """Thin app-layer bridge that exposes runtime order placement to the frontend."""
 
-    Goals:
-    - Give app/panel/adapter layer a stable place to submit an order
-    - Reuse the existing runtime matching/settlement path directly
-    - Emit a lightweight frontend event after submission so UI can refresh/account for it
-    """
-
-    def __init__(self):
-        models_init.init_models()
+    def __init__(self, *, runtime_gateway: RuntimeGateway | None = None):
+        self._runtime_gateway = runtime_gateway or RuntimeGateway()
 
     def submit_order(self, req: SubmitOrderRequest) -> Dict[str, Any]:
-        session = SessionLocal()
+        result = self._runtime_gateway.submit_order(
+            symbol=req.symbol,
+            side=req.side,
+            price=req.price,
+            qty=req.qty,
+            account_id=req.account_id,
+        )
+        payload = {key: value for key, value in result.items() if key != "trades"}
+        payload["ts"] = int(time.time() * 1000)
+
         try:
-            symbol = (req.symbol or "").strip().upper()
-            account_id = (req.account_id or "").strip()
-            side_s = (req.side or "").strip().lower()
-            if not symbol:
-                raise ValueError("symbol 不能为空")
-            if not account_id:
-                raise ValueError("account_id 不能为空")
-            if side_s not in {"buy", "sell"}:
-                raise ValueError("side 必须是 buy/sell")
-            if req.qty <= 0:
-                raise ValueError("qty 必须 > 0")
-            if req.price <= 0:
-                raise ValueError("price 必须 > 0")
+            publish_order_submitted(payload)
+        except Exception:
+            pass
 
-            inst_srv = InstrumentService(session)
-            dto = inst_srv.get(symbol)
-            if dto is None:
-                reg = engine_registry.get(symbol)
-                reg_inst = getattr(reg, 'instrument', None) if reg is not None else None
-                if reg_inst is not None:
-                    class _Dto:
-                        pass
-                    dto = _Dto()
-                    dto.tick_size = float(getattr(reg_inst, 'tick_size', 0.01) or 0.01)
-                    dto.lot_size = int(getattr(reg_inst, 'lot_size', 100) or 100)
-                    dto.min_qty = int(getattr(reg_inst, 'min_qty', dto.lot_size) or dto.lot_size)
-                    dto.initial_price = float(getattr(reg_inst, 'initial_price', req.price) or req.price)
-                else:
-                    raise ValueError(f"instrument not found: {symbol}")
-
-            engine = engine_registry.get(symbol)
-            if engine is None:
-                engine = MatchingEngine(
-                    symbol,
-                    create_instrument(
-                        symbol,
-                        tick_size=dto.tick_size,
-                        lot_size=dto.lot_size,
-                        min_qty=dto.min_qty,
-                        initial_price=dto.initial_price,
-                    ),
-                )
-                engine_registry.register(symbol, engine, overwrite=True)
-
-            runtime_accounts = RuntimeAccountService(session)
-            runtime_accounts.get_or_create(account_id)
-
-            order = Order(
-                symbol=symbol,
-                side=OrderSide.BUY if side_s == "buy" else OrderSide.SELL,
-                price=float(req.price),
-                quantity=int(req.qty),
-                account_id=account_id,
-            )
-            osrv = OrderService(session, engine=engine, instrument_service=inst_srv)
-            trades = osrv.place_order(order)
-            session.commit()
-
-            payload = {
-                "ok": order.status.name != "REJECTED",
-                "order_id": order.order_id,
-                "symbol": symbol,
-                "account_id": account_id,
-                "side": side_s,
-                "price": float(order.price),
-                "qty": int(order.quantity),
-                "filled": int(order.filled),
-                "status": order.status.name,
-                "trade_count": len(trades),
-                "ts": int(time.time() * 1000),
-            }
-
-            try:
-                event_bus.publish("frontend.order.submitted", payload)
-            except Exception:
-                pass
-
-            # Frontend-friendly trade bridge:
-            # runtime matching may already emit trade events, but app/runtime bus paths and
-            # adapter subscription timing can differ. Re-emit a normalized trade payload on
-            # both buses so orders/market/account-facing adapters can consume the same shape.
-            for tr in trades:
-                try:
-                    trade_payload = {"trade": tr.to_dict() if hasattr(tr, 'to_dict') else dict(tr)}
-                except Exception:
-                    continue
-                try:
-                    event_bus.publish("Trade", trade_payload)
-                except Exception:
-                    pass
-                try:
-                    event_bus.publish("TradeEvent", trade_payload)
-                except Exception:
-                    pass
-                if runtime_event_bus is not event_bus:
-                    try:
-                        runtime_event_bus.publish("Trade", trade_payload)
-                    except Exception:
-                        pass
-                    try:
-                        runtime_event_bus.publish("TradeEvent", trade_payload)
-                    except Exception:
-                        pass
-            metrics.inc("frontend_order_submit")
-            return payload
-        finally:
-            session.close()
+        for trade in list(result.get("trades") or []):
+            if not isinstance(trade, dict):
+                continue
+            publish_trade_payload({"trade": trade})
+        metrics.inc("frontend_order_submit")
+        return payload
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
-        session = SessionLocal()
+        result = self._runtime_gateway.cancel_order(order_id)
+        payload = {
+            "ok": bool(result.get("ok")),
+            "order_id": str(result.get("order_id") or order_id),
+            "ts": int(time.time() * 1000),
+        }
         try:
-            models_init.init_models()
-            osrv = OrderService(session)
-            ok = bool(osrv.cancel(order_id))
-            session.commit()
-            payload = {"ok": ok, "order_id": order_id, "ts": int(time.time() * 1000)}
-            try:
-                event_bus.publish("frontend.order.cancel_result", payload)
-            except Exception:
-                pass
-            return payload
-        finally:
-            session.close()
+            event_bus.publish("frontend.order.cancel_result", payload)
+        except Exception:
+            pass
+        return payload
 
 
 __all__ = ["TradingService", "SubmitOrderRequest"]

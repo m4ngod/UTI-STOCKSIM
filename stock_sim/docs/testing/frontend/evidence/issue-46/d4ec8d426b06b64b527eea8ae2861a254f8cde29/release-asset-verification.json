@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "status": "verified",
+  "verification_method": "github_server_digest_plus_distributed_content_ranges_v1",
+  "verified_at": "2026-07-27T10:34:45.4108184+00:00",
+  "repository": "m4ngod/UTI-STOCKSIM",
+  "release_tag": "frontend-v2-wave1-rc-d4ec8d426b06",
+  "release_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/frontend-v2-wave1-rc-d4ec8d426b06",
+  "is_prerelease": true,
+  "target_commitish": "d4ec8d426b06b64b527eea8ae2861a254f8cde29",
+  "source_commit": "d4ec8d426b06b64b527eea8ae2861a254f8cde29",
+  "assets": [
+    {
+      "asset_id": "491294051",
+      "asset_node_id": "RA_kwDOQs7Qds4dSI1j",
+      "name": "qml-journey-d4ec8d426b06.zip",
+      "stable_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/download/frontend-v2-wave1-rc-d4ec8d426b06/qml-journey-d4ec8d426b06.zip",
+      "state": "uploaded",
+      "server_size": 76060962,
+      "server_sha256": "sha256:9a810d48b760d0d97a9c52a851f480917887bcf5ab91bc234c302c648c43885a",
+      "local_size": 76060962,
+      "local_sha256": "sha256:9a810d48b760d0d97a9c52a851f480917887bcf5ab91bc234c302c648c43885a",
+      "full_size_match": true,
+      "full_sha256_match": true,
+      "probes": [
+        {
+          "position": "start",
+          "http_status": "HTTP/2.0 206 Partial Content",
+          "content_range": "bytes 0-1023/76060962",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:8faa9f214f8e11724980df99da61f3ed4cc2fd3a3c445b2cd9fb86998d573360",
+          "local_range_sha256": "sha256:8faa9f214f8e11724980df99da61f3ed4cc2fd3a3c445b2cd9fb86998d573360",
+          "bytes_match": true
+        },
+        {
+          "position": "middle",
+          "http_status": "HTTP/2.0 206 Partial Content",
+          "content_range": "bytes 38030481-38031504/76060962",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:460fff68d33e7ae63a854871e4cf6fdede19d2a80c40f97b5460fa963e533100",
+          "local_range_sha256": "sha256:460fff68d33e7ae63a854871e4cf6fdede19d2a80c40f97b5460fa963e533100",
+          "bytes_match": true
+        },
+        {
+          "position": "tail",
+          "http_status": "HTTP/2.0 206 Partial Content",
+          "content_range": "bytes 76059938-76060961/76060962",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:1f62781554c041dab5b52d16f97b7fe8ff9bb7829300928d4bdfddf108ca4488",
+          "local_range_sha256": "sha256:1f62781554c041dab5b52d16f97b7fe8ff9bb7829300928d4bdfddf108ca4488",
+          "bytes_match": true
+        }
+      ]
+    },
+    {
+      "asset_id": "491294050",
+      "asset_node_id": "RA_kwDOQs7Qds4dSI1i",
+      "name": "widgets-rollback-d4ec8d426b06.zip",
+      "stable_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/download/frontend-v2-wave1-rc-d4ec8d426b06/widgets-rollback-d4ec8d426b06.zip",
+      "state": "uploaded",
+      "server_size": 131696670,
+      "server_sha256": "sha256:5bd61586f70905f758d1033f30afe292272a9149c6c29e9dcd6aeaf01eb45f5f",
+      "local_size": 131696670,
+      "local_sha256": "sha256:5bd61586f70905f758d1033f30afe292272a9149c6c29e9dcd6aeaf01eb45f5f",
+      "full_size_match": true,
+      "full_sha256_match": true,
+      "probes": [
+        {
+          "position": "start",
+          "http_status": "HTTP/2.0 206 Partial Content",
+          "content_range": "bytes 0-1023/131696670",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:4a93481a3c7d5289bcbc7ed22fd1a5bcd5bb8fccfe577eb860b1ee0078339f5b",
+          "local_range_sha256": "sha256:4a93481a3c7d5289bcbc7ed22fd1a5bcd5bb8fccfe577eb860b1ee0078339f5b",
+          "bytes_match": true
+        },
+        {
+          "position": "middle",
+          "http_status": "HTTP/2.0 206 Partial Content",
+          "content_range": "bytes 65848335-65849358/131696670",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:5677ed33fb65e49fcf67280d7c3d0f02cd73e44013ac7c6eadc51319184ea8e1",
+          "local_range_sha256": "sha256:5677ed33fb65e49fcf67280d7c3d0f02cd73e44013ac7c6eadc51319184ea8e1",
+          "bytes_match": true
+        },
+        {
+          "position": "tail",
+          "http_status": "HTTP/2.0 206 Partial Content",
+          "content_range": "bytes 131695646-131696669/131696670",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:2bafb4e12cf74faa40869b74752b511001c462aeef0fabbd5ee1d0a54bb8ac6d",
+          "local_range_sha256": "sha256:2bafb4e12cf74faa40869b74752b511001c462aeef0fabbd5ee1d0a54bb8ac6d",
+          "bytes_match": true
+        }
+      ]
+    }
+  ]
+}

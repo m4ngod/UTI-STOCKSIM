@@ -45,10 +45,14 @@ def test_detail_view_exposes_contract_metadata_and_placeholder_holdings():
     assert "holdings_meta" in detail
     assert "detail_health" in detail
 
-    assert detail["series_meta"]["source"] == "app-market-data-service-bars-cache"
+    assert detail["series_meta"]["source"] == "default-synthetic-fetcher"
+    assert detail["series_meta"]["placeholder"] is True
     assert detail["snapshot_meta"]["source"] == "market-controller-merged-snapshot-cache"
+    assert detail["snapshot_meta"]["freshness_model"] == "snapshot-ts-age"
     assert detail["order_book_meta"]["source"] == "snapshot-derived-order-book-view"
-    assert detail["trades_meta"]["source"] == "local-symbol-detail-ring-buffer"
+    assert detail["order_book_meta"]["freshness_model"] == "inherit-snapshot-age"
+    assert detail["order_book_meta"]["derived_from"] == "snapshot"
+    assert detail["trades_meta"]["source"] == "runtime-trade-log"
     assert detail["indicators_meta"]["source"] == "indicator-executor-from-series"
 
     for key in ("series_meta", "snapshot_meta", "order_book_meta", "trades_meta", "indicators_meta", "holdings_meta"):
@@ -81,9 +85,9 @@ def test_detail_view_health_ok_when_series_and_snapshot_are_available():
     assert detail["series"] is not None
     assert detail["snapshot"] is not None
     assert detail["order_book"] is not None
-    assert detail["detail_health"]["series_status"] == "available"
+    assert detail["detail_health"]["series_status"] == "placeholder"
     assert detail["detail_health"]["snapshot_status"] == "available"
     assert detail["detail_health"]["order_book_status"] == "available"
-    assert detail["detail_health"]["overall"] == "ok"
+    assert detail["detail_health"]["overall"] == "degraded"
     assert detail["snapshot_meta"]["status"] == "available"
     assert detail["order_book_meta"]["status"] == "available"

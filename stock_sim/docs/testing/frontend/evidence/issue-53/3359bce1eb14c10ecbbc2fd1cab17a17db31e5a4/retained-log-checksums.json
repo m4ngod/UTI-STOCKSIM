@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source_commit": "3359bce1eb14c10ecbbc2fd1cab17a17db31e5a4",
+  "release_tag": "strategy-diagnostics-v1-frontend-v2-integration-rc-3359bce1eb14",
+  "logs": [
+    {
+      "path": "logs/packaging-build.stdout.log",
+      "size": 2694904,
+      "sha256": "sha256:f5b3d6450b41d62d8e75f6973d18ec0a56f3ff3f12f5ae74c183eea90eab7da3"
+    },
+    {
+      "path": "logs/packaging-build.stderr.log",
+      "size": 26240,
+      "sha256": "sha256:9750cbb27f7c035ba9156fd3a0ff59809a746de7c011e605a85577612c1e5f48"
+    },
+    {
+      "path": "logs/sandbox-launch.stdout.log",
+      "size": 390,
+      "sha256": "sha256:962f7bc583590369152ee1b789593a85d9c46e4a5ec90088631e8b22d9309c74"
+    },
+    {
+      "path": "logs/sandbox-launch.stderr.log",
+      "size": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

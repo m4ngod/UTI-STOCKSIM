@@ -13,6 +13,9 @@ from stock_sim.core.matching_engine import MatchingEngine
 from stock_sim.core.instruments import create_instrument
 from stock_sim.core.order import Order
 from stock_sim.core.const import OrderSide, OrderStatus, Phase
+from stock_sim.services.run_context import RunContext
+from stock_sim.services.runtime_query_service import RuntimeQueryService
+from stock_sim.services.sim_clock import ensure_sim_clock_started
 from stock_sim.settings import settings
 
 
@@ -53,6 +56,71 @@ def test_same_day_buy_then_sell_is_blocked_for_t1_instrument():
     s.close()
 
 
+def test_same_day_buy_then_sell_is_blocked_across_order_service_instances():
+    symbol = f"T1P{uuid.uuid4().hex[:6].upper()}"
+    run_id = f"RUN-T1-{uuid.uuid4().hex[:8].upper()}"
+    engine_registry.remove(symbol)
+    clk = ensure_sim_clock_started()
+    if hasattr(clk, "set_day"):
+        clk.set_day(0)
+    if hasattr(clk, "configure"):
+        clk.configure(run_id=run_id)
+
+    models_init.init_models()
+    s1 = SessionLocal()
+    inst_srv1 = InstrumentService(s1)
+    inst_srv1.create(
+        symbol=symbol,
+        name=symbol,
+        tick_size=0.01,
+        lot_size=100,
+        min_qty=100,
+        settlement_cycle=1,
+        total_shares=1_000_000,
+        free_float_shares=500_000,
+        initial_price=10.0,
+        ipo_opened=True,
+    )
+    engine = MatchingEngine(
+        symbol,
+        create_instrument(symbol, tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0, settlement_cycle=1),
+    )
+    run_context = RunContext(run_id=run_id, run_type="simulation", scenario_name="tplus1-persisted", sim_day=0)
+    osrv1 = OrderService(s1, engine, instrument_service=inst_srv1, run_context=run_context)
+    acc_svc1 = AccountService(s1)
+    seller = acc_svc1.get_or_create(f"SELLER_{symbol}", cash=100000.0)
+    seller_pos = acc_svc1.get_position(seller, symbol)
+    seller_pos.quantity = 100
+    seller_pos.avg_price = 10.0
+    buyer_id = f"BUYER_{symbol}"
+    acc_svc1.get_or_create(buyer_id, cash=100000.0)
+    s1.flush()
+
+    sell_liquidity = Order(symbol=symbol, side=OrderSide.SELL, price=10.0, quantity=100, account_id=seller.id)
+    osrv1.place_order(sell_liquidity)
+    buy_order = Order(symbol=symbol, side=OrderSide.BUY, price=10.0, quantity=100, account_id=buyer_id)
+    buy_trades = osrv1.place_order(buy_order)
+    assert buy_trades
+    s1.commit()
+    s1.close()
+
+    assert RuntimeQueryService().get_available_sell_qty(account_id=buyer_id, symbol=symbol) == 0
+
+    s2 = SessionLocal()
+    try:
+        inst_srv2 = InstrumentService(s2)
+        osrv2 = OrderService(s2, engine, instrument_service=inst_srv2, run_context=run_context)
+        same_day_sell = Order(symbol=symbol, side=OrderSide.SELL, price=10.0, quantity=100, account_id=buyer_id)
+        trades = osrv2.place_order(same_day_sell)
+
+        assert trades == []
+        assert same_day_sell.status == OrderStatus.REJECTED
+    finally:
+        s2.close()
+        if hasattr(clk, "configure"):
+            clk.configure(run_id="")
+
+
 def test_same_day_buy_then_sell_allowed_for_t0_instrument():
     engine_registry.remove('T0X')
     models_init.init_models()
@@ -90,6 +158,50 @@ def test_same_day_buy_then_sell_allowed_for_t0_instrument():
     assert same_day_sell.status != OrderStatus.REJECTED
     assert isinstance(trades, list)
     s.close()
+
+
+def test_same_day_sell_allowed_for_model_on_t1_instrument():
+    symbol = f"T1M{uuid.uuid4().hex[:6].upper()}"
+    model_account = f"MODEL_T1_{uuid.uuid4().hex[:6].upper()}"
+    engine_registry.remove(symbol)
+    models_init.init_models()
+    s = SessionLocal()
+    try:
+        inst_srv = InstrumentService(s)
+        inst_srv.create(
+            symbol=symbol,
+            name=symbol,
+            tick_size=0.01,
+            lot_size=100,
+            min_qty=100,
+            settlement_cycle=1,
+            total_shares=1_000_000,
+            free_float_shares=500_000,
+            initial_price=10.0,
+            ipo_opened=True,
+        )
+
+        engine = MatchingEngine(
+            symbol,
+            create_instrument(symbol, tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0, settlement_cycle=1),
+        )
+        osrv = OrderService(s, engine, instrument_service=inst_srv)
+        acc_svc = AccountService(s)
+        acc = acc_svc.get_or_create(model_account, cash=100000.0)
+        pos = acc_svc.get_position(acc, symbol)
+        pos.quantity = 100
+        pos.avg_price = 10.0
+        s.flush()
+        osrv.risk.update_tplus(acc.id, symbol, OrderSide.BUY, 100)
+
+        same_day_sell = Order(symbol=symbol, side=OrderSide.SELL, price=10.0, quantity=100, account_id=model_account)
+        trades = osrv.place_order(same_day_sell)
+
+        assert same_day_sell.status != OrderStatus.REJECTED
+        assert same_day_sell.status in (OrderStatus.NEW, OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELED)
+        assert isinstance(trades, list)
+    finally:
+        s.close()
 
 
 def test_ipo_open_then_same_day_sell_is_blocked_for_t1_instrument():

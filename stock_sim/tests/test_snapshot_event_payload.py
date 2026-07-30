@@ -22,5 +22,8 @@ def test_matching_engine_snapshot_event_contains_symbol_and_sim_time():
     assert payload['symbol'] == 'AAA'
     assert payload['run_id'] == 'RUN-SNAPSHOT-PRODUCER-001'
     assert payload['snapshot']['symbol'] == 'AAA'
+    assert isinstance(payload['ts_ms'], int)
+    assert payload['ts_ms'] > 0
+    assert payload['snapshot']['ts_ms'] == payload['ts_ms']
     assert 'sim_day' in payload
     assert 'sim_dt' in payload

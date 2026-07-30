@@ -56,3 +56,43 @@ def test_recovery_service_switches_readonly_on_mismatch():
 def test_mark_failed_sets_readonly():
     mark_failed("MANUAL_TEST_FAILURE")
     assert is_readonly() is True
+
+
+def test_recovery_service_degrades_when_run_report_is_not_ok_even_without_trade_rows():
+    models_init.init_models()
+    disable_event_persistence()
+    assert enable_event_persistence(force=True)
+
+    run_id = "RUN-REC-REPORT-GAP-001"
+    event_bus.publish(EventType.TRADE, {"run_id": run_id, "symbol": "AAA", "trade": {"symbol": "AAA", "price": 10.0, "quantity": 100}})
+
+    rep = recovery_service.recover()
+
+    assert rep["status"] == "degraded"
+    assert rep["readonly"] is True
+    assert run_id in rep["checks"]["inconsistent_runs"]
+    assert "trade_event_trade_row_gap" in rep["checks"]["inconsistent_run_reasons"][run_id]
+    assert "run_report_not_ok" in rep["checks"]["inconsistent_run_reasons"][run_id]
+
+
+def test_recovery_service_exposes_order_event_gap_reason_from_run_report():
+    models_init.init_models()
+
+    s = SessionLocal()
+    try:
+        ctx = RunContext(run_id="RUN-REC-ORDER-GAP-001", run_type="simulation")
+        inst = create_instrument('BBB', tick_size=0.01, lot_size=100, min_qty=100, initial_price=10.0)
+        engine = MatchingEngine('BBB', inst)
+        engine_registry.register('BBB', engine, overwrite=True)
+        svc = OrderService(s, engine=engine, run_context=ctx)
+        order = Order(symbol='BBB', side=OrderSide.BUY, order_type=OrderType.LIMIT, price=10.0, quantity=100, tif=TimeInForce.GFD, account_id='REC_ACC_2')
+        svc._persist_order(order, "NEW", "")
+        s.commit()
+    finally:
+        s.close()
+
+    rep = recovery_service.recover()
+
+    assert rep["status"] == "degraded"
+    assert "RUN-REC-ORDER-GAP-001" in rep["checks"]["inconsistent_runs"]
+    assert "order_event_order_row_gap" in rep["checks"]["inconsistent_run_reasons"]["RUN-REC-ORDER-GAP-001"]

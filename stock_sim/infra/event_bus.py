@@ -2,7 +2,7 @@
 # file: infra/event_bus.py
 from __future__ import annotations
 from collections import defaultdict, deque
-from threading import RLock, Thread
+from threading import Condition, RLock, Thread
 from typing import Callable, Any, Dict, List, Deque, Optional
 from concurrent.futures import ThreadPoolExecutor
 try:
@@ -10,11 +10,16 @@ try:
 except Exception:  # 回退本地
     from core.const import EventType  # type: ignore
 
+def _topic_key(topic: str | EventType) -> str:
+    return topic.value if hasattr(topic, "value") else str(topic)
+
+
 class EventBus:
     def __init__(self, async_workers: int = 4):
         self._subs_sync: Dict[str, List[Callable[[str, dict], None]]] = defaultdict(list)
         self._subs_async: Dict[str, List[Callable[[str, dict], None]]] = defaultdict(list)
         self._lock = RLock()
+        self._condition = Condition(self._lock)
         self._queue: Deque[tuple[str, dict]] = deque()
         self._executor = ThreadPoolExecutor(max_workers=async_workers)
         self._bg_thread: Optional[Thread] = None
@@ -22,26 +27,29 @@ class EventBus:
         self._persist_hook = None  # 新增: 可由事件持久化服务注入 callable(topic,payload)
 
     def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._bg_thread = Thread(target=self._loop, daemon=True)
-        self._bg_thread.start()
+        with self._condition:
+            if self._running:
+                return
+            self._running = True
+            self._bg_thread = Thread(target=self._loop, daemon=True)
+            self._bg_thread.start()
 
     def stop(self):
-        self._running = False
+        with self._condition:
+            self._running = False
+            self._condition.notify_all()
         if self._bg_thread:
             self._bg_thread.join(timeout=1)
 
     def subscribe(self, topic: str | EventType, handler: Callable[[str, dict], None], *, async_mode: bool = False):
-        key = topic.value if isinstance(topic, EventType) else topic
+        key = _topic_key(topic)
         with self._lock:
             target = self._subs_async if async_mode else self._subs_sync
             target[key].append(handler)
         return handler  # 返回 handler 方便上层保存用于取消
 
     def unsubscribe(self, topic: str | EventType, handler: Callable[[str, dict], None]):
-        key = topic.value if isinstance(topic, EventType) else topic
+        key = _topic_key(topic)
         with self._lock:
             arr = self._subs_sync.get(key)
             if arr and handler in arr:
@@ -57,7 +65,7 @@ class EventBus:
                     pass
 
     def publish(self, topic: str | EventType, payload: dict):
-        key = topic.value if isinstance(topic, EventType) else topic
+        key = _topic_key(topic)
         sync_handlers: List[Callable[[str, dict], None]]
         async_handlers: List[Callable[[str, dict], None]]
         with self._lock:
@@ -77,8 +85,9 @@ class EventBus:
                 pass
         # 异步
         if async_handlers:
-            with self._lock:
+            with self._condition:
                 self._queue.append((key, payload))
+                self._condition.notify()
             if not self._running:
                 self.start()
         # 新增: 持久化钩子 (同步调用, 保证测��立即可见)
@@ -90,12 +99,14 @@ class EventBus:
                 pass
 
     def _loop(self):
-        while self._running:
-            item = None
-            with self._lock:
-                if self._queue:
-                    item = self._queue.popleft()
-            if not item:
+        while True:
+            with self._condition:
+                while self._running and not self._queue:
+                    self._condition.wait(timeout=0.25)
+                if not self._running and not self._queue:
+                    break
+                item = self._queue.popleft() if self._queue else None
+            if item is None:
                 continue
             topic, payload = item
             handlers = []

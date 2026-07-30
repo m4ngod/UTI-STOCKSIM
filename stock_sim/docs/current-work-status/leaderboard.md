@@ -1,0 +1,24 @@
+## Task 2026-04-08-leaderboard-01
+- **time**: 2026-04-08
+- **status**: done
+- **goal**: move leaderboard detail curves from synthetic placeholders toward runtime-authoritative history and make export behavior safe under threaded execution
+- **files involved**:
+  - `services/runtime_query_service.py`
+  - `app/runtime_gateway.py`
+  - `app/services/leaderboard_service.py`
+  - `app/controllers/leaderboard_controller.py`
+  - `app/panels/leaderboard/panel.py`
+  - `app/ui/adapters/leaderboard_adapter.py`
+  - `tests/frontend/unit/test_leaderboard_service_runtime_gateway.py`
+  - `tests/frontend/unit/test_leaderboard_panel.py`
+  - `tests/frontend/unit/test_leaderboard_export_concurrency.py`
+- **change summary**:
+  - runtime query path now exposes leaderboard history by resolving agent bindings to runtime accounts and reading `account_equity_snapshots`
+  - leaderboard service/controller/panel now surface runtime curves first and annotate selected rows with `curve_source`, `curve_authoritative`, and `active_run_id`
+  - synthetic curves remain only as a fallback when runtime history is unavailable
+  - the Qt adapter no longer updates labels/buttons from the background export worker thread
+  - the adapter now has an explicit headless widget path so unit tests can execute without a live `QApplication`
+- **impact / risk**:
+  - Positive: leaderboard detail is closer to the same persisted truth used by replay/recovery and active-run diagnostics
+  - Positive: export concurrency behavior is stable in tests and no longer depends on undefined Qt thread behavior
+  - Risk: leaderboard rows themselves are still runtime-derived snapshots rather than a dedicated leaderboard authority model, so future work should keep tightening the runtime source of ranking state

@@ -50,11 +50,10 @@ def open_symbol_page(symbol: str, *, controller: Any | None = None, service: Any
         return None
     try:
         # Lazy imports to avoid hard dependency at import time
+        from app.app_context import get_app_context  # type: ignore
         from app.panels import list_panels, register_panel, get_panel  # type: ignore
         from app.panels.market.panel import SymbolDetailPanel  # type: ignore
         from app.ui.adapters.market_adapter import SymbolDetailPanelAdapter  # type: ignore
-        from app.controllers.market_controller import MarketController  # type: ignore
-        from app.services.market_data_service import MarketDataService  # type: ignore
     except Exception:
         # Registry or required classes not available
         return None
@@ -64,9 +63,11 @@ def open_symbol_page(symbol: str, *, controller: Any | None = None, service: Any
     svc = service
     try:
         if ctl is None or svc is None:
-            # Create fresh instances as a fallback
-            svc = svc or MarketDataService()  # type: ignore[call-arg]
-            ctl = ctl or MarketController(svc)  # type: ignore[call-arg]
+            # Reuse the shared desktop app context so detail pages stay on the
+            # same runtime/service graph as the main workspace panels.
+            ctx = get_app_context()
+            svc = svc or ctx.market_data_service
+            ctl = ctl or ctx.market_controller
     except Exception:
         return None
 

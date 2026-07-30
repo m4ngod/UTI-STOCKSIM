@@ -31,6 +31,18 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     _notification_center = None
 
+
+def _resolve_notification_center():
+    global _notification_center
+    if _notification_center is not None:
+        return _notification_center
+    try:
+        from app.panels.shared.notifications import notification_center
+    except Exception:
+        return None
+    _notification_center = notification_center
+    return _notification_center
+
 class ScriptValidationError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -95,7 +107,8 @@ class ScriptValidator:
 
     # ------------- Notification Helpers -------------
     def _notify_violations_if_needed(self, violations: List[Violation], code: str, filename: str):
-        if _notification_center is None:
+        center = _resolve_notification_center()
+        if center is None:
             return
         # 签名: 违规代码 + 行列 (排序稳定)
         parts = sorted(f"{v.code}:{v.lineno}:{v.col}" for v in violations)
@@ -120,12 +133,13 @@ class ScriptValidator:
             'code_excerpt': code[:200],
         }
         try:  # 不影响主流程
-            _notification_center.publish_error('script_violation', summary, data=data)
+            center.publish_error('script_violation', summary, data=data)
         except Exception:  # pragma: no cover
             pass
 
     def _notify_exception_if_needed(self, exc: ScriptValidationError, filename: str, code: str | None = None):
-        if _notification_center is None:
+        center = _resolve_notification_center()
+        if center is None:
             return
         sig = f"EXC:{exc.code}:{filename}"
         if sig == self._last_fail_sig:
@@ -141,7 +155,7 @@ class ScriptValidator:
         if code is not None:
             data['code_excerpt'] = code[:200]
         try:  # pragma: no cover
-            _notification_center.publish_error('script_violation', summary, data=data)
+            center.publish_error('script_violation', summary, data=data)
         except Exception:  # pragma: no cover
             pass
 

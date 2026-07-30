@@ -8,11 +8,28 @@
 在 headless 或缺失 PySide6 时退化为无窗口占位实现，方法仍可被调用以便测试。
 """
 from __future__ import annotations
-from typing import Any, Optional, List, Dict
+import importlib
+import os
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Optional,
+    List,
+    Dict,
+)
+
+if TYPE_CHECKING:
+    from app.features import (
+        EvidenceAndFindingsContext,
+        EvidenceAndFindingsFeature,
+        RunMonitoringContext,
+        RunMonitoringFeature,
+    )
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
-    from PySide6.QtGui import QAction  # type: ignore
+    from PySide6.QtGui import QAction, QFont  # type: ignore
     from PySide6.QtWidgets import (
         QMainWindow, QWidget, QLabel, QMenuBar, QVBoxLayout, QDockWidget,
         QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QPushButton
@@ -32,6 +49,9 @@ except Exception:  # pragma: no cover - headless fallback
     class QAction:  # type: ignore
         def __init__(self, *_, **__):
             pass
+    class QFont:  # type: ignore
+        def __init__(self, *_, **__):
+            pass
     class QVBoxLayout:  # type: ignore
         def __init__(self, *_, **__):
             self._items = []
@@ -44,25 +64,72 @@ except Exception:  # pragma: no cover - headless fallback
     class Qt:  # type: ignore
         LeftDockWidgetArea = 0
 
-from app.panels import list_panels, get_panel  # 惰性加载
 from .docking import DockManager
-from app.state.layout_persistence import LayoutPersistence  # 新增
 from observability.metrics import metrics
-# 新增：UI 桥
-try:
-    from app.ui.ui_refresh import register_main_window as _register_mw  # type: ignore
-except Exception:  # pragma: no cover
-    _register_mw = None  # type: ignore
 
-DEFAULT_PRELOAD_PANELS = ["account", "market", "agents", "leaderboard", "clock", "orders"]
+PRIMARY_WORKSPACE_PANELS = ["account", "diagnostics", "market", "agents", "arena", "leaderboard", "clock", "orders"]
+DEFAULT_PRELOAD_PANELS = list(PRIMARY_WORKSPACE_PANELS)
 
-__all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS"]
+__all__ = ["MainWindow", "DEFAULT_PRELOAD_PANELS", "PRIMARY_WORKSPACE_PANELS"]
 
 class MainWindow(QMainWindow):  # type: ignore[misc]
-    def __init__(self):  # noqa: D401
+    def __init__(
+        self,
+        *,
+        run_monitoring_feature: RunMonitoringFeature | None = None,
+        run_monitoring_context: RunMonitoringContext | None = None,
+        evidence_and_findings_feature: EvidenceAndFindingsFeature | None = None,
+        evidence_and_findings_context: EvidenceAndFindingsContext | None = None,
+        frontend_v2_enabled: bool | None = None,
+        rollback_read_only: bool = False,
+        layout_path: str = "layout_main.json",
+        panel_list: Callable[[], List[Dict[str, Any]]] | None = None,
+        panel_get: Callable[[str], Any] | None = None,
+        layout_store: Any | None = None,
+    ):  # noqa: D401
         super().__init__()  # type: ignore
+        self._rollback_read_only = rollback_read_only
+        self._frontend_v2_enabled = (
+            _frontend_v2_route_enabled()
+            if frontend_v2_enabled is None
+            else frontend_v2_enabled
+        )
+        if (panel_list is None) != (panel_get is None):
+            raise ValueError(
+                "panel_list and panel_get must be provided together"
+            )
+        if panel_list is None or panel_get is None:
+            if self._frontend_v2_enabled:
+                self._panel_list = lambda: []
+                self._panel_get = lambda _name: None
+            else:
+                registry_module = importlib.import_module(
+                    "app.panels." + "registry"
+                )
+                self._panel_list = registry_module.list_panels
+                self._panel_get = registry_module.get_panel
+        else:
+            self._panel_list = panel_list
+            self._panel_get = panel_get
+        if layout_store is None:
+            if self._rollback_read_only:
+                raise ValueError(
+                    "Read-only rollback mode requires an isolated "
+                    "layout_store"
+                )
+            layout_module = importlib.import_module(
+                "app.state." + "layout_persistence"
+            )
+            layout_store = layout_module.LayoutPersistence(
+                path=layout_path
+            )
+        self._run_monitoring_feature = run_monitoring_feature
+        self._run_monitoring_context = run_monitoring_context
+        self._evidence_and_findings_feature = evidence_and_findings_feature
+        self._evidence_and_findings_context = evidence_and_findings_context
+        self._journey_workspace: Any = None
         self._dock = DockManager(self)
-        self._layout_store = LayoutPersistence(path="layout_main.json")  # 持久化实例
+        self._layout_store = layout_store
         self._legacy_central: Any = None
         self._legacy_layout: Any = None
         # 现代主框架：左导航 + 中央主工作区；同时兼容旧测试接口
@@ -81,17 +148,55 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.setWindowTitle("StockSim Frontend")  # type: ignore
             except Exception:  # pragma: no cover
                 pass
+        try:
+            if hasattr(self, 'setMinimumSize'):
+                self.setMinimumSize(900, 600)  # type: ignore[attr-defined]
+            if hasattr(self, 'resize'):
+                self.resize(1280, 820)  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self._init_menu()
         self._init_window_style()
-        self._restore_layout_safe()  # 启动时恢复
+        if self._frontend_v2_enabled:
+            self._mount_journey_workspace()
+        else:
+            self._restore_layout_safe()  # 启动时恢复
         # 向 UI 桥注册自身，以允许外部打开动态面板
-        try:
-            if callable(_register_mw):
-                _register_mw(self)  # type: ignore
-        except Exception:  # pragma: no cover
-            pass
+        if not self._rollback_read_only:
+            try:
+                refresh_module = importlib.import_module(
+                    "app.ui." + "ui_refresh"
+                )
+                refresh_module.register_main_window(self)
+            except Exception:  # pragma: no cover
+                pass
+
+    @property
+    def journey_workspace_active(self) -> bool:
+        return self._journey_workspace is not None
+
+    def _mount_journey_workspace(self) -> None:
+        if self._journey_workspace is not None:
+            return
+        if self._run_monitoring_feature is None:
+            raise RuntimeError(
+                "Frontend V2 requires the RunMonitoringFeature Interface"
+            )
+        from app.ui.journey_workspace import JourneyWorkspaceHost
+
+        workspace = JourneyWorkspaceHost(
+            self._run_monitoring_feature,
+            context=self._run_monitoring_context,
+            evidence_feature=self._evidence_and_findings_feature,
+            evidence_context=self._evidence_and_findings_context,
+            parent=self,
+        )
+        self.setCentralWidget(workspace)  # type: ignore[attr-defined]
+        self._journey_workspace = workspace
 
     def ensure_legacy_central_layout(self):
+        if self._frontend_v2_enabled:
+            return None
         if self._legacy_central is not None and self._legacy_layout is not None:
             self._layout = self._legacy_layout
             return self._legacy_layout
@@ -119,11 +224,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 pass
 
             workspace_wrap = QWidget()  # type: ignore
+            if hasattr(workspace_wrap, 'setObjectName'):
+                workspace_wrap.setObjectName('workspaceWrap')  # type: ignore[attr-defined]
             workspace_layout = QVBoxLayout(workspace_wrap)  # type: ignore
             if hasattr(workspace_layout, 'setContentsMargins'):
-                workspace_layout.setContentsMargins(12, 12, 12, 12)
+                workspace_layout.setContentsMargins(20, 18, 20, 18)
             if hasattr(workspace_layout, 'setSpacing'):
-                workspace_layout.setSpacing(8)
+                workspace_layout.setSpacing(12)
             stack = QStackedWidget()  # type: ignore
             workspace_layout.addWidget(stack)  # type: ignore
 
@@ -240,6 +347,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _init_window_style(self):
         try:
+            if hasattr(self, 'setFont'):
+                self.setFont(QFont("Segoe UI", 10))  # type: ignore[attr-defined]
             if hasattr(self, 'setDockOptions'):
                 opts = 0
                 for name in ('AllowNestedDocks', 'AllowTabbedDocks', 'AnimatedDocks'):
@@ -253,26 +362,48 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         try:
             if hasattr(self, 'setStyleSheet'):
                 self.setStyleSheet(
-                    'QMainWindow { background: #1f2329; } '
-                    'QWidget { color: #e6edf3; font-size: 13px; background: #1f2329; } '
-                    'QDockWidget::title { background: #262c36; padding: 6px 10px; font-weight: 600; border: none; } '
-                    'QDockWidget { color: #dce4ec; border: 1px solid #2d333b; } '
-                    'QMenuBar { background: #1f2329; color: #c9d1d9; border-bottom: 1px solid #2d333b; } '
+                    'QMainWindow { background: #0f141b; } '
+                    'QWidget { color: #d8dee8; font-family: "Segoe UI", "Microsoft YaHei UI", Arial; font-size: 13px; background: #121821; } '
+                    'QWidget#workspaceWrap { background: #121821; } '
+                    'QStackedWidget { background: #121821; border: none; } '
+                    'QDockWidget::title { background: #171f2a; padding: 6px 10px; font-weight: 600; border: none; } '
+                    'QDockWidget { color: #d8dee8; border: 1px solid #26313f; } '
+                    'QMenuBar { background: #0f141b; color: #c6d0dd; border-bottom: 1px solid #26313f; } '
                     'QMenuBar::item { padding: 6px 10px; border-radius: 6px; } '
-                    'QMenuBar::item:selected { background: #2d333b; } '
-                    'QListWidget#mainNavList { background: #161b22; border: none; padding: 14px 10px; outline: none; } '
-                    'QListWidget#mainNavList::item { padding: 12px 14px; margin: 3px 6px; border-radius: 12px; color: #c9d1d9; } '
-                    'QListWidget#mainNavList::item:selected { background: #2d333b; color: #ffffff; } '
-                    'QListWidget#mainNavList::item:hover { background: #21262d; } '
-                    'QPushButton { background: #262c36; border: 1px solid #30363d; padding: 6px 10px; border-radius: 10px; color: #e6edf3; } '
-                    'QPushButton:hover { background: #2d333b; } '
+                    'QMenuBar::item:selected { background: #202a36; color: #ffffff; } '
+                    'QListWidget#mainNavList { background: #0b1017; border: none; padding: 18px 10px; outline: none; } '
+                    'QListWidget#mainNavList::item { padding: 11px 14px; margin: 3px 0; border-radius: 8px; color: #9da8b7; } '
+                    'QListWidget#mainNavList::item:selected { background: #1e2937; color: #ffffff; border-left: 3px solid #38bdf8; } '
+                    'QListWidget#mainNavList::item:hover { background: #182231; color: #e7edf5; } '
+                    'QPushButton { background: #1a2430; border: 1px solid #2b3848; padding: 7px 12px; border-radius: 7px; color: #dfe7f1; font-weight: 500; } '
+                    'QPushButton:hover { background: #223044; border-color: #3b4a60; } '
+                    'QPushButton:pressed { background: #111923; } '
+                    'QPushButton#primaryAction { background: #0e7490; border-color: #0891b2; color: #ffffff; } '
+                    'QPushButton#secondaryAction { background: #151e29; color: #b9c3d0; } '
+                    'QLineEdit, QComboBox { background: #0d131b; border: 1px solid #273444; border-radius: 6px; padding: 6px 8px; color: #e5edf7; selection-background-color: #0e7490; } '
+                    'QLineEdit:focus, QComboBox:focus { border-color: #38bdf8; } '
+                    'QTableWidget { background: #111821; alternate-background-color: #151e29; color: #d8dee8; gridline-color: #26313f; border: 1px solid #26313f; border-radius: 6px; selection-background-color: #1f3b52; selection-color: #ffffff; } '
+                    'QHeaderView::section { background: #17202b; color: #9fb0c3; border: none; border-right: 1px solid #26313f; border-bottom: 1px solid #26313f; padding: 6px 8px; font-weight: 600; } '
+                    'QTextEdit { background: #0d131b; border: 1px solid #26313f; border-radius: 6px; color: #cfd8e3; } '
                     'QLabel { background: transparent; } '
+                    'QLabel#detailSymbolLabel { color: #f8fafc; font-size: 22px; font-weight: 700; } '
+                    'QLabel#detailMetaLabel { color: #9fb0c3; font-size: 12px; } '
+                    'QLabel#detailStatusLabel { color: #67e8f9; font-size: 12px; font-weight: 600; } '
+                    'QLabel#detailDebugLabel { color: #94a3b8; font-size: 11px; } '
+                    'QFrame#detailHeader { background: #141d28; border: 1px solid #26313f; border-radius: 8px; } '
+                    'QFrame#marketSidebar { background: #0d131b; border: 1px solid #26313f; border-radius: 8px; } '
+                    'QListWidget#marketSymbolList { background: #0d131b; border: none; outline: none; padding: 6px; } '
+                    'QListWidget#marketSymbolList::item { padding: 8px 10px; margin: 2px 0; border-radius: 6px; color: #b8c2cf; } '
+                    'QListWidget#marketSymbolList::item:selected { background: #1f3b52; color: #ffffff; } '
+                    'QListWidget#marketSymbolList::item:hover { background: #172334; } '
                 )  # type: ignore[attr-defined]
         except Exception:
             pass
 
     # -------- Menu --------
     def _init_menu(self):  # 轻量 Panels 菜单
+        if self._frontend_v2_enabled:
+            return
         if not hasattr(self, 'menuBar'):
             return
         try:
@@ -296,7 +427,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     panels_menu.removeAction(act)  # type: ignore
             except Exception:  # pragma: no cover
                 pass
-            for p in list_panels():
+            for p in self._panel_list():
                 name = p.get('name')
                 if not name:
                     continue
@@ -331,7 +462,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         ]
         if not ordered_names:
             ordered_names = [
-                name for name in ['market', 'account', 'agents', 'leaderboard', 'clock', 'orders']
+                name for name in PRIMARY_WORKSPACE_PANELS
                 if name in self._workspace_pages
             ]
         active_page = getattr(self, '_last_non_symbol_page', 'market') or 'market'
@@ -385,6 +516,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.restore_layout(layout)
 
     def _save_layout(self):
+        if self._frontend_v2_enabled:
+            return
         try:
             self._layout_store.save(self.serialize_layout())
         except Exception:  # pragma: no cover
@@ -392,6 +525,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Panel Ops --------
     def open_panel(self, name: str) -> Optional[Any]:
+        if self._frontend_v2_enabled:
+            return None
         # 先看 workspace page，再看 dock；否则主页面已在 workspace 中时，
         # 重复 open_panel(name) 会因为 _dock 中查不到而再挂一份同名页面。
         if name in self._workspace_pages:
@@ -403,9 +538,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         existing = self._dock.get_panel(name)
         if existing is not None:
             return existing
-        if not any(p["name"] == name for p in list_panels()):
+        if not any(p["name"] == name for p in self._panel_list()):
             return None
-        obj = get_panel(name)
+        obj = self._panel_get(name)
         widget: Any
         # 支持 PanelAdapter: 若对象提供 widget() 则使用其返回的真实 QWidget
         real_widget = getattr(obj, 'widget', None)
@@ -423,26 +558,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._ensure_central_layout()
         try:
             self._panel_widgets[name] = widget
-            primary_panels = {'market', 'account', 'agents', 'clock', 'leaderboard', 'orders'} | {n for n in self.list_open() if str(n).startswith('symbol:')}
+            primary_panels = set(PRIMARY_WORKSPACE_PANELS) | {n for n in self.list_open() if str(n).startswith('symbol:')}
             if name in primary_panels or str(name).startswith('symbol:'):
                 try:
                     if self._workspace_stack is not None and hasattr(self._workspace_stack, 'addWidget'):
-                        title = next((p.get('title') for p in list_panels() if p.get('name') == name), None) or name
+                        title = next((p.get('title') for p in self._panel_list() if p.get('name') == name), None) or name
                         page = self._make_workspace_page(name, widget, title)
                         self._workspace_stack.addWidget(page)  # type: ignore[attr-defined]
                         idx = self._workspace_stack.count() - 1 if hasattr(self._workspace_stack, 'count') else 0
                         self._workspace_pages[name] = page
                         self._workspace_index_to_name[idx] = name
                         if self._nav_list is not None and hasattr(self._nav_list, 'addItem') and not str(name).startswith('symbol:'):
-                            nav_titles = {
-                                'market': 'Market',
-                                'account': 'Account',
-                                'agents': 'Agents',
-                                'clock': 'Clock',
-                                'leaderboard': 'Leaderboard',
-                                'orders': 'Orders',
-                            }
-                            self._nav_list.addItem(nav_titles.get(name, title))  # type: ignore[attr-defined]
+                            self._nav_list.addItem(title)  # type: ignore[attr-defined]
                         self.show_workspace_page(name)
                         try:
                             if hasattr(page, 'update'):
@@ -471,7 +598,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         return ok
 
     def list_registered(self) -> List[str]:
-        return [p["name"] for p in list_panels()]
+        return [p["name"] for p in self._panel_list()]
 
     def list_open(self) -> List[str]:
         """Return the current app-open state with workspace-first semantics.
@@ -489,6 +616,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # -------- Qt Events --------
     def closeEvent(self, event):  # type: ignore[override]
+        if self._journey_workspace is not None:
+            self._journey_workspace.close_adapter()
         # 关闭时保存布局 (即便 headless fallback 也安全调用)
         self._save_layout()
         try:
@@ -497,3 +626,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 super_close(event)
         except Exception:  # pragma: no cover
             pass
+
+
+def _frontend_v2_route_enabled() -> bool:
+    return os.environ.get("STOCKSIM_FRONTEND_V2", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

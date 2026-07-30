@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from app.controllers.market_controller import MarketController
 from app.panels.market.panel import MarketPanel
 from app.services.market_data_service import MarketDataService
@@ -70,6 +72,70 @@ def test_detail_view_marks_series_stale_as_degraded():
     panel._detail._is_stale = True  # type: ignore[attr-defined]
     detail = panel.detail_view()
 
-    assert detail["series_meta"]["status"] == "stale"
-    assert detail["detail_health"]["series_status"] == "stale"
+    assert detail["series_meta"]["status"] == "placeholder"
+    assert detail["detail_health"]["series_status"] == "placeholder"
+    assert detail["detail_health"]["overall"] == "degraded"
+
+
+def test_detail_view_marks_stale_snapshot_and_order_book_as_degraded():
+    svc = MarketDataService()
+    ctl = MarketController(svc)
+    panel = MarketPanel(ctl, svc)
+
+    ctl.merge_batch(
+        [
+            {
+                "symbol": "AAA",
+                "last": 12.3,
+                "bid_levels": [(12.2, 10)],
+                "ask_levels": [(12.4, 10)],
+                "volume": 100,
+                "turnover": 1230.0,
+                "ts": int(time.time() * 1000) - 60_000,
+                "snapshot_id": "snap-stale-aaa",
+            }
+        ]
+    )
+    panel.select_symbol("AAA", timeframe="1m")
+
+    detail = panel.detail_view()
+
+    assert detail["snapshot_meta"]["status"] == "stale"
+    assert detail["order_book_meta"]["status"] == "stale"
+    assert detail["snapshot_meta"]["freshness_model"] == "snapshot-ts-age"
+    assert detail["order_book_meta"]["freshness_model"] == "inherit-snapshot-age"
+    assert detail["order_book_meta"]["derived_from"] == "snapshot"
+    assert detail["snapshot_meta"]["age_ms"] is not None
+    assert detail["snapshot_meta"]["stale_after_ms"] == 15_000
+    assert detail["detail_health"]["snapshot_status"] == "stale"
+    assert detail["detail_health"]["order_book_status"] == "stale"
+    assert detail["detail_health"]["overall"] == "degraded"
+
+
+def test_detail_view_marks_placeholder_series_as_degraded_even_with_snapshot():
+    svc = MarketDataService()
+    ctl = MarketController(svc)
+    panel = MarketPanel(ctl, svc)
+
+    ctl.merge_batch(
+        [
+            {
+                "symbol": "AAA",
+                "last": 12.3,
+                "bid_levels": [(12.2, 10)],
+                "ask_levels": [(12.4, 10)],
+                "volume": 100,
+                "turnover": 1230.0,
+                "ts": int(time.time() * 1000),
+                "snapshot_id": "snap-live-aaa",
+            }
+        ]
+    )
+    panel.select_symbol("AAA", timeframe="1m")
+
+    detail = panel.detail_view()
+
+    assert detail["series_meta"]["status"] == "placeholder"
+    assert detail["detail_health"]["series_status"] == "placeholder"
+    assert detail["snapshot_meta"]["status"] == "available"
     assert detail["detail_health"]["overall"] == "degraded"

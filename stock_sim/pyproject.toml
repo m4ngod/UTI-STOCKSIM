@@ -12,6 +12,9 @@ dependencies = [
     "pytorch==2.8.0+cu129",
     "redis>=5.0.0",
     "SQLAlchemy>=1.4",
+    "duckdb>=1.1,<2.0",
+    "psycopg[binary]>=3.1",
+    "pg8000>=1.31",
     "pytest>=8.2",
     "pytest-cov>=4.1",  # Task41 增量: 覆盖率
     "numpy>=1.26",
@@ -21,13 +24,25 @@ dependencies = [
 
 [project.scripts]
 frontend-trading-ui = "setup_frontend_entry:main"
+stock-sim-db-health = "stock_sim.persistence.db_health:main"
+strategy-diagnostics = "strategy_diagnostics.__main__:main"
 
 [tool.setuptools]
 # 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?
 
+[tool.setuptools.package-data]
+"stock_sim.release" = ["*.json"]
+
 [tool.setuptools.packages.find]
 where = [""]
-include = ["stock_sim", "stock_sim.*", "app", "app.*"]
+include = [
+  "stock_sim",
+  "stock_sim.*",
+  "app",
+  "app.*",
+  "strategy_diagnostics",
+  "strategy_diagnostics.*",
+]
 exclude = [
   "logs*",
   "Quent*",

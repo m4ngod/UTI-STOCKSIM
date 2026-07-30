@@ -1,53 +1,41 @@
 """
-事务日志模块
-author: you
+Compatibility transaction logger backed by the project ORM tables.
+
+Historically this module wrote a private SQLite file (`trade_log.db`). Runtime
+persistence is now PostgreSQL-first, so the compatibility surface writes through
+`SessionLocal` into the authoritative trade/order-event tables instead.
 """
-import sqlite3
-import threading
-from pathlib import Path
+from __future__ import annotations
+
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-DB_SCHEMA = """
-PRAGMA journal_mode=WAL;
+from .models_imports import SessionLocal
+from .models_order_event import OrderEvent
+from .models_trade import TradeORM
 
-CREATE TABLE IF NOT EXISTS trade_log (
-    trade_id     TEXT PRIMARY KEY,
-    symbol       TEXT NOT NULL,
-    price        REAL NOT NULL,
-    quantity     INTEGER NOT NULL,
-    buy_order_id TEXT NOT NULL,
-    sell_order_id TEXT NOT NULL,
-    ts           TEXT NOT NULL          -- ISO8601
-);
 
-CREATE TABLE IF NOT EXISTS order_change_log (
-    change_id    TEXT PRIMARY KEY,
-    order_id     TEXT NOT NULL,
-    symbol       TEXT NOT NULL,
-    side         TEXT NOT NULL,
-    action       TEXT NOT NULL,         -- NEW / FILL / CANCEL / MODIFY
-    price        REAL,
-    quantity     INTEGER,
-    remaining    INTEGER,
-    ts           TEXT NOT NULL
-);
-"""
+def _parse_ts(ts: str | None) -> datetime:
+    if not ts:
+        return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return datetime.utcnow()
+
 
 class TransactionLogger:
     """
-    线程安全、支持 WAL 的简易 SQLite 日志器。
-    """
-    def __init__(self, db_path: str | Path = "trade_log.db") -> None:
-        self._conn = sqlite3.connect(
-            str(db_path),
-            check_same_thread=False,
-            isolation_level=None,       # autocommit
-        )
-        self._lock = threading.Lock()
-        self._initialize_schema()
+    Backward-compatible logger for legacy callers.
 
-    # ------------------------- PUBLIC API -------------------------
+    The `db_path` argument is accepted for API compatibility but ignored; the
+    active SQLAlchemy database configuration decides the storage backend.
+    """
+
+    def __init__(self, db_path: str | Path | None = None, *, session_factory=SessionLocal) -> None:
+        self._session_factory = session_factory
+
     def log_trade(
         self,
         *,
@@ -59,13 +47,29 @@ class TransactionLogger:
         sell_order_id: str,
         ts: Optional[str] = None,
     ) -> None:
-        ts = ts or datetime.utcnow().isoformat(timespec="milliseconds")
-        sql = """INSERT INTO trade_log
-                 (trade_id, symbol, price, quantity,
-                  buy_order_id, sell_order_id, ts)
-                 VALUES (?,?,?,?,?,?,?);"""
-        self._execute(sql, (trade_id, symbol, price, quantity,
-                            buy_order_id, sell_order_id, ts))
+        session = self._session_factory()
+        try:
+            existing = session.get(TradeORM, trade_id)
+            if existing is None:
+                session.add(
+                    TradeORM(
+                        id=trade_id,
+                        symbol=str(symbol or "").upper(),
+                        price=float(price),
+                        quantity=int(quantity),
+                        buy_order_id=str(buy_order_id),
+                        sell_order_id=str(sell_order_id),
+                        buy_account_id="",
+                        sell_account_id="",
+                        ts=_parse_ts(ts),
+                    )
+                )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def log_order_change(
         self,
@@ -80,29 +84,33 @@ class TransactionLogger:
         remaining: int | None,
         ts: Optional[str] = None,
     ) -> None:
-        ts = ts or datetime.utcnow().isoformat(timespec="milliseconds")
-        sql = """INSERT INTO order_change_log
-                 (change_id, order_id, symbol, side, action,
-                  price, quantity, remaining, ts)
-                 VALUES (?,?,?,?,?,?,?,?,?);"""
-        self._execute(sql, (change_id, order_id, symbol, side, action,
-                            price, quantity, remaining, ts))
-
-    # ----------------------- INTERNAL METHODS ---------------------
-    def _initialize_schema(self) -> None:
-        with self._lock, self._conn as cur:
-            cur.executescript(DB_SCHEMA)
-
-    def _execute(self, sql: str, params: tuple) -> None:
-        with self._lock, self._conn as cur:
-            cur.execute(sql, params)
-
-    # -------------------------- CLEANUP ---------------------------
-    def close(self) -> None:
-        self._conn.close()
-
-    def __del__(self) -> None:
+        detail = {
+            "symbol": str(symbol or "").upper(),
+            "side": str(side or ""),
+            "price": price,
+            "quantity": quantity,
+            "remaining": remaining,
+        }
+        compact_detail = ";".join(f"{k}={v}" for k, v in detail.items() if v is not None)
+        session = self._session_factory()
         try:
-            self.close()
-        except Exception:   # pragma: no cover
-            pass
+            session.add(
+                OrderEvent(
+                    order_id=str(order_id),
+                    event=str(action or "").upper(),
+                    detail=f"change_id={change_id};{compact_detail}"[:128],
+                    ts=_parse_ts(ts),
+                )
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def close(self) -> None:
+        return None
+
+
+__all__ = ["TransactionLogger"]
