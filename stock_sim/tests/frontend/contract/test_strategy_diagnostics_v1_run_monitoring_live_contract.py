@@ -476,15 +476,11 @@ def test_real_file_backed_v1_run_is_visible_in_the_qml_journey(tmp_path) -> None
         selected_run.run_artifact_hash,
     )
     _wait_for_run_state(run_feature, resolved.value.run_context, app=app)
-    app.processEvents()
-    visible_text = " ".join(
-        str(item.property("text"))
-        for item in root.findChildren(QObject)
-        if item.metaObject().indexOfProperty("text") >= 0
-        and item.property("visible")
-        and item.property("text")
+    _wait_for_visible_text(
+        root,
+        expected_values,
+        app=app,
     )
-    assert all(value is not None and value in visible_text for value in expected_values)
     run_state = run_feature.snapshot(resolved.value.run_context)
     assert run_state.last_reliable_data is not None
     assert window.centralWidget()._run_monitoring.progressText == (
@@ -533,3 +529,33 @@ def _wait_for_run_state(
             return state
         sleep(0.005)
     raise AssertionError("Run Monitoring did not receive its authoritative state")
+
+
+def _wait_for_visible_text(
+    root: QObject,
+    expected_values: tuple[str | None, ...],
+    *,
+    app: QApplication,
+) -> None:
+    deadline = monotonic() + 2
+    missing = expected_values
+    while monotonic() < deadline:
+        app.processEvents()
+        visible_text = " ".join(
+            str(item.property("text"))
+            for item in root.findChildren(QObject)
+            if item.metaObject().indexOfProperty("text") >= 0
+            and item.property("visible")
+            and item.property("text")
+        )
+        missing = tuple(
+            value
+            for value in expected_values
+            if value is None or value not in visible_text
+        )
+        if not missing:
+            return
+        sleep(0.005)
+    raise AssertionError(
+        f"Run Monitoring QML did not expose expected values: {missing!r}"
+    )
