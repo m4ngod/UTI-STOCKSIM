@@ -31,6 +31,23 @@ POLICY_VERSION = "frontend-v2-no-manual-trading-v1"
 ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
+            "DiagnosticTasksFeature": frozenset(
+                {
+                    "interface_version",
+                    "snapshot",
+                    "subscribe",
+                    "create_diagnostic_task",
+                    "revise_configuration",
+                    "validate_configuration",
+                    "approve_configuration",
+                    "start_formal_diagnostic_campaign",
+                    "pause_diagnostic_target",
+                    "resume_diagnostic_target",
+                    "cancel_diagnostic_target",
+                    "retry_failed_campaign_node",
+                    "close",
+                }
+            ),
             "RunMonitoringFeature": frozenset(
                 {
                     "interface_version",
@@ -56,6 +73,7 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
 
 QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
     {
+        "DiagnosticTasksQtAdapter": frozenset({"refresh"}),
         "RunMonitoringQtAdapter": frozenset(
             {
                 "refresh",
@@ -83,6 +101,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
 
 JOURNEY_ROUTE_ALLOWLIST = frozenset(
     {
+        "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
     }
@@ -107,6 +126,9 @@ TELEMETRY_EVENT_ALLOWLIST: frozenset[str] = frozenset()
 RUNTIME_GATEWAY_CALL_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
+            # Diagnostic Tasks consumes only its typed in-process Application
+            # Interface; RuntimeGateway is never an approved authority.
+            "LiveDiagnosticTasksAdapter": frozenset(),
             # Issue #50 moved Run Monitoring to the typed in-process
             # Strategy Diagnostics V1 read model. Any RuntimeGateway call is
             # now unapproved for this adapter.
@@ -938,6 +960,9 @@ def audit_no_manual_trading_gate(
         / "test_no_manual_trading_runtime_gate.py"
     )
     live_sources = {
+        "LiveDiagnosticTasksAdapter": (
+            project_root / "app" / "features" / "live_diagnostic_tasks.py"
+        ),
         "LiveRunMonitoringAdapter": (
             project_root / "app" / "features" / "live_run_monitoring.py"
         ),
@@ -955,10 +980,13 @@ def audit_no_manual_trading_gate(
     )
 
     from app.features import (
+        DeterministicFakeDiagnosticTasksAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,
         DeterministicFakeRunMonitoringAdapter,
+        DiagnosticTasksFeature,
         EvidenceAndFindingsFeature,
         FillEvidenceTrace,
+        LiveDiagnosticTasksAdapter,
         LiveEvidenceAndFindingsAdapter,
         LiveRunMonitoringAdapter,
         OrderEvidenceTrace,
@@ -969,6 +997,7 @@ def audit_no_manual_trading_gate(
     from app.features.run_monitoring import _diagnostic_task_transition
 
     interfaces: Mapping[str, type[Any]] = {
+        "DiagnosticTasksFeature": DiagnosticTasksFeature,
         "RunMonitoringFeature": RunMonitoringFeature,
         "EvidenceAndFindingsFeature": EvidenceAndFindingsFeature,
     }
@@ -1084,6 +1113,8 @@ def audit_no_manual_trading_gate(
         )
 
     adapter_types = (
+        DeterministicFakeDiagnosticTasksAdapter,
+        LiveDiagnosticTasksAdapter,
         DeterministicFakeRunMonitoringAdapter,
         LiveRunMonitoringAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,

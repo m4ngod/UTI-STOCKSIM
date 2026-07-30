@@ -110,6 +110,15 @@ def _start_frontend(*, headless: bool):
     app = QApplication.instance() or QApplication([])
     try:
         app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
+        diagnostic_tasks_feature = getattr(
+            context,
+            "diagnostic_tasks_feature",
+            None,
+        )
+        if diagnostic_tasks_feature is not None:
+            app.aboutToQuit.connect(  # type: ignore[attr-defined]
+                diagnostic_tasks_feature.close
+            )
         app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
         evidence_feature = getattr(
             context,
@@ -121,6 +130,16 @@ def _start_frontend(*, headless: bool):
     except Exception:
         pass
     mw = MainWindow(
+        diagnostic_tasks_feature=getattr(
+            context,
+            "diagnostic_tasks_feature",
+            None,
+        ),
+        diagnostic_tasks_context=getattr(
+            context,
+            "diagnostic_tasks_context",
+            None,
+        ),
         run_monitoring_feature=context.run_monitoring_feature,
         run_monitoring_context=getattr(
             context,

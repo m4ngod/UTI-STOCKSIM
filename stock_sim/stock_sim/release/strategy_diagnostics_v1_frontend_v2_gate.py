@@ -55,6 +55,18 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
         (
             (
                 "tests/frontend/contract/"
+                "test_diagnostic_tasks_feature_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_diagnostic_tasks_application_live_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_diagnostic_tasks_live_fake_conformance.py"
+            ),
+            (
+                "tests/frontend/contract/"
                 "test_strategy_diagnostics_v1_feature_pair_conformance.py"
             ),
             (
@@ -160,6 +172,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
     root = project_root.resolve()
     errors: list[str] = []
     expected_interfaces = (
+        "DiagnosticTasksFeature",
         "RunMonitoringFeature",
         "EvidenceAndFindingsFeature",
     )

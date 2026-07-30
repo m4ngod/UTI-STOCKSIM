@@ -26,6 +26,9 @@ from PySide6.QtWidgets import QWidget
 from app.features import (
     CancelDiagnosticTask,
     CandidateEvidence,
+    DiagnosticTasksContext,
+    DiagnosticTasksFeature,
+    DiagnosticTasksViewState,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsFeature,
     EvidenceAndFindingsSubscription,
@@ -73,6 +76,215 @@ class ViewMountGenerationId:
 def _next_mount_generation() -> ViewMountGenerationId:
     with _MOUNT_GENERATION_LOCK:
         return ViewMountGenerationId(next(_MOUNT_GENERATIONS))
+
+
+class DiagnosticTasksQtAdapter(QObject):
+    """Qt-only projection of the typed Diagnostic Tasks Feature Interface."""
+
+    stateChanged = Signal()
+    deliveryRequested = Signal(int, object)
+
+    def __init__(
+        self,
+        feature: DiagnosticTasksFeature,
+        *,
+        context: DiagnosticTasksContext | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._feature = feature
+        self._context = context or DiagnosticTasksContext.workspace()
+        self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._closed = False
+        self.deliveryRequested.connect(
+            self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subscription: Subscription | None = feature.subscribe(
+            self._context,
+            self._queue_state,
+        )
+
+    def _queue_state(self, state: DiagnosticTasksViewState) -> None:
+        if not self._closed:
+            self.deliveryRequested.emit(self._mount_generation.value, state)
+
+    @Slot(int, object)
+    def _accept_state(
+        self,
+        mount_generation: int,
+        state: DiagnosticTasksViewState,
+    ) -> None:
+        if self._closed or mount_generation != self._mount_generation.value:
+            return
+        if state.context != self._context or state.revision <= self._state.revision:
+            return
+        self._state = state
+        self.stateChanged.emit()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def presentationState(self) -> str:  # noqa: N802
+        return str(self._state.presentation.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshness(self) -> str:
+        return str(self._state.freshness.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusText(self) -> str:  # noqa: N802
+        error = self._state.error
+        details = (
+            f"{self.freshness} · {self.presentationState} · "
+            f"{self._state.completeness.value}"
+        )
+        return details if error is None else f"{details} · {error.message}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def stateTitle(self) -> str:  # noqa: N802
+        return {
+            "loading": "Loading authoritative inputs",
+            "empty": "No authoritative inputs are registered",
+            "ready": "Authoritative inputs are ready",
+            "degraded": "Showing last reliable authoritative inputs",
+            "failed": "Authoritative input read failed",
+            "input_unavailable": "Required authoritative inputs are unavailable",
+        }[self.presentationState]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def revisionText(self) -> str:  # noqa: N802
+        return f"r{self._state.revision}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceText(self) -> str:  # noqa: N802
+        return (
+            f"{self._state.source.identity} · "
+            f"g{self._state.source.generation.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def strategyCatalogText(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.strategies:
+            return "No authoritative Strategy Under Test is available."
+        return "\n".join(
+            (
+                f"{item.strategy_id.value}@{item.strategy_version} · "
+                f"{'required fixed input' if item.required else 'optional input'} · "
+                f"compatibility {item.compatibility_surface_version} "
+                f"{item.compatibility_manifest_hash} · "
+                f"module {item.strategy_module} · "
+                f"guardrail {item.guardrail_profile_id.value}@"
+                f"{item.guardrail_profile_version} · thresholds "
+                + ", ".join(
+                    f"{threshold.metric_name} {threshold.operator} {threshold.value}"
+                    for threshold in item.guardrail_thresholds
+                )
+            )
+            for item in inventory.strategies
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def recipeCatalogText(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.approved_recipes:
+            return "No approved Scenario Recipe version is available."
+        return "\n".join(
+            (
+                f"{item.recipe_id} · {item.recipe_version_id.value} · "
+                f"{item.content_hash} · schema {item.schema_version} · "
+                f"catalog {item.transformation_catalog_version}"
+            )
+            for item in inventory.approved_recipes
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def marketScenarioCatalogText(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.market_scenarios:
+            return "No materialized Market Scenario is available."
+        return "\n".join(
+            (
+                f"{item.market_scenario_id.value} · {item.layer.value} · "
+                f"case {item.campaign_case_id.value} · "
+                f"source {item.historical_segment_id.value} "
+                f"{item.historical_segment_content_hash} · "
+                f"snapshot {item.source_snapshot_id.value} · "
+                f"seed {item.materialization_seed} · "
+                f"materializer {item.materialization_provenance.expander_version} "
+                f"{item.materialization_provenance.source_resolution}->"
+                f"{item.materialization_provenance.runtime_resolution} · "
+                f"numeric tolerance "
+                f"{item.materialization_provenance.numeric_tolerance} · "
+                f"normalization "
+                f"{item.materialization_provenance.normalization_provenance} · "
+                f"reconstructed "
+                f"{str(item.materialization_provenance.reconstructed).lower()} · "
+                f"transformations {item.transformation_catalog_version}/"
+                + (
+                    ", ".join(
+                        f"{transformation.transformation_id} "
+                        f"[{transformation.family}]@"
+                        f"{transformation.implementation_version} "
+                        + (
+                            "("
+                            + ", ".join(
+                                f"{parameter.name}={parameter.value}"
+                                for parameter in transformation.parameters
+                            )
+                            + ")"
+                            if transformation.parameters
+                            else "(no parameters)"
+                        )
+                        for transformation in item.applied_transformations
+                    )
+                    or "baseline (no applied transformations)"
+                )
+                + " · "
+                f"market rules {item.market_rule_profile_version} · "
+                f"comparison {item.comparison_requirement} · "
+                "execution policy "
+                + ", ".join(
+                    f"{value.name}={value.value}@{value.version} "
+                    f"from {value.source}"
+                    for value in item.execution_policy_values
+                )
+            )
+            for item in inventory.market_scenarios
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def reproductionManifestStatus(self) -> str:  # noqa: N802
+        return str(self._state.reproduction_manifest_availability.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def blockingReasonsText(self) -> str:  # noqa: N802
+        if not self._state.blocking_reasons:
+            return "No blocking reason."
+        return "\n".join(
+            f"{reason.code.value}: {reason.message}"
+            for reason in self._state.blocking_reasons
+        )
+
+    @Slot()
+    def refresh(self) -> None:
+        self._accept_state(
+            self._mount_generation.value,
+            self._feature.snapshot(self._context),
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        try:
+            self.deliveryRequested.disconnect(self._accept_state)
+        except (RuntimeError, TypeError):
+            pass
 
 
 class RunMonitoringQtAdapter(QObject):
@@ -1329,6 +1541,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         feature: RunMonitoringFeature,
         *,
         context: RunMonitoringContext | None = None,
+        diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
+        diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
         evidence_context: EvidenceAndFindingsContext | None = None,
         accessibility_preferences: AccessibilityPreferences | None = None,
@@ -1345,6 +1559,19 @@ class JourneyWorkspaceHost(QQuickWidget):
         self.rootContext().setContextProperty(
             "accessibilitySettings",
             self._accessibility_settings,
+        )
+        self._diagnostic_tasks = (
+            DiagnosticTasksQtAdapter(
+                diagnostic_tasks_feature,
+                context=diagnostic_tasks_context,
+                parent=self,
+            )
+            if diagnostic_tasks_feature is not None
+            else None
+        )
+        self.rootContext().setContextProperty(
+            "diagnosticTasks",
+            self._diagnostic_tasks,
         )
         self._run_monitoring = RunMonitoringQtAdapter(
             feature,
@@ -1377,6 +1604,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         if self._workspace_closed:
             return
         self._workspace_closed = True
+        if self._diagnostic_tasks is not None:
+            self._diagnostic_tasks.close()
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
@@ -1384,6 +1613,7 @@ class JourneyWorkspaceHost(QQuickWidget):
 
 
 __all__ = [
+    "DiagnosticTasksQtAdapter",
     "EvidenceAndFindingsQtAdapter",
     "JourneyWorkspaceHost",
     "RunMonitoringQtAdapter",

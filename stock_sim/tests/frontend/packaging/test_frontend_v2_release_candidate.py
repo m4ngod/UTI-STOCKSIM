@@ -485,6 +485,8 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.production_path == (
         "DiagnosticsApplication",
         "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
@@ -517,6 +519,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         == "StrategyDiagnosticsV1ApplicationReadModel/1.0"
     )
     assert result.active_feature_interfaces == (
+        "DiagnosticTasksFeature/1.0",
         "RunMonitoringFeature/1.2",
         "EvidenceAndFindingsFeature/1.1",
     )
@@ -566,6 +569,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.old_generation_rejected is True
     assert result.authoritative_reconnect_verified is True
     assert result.routes_rendered == (
+        "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
     )
@@ -706,6 +710,8 @@ result = run_smoke_journey(
 assert result.production_path == (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+    "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
     "EventBridge",
     "LiveRunMonitoringAdapter",
@@ -718,6 +724,8 @@ assert result.clean_exit is True
     environment = os.environ.copy()
     environment["QT_QPA_PLATFORM"] = "offscreen"
     environment["QT_QUICK_BACKEND"] = "software"
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(
         (sys.executable, "-c", script, str(tmp_path)),
         cwd=PROJECT_ROOT,
@@ -725,6 +733,7 @@ assert result.clean_exit is True
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="backslashreplace",
         timeout=120,
         check=False,
     )
@@ -817,6 +826,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "production_path": [
                 "DiagnosticsApplication",
                 "FileBackedV1Persistence",
+                "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+                "LiveDiagnosticTasksAdapter",
                 "LiveStrategyDiagnosticsV1ApplicationAdapter",
                 "EventBridge",
                 "LiveRunMonitoringAdapter",
@@ -837,6 +848,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "StrategyDiagnosticsV1ApplicationReadModel/1.0"
             ),
             "active_feature_interfaces": [
+                "DiagnosticTasksFeature/1.0",
                 "RunMonitoringFeature/1.2",
                 "EvidenceAndFindingsFeature/1.1",
             ],
@@ -866,6 +878,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "old_generation_rejected": True,
             "authoritative_reconnect_verified": True,
             "routes_rendered": [
+                "diagnostic_tasks",
                 "run_monitoring",
                 "evidence_and_findings",
             ],
@@ -953,6 +966,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
     compromised["renderer_lanes"]["software"]["production_path"] = [
         "DiagnosticsApplication",
         "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
@@ -1514,6 +1529,7 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
         "Context",
         (),
         {
+            "diagnostic_tasks_feature": Feature("diagnostic-feature"),
             "run_monitoring_feature": Feature("run-feature"),
             "evidence_and_findings_feature": Feature("evidence-feature"),
         },
@@ -1535,6 +1551,7 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
 
     assert events == [
         "adapter",
+        "diagnostic-feature",
         "run-feature",
         "evidence-feature",
         "window",
@@ -1618,10 +1635,13 @@ def test_production_window_factory_closes_features_when_window_fails(
         def close(self):
             self.closed = True
 
+    diagnostic_feature = Resource()
     run_feature = Resource()
     evidence_feature = Resource()
 
     class Context:
+        diagnostic_tasks_feature = diagnostic_feature
+        diagnostic_tasks_context = object()
         run_monitoring_feature = run_feature
         run_monitoring_context = object()
         evidence_and_findings_feature = evidence_feature
@@ -1644,5 +1664,6 @@ def test_production_window_factory_closes_features_when_window_fails(
             settings_path=tmp_path / "settings.json",
         )
 
+    assert diagnostic_feature.closed is True
     assert run_feature.closed is True
     assert evidence_feature.closed is True

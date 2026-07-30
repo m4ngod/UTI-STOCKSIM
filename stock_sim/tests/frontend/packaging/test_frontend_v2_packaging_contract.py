@@ -245,6 +245,8 @@ def _clean_room_lane(root, lane, graphics_api):
         "production_path": [
             "DiagnosticsApplication",
             "FileBackedV1Persistence",
+            "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+            "LiveDiagnosticTasksAdapter",
             "LiveStrategyDiagnosticsV1ApplicationAdapter",
             "EventBridge",
             "LiveRunMonitoringAdapter",
@@ -265,6 +267,7 @@ def _clean_room_lane(root, lane, graphics_api):
             "StrategyDiagnosticsV1ApplicationReadModel/1.0"
         ),
         "active_feature_interfaces": [
+            "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
         ],
@@ -294,6 +297,7 @@ def _clean_room_lane(root, lane, graphics_api):
         "old_generation_rejected": True,
         "authoritative_reconnect_verified": True,
         "routes_rendered": [
+            "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
         ],
@@ -1327,6 +1331,8 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "production_path": [
                         "DiagnosticsApplication",
                         "FileBackedV1Persistence",
+                        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+                        "LiveDiagnosticTasksAdapter",
                         "LiveStrategyDiagnosticsV1ApplicationAdapter",
                         "EventBridge",
                         "LiveRunMonitoringAdapter",
@@ -1347,6 +1353,7 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                         "StrategyDiagnosticsV1ApplicationReadModel/1.0"
                     ),
                     "active_feature_interfaces": [
+                        "DiagnosticTasksFeature/1.0",
                         "RunMonitoringFeature/1.2",
                         "EvidenceAndFindingsFeature/1.1",
                     ],
@@ -1386,6 +1393,7 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "old_generation_rejected": True,
                     "authoritative_reconnect_verified": True,
                     "routes_rendered": [
+                        "diagnostic_tasks",
                         "run_monitoring",
                         "evidence_and_findings",
                     ],

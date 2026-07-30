@@ -1011,3 +1011,4 @@ def test_approved_version_keeps_its_validation_snapshot(tmp_path: Path) -> None:
     restored = repository.get_version(approved.version_id)
     assert restored is not None
     assert restored.to_dict() == approved.to_dict()
+    assert repository.list_all_versions() == (restored,)

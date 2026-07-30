@@ -6,7 +6,8 @@ Rectangle {
     objectName: "journeyWorkspace"
     color: tokens.background
 
-    property string activeRoute: "run_monitoring"
+    property bool diagnosticTasksAvailable: diagnosticTasks !== null
+    property string activeRoute: "diagnostic_tasks"
     property bool evidenceAvailable: evidenceAndFindings !== null
     property var designSystem: tokens
     readonly property var evidenceInitialFocusItem: (
@@ -96,7 +97,8 @@ Rectangle {
     }
 
     function repairRunFocus() {
-        if (runMonitoringRouteNavigation.activeFocus
+        if (diagnosticTasksRouteNavigation.activeFocus
+                || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
                 || (pauseDiagnosticTask.activeFocus
                     && pauseDiagnosticTask.enabled)
@@ -109,7 +111,8 @@ Rectangle {
     }
 
     function repairEvidenceFocus() {
-        if (runMonitoringRouteNavigation.activeFocus
+        if (diagnosticTasksRouteNavigation.activeFocus
+                || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
                 || (evidencePageLoader.item !== null
                     && evidencePageLoader.item.hasMeaningfulFocus))
@@ -121,6 +124,8 @@ Rectangle {
         if (activeRoute === "evidence_and_findings"
                 && evidencePageLoader.item !== null)
             evidencePageLoader.item.restoreFocus()
+        else if (activeRoute === "diagnostic_tasks")
+            diagnosticTasksRouteNavigation.forceActiveFocus()
         else
             restoreRunFocus()
     }
@@ -131,7 +136,11 @@ Rectangle {
     }
 
     onActiveRouteChanged: Qt.callLater(restoreActiveRouteFocus)
-    Component.onCompleted: Qt.callLater(restoreActiveRouteFocus)
+    Component.onCompleted: {
+        if (!diagnosticTasksAvailable)
+            activeRoute = "run_monitoring"
+        Qt.callLater(restoreActiveRouteFocus)
+    }
 
     DesignTokens {
         id: tokens
@@ -143,6 +152,15 @@ Rectangle {
         repeat: true
         running: workspace.screenState === "active"
         onTriggered: runMonitoring.refresh()
+    }
+
+    Connections {
+        target: diagnosticTasks
+        enabled: workspace.diagnosticTasksAvailable
+        function onStateChanged() {
+            if (workspace.activeRoute === "diagnostic_tasks")
+                Qt.callLater(workspace.restoreActiveRouteFocus)
+        }
     }
 
     Connections {
@@ -202,6 +220,65 @@ Rectangle {
                         text: "Research workspace"
                         color: tokens.textQuiet
                         font.pixelSize: tokens.labelSize
+                    }
+                }
+
+                Rectangle {
+                    id: diagnosticTasksRouteNavigation
+                    objectName: "diagnosticTasksRouteNavigation"
+                    activeFocusOnTab: true
+                    visible: workspace.diagnosticTasksAvailable
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: Math.max(
+                        44,
+                        tokens.bodySize + tokens.spaceSm * 2
+                    )
+                    radius: tokens.radiusSm
+                    color: workspace.activeRoute === "diagnostic_tasks"
+                        ? tokens.surfaceRaised : "transparent"
+                    border.color: workspace.activeRoute === "diagnostic_tasks"
+                        ? tokens.accent : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.name: "Open Diagnostic Tasks"
+                    Accessible.description: (
+                        "Navigate to authoritative Diagnostic Tasks inputs"
+                    )
+                    Accessible.role: Accessible.Button
+                    Accessible.focusable: true
+                    Accessible.focused: activeFocus
+                    Accessible.selectable: true
+                    Accessible.selected: (
+                        workspace.activeRoute === "diagnostic_tasks"
+                    )
+                    Accessible.onPressAction: (
+                        workspace.openRoute("diagnostic_tasks")
+                    )
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: tokens.spaceMd
+                        anchors.rightMargin: tokens.spaceSm
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Diagnostic Tasks"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: workspace.openRoute("diagnostic_tasks")
+                    }
+                    Keys.onReturnPressed: function(event) {
+                        workspace.openRoute("diagnostic_tasks")
+                        event.accepted = true
+                    }
+                    Keys.onSpacePressed: function(event) {
+                        workspace.openRoute("diagnostic_tasks")
+                        event.accepted = true
                     }
                 }
 
@@ -390,6 +467,20 @@ Rectangle {
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+            Loader {
+                id: diagnosticTasksPageLoader
+                objectName: "diagnosticTasksPageLoader"
+                anchors.fill: parent
+                active: workspace.diagnosticTasksAvailable
+                visible: workspace.activeRoute === "diagnostic_tasks"
+                sourceComponent: Component {
+                    DiagnosticTasksPage {
+                        adapter: diagnosticTasks
+                        tokens: workspace.designSystem
+                    }
+                }
+            }
 
             Flickable {
                 id: runMonitoringScroll

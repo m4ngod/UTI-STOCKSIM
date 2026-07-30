@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
-from app.features import EvidenceAndFindingsFeature, RunMonitoringFeature
+from app.features import (
+    DiagnosticTasksFeature,
+    EvidenceAndFindingsFeature,
+    RunMonitoringFeature,
+    StrategyDiagnosticsV1DiagnosticTasksApplication,
+)
 from stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate import (
     INTEGRATION_GATE_GROUPS,
     REQUIRED_CONTRACT_DOCUMENTS,
@@ -59,10 +64,12 @@ def _transitive_interface_graph(*interfaces: type[object]) -> set[object]:
     return visited
 
 
-def test_only_the_two_wave_1_feature_interfaces_have_clean_public_type_graphs():
+def test_all_three_active_features_and_diagnostic_tasks_application_have_clean_public_type_graphs():
     public_graph = _transitive_interface_graph(
+        DiagnosticTasksFeature,
         RunMonitoringFeature,
         EvidenceAndFindingsFeature,
+        StrategyDiagnosticsV1DiagnosticTasksApplication,
     )
 
     assert Any not in public_graph

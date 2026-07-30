@@ -142,6 +142,8 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
 _PRODUCTION_JOURNEY_PATH = (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+    "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
     "EventBridge",
     "LiveRunMonitoringAdapter",
@@ -241,6 +243,7 @@ _EXPECTED_APPLICATION_READ_MODEL_INTERFACE = (
     "StrategyDiagnosticsV1ApplicationReadModel/1.0"
 )
 _EXPECTED_ACTIVE_FEATURE_INTERFACES = (
+    "DiagnosticTasksFeature/1.0",
     "RunMonitoringFeature/1.2",
     "EvidenceAndFindingsFeature/1.1",
 )
@@ -1536,6 +1539,7 @@ def verify_clean_room_report(
                 "remount, and close journey"
             )
         if tuple(lane.get("routes_rendered", ())) != (
+            "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
         ):
@@ -1934,7 +1938,7 @@ def _load_renderer_lane(
     real_v1_failures = _real_v1_smoke_failures(payload)
     if (
         routes_rendered
-        != ("run_monitoring", "evidence_and_findings")
+        != ("diagnostic_tasks", "run_monitoring", "evidence_and_findings")
         or production_path != _PRODUCTION_JOURNEY_PATH
         or connection_transitions
         != _EXPECTED_CONNECTION_TRANSITIONS

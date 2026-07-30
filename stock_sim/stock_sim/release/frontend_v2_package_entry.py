@@ -20,6 +20,8 @@ from typing import Any
 PRODUCTION_PATH = (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+    "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
     "EventBridge",
     "LiveRunMonitoringAdapter",
@@ -111,6 +113,7 @@ EXPECTED_JOURNEY = (
 )
 _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
+    r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
     r"Pause diagnostic task|"
@@ -246,6 +249,7 @@ def _create_production_window(
     settings_path: Path,
     runtime_gateway: Any | None = None,
     strategy_diagnostics_read_model: Any | None = None,
+    strategy_diagnostics_tasks_application: Any | None = None,
 ) -> tuple[Any, Any, Any]:
     from app.app_context import build_app_context
     from app.ui.main_window import MainWindow
@@ -256,10 +260,15 @@ def _create_production_window(
         event_bridge=event_bridge,
         runtime_gateway=runtime_gateway,
         strategy_diagnostics_read_model=strategy_diagnostics_read_model,
+        strategy_diagnostics_tasks_application=(
+            strategy_diagnostics_tasks_application
+        ),
     )
     window = None
     try:
         window = MainWindow(
+            diagnostic_tasks_feature=context.diagnostic_tasks_feature,
+            diagnostic_tasks_context=context.diagnostic_tasks_context,
             run_monitoring_feature=context.run_monitoring_feature,
             run_monitoring_context=context.run_monitoring_context,
             evidence_and_findings_feature=(
@@ -287,6 +296,7 @@ def _create_production_window(
                 else None
             ),
             window.close if window is not None else None,
+            context.diagnostic_tasks_feature.close,
             context.run_monitoring_feature.close,
             context.evidence_and_findings_feature.close,
         )
@@ -354,6 +364,7 @@ def _navigate_route(
     from PySide6.QtQuick import QQuickItem
 
     object_name = {
+        "diagnostic_tasks": "diagnosticTasksRouteNavigation",
         "run_monitoring": "runMonitoringRouteNavigation",
         "evidence_and_findings": (
             "evidenceAndFindingsRouteNavigation"
@@ -705,6 +716,7 @@ def _run_smoke_journey(
     from app.features import (
         ACTIVE_FEATURE_INTERFACES,
         LiveStrategyDiagnosticsV1ApplicationAdapter,
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         create_file_backed_formal_v1_release_fixture,
@@ -760,6 +772,11 @@ def _run_smoke_journey(
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
         fixture.application,
         fixture.engine,
+    )
+    diagnostic_tasks_application = (
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            fixture.application
+        )
     )
     interface_version = read_model.interface_version
     application_interface = (
@@ -867,6 +884,7 @@ def _run_smoke_journey(
     context, window, host = _create_production_window(
         event_bridge=bridge,
         strategy_diagnostics_read_model=read_model,
+        strategy_diagnostics_tasks_application=diagnostic_tasks_application,
         settings_path=report_dir / "frontend-v2-settings.json",
     )
     close_initial_mount = register_mount(
@@ -971,6 +989,64 @@ def _run_smoke_journey(
 
     observe(*EXPECTED_JOURNEY[0])
     observe(*EXPECTED_JOURNEY[1])
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="diagnostic_tasks",
+    )
+    keyboard_routes.add("diagnostic_tasks")
+    diagnostic_tasks_adapter = host._diagnostic_tasks
+    if diagnostic_tasks_adapter is None:
+        raise RuntimeError("Diagnostic Tasks Adapter is unavailable")
+    try:
+        _settle_until(
+            app,
+            lambda: (
+                root.property("activeRoute") == "diagnostic_tasks"
+                and diagnostic_tasks_adapter.property("presentationState")
+                in {"ready", "input_unavailable", "empty"}
+            ),
+            "authoritative Diagnostic Tasks route",
+        )
+    except RuntimeError as error:
+        raise RuntimeError(
+            f"{error}; observed {root.property('activeRoute')}/"
+            f"{diagnostic_tasks_adapter.property('presentationState')}/"
+            f"{diagnostic_tasks_adapter.property('statusText')}"
+        ) from error
+    diagnostic_route_text = "\n".join(
+        (
+            str(diagnostic_tasks_adapter.property("strategyCatalogText")),
+            str(diagnostic_tasks_adapter.property("recipeCatalogText")),
+            str(diagnostic_tasks_adapter.property("marketScenarioCatalogText")),
+            str(diagnostic_tasks_adapter.property("blockingReasonsText")),
+        )
+    )
+    for required_text in (
+        "required fixed input",
+        "compatibility",
+        "guardrail",
+        "source",
+        "comparison",
+        "execution policy",
+        "not_yet_available",
+    ):
+        if required_text not in diagnostic_route_text:
+            raise RuntimeError(
+                "Diagnostic Tasks production route omitted authoritative "
+                f"inventory detail: {required_text}"
+            )
+    if (
+        diagnostic_tasks_adapter.property("reproductionManifestStatus")
+        != "not_yet_available"
+    ):
+        raise RuntimeError(
+            "Diagnostic Tasks predicted a Reproduction Manifest before start"
+        )
+    accessibility_announcements.append(
+        _accessible_announcement(root, "diagnosticTasksAccessibleStatus")
+    )
     feature_identity_graph = _feature_identity_graph(
         context=context,
         expected=expected_identity_graph,
@@ -1061,6 +1137,7 @@ def _run_smoke_journey(
     context, window, host = _create_production_window(
         event_bridge=bridge,
         strategy_diagnostics_read_model=read_model,
+        strategy_diagnostics_tasks_application=diagnostic_tasks_application,
         settings_path=report_dir / "frontend-v2-settings.json",
     )
     register_mount(
@@ -1129,6 +1206,7 @@ def _run_smoke_journey(
         ),
         raw_artifact_hashes=fixture.raw_artifact_hashes,
         keyboard_navigation_verified=keyboard_routes == {
+            "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
         },
@@ -1143,7 +1221,11 @@ def _run_smoke_journey(
         authoritative_reconnect_verified=(
             authoritative_reconnect_verified
         ),
-        routes_rendered=("run_monitoring", "evidence_and_findings"),
+        routes_rendered=(
+            "diagnostic_tasks",
+            "run_monitoring",
+            "evidence_and_findings",
+        ),
         connection_transitions=(
             "connected",
             "disconnected",
@@ -1173,6 +1255,10 @@ def _close_mount(
     observed_errors = errors if errors is not None else []
     for label, action in (
         ("QML Adapter", host.close_adapter),
+        (
+            "Diagnostic Tasks Feature",
+            context.diagnostic_tasks_feature.close,
+        ),
         ("Run Monitoring Feature", context.run_monitoring_feature.close),
         (
             "Evidence and Findings Feature",
@@ -1217,6 +1303,7 @@ def _mount_is_closed(
 
     return bool(
         getattr(host, "_workspace_closed", False)
+        and getattr(context.diagnostic_tasks_feature, "_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
         and getattr(
             context.evidence_and_findings_feature,
@@ -1431,6 +1518,7 @@ def _run_interactive() -> int:
         settings_path=Path("frontend-v2-settings.json"),
     )
     window.resize(1024, 640)
+    app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
     app.aboutToQuit.connect(context.run_monitoring_feature.close)
     app.aboutToQuit.connect(context.evidence_and_findings_feature.close)
     app.aboutToQuit.connect(stop_frontend_bridge)

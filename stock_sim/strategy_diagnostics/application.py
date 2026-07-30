@@ -287,6 +287,44 @@ class DiagnosticsApplication:
             self._historical_segments.list_segments(),
         )
 
+    def list_approved_scenario_recipes(
+        self,
+    ) -> tuple[ApprovedScenarioRecipeVersion, ...]:
+        """Enumerate immutable approved recipe versions for typed consumers."""
+
+        self.status()
+        return self._recipe_workbench.list_approved_versions()
+
+    def list_materialized_market_paths(
+        self,
+    ) -> tuple[MaterializedMarketPath, ...]:
+        """Enumerate existing paths without materializing new diagnostic work."""
+
+        self.status()
+        if self._scenario_materializer is None:
+            return ()
+        return self._scenario_materializer.list_materialized_paths()
+
+    def list_available_diagnostic_campaign_cases(
+        self,
+    ) -> tuple[DiagnosticCampaignCase, ...]:
+        """Enumerate valid existing recipe/path anchors without creating paths."""
+
+        self.status()
+        cases: list[DiagnosticCampaignCase] = []
+        for approved in self._recipe_workbench.list_approved_versions():
+            for path in self.list_materialized_market_paths():
+                try:
+                    cases.append(
+                        self._diagnostic_campaign_case_from_existing_path(
+                            approved,
+                            path,
+                        )
+                    )
+                except ValueError:
+                    continue
+        return tuple(sorted(cases, key=lambda item: item.case_id))
+
     def recommend_historical_segments(
         self,
         intent: str = "",
@@ -462,16 +500,33 @@ class DiagnosticsApplication:
                 "its approved recipe"
             )
         path = self._load_reference_path(materialization_hash)
+        return self._diagnostic_campaign_case_from_existing_path(approved, path)
+
+    def _diagnostic_campaign_case_from_existing_path(
+        self,
+        approved: ApprovedScenarioRecipeVersion,
+        path: MaterializedMarketPath,
+    ) -> DiagnosticCampaignCase:
+        recipe = approved.recipe
+        if (
+            path.segment_id != recipe.historical_segment_id
+            or path.seed != recipe.materialization_seed
+            or path.market_rule_profile_version != recipe.market_rule_profile
+        ):
+            raise ValueError(
+                "Diagnostic Campaign Case materialization does not match "
+                "its approved recipe"
+            )
         requested_by_id = {
             item.transformation_id: item
-            for item in approved.recipe.transformations
+            for item in recipe.transformations
         }
         applied_by_id = {
             item.transformation_id: item
             for item in path.applied_transformations
         }
         if (
-            len(requested_by_id) != len(approved.recipe.transformations)
+            len(requested_by_id) != len(recipe.transformations)
             or len(applied_by_id) != len(path.applied_transformations)
             or set(requested_by_id) != set(applied_by_id)
             or self._transformation_catalog.catalog_version
@@ -515,7 +570,7 @@ class DiagnosticsApplication:
                     ),
                 )
             )
-        execution = approved.recipe.execution_conditions
+        execution = recipe.execution_conditions
         return DiagnosticCampaignCase(
             recipe_version_id=approved.version_id,
             recipe_content_hash=approved.content_hash,
@@ -542,7 +597,7 @@ class DiagnosticsApplication:
                 )
             ),
             market_rule_profile_version=path.market_rule_profile_version,
-            decision_cadence_minutes=approved.recipe.decision_cadence_minutes,
+            decision_cadence_minutes=recipe.decision_cadence_minutes,
             requested_execution_conditions=RequestedExecutionAssumptions(
                 commission_bps=execution.commission_bps,
                 slippage_bps=execution.slippage_bps,

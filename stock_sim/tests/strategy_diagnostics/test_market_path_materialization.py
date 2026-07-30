@@ -758,10 +758,12 @@ def test_content_addressed_path_survives_artifact_store_restart(tmp_path: Path) 
     )
     materialized = materializer.materialize_baseline(_segment(), seed=17)
 
-    restored = ParquetMarketPathArtifactStore(root).get(materialized.artifact_hash)
+    reopened_store = ParquetMarketPathArtifactStore(root)
+    restored = reopened_store.get(materialized.artifact_hash)
 
     assert restored == materialized
     assert restored.to_preview_dict() == materialized.to_preview_dict()
+    assert reopened_store.list_paths() == (materialized,)
 
 
 def test_parquet_store_idempotently_accepts_equivalent_feature_map_order(

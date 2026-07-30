@@ -1123,6 +1123,19 @@ class SqlScenarioRecipeRepository:
             raise ValueError("Scenario Recipe Version index is inconsistent")
         return tuple(version for version in versions if version is not None)
 
+    def list_all_versions(self) -> tuple[ApprovedScenarioRecipeVersion, ...]:
+        with self._engine.connect() as connection:
+            version_ids = connection.execute(
+                text(
+                    "SELECT version_id FROM diagnostic_recipe_versions "
+                    "ORDER BY recipe_id, version_number"
+                )
+            ).scalars().all()
+        versions = tuple(self.get_version(str(item)) for item in version_ids)
+        if any(version is None for version in versions):
+            raise ValueError("Scenario Recipe Version index is inconsistent")
+        return tuple(version for version in versions if version is not None)
+
 
 def _source_provenance_from_json(payload: str) -> SourceProvenance:
     values = json.loads(payload)
