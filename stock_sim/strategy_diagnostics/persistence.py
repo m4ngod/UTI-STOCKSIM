@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Final, Literal, cast
 
 from sqlalchemy import text
@@ -30,7 +30,6 @@ from .recipes import (
     TransformationProposalV1,
 )
 
-
 _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
 _SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
 _AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
@@ -43,7 +42,8 @@ _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION: Final = (
     "0010_formal_diagnostic_campaigns"
 )
 _DIAGNOSTIC_EVIDENCE_REVISION: Final = "0011_diagnostic_evidence"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0012_reproduction_manifests"
+_REPRODUCTION_MANIFEST_REVISION: Final = "0012_reproduction_manifests"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0013_diagnostic_tasks"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -57,6 +57,7 @@ _MIGRATION_REVISIONS: Final = (
     _ISOLATED_SENSITIVITY_REVISION,
     _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION,
     _DIAGNOSTIC_EVIDENCE_REVISION,
+    _REPRODUCTION_MANIFEST_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -83,6 +84,12 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 text(f"SELECT revision FROM {_MIGRATION_TABLE}")
             ).scalars()
         )
+        unknown_revisions = existing_revisions.difference(_MIGRATION_REVISIONS)
+        if unknown_revisions:
+            raise ValueError(
+                "incompatible diagnostic schema revision: "
+                + ", ".join(sorted(unknown_revisions))
+            )
         for revision in _MIGRATION_REVISIONS:
             if revision in existing_revisions:
                 continue
@@ -106,8 +113,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_diagnostic_campaigns(connection)
             elif revision == _DIAGNOSTIC_EVIDENCE_REVISION:
                 _create_diagnostic_evidence(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _REPRODUCTION_MANIFEST_REVISION:
                 _create_reproduction_manifests(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_diagnostic_tasks(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -317,6 +326,67 @@ def _create_reproduction_manifests(connection: Connection) -> None:
         "created_at_utc VARCHAR(64) NOT NULL, "
         "FOREIGN KEY(manifest_id) "
         "REFERENCES diagnostic_reproduction_manifests(manifest_id)"
+        ")"
+    )
+
+
+def _create_diagnostic_tasks(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_sequences ("
+        "sequence_name VARCHAR(64) PRIMARY KEY NOT NULL, "
+        "next_value BIGINT NOT NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO diagnostic_task_sequences (sequence_name, next_value) "
+        "SELECT 'diagnostic_task_creation', 0 "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM diagnostic_task_sequences "
+        "WHERE sequence_name = 'diagnostic_task_creation'"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_tasks ("
+        "task_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "creation_sequence BIGINT UNIQUE NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "lifecycle VARCHAR(32) NOT NULL, "
+        "schema_version VARCHAR(64) NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "configuration_json TEXT NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_handles ("
+        "task_handle_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "phase VARCHAR(32) NOT NULL, "
+        "progress_value REAL NOT NULL, "
+        "result_code VARCHAR(128) NULL, "
+        "error_json TEXT NULL, "
+        "cancelable INTEGER NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_commands ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_key VARCHAR(128) UNIQUE NOT NULL, "
+        "command_type VARCHAR(64) NOT NULL, "
+        "command_content_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_handle_id VARCHAR(96) NOT NULL, "
+        "disposition VARCHAR(32) NOT NULL, "
+        "command_json TEXT NOT NULL, "
+        "acceptance_json TEXT NOT NULL, "
+        "accepted_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
         ")"
     )
 

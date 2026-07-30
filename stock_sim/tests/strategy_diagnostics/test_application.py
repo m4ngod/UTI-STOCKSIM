@@ -15,6 +15,6 @@ def test_headless_application_starts_the_diagnostics_workspace() -> None:
         "message": "Diagnostics workspace is ready.",
         "persistence_status": "not_initialized",
         "persistence_revision": None,
-        "supported_persistence_revision": "0012_reproduction_manifests",
+        "supported_persistence_revision": "0013_diagnostic_tasks",
     }
     assert application.status() == state

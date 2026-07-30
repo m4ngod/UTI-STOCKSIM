@@ -10,21 +10,21 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import asdict, dataclass
-from functools import lru_cache
 import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
-from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
 import xml.etree.ElementTree as ET
-
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
+from functools import lru_cache
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 POLICY_VERSION = "frontend-v2-no-manual-trading-v1"
 
@@ -73,7 +73,7 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
 
 QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "DiagnosticTasksQtAdapter": frozenset({"refresh"}),
+        "DiagnosticTasksQtAdapter": frozenset({"createTask", "refresh"}),
         "RunMonitoringQtAdapter": frozenset(
             {
                 "refresh",
@@ -1354,13 +1354,13 @@ __all__ = [
     "DIAGNOSTIC_TASK_CONTROLLER_ALLOWLIST",
     "JOURNEY_ROUTE_ALLOWLIST",
     "JOURNEY_SHORTCUT_KEY_ALLOWLIST",
-    "NoManualTradingGateReport",
     "POLICY_VERSION",
     "QML_ADAPTER_SLOT_ALLOWLIST",
     "REQUIRED_GATE_SURFACES",
-    "RUNTIME_NEGATIVE_TEST_CASE_ALLOWLIST",
     "RUNTIME_GATEWAY_CALL_ALLOWLIST",
+    "RUNTIME_NEGATIVE_TEST_CASE_ALLOWLIST",
     "TELEMETRY_EVENT_ALLOWLIST",
+    "NoManualTradingGateReport",
     "audit_feature_interface",
     "audit_no_manual_trading_gate",
     "audit_python_imports",

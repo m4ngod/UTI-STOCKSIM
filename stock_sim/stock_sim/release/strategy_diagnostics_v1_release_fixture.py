@@ -52,7 +52,6 @@ from strategy_diagnostics.ptrade_host import (
     SubprocessPTradeStrategyHost,
 )
 
-
 UTC = timezone.utc
 RELEASE_FIXTURE_CLOCK = datetime(2026, 7, 28, 8, 0, tzinfo=UTC)
 FORMAL_V1_RELEASE_FIXTURE_DIRNAME = "strategy-diagnostics-v1-fixture"
@@ -714,7 +713,7 @@ def _open_file_backed_formal_v1_release_fixture(
         reopened.start()
         migration = reopened.initialize_persistence(reopened_engine)
         _require(
-            migration.current_revision == "0012_reproduction_manifests",
+            migration.current_revision == "0013_diagnostic_tasks",
             "The reopened V1 persistence revision is incompatible.",
         )
         reopened_campaign = reopened.diagnostic_campaign_status(
@@ -1178,12 +1177,12 @@ def _require(condition: object, message: str) -> None:
 
 
 __all__ = [
-    "DeterministicReleaseMarketSource",
     "FORMAL_V1_RELEASE_FIXTURE_ARCHIVE",
     "FORMAL_V1_RELEASE_FIXTURE_DIRNAME",
     "FORMAL_V1_RELEASE_FIXTURE_MANIFEST",
-    "FileBackedFormalV1ReleaseFixture",
     "RELEASE_FIXTURE_CLOCK",
+    "DeterministicReleaseMarketSource",
+    "FileBackedFormalV1ReleaseFixture",
     "SealedFormalV1ReleaseFixtureFile",
     "SealedFormalV1ReleaseFixtureManifest",
     "create_file_backed_formal_v1_release_fixture",

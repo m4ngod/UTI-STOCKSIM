@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from app.features import (
     DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
     DiagnosticCampaignLayer,
-    DiagnosticTasksApplicationCommandRejectionReason,
     DiagnosticTasksApplicationAvailability,
+    DiagnosticTasksApplicationCommandRejectionReason,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     StrategyDiagnosticsV1DiagnosticTasksApplication,
 )
@@ -16,8 +16,8 @@ from tests.frontend.contract.test_diagnostic_tasks_live_fake_conformance import 
     _unavailable_commands,
 )
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
-    _RecipeFixtureSource,
     _baseline_payload,
+    _RecipeFixtureSource,
 )
 
 
@@ -108,6 +108,7 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
     assert public_operations == {
         "interface_version",
         "read_inventory",
+        "read_diagnostic_task",
         "create_diagnostic_task",
         "revise_configuration",
         "validate_configuration",
@@ -119,8 +120,10 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
         "retry_failed_campaign_node",
     }
     commands = _unavailable_commands(result.inventory)
+    created = adapter.create_diagnostic_task(commands[0])
+    assert created.accepted
+    assert created.task is not None
     unavailable = (
-        adapter.create_diagnostic_task(commands[0]),
         adapter.revise_configuration(commands[1]),
         adapter.validate_configuration(commands[2]),
         adapter.approve_configuration(commands[3]),

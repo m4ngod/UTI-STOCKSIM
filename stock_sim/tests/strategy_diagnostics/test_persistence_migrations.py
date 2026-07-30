@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
 import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,6 @@ from strategy_diagnostics import (
     create_diagnostics_application,
 )
 from strategy_diagnostics.persistence import SqlHistoricalSegmentCatalog
-
 
 REQUIRED_CHECKS = (
     "bar_continuity",
@@ -71,7 +70,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0012_reproduction_manifests"
+    assert first.current_revision == "0013_diagnostic_tasks"
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
@@ -85,13 +84,14 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0010_formal_diagnostic_campaigns",
         "0011_diagnostic_evidence",
         "0012_reproduction_manifests",
+        "0013_diagnostic_tasks",
     )
-    assert second.current_revision == "0012_reproduction_manifests"
+    assert second.current_revision == "0013_diagnostic_tasks"
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0012_reproduction_manifests"
+        == "0013_diagnostic_tasks"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -118,6 +118,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0010_formal_diagnostic_campaigns",
         "0011_diagnostic_evidence",
         "0012_reproduction_manifests",
+        "0013_diagnostic_tasks",
     ]
     strategy_run_columns = {
         column["name"]
@@ -145,6 +146,10 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "diagnostic_findings",
         "diagnostic_reproduction_manifests",
         "diagnostic_reproduction_attempts",
+        "diagnostic_tasks",
+        "diagnostic_task_commands",
+        "diagnostic_task_handles",
+        "diagnostic_task_sequences",
         "diagnostic_run_orders",
         "diagnostic_run_fills",
         "diagnostic_run_positions",
@@ -240,3 +245,30 @@ def test_admitted_segment_catalog_survives_application_restart(tmp_path: Path) -
         )
     with pytest.raises(ValueError, match="timezone-aware"):
         catalog.get_source_snapshot(admitted.source_snapshot.snapshot_id)
+
+
+def test_diagnostic_migration_rejects_an_unknown_future_revision(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'future.db'}", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE diagnostic_schema_migrations ("
+            "revision VARCHAR(128) PRIMARY KEY NOT NULL, "
+            "applied_at_utc VARCHAR(64) NOT NULL"
+            ")"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_schema_migrations "
+                "(revision, applied_at_utc) VALUES "
+                "('9999_future_schema', '2030-01-01T00:00:00+00:00')"
+            )
+        )
+
+    application = create_diagnostics_application()
+    application.start()
+
+    with pytest.raises(ValueError, match="incompatible diagnostic schema"):
+        application.initialize_persistence(engine)
+    assert "diagnostic_tasks" not in inspect(engine).get_table_names()

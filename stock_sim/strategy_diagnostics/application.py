@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Mapping, cast
+from typing import cast
 
 from sqlalchemy.engine import Engine
 
@@ -23,6 +24,28 @@ from .diagnostic_evidence import (
 from .diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
     SqlDiagnosticEvidenceRepository,
+)
+from .diagnostic_tasks import (
+    CreateDiagnosticTaskRequest,
+    DiagnosticTaskConfiguration,
+    DiagnosticTaskCreationResult,
+    DiagnosticTaskService,
+    DiagnosticTaskSnapshot,
+    SqlDiagnosticTaskRepository,
+)
+from .execution_conditions import (
+    RequestedExecutionAssumptions,
+    resolve_execution_conditions,
+)
+from .formal_diagnostic_campaigns import (
+    CampaignCaseSpecification,
+    CampaignTransformation,
+    DiagnosticCampaignCase,
+    DiagnosticCampaignExecutionLayer,
+    DiagnosticCampaignRunner,
+    DiagnosticCampaignSnapshot,
+    DiagnosticCampaignSpecification,
+    SqlDiagnosticCampaignRepository,
 )
 from .historical_segments import (
     HistoricalMarketSegment,
@@ -56,23 +79,18 @@ from .persistence import (
     SqlScenarioRecipeRepository,
     initialize_diagnostic_persistence,
 )
-from .execution_conditions import (
-    RequestedExecutionAssumptions,
-    resolve_execution_conditions,
-)
-from .formal_diagnostic_campaigns import (
-    CampaignCaseSpecification,
-    CampaignTransformation,
-    DiagnosticCampaignCase,
-    DiagnosticCampaignExecutionLayer,
-    DiagnosticCampaignRunner,
-    DiagnosticCampaignSnapshot,
-    DiagnosticCampaignSpecification,
-    SqlDiagnosticCampaignRepository,
+from .ptrade_host import (
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+    PTradeStrategyHost,
+    SubprocessPTradeStrategyHost,
+    ptrade_manifest_for,
 )
 from .recipes import (
-    AIRecipeAuditRecord,
     AIRecipeAssistant,
+    AIRecipeAuditRecord,
     AIRecipeAuthoringResult,
     ApprovedScenarioRecipeVersion,
     RecipeValidationResult,
@@ -86,15 +104,6 @@ from .reproduction import (
     ReproductionService,
 )
 from .reproduction_storage import SqlReproductionRepository
-from .ptrade_host import (
-    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
-    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
-    PTradeStrategyHost,
-    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
-    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
-    SubprocessPTradeStrategyHost,
-    ptrade_manifest_for,
-)
 from .strategy_campaigns import (
     BASELINE_CAMPAIGN_COMMISSION_BPS,
     BASELINE_CAMPAIGN_SLIPPAGE_BPS,
@@ -102,18 +111,18 @@ from .strategy_campaigns import (
     BaselineCampaignSnapshot,
     BaselineCampaignSpecification,
 )
-from .transformations import create_initial_transformation_catalog
 from .strategy_runs import (
     BASELINE_EXECUTION_POLICY_VERSION,
-    CompletedStrategyRunEvidence,
     REFERENCE_STRATEGY_ID,
     REFERENCE_STRATEGY_VERSION,
     STRATEGY_RUN_ENGINE_VERSION,
+    CompletedStrategyRunEvidence,
     SqlStrategyRunRepository,
     StrategyRunEngine,
     StrategyRunSnapshot,
     StrategyRunSpecification,
 )
+from .transformations import create_initial_transformation_catalog
 from .v1_acceptance import (
     V1AcceptanceFacts,
     V1AcceptanceGate,
@@ -158,6 +167,7 @@ class DiagnosticsApplication:
         artifact_store: MarketPathArtifactStore | None = None,
         recipe_assistant: AIRecipeAssistant | None = None,
         recipe_clock: Callable[[], datetime] | None = None,
+        diagnostic_task_clock: Callable[[], datetime] | None = None,
         ptrade_host: PTradeStrategyHost | None = None,
         evidence_artifact_store: DiagnosticEvidenceArtifactStore | None = None,
         finding_explanation_provider: (
@@ -190,6 +200,12 @@ class DiagnosticsApplication:
         self._recipe_workbench = RecipeWorkbench(
             clock=recipe_clock,
             transformation_catalog=self._transformation_catalog,
+        )
+        self._diagnostic_tasks = DiagnosticTaskService(
+            clock=diagnostic_task_clock,
+            configuration_validator=(
+                self._is_authoritative_diagnostic_task_configuration
+            ),
         )
         self._recipe_assistant = recipe_assistant
         self._strategy_runs = StrategyRunEngine(
@@ -251,6 +267,9 @@ class DiagnosticsApplication:
         )
         self._diagnostic_campaigns.replace_repository(
             SqlDiagnosticCampaignRepository(engine)
+        )
+        self._diagnostic_tasks.replace_repository(
+            SqlDiagnosticTaskRepository(engine)
         )
         self._diagnostic_evidence.replace_repository(
             SqlDiagnosticEvidenceRepository(
@@ -324,6 +343,167 @@ class DiagnosticsApplication:
                 except ValueError:
                     continue
         return tuple(sorted(cases, key=lambda item: item.case_id))
+
+    def create_diagnostic_task(
+        self,
+        request: CreateDiagnosticTaskRequest,
+    ) -> DiagnosticTaskCreationResult:
+        """Create one durable task without validating or starting a Campaign."""
+
+        self.status()
+        return self._diagnostic_tasks.create(request)
+
+    def get_diagnostic_task(
+        self,
+        task_id: str | None = None,
+    ) -> DiagnosticTaskSnapshot | None:
+        """Read a durable task by identity, or the latest workspace task."""
+
+        self.status()
+        if task_id is None:
+            return self._diagnostic_tasks.latest()
+        return self._diagnostic_tasks.get(task_id)
+
+    def _is_authoritative_diagnostic_task_configuration(
+        self,
+        candidate: DiagnosticTaskConfiguration,
+    ) -> bool:
+        configuration = self.v1_diagnostic_configuration()
+        manifests = {
+            str(item["strategy_id"]): item
+            for item in cast(
+                list[Mapping[str, object]],
+                configuration["supported_strategies"],
+            )
+        }
+        profiles = {
+            str(item["strategy_id"]): item
+            for item in cast(
+                list[Mapping[str, object]],
+                configuration["supported_guardrail_profiles"],
+            )
+        }
+        selected_strategy_ids = tuple(
+            item.strategy_id for item in candidate.strategy_selections
+        )
+        if (
+            len(set(selected_strategy_ids)) != len(selected_strategy_ids)
+            or set(selected_strategy_ids) != set(manifests)
+        ):
+            return False
+        for strategy_selection in candidate.strategy_selections:
+            manifest = manifests.get(strategy_selection.strategy_id)
+            profile = profiles.get(strategy_selection.strategy_id)
+            if manifest is None or profile is None:
+                return False
+            if (
+                strategy_selection.strategy_version
+                != str(manifest["strategy_version"])
+                or strategy_selection.compatibility_manifest_hash
+                != str(manifest["manifest_content_hash"])
+                or strategy_selection.guardrail_profile_id
+                != str(profile["profile_id"])
+                or strategy_selection.guardrail_profile_version
+                != str(profile["profile_version"])
+            ):
+                return False
+
+        approved = {
+            item.version_id: item
+            for item in self.list_approved_scenario_recipes()
+        }
+        paths = {
+            item.artifact_hash: item
+            for item in self.list_materialized_market_paths()
+        }
+        cases = {
+            item.case_id: item
+            for item in self.list_available_diagnostic_campaign_cases()
+        }
+        if (
+            sum(item.layer == "baseline" for item in cases.values())
+            != 1
+        ):
+            return False
+        selected_case_ids = tuple(
+            item.campaign_case_id
+            for item in candidate.campaign_case_selections
+        )
+        if (
+            not selected_case_ids
+            or len(set(selected_case_ids)) != len(selected_case_ids)
+        ):
+            return False
+        baseline_case_ids = {
+            item.campaign_case_id
+            for item in candidate.campaign_case_selections
+            if item.layer == "baseline"
+        }
+        if len(baseline_case_ids) != 1:
+            return False
+        baseline_case_id = next(iter(baseline_case_ids))
+        for case_selection in candidate.campaign_case_selections:
+            case = cases.get(case_selection.campaign_case_id)
+            recipe = approved.get(case_selection.recipe_version_id)
+            path = paths.get(case_selection.market_scenario_id)
+            expected_layer = {
+                "baseline": "baseline",
+                "isolated": "isolated_sensitivity",
+                "compound": "compound",
+            }.get(case.layer if case is not None else "")
+            if (
+                case is None
+                or recipe is None
+                or path is None
+                or case.recipe_version_id != case_selection.recipe_version_id
+                or case.materialization_hash
+                != case_selection.market_scenario_id
+                or recipe.content_hash != case_selection.recipe_content_hash
+                or expected_layer != case_selection.layer
+            ):
+                return False
+            is_baseline = case_selection.layer == "baseline"
+            if (
+                case_selection.comparison_role
+                != ("control" if is_baseline else "compare_to_baseline")
+                or case_selection.baseline_campaign_case_id
+                != (None if is_baseline else baseline_case_id)
+            ):
+                return False
+            execution = recipe.recipe.execution_conditions
+            expected_values = {
+                "allow_partial_fills": str(
+                    execution.allow_partial_fills
+                ).lower(),
+                "commission_bps": str(execution.commission_bps),
+                "decision_cadence_minutes": str(
+                    recipe.recipe.decision_cadence_minutes
+                ),
+                "latency_nodes": str(execution.latency_nodes),
+                "max_fill_fraction": str(execution.max_fill_fraction),
+                "slippage_bps": str(execution.slippage_bps),
+            }
+            actual_values = {
+                name: (value, version, source)
+                for name, value, version, source in (
+                    case_selection.execution_policy_values
+                )
+            }
+            if (
+                len(actual_values)
+                != len(case_selection.execution_policy_values)
+                or actual_values
+                != {
+                    name: (
+                        value,
+                        recipe.recipe.schema_version,
+                        "Approved Scenario Recipe",
+                    )
+                    for name, value in expected_values.items()
+                }
+            ):
+                return False
+        return True
 
     def recommend_historical_segments(
         self,
@@ -1989,6 +2169,7 @@ def create_diagnostics_application(
     artifact_store: MarketPathArtifactStore | None = None,
     recipe_assistant: AIRecipeAssistant | None = None,
     recipe_clock: Callable[[], datetime] | None = None,
+    diagnostic_task_clock: Callable[[], datetime] | None = None,
     ptrade_host: PTradeStrategyHost | None = None,
     evidence_artifact_store: DiagnosticEvidenceArtifactStore | None = None,
     finding_explanation_provider: (
@@ -2001,6 +2182,7 @@ def create_diagnostics_application(
         artifact_store=artifact_store,
         recipe_assistant=recipe_assistant,
         recipe_clock=recipe_clock,
+        diagnostic_task_clock=diagnostic_task_clock,
         ptrade_host=ptrade_host,
         evidence_artifact_store=evidence_artifact_store,
         finding_explanation_provider=finding_explanation_provider,

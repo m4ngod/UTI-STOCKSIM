@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
 from math import ceil
 from pathlib import Path
 from threading import Lock
 from time import monotonic_ns
-from typing import Callable
+from uuid import uuid4
 
 from PySide6.QtCore import (
     Property,
@@ -26,6 +27,14 @@ from PySide6.QtWidgets import QWidget
 from app.features import (
     CancelDiagnosticTask,
     CandidateEvidence,
+    CreateDiagnosticTask,
+    DiagnosticCampaignCaseSelection,
+    DiagnosticCampaignLayer,
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
+    DiagnosticComparisonRole,
+    DiagnosticStrategySelection,
+    DiagnosticTaskConfiguration,
     DiagnosticTasksContext,
     DiagnosticTasksFeature,
     DiagnosticTasksViewState,
@@ -42,6 +51,7 @@ from app.features import (
     RunMonitoringViewState,
     Subscription,
 )
+
 from .accessibility import (
     AccessibilityPreferences,
     AccessibilitySettingsQtAdapter,
@@ -57,7 +67,6 @@ from .evidence_chart import (
     advance_evidence_chart_presentation_revision,
     build_evidence_chart_presentation,
 )
-
 
 _QML_ROOT = Path(__file__).resolve().parent / "qml"
 _MOUNT_GENERATIONS = count(1)
@@ -265,6 +274,115 @@ class DiagnosticTasksQtAdapter(QObject):
             f"{reason.code.value}: {reason.message}"
             for reason in self._state.blocking_reasons
         )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCreate(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_create)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def taskStatusText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None:
+            return "No durable Diagnostic Task has been created."
+        return (
+            f"{task.task_id.value} · r{task.revision} · "
+            f"{task.lifecycle.value} · configuration "
+            f"{task.configuration.content_identity.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def taskHandleText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or not task.task_handles:
+            return "No persistent TaskHandle is available."
+        return "\n".join(
+            (
+                f"{handle.identity.value} · {handle.phase.value} · "
+                f"{handle.progress:.0%} · "
+                f"{handle.result or 'pending'} · "
+                f"cancelable {str(handle.cancelable).lower()}"
+            )
+            for handle in task.task_handles
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def createStatusText(self) -> str:  # noqa: N802
+        return getattr(
+            self,
+            "_create_status",
+            "Create is ready when all displayed authoritative inputs are ready.",
+        )
+
+    @Slot()
+    def createTask(self) -> None:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not self.canCreate:
+            self._create_status = (
+                "Diagnostic Task creation requires all authoritative inputs."
+            )
+            self.stateChanged.emit()
+            return
+        recipe_by_id = {
+            item.recipe_version_id: item
+            for item in inventory.approved_recipes
+        }
+        baseline_case_id = next(
+            item.campaign_case_id
+            for item in inventory.market_scenarios
+            if item.layer is DiagnosticCampaignLayer.BASELINE
+        )
+        configuration = DiagnosticTaskConfiguration.create(
+            strategy_selections=tuple(
+                DiagnosticStrategySelection(
+                    strategy_id=item.strategy_id,
+                    strategy_version=item.strategy_version,
+                    compatibility_manifest_hash=(
+                        item.compatibility_manifest_hash
+                    ),
+                    guardrail_profile_id=item.guardrail_profile_id,
+                    guardrail_profile_version=item.guardrail_profile_version,
+                )
+                for item in inventory.strategies
+            ),
+            campaign_case_selections=tuple(
+                DiagnosticCampaignCaseSelection(
+                    layer=item.layer,
+                    recipe_version_id=item.recipe_version_id,
+                    recipe_content_hash=recipe_by_id[
+                        item.recipe_version_id
+                    ].content_hash,
+                    market_scenario_id=item.market_scenario_id,
+                    campaign_case_id=item.campaign_case_id,
+                    comparison_role=(
+                        DiagnosticComparisonRole.CONTROL
+                        if item.layer is DiagnosticCampaignLayer.BASELINE
+                        else DiagnosticComparisonRole.COMPARE_TO_BASELINE
+                    ),
+                    baseline_campaign_case_id=(
+                        None
+                        if item.layer is DiagnosticCampaignLayer.BASELINE
+                        else baseline_case_id
+                    ),
+                    execution_policy_values=item.execution_policy_values,
+                )
+                for item in inventory.market_scenarios
+            ),
+        )
+        command_identity = uuid4().hex
+        result = self._feature.create_diagnostic_task(
+            CreateDiagnosticTask(
+                command_id=DiagnosticCommandId(
+                    f"create-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-create-{command_identity}"
+                ),
+                configuration=configuration,
+            )
+        )
+        self._create_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
 
     @Slot()
     def refresh(self) -> None:
@@ -938,13 +1056,13 @@ class EvidenceAndFindingsQtAdapter(QObject):
                 for point in curve.points
             )
             lines.append(
-                (
+
                     f"{curve.identity} · transformation "
                     f"{curve.transformation_family} / {curve.transformation_id} · "
                     f"strategy {curve.strategy_id.value}@{curve.strategy_version} · "
                     f"metric {curve.metric_name} / unit {curve.unit} · "
                     f"axis {axis} · {points}"
-                )
+
             )
         return "\n".join(lines)
 

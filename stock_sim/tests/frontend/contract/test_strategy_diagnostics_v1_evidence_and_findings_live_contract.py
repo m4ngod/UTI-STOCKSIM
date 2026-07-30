@@ -245,7 +245,7 @@ def _persist_real_formal_v1_through_application(
     )
     reopened.start()
     migration = reopened.initialize_persistence(reopened_engine)
-    assert migration.current_revision == "0012_reproduction_manifests"
+    assert migration.current_revision == "0013_diagnostic_tasks"
     return (
         reopened,
         reopened_engine,

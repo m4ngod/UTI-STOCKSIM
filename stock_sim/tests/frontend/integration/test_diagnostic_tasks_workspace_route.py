@@ -8,8 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QMetaObject, QObject
 from PySide6.QtWidgets import QApplication
+from sqlalchemy import create_engine, text
 
 from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
@@ -22,8 +23,8 @@ from app.ui.main_window import MainWindow
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
-    _RecipeFixtureSource,
     _baseline_payload,
+    _RecipeFixtureSource,
 )
 
 
@@ -199,3 +200,119 @@ def test_diagnostic_tasks_is_the_active_typed_qml_workspace_route() -> None:
     window.close()
     diagnostic_tasks.close()
     run_monitoring.close()
+
+
+def test_qml_create_persists_task_handle_across_remount_and_application_reopen(
+    tmp_path,
+) -> None:
+    app = _app()
+    source = _RecipeFixtureSource()
+    artifact_store = InMemoryMarketPathArtifactStore()
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'qml-diagnostic-task.db'}",
+        future=True,
+    )
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=artifact_store,
+        recipe_clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+        diagnostic_task_clock=lambda: datetime(
+            2030,
+            1,
+            2,
+            tzinfo=timezone.utc,
+        ),
+    )
+    application.start()
+    application.initialize_persistence(engine)
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    draft = application.create_manual_recipe_draft(
+        _baseline_payload(admission.segment.segment_id),
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(draft.draft_id).is_valid
+    approved = application.approve_recipe_draft(draft.draft_id, actor="owner")
+    application.materialize_baseline_reference_path(approved.version_id)
+    feature = LiveDiagnosticTasksAdapter(
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            application
+        )
+    )
+    window, run_monitoring = _window(feature)
+    window.show()
+    app.processEvents()
+    root = window.centralWidget().rootObject()
+    page = root.findChild(QObject, "diagnosticTasksPage")
+    button = root.findChild(QObject, "createDiagnosticTaskButton")
+    assert page is not None
+    assert button is not None
+    assert button.property("enabled") is True
+
+    assert QMetaObject.invokeMethod(button, "clicked")
+    app.processEvents()
+
+    task_text = page.property("taskStatusText")
+    handle_text = page.property("taskHandleText")
+    assert "diagnostic-task-" in task_text
+    assert " · r2 · draft · " in task_text
+    assert "diagnostic-task-handle-" in handle_text
+    assert " · completed · 100% · diagnostic_task_created · " in handle_text
+    window.close()
+    run_monitoring.close()
+
+    remounted_window, remounted_monitoring = _window(feature)
+    remounted_window.show()
+    app.processEvents()
+    remounted_page = remounted_window.centralWidget().rootObject().findChild(
+        QObject,
+        "diagnosticTasksPage",
+    )
+    assert remounted_page is not None
+    assert remounted_page.property("taskStatusText") == task_text
+    assert remounted_page.property("taskHandleText") == handle_text
+    remounted_window.close()
+    remounted_monitoring.close()
+    feature.close()
+
+    restarted_application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=artifact_store,
+        recipe_clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+        diagnostic_task_clock=lambda: datetime(
+            2030,
+            1,
+            3,
+            tzinfo=timezone.utc,
+        ),
+    )
+    restarted_application.start()
+    restarted_application.initialize_persistence(engine)
+    restarted_feature = LiveDiagnosticTasksAdapter(
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            restarted_application
+        )
+    )
+    restarted_window, restarted_monitoring = _window(restarted_feature)
+    restarted_window.show()
+    app.processEvents()
+    restarted_page = restarted_window.centralWidget().rootObject().findChild(
+        QObject,
+        "diagnosticTasksPage",
+    )
+
+    assert restarted_page is not None
+    assert restarted_page.property("taskStatusText") == task_text
+    assert restarted_page.property("taskHandleText") == handle_text
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_tasks")
+        ).scalar_one() == 1
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_campaigns")
+        ).scalar_one() == 0
+    restarted_window.close()
+    restarted_feature.close()
+    restarted_monitoring.close()

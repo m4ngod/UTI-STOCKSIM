@@ -14,12 +14,21 @@ from .run_monitoring import (
     DiagnosticTaskId,
     FormalDiagnosticCampaignId,
     StrategyUnderTestId,
+    StructuredFeatureError,
     TaskHandle,
+    TaskHandleId,
+    TaskPhase,
 )
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
 
 if TYPE_CHECKING:
     from strategy_diagnostics.application import DiagnosticsApplication
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticTaskCreationResult as BackendDiagnosticTaskCreationResult,
+    )
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticTaskSnapshot as BackendDiagnosticTaskSnapshot,
+    )
     from strategy_diagnostics.formal_diagnostic_campaigns import (
         DiagnosticCampaignCase,
     )
@@ -119,12 +128,16 @@ class DiagnosticTasksApplicationAvailability(str, Enum):
 
 class DiagnosticTasksApplicationErrorCode(str, Enum):
     INVENTORY_READ_FAILED = "diagnostic_tasks_inventory_read_failed"
+    TASK_READ_FAILED = "diagnostic_task_read_failed"
     APPLICATION_NOT_READY = "diagnostic_tasks_application_not_ready"
 
 
 class DiagnosticTasksApplicationCommandRejectionReason(str, Enum):
     NOT_YET_AVAILABLE = "not_yet_available"
     INVALID_COMMAND = "invalid_command"
+    IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    COMMAND_IDENTITY_CONFLICT = "command_identity_conflict"
+    PERSISTENCE_FAILURE = "persistence_failure"
     STALE_EXPECTED_REVISION = "stale_expected_revision"
     DISCONNECTED_SOURCE = "disconnected_source"
     UNAVAILABLE_CAPABILITY = "unavailable_capability"
@@ -345,6 +358,34 @@ class DiagnosticTaskConfiguration:
     strategy_selections: tuple[DiagnosticStrategySelection, ...]
     campaign_case_selections: tuple[DiagnosticCampaignCaseSelection, ...]
 
+    @classmethod
+    def create(
+        cls,
+        *,
+        strategy_selections: tuple[DiagnosticStrategySelection, ...],
+        campaign_case_selections: tuple[
+            DiagnosticCampaignCaseSelection,
+            ...,
+        ],
+    ) -> DiagnosticTaskConfiguration:
+        payload = _diagnostic_task_configuration_payload(
+            strategy_selections,
+            campaign_case_selections,
+        )
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return cls(
+            content_identity=DiagnosticTaskConfigurationContentId(
+                "sha256:" + hashlib.sha256(encoded).hexdigest()
+            ),
+            strategy_selections=strategy_selections,
+            campaign_case_selections=campaign_case_selections,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CreateDiagnosticTask:
@@ -496,12 +537,40 @@ class DiagnosticTasksApplicationInventoryResult:
     error: DiagnosticTasksApplicationError | None
 
 
+class DiagnosticTasksApplicationTaskLifecycle(str, Enum):
+    CREATING = "creating"
+    DRAFT = "draft"
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationTask:
+    task_id: DiagnosticTaskId
+    revision: int
+    lifecycle: DiagnosticTasksApplicationTaskLifecycle
+    configuration: DiagnosticTaskConfiguration
+    task_handles: tuple[TaskHandle, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationTaskResult:
+    availability: DiagnosticTasksApplicationAvailability
+    task: DiagnosticTasksApplicationTask | None
+    source_token: SourceRevisionToken | None
+    observed_at: datetime
+    error: DiagnosticTasksApplicationError | None
+
+
 @runtime_checkable
 class StrategyDiagnosticsV1DiagnosticTasksApplication(Protocol):
     @property
     def interface_version(self) -> DiagnosticTasksApplicationVersion: ...
 
     def read_inventory(self) -> DiagnosticTasksApplicationInventoryResult: ...
+
+    def read_diagnostic_task(
+        self,
+        task_id: DiagnosticTaskId | None,
+    ) -> DiagnosticTasksApplicationTaskResult: ...
 
     def create_diagnostic_task(
         self,
@@ -606,11 +675,156 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
             error=None,
         )
 
+    def read_diagnostic_task(
+        self,
+        task_id: DiagnosticTaskId | None,
+    ) -> DiagnosticTasksApplicationTaskResult:
+        observed_at = datetime.now(timezone.utc)
+        try:
+            snapshot = self._application.get_diagnostic_task(
+                None if task_id is None else task_id.value
+            )
+        except RuntimeError:
+            return DiagnosticTasksApplicationTaskResult(
+                availability=DiagnosticTasksApplicationAvailability.FAILED,
+                task=None,
+                source_token=None,
+                observed_at=observed_at,
+                error=DiagnosticTasksApplicationError(
+                    code=DiagnosticTasksApplicationErrorCode.APPLICATION_NOT_READY,
+                    message="Strategy Diagnostics is not ready.",
+                    retryable=True,
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return DiagnosticTasksApplicationTaskResult(
+                availability=DiagnosticTasksApplicationAvailability.FAILED,
+                task=None,
+                source_token=None,
+                observed_at=observed_at,
+                error=DiagnosticTasksApplicationError(
+                    code=DiagnosticTasksApplicationErrorCode.TASK_READ_FAILED,
+                    message="The authoritative Diagnostic Task could not be read.",
+                    retryable=False,
+                ),
+            )
+        if snapshot is None:
+            return DiagnosticTasksApplicationTaskResult(
+                availability=DiagnosticTasksApplicationAvailability.EMPTY,
+                task=None,
+                source_token=SourceRevisionToken(
+                    hashlib.sha256(b"diagnostic-task:none").hexdigest()
+                ),
+                observed_at=observed_at,
+                error=None,
+            )
+        task = _map_diagnostic_task(snapshot)
+        return DiagnosticTasksApplicationTaskResult(
+            availability=DiagnosticTasksApplicationAvailability.READY,
+            task=task,
+            source_token=_diagnostic_task_token(task),
+            observed_at=observed_at,
+            error=None,
+        )
+
     def create_diagnostic_task(
         self,
         command: CreateDiagnosticTask,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            CreateDiagnosticTaskRequest as BackendCreateDiagnosticTaskRequest,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticCampaignCaseSelection as BackendCampaignCaseSelection,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticStrategySelection as BackendStrategySelection,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticTaskConfiguration as BackendTaskConfiguration,
+        )
+
+        try:
+            result = self._application.create_diagnostic_task(
+                BackendCreateDiagnosticTaskRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    configuration=BackendTaskConfiguration(
+                        content_identity=(
+                            command.configuration.content_identity.value
+                        ),
+                        strategy_selections=tuple(
+                            BackendStrategySelection(
+                                strategy_id=item.strategy_id.value,
+                                strategy_version=item.strategy_version,
+                                compatibility_manifest_hash=(
+                                    item.compatibility_manifest_hash
+                                ),
+                                guardrail_profile_id=(
+                                    item.guardrail_profile_id.value
+                                ),
+                                guardrail_profile_version=(
+                                    item.guardrail_profile_version
+                                ),
+                            )
+                            for item in (
+                                command.configuration.strategy_selections
+                            )
+                        ),
+                        campaign_case_selections=tuple(
+                            BackendCampaignCaseSelection(
+                                layer=item.layer.value,
+                                recipe_version_id=(
+                                    item.recipe_version_id.value
+                                ),
+                                recipe_content_hash=item.recipe_content_hash,
+                                market_scenario_id=(
+                                    item.market_scenario_id.value
+                                ),
+                                campaign_case_id=(
+                                    item.campaign_case_id.value
+                                ),
+                                comparison_role=item.comparison_role.value,
+                                baseline_campaign_case_id=(
+                                    None
+                                    if item.baseline_campaign_case_id is None
+                                    else item.baseline_campaign_case_id.value
+                                ),
+                                execution_policy_values=tuple(
+                                    (
+                                        value.name,
+                                        value.value,
+                                        value.version,
+                                        value.source,
+                                    )
+                                    for value in item.execution_policy_values
+                                ),
+                            )
+                            for item in (
+                                command.configuration.campaign_case_selections
+                            )
+                        ),
+                    ),
+                )
+            )
+        except RuntimeError:
+            return DiagnosticTasksApplicationCommandResult(
+                disposition=DiagnosticTasksCommandDisposition.REJECTED,
+                command_id=command.command_id,
+                idempotency_key=command.idempotency_key,
+                message="Strategy Diagnostics is not ready.",
+                rejection_reason=(
+                    DiagnosticTasksApplicationCommandRejectionReason.DISCONNECTED_SOURCE
+                ),
+                task_handle=None,
+                current_revision=None,
+                affected_task_id=None,
+                affected_campaign_id=None,
+                affected_campaign_node_id=None,
+                retryable=True,
+                correlation_id=None,
+            )
+        return _map_creation_result(result)
 
     def revise_configuration(
         self,
@@ -889,6 +1103,233 @@ def _inventory_token(inventory: DiagnosticTasksInventory) -> SourceRevisionToken
     return SourceRevisionToken(hashlib.sha256(encoded).hexdigest())
 
 
+def _diagnostic_task_configuration_payload(
+    strategy_selections: tuple[DiagnosticStrategySelection, ...],
+    campaign_case_selections: tuple[
+        DiagnosticCampaignCaseSelection,
+        ...,
+    ],
+) -> dict[str, object]:
+    return {
+        "campaign_case_selections": [
+            {
+                "baseline_campaign_case_id": (
+                    None
+                    if item.baseline_campaign_case_id is None
+                    else item.baseline_campaign_case_id.value
+                ),
+                "campaign_case_id": item.campaign_case_id.value,
+                "comparison_role": item.comparison_role.value,
+                "execution_policy_values": [
+                    {
+                        "name": value.name,
+                        "source": value.source,
+                        "value": value.value,
+                        "version": value.version,
+                    }
+                    for value in sorted(
+                        item.execution_policy_values,
+                        key=lambda candidate: (
+                            candidate.name,
+                            candidate.value,
+                            candidate.version,
+                            candidate.source,
+                        ),
+                    )
+                ],
+                "layer": item.layer.value,
+                "market_scenario_id": item.market_scenario_id.value,
+                "recipe_content_hash": item.recipe_content_hash,
+                "recipe_version_id": item.recipe_version_id.value,
+            }
+            for item in sorted(
+                campaign_case_selections,
+                key=lambda candidate: (
+                    candidate.layer.value,
+                    candidate.campaign_case_id.value,
+                ),
+            )
+        ],
+        "strategy_selections": [
+            {
+                "compatibility_manifest_hash": (
+                    item.compatibility_manifest_hash
+                ),
+                "guardrail_profile_id": item.guardrail_profile_id.value,
+                "guardrail_profile_version": item.guardrail_profile_version,
+                "strategy_id": item.strategy_id.value,
+                "strategy_version": item.strategy_version,
+            }
+            for item in sorted(
+                strategy_selections,
+                key=lambda candidate: candidate.strategy_id.value,
+            )
+        ],
+    }
+
+
+def _map_diagnostic_task(
+    snapshot: BackendDiagnosticTaskSnapshot,
+) -> DiagnosticTasksApplicationTask:
+    configuration = snapshot.configuration
+    task_id = DiagnosticTaskId(snapshot.task_id)
+    return DiagnosticTasksApplicationTask(
+        task_id=task_id,
+        revision=snapshot.revision,
+        lifecycle=DiagnosticTasksApplicationTaskLifecycle(
+            snapshot.lifecycle.value
+        ),
+        configuration=DiagnosticTaskConfiguration(
+            content_identity=DiagnosticTaskConfigurationContentId(
+                configuration.content_identity
+            ),
+            strategy_selections=tuple(
+                DiagnosticStrategySelection(
+                    strategy_id=StrategyUnderTestId(item.strategy_id),
+                    strategy_version=item.strategy_version,
+                    compatibility_manifest_hash=(
+                        item.compatibility_manifest_hash
+                    ),
+                    guardrail_profile_id=GuardrailProfileId(
+                        item.guardrail_profile_id
+                    ),
+                    guardrail_profile_version=item.guardrail_profile_version,
+                )
+                for item in configuration.strategy_selections
+            ),
+            campaign_case_selections=tuple(
+                DiagnosticCampaignCaseSelection(
+                    layer=DiagnosticCampaignLayer(item.layer),
+                    recipe_version_id=ApprovedScenarioRecipeVersionId(
+                        item.recipe_version_id
+                    ),
+                    recipe_content_hash=item.recipe_content_hash,
+                    market_scenario_id=MaterializedMarketScenarioId(
+                        item.market_scenario_id
+                    ),
+                    campaign_case_id=CampaignCaseId(item.campaign_case_id),
+                    comparison_role=DiagnosticComparisonRole(
+                        item.comparison_role
+                    ),
+                    baseline_campaign_case_id=(
+                        None
+                        if item.baseline_campaign_case_id is None
+                        else CampaignCaseId(item.baseline_campaign_case_id)
+                    ),
+                    execution_policy_values=tuple(
+                        ExecutionPolicyValue(
+                            name=name,
+                            value=value,
+                            version=version,
+                            source=source,
+                        )
+                        for name, value, version, source in (
+                            item.execution_policy_values
+                        )
+                    ),
+                )
+                for item in configuration.campaign_case_selections
+            ),
+        ),
+        task_handles=tuple(
+            TaskHandle(
+                identity=TaskHandleId(item.task_handle_id),
+                target_id=task_id,
+                phase=TaskPhase(item.phase.value),
+                progress=item.progress,
+                result=item.result_code,
+                error=(
+                    None
+                    if item.error_code is None
+                    else StructuredFeatureError(
+                        code=item.error_code,
+                        message=item.error_message or item.error_code,
+                        retryable=item.error_retryable,
+                    )
+                ),
+                cancelable=item.cancelable,
+            )
+            for item in snapshot.task_handles
+        ),
+    )
+
+
+def _map_creation_result(
+    result: BackendDiagnosticTaskCreationResult,
+) -> DiagnosticTasksApplicationCommandResult:
+    task_id = (
+        None
+        if result.affected_task_id is None
+        else DiagnosticTaskId(result.affected_task_id)
+    )
+    handle = result.task_handle
+    return DiagnosticTasksApplicationCommandResult(
+        disposition=DiagnosticTasksCommandDisposition(
+            result.disposition.value
+        ),
+        command_id=DiagnosticCommandId(result.command_id),
+        idempotency_key=DiagnosticCommandIdempotencyKey(
+            result.idempotency_key
+        ),
+        message=result.message,
+        rejection_reason=(
+            None
+            if result.rejection_reason is None
+            else DiagnosticTasksApplicationCommandRejectionReason(
+                result.rejection_reason.value
+            )
+        ),
+        task_handle=(
+            None
+            if handle is None or task_id is None
+            else TaskHandle(
+                identity=TaskHandleId(handle.task_handle_id),
+                target_id=task_id,
+                phase=TaskPhase(handle.phase.value),
+                progress=handle.progress,
+                result=handle.result_code,
+                error=(
+                    None
+                    if handle.error_code is None
+                    else StructuredFeatureError(
+                        code=handle.error_code,
+                        message=handle.error_message or handle.error_code,
+                        retryable=handle.error_retryable,
+                    )
+                ),
+                cancelable=handle.cancelable,
+            )
+        ),
+        current_revision=result.current_revision,
+        affected_task_id=task_id,
+        affected_campaign_id=None,
+        affected_campaign_node_id=None,
+        retryable=result.retryable,
+        correlation_id=None,
+    )
+
+
+def _diagnostic_task_token(
+    task: DiagnosticTasksApplicationTask,
+) -> SourceRevisionToken:
+    payload = {
+        "handle_phases": [
+            (item.identity.value, item.phase.value, item.progress, item.result)
+            for item in task.task_handles
+        ],
+        "lifecycle": task.lifecycle.value,
+        "revision": task.revision,
+        "task_id": task.task_id.value,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return SourceRevisionToken(hashlib.sha256(encoded).hexdigest())
+
+
 __all__ = [
     "DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION",
     "AppliedScenarioTransformation",
@@ -902,28 +1343,32 @@ __all__ = [
     "CancelDiagnosticTarget",
     "CreateDiagnosticTask",
     "DiagnosticActorId",
-    "DiagnosticCampaignLayer",
     "DiagnosticCampaignCaseSelection",
-    "DiagnosticComparisonRole",
+    "DiagnosticCampaignLayer",
     "DiagnosticCommandId",
     "DiagnosticCommandIdempotencyKey",
+    "DiagnosticComparisonRole",
+    "DiagnosticLifecycleTarget",
     "DiagnosticStrategyInput",
     "DiagnosticStrategySelection",
-    "DiagnosticLifecycleTarget",
-    "DiagnosticTaskTarget",
     "DiagnosticTaskConfiguration",
     "DiagnosticTaskConfigurationContentId",
+    "DiagnosticTaskTarget",
     "DiagnosticTasksApplicationAvailability",
-    "DiagnosticTasksApplicationError",
     "DiagnosticTasksApplicationCommand",
     "DiagnosticTasksApplicationCommandRejectionReason",
     "DiagnosticTasksApplicationCommandResult",
+    "DiagnosticTasksApplicationError",
     "DiagnosticTasksApplicationErrorCode",
     "DiagnosticTasksApplicationInventoryResult",
+    "DiagnosticTasksApplicationTask",
+    "DiagnosticTasksApplicationTaskLifecycle",
+    "DiagnosticTasksApplicationTaskResult",
     "DiagnosticTasksApplicationVersion",
     "DiagnosticTasksCommandDisposition",
     "DiagnosticTasksInventory",
     "ExecutionPolicyValue",
+    "FormalDiagnosticCampaignTarget",
     "GuardrailProfileId",
     "GuardrailThresholdInput",
     "HistoricalMarketSegmentId",
@@ -938,7 +1383,6 @@ __all__ = [
     "SourceSnapshotId",
     "StartFormalDiagnosticCampaign",
     "StrategyDiagnosticsV1DiagnosticTasksApplication",
-    "FormalDiagnosticCampaignTarget",
     "TransformationParameterValue",
     "ValidateDiagnosticTaskConfiguration",
 ]

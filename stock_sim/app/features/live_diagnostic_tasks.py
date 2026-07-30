@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from threading import RLock
-from typing import Callable
 
 from .diagnostic_tasks import (
     DiagnosticTaskCommandRejectionReason,
+    DiagnosticTaskHandoff,
+    DiagnosticTaskLifecycle,
+    DiagnosticTaskPresentation,
     DiagnosticTasksBlockingCode,
     DiagnosticTasksBlockingReason,
     DiagnosticTasksCapabilities,
@@ -18,22 +22,27 @@ from .diagnostic_tasks import (
     DiagnosticTasksPresentationState,
     DiagnosticTasksSource,
     DiagnosticTasksViewState,
+    DiagnosticTaskValidationState,
+    DiagnosticTaskValidationSummary,
     ReproductionManifestAvailability,
 )
 from .diagnostic_tasks_application import (
-    ApproveDiagnosticTaskConfiguration,
     AppliedScenarioTransformation,
+    ApproveDiagnosticTaskConfiguration,
     ApprovedScenarioRecipeInput,
     ApprovedScenarioRecipeVersionId,
-    CancelDiagnosticTarget,
     CampaignCaseId,
+    CancelDiagnosticTarget,
     CreateDiagnosticTask,
     DiagnosticCampaignLayer,
+    DiagnosticComparisonRole,
     DiagnosticStrategyInput,
+    DiagnosticTaskConfiguration,
     DiagnosticTasksApplicationAvailability,
     DiagnosticTasksApplicationCommand,
     DiagnosticTasksApplicationError,
     DiagnosticTasksApplicationInventoryResult,
+    DiagnosticTasksApplicationTask,
     DiagnosticTasksCommandDisposition,
     DiagnosticTasksInventory,
     ExecutionPolicyValue,
@@ -54,13 +63,17 @@ from .diagnostic_tasks_application import (
     ValidateDiagnosticTaskConfiguration,
 )
 from .run_monitoring import (
-    Freshness,
     Completeness,
+    DiagnosticTaskId,
+    Freshness,
     SourceGenerationId,
     SourceKind,
     StrategyUnderTestId,
     StructuredFeatureError,
     Subscription,
+    TaskHandle,
+    TaskHandleId,
+    TaskPhase,
     ViewPhase,
 )
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
@@ -227,6 +240,22 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 self._states[context] = loading
                 return loading
         result = self._application.read_inventory()
+        task_result = self._application.read_diagnostic_task(context.task_id)
+        if result.error is None and task_result.error is not None:
+            result = replace(
+                result,
+                availability=DiagnosticTasksApplicationAvailability.FAILED,
+                source_token=None,
+                error=task_result.error,
+            )
+        elif result.error is None:
+            result = replace(
+                result,
+                source_token=_combined_source_token(
+                    result.source_token,
+                    task_result.source_token,
+                ),
+            )
         now = _aware(self._clock())
         state = _next_view_state(
             context=context,
@@ -237,6 +266,16 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
             source=source,
             freshness_threshold=self._freshness_threshold,
         )
+        if result.error is None:
+            task = (
+                None
+                if task_result.task is None
+                else _task_presentation(task_result.task)
+            )
+            state = _with_task_state(
+                state,
+                task=task,
+            )
         with self._lock:
             self._ensure_open()
             if current is state:
@@ -254,6 +293,14 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         for observer in observers:
             observer(state)
         return state
+
+    def create_diagnostic_task(
+        self,
+        command: CreateDiagnosticTask,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+        return self._application.create_diagnostic_task(command)
 
     def subscribe(
         self,
@@ -347,6 +394,16 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 _DiagnosticTasksSubscription,
             ]
         ] = []
+        self._tasks: dict[DiagnosticTaskId, DiagnosticTaskPresentation] = {}
+        self._latest_task_id: DiagnosticTaskId | None = None
+        self._commands_by_id: dict[
+            str,
+            tuple[str, DiagnosticTasksCommandResult],
+        ] = {}
+        self._commands_by_key: dict[
+            str,
+            tuple[str, DiagnosticTasksCommandResult],
+        ] = {}
         self._closed = False
         self._lock = RLock()
 
@@ -379,6 +436,14 @@ class DeterministicFakeDiagnosticTasksAdapter(
             if self._scripted_results:
                 self._last_scripted_result = self._scripted_results.pop(0)
             result = self._last_scripted_result
+            task = self._task_for_context(context)
+            result = replace(
+                result,
+                source_token=_combined_source_token(
+                    result.source_token,
+                    _fake_task_token(task),
+                ),
+            )
         state = _next_view_state(
             context=context,
             result=result,
@@ -387,6 +452,10 @@ class DeterministicFakeDiagnosticTasksAdapter(
             now=_aware(self._clock()),
             source=source,
             freshness_threshold=self._freshness_threshold,
+        )
+        state = _with_task_state(
+            state,
+            task=task,
         )
         with self._lock:
             self._ensure_open()
@@ -403,6 +472,149 @@ class DeterministicFakeDiagnosticTasksAdapter(
         for observer in observers:
             observer(state)
         return state
+
+    def create_diagnostic_task(
+        self,
+        command: CreateDiagnosticTask,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+            content_identity = _fake_command_content_identity(
+                command.configuration
+            )
+            command_binding = self._commands_by_id.get(
+                command.command_id.value
+            )
+            key_binding = self._commands_by_key.get(
+                command.idempotency_key.value
+            )
+            if (
+                command_binding is not None
+                and key_binding is not None
+                and command_binding is not key_binding
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.COMMAND_IDENTITY_CONFLICT,
+                )
+            if (
+                command_binding is not None
+                and command_binding[1].idempotency_key
+                != command.idempotency_key
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.COMMAND_IDENTITY_CONFLICT,
+                )
+            existing = command_binding or key_binding
+            if existing is not None:
+                existing_content, existing_result = existing
+                if existing_content != content_identity:
+                    reason = (
+                        DiagnosticTaskCommandRejectionReason.COMMAND_IDENTITY_CONFLICT
+                        if command.command_id.value in self._commands_by_id
+                        else DiagnosticTaskCommandRejectionReason.IDEMPOTENCY_CONFLICT
+                    )
+                    return _fake_rejection(command, reason)
+                return replace(
+                    existing_result,
+                    disposition=(
+                        DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+                    ),
+                    command_id=command.command_id,
+                    idempotency_key=command.idempotency_key,
+                    message="Existing Diagnostic Task acceptance replayed.",
+                    task_handle=(
+                        None
+                        if existing_result.affected_task_id is None
+                        else self._tasks[
+                            existing_result.affected_task_id
+                        ].task_handles[0]
+                    ),
+                    current_revision=2,
+                )
+            inventory = self._last_scripted_result.inventory
+            if not _configuration_matches_inventory(
+                command.configuration,
+                inventory,
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            task_id = DiagnosticTaskId(
+                _stable_fake_identity(
+                    "diagnostic-task",
+                    command.command_id.value,
+                )
+            )
+            handle_id = TaskHandleId(
+                _stable_fake_identity(
+                    "diagnostic-task-handle",
+                    command.command_id.value,
+                )
+            )
+            queued = TaskHandle(
+                identity=handle_id,
+                target_id=task_id,
+                phase=TaskPhase.QUEUED,
+                progress=0.0,
+                result=None,
+                error=None,
+                cancelable=False,
+            )
+            completed = replace(
+                queued,
+                phase=TaskPhase.COMPLETED,
+                progress=1.0,
+                result="diagnostic_task_created",
+            )
+            task = DiagnosticTaskPresentation(
+                task_id=task_id,
+                revision=2,
+                lifecycle=DiagnosticTaskLifecycle.DRAFT,
+                configuration=command.configuration,
+                validation=DiagnosticTaskValidationSummary(
+                    state=DiagnosticTaskValidationState.NOT_VALIDATED,
+                    validated_revision=None,
+                    configuration_content_identity=None,
+                    findings=(),
+                ),
+                approval=None,
+                task_handles=(completed,),
+                capabilities=_CREATE_ONLY_CAPABILITIES,
+                handoff=DiagnosticTaskHandoff(
+                    campaign_id=None,
+                    selected_cases=(
+                        command.configuration.campaign_case_selections
+                    ),
+                    campaign_nodes=(),
+                    evidence_package_id=None,
+                    reproduction_manifest_id=None,
+                ),
+            )
+            result = DiagnosticTasksCommandResult(
+                disposition=(
+                    DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+                ),
+                command_id=command.command_id,
+                idempotency_key=command.idempotency_key,
+                message="Diagnostic Task creation accepted.",
+                rejection_reason=None,
+                task_handle=queued,
+                current_revision=1,
+                affected_task_id=task_id,
+                affected_campaign_id=None,
+                affected_campaign_node_id=None,
+                retryable=False,
+                correlation_id=None,
+            )
+            self._tasks[task_id] = task
+            self._latest_task_id = task_id
+            record = (content_identity, result)
+            self._commands_by_id[command.command_id.value] = record
+            self._commands_by_key[command.idempotency_key.value] = record
+            return result
 
     def subscribe(
         self,
@@ -431,6 +643,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
         if self._closed:
             raise RuntimeError("Diagnostic Tasks Adapter is closed")
 
+    def _task_for_context(
+        self,
+        context: DiagnosticTasksContext,
+    ) -> DiagnosticTaskPresentation | None:
+        task_id = context.task_id or self._latest_task_id
+        return None if task_id is None else self._tasks.get(task_id)
+
 
 _UNAVAILABLE_CAPABILITIES = DiagnosticTasksCapabilities(
     can_create=False,
@@ -443,14 +662,17 @@ _UNAVAILABLE_CAPABILITIES = DiagnosticTasksCapabilities(
     can_cancel=False,
     can_retry_failed_node=False,
 )
+_CREATE_ONLY_CAPABILITIES = replace(
+    _UNAVAILABLE_CAPABILITIES,
+    can_create=True,
+)
 _COMMANDS_NOT_YET_AVAILABLE = DiagnosticTasksBlockingReason(
     code=DiagnosticTasksBlockingCode.COMMAND_NOT_YET_AVAILABLE,
     message=(
-        "Create, revise, validate, approve, start, lifecycle, and retry "
-        "commands are not_yet_available in Issue #56."
+        "Revise, validate, approve, start, lifecycle, and retry commands are "
+        "not_yet_available after Issue #57."
     ),
     dependent_operations=(
-        "create_diagnostic_task",
         "revise_configuration",
         "validate_configuration",
         "approve_configuration",
@@ -761,8 +983,278 @@ def _inventory_blocking_reasons(
                 dependent_operations=("create_diagnostic_task",),
             )
         )
+    elif (
+        sum(
+            item.layer is DiagnosticCampaignLayer.BASELINE
+            for item in inventory.market_scenarios
+        )
+        != 1
+    ):
+        reasons.append(
+            DiagnosticTasksBlockingReason(
+                code=(
+                    DiagnosticTasksBlockingCode.MATERIALIZED_SCENARIO_NOT_AVAILABLE
+                ),
+                message=(
+                    "Diagnostic Task creation requires exactly one "
+                    "authoritative baseline Market Scenario."
+                ),
+                dependent_operations=("create_diagnostic_task",),
+            )
+        )
     reasons.append(_COMMANDS_NOT_YET_AVAILABLE)
     return tuple(reasons)
+
+
+def _capabilities(
+    inventory: DiagnosticTasksInventory | None,
+    task: DiagnosticTaskPresentation | None,
+) -> DiagnosticTasksCapabilities:
+    del task
+    baseline_count = (
+        0
+        if inventory is None
+        else sum(
+            item.layer is DiagnosticCampaignLayer.BASELINE
+            for item in inventory.market_scenarios
+        )
+    )
+    if (
+        inventory is not None
+        and inventory.strategies
+        and inventory.approved_recipes
+        and inventory.market_scenarios
+        and baseline_count == 1
+    ):
+        return _CREATE_ONLY_CAPABILITIES
+    return _UNAVAILABLE_CAPABILITIES
+
+
+def _with_task_state(
+    state: DiagnosticTasksViewState,
+    *,
+    task: DiagnosticTaskPresentation | None,
+) -> DiagnosticTasksViewState:
+    capabilities = _capabilities(state.last_reliable_inventory, task)
+    blocking_reasons = _inventory_blocking_reasons(
+        state.last_reliable_inventory
+    )
+    if (
+        state.task == task
+        and state.capabilities == capabilities
+        and state.blocking_reasons == blocking_reasons
+    ):
+        return state
+    return replace(
+        state,
+        task=task,
+        capabilities=capabilities,
+        blocking_reasons=blocking_reasons,
+    )
+
+
+def _task_presentation(
+    task: DiagnosticTasksApplicationTask,
+) -> DiagnosticTaskPresentation:
+    return DiagnosticTaskPresentation(
+        task_id=task.task_id,
+        revision=task.revision,
+        lifecycle=DiagnosticTaskLifecycle(task.lifecycle.value),
+        configuration=task.configuration,
+        validation=DiagnosticTaskValidationSummary(
+            state=DiagnosticTaskValidationState.NOT_VALIDATED,
+            validated_revision=None,
+            configuration_content_identity=None,
+            findings=(),
+        ),
+        approval=None,
+        task_handles=task.task_handles,
+        capabilities=_CREATE_ONLY_CAPABILITIES,
+        handoff=DiagnosticTaskHandoff(
+            campaign_id=None,
+            selected_cases=task.configuration.campaign_case_selections,
+            campaign_nodes=(),
+            evidence_package_id=None,
+            reproduction_manifest_id=None,
+        ),
+    )
+
+
+def _combined_source_token(
+    inventory_token: SourceRevisionToken | None,
+    task_token: SourceRevisionToken | None,
+) -> SourceRevisionToken | None:
+    if inventory_token is None or task_token is None:
+        return None
+    return SourceRevisionToken(
+        hashlib.sha256(
+            f"{inventory_token.value}:{task_token.value}".encode()
+        ).hexdigest()
+    )
+
+
+def _fake_task_token(
+    task: DiagnosticTaskPresentation | None,
+) -> SourceRevisionToken:
+    value = (
+        "diagnostic-task:none"
+        if task is None
+        else (
+            f"{task.task_id.value}:{task.revision}:"
+            + ",".join(
+                f"{item.identity.value}:{item.phase.value}:{item.progress}"
+                for item in task.task_handles
+            )
+        )
+    )
+    return SourceRevisionToken(hashlib.sha256(value.encode("utf-8")).hexdigest())
+
+
+def _configuration_matches_inventory(
+    configuration: DiagnosticTaskConfiguration,
+    inventory: DiagnosticTasksInventory | None,
+) -> bool:
+    if inventory is None:
+        return False
+    if (
+        sum(
+            item.layer is DiagnosticCampaignLayer.BASELINE
+            for item in inventory.market_scenarios
+        )
+        != 1
+    ):
+        return False
+    calculated = DiagnosticTaskConfiguration.create(
+        strategy_selections=configuration.strategy_selections,
+        campaign_case_selections=configuration.campaign_case_selections,
+    )
+    if calculated.content_identity != configuration.content_identity:
+        return False
+    strategies = {
+        (
+            item.strategy_id,
+            item.strategy_version,
+            item.compatibility_manifest_hash,
+            item.guardrail_profile_id,
+            item.guardrail_profile_version,
+        )
+        for item in configuration.strategy_selections
+    }
+    authoritative_strategies = {
+        (
+            item.strategy_id,
+            item.strategy_version,
+            item.compatibility_manifest_hash,
+            item.guardrail_profile_id,
+            item.guardrail_profile_version,
+        )
+        for item in inventory.strategies
+    }
+    if (
+        len(strategies) != len(configuration.strategy_selections)
+        or strategies != authoritative_strategies
+    ):
+        return False
+    recipes = {
+        item.recipe_version_id: item for item in inventory.approved_recipes
+    }
+    authoritative_cases = {
+        item.campaign_case_id: item for item in inventory.market_scenarios
+    }
+    selected_case_ids = tuple(
+        item.campaign_case_id
+        for item in configuration.campaign_case_selections
+    )
+    if (
+        not selected_case_ids
+        or len(set(selected_case_ids)) != len(selected_case_ids)
+    ):
+        return False
+    baseline_case_ids = {
+        item.campaign_case_id
+        for item in configuration.campaign_case_selections
+        if item.layer is DiagnosticCampaignLayer.BASELINE
+    }
+    if len(baseline_case_ids) != 1:
+        return False
+    baseline_case_id = next(iter(baseline_case_ids))
+    for selection in configuration.campaign_case_selections:
+        authoritative = authoritative_cases.get(selection.campaign_case_id)
+        recipe = recipes.get(selection.recipe_version_id)
+        if (
+            authoritative is None
+            or recipe is None
+            or selection.layer is not authoritative.layer
+            or selection.recipe_version_id
+            != authoritative.recipe_version_id
+            or selection.recipe_content_hash != recipe.content_hash
+            or selection.market_scenario_id
+            != authoritative.market_scenario_id
+        ):
+            return False
+        selected_policies = {
+            item.name: (item.value, item.version, item.source)
+            for item in selection.execution_policy_values
+        }
+        authoritative_policies = {
+            item.name: (item.value, item.version, item.source)
+            for item in authoritative.execution_policy_values
+        }
+        if (
+            len(selected_policies)
+            != len(selection.execution_policy_values)
+            or selected_policies != authoritative_policies
+        ):
+            return False
+        is_baseline = selection.layer is DiagnosticCampaignLayer.BASELINE
+        if (
+            selection.comparison_role
+            is not (
+                DiagnosticComparisonRole.CONTROL
+                if is_baseline
+                else DiagnosticComparisonRole.COMPARE_TO_BASELINE
+            )
+            or selection.baseline_campaign_case_id
+            != (None if is_baseline else baseline_case_id)
+        ):
+            return False
+    return True
+
+
+def _fake_rejection(
+    command: CreateDiagnosticTask,
+    reason: DiagnosticTaskCommandRejectionReason,
+) -> DiagnosticTasksCommandResult:
+    return DiagnosticTasksCommandResult(
+        disposition=DiagnosticTasksCommandDisposition.REJECTED,
+        command_id=command.command_id,
+        idempotency_key=command.idempotency_key,
+        message="Diagnostic Task creation rejected.",
+        rejection_reason=reason,
+        task_handle=None,
+        current_revision=None,
+        affected_task_id=None,
+        affected_campaign_id=None,
+        affected_campaign_node_id=None,
+        retryable=False,
+        correlation_id=None,
+    )
+
+
+def _stable_fake_identity(prefix: str, seed: str) -> str:
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}-{digest}"
+
+
+def _fake_command_content_identity(
+    configuration: DiagnosticTaskConfiguration,
+) -> str:
+    calculated = DiagnosticTaskConfiguration.create(
+        strategy_selections=configuration.strategy_selections,
+        campaign_case_selections=configuration.campaign_case_selections,
+    ).content_identity.value
+    value = f"{configuration.content_identity.value}:{calculated}"
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _aware(value: datetime) -> datetime:

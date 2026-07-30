@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 
 Item {
@@ -13,6 +14,9 @@ Item {
     readonly property string stateTitle: adapter.stateTitle
     readonly property string blockingReasonsText: adapter.blockingReasonsText
     readonly property string reproductionManifestStatus: adapter.reproductionManifestStatus
+    readonly property string taskStatusText: adapter.taskStatusText
+    readonly property string taskHandleText: adapter.taskHandleText
+    readonly property string createStatusText: adapter.createStatusText
 
     Flickable {
         id: scroll
@@ -160,9 +164,73 @@ Item {
                 }
             }
 
+            Rectangle {
+                objectName: "diagnosticTaskCreationPanel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: creationContent.implicitHeight + tokens.spaceLg * 2
+                radius: tokens.radiusMd
+                color: tokens.surface
+                border.color: tokens.border
+                Accessible.role: Accessible.Grouping
+                Accessible.name: "Durable Diagnostic Task creation"
+                Accessible.description: adapter.taskStatusText + ". " + adapter.taskHandleText
+
+                ColumnLayout {
+                    id: creationContent
+                    anchors.fill: parent
+                    anchors.margins: tokens.spaceLg
+                    spacing: tokens.spaceSm
+
+                    Text {
+                        text: "DURABLE DIAGNOSTIC TASK"
+                        color: tokens.accent
+                        font.pixelSize: tokens.labelSize
+                        font.bold: true
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: adapter.taskStatusText
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WrapAnywhere
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: adapter.taskHandleText
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                    }
+
+                    Button {
+                        id: createButton
+                        objectName: "createDiagnosticTaskButton"
+                        text: "Create Diagnostic Task"
+                        enabled: adapter.canCreate
+                        focusPolicy: Qt.StrongFocus
+                        Accessible.name: text
+                        Accessible.description: "Create one durable task from every displayed authoritative typed input"
+                        onClicked: adapter.createTask()
+                    }
+
+                    Text {
+                        objectName: "diagnosticTaskCreationStatus"
+                        Layout.fillWidth: true
+                        text: adapter.createStatusText
+                        color: tokens.textQuiet
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: text
+                    }
+                }
+            }
+
             Text {
                 Layout.fillWidth: true
-                text: "Create, validate, approve, launch, lifecycle, and retry commands are explicitly unavailable in this baseline."
+                text: "Validation, approval, launch, lifecycle, and retry commands remain explicitly unavailable."
                 color: tokens.textQuiet
                 font.pixelSize: tokens.labelSize
                 horizontalAlignment: Text.AlignRight

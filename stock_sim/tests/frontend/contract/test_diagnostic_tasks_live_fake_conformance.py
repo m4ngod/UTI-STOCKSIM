@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -11,14 +10,13 @@ import pytest
 from app.app_context import build_app_context
 from app.event_bridge import EventBridge
 from app.features import (
+    DIAGNOSTIC_TASKS_INTERFACE_VERSION,
     ApproveDiagnosticTaskConfiguration,
     CampaignAttemptId,
     CampaignNodeId,
     CancelDiagnosticTarget,
     CreateDiagnosticTask,
-    DIAGNOSTIC_TASKS_INTERFACE_VERSION,
     DeterministicFakeDiagnosticTasksAdapter,
-    DiagnosticTaskCommandRejectionReason,
     DiagnosticActorId,
     DiagnosticCampaignCaseSelection,
     DiagnosticCampaignLayer,
@@ -26,17 +24,20 @@ from app.features import (
     DiagnosticCommandIdempotencyKey,
     DiagnosticComparisonRole,
     DiagnosticStrategySelection,
-    DiagnosticTaskTarget,
+    DiagnosticTaskCommandRejectionReason,
     DiagnosticTaskConfiguration,
     DiagnosticTaskConfigurationContentId,
     DiagnosticTaskId,
-    DiagnosticTasksContext,
+    DiagnosticTaskLifecycle,
     DiagnosticTasksApplicationAvailability,
     DiagnosticTasksApplicationError,
     DiagnosticTasksApplicationErrorCode,
     DiagnosticTasksApplicationInventoryResult,
+    DiagnosticTasksCommandDisposition,
+    DiagnosticTasksContext,
     DiagnosticTasksFeature,
     DiagnosticTasksPresentationState,
+    DiagnosticTaskTarget,
     Freshness,
     LiveDiagnosticTasksAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
@@ -47,15 +48,15 @@ from app.features import (
     ReviseDiagnosticTaskConfiguration,
     SourceRevisionToken,
     StartFormalDiagnosticCampaign,
-    StrategyDiagnosticsV1DiagnosticTasksApplication,
     StrategyDiagnosticsV1ApplicationReadModel,
+    TaskPhase,
     ValidateDiagnosticTaskConfiguration,
 )
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
-    _RecipeFixtureSource,
     _baseline_payload,
+    _RecipeFixtureSource,
 )
 
 
@@ -186,10 +187,7 @@ def _unavailable_commands(inventory):
         for item in scenarios
         if item.layer is DiagnosticCampaignLayer.BASELINE
     )
-    configuration = DiagnosticTaskConfiguration(
-        content_identity=DiagnosticTaskConfigurationContentId(
-            "sha256:configuration-56"
-        ),
+    configuration = DiagnosticTaskConfiguration.create(
         strategy_selections=tuple(
             DiagnosticStrategySelection(
                 strategy_id=item.strategy_id,
@@ -398,8 +396,120 @@ def test_live_and_fake_share_one_typed_feature_conformance(
     assert subscription.disposed
 
     commands = _unavailable_commands(state.last_reliable_inventory)
+    created = feature.create_diagnostic_task(commands[0])
+    assert (
+        created.disposition
+        is DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+    )
+    assert created.task is not None
+    assert created.task.phase is TaskPhase.QUEUED
+    assert created.affected_task_id is not None
+    task_context = DiagnosticTasksContext(created.affected_task_id)
+    assert (
+        feature.snapshot(task_context).presentation
+        is DiagnosticTasksPresentationState.LOADING
+    )
+    created_state = feature.snapshot(task_context)
+    assert created_state.task is not None
+    assert created_state.task.revision == 2
+    assert created_state.task.lifecycle is DiagnosticTaskLifecycle.DRAFT
+    assert created_state.task.task_handles[0].phase is TaskPhase.COMPLETED
+    assert created_state.task.handoff.campaign_id is None
+    replay = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-57-replay"),
+        )
+    )
+    assert (
+        replay.disposition is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert replay.affected_task_id == created.affected_task_id
+    conflict = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-57-conflict"),
+            configuration=replace(
+                commands[0].configuration,
+                content_identity=DiagnosticTaskConfigurationContentId(
+                    "sha256:" + "f" * 64
+                ),
+            ),
+        )
+    )
+    assert conflict.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.IDEMPOTENCY_CONFLICT
+    )
+    second = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-57-second"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-57-second"
+            ),
+        )
+    )
+    assert second.disposition is (
+        DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+    )
+    cross_bound = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-57-second"
+            ),
+        )
+    )
+    assert cross_bound.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.COMMAND_IDENTITY_CONFLICT
+    )
+    authoritative_case = commands[0].configuration.campaign_case_selections[0]
+    non_authoritative = DiagnosticTaskConfiguration.create(
+        strategy_selections=commands[0].configuration.strategy_selections,
+        campaign_case_selections=(
+            replace(
+                authoritative_case,
+                recipe_content_hash="sha256:non-authoritative-recipe",
+            ),
+        ),
+    )
+    invalid = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-57-invalid-authority"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-57-invalid-authority"
+            ),
+            configuration=non_authoritative,
+        )
+    )
+    assert invalid.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.INVALID_COMMAND
+    )
+    reordered_case = replace(
+        authoritative_case,
+        execution_policy_values=tuple(
+            reversed(authoritative_case.execution_policy_values)
+        ),
+    )
+    reordered_configuration = DiagnosticTaskConfiguration.create(
+        strategy_selections=commands[0].configuration.strategy_selections,
+        campaign_case_selections=(reordered_case,),
+    )
+    reordered = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-57-reordered-policies"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-57-reordered-policies"
+            ),
+            configuration=reordered_configuration,
+        )
+    )
+    assert reordered.disposition is (
+        DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+    )
     results = (
-        feature.create_diagnostic_task(commands[0]),
         feature.revise_configuration(commands[1]),
         feature.validate_configuration(commands[2]),
         feature.approve_configuration(commands[3]),
@@ -450,6 +560,25 @@ def test_live_and_fake_share_freshness_and_last_reliable_transitions(
         assert degraded.error.code == "diagnostic_tasks_application_not_ready"
     else:
         assert degraded.error.code == "diagnostic_tasks_inventory_stale"
+    feature.close()
+
+
+@pytest.mark.parametrize("baseline_count", [0, 2])
+def test_create_capability_requires_exactly_one_authoritative_baseline(
+    baseline_count: int,
+) -> None:
+    inventory = _authoritative_inventory()
+    baseline = inventory.market_scenarios[0]
+    scenarios = () if baseline_count == 0 else (baseline, baseline)
+    feature = DeterministicFakeDiagnosticTasksAdapter(
+        inventory=replace(inventory, market_scenarios=scenarios)
+    )
+    context = DiagnosticTasksContext.workspace()
+    feature.snapshot(context)
+
+    state = feature.snapshot(context)
+
+    assert state.capabilities.can_create is False
     feature.close()
 
 
