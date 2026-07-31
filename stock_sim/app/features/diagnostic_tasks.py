@@ -106,6 +106,8 @@ class DiagnosticTasksBlockingCode(str, Enum):
     MATERIALIZED_SCENARIO_NOT_AVAILABLE = "materialized_scenario_not_available"
     COMMAND_NOT_YET_AVAILABLE = "not_yet_available"
     INVENTORY_READ_FAILED = "inventory_read_failed"
+    SOURCE_DISCONNECTED = "source_disconnected"
+    SOURCE_RECONNECTING = "source_reconnecting"
 
 
 @dataclass(frozen=True, slots=True)

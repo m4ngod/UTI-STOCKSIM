@@ -20,11 +20,11 @@ from app.features import (
     EvidenceAndFindingsFeature,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
-    LiveEvidenceAndFindingsAdapter,
     LiveDiagnosticTasksAdapter,
+    LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
-    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
+    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     MarketScenarioId,
     ReproductionManifestId,
     RunMonitoringContext,
@@ -197,6 +197,7 @@ def build_app_context(
                 )
         diagnostic_tasks_feature = LiveDiagnosticTasksAdapter(
             application=strategy_diagnostics_tasks_application,
+            event_bridge=live_bridge,
         )
         journey_selector = _v1_journey_selector_from_environment(
             run_monitoring_context

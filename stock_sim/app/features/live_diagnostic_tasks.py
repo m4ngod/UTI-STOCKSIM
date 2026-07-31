@@ -8,6 +8,14 @@ from collections.abc import Callable
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from threading import RLock
+from typing import TypeVar
+
+from app.event_bridge import (
+    EventBridge,
+    EventBridgeBatch,
+    EventBridgeConnectionPhase,
+    EventBridgeConnectionState,
+)
 
 from .diagnostic_tasks import (
     DiagnosticCampaignAttemptHandoff,
@@ -108,11 +116,17 @@ from .versioning import (
     FeatureInterfaceVersion,
 )
 
+_DiagnosticCommandT = TypeVar(
+    "_DiagnosticCommandT",
+    bound=DiagnosticTasksApplicationCommand,
+)
+
 
 class _DiagnosticTasksSubscription:
     def __init__(self, dispose: Callable[[], None]) -> None:
         self._dispose = dispose
         self._disposed = False
+        self._last_revision = 0
         self._lock = RLock()
 
     @property
@@ -130,6 +144,20 @@ class _DiagnosticTasksSubscription:
     def mark_disposed(self) -> None:
         with self._lock:
             self._disposed = True
+
+    def deliver(
+        self,
+        observer: DiagnosticTasksObserver,
+        state: DiagnosticTasksViewState,
+    ) -> None:
+        with self._lock:
+            if self._disposed or state.revision <= self._last_revision:
+                return
+            self._last_revision = state.revision
+            try:
+                observer(state)
+            except Exception:  # noqa: BLE001 - isolate observer failures.
+                return
 
 
 class _UnavailableDiagnosticTasksCommands:
@@ -216,6 +244,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         *,
         application: StrategyDiagnosticsV1DiagnosticTasksApplication,
+        event_bridge: EventBridge | None = None,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
     ) -> None:
@@ -236,8 +265,37 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
             ],
         ] = {}
         self._next_subscription_id = 1
+        connection = (
+            event_bridge.connection_state
+            if event_bridge is not None
+            else None
+        )
+        self._connection_generation = SourceGenerationId(
+            1 if connection is None else connection.generation.value
+        )
+        self._connection_sequence = (
+            1 if connection is None else connection.sequence.value
+        )
+        self._connection_phase = (
+            EventBridgeConnectionPhase.CONNECTED
+            if connection is None
+            else connection.phase
+        )
         self._closed = False
         self._lock = RLock()
+        self._dispose_connection_subscription: Callable[[], None] = (
+            event_bridge.subscribe_connection_state(
+                self._on_connection_state,
+                replay_current=True,
+            )
+            if event_bridge is not None
+            else lambda: None
+        )
+        self._dispose_batch_subscription: Callable[[], None] = (
+            event_bridge.subscribe_batches(self._on_snapshot_batch)
+            if event_bridge is not None
+            else lambda: None
+        )
 
     @property
     def interface_version(self) -> FeatureInterfaceVersion:
@@ -247,15 +305,14 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         context: DiagnosticTasksContext,
     ) -> DiagnosticTasksViewState:
-        source = DiagnosticTasksSource(
-            kind=SourceKind.LIVE_RUNTIME,
-            identity="strategy-diagnostics-v1-diagnostic-tasks",
-            generation=SourceGenerationId(1),
-        )
         with self._lock:
             self._ensure_open()
             current = self._states.get(context)
             current_token = self._source_tokens.get(context)
+            generation = self._connection_generation
+            connection_sequence = self._connection_sequence
+            connection_phase = self._connection_phase
+            source = self._source()
             if current is None:
                 loading = _loading_view_state(
                     context=context,
@@ -263,8 +320,18 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                     source=source,
                     freshness_threshold=self._freshness_threshold,
                 )
+                if connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
+                    loading = _diagnostic_tasks_connection_state(
+                        loading,
+                        phase=connection_phase,
+                        now=_aware(self._clock()),
+                        source=source,
+                        revision=1,
+                    )
                 self._states[context] = loading
                 return loading
+            if connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
+                return current
         result = self._application.read_inventory()
         task_result = self._application.read_diagnostic_task(context.task_id)
         if result.error is None and task_result.error is not None:
@@ -303,94 +370,145 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 task=task,
             )
         with self._lock:
-            self._ensure_open()
+            if self._closed:
+                return self._states.get(context, state)
+            if (
+                generation != self._connection_generation
+                or connection_sequence != self._connection_sequence
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return self._states.get(context, state)
+            latest = self._states.get(context)
+            if latest is not current:
+                return state if latest is None else latest
             if current is state:
                 return state
             self._states[context] = state
             if result.source_token is not None and result.error is None:
                 self._source_tokens[context] = result.source_token
             observers = tuple(
-                observer
+                (observer, subscription)
                 for subscribed_context, observer, subscription in (
                     item for item in self._subscriptions.values()
                 )
                 if subscribed_context == context and not subscription.disposed
             )
-        for observer in observers:
-            observer(state)
+        for observer, subscription in observers:
+            subscription.deliver(observer, state)
         return state
 
     def create_diagnostic_task(
         self,
         command: CreateDiagnosticTask,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.create_diagnostic_task(command)
+        return self._submit_command(
+            command,
+            self._application.create_diagnostic_task,
+        )
 
     def revise_configuration(
         self,
         command: ReviseDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.revise_configuration(command)
+        return self._submit_command(
+            command,
+            self._application.revise_configuration,
+        )
 
     def validate_configuration(
         self,
         command: ValidateDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.validate_configuration(command)
+        return self._submit_command(
+            command,
+            self._application.validate_configuration,
+        )
 
     def approve_configuration(
         self,
         command: ApproveDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.approve_configuration(command)
+        return self._submit_command(
+            command,
+            self._application.approve_configuration,
+        )
 
     def start_formal_diagnostic_campaign(
         self,
         command: StartFormalDiagnosticCampaign,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.start_formal_diagnostic_campaign(command)
+        return self._submit_command(
+            command,
+            self._application.start_formal_diagnostic_campaign,
+        )
 
     def pause_diagnostic_target(
         self,
         command: PauseDiagnosticTarget,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.pause_diagnostic_target(command)
+        return self._submit_command(
+            command,
+            self._application.pause_diagnostic_target,
+        )
 
     def resume_diagnostic_target(
         self,
         command: ResumeDiagnosticTarget,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.resume_diagnostic_target(command)
+        return self._submit_command(
+            command,
+            self._application.resume_diagnostic_target,
+        )
 
     def cancel_diagnostic_target(
         self,
         command: CancelDiagnosticTarget,
     ) -> DiagnosticTasksCommandResult:
-        with self._lock:
-            self._ensure_open()
-        return self._application.cancel_diagnostic_target(command)
+        return self._submit_command(
+            command,
+            self._application.cancel_diagnostic_target,
+        )
 
     def retry_failed_campaign_node(
         self,
         command: RetryFailedCampaignNode,
     ) -> DiagnosticTasksCommandResult:
+        return self._submit_command(
+            command,
+            self._application.retry_failed_campaign_node,
+        )
+
+    def _submit_command(
+        self,
+        command: _DiagnosticCommandT,
+        submit: Callable[
+            [_DiagnosticCommandT],
+            DiagnosticTasksCommandResult,
+        ],
+    ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
-        return self._application.retry_failed_campaign_node(command)
+            generation = self._connection_generation
+            connection_sequence = self._connection_sequence
+            if (
+                self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _disconnected_command_result(command)
+        result = submit(command)
+        with self._lock:
+            if generation != self._connection_generation:
+                return _disconnected_command_result(command)
+            if result.accepted:
+                return result
+            if (
+                connection_sequence != self._connection_sequence
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _disconnected_command_result(command)
+        return result
 
     def subscribe(
         self,
@@ -410,7 +528,8 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 observer,
                 subscription,
             )
-        observer(state)
+            state = self._states.get(context, state)
+        subscription.deliver(observer, state)
         return subscription
 
     def close(self) -> None:
@@ -422,8 +541,107 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 item[2] for item in self._subscriptions.values()
             )
             self._subscriptions.clear()
+            dispose_connection = self._dispose_connection_subscription
+            self._dispose_connection_subscription = lambda: None
+            dispose_batch = self._dispose_batch_subscription
+            self._dispose_batch_subscription = lambda: None
+        dispose_connection()
+        dispose_batch()
         for subscription in subscriptions:
             subscription.mark_disposed()
+
+    def _on_connection_state(
+        self,
+        connection: EventBridgeConnectionState,
+    ) -> None:
+        generation = SourceGenerationId(connection.generation.value)
+        with self._lock:
+            if (
+                self._closed
+                or connection.sequence.value <= self._connection_sequence
+            ):
+                return
+            self._connection_generation = generation
+            self._connection_sequence = connection.sequence.value
+            self._connection_phase = connection.phase
+            contexts = tuple(self._states)
+        for context in contexts:
+            self._publish_connection_state(context, connection)
+        if connection.phase is EventBridgeConnectionPhase.CONNECTED:
+            for context in contexts:
+                with self._lock:
+                    if self._closed:
+                        return
+                self.snapshot(context)
+
+    def _publish_connection_state(
+        self,
+        context: DiagnosticTasksContext,
+        connection: EventBridgeConnectionState,
+    ) -> None:
+        generation = SourceGenerationId(connection.generation.value)
+        with self._lock:
+            if (
+                self._closed
+                or generation != self._connection_generation
+                or connection.sequence.value != self._connection_sequence
+                or connection.phase is not self._connection_phase
+            ):
+                return
+            previous = self._states.get(context)
+            if previous is None:
+                return
+            state = _diagnostic_tasks_connection_state(
+                previous,
+                phase=connection.phase,
+                now=_aware(self._clock()),
+                source=self._source(),
+            )
+            self._states[context] = state
+            observers = tuple(
+                (observer, subscription)
+                for subscribed_context, observer, subscription in (
+                    item for item in self._subscriptions.values()
+                )
+                if subscribed_context == context and not subscription.disposed
+            )
+        for observer, subscription in observers:
+            subscription.deliver(observer, state)
+
+    def _on_snapshot_batch(self, batch: EventBridgeBatch) -> None:
+        generation = SourceGenerationId(batch.generation.value)
+        diagnostic_invalidation = any(
+            _is_diagnostic_tasks_invalidation(snapshot)
+            for snapshot in batch.snapshots
+        )
+        batch_run_ids = {
+            str(snapshot.get("run_id") or "").strip()
+            for snapshot in batch.snapshots
+            if str(snapshot.get("run_id") or "").strip()
+        }
+        with self._lock:
+            if (
+                self._closed
+                or generation != self._connection_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return
+            contexts = tuple(
+                context
+                for context, state in self._states.items()
+                if diagnostic_invalidation
+                or bool(
+                    batch_run_ids.intersection(
+                        _diagnostic_tasks_run_ids(state)
+                    )
+                )
+            )
+        for context in contexts:
+            with self._lock:
+                if self._closed:
+                    return
+            self.snapshot(context)
 
     def _remove_subscription(self, subscription_id: int) -> None:
         with self._lock:
@@ -432,6 +650,13 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("Diagnostic Tasks Adapter is closed")
+
+    def _source(self) -> DiagnosticTasksSource:
+        return DiagnosticTasksSource(
+            kind=SourceKind.LIVE_RUNTIME,
+            identity="strategy-diagnostics-v1-diagnostic-tasks",
+            generation=self._connection_generation,
+        )
 
 
 class DeterministicFakeDiagnosticTasksAdapter(
@@ -496,6 +721,9 @@ class DeterministicFakeDiagnosticTasksAdapter(
             str,
             tuple[str, DiagnosticTasksCommandResult],
         ] = {}
+        self._connection_generation = SourceGenerationId(1)
+        self._connection_sequence = 1
+        self._connection_phase = EventBridgeConnectionPhase.CONNECTED
         self._closed = False
         self._lock = RLock()
 
@@ -507,13 +735,9 @@ class DeterministicFakeDiagnosticTasksAdapter(
         self,
         context: DiagnosticTasksContext,
     ) -> DiagnosticTasksViewState:
-        source = DiagnosticTasksSource(
-            kind=SourceKind.DETERMINISTIC_FAKE,
-            identity="deterministic-diagnostic-tasks",
-            generation=SourceGenerationId(1),
-        )
         with self._lock:
             self._ensure_open()
+            source = self._source()
             previous = self._states.get(context)
             previous_token = self._source_tokens.get(context)
             if previous is None:
@@ -523,8 +747,24 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     source=source,
                     freshness_threshold=self._freshness_threshold,
                 )
+                if (
+                    self._connection_phase
+                    is EventBridgeConnectionPhase.DISCONNECTED
+                ):
+                    loading = _diagnostic_tasks_connection_state(
+                        loading,
+                        phase=self._connection_phase,
+                        now=_aware(self._clock()),
+                        source=source,
+                        revision=1,
+                    )
                 self._states[context] = loading
                 return loading
+            if (
+                self._connection_phase
+                is EventBridgeConnectionPhase.DISCONNECTED
+            ):
+                return previous
             if self._scripted_results:
                 self._last_scripted_result = self._scripted_results.pop(0)
             result = self._last_scripted_result
@@ -550,19 +790,23 @@ class DeterministicFakeDiagnosticTasksAdapter(
             task=task,
         )
         with self._lock:
-            self._ensure_open()
+            if self._closed:
+                return self._states.get(context, state)
+            latest = self._states.get(context)
+            if latest is not previous:
+                return state if latest is None else latest
             if state is previous:
                 return state
             self._states[context] = state
             if result.source_token is not None and result.error is None:
                 self._source_tokens[context] = result.source_token
             observers = tuple(
-                observer
+                (observer, subscription)
                 for subscribed_context, observer, subscription in self._subscriptions
                 if subscribed_context == context and not subscription.disposed
             )
-        for observer in observers:
-            observer(state)
+        for observer, subscription in observers:
+            subscription.deliver(observer, state)
         return state
 
     def create_diagnostic_task(
@@ -571,6 +815,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_command_content_identity(
                 command.configuration
             )
@@ -718,6 +964,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_mutation_content_identity(command)
             existing = self._fake_existing_result(
                 command,
@@ -798,6 +1046,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_mutation_content_identity(command)
             existing = self._fake_existing_result(
                 command,
@@ -919,6 +1169,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_mutation_content_identity(command)
             existing = self._fake_existing_result(
                 command,
@@ -1061,6 +1313,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_mutation_content_identity(command)
             existing = self._fake_existing_result(
                 command,
@@ -1285,6 +1539,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_mutation_content_identity(command)
             existing = self._fake_existing_result(command, content_identity)
             if existing is not None:
@@ -1461,6 +1717,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
+            if self._is_disconnected():
+                return _disconnected_command_result(command)
             content_identity = _fake_mutation_content_identity(command)
             existing = self._fake_existing_result(
                 command,
@@ -1757,6 +2015,61 @@ class DeterministicFakeDiagnosticTasksAdapter(
         self._commands_by_id[command.command_id.value] = record
         self._commands_by_key[command.idempotency_key.value] = record
 
+    def advance_to_disconnected(self) -> None:
+        with self._lock:
+            self._ensure_open()
+            if self._is_disconnected():
+                return
+            self._connection_phase = EventBridgeConnectionPhase.DISCONNECTED
+            self._connection_sequence += 1
+            contexts = tuple(self._states)
+        for context in contexts:
+            self._publish_fake_connection_state(context)
+
+    def advance_to_reconnected(self) -> None:
+        with self._lock:
+            self._ensure_open()
+            if not self._is_disconnected():
+                return
+            self._connection_generation = SourceGenerationId(
+                self._connection_generation.value + 1
+            )
+            self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+            self._connection_sequence += 1
+            contexts = tuple(self._states)
+        for context in contexts:
+            self._publish_fake_connection_state(context)
+        for context in contexts:
+            with self._lock:
+                if self._closed:
+                    return
+            self.snapshot(context)
+
+    def _publish_fake_connection_state(
+        self,
+        context: DiagnosticTasksContext,
+    ) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            previous = self._states.get(context)
+            if previous is None:
+                return
+            state = _diagnostic_tasks_connection_state(
+                previous,
+                phase=self._connection_phase,
+                now=_aware(self._clock()),
+                source=self._source(),
+            )
+            self._states[context] = state
+            observers = tuple(
+                (observer, subscription)
+                for subscribed_context, observer, subscription in self._subscriptions
+                if subscribed_context == context and not subscription.disposed
+            )
+        for observer, subscription in observers:
+            subscription.deliver(observer, state)
+
     def subscribe(
         self,
         context: DiagnosticTasksContext,
@@ -1767,7 +2080,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
         with self._lock:
             self._ensure_open()
             self._subscriptions.append((context, observer, subscription))
-        observer(state)
+            state = self._states.get(context, state)
+        subscription.deliver(observer, state)
         return subscription
 
     def close(self) -> None:
@@ -1783,6 +2097,19 @@ class DeterministicFakeDiagnosticTasksAdapter(
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("Diagnostic Tasks Adapter is closed")
+
+    def _is_disconnected(self) -> bool:
+        return (
+            self._connection_phase
+            is EventBridgeConnectionPhase.DISCONNECTED
+        )
+
+    def _source(self) -> DiagnosticTasksSource:
+        return DiagnosticTasksSource(
+            kind=SourceKind.DETERMINISTIC_FAKE,
+            identity="deterministic-diagnostic-tasks",
+            generation=self._connection_generation,
+        )
 
     def _task_for_context(
         self,
@@ -1807,6 +2134,66 @@ _CREATE_ONLY_CAPABILITIES = replace(
     _UNAVAILABLE_CAPABILITIES,
     can_create=True,
 )
+
+
+def _disconnected_command_result(
+    command: DiagnosticTasksApplicationCommand,
+) -> DiagnosticTasksCommandResult:
+    return DiagnosticTasksCommandResult(
+        disposition=DiagnosticTasksCommandDisposition.REJECTED,
+        command_id=command.command_id,
+        idempotency_key=command.idempotency_key,
+        message=(
+            "Diagnostic Tasks is disconnected. Perform an authoritative "
+            "command lookup after reconnect before retrying."
+        ),
+        rejection_reason=(
+            DiagnosticTaskCommandRejectionReason.DISCONNECTED_SOURCE
+        ),
+        task_handle=None,
+        current_revision=None,
+        affected_task_id=None,
+        affected_campaign_id=None,
+        affected_campaign_node_id=None,
+        retryable=True,
+        correlation_id=None,
+    )
+
+
+def _is_diagnostic_tasks_invalidation(snapshot: dict[str, object]) -> bool:
+    kind = str(snapshot.get("kind") or "").strip().lower()
+    if kind in {
+        "diagnostic-task",
+        "diagnostic-task-handle",
+        "diagnostic-campaign-node",
+        "formal-diagnostic-campaign",
+    }:
+        return True
+    return any(
+        snapshot.get(identity) not in {None, ""}
+        for identity in (
+            "diagnostic_task_id",
+            "diagnostic_task_handle_id",
+            "formal_diagnostic_campaign_id",
+            "diagnostic_campaign_node_id",
+        )
+    )
+
+
+def _diagnostic_tasks_run_ids(
+    state: DiagnosticTasksViewState,
+) -> set[str]:
+    task = state.task
+    if task is None:
+        return set()
+    return {
+        run.run_id.value
+        for node in task.handoff.campaign_nodes
+        for attempt in node.attempts
+        for run in attempt.runs
+    }
+
+
 def _loading_view_state(
     *,
     context: DiagnosticTasksContext,
@@ -1901,6 +2288,7 @@ def _next_view_state(
         freshness=Freshness.STALE if stale else Freshness.FRESH,
         age=age,
         phase=ViewPhase.DEGRADED if stale else ViewPhase.READY,
+        source=source,
         presentation=(
             DiagnosticTasksPresentationState.DEGRADED
             if stale
@@ -1980,6 +2368,7 @@ def _failed_or_degraded_state(
         freshness=Freshness.STALE,
         age=age,
         phase=ViewPhase.DEGRADED,
+        source=source,
         presentation=DiagnosticTasksPresentationState.DEGRADED,
         blocking_reasons=(
             DiagnosticTasksBlockingReason(
@@ -1992,6 +2381,71 @@ def _failed_or_degraded_state(
             ),
         ),
         error=structured_error,
+    )
+
+
+def _diagnostic_tasks_connection_state(
+    previous: DiagnosticTasksViewState,
+    *,
+    phase: EventBridgeConnectionPhase,
+    now: datetime,
+    source: DiagnosticTasksSource,
+    revision: int | None = None,
+) -> DiagnosticTasksViewState:
+    disconnected = phase is EventBridgeConnectionPhase.DISCONNECTED
+    has_reliable_state = previous.last_reliable_inventory is not None
+    last_reliable_at = previous.last_reliable_at or (
+        previous.observed_at if has_reliable_state else None
+    )
+    age = (
+        timedelta(0)
+        if last_reliable_at is None
+        else max(now - last_reliable_at, timedelta(0))
+    )
+    message = (
+        "Diagnostic Tasks is disconnected; showing the last reliable state."
+        if disconnected
+        else (
+            "Diagnostic Tasks reconnected and is awaiting an authoritative "
+            "Application reread."
+        )
+    )
+    return replace(
+        previous,
+        revision=previous.revision + 1 if revision is None else revision,
+        observed_at=now,
+        freshness=(
+            Freshness.DISCONNECTED if disconnected else Freshness.STALE
+        ),
+        age=age,
+        source=source,
+        phase=ViewPhase.DEGRADED if has_reliable_state else ViewPhase.FAILED,
+        presentation=(
+            DiagnosticTasksPresentationState.DEGRADED
+            if has_reliable_state
+            else DiagnosticTasksPresentationState.FAILED
+        ),
+        capabilities=_UNAVAILABLE_CAPABILITIES,
+        blocking_reasons=(
+            DiagnosticTasksBlockingReason(
+                code=(
+                    DiagnosticTasksBlockingCode.SOURCE_DISCONNECTED
+                    if disconnected
+                    else DiagnosticTasksBlockingCode.SOURCE_RECONNECTING
+                ),
+                message=message,
+                dependent_operations=("read_inventory", "authoritative_lookup"),
+            ),
+        ),
+        error=StructuredFeatureError(
+            code=(
+                "diagnostic_tasks_source_disconnected"
+                if disconnected
+                else "diagnostic_tasks_source_reconnecting"
+            ),
+            message=message,
+            retryable=True,
+        ),
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import datetime, timedelta, timezone
+from threading import Event, Thread, current_thread
 from typing import cast
 
 import pytest
@@ -33,6 +34,7 @@ from app.features import (
     DiagnosticTasksApplicationError,
     DiagnosticTasksApplicationErrorCode,
     DiagnosticTasksApplicationInventoryResult,
+    DiagnosticTasksBlockingCode,
     DiagnosticTasksCommandDisposition,
     DiagnosticTasksContext,
     DiagnosticTasksFeature,
@@ -51,6 +53,7 @@ from app.features import (
     SourceRevisionToken,
     StartFormalDiagnosticCampaign,
     StrategyDiagnosticsV1ApplicationReadModel,
+    StrategyDiagnosticsV1DiagnosticTasksApplication,
     TaskPhase,
     ValidateDiagnosticTaskConfiguration,
 )
@@ -65,7 +68,7 @@ from tests.strategy_diagnostics.test_recipe_lifecycle import (
 )
 
 
-def _live_feature() -> DiagnosticTasksFeature:
+def _live_diagnostics_application():
     source = _RecipeFixtureSource()
     application = create_diagnostics_application(
         historical_source=source,
@@ -83,10 +86,24 @@ def _live_feature() -> DiagnosticTasksFeature:
     assert application.validate_recipe_draft(draft.draft_id).is_valid
     approved = application.approve_recipe_draft(draft.draft_id, actor="owner")
     application.materialize_baseline_reference_path(approved.version_id)
+    return application
+
+
+def _live_application_adapter() -> (
+    StrategyDiagnosticsV1DiagnosticTasksApplication
+):
+    return LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+        _live_diagnostics_application()
+    )
+
+
+def _live_feature(
+    *,
+    event_bridge: EventBridge | None = None,
+) -> DiagnosticTasksFeature:
     return LiveDiagnosticTasksAdapter(
-        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-            application
-        ),
+        application=_live_application_adapter(),
+        event_bridge=event_bridge,
         clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
     )
 
@@ -119,6 +136,227 @@ class _MutableClock:
         self.now += delta
         if self.on_advance is not None:
             self.on_advance()
+
+
+@dataclass(frozen=True)
+class _DiagnosticTasksRecoveryHarness:
+    feature: DiagnosticTasksFeature
+    disconnect: Callable[[], None]
+    reconnect: Callable[[], None]
+
+
+@dataclass(frozen=True)
+class _DelayedSnapshotRecoveryHarness:
+    feature: DiagnosticTasksFeature
+    disconnect: Callable[[], None]
+    reconnect: Callable[[], None]
+    block_next_read: Callable[[], None]
+    wait_until_blocked: Callable[[], bool]
+    release_read: Callable[[], None]
+
+
+class _BlockingInventoryApplication:
+    def __init__(
+        self,
+        delegate: StrategyDiagnosticsV1DiagnosticTasksApplication,
+        entered: Event,
+        release: Event,
+    ) -> None:
+        self._delegate = delegate
+        self._entered = entered
+        self._release = release
+        self._block_next = False
+
+    def block_next_read(self) -> None:
+        self._block_next = True
+
+    def read_inventory(self):
+        if self._block_next:
+            self._block_next = False
+            self._entered.set()
+            assert self._release.wait(2)
+        return self._delegate.read_inventory()
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
+class _BlockingTaskReadApplication:
+    def __init__(
+        self,
+        delegate: StrategyDiagnosticsV1DiagnosticTasksApplication,
+        entered: Event,
+        release: Event,
+    ) -> None:
+        self._delegate = delegate
+        self._entered = entered
+        self._release = release
+        self._block_next = False
+
+    def block_next_read(self) -> None:
+        self._block_next = True
+
+    def read_diagnostic_task(self, task_id):
+        result = self._delegate.read_diagnostic_task(task_id)
+        if self._block_next:
+            self._block_next = False
+            self._entered.set()
+            assert self._release.wait(2)
+        return result
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
+class _BlockingClock:
+    def __init__(self) -> None:
+        self._entered = Event()
+        self._release = Event()
+        self._block_named_thread = False
+
+    def block_next_named_thread(self) -> None:
+        self._block_named_thread = True
+
+    def wait_until_blocked(self) -> bool:
+        return self._entered.wait(2)
+
+    def release(self) -> None:
+        self._release.set()
+
+    def __call__(self) -> datetime:
+        if (
+            self._block_named_thread
+            and current_thread().name == "older-snapshot"
+        ):
+            self._block_named_thread = False
+            self._entered.set()
+            assert self._release.wait(2)
+        return datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+
+class _DisconnectAfterAcceptedCreateApplication:
+    def __init__(
+        self,
+        delegate: StrategyDiagnosticsV1DiagnosticTasksApplication,
+        bridge: EventBridge,
+    ) -> None:
+        self._delegate = delegate
+        self._bridge = bridge
+        self._did_disconnect = False
+
+    def create_diagnostic_task(self, command):
+        accepted = self._delegate.create_diagnostic_task(command)
+        if not self._did_disconnect:
+            self._did_disconnect = True
+            self._bridge.mark_disconnected()
+        return accepted
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
+class _ReconnectBeforeAcceptedCreateReturnsApplication:
+    def __init__(
+        self,
+        delegate: StrategyDiagnosticsV1DiagnosticTasksApplication,
+        bridge: EventBridge,
+    ) -> None:
+        self._delegate = delegate
+        self._bridge = bridge
+        self._did_reconnect = False
+
+    def create_diagnostic_task(self, command):
+        accepted = self._delegate.create_diagnostic_task(command)
+        if not self._did_reconnect:
+            self._did_reconnect = True
+            self._bridge.mark_disconnected()
+            self._bridge.mark_reconnected()
+        return accepted
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
+class _LoseFirstCreateResponseDiagnosticsApplication:
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self._lost = False
+
+    def create_diagnostic_task(self, request):
+        result = self._delegate.create_diagnostic_task(request)
+        if not self._lost:
+            self._lost = True
+            raise RuntimeError("response lost after durable acceptance")
+        return result
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
+def _live_recovery_harness() -> _DiagnosticTasksRecoveryHarness:
+    bridge = EventBridge(subscribe_backend=False)
+    return _DiagnosticTasksRecoveryHarness(
+        feature=_live_feature(event_bridge=bridge),
+        disconnect=bridge.mark_disconnected,
+        reconnect=bridge.mark_reconnected,
+    )
+
+
+def _fake_recovery_harness() -> _DiagnosticTasksRecoveryHarness:
+    feature = _fake_feature()
+    assert isinstance(feature, DeterministicFakeDiagnosticTasksAdapter)
+    return _DiagnosticTasksRecoveryHarness(
+        feature=feature,
+        disconnect=feature.advance_to_disconnected,
+        reconnect=feature.advance_to_reconnected,
+    )
+
+
+def _live_delayed_snapshot_recovery_harness() -> (
+    _DelayedSnapshotRecoveryHarness
+):
+    bridge = EventBridge(subscribe_backend=False)
+    entered = Event()
+    release = Event()
+    application = _BlockingTaskReadApplication(
+        _live_application_adapter(),
+        entered,
+        release,
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            application,
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    return _DelayedSnapshotRecoveryHarness(
+        feature=feature,
+        disconnect=bridge.mark_disconnected,
+        reconnect=bridge.mark_reconnected,
+        block_next_read=application.block_next_read,
+        wait_until_blocked=lambda: entered.wait(2),
+        release_read=release.set,
+    )
+
+
+def _fake_delayed_snapshot_recovery_harness() -> (
+    _DelayedSnapshotRecoveryHarness
+):
+    clock = _BlockingClock()
+    feature = DeterministicFakeDiagnosticTasksAdapter(
+        inventory=_authoritative_inventory(),
+        clock=clock,
+    )
+    return _DelayedSnapshotRecoveryHarness(
+        feature=feature,
+        disconnect=feature.advance_to_disconnected,
+        reconnect=feature.advance_to_reconnected,
+        block_next_read=clock.block_next_named_thread,
+        wait_until_blocked=clock.wait_until_blocked,
+        release_read=clock.release,
+    )
 
 
 class _DisconnectableMarketPathArtifactStore(InMemoryMarketPathArtifactStore):
@@ -923,3 +1161,698 @@ def test_production_composition_uses_only_the_live_diagnostic_tasks_adapter(
     context.diagnostic_tasks_feature.close()
     context.run_monitoring_feature.close()
     context.evidence_and_findings_feature.close()
+
+
+def test_live_diagnostic_tasks_reconnects_with_a_new_generation_only_after_reread(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    application = create_diagnostics_application()
+    application.start()
+    application_adapter = (
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application)
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="live",
+        event_bridge=bridge,
+        strategy_diagnostics_read_model=cast(
+            StrategyDiagnosticsV1ApplicationReadModel,
+            object(),
+        ),
+        strategy_diagnostics_tasks_application=application_adapter,
+    )
+    feature = context.diagnostic_tasks_feature
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    observed = []
+    subscription = feature.subscribe(workspace, observed.append)
+
+    bridge.mark_disconnected()
+    disconnected = feature.snapshot(workspace)
+
+    assert disconnected.revision > reliable.revision
+    assert disconnected.freshness is Freshness.DISCONNECTED
+    assert disconnected.last_reliable_inventory is reliable.last_reliable_inventory
+    assert disconnected.source.generation.value == 1
+    assert disconnected.error is not None
+    assert disconnected.error.code == "diagnostic_tasks_source_disconnected"
+    assert disconnected.blocking_reasons[0].code is (
+        DiagnosticTasksBlockingCode.SOURCE_DISCONNECTED
+    )
+
+    bridge.mark_reconnected()
+    recovered = feature.snapshot(workspace)
+
+    assert recovered.revision > disconnected.revision
+    assert recovered.freshness is Freshness.FRESH
+    assert recovered.source.generation.value == 2
+    assert recovered.last_reliable_inventory is not None
+    assert any(
+        state.source.generation.value == 2
+        and state.freshness is not Freshness.FRESH
+        and state.error is not None
+        and state.error.code == "diagnostic_tasks_source_reconnecting"
+        for state in observed
+    )
+
+    subscription.dispose()
+    delivered_before_close = len(observed)
+    feature.close()
+    feature.close()
+    bridge.mark_disconnected()
+    bridge.mark_reconnected()
+    assert len(observed) == delivered_before_close
+
+    context.run_monitoring_feature.close()
+    context.evidence_and_findings_feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    [_live_recovery_harness, _fake_recovery_harness],
+)
+def test_live_and_fake_opened_disconnected_never_claim_fresh_or_empty(
+    harness_factory: Callable[[], _DiagnosticTasksRecoveryHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    workspace = DiagnosticTasksContext.workspace()
+    harness.disconnect()
+
+    disconnected = feature.snapshot(workspace)
+
+    assert disconnected.revision == 1
+    assert disconnected.freshness is Freshness.DISCONNECTED
+    assert disconnected.presentation is DiagnosticTasksPresentationState.FAILED
+    assert disconnected.last_reliable_inventory is None
+    assert disconnected.task is None
+    assert disconnected.source.generation.value == 1
+    assert disconnected.error is not None
+    assert disconnected.error.code == "diagnostic_tasks_source_disconnected"
+    assert disconnected.blocking_reasons[0].code is (
+        DiagnosticTasksBlockingCode.SOURCE_DISCONNECTED
+    )
+
+    harness.reconnect()
+    recovered = feature.snapshot(workspace)
+
+    assert recovered.revision > disconnected.revision
+    assert recovered.freshness is Freshness.FRESH
+    assert recovered.source.generation.value == 2
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    [_live_recovery_harness, _fake_recovery_harness],
+)
+def test_live_and_fake_share_navigation_disconnect_and_reconnect_state(
+    harness_factory: Callable[[], _DiagnosticTasksRecoveryHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    observed = []
+    page_subscription = feature.subscribe(workspace, observed.append)
+
+    harness.disconnect()
+    disconnected = feature.snapshot(workspace)
+
+    assert disconnected.revision > reliable.revision
+    assert disconnected.freshness is Freshness.DISCONNECTED
+    assert disconnected.last_reliable_inventory is reliable.last_reliable_inventory
+    assert disconnected.source.generation.value == 1
+    assert disconnected.error is not None
+    assert disconnected.error.code == "diagnostic_tasks_source_disconnected"
+    assert disconnected.blocking_reasons[0].code is (
+        DiagnosticTasksBlockingCode.SOURCE_DISCONNECTED
+    )
+
+    harness.reconnect()
+    recovered = feature.snapshot(workspace)
+
+    assert recovered.revision > disconnected.revision
+    assert recovered.freshness is Freshness.FRESH
+    assert recovered.source.generation.value == 2
+    assert any(
+        state.source.generation.value == 2
+        and state.freshness is not Freshness.FRESH
+        and state.error is not None
+        and state.error.code == "diagnostic_tasks_source_reconnecting"
+        for state in observed
+    )
+
+    page_subscription.dispose()
+    observed_before_route_leave = len(observed)
+    harness.disconnect()
+    harness.reconnect()
+    remounted = feature.snapshot(workspace)
+
+    assert len(observed) == observed_before_route_leave
+    assert remounted.freshness is Freshness.FRESH
+    assert remounted.source.generation.value == 3
+    remount_observed = []
+    remount_subscription = feature.subscribe(
+        workspace,
+        remount_observed.append,
+    )
+    assert remount_observed[-1] == remounted
+    remount_subscription.dispose()
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    [_live_recovery_harness, _fake_recovery_harness],
+)
+def test_live_and_fake_reject_before_acceptance_while_disconnected(
+    harness_factory: Callable[[], _DiagnosticTasksRecoveryHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    commands = _unavailable_commands(reliable.last_reliable_inventory)
+    command = commands[0]
+
+    harness.disconnect()
+    rejected_results = (
+        feature.create_diagnostic_task(commands[0]),
+        feature.revise_configuration(commands[1]),
+        feature.validate_configuration(commands[2]),
+        feature.approve_configuration(commands[3]),
+        feature.start_formal_diagnostic_campaign(commands[4]),
+        feature.pause_diagnostic_target(commands[5]),
+        feature.resume_diagnostic_target(commands[6]),
+        feature.cancel_diagnostic_target(commands[7]),
+        feature.retry_failed_campaign_node(commands[8]),
+    )
+
+    assert all(not result.accepted for result in rejected_results)
+    assert all(
+        result.rejection_reason
+        is DiagnosticTaskCommandRejectionReason.DISCONNECTED_SOURCE
+        for result in rejected_results
+    )
+    assert all(result.task_handle is None for result in rejected_results)
+    assert all(result.retryable for result in rejected_results)
+    assert all(
+        "authoritative command lookup" in result.message
+        for result in rejected_results
+    )
+
+    harness.reconnect()
+    accepted = feature.create_diagnostic_task(command)
+    replay = feature.create_diagnostic_task(
+        replace(
+            command,
+            command_id=DiagnosticCommandId("command-62-create-replay"),
+        )
+    )
+
+    assert accepted.accepted
+    assert accepted.task_handle is not None
+    assert (
+        replay.disposition
+        is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert replay.task_handle is not None
+    assert replay.task_handle.identity == accepted.task_handle.identity
+    assert replay.task_handle.phase is TaskPhase.COMPLETED
+    assert replay.affected_task_id == accepted.affected_task_id
+    feature.close()
+
+
+def test_live_adapter_quarantines_an_authoritative_read_from_old_generation() -> (
+    None
+):
+    bridge = EventBridge(subscribe_backend=False)
+    entered = Event()
+    release = Event()
+    application = _BlockingInventoryApplication(
+        _live_application_adapter(),
+        entered,
+        release,
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            application,
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    application.block_next_read()
+    completed = []
+    reader = Thread(target=lambda: completed.append(feature.snapshot(workspace)))
+    reader.start()
+    assert entered.wait(2)
+
+    bridge.mark_disconnected()
+    disconnected = feature.snapshot(workspace)
+    release.set()
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert completed == [disconnected]
+    assert feature.snapshot(workspace) == disconnected
+    assert disconnected.freshness is Freshness.DISCONNECTED
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    [
+        _live_delayed_snapshot_recovery_harness,
+        _fake_delayed_snapshot_recovery_harness,
+    ],
+)
+def test_live_and_fake_quarantine_a_delayed_old_generation_snapshot(
+    harness_factory: Callable[[], _DelayedSnapshotRecoveryHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    commands = _unavailable_commands(reliable.last_reliable_inventory)
+    first = feature.create_diagnostic_task(commands[0])
+    assert first.affected_task_id is not None
+
+    harness.block_next_read()
+    completed = []
+    reader = Thread(
+        name="older-snapshot",
+        target=lambda: completed.append(feature.snapshot(workspace)),
+    )
+    reader.start()
+    assert harness.wait_until_blocked()
+
+    harness.disconnect()
+    harness.reconnect()
+    second = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId(
+                "command-62-new-generation-task"
+            ),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-62-new-generation-task"
+            ),
+        )
+    )
+    assert second.affected_task_id is not None
+    newest = feature.snapshot(workspace)
+    assert newest.task is not None
+    assert newest.task.task_id == second.affected_task_id
+    assert newest.source.generation.value == 2
+
+    harness.release_read()
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert completed == [newest]
+    assert feature.snapshot(workspace) == newest
+    feature.close()
+
+
+def test_live_adapter_quarantines_an_older_same_generation_snapshot() -> None:
+    entered = Event()
+    release = Event()
+    application = _BlockingTaskReadApplication(
+        _live_application_adapter(),
+        entered,
+        release,
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            application,
+        ),
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    commands = _unavailable_commands(reliable.last_reliable_inventory)
+    first = feature.create_diagnostic_task(commands[0])
+    assert first.affected_task_id is not None
+
+    application.block_next_read()
+    completed = []
+    reader = Thread(
+        name="older-snapshot",
+        target=lambda: completed.append(feature.snapshot(workspace)),
+    )
+    reader.start()
+    assert entered.wait(2)
+
+    second = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-62-newer-task"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-62-newer-task"
+            ),
+        )
+    )
+    assert second.affected_task_id is not None
+    newest = feature.snapshot(workspace)
+    assert newest.task is not None
+    assert newest.task.task_id == second.affected_task_id
+
+    release.set()
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert completed == [newest]
+    assert feature.snapshot(workspace) == newest
+    feature.close()
+
+
+def test_fake_adapter_quarantines_an_older_same_generation_snapshot() -> None:
+    clock = _BlockingClock()
+    feature = DeterministicFakeDiagnosticTasksAdapter(
+        inventory=_authoritative_inventory(),
+        clock=clock,
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    commands = _unavailable_commands(reliable.last_reliable_inventory)
+    first = feature.create_diagnostic_task(commands[0])
+    assert first.affected_task_id is not None
+
+    clock.block_next_named_thread()
+    completed = []
+    reader = Thread(
+        name="older-snapshot",
+        target=lambda: completed.append(feature.snapshot(workspace)),
+    )
+    reader.start()
+    assert clock.wait_until_blocked()
+
+    second = feature.create_diagnostic_task(
+        replace(
+            commands[0],
+            command_id=DiagnosticCommandId("command-62-newer-fake-task"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-62-newer-fake-task"
+            ),
+        )
+    )
+    assert second.affected_task_id is not None
+    newest = feature.snapshot(workspace)
+    assert newest.task is not None
+    assert newest.task.task_id == second.affected_task_id
+
+    clock.release()
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert completed == [newest]
+    assert feature.snapshot(workspace) == newest
+    feature.close()
+
+
+@pytest.mark.parametrize("feature_factory", [_live_feature, _fake_feature])
+def test_subscribe_registers_against_the_latest_state(
+    feature_factory: Callable[[], DiagnosticTasksFeature],
+    monkeypatch,
+) -> None:
+    feature = feature_factory()
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    command = _unavailable_commands(reliable.last_reliable_inventory)[0]
+    original_snapshot = feature.snapshot
+    entered = Event()
+    release = Event()
+
+    def delayed_subscribe_snapshot(context):
+        state = original_snapshot(context)
+        if current_thread().name == "subscriber":
+            entered.set()
+            assert release.wait(2)
+        return state
+
+    monkeypatch.setattr(feature, "snapshot", delayed_subscribe_snapshot)
+    observed = []
+    subscriptions = []
+    subscriber = Thread(
+        name="subscriber",
+        target=lambda: subscriptions.append(
+            feature.subscribe(workspace, observed.append)
+        ),
+    )
+    subscriber.start()
+    assert entered.wait(2)
+
+    accepted = feature.create_diagnostic_task(command)
+    assert accepted.affected_task_id is not None
+    newest = original_snapshot(workspace)
+    assert newest.task is not None
+    assert newest.task.task_id == accepted.affected_task_id
+
+    release.set()
+    subscriber.join(timeout=2)
+
+    assert not subscriber.is_alive()
+    assert observed[-1] == newest
+    assert subscriptions
+    subscriptions[0].dispose()
+    feature.close()
+
+
+def test_live_adapter_close_drops_an_inflight_read_without_late_callback() -> None:
+    entered = Event()
+    release = Event()
+    application = _BlockingInventoryApplication(
+        _live_application_adapter(),
+        entered,
+        release,
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            application,
+        ),
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    feature.snapshot(workspace)
+    observed = []
+    subscription = feature.subscribe(workspace, observed.append)
+    delivered_before_close = len(observed)
+    application.block_next_read()
+    completed = []
+    reader = Thread(target=lambda: completed.append(feature.snapshot(workspace)))
+    reader.start()
+    assert entered.wait(2)
+
+    feature.close()
+    feature.close()
+    release.set()
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert subscription.disposed
+    assert len(observed) == delivered_before_close
+    assert len(completed) == 1
+
+
+def test_live_adapter_ignores_old_generation_batches_but_rereads_current() -> (
+    None
+):
+    bridge = EventBridge(subscribe_backend=False)
+    feature = _live_feature(event_bridge=bridge)
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    observed = []
+    subscription = feature.subscribe(workspace, observed.append)
+    bridge.mark_disconnected()
+    bridge.mark_reconnected()
+    accepted = feature.create_diagnostic_task(
+        _unavailable_commands(reliable.last_reliable_inventory)[0]
+    )
+    assert accepted.accepted
+    assert observed[-1].task is None
+
+    delivered_before_old_batch = len(observed)
+    bridge.on_snapshot({"kind": "diagnostic-task"}, generation=1)
+    bridge.flush(force=True)
+
+    assert len(observed) == delivered_before_old_batch
+    assert observed[-1].task is None
+
+    bridge.on_snapshot({"run_id": "market-run"}, generation=2)
+    bridge.flush(force=True)
+
+    assert len(observed) == delivered_before_old_batch
+    assert observed[-1].task is None
+
+    bridge.on_snapshot({"kind": "diagnostic-task"}, generation=2)
+    bridge.flush(force=True)
+
+    assert observed[-1].task is not None
+    assert observed[-1].task.task_id == accepted.affected_task_id
+    subscription.dispose()
+    feature.close()
+
+
+def test_disconnect_after_durable_acceptance_preserves_the_original_handle() -> (
+    None
+):
+    bridge = EventBridge(subscribe_backend=False)
+    wrapped = _DisconnectAfterAcceptedCreateApplication(
+        _live_application_adapter(),
+        bridge,
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            wrapped,
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    command = _unavailable_commands(reliable.last_reliable_inventory)[0]
+
+    accepted = feature.create_diagnostic_task(command)
+
+    assert accepted.accepted
+    assert accepted.task_handle is not None
+    assert feature.snapshot(workspace).freshness is Freshness.DISCONNECTED
+
+    bridge.mark_reconnected()
+    replay = feature.create_diagnostic_task(
+        replace(
+            command,
+            command_id=DiagnosticCommandId("command-62-post-accept-replay"),
+        )
+    )
+
+    assert (
+        replay.disposition
+        is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert replay.task_handle is not None
+    assert replay.task_handle.identity == accepted.task_handle.identity
+    assert replay.affected_task_id == accepted.affected_task_id
+    feature.close()
+
+
+def test_old_generation_accepted_response_requires_authoritative_recovery() -> (
+    None
+):
+    bridge = EventBridge(subscribe_backend=False)
+    wrapped = _ReconnectBeforeAcceptedCreateReturnsApplication(
+        _live_application_adapter(),
+        bridge,
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            wrapped,
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    command = _unavailable_commands(reliable.last_reliable_inventory)[0]
+
+    quarantined = feature.create_diagnostic_task(command)
+
+    assert not quarantined.accepted
+    assert quarantined.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.DISCONNECTED_SOURCE
+    )
+    assert quarantined.task_handle is None
+    authoritative = feature.snapshot(workspace)
+    assert authoritative.task is not None
+    replay = feature.create_diagnostic_task(
+        replace(
+            command,
+            command_id=DiagnosticCommandId(
+                "command-62-old-generation-replay"
+            ),
+        )
+    )
+    assert (
+        replay.disposition
+        is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert replay.task_handle is not None
+    assert replay.affected_task_id == authoritative.task.task_id
+    feature.close()
+
+
+def test_lost_response_requires_lookup_and_same_key_recovers_acceptance() -> None:
+    backend = _LoseFirstCreateResponseDiagnosticsApplication(
+        _live_diagnostics_application()
+    )
+    feature = LiveDiagnosticTasksAdapter(
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            backend
+        ),
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    command = _unavailable_commands(reliable.last_reliable_inventory)[0]
+
+    indeterminate = feature.create_diagnostic_task(command)
+
+    assert not indeterminate.accepted
+    assert indeterminate.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.DISCONNECTED_SOURCE
+    )
+    assert indeterminate.task_handle is None
+    assert "authoritative task lookup" in indeterminate.message
+    assert "same idempotency key" in indeterminate.message
+
+    authoritative = feature.snapshot(workspace)
+    assert authoritative.task is not None
+    replay = feature.create_diagnostic_task(
+        replace(
+            command,
+            command_id=DiagnosticCommandId(
+                "command-62-lost-response-replay"
+            ),
+        )
+    )
+
+    assert (
+        replay.disposition
+        is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert replay.task_handle is not None
+    assert replay.task_handle.phase is TaskPhase.COMPLETED
+    assert replay.affected_task_id == authoritative.task.task_id
+    feature.close()

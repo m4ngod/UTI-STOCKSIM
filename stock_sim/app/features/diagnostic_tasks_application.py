@@ -1002,7 +1002,11 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                 disposition=DiagnosticTasksCommandDisposition.REJECTED,
                 command_id=command.command_id,
                 idempotency_key=command.idempotency_key,
-                message="Strategy Diagnostics is not ready.",
+                message=(
+                    "The command outcome could not be confirmed. Perform an "
+                    "authoritative task lookup after reconnect before retrying "
+                    "with the same idempotency key."
+                ),
                 rejection_reason=(
                     DiagnosticTasksApplicationCommandRejectionReason.DISCONNECTED_SOURCE
                 ),
@@ -1253,7 +1257,11 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
             disposition=DiagnosticTasksCommandDisposition.REJECTED,
             command_id=command.command_id,
             idempotency_key=command.idempotency_key,
-            message="Strategy Diagnostics is not ready.",
+            message=(
+                "The command outcome could not be confirmed. Perform an "
+                "authoritative task lookup after reconnect before retrying "
+                "with the same idempotency key."
+            ),
             rejection_reason=(
                 DiagnosticTasksApplicationCommandRejectionReason.DISCONNECTED_SOURCE
             ),
