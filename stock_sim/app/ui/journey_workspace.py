@@ -9,6 +9,7 @@ from math import ceil
 from pathlib import Path
 from threading import Lock
 from time import monotonic_ns
+from typing import cast
 from uuid import uuid4
 
 from PySide6.QtCore import (
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import QWidget
 
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
+    ApprovedScenarioRecipeId,
     CampaignNodeTarget,
     CancelDiagnosticTarget,
     CancelDiagnosticTask,
@@ -48,11 +50,13 @@ from app.features import (
     DiagnosticTaskTarget,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsFeature,
+    EvidenceAndFindingsSelection,
     EvidenceAndFindingsSubscription,
     EvidenceAndFindingsViewState,
     EvidenceCoverage,
     EvidenceDimension,
     FormalDiagnosticCampaignTarget,
+    MarketScenarioId,
     PauseDiagnosticTarget,
     PauseDiagnosticTask,
     ResumeDiagnosticTarget,
@@ -109,6 +113,7 @@ class DiagnosticTasksQtAdapter(QObject):
     stateChanged = Signal()
     deliveryRequested = Signal(int, object)
     campaignHandoffReady = Signal(object)
+    evidenceHandoffReady = Signal(object)
 
     def __init__(
         self,
@@ -123,6 +128,9 @@ class DiagnosticTasksQtAdapter(QObject):
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
         self._last_emitted_monitoring_selection: tuple[str, str] | None = None
+        self._last_emitted_evidence_selection: (
+            tuple[str, str, str, str, str, str] | None
+        ) = None
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
@@ -150,6 +158,7 @@ class DiagnosticTasksQtAdapter(QObject):
         self._state = state
         self.stateChanged.emit()
         self._emit_monitoring_handoff_if_ready()
+        self._emit_evidence_handoff_if_ready()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
@@ -166,7 +175,15 @@ class DiagnosticTasksQtAdapter(QObject):
             f"{self.freshness} · {self.presentationState} · "
             f"{self._state.completeness.value}"
         )
-        return details if error is None else f"{details} · {error.message}"
+        return (
+            details
+            if error is None
+            else (
+                f"{details} · structured error {error.code}: "
+                f"{error.message} · retryable "
+                f"{str(error.retryable).lower()}"
+            )
+        )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def stateTitle(self) -> str:  # noqa: N802
@@ -494,6 +511,41 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def evidenceHandoffText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or task.handoff.campaign_id is None:
+            return "No Evidence and Findings handoff is available."
+        handoff = task.handoff
+        run_lines = tuple(
+            (
+                f"Campaign Case {node.selected_campaign_case_id.value}; "
+                f"Market Scenario {node.market_scenario_id.value}; "
+                f"attempt {attempt.attempt_id.value}; "
+                f"Run {run.run_id.value}; "
+                f"Strategy Under Test {run.strategy_id.value}; "
+                "Reproduction Manifest "
+                f"{run.reproduction_manifest_id.value if run.reproduction_manifest_id is not None else 'not yet available'}"
+            )
+            for node in handoff.campaign_nodes
+            for attempt in node.attempts
+            if attempt.attempt_id == node.active_attempt_id
+            for run in attempt.runs
+        )
+        return " · ".join(
+            (
+                (
+                    f"Evidence Package "
+                    f"{handoff.evidence_package_id.value if handoff.evidence_package_id is not None else 'not yet available'}"
+                ),
+                (
+                    f"Top Reproduction Manifest "
+                    f"{handoff.reproduction_manifest_id.value if handoff.reproduction_manifest_id is not None else 'not yet available'}"
+                ),
+                *run_lines,
+            )
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def campaignLifecycleText(self) -> str:  # noqa: N802
         task = self._state.task
         if task is None or task.handoff.campaign_id is None:
@@ -548,6 +600,127 @@ class DiagnosticTasksQtAdapter(QObject):
             "when their typed capabilities are available.",
         )
 
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def capabilitiesText(self) -> str:  # noqa: N802
+        capabilities = (
+            ("create", self.canCreate),
+            ("correct", self.canRevise),
+            ("validate", self.canValidate),
+            ("approve", self.canApprove),
+            ("start Campaign", self.canStartCampaign),
+            (
+                "pause",
+                self.canPauseTask
+                or self.canPauseCampaign
+                or self.canPauseCampaignNode,
+            ),
+            (
+                "resume",
+                self.canResumeTask
+                or self.canResumeCampaign
+                or self.canResumeCampaignNode,
+            ),
+            (
+                "cancel diagnostic target",
+                self.canCancelTask
+                or self.canCancelCampaign
+                or self.canCancelCampaignNode,
+            ),
+            ("retry failed node", self.canRetryFailedCampaignNode),
+        )
+        return "Capabilities · " + " · ".join(
+            f"{name} {'available' if available else 'unavailable'}"
+            for name, available in capabilities
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def accessibilitySummaryText(self) -> str:  # noqa: N802
+        error = self._state.error
+        manifest_id = self._state.reproduction_manifest_id
+        return ". ".join(
+            (
+                (
+                    f"Diagnostic Tasks {self.presentationState}; "
+                    f"freshness {self.freshness}; "
+                    f"view revision {self.revisionText}; "
+                    f"source {self.sourceText}"
+                ),
+                cast(str, self.taskStatusText),
+                f"Validation {self.validationStatusText}",
+                f"Approval {self.approvalStatusText}",
+                f"TaskHandle {self.taskHandleText}",
+                cast(str, self.campaignHandoffText),
+                cast(str, self.evidenceHandoffText),
+                cast(str, self.campaignLifecycleText),
+                cast(str, self.campaignNodeLifecycleText),
+                (
+                    "Reproduction Manifest "
+                    f"{self.reproductionManifestStatus} · "
+                    f"{manifest_id.value if manifest_id is not None else 'no identity'}"
+                ),
+                cast(str, self.capabilitiesText),
+                (
+                    "No structured error."
+                    if error is None
+                    else (
+                        f"Structured error {error.code}: {error.message}; "
+                        f"retryable {str(error.retryable).lower()}."
+                    )
+                ),
+            )
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def accessibilityAnnouncementText(self) -> str:  # noqa: N802
+        task = self._state.task
+        error = self._state.error
+        lifecycle = (
+            "No Diagnostic Task"
+            if task is None
+            else f"Diagnostic Task {task.lifecycle.value}"
+        )
+        validation = (
+            "validation unavailable"
+            if task is None
+            else f"validation {task.validation.state.value}"
+        )
+        approval = (
+            "approval unavailable"
+            if task is None or task.approval is None
+            else (
+                "approval bound to exact task revision "
+                f"r{task.approval.approved_revision}"
+            )
+        )
+        latest_handle = (
+            None
+            if task is None or not task.task_handles
+            else task.task_handles[-1]
+        )
+        handle = (
+            "no TaskHandle"
+            if latest_handle is None
+            else (
+                f"TaskHandle {latest_handle.identity.value} "
+                f"{latest_handle.phase.value} "
+                f"{latest_handle.progress:.0%}"
+            )
+        )
+        evidence = (
+            "Evidence "
+            + cast(str, self.reproductionManifestStatus).replace("_", " ")
+        )
+        error_text = (
+            ""
+            if error is None
+            else f"; structured error {error.code}: {error.message}"
+        )
+        return (
+            f"Diagnostic Tasks update; freshness {self.freshness}; "
+            f"{lifecycle}; {validation}; {approval}; {handle}; "
+            f"{evidence}; {self.commandStatusText}{error_text}"
+        )
+
     @Slot()
     def createTask(self) -> None:  # noqa: N802
         configuration = self._configuration_from_inventory(
@@ -571,7 +744,7 @@ class DiagnosticTasksQtAdapter(QObject):
                 configuration=configuration,
             )
         )
-        self._create_status = result.message
+        self._create_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
 
@@ -601,7 +774,7 @@ class DiagnosticTasksQtAdapter(QObject):
                 configuration=configuration,
             )
         )
-        self._command_status = result.message
+        self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
 
@@ -627,7 +800,7 @@ class DiagnosticTasksQtAdapter(QObject):
                 expected_revision=task.revision,
             )
         )
-        self._command_status = result.message
+        self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
 
@@ -673,7 +846,7 @@ class DiagnosticTasksQtAdapter(QObject):
                 actor_id=DiagnosticActorId(actor),
             )
         )
-        self._command_status = result.message
+        self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
 
@@ -706,7 +879,7 @@ class DiagnosticTasksQtAdapter(QObject):
                 approved_revision=approval.approved_revision,
             )
         )
-        self._command_status = result.message
+        self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
         self._emit_monitoring_handoff_if_ready()
@@ -969,7 +1142,7 @@ class DiagnosticTasksQtAdapter(QObject):
                 expected_revision=node.revision,
             )
         )
-        self._command_status = result.message
+        self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
 
@@ -977,9 +1150,30 @@ class DiagnosticTasksQtAdapter(QObject):
         self,
         result: DiagnosticTasksCommandResult,
     ) -> None:
-        self._command_status = result.message
+        self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
+
+    @staticmethod
+    def _command_result_text(
+        result: DiagnosticTasksCommandResult,
+    ) -> str:
+        reason = result.rejection_reason
+        if reason is None:
+            return result.message
+        current_revision = (
+            ""
+            if result.current_revision is None
+            else (
+                " Authoritative current revision "
+                f"r{result.current_revision}."
+            )
+        )
+        return (
+            f"{result.message} Rejection "
+            f"{reason.value.replace('_', ' ')}."
+            f"{current_revision}"
+        )
 
     def _lifecycle_unavailable(self, operation: str) -> None:
         self._command_status = (
@@ -1054,14 +1248,68 @@ class DiagnosticTasksQtAdapter(QObject):
         if handoff.campaign_id is None:
             return None
         for node in handoff.campaign_nodes:
-            for attempt in node.attempts:
-                for run in attempt.runs:
+            active_attempt = next(
+                (
+                    attempt
+                    for attempt in node.attempts
+                    if attempt.attempt_id == node.active_attempt_id
+                ),
+                None,
+            )
+            if active_attempt is not None:
+                for run in active_attempt.runs:
                     return RunMonitoringContext.for_run(
                         RunMonitoringSelection(
                             campaign_id=handoff.campaign_id,
                             run_id=run.run_id,
                         )
                     )
+        return None
+
+    def evidence_context(self) -> EvidenceAndFindingsContext | None:
+        task = self._state.task
+        if task is None or not task.handoff.ready_for_evidence_and_findings:
+            return None
+        handoff = task.handoff
+        if handoff.campaign_id is None:
+            return None
+        selected_cases = {
+            item.campaign_case_id: item
+            for item in handoff.selected_cases
+        }
+        for node in handoff.campaign_nodes:
+            selected_case = selected_cases.get(node.selected_campaign_case_id)
+            if selected_case is None or node.active_attempt_id is None:
+                continue
+            active_attempt = next(
+                (
+                    item
+                    for item in node.attempts
+                    if item.attempt_id == node.active_attempt_id
+                ),
+                None,
+            )
+            if active_attempt is None:
+                continue
+            for run in active_attempt.runs:
+                if run.reproduction_manifest_id is None:
+                    continue
+                return EvidenceAndFindingsContext.for_selection(
+                    EvidenceAndFindingsSelection(
+                        campaign_id=handoff.campaign_id,
+                        run_id=run.run_id,
+                        strategy_id=run.strategy_id,
+                        market_scenario_id=MarketScenarioId(
+                            node.selected_campaign_case_id.value
+                        ),
+                        approved_recipe_id=ApprovedScenarioRecipeId(
+                            selected_case.recipe_version_id.value
+                        ),
+                        reproduction_manifest_id=(
+                            run.reproduction_manifest_id
+                        ),
+                    )
+                )
         return None
 
     def _emit_monitoring_handoff_if_ready(self) -> None:
@@ -1076,6 +1324,31 @@ class DiagnosticTasksQtAdapter(QObject):
             return
         self._last_emitted_monitoring_selection = identity
         self.campaignHandoffReady.emit(context)
+
+    def _emit_evidence_handoff_if_ready(self) -> None:
+        context = self.evidence_context()
+        if context is None or context.selection is None:
+            return
+        selection = context.selection
+        if (
+            selection.strategy_id is None
+            or selection.market_scenario_id is None
+            or selection.approved_recipe_id is None
+            or selection.reproduction_manifest_id is None
+        ):
+            return
+        identity = (
+            selection.campaign_id.value,
+            selection.run_id.value,
+            selection.strategy_id.value,
+            selection.market_scenario_id.value,
+            selection.approved_recipe_id.value,
+            selection.reproduction_manifest_id.value,
+        )
+        if identity == self._last_emitted_evidence_selection:
+            return
+        self._last_emitted_evidence_selection = identity
+        self.evidenceHandoffReady.emit(context)
 
     def _configuration_from_inventory(
         self,
@@ -1641,6 +1914,47 @@ class EvidenceAndFindingsQtAdapter(QObject):
         )
         self.stateChanged.emit()
         self.localStateChanged.emit()
+
+    def select_context(self, context: EvidenceAndFindingsContext) -> None:
+        if self._closed or context == self._context:
+            return
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._mount_generation = _next_mount_generation()
+        self._context = context
+        self._state = self._feature.snapshot(context)
+        self._selected_candidate = ""
+        self._selected_finding = ""
+        self._selected_point_source_index = None
+        self._selected_overlay = ""
+        self._selected_breakpoint = ""
+        self._repair_local_selection()
+        self._chart_timer.stop()
+        self._pending_chart_presentations.clear()
+        self._chart_frame_gate = EvidenceChartFrameGate(
+            max_frames_per_second=20
+        )
+        self._chart_presentation = self._build_chart_presentation()
+        self._chart_frame_sequence += 1
+        initial_gate = self._chart_frame_gate.offer(
+            self._chart_presentation.frame,
+            now_ns=self._chart_clock(),
+        )
+        if not initial_gate.committed:
+            raise RuntimeError(
+                "Selected Evidence chart presentation was not committed"
+            )
+        self._subscription = self._feature.subscribe(
+            context,
+            self._queue_state,
+        )
+        self.stateChanged.emit()
+        self.localStateChanged.emit()
+        self.chartPresentationChanged.emit()
+        self.chartGeometryChanged.emit()
+        self._sync_chart_interaction_enabled()
 
     def _repair_local_selection(self) -> None:
         data = self._state.last_reliable_data
@@ -2494,6 +2808,13 @@ class JourneyWorkspaceHost(QQuickWidget):
             "evidenceAndFindings",
             self._evidence_and_findings,
         )
+        if (
+            self._diagnostic_tasks is not None
+            and self._evidence_and_findings is not None
+        ):
+            self._diagnostic_tasks.evidenceHandoffReady.connect(
+                self._open_evidence_and_findings_handoff
+            )
         self.setSource(QUrl.fromLocalFile(str(_QML_ROOT / "JourneyWorkspace.qml")))
         if self.status() == QQuickWidget.Status.Error:
             details = "; ".join(error.toString() for error in self.errors())
@@ -2502,6 +2823,9 @@ class JourneyWorkspaceHost(QQuickWidget):
             monitoring_context = self._diagnostic_tasks.monitoring_context()
             if monitoring_context is not None:
                 self._open_run_monitoring_handoff(monitoring_context)
+            evidence_context = self._diagnostic_tasks.evidence_context()
+            if evidence_context is not None:
+                self._open_evidence_and_findings_handoff(evidence_context)
 
     @Slot(object)
     def _open_run_monitoring_handoff(
@@ -2514,6 +2838,19 @@ class JourneyWorkspaceHost(QQuickWidget):
         root = self.rootObject()
         if root is not None:
             root.setProperty("activeRoute", "run_monitoring")
+
+    @Slot(object)
+    def _open_evidence_and_findings_handoff(
+        self,
+        context: EvidenceAndFindingsContext,
+    ) -> None:
+        if (
+            self._workspace_closed
+            or self._evidence_and_findings is None
+            or not isinstance(context, EvidenceAndFindingsContext)
+        ):
+            return
+        self._evidence_and_findings.select_context(context)
 
     def close_adapter(self) -> None:
         if self._workspace_closed:

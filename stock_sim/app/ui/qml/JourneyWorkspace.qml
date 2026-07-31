@@ -15,6 +15,11 @@ Rectangle {
             ? null
             : evidencePageLoader.item.firstCandidateControl
     )
+    readonly property var diagnosticTasksInitialFocusItem: (
+        diagnosticTasksPageLoader.item === null
+            ? null
+            : diagnosticTasksPageLoader.item.firstActionControl
+    )
     readonly property var evidenceSecondCandidateFocusItem: (
         evidencePageLoader.item === null
             ? null
@@ -120,12 +125,25 @@ Rectangle {
         restoreActiveRouteFocus()
     }
 
+    function repairDiagnosticTasksFocus() {
+        if (diagnosticTasksRouteNavigation.activeFocus
+                || runMonitoringRouteNavigation.activeFocus
+                || evidenceAndFindingsRouteNavigation.activeFocus
+                || (diagnosticTasksPageLoader.item !== null
+                    && diagnosticTasksPageLoader.item.hasMeaningfulFocus))
+            return
+        restoreActiveRouteFocus()
+    }
+
     function restoreActiveRouteFocus() {
         if (activeRoute === "evidence_and_findings"
                 && evidencePageLoader.item !== null)
             evidencePageLoader.item.restoreFocus()
-        else if (activeRoute === "diagnostic_tasks")
-            diagnosticTasksRouteNavigation.forceActiveFocus()
+        else if (activeRoute === "diagnostic_tasks") {
+            if (diagnosticTasksPageLoader.item === null
+                    || !diagnosticTasksPageLoader.item.restoreFocus())
+                diagnosticTasksRouteNavigation.forceActiveFocus()
+        }
         else
             restoreRunFocus()
     }
@@ -159,7 +177,7 @@ Rectangle {
         enabled: workspace.diagnosticTasksAvailable
         function onStateChanged() {
             if (workspace.activeRoute === "diagnostic_tasks")
-                Qt.callLater(workspace.restoreActiveRouteFocus)
+                Qt.callLater(workspace.repairDiagnosticTasksFocus)
         }
     }
 

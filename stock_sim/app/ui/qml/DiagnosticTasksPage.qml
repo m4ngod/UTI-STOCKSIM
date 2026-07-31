@@ -21,6 +21,91 @@ Item {
     readonly property string approvalStatusText: adapter.approvalStatusText
     readonly property string campaignHandoffText: adapter.campaignHandoffText
     readonly property string commandStatusText: adapter.commandStatusText
+    property var lastFocusedItem: null
+    readonly property bool hasMeaningfulFocus: (
+        lastFocusedItem !== null
+        && lastFocusedItem.activeFocus
+        && lastFocusedItem.visible
+        && lastFocusedItem.enabled
+    )
+    readonly property var firstActionControl: firstEnabledControl()
+
+    function firstEnabledControl() {
+        var candidates = [
+            createButton,
+            reviseButton,
+            validateButton,
+            approveButton,
+            startCampaignButton,
+            pauseTaskButton,
+            resumeTaskButton,
+            cancelTaskButton,
+            pauseCampaignButton,
+            resumeCampaignButton,
+            cancelCampaignButton,
+            pauseNodeButton,
+            resumeNodeButton,
+            cancelNodeButton,
+            retryNodeButton
+        ]
+        for (var index = 0; index < candidates.length; ++index) {
+            if (candidates[index].visible && candidates[index].enabled)
+                return candidates[index]
+        }
+        return null
+    }
+
+    function ensureItemVisible(item) {
+        if (item === null || !scroll.visible)
+            return
+        var point = item.mapToItem(scroll.contentItem, 0, 0)
+        var top = point.y - tokens.spaceMd
+        var bottom = point.y + item.height + tokens.spaceMd
+        if (top < scroll.contentY)
+            scroll.contentY = Math.max(0, top)
+        else if (bottom > scroll.contentY + scroll.height)
+            scroll.contentY = Math.max(
+                0,
+                Math.min(
+                    scroll.contentHeight - scroll.height,
+                    bottom - scroll.height
+                )
+            )
+    }
+
+    function rememberFocus(item) {
+        lastFocusedItem = item
+        ensureItemVisible(item)
+    }
+
+    function restoreFocus() {
+        var target = lastFocusedItem
+        if (target === null || !target.visible || !target.enabled)
+            target = firstEnabledControl()
+        if (target !== null) {
+            target.forceActiveFocus()
+            ensureItemVisible(target)
+        }
+        return target !== null
+    }
+
+    function focusFirstAvailable(candidates) {
+        for (var index = 0; index < candidates.length; ++index) {
+            var candidate = candidates[index]
+            if (candidate.enabled && (!page.visible || candidate.visible)) {
+                if (!page.visible) {
+                    lastFocusedItem = candidate
+                    return true
+                }
+                candidate.forceActiveFocus()
+                rememberFocus(candidate)
+                return true
+            }
+        }
+        if (!page.visible)
+            return false
+        return restoreFocus()
+    }
 
     Flickable {
         id: scroll
@@ -97,6 +182,57 @@ Item {
                         color: tokens.textMuted
                         font.pixelSize: tokens.bodySize
                         wrapMode: Text.WrapAnywhere
+                    }
+                }
+            }
+
+            Rectangle {
+                objectName: "diagnosticTasksAccessibleSummary"
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.preferredHeight: Math.max(
+                    138,
+                    tokens.bodySize * 4 + tokens.spaceLg * 2
+                )
+                radius: tokens.radiusMd
+                color: tokens.surfaceRaised
+                border.color: tokens.border
+                Accessible.role: Accessible.StatusBar
+                Accessible.name: adapter.accessibilityAnnouncementText
+                Accessible.description: adapter.accessibilitySummaryText
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: tokens.spaceLg
+                    spacing: tokens.spaceXs
+
+                    Text {
+                        text: "TASK JOURNEY STATUS"
+                        color: tokens.accent
+                        font.pixelSize: tokens.labelSize
+                        font.bold: true
+                    }
+
+                    Text {
+                        id: diagnosticTasksAnnouncement
+                        objectName: "diagnosticTasksAnnouncement"
+                        Layout.fillWidth: true
+                        text: adapter.accessibilityAnnouncementText
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.AlertMessage
+                        Accessible.name: text
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: adapter.capabilitiesText
+                        color: tokens.textQuiet
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
                     }
                 }
             }
@@ -208,15 +344,26 @@ Item {
                         wrapMode: Text.WrapAnywhere
                     }
 
-                    Button {
+                    DiagnosticCommandButton {
                         id: createButton
                         objectName: "createDiagnosticTaskButton"
+                        tokens: page.tokens
                         text: "Create Diagnostic Task"
                         enabled: adapter.canCreate
-                        focusPolicy: Qt.StrongFocus
-                        Accessible.name: text
-                        Accessible.description: "Create one durable task from the authoritative baseline and required strategies"
-                        onClicked: adapter.createTask()
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: tokens.controlHeight
+                        accessibleDescription: "Create one durable task from the authoritative baseline and required strategies"
+                        onFocusEntered: page.rememberFocus(item)
+                        onClicked: {
+                            adapter.createTask()
+                            Qt.callLater(function() {
+                                page.focusFirstAvailable([
+                                    reviseButton,
+                                    validateButton,
+                                    createButton
+                                ])
+                            })
+                        }
                     }
 
                     Text {
@@ -252,30 +399,55 @@ Item {
                         Accessible.name: "Diagnostic Task approval " + text
                     }
 
-                    RowLayout {
+                    GridLayout {
+                        objectName: "diagnosticTaskConfigurationActionGrid"
                         Layout.fillWidth: true
-                        spacing: tokens.spaceSm
+                        columns: tokens.textScale >= 1.75 ? 1 : 2
+                        columnSpacing: tokens.spaceSm
+                        rowSpacing: tokens.spaceSm
 
-                        Button {
+                        DiagnosticCommandButton {
                             id: reviseButton
                             objectName: "reviseDiagnosticTaskButton"
+                            tokens: page.tokens
                             text: "Correct Configuration"
                             enabled: adapter.canRevise
-                            focusPolicy: Qt.StrongFocus
-                            Accessible.name: text
-                            Accessible.description: "Replace the current task revision with all displayed authoritative typed inputs"
-                            onClicked: adapter.reviseTask()
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: tokens.controlHeight
+                            accessibleDescription: "Replace the current task revision with all displayed authoritative typed inputs"
+                            onFocusEntered: page.rememberFocus(item)
+                            onClicked: {
+                                adapter.reviseTask()
+                                Qt.callLater(function() {
+                                    page.focusFirstAvailable([
+                                        validateButton,
+                                        approvalActor,
+                                        reviseButton
+                                    ])
+                                })
+                            }
                         }
 
-                        Button {
+                        DiagnosticCommandButton {
                             id: validateButton
                             objectName: "validateDiagnosticTaskButton"
+                            tokens: page.tokens
                             text: "Validate Configuration"
                             enabled: adapter.canValidate
-                            focusPolicy: Qt.StrongFocus
-                            Accessible.name: text
-                            Accessible.description: "Validate the exact durable task revision"
-                            onClicked: adapter.validateTask()
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: tokens.controlHeight
+                            accessibleDescription: "Validate the exact durable task revision"
+                            onFocusEntered: page.rememberFocus(item)
+                            onClicked: {
+                                adapter.validateTask()
+                                Qt.callLater(function() {
+                                    page.focusFirstAvailable([
+                                        approvalActor,
+                                        approveButton,
+                                        validateButton
+                                    ])
+                                })
+                            }
                         }
                     }
 
@@ -286,29 +458,62 @@ Item {
                         placeholderText: "Approval actor identity"
                         selectByMouse: true
                         focusPolicy: Qt.StrongFocus
+                        font.pixelSize: tokens.labelSize
+                        color: tokens.textPrimary
+                        placeholderTextColor: tokens.textQuiet
+                        selectionColor: tokens.accent
+                        selectedTextColor: tokens.background
+                        Layout.preferredHeight: tokens.controlHeight
                         Accessible.name: "Approval actor identity"
                         Accessible.description: "Identity recorded on the exact-revision Diagnostic Task approval"
+                        Accessible.focusable: true
+                        Accessible.focused: activeFocus
+                        background: Rectangle {
+                            radius: tokens.radiusSm
+                            color: tokens.surfaceRaised
+                            border.color: approvalActor.activeFocus
+                                ? tokens.focus : tokens.border
+                            border.width: approvalActor.activeFocus
+                                ? tokens.focusWidth : 1
+                        }
+                        onActiveFocusChanged: {
+                            if (activeFocus)
+                                page.rememberFocus(approvalActor)
+                        }
                     }
 
-                    Button {
+                    DiagnosticCommandButton {
                         id: approveButton
                         objectName: "approveDiagnosticTaskButton"
+                        tokens: page.tokens
                         text: "Approve Configuration"
                         enabled: adapter.canApprove && approvalActor.text.trim().length > 0
-                        focusPolicy: Qt.StrongFocus
-                        Accessible.name: text
-                        Accessible.description: "Approve only the exact successfully validated task revision"
-                        onClicked: adapter.approveTask(approvalActor.text)
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: tokens.controlHeight
+                        accessibleDescription: "Approve only the exact successfully validated task revision"
+                        onFocusEntered: page.rememberFocus(item)
+                        onClicked: {
+                            adapter.approveTask(approvalActor.text)
+                            Qt.callLater(function() {
+                                page.focusFirstAvailable([
+                                    startCampaignButton,
+                                    validateButton,
+                                    approveButton
+                                ])
+                            })
+                        }
                     }
 
-                    Button {
+                    DiagnosticCommandButton {
                         id: startCampaignButton
                         objectName: "startDiagnosticCampaignButton"
+                        tokens: page.tokens
                         text: "Start Formal Diagnostic Campaign"
                         enabled: adapter.canStartCampaign
-                        focusPolicy: Qt.StrongFocus
-                        Accessible.name: text
-                        Accessible.description: "Start the exact approved task revision and hand its real Campaign and Run identities to Run Monitoring"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: tokens.controlHeight
+                        accessibleDescription: "Start the exact approved task revision and hand its real Campaign and Run identities to Run Monitoring"
+                        onFocusEntered: page.rememberFocus(item)
                         onClicked: adapter.startCampaign()
                     }
 
@@ -378,33 +583,73 @@ Item {
                                 wrapMode: Text.WrapAnywhere
                             }
                             GridLayout {
+                                objectName: "diagnosticTaskLifecycleActionGrid"
                                 columns: tokens.textScale >= 1.75 ? 1 : 3
                                 columnSpacing: tokens.spaceXs
+                                rowSpacing: tokens.spaceXs
 
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: pauseTaskButton
                                     objectName: "pauseDiagnosticTaskTargetButton"
+                                    tokens: page.tokens
                                     text: "Pause Task"
                                     enabled: adapter.canPauseTask
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Pause Diagnostic Task lifecycle"
-                                    onClicked: adapter.pauseDiagnosticTaskTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Pause Diagnostic Task lifecycle"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.pauseDiagnosticTaskTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                resumeTaskButton,
+                                                cancelTaskButton,
+                                                pauseTaskButton
+                                            ])
+                                        })
+                                    }
                                 }
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: resumeTaskButton
                                     objectName: "resumeDiagnosticTaskTargetButton"
+                                    tokens: page.tokens
                                     text: "Resume Task"
                                     enabled: adapter.canResumeTask
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Resume Diagnostic Task lifecycle"
-                                    onClicked: adapter.resumeDiagnosticTaskTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Resume Diagnostic Task lifecycle"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.resumeDiagnosticTaskTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                pauseTaskButton,
+                                                cancelTaskButton,
+                                                resumeTaskButton
+                                            ])
+                                        })
+                                    }
                                 }
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: cancelTaskButton
                                     objectName: "cancelDiagnosticTaskTargetButton"
+                                    tokens: page.tokens
                                     text: "Cancel Task"
                                     enabled: adapter.canCancelTask
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Cancel Diagnostic Task lifecycle"
-                                    Accessible.description: "Cancel only the typed non-transactional Diagnostic Task lifecycle target"
-                                    onClicked: adapter.cancelDiagnosticTaskTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Cancel Diagnostic Task lifecycle"
+                                    accessibleDescription: "Cancel only the typed non-transactional Diagnostic Task lifecycle target"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.cancelDiagnosticTaskTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                retryNodeButton,
+                                                createButton
+                                            ])
+                                        })
+                                    }
                                 }
                             }
                         }
@@ -421,33 +666,73 @@ Item {
                                 wrapMode: Text.WrapAnywhere
                             }
                             GridLayout {
+                                objectName: "formalCampaignLifecycleActionGrid"
                                 columns: tokens.textScale >= 1.75 ? 1 : 3
                                 columnSpacing: tokens.spaceXs
+                                rowSpacing: tokens.spaceXs
 
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: pauseCampaignButton
                                     objectName: "pauseFormalDiagnosticCampaignTargetButton"
+                                    tokens: page.tokens
                                     text: "Pause Campaign"
                                     enabled: adapter.canPauseCampaign
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Pause Formal Diagnostic Campaign lifecycle"
-                                    onClicked: adapter.pauseFormalDiagnosticCampaignTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Pause Formal Diagnostic Campaign lifecycle"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.pauseFormalDiagnosticCampaignTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                resumeCampaignButton,
+                                                cancelCampaignButton,
+                                                pauseCampaignButton
+                                            ])
+                                        })
+                                    }
                                 }
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: resumeCampaignButton
                                     objectName: "resumeFormalDiagnosticCampaignTargetButton"
+                                    tokens: page.tokens
                                     text: "Resume Campaign"
                                     enabled: adapter.canResumeCampaign
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Resume Formal Diagnostic Campaign lifecycle"
-                                    onClicked: adapter.resumeFormalDiagnosticCampaignTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Resume Formal Diagnostic Campaign lifecycle"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.resumeFormalDiagnosticCampaignTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                pauseCampaignButton,
+                                                cancelCampaignButton,
+                                                resumeCampaignButton
+                                            ])
+                                        })
+                                    }
                                 }
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: cancelCampaignButton
                                     objectName: "cancelFormalDiagnosticCampaignTargetButton"
+                                    tokens: page.tokens
                                     text: "Cancel Campaign"
                                     enabled: adapter.canCancelCampaign
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Cancel Formal Diagnostic Campaign lifecycle"
-                                    Accessible.description: "Cancel only the typed non-transactional Formal Diagnostic Campaign lifecycle target"
-                                    onClicked: adapter.cancelFormalDiagnosticCampaignTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Cancel Formal Diagnostic Campaign lifecycle"
+                                    accessibleDescription: "Cancel only the typed non-transactional Formal Diagnostic Campaign lifecycle target"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.cancelFormalDiagnosticCampaignTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                retryNodeButton,
+                                                createButton
+                                            ])
+                                        })
+                                    }
                                 }
                             }
                         }
@@ -464,33 +749,73 @@ Item {
                                 wrapMode: Text.WrapAnywhere
                             }
                             GridLayout {
+                                objectName: "campaignNodeLifecycleActionGrid"
                                 columns: tokens.textScale >= 1.75 ? 1 : 3
                                 columnSpacing: tokens.spaceXs
+                                rowSpacing: tokens.spaceXs
 
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: pauseNodeButton
                                     objectName: "pauseCampaignNodeTargetButton"
+                                    tokens: page.tokens
                                     text: "Pause Node"
                                     enabled: adapter.canPauseCampaignNode
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Pause Campaign node lifecycle"
-                                    onClicked: adapter.pauseCampaignNodeTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Pause Campaign node lifecycle"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.pauseCampaignNodeTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                resumeNodeButton,
+                                                cancelNodeButton,
+                                                pauseNodeButton
+                                            ])
+                                        })
+                                    }
                                 }
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: resumeNodeButton
                                     objectName: "resumeCampaignNodeTargetButton"
+                                    tokens: page.tokens
                                     text: "Resume Node"
                                     enabled: adapter.canResumeCampaignNode
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Resume Campaign node lifecycle"
-                                    onClicked: adapter.resumeCampaignNodeTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Resume Campaign node lifecycle"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.resumeCampaignNodeTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                pauseNodeButton,
+                                                cancelNodeButton,
+                                                resumeNodeButton
+                                            ])
+                                        })
+                                    }
                                 }
-                                Button {
+                                DiagnosticCommandButton {
+                                    id: cancelNodeButton
                                     objectName: "cancelCampaignNodeTargetButton"
+                                    tokens: page.tokens
                                     text: "Cancel Node"
                                     enabled: adapter.canCancelCampaignNode
-                                    focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Cancel Campaign node lifecycle"
-                                    Accessible.description: "Cancel only the typed non-transactional Campaign node lifecycle target"
-                                    onClicked: adapter.cancelCampaignNodeTarget()
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: tokens.controlHeight
+                                    accessibleName: "Cancel Campaign node lifecycle"
+                                    accessibleDescription: "Cancel only the typed non-transactional Campaign node lifecycle target"
+                                    onFocusEntered: page.rememberFocus(item)
+                                    onClicked: {
+                                        adapter.cancelCampaignNodeTarget()
+                                        Qt.callLater(function() {
+                                            page.focusFirstAvailable([
+                                                retryNodeButton,
+                                                createButton
+                                            ])
+                                        })
+                                    }
                                 }
                             }
                         }
@@ -508,14 +833,30 @@ Item {
                         Accessible.description: text
                     }
 
-                    Button {
+                    DiagnosticCommandButton {
+                        id: retryNodeButton
                         objectName: "retryFailedCampaignNodeButton"
+                        tokens: page.tokens
                         text: "Retry Failed Node"
                         enabled: adapter.canRetryFailedCampaignNode
-                        focusPolicy: Qt.StrongFocus
-                        Accessible.name: "Retry failed Campaign node attempt"
-                        Accessible.description: "Create a new typed Campaign attempt linked to the immutable failed predecessor and a persistent TaskHandle"
-                        onClicked: adapter.retryFailedCampaignNode()
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: tokens.controlHeight
+                        accessibleName: "Retry failed Campaign node attempt"
+                        accessibleDescription: "Create a new typed Campaign attempt linked to the immutable failed predecessor and a persistent TaskHandle"
+                        onFocusEntered: page.rememberFocus(item)
+                        onClicked: {
+                            adapter.retryFailedCampaignNode()
+                            Qt.callLater(function() {
+                                Qt.callLater(function() {
+                                    page.focusFirstAvailable([
+                                        pauseTaskButton,
+                                        pauseCampaignButton,
+                                        pauseNodeButton,
+                                        retryNodeButton
+                                    ])
+                                })
+                            })
+                        }
                     }
                 }
             }
