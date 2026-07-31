@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QApplication
 
@@ -86,6 +86,7 @@ host = JourneyWorkspaceHost(
     evidence_feature=evidence_feature,
     evidence_context=evidence_context,
 )
+host.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
 host.resize(1280, 720)
 host.move(-10000, -10000)
 host.show()
@@ -273,8 +274,8 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
     assert observation["run_scrollable"] is True
     assert observation["route_screenshots_distinct"] is True
     assert len(set(observation["route_framebuffer_sha256"].values())) == 3
-    assert observation["image_width"] > 0
-    assert observation["image_height"] > 0
+    assert observation["image_width"] == 2560
+    assert observation["image_height"] == 1440
     assert observation["candidate_focus"] is True
     assert observation["candidate_name"] == "Select candidate MODEL-B17"
     assert observation["status_role"] == "StatusBar"
