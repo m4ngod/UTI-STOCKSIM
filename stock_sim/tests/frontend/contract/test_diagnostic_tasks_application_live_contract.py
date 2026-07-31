@@ -123,15 +123,23 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
     created = adapter.create_diagnostic_task(commands[0])
     assert created.accepted
     assert created.task is not None
-    unavailable = (
+    invalid_task_commands = (
         adapter.revise_configuration(commands[1]),
         adapter.validate_configuration(commands[2]),
         adapter.approve_configuration(commands[3]),
+    )
+    unavailable = (
         adapter.start_formal_diagnostic_campaign(commands[4]),
         adapter.pause_diagnostic_target(commands[5]),
         adapter.resume_diagnostic_target(commands[6]),
         adapter.cancel_diagnostic_target(commands[7]),
         adapter.retry_failed_campaign_node(commands[8]),
+    )
+    assert all(not item.accepted for item in invalid_task_commands)
+    assert all(
+        item.rejection_reason
+        is DiagnosticTasksApplicationCommandRejectionReason.INVALID_COMMAND
+        for item in invalid_task_commands
     )
     assert all(not item.accepted for item in unavailable)
     assert all(

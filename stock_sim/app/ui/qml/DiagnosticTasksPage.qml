@@ -17,6 +17,9 @@ Item {
     readonly property string taskStatusText: adapter.taskStatusText
     readonly property string taskHandleText: adapter.taskHandleText
     readonly property string createStatusText: adapter.createStatusText
+    readonly property string validationStatusText: adapter.validationStatusText
+    readonly property string approvalStatusText: adapter.approvalStatusText
+    readonly property string commandStatusText: adapter.commandStatusText
 
     Flickable {
         id: scroll
@@ -172,8 +175,8 @@ Item {
                 color: tokens.surface
                 border.color: tokens.border
                 Accessible.role: Accessible.Grouping
-                Accessible.name: "Durable Diagnostic Task creation"
-                Accessible.description: adapter.taskStatusText + ". " + adapter.taskHandleText
+                Accessible.name: "Durable Diagnostic Task configuration validation and approval"
+                Accessible.description: adapter.taskStatusText + ". " + adapter.validationStatusText + ". " + adapter.approvalStatusText
 
                 ColumnLayout {
                     id: creationContent
@@ -211,7 +214,7 @@ Item {
                         enabled: adapter.canCreate
                         focusPolicy: Qt.StrongFocus
                         Accessible.name: text
-                        Accessible.description: "Create one durable task from every displayed authoritative typed input"
+                        Accessible.description: "Create one durable task from the authoritative baseline and required strategies"
                         onClicked: adapter.createTask()
                     }
 
@@ -225,12 +228,94 @@ Item {
                         Accessible.role: Accessible.StatusBar
                         Accessible.name: text
                     }
+
+                    Text {
+                        objectName: "diagnosticTaskValidationStatus"
+                        Layout.fillWidth: true
+                        text: adapter.validationStatusText
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: "Diagnostic Task validation " + text
+                    }
+
+                    Text {
+                        objectName: "diagnosticTaskApprovalStatus"
+                        Layout.fillWidth: true
+                        text: adapter.approvalStatusText
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: "Diagnostic Task approval " + text
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: tokens.spaceSm
+
+                        Button {
+                            id: reviseButton
+                            objectName: "reviseDiagnosticTaskButton"
+                            text: "Correct Configuration"
+                            enabled: adapter.canRevise
+                            focusPolicy: Qt.StrongFocus
+                            Accessible.name: text
+                            Accessible.description: "Replace the current task revision with all displayed authoritative typed inputs"
+                            onClicked: adapter.reviseTask()
+                        }
+
+                        Button {
+                            id: validateButton
+                            objectName: "validateDiagnosticTaskButton"
+                            text: "Validate Configuration"
+                            enabled: adapter.canValidate
+                            focusPolicy: Qt.StrongFocus
+                            Accessible.name: text
+                            Accessible.description: "Validate the exact durable task revision"
+                            onClicked: adapter.validateTask()
+                        }
+                    }
+
+                    TextField {
+                        id: approvalActor
+                        objectName: "diagnosticTaskApprovalActorInput"
+                        Layout.fillWidth: true
+                        placeholderText: "Approval actor identity"
+                        selectByMouse: true
+                        focusPolicy: Qt.StrongFocus
+                        Accessible.name: "Approval actor identity"
+                        Accessible.description: "Identity recorded on the exact-revision Diagnostic Task approval"
+                    }
+
+                    Button {
+                        id: approveButton
+                        objectName: "approveDiagnosticTaskButton"
+                        text: "Approve Configuration"
+                        enabled: adapter.canApprove && approvalActor.text.trim().length > 0
+                        focusPolicy: Qt.StrongFocus
+                        Accessible.name: text
+                        Accessible.description: "Approve only the exact successfully validated task revision"
+                        onClicked: adapter.approveTask(approvalActor.text)
+                    }
+
+                    Text {
+                        objectName: "diagnosticTaskCommandStatus"
+                        Layout.fillWidth: true
+                        text: adapter.commandStatusText
+                        color: tokens.textQuiet
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: text
+                    }
                 }
             }
 
             Text {
                 Layout.fillWidth: true
-                text: "Validation, approval, launch, lifecycle, and retry commands remain explicitly unavailable."
+                text: "Campaign launch, lifecycle, and retry commands remain explicitly unavailable."
                 color: tokens.textQuiet
                 font.pixelSize: tokens.labelSize
                 horizontalAlignment: Text.AlignRight

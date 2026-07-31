@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .diagnostic_tasks_application import (
     ApproveDiagnosticTaskConfiguration,
@@ -16,12 +17,15 @@ from .diagnostic_tasks_application import (
     CreateDiagnosticTask,
     DiagnosticActorId,
     DiagnosticCampaignCaseSelection,
+    DiagnosticPolicyIdentity,
+    DiagnosticTaskApprovalId,
     DiagnosticTaskConfiguration,
     DiagnosticTaskConfigurationContentId,
     DiagnosticTasksApplicationCommand,
     DiagnosticTasksApplicationCommandRejectionReason,
     DiagnosticTasksApplicationCommandResult,
     DiagnosticTasksInventory,
+    DiagnosticTaskValidationId,
     MaterializedMarketScenarioId,
     PauseDiagnosticTarget,
     ResumeDiagnosticTarget,
@@ -44,10 +48,10 @@ from .run_monitoring import (
     StructuredFeatureError,
     Subscription,
     TaskHandle,
+    TaskHandleId,
     ViewPhase,
 )
 from .versioning import (
-    DIAGNOSTIC_TASKS_INTERFACE_VERSION,
     FeatureInterfaceVersion,
 )
 
@@ -172,17 +176,25 @@ class DiagnosticTaskValidationFinding:
 @dataclass(frozen=True, slots=True)
 class DiagnosticTaskValidationSummary:
     state: DiagnosticTaskValidationState
+    validation_id: DiagnosticTaskValidationId | None
+    task_handle_id: TaskHandleId | None
+    validation_revision: int | None
     validated_revision: int | None
     configuration_content_identity: DiagnosticTaskConfigurationContentId | None
     findings: tuple[DiagnosticTaskValidationFinding, ...]
+    policy_identities: tuple[DiagnosticPolicyIdentity, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticTaskApprovalSummary:
+    approval_id: DiagnosticTaskApprovalId
     approved_revision: int
     configuration_content_identity: DiagnosticTaskConfigurationContentId
+    validation_id: DiagnosticTaskValidationId
+    validation_revision: int
     actor_identity: DiagnosticActorId
     approved_at: datetime
+    policy_identities: tuple[DiagnosticPolicyIdentity, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,7 +317,7 @@ class DiagnosticTasksContext:
     task_id: DiagnosticTaskId | None = None
 
     @classmethod
-    def workspace(cls) -> "DiagnosticTasksContext":
+    def workspace(cls) -> DiagnosticTasksContext:
         return cls(task_id=None)
 
 
@@ -424,8 +436,8 @@ __all__ = [
     "DiagnosticTaskHandoff",
     "DiagnosticTaskLifecycle",
     "DiagnosticTaskPresentation",
-    "DiagnosticTaskValidationFinding",
     "DiagnosticTaskValidationCode",
+    "DiagnosticTaskValidationFinding",
     "DiagnosticTaskValidationSeverity",
     "DiagnosticTaskValidationState",
     "DiagnosticTaskValidationSummary",

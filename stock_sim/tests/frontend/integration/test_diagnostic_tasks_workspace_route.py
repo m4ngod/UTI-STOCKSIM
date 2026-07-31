@@ -22,6 +22,9 @@ from app.features import (
 from app.ui.main_window import MainWindow
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
+    _persistent_three_layer_stack,
+)
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
     _baseline_payload,
     _RecipeFixtureSource,
@@ -310,6 +313,146 @@ def test_qml_create_persists_task_handle_across_remount_and_application_reopen(
         assert connection.execute(
             text("SELECT COUNT(*) FROM diagnostic_tasks")
         ).scalar_one() == 1
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_campaigns")
+        ).scalar_one() == 0
+    restarted_window.close()
+    restarted_feature.close()
+    restarted_monitoring.close()
+
+
+def test_qml_corrects_validates_and_approves_exact_persisted_revision(
+    tmp_path,
+) -> None:
+    app = _app()
+    (
+        source,
+        artifact_store,
+        engine,
+        _application,
+        _application_adapter,
+        feature,
+    ) = _persistent_three_layer_stack(tmp_path)
+    window, run_monitoring = _window(feature)
+    window.show()
+    app.processEvents()
+    root = window.centralWidget().rootObject()
+    page = root.findChild(QObject, "diagnosticTasksPage")
+    create_button = root.findChild(QObject, "createDiagnosticTaskButton")
+    revise_button = root.findChild(QObject, "reviseDiagnosticTaskButton")
+    validate_button = root.findChild(QObject, "validateDiagnosticTaskButton")
+    approve_button = root.findChild(QObject, "approveDiagnosticTaskButton")
+    actor_input = root.findChild(QObject, "diagnosticTaskApprovalActorInput")
+    assert page is not None
+    assert create_button is not None
+    assert revise_button is not None
+    assert validate_button is not None
+    assert approve_button is not None
+    assert actor_input is not None
+
+    assert QMetaObject.invokeMethod(create_button, "clicked")
+    app.processEvents()
+    assert " · r2 · draft · " in page.property("taskStatusText")
+    assert validate_button.property("enabled") is True
+    assert approve_button.property("enabled") is False
+
+    assert QMetaObject.invokeMethod(validate_button, "clicked")
+    app.processEvents()
+    assert "invalid" in page.property("validationStatusText")
+    assert "campaign.layer.isolated_sensitivity_required" in page.property(
+        "validationStatusText"
+    )
+    assert "campaign.layer.compound_required" in page.property(
+        "validationStatusText"
+    )
+    assert approve_button.property("enabled") is False
+
+    assert QMetaObject.invokeMethod(revise_button, "clicked")
+    app.processEvents()
+    assert " · r3 · draft · " in page.property("taskStatusText")
+    assert "has not been validated" in page.property(
+        "validationStatusText"
+    )
+    assert "No exact-revision approval" in page.property(
+        "approvalStatusText"
+    )
+
+    assert QMetaObject.invokeMethod(validate_button, "clicked")
+    app.processEvents()
+    assert " · r3 · awaiting_approval · " in page.property(
+        "taskStatusText"
+    )
+    assert "valid · validation" in page.property("validationStatusText")
+    assert "no findings" in page.property("validationStatusText")
+    assert actor_input.setProperty("text", "qml-research-owner")
+    app.processEvents()
+    assert approve_button.property("enabled") is True
+
+    assert QMetaObject.invokeMethod(approve_button, "clicked")
+    app.processEvents()
+    task_text = page.property("taskStatusText")
+    validation_text = page.property("validationStatusText")
+    approval_text = page.property("approvalStatusText")
+    handle_text = page.property("taskHandleText")
+    assert " · r3 · approved · " in task_text
+    assert "qml-research-owner" in approval_text
+    assert "diagnostic-task-validation-" in validation_text
+    assert "diagnostic-task-approval-" in approval_text
+    assert "diagnostic_task_configuration_valid" in handle_text
+
+    window.close()
+    run_monitoring.close()
+    feature.close()
+    restarted_application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=artifact_store,
+        recipe_clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+        diagnostic_task_clock=lambda: datetime(
+            2030,
+            1,
+            5,
+            tzinfo=timezone.utc,
+        ),
+    )
+    restarted_application.start()
+    restarted_application.initialize_persistence(engine)
+    restarted_feature = LiveDiagnosticTasksAdapter(
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            restarted_application
+        )
+    )
+    restarted_window, restarted_monitoring = _window(restarted_feature)
+    restarted_window.show()
+    app.processEvents()
+    restarted_page = restarted_window.centralWidget().rootObject().findChild(
+        QObject,
+        "diagnosticTasksPage",
+    )
+    assert restarted_page is not None
+    assert restarted_page.property("taskStatusText") == task_text
+    assert restarted_page.property("validationStatusText") == validation_text
+    assert restarted_page.property("approvalStatusText") == approval_text
+    assert restarted_page.property("taskHandleText") == handle_text
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) "
+                "FROM diagnostic_task_configuration_revisions"
+            )
+        ).scalar_one() == 3
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_task_validations")
+        ).scalar_one() == 2
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_task_approvals")
+        ).scalar_one() == 1
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_recipe_approvals")
+        ).scalar_one() == 3
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_task_mutation_commands")
+        ).scalar_one() == 4
         assert connection.execute(
             text("SELECT COUNT(*) FROM diagnostic_campaigns")
         ).scalar_one() == 0

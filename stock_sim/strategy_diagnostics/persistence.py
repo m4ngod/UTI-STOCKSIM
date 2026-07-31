@@ -43,7 +43,8 @@ _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION: Final = (
 )
 _DIAGNOSTIC_EVIDENCE_REVISION: Final = "0011_diagnostic_evidence"
 _REPRODUCTION_MANIFEST_REVISION: Final = "0012_reproduction_manifests"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0013_diagnostic_tasks"
+_DIAGNOSTIC_TASK_REVISION: Final = "0013_diagnostic_tasks"
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0014_diagnostic_task_approval"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -58,6 +59,7 @@ _MIGRATION_REVISIONS: Final = (
     _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION,
     _DIAGNOSTIC_EVIDENCE_REVISION,
     _REPRODUCTION_MANIFEST_REVISION,
+    _DIAGNOSTIC_TASK_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -115,8 +117,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_diagnostic_evidence(connection)
             elif revision == _REPRODUCTION_MANIFEST_REVISION:
                 _create_reproduction_manifests(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _DIAGNOSTIC_TASK_REVISION:
                 _create_diagnostic_tasks(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_diagnostic_task_approval(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -383,6 +387,114 @@ def _create_diagnostic_tasks(connection: Connection) -> None:
         "disposition VARCHAR(32) NOT NULL, "
         "command_json TEXT NOT NULL, "
         "acceptance_json TEXT NOT NULL, "
+        "accepted_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+
+
+def _create_diagnostic_task_approval(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_configuration_revisions ("
+        "task_id VARCHAR(96) NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "configuration_json TEXT NOT NULL, "
+        "accepted_command_id VARCHAR(96) NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(task_id, revision), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_command_identities ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_key VARCHAR(128) UNIQUE NOT NULL, "
+        "command_type VARCHAR(64) NOT NULL, "
+        "command_content_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_handle_id VARCHAR(96) NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO diagnostic_task_command_identities ("
+        "command_id, idempotency_key, command_type, command_content_id, "
+        "task_id, task_handle_id"
+        ") SELECT command_id, idempotency_key, command_type, "
+        "command_content_id, task_id, task_handle_id "
+        "FROM diagnostic_task_commands "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM diagnostic_task_command_identities i "
+        "WHERE i.command_id = diagnostic_task_commands.command_id "
+        "OR i.idempotency_key = "
+        "diagnostic_task_commands.idempotency_key"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO diagnostic_task_configuration_revisions ("
+        "task_id, revision, configuration_content_id, configuration_json, "
+        "accepted_command_id, created_at_utc"
+        ") SELECT task_id, revision, configuration_content_id, "
+        "configuration_json, NULL, updated_at_utc FROM diagnostic_tasks "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM diagnostic_task_configuration_revisions r "
+        "WHERE r.task_id = diagnostic_tasks.task_id "
+        "AND r.revision = diagnostic_tasks.revision"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_validations ("
+        "validation_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "validation_revision INTEGER NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "state VARCHAR(32) NOT NULL, "
+        "findings_json TEXT NOT NULL, "
+        "policy_identities_json TEXT NOT NULL, "
+        "task_handle_id VARCHAR(96) UNIQUE NOT NULL, "
+        "validated_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_approvals ("
+        "approval_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "validation_id VARCHAR(96) NOT NULL, "
+        "validation_revision INTEGER NOT NULL, "
+        "actor_id VARCHAR(128) NOT NULL, "
+        "policy_identities_json TEXT NOT NULL, "
+        "approved_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(validation_id) "
+        "REFERENCES diagnostic_task_validations(validation_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_mutation_commands ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_key VARCHAR(128) UNIQUE NOT NULL, "
+        "command_type VARCHAR(64) NOT NULL, "
+        "command_content_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_handle_id VARCHAR(96) NULL, "
+        "disposition VARCHAR(32) NOT NULL, "
+        "message TEXT NOT NULL, "
+        "current_revision INTEGER NOT NULL, "
+        "command_json TEXT NOT NULL, "
+        "result_json TEXT NOT NULL, "
         "accepted_at_utc VARCHAR(64) NOT NULL, "
         "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
         "FOREIGN KEY(task_handle_id) "

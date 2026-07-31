@@ -673,7 +673,7 @@ def test_sql_repository_survives_restart_and_rejects_tampering(
     repository.save_report(report)
     restarted = SqlReproductionRepository(engine)
 
-    assert migration.current_revision == "0013_diagnostic_tasks"
+    assert migration.current_revision == "0014_diagnostic_task_approval"
     assert restarted.get_manifest(manifest.manifest_id) == manifest
     assert restarted.list_manifests(manifest.evidence_package_id) == (
         manifest,

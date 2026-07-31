@@ -26,12 +26,19 @@ from .diagnostic_evidence_storage import (
     SqlDiagnosticEvidenceRepository,
 )
 from .diagnostic_tasks import (
+    ApproveDiagnosticTaskConfigurationRequest,
     CreateDiagnosticTaskRequest,
+    DiagnosticTaskCommandResult,
     DiagnosticTaskConfiguration,
     DiagnosticTaskCreationResult,
     DiagnosticTaskService,
     DiagnosticTaskSnapshot,
+    DiagnosticTaskValidationFinding,
+    DiagnosticTaskValidationReferenceKind,
+    DiagnosticTaskValidationSeverity,
+    ReviseDiagnosticTaskConfigurationRequest,
     SqlDiagnosticTaskRepository,
+    ValidateDiagnosticTaskConfigurationRequest,
 )
 from .execution_conditions import (
     RequestedExecutionAssumptions,
@@ -206,6 +213,12 @@ class DiagnosticsApplication:
             configuration_validator=(
                 self._is_authoritative_diagnostic_task_configuration
             ),
+            configuration_validation=(
+                self._validate_diagnostic_task_configuration
+            ),
+            validation_policy_provider=(
+                self._diagnostic_task_validation_policy_identities
+            ),
         )
         self._recipe_assistant = recipe_assistant
         self._strategy_runs = StrategyRunEngine(
@@ -364,10 +377,114 @@ class DiagnosticsApplication:
             return self._diagnostic_tasks.latest()
         return self._diagnostic_tasks.get(task_id)
 
-    def _is_authoritative_diagnostic_task_configuration(
+    def revise_diagnostic_task_configuration(
+        self,
+        request: ReviseDiagnosticTaskConfigurationRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Correct one exact durable task revision without starting work."""
+
+        self.status()
+        return self._diagnostic_tasks.revise_configuration(request)
+
+    def validate_diagnostic_task_configuration(
+        self,
+        request: ValidateDiagnosticTaskConfigurationRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Validate one exact task revision against authoritative inputs."""
+
+        self.status()
+        return self._diagnostic_tasks.validate_configuration(request)
+
+    def approve_diagnostic_task_configuration(
+        self,
+        request: ApproveDiagnosticTaskConfigurationRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Approve only the exact current successfully validated revision."""
+
+        self.status()
+        return self._diagnostic_tasks.approve_configuration(request)
+
+    def _validate_diagnostic_task_configuration(
         self,
         candidate: DiagnosticTaskConfiguration,
-    ) -> bool:
+    ) -> tuple[DiagnosticTaskValidationFinding, ...]:
+        findings: list[DiagnosticTaskValidationFinding] = []
+        layers = tuple(
+            item.layer for item in candidate.campaign_case_selections
+        )
+        for layer, code, explanation in (
+            (
+                "baseline",
+                "campaign.layer.baseline_required",
+                "Exactly one Baseline Campaign Case is required.",
+            ),
+            (
+                "isolated_sensitivity",
+                "campaign.layer.isolated_sensitivity_required",
+                "At least one Isolated Sensitivity Campaign Case is required.",
+            ),
+            (
+                "compound",
+                "campaign.layer.compound_required",
+                "At least one Compound Campaign Case is required.",
+            ),
+        ):
+            count = layers.count(layer)
+            invalid = count != 1 if layer == "baseline" else count < 1
+            if invalid:
+                findings.append(
+                    DiagnosticTaskValidationFinding(
+                        reference_kind=(
+                            DiagnosticTaskValidationReferenceKind.CONFIGURATION
+                        ),
+                        reference_identity=candidate.content_identity,
+                        severity=DiagnosticTaskValidationSeverity.ERROR,
+                        code=code,
+                        safe_explanation=explanation,
+                        retryable=False,
+                        requires_different_input=True,
+                    )
+                )
+        findings.extend(
+            self._diagnostic_task_authority_findings(candidate)
+        )
+        return tuple(findings)
+
+    def _diagnostic_task_authority_findings(
+        self,
+        candidate: DiagnosticTaskConfiguration,
+    ) -> tuple[DiagnosticTaskValidationFinding, ...]:
+        findings: list[DiagnosticTaskValidationFinding] = []
+
+        def add(
+            reference_kind: DiagnosticTaskValidationReferenceKind,
+            reference_identity: str,
+            code: str,
+            explanation: str,
+        ) -> None:
+            findings.append(
+                DiagnosticTaskValidationFinding(
+                    reference_kind=reference_kind,
+                    reference_identity=reference_identity,
+                    severity=DiagnosticTaskValidationSeverity.ERROR,
+                    code=code,
+                    safe_explanation=explanation,
+                    retryable=False,
+                    requires_different_input=True,
+                )
+            )
+
+        if (
+            candidate.content_identity
+            != candidate.calculated_content_identity()
+        ):
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "configuration.content_identity_mismatch",
+                "The configuration content identity is not canonical.",
+            )
+
         configuration = self.v1_diagnostic_configuration()
         manifests = {
             str(item["strategy_id"]): item
@@ -386,27 +503,75 @@ class DiagnosticsApplication:
         selected_strategy_ids = tuple(
             item.strategy_id for item in candidate.strategy_selections
         )
-        if (
-            len(set(selected_strategy_ids)) != len(selected_strategy_ids)
-            or set(selected_strategy_ids) != set(manifests)
-        ):
-            return False
+        if len(set(selected_strategy_ids)) != len(selected_strategy_ids):
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "strategy.selection_duplicate",
+                "Each authoritative strategy may be selected only once.",
+            )
+        if set(selected_strategy_ids) != set(manifests):
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "strategy.selection_set_mismatch",
+                "The selected strategy set does not match the authoritative inventory.",
+            )
         for strategy_selection in candidate.strategy_selections:
             manifest = manifests.get(strategy_selection.strategy_id)
             profile = profiles.get(strategy_selection.strategy_id)
-            if manifest is None or profile is None:
-                return False
-            if (
-                strategy_selection.strategy_version
-                != str(manifest["strategy_version"])
-                or strategy_selection.compatibility_manifest_hash
-                != str(manifest["manifest_content_hash"])
-                or strategy_selection.guardrail_profile_id
-                != str(profile["profile_id"])
-                or strategy_selection.guardrail_profile_version
-                != str(profile["profile_version"])
-            ):
-                return False
+            if manifest is None:
+                add(
+                    DiagnosticTaskValidationReferenceKind.STRATEGY,
+                    strategy_selection.strategy_id,
+                    "strategy.identity_unavailable",
+                    "The selected strategy identity is not authoritative.",
+                )
+            else:
+                if strategy_selection.strategy_version != str(
+                    manifest["strategy_version"]
+                ):
+                    add(
+                        DiagnosticTaskValidationReferenceKind.STRATEGY,
+                        strategy_selection.strategy_id,
+                        "strategy.version_mismatch",
+                        "The selected strategy version is not authoritative.",
+                    )
+                if strategy_selection.compatibility_manifest_hash != str(
+                    manifest["manifest_content_hash"]
+                ):
+                    add(
+                        DiagnosticTaskValidationReferenceKind.STRATEGY,
+                        strategy_selection.strategy_id,
+                        "strategy.compatibility_manifest_mismatch",
+                        "The compatibility manifest identity does not match.",
+                    )
+            if profile is None:
+                add(
+                    DiagnosticTaskValidationReferenceKind.STRATEGY,
+                    strategy_selection.strategy_id,
+                    "strategy.guardrail_profile_unavailable",
+                    "The authoritative guardrail profile is unavailable.",
+                )
+            else:
+                if strategy_selection.guardrail_profile_id != str(
+                    profile["profile_id"]
+                ):
+                    add(
+                        DiagnosticTaskValidationReferenceKind.STRATEGY,
+                        strategy_selection.strategy_id,
+                        "strategy.guardrail_profile_id_mismatch",
+                        "The selected guardrail profile identity does not match.",
+                    )
+                if strategy_selection.guardrail_profile_version != str(
+                    profile["profile_version"]
+                ):
+                    add(
+                        DiagnosticTaskValidationReferenceKind.STRATEGY,
+                        strategy_selection.strategy_id,
+                        "strategy.guardrail_profile_version_mismatch",
+                        "The selected guardrail profile version does not match.",
+                    )
 
         approved = {
             item.version_id: item
@@ -420,56 +585,142 @@ class DiagnosticsApplication:
             item.case_id: item
             for item in self.list_available_diagnostic_campaign_cases()
         }
-        if (
-            sum(item.layer == "baseline" for item in cases.values())
-            != 1
-        ):
-            return False
+        if sum(item.layer == "baseline" for item in cases.values()) != 1:
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "campaign.authoritative_baseline_catalog_invalid",
+                "The authoritative Campaign Case inventory must contain one baseline.",
+            )
         selected_case_ids = tuple(
             item.campaign_case_id
             for item in candidate.campaign_case_selections
         )
-        if (
-            not selected_case_ids
-            or len(set(selected_case_ids)) != len(selected_case_ids)
-        ):
-            return False
+        if not selected_case_ids:
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "campaign.selection_required",
+                "At least one authoritative Campaign Case is required.",
+            )
+        if len(set(selected_case_ids)) != len(selected_case_ids):
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "campaign.case_selection_duplicate",
+                "Each Campaign Case may be selected only once.",
+            )
         baseline_case_ids = {
             item.campaign_case_id
             for item in candidate.campaign_case_selections
             if item.layer == "baseline"
         }
-        if len(baseline_case_ids) != 1:
-            return False
-        baseline_case_id = next(iter(baseline_case_ids))
+        baseline_case_id = (
+            next(iter(baseline_case_ids))
+            if len(baseline_case_ids) == 1
+            else None
+        )
+        if baseline_case_id is None:
+            add(
+                DiagnosticTaskValidationReferenceKind.CONFIGURATION,
+                candidate.content_identity,
+                "campaign.baseline_selection_invalid",
+                "Exactly one selected Campaign Case must be the baseline.",
+            )
         for case_selection in candidate.campaign_case_selections:
             case = cases.get(case_selection.campaign_case_id)
             recipe = approved.get(case_selection.recipe_version_id)
             path = paths.get(case_selection.market_scenario_id)
+            reference_kind = (
+                DiagnosticTaskValidationReferenceKind.CAMPAIGN_CASE
+            )
+            reference_identity = case_selection.campaign_case_id
+            if case is None:
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.case_identity_unavailable",
+                    "The selected Campaign Case identity is not authoritative.",
+                )
+            if recipe is None:
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.recipe_version_unavailable",
+                    "The approved Scenario Recipe version is unavailable.",
+                )
+            if path is None:
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.market_scenario_unavailable",
+                    "The materialized market scenario is unavailable.",
+                )
+            if (
+                case is not None
+                and case.recipe_version_id
+                != case_selection.recipe_version_id
+            ):
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.case_recipe_mismatch",
+                    "The Campaign Case is bound to a different recipe version.",
+                )
+            if (
+                case is not None
+                and case.materialization_hash
+                != case_selection.market_scenario_id
+            ):
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.case_market_scenario_mismatch",
+                    "The Campaign Case is bound to a different market scenario.",
+                )
+            if (
+                recipe is not None
+                and recipe.content_hash
+                != case_selection.recipe_content_hash
+            ):
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.recipe_content_hash_mismatch",
+                    "The approved Scenario Recipe content identity does not match.",
+                )
             expected_layer = {
                 "baseline": "baseline",
                 "isolated": "isolated_sensitivity",
                 "compound": "compound",
             }.get(case.layer if case is not None else "")
-            if (
-                case is None
-                or recipe is None
-                or path is None
-                or case.recipe_version_id != case_selection.recipe_version_id
-                or case.materialization_hash
-                != case_selection.market_scenario_id
-                or recipe.content_hash != case_selection.recipe_content_hash
-                or expected_layer != case_selection.layer
-            ):
-                return False
+            if case is not None and expected_layer != case_selection.layer:
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.layer_mismatch",
+                    "The Campaign Case layer does not match its authoritative type.",
+                )
             is_baseline = case_selection.layer == "baseline"
+            expected_role = (
+                "control" if is_baseline else "compare_to_baseline"
+            )
+            expected_baseline_id = (
+                None if is_baseline else baseline_case_id
+            )
             if (
-                case_selection.comparison_role
-                != ("control" if is_baseline else "compare_to_baseline")
+                case_selection.comparison_role != expected_role
                 or case_selection.baseline_campaign_case_id
-                != (None if is_baseline else baseline_case_id)
+                != expected_baseline_id
             ):
-                return False
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.comparison_binding_mismatch",
+                    "The comparison role or baseline binding does not match.",
+                )
+            if recipe is None:
+                continue
             execution = recipe.recipe.execution_conditions
             expected_values = {
                 "allow_partial_fills": str(
@@ -489,21 +740,84 @@ class DiagnosticsApplication:
                     case_selection.execution_policy_values
                 )
             }
-            if (
-                len(actual_values)
-                != len(case_selection.execution_policy_values)
-                or actual_values
-                != {
-                    name: (
-                        value,
-                        recipe.recipe.schema_version,
-                        "Approved Scenario Recipe",
-                    )
-                    for name, value in expected_values.items()
-                }
+            if len(actual_values) != len(
+                case_selection.execution_policy_values
             ):
-                return False
-        return True
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.execution_policy_duplicate",
+                    "Execution policy names must be unique.",
+                )
+            if actual_values != {
+                name: (
+                    value,
+                    recipe.recipe.schema_version,
+                    "Approved Scenario Recipe",
+                )
+                for name, value in expected_values.items()
+            }:
+                add(
+                    reference_kind,
+                    reference_identity,
+                    "campaign.execution_policy_mismatch",
+                    "Execution policy values or provenance do not match.",
+                )
+        return tuple(findings)
+
+    def _diagnostic_task_validation_policy_identities(
+        self,
+        candidate: DiagnosticTaskConfiguration,
+    ) -> tuple[str, ...]:
+        configuration = self.v1_diagnostic_configuration()
+        manifests = cast(
+            list[Mapping[str, object]],
+            configuration["supported_strategies"],
+        )
+        profiles = cast(
+            list[Mapping[str, object]],
+            configuration["supported_guardrail_profiles"],
+        )
+        approved = {
+            item.version_id: item
+            for item in self.list_approved_scenario_recipes()
+        }
+        paths = {
+            item.artifact_hash: item
+            for item in self.list_materialized_market_paths()
+        }
+        identities = {"diagnostic-task-validation-policy.v1"}
+        identities.update(
+            f"compatibility-surface:{item['surface_version']}"
+            for item in manifests
+        )
+        identities.update(
+            f"guardrail-profile:{item['profile_id']}@{item['profile_version']}"
+            for item in profiles
+        )
+        for selection in candidate.campaign_case_selections:
+            recipe = approved.get(selection.recipe_version_id)
+            path = paths.get(selection.market_scenario_id)
+            if recipe is not None:
+                identities.add(
+                    f"scenario-recipe-schema:{recipe.recipe.schema_version}"
+                )
+            if path is not None:
+                identities.add(
+                    "transformation-catalog:"
+                    + path.transformation_catalog_version
+                )
+                identities.add(
+                    "market-rule-profile:"
+                    + path.market_rule_profile_version
+                )
+        return tuple(sorted(identities))
+
+    def _is_authoritative_diagnostic_task_configuration(
+        self,
+        candidate: DiagnosticTaskConfiguration,
+    ) -> bool:
+        return not self._diagnostic_task_authority_findings(candidate)
 
     def recommend_historical_segments(
         self,

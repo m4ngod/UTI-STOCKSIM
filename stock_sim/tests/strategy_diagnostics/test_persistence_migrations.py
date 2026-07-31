@@ -70,7 +70,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0013_diagnostic_tasks"
+    assert first.current_revision == "0014_diagnostic_task_approval"
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
@@ -85,13 +85,14 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0011_diagnostic_evidence",
         "0012_reproduction_manifests",
         "0013_diagnostic_tasks",
+        "0014_diagnostic_task_approval",
     )
-    assert second.current_revision == "0013_diagnostic_tasks"
+    assert second.current_revision == "0014_diagnostic_task_approval"
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0013_diagnostic_tasks"
+        == "0014_diagnostic_task_approval"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -119,6 +120,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0011_diagnostic_evidence",
         "0012_reproduction_manifests",
         "0013_diagnostic_tasks",
+        "0014_diagnostic_task_approval",
     ]
     strategy_run_columns = {
         column["name"]
@@ -150,11 +152,84 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "diagnostic_task_commands",
         "diagnostic_task_handles",
         "diagnostic_task_sequences",
+        "diagnostic_task_configuration_revisions",
+        "diagnostic_task_command_identities",
+        "diagnostic_task_validations",
+        "diagnostic_task_approvals",
+        "diagnostic_task_mutation_commands",
         "diagnostic_run_orders",
         "diagnostic_run_fills",
         "diagnostic_run_positions",
         "diagnostic_run_equity",
     }.issubset(set(inspect(engine).get_table_names()))
+
+
+def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'issue-57-upgrade.db'}",
+        future=True,
+    )
+    application = create_diagnostics_application()
+    application.start()
+    application.initialize_persistence(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_tasks ("
+                "task_id, creation_sequence, revision, lifecycle, "
+                "schema_version, configuration_content_id, "
+                "configuration_json, created_at_utc, updated_at_utc"
+                ") VALUES ("
+                "'diagnostic-task-upgrade-58', 1, 2, 'draft', '1.0', "
+                "'sha256:configuration-upgrade-58', '{}', "
+                "'2030-01-01T00:00:00+00:00', "
+                "'2030-01-02T00:00:00+00:00')"
+            )
+        )
+        for table_name in (
+            "diagnostic_task_mutation_commands",
+            "diagnostic_task_approvals",
+            "diagnostic_task_validations",
+            "diagnostic_task_configuration_revisions",
+            "diagnostic_task_command_identities",
+        ):
+            connection.exec_driver_sql(f"DROP TABLE {table_name}")
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations "
+                "WHERE revision = '0014_diagnostic_task_approval'"
+            )
+        )
+
+    report = application.initialize_persistence(engine)
+
+    assert report.current_revision == "0014_diagnostic_task_approval"
+    assert report.applied_revisions == ("0014_diagnostic_task_approval",)
+    with engine.connect() as connection:
+        backfilled = connection.execute(
+            text(
+                "SELECT task_id, revision, configuration_content_id, "
+                "configuration_json, accepted_command_id, created_at_utc "
+                "FROM diagnostic_task_configuration_revisions"
+            )
+        ).mappings().one()
+    assert dict(backfilled) == {
+        "task_id": "diagnostic-task-upgrade-58",
+        "revision": 2,
+        "configuration_content_id": "sha256:configuration-upgrade-58",
+        "configuration_json": "{}",
+        "accepted_command_id": None,
+        "created_at_utc": "2030-01-02T00:00:00+00:00",
+    }
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) "
+                "FROM diagnostic_task_command_identities"
+            )
+        ).scalar_one() == 0
 
 
 def test_admitted_segment_catalog_survives_application_restart(tmp_path: Path) -> None:

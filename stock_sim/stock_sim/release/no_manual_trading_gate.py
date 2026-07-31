@@ -1,6 +1,6 @@
 """Mandatory Frontend V2 no-manual-trading release gate.
 
-The gate is deliberately stricter than a text search. It reflects the two
+The gate is deliberately stricter than a text search. It reflects the three
 active Feature Interfaces, parses QML Adapter slots and Journey source,
 inspects live/fake Adapter surfaces and runtime calls, and records immutable
 evidence that packaging certification can require.
@@ -73,7 +73,15 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
 
 QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "DiagnosticTasksQtAdapter": frozenset({"createTask", "refresh"}),
+        "DiagnosticTasksQtAdapter": frozenset(
+            {
+                "approveTask",
+                "createTask",
+                "refresh",
+                "reviseTask",
+                "validateTask",
+            }
+        ),
         "RunMonitoringQtAdapter": frozenset(
             {
                 "refresh",

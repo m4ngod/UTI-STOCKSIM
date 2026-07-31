@@ -25,9 +25,11 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QWidget
 
 from app.features import (
+    ApproveDiagnosticTaskConfiguration,
     CancelDiagnosticTask,
     CandidateEvidence,
     CreateDiagnosticTask,
+    DiagnosticActorId,
     DiagnosticCampaignCaseSelection,
     DiagnosticCampaignLayer,
     DiagnosticCommandId,
@@ -46,10 +48,12 @@ from app.features import (
     EvidenceDimension,
     PauseDiagnosticTask,
     ResumeDiagnosticTask,
+    ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
     RunMonitoringFeature,
     RunMonitoringViewState,
     Subscription,
+    ValidateDiagnosticTaskConfiguration,
 )
 
 from .accessibility import (
@@ -279,6 +283,18 @@ class DiagnosticTasksQtAdapter(QObject):
     def canCreate(self) -> bool:  # noqa: N802
         return bool(self._state.capabilities.can_create)
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canRevise(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_revise)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canValidate(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_validate)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canApprove(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_approve)
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskStatusText(self) -> str:  # noqa: N802
         task = self._state.task
@@ -313,25 +329,212 @@ class DiagnosticTasksQtAdapter(QObject):
             "Create is ready when all displayed authoritative inputs are ready.",
         )
 
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def validationStatusText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None:
+            return "No Diagnostic Task revision is available for validation."
+        validation = task.validation
+        if validation.validation_id is None:
+            return f"Task r{task.revision} has not been validated."
+        findings = (
+            "no findings"
+            if not validation.findings
+            else "; ".join(
+                f"{item.severity.value} {item.code.value}: "
+                f"{item.safe_explanation}"
+                for item in validation.findings
+            )
+        )
+        return (
+            f"{validation.state.value} · validation "
+            f"{validation.validation_id.value}@"
+            f"{validation.validation_revision} · task "
+            f"r{validation.validated_revision} · {findings}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def approvalStatusText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or task.approval is None:
+            return "No exact-revision approval is active."
+        approval = task.approval
+        return (
+            f"{approval.approval_id.value} · task "
+            f"r{approval.approved_revision} · validation "
+            f"{approval.validation_id.value}@"
+            f"{approval.validation_revision} · actor "
+            f"{approval.actor_identity.value} · "
+            f"{approval.approved_at.isoformat()}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def commandStatusText(self) -> str:  # noqa: N802
+        return getattr(
+            self,
+            "_command_status",
+            "Correction, validation, and exact-revision approval are ready "
+            "when their typed capabilities are available.",
+        )
+
     @Slot()
     def createTask(self) -> None:  # noqa: N802
-        inventory = self._state.last_reliable_inventory
-        if inventory is None or not self.canCreate:
+        configuration = self._configuration_from_inventory(
+            include_all_cases=False
+        )
+        if configuration is None or not self.canCreate:
             self._create_status = (
                 "Diagnostic Task creation requires all authoritative inputs."
             )
             self.stateChanged.emit()
             return
+        command_identity = uuid4().hex
+        result = self._feature.create_diagnostic_task(
+            CreateDiagnosticTask(
+                command_id=DiagnosticCommandId(
+                    f"create-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-create-{command_identity}"
+                ),
+                configuration=configuration,
+            )
+        )
+        self._create_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot()
+    def reviseTask(self) -> None:  # noqa: N802
+        task = self._state.task
+        configuration = self._configuration_from_inventory(
+            include_all_cases=True
+        )
+        if task is None or configuration is None or not self.canRevise:
+            self._command_status = (
+                "Configuration correction is unavailable for this task state."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.revise_configuration(
+            ReviseDiagnosticTaskConfiguration(
+                command_id=DiagnosticCommandId(
+                    f"revise-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-revise-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                configuration=configuration,
+            )
+        )
+        self._command_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot()
+    def validateTask(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canValidate:
+            self._command_status = (
+                "Validation is unavailable for this task state."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.validate_configuration(
+            ValidateDiagnosticTaskConfiguration(
+                command_id=DiagnosticCommandId(
+                    f"validate-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-validate-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+            )
+        )
+        self._command_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot(str)
+    def approveTask(self, actor_identity: str) -> None:  # noqa: N802
+        task = self._state.task
+        actor = actor_identity.strip()
+        if task is None or not self.canApprove or not actor:
+            self._command_status = (
+                "Approval requires a valid exact revision and an actor identity."
+            )
+            self.stateChanged.emit()
+            return
+        validation = task.validation
+        if (
+            validation.validation_id is None
+            or validation.validation_revision is None
+            or validation.validated_revision is None
+            or validation.configuration_content_identity is None
+        ):
+            self._command_status = (
+                "Approval requires a valid exact revision."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.approve_configuration(
+            ApproveDiagnosticTaskConfiguration(
+                command_id=DiagnosticCommandId(
+                    f"approve-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-approve-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                validation_id=validation.validation_id,
+                validation_revision=validation.validation_revision,
+                validated_revision=validation.validated_revision,
+                configuration_content_id=(
+                    validation.configuration_content_identity
+                ),
+                actor_id=DiagnosticActorId(actor),
+            )
+        )
+        self._command_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+
+    def _configuration_from_inventory(
+        self,
+        *,
+        include_all_cases: bool,
+    ) -> DiagnosticTaskConfiguration | None:
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.market_scenarios:
+            return None
         recipe_by_id = {
             item.recipe_version_id: item
             for item in inventory.approved_recipes
         }
         baseline_case_id = next(
-            item.campaign_case_id
-            for item in inventory.market_scenarios
-            if item.layer is DiagnosticCampaignLayer.BASELINE
+            (
+                item.campaign_case_id
+                for item in inventory.market_scenarios
+                if item.layer is DiagnosticCampaignLayer.BASELINE
+            ),
+            None,
         )
-        configuration = DiagnosticTaskConfiguration.create(
+        if baseline_case_id is None:
+            return None
+        selected_scenarios = tuple(
+            item
+            for item in inventory.market_scenarios
+            if include_all_cases
+            or item.layer is DiagnosticCampaignLayer.BASELINE
+        )
+        return DiagnosticTaskConfiguration.create(
             strategy_selections=tuple(
                 DiagnosticStrategySelection(
                     strategy_id=item.strategy_id,
@@ -365,24 +568,9 @@ class DiagnosticTasksQtAdapter(QObject):
                     ),
                     execution_policy_values=item.execution_policy_values,
                 )
-                for item in inventory.market_scenarios
+                for item in selected_scenarios
             ),
         )
-        command_identity = uuid4().hex
-        result = self._feature.create_diagnostic_task(
-            CreateDiagnosticTask(
-                command_id=DiagnosticCommandId(
-                    f"create-diagnostic-task-{command_identity}"
-                ),
-                idempotency_key=DiagnosticCommandIdempotencyKey(
-                    f"diagnostic-task-create-{command_identity}"
-                ),
-                configuration=configuration,
-            )
-        )
-        self._create_status = result.message
-        self.refresh()
-        self.stateChanged.emit()
 
     @Slot()
     def refresh(self) -> None:

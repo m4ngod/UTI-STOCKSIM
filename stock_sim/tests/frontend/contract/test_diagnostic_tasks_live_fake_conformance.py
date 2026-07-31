@@ -38,6 +38,8 @@ from app.features import (
     DiagnosticTasksFeature,
     DiagnosticTasksPresentationState,
     DiagnosticTaskTarget,
+    DiagnosticTaskValidationId,
+    DiagnosticTaskValidationState,
     Freshness,
     LiveDiagnosticTasksAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
@@ -54,6 +56,9 @@ from app.features import (
 )
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
+    _persistent_three_layer_stack,
+)
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
     _baseline_payload,
     _RecipeFixtureSource,
@@ -260,6 +265,8 @@ def _unavailable_commands(inventory):
             approve_key,
             task_id,
             1,
+            DiagnosticTaskValidationId("diagnostic-task-validation-58"),
+            1,
             1,
             configuration.content_identity,
             DiagnosticActorId("research-owner"),
@@ -352,6 +359,285 @@ def _scripted_fake_feature(
         ),
         clock,
     )
+
+
+def _live_revision_feature(tmp_path) -> DiagnosticTasksFeature:
+    return _persistent_three_layer_stack(tmp_path)[-1]
+
+
+def _fake_revision_feature(tmp_path) -> DiagnosticTasksFeature:
+    live = _persistent_three_layer_stack(tmp_path)[-1]
+    context = DiagnosticTasksContext.workspace()
+    live.snapshot(context)
+    inventory = live.snapshot(context).last_reliable_inventory
+    live.close()
+    assert inventory is not None
+    return DeterministicFakeDiagnosticTasksAdapter(inventory=inventory)
+
+
+def _current_task(feature: DiagnosticTasksFeature, task_id: DiagnosticTaskId):
+    context = DiagnosticTasksContext(task_id)
+    feature.snapshot(context)
+    state = feature.snapshot(context)
+    assert state.task is not None
+    return state.task
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    [_live_revision_feature, _fake_revision_feature],
+)
+def test_live_and_fake_share_revision_validation_approval_conformance(
+    feature_factory,
+    tmp_path,
+) -> None:
+    feature = feature_factory(tmp_path)
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    inventory = feature.snapshot(workspace).last_reliable_inventory
+    assert inventory is not None
+    commands = _unavailable_commands(inventory)
+    full_configuration = commands[0].configuration
+    baseline_configuration = DiagnosticTaskConfiguration.create(
+        strategy_selections=full_configuration.strategy_selections,
+        campaign_case_selections=tuple(
+            item
+            for item in full_configuration.campaign_case_selections
+            if item.layer is DiagnosticCampaignLayer.BASELINE
+        ),
+    )
+    created = feature.create_diagnostic_task(
+        replace(commands[0], configuration=baseline_configuration)
+    )
+    assert created.affected_task_id is not None
+    task_id = created.affected_task_id
+    revised_command = replace(
+        commands[1],
+        task_id=task_id,
+        expected_revision=2,
+        configuration=full_configuration,
+    )
+    creation_identity_conflict = feature.revise_configuration(
+        replace(
+            revised_command,
+            command_id=commands[0].command_id,
+        )
+    )
+    assert creation_identity_conflict.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.COMMAND_IDENTITY_CONFLICT
+    )
+    creation_key_conflict = feature.revise_configuration(
+        replace(
+            revised_command,
+            idempotency_key=commands[0].idempotency_key,
+        )
+    )
+    assert creation_key_conflict.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.IDEMPOTENCY_CONFLICT
+    )
+    assert _current_task(feature, task_id).revision == 2
+
+    revised = feature.revise_configuration(revised_command)
+    replayed_revision = feature.revise_configuration(revised_command)
+
+    assert revised.disposition is (
+        DiagnosticTasksCommandDisposition.SYNCHRONOUS_COMPLETION
+    )
+    assert revised.current_revision == 3
+    assert revised.task_handle is None
+    assert replayed_revision.disposition is (
+        DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert _current_task(feature, task_id).configuration == full_configuration
+
+    stale = feature.revise_configuration(
+        replace(
+            revised_command,
+            command_id=DiagnosticCommandId("command-58-stale"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-58-stale"
+            ),
+            expected_revision=2,
+            configuration=baseline_configuration,
+        )
+    )
+    assert stale.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.STALE_EXPECTED_REVISION
+    )
+    assert stale.current_revision == 3
+    assert stale.task_handle is None
+
+    validate_command = replace(
+        commands[2],
+        task_id=task_id,
+        expected_revision=3,
+    )
+    validated = feature.validate_configuration(validate_command)
+    replayed_validation = feature.validate_configuration(validate_command)
+
+    assert validated.disposition is (
+        DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+    )
+    assert validated.task_handle is not None
+    assert validated.task_handle.phase is TaskPhase.QUEUED
+    assert replayed_validation.disposition is (
+        DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert replayed_validation.task_handle is not None
+    assert replayed_validation.task_handle.phase is TaskPhase.COMPLETED
+    task = _current_task(feature, task_id)
+    assert task.lifecycle is DiagnosticTaskLifecycle.AWAITING_APPROVAL
+    assert task.validation.state is DiagnosticTaskValidationState.VALID
+    assert task.validation.validation_id is not None
+    assert task.validation.task_handle_id is not None
+    assert task.validation.validation_revision == 1
+    assert task.validation.validated_revision == 3
+    assert task.validation.policy_identities
+    assert task.validation.findings == ()
+    validation_handle = next(
+        handle
+        for handle in task.task_handles
+        if handle.identity == task.validation.task_handle_id
+    )
+    assert validation_handle.phase is TaskPhase.COMPLETED
+    assert (
+        validation_handle.result
+        == "diagnostic_task_configuration_valid"
+    )
+    assert task.capabilities.can_approve
+    validated_view_revision = feature.snapshot(
+        DiagnosticTasksContext(task_id=task_id)
+    ).revision
+
+    stale_validation_approval = feature.approve_configuration(
+        replace(
+            commands[3],
+            task_id=task_id,
+            expected_revision=3,
+            validation_id=DiagnosticTaskValidationId(
+                "diagnostic-task-validation-stale"
+            ),
+            validation_revision=task.validation.validation_revision,
+            validated_revision=3,
+            configuration_content_id=full_configuration.content_identity,
+        )
+    )
+    assert stale_validation_approval.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.STALE_VALIDATION
+    )
+    assert stale_validation_approval.current_revision == 3
+    assert stale_validation_approval.task_handle is None
+    assert _current_task(feature, task_id).approval is None
+
+    approval_command = replace(
+        commands[3],
+        task_id=task_id,
+        expected_revision=3,
+        validation_id=task.validation.validation_id,
+        validation_revision=task.validation.validation_revision,
+        validated_revision=3,
+        configuration_content_id=full_configuration.content_identity,
+    )
+    approved = feature.approve_configuration(approval_command)
+    replayed_approval = feature.approve_configuration(approval_command)
+
+    assert approved.disposition is (
+        DiagnosticTasksCommandDisposition.SYNCHRONOUS_COMPLETION
+    )
+    assert approved.task_handle is None
+    assert replayed_approval.disposition is (
+        DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    task = _current_task(feature, task_id)
+    approved_view_revision = feature.snapshot(
+        DiagnosticTasksContext(task_id=task_id)
+    ).revision
+    assert approved_view_revision > validated_view_revision
+    assert task.lifecycle is DiagnosticTaskLifecycle.APPROVED
+    assert task.approval is not None
+    assert task.approval.validation_id == task.validation.validation_id
+    assert task.approval.validation_revision == 1
+    assert task.approval.policy_identities == task.validation.policy_identities
+    original_approval = task.approval
+    stale_approval = feature.approve_configuration(
+        replace(
+            approval_command,
+            command_id=DiagnosticCommandId("command-58-stale-approval"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-58-stale-approval"
+            ),
+        )
+    )
+    assert stale_approval.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.STALE_APPROVAL
+    )
+    assert stale_approval.current_revision == 3
+    assert stale_approval.task_handle is None
+    assert _current_task(feature, task_id).approval == original_approval
+
+    corrected = feature.revise_configuration(
+        replace(
+            revised_command,
+            command_id=DiagnosticCommandId("command-58-invalidate"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-58-invalidate"
+            ),
+            expected_revision=3,
+            configuration=baseline_configuration,
+        )
+    )
+    assert corrected.current_revision == 4
+    task = _current_task(feature, task_id)
+    assert task.lifecycle is DiagnosticTaskLifecycle.DRAFT
+    assert task.validation.state is DiagnosticTaskValidationState.NOT_VALIDATED
+    assert task.approval is None
+
+    invalid_validation = feature.validate_configuration(
+        replace(
+            validate_command,
+            command_id=DiagnosticCommandId("command-58-invalid-validate"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-58-invalid-validate"
+            ),
+            expected_revision=4,
+        )
+    )
+    assert invalid_validation.accepted
+    task = _current_task(feature, task_id)
+    assert task.validation.state is DiagnosticTaskValidationState.INVALID
+    assert {
+        item.code.value for item in task.validation.findings
+    } >= {
+        "campaign.layer.isolated_sensitivity_required",
+        "campaign.layer.compound_required",
+    }
+    rejected_approval = feature.approve_configuration(
+        replace(
+            approval_command,
+            command_id=DiagnosticCommandId("command-58-invalid-approve"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "idempotency-58-invalid-approve"
+            ),
+            expected_revision=4,
+            validation_id=task.validation.validation_id,
+            validation_revision=task.validation.validation_revision,
+            validated_revision=4,
+            configuration_content_id=baseline_configuration.content_identity,
+        )
+    )
+    assert rejected_approval.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.VALIDATION_FAILED
+    )
+    assert rejected_approval.task_handle is None
+    assert feature.start_formal_diagnostic_campaign(
+        replace(
+            commands[4],
+            task_id=task_id,
+            expected_revision=4,
+            approved_revision=4,
+        )
+    ).rejection_reason is DiagnosticTaskCommandRejectionReason.NOT_YET_AVAILABLE
+    feature.close()
 
 
 @pytest.mark.parametrize("feature_factory", [_live_feature, _fake_feature])
@@ -523,8 +809,13 @@ def test_live_and_fake_share_one_typed_feature_conformance(
     assert all(result.task is None for result in results)
     assert all(
         result.rejection_reason
+        is DiagnosticTaskCommandRejectionReason.INVALID_COMMAND
+        for result in results[:3]
+    )
+    assert all(
+        result.rejection_reason
         is DiagnosticTaskCommandRejectionReason.NOT_YET_AVAILABLE
-        for result in results
+        for result in results[3:]
     )
     feature.close()
     feature.close()

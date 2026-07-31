@@ -923,7 +923,7 @@ def test_approved_recipe_version_survives_application_restart(tmp_path: Path) ->
     restarted.initialize_persistence(engine)
     restored = restarted.get_recipe_version(approved.version_id)
 
-    assert migration.current_revision == "0013_diagnostic_tasks"
+    assert migration.current_revision == "0014_diagnostic_task_approval"
     assert restored.to_dict() == approved.to_dict()
     assert {
         "diagnostic_recipe_drafts",

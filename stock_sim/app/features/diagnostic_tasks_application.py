@@ -24,10 +24,16 @@ from .strategy_diagnostics_v1_read_model import SourceRevisionToken
 if TYPE_CHECKING:
     from strategy_diagnostics.application import DiagnosticsApplication
     from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticTaskConfiguration as BackendDiagnosticTaskConfiguration,
+    )
+    from strategy_diagnostics.diagnostic_tasks import (
         DiagnosticTaskCreationResult as BackendDiagnosticTaskCreationResult,
     )
     from strategy_diagnostics.diagnostic_tasks import (
         DiagnosticTaskSnapshot as BackendDiagnosticTaskSnapshot,
+    )
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticTaskValidationFinding as BackendDiagnosticTaskValidationFinding,
     )
     from strategy_diagnostics.formal_diagnostic_campaigns import (
         DiagnosticCampaignCase,
@@ -139,6 +145,11 @@ class DiagnosticTasksApplicationCommandRejectionReason(str, Enum):
     COMMAND_IDENTITY_CONFLICT = "command_identity_conflict"
     PERSISTENCE_FAILURE = "persistence_failure"
     STALE_EXPECTED_REVISION = "stale_expected_revision"
+    STALE_VALIDATION = "stale_validation"
+    STALE_APPROVAL = "stale_approval"
+    VALIDATION_PENDING = "validation_pending"
+    VALIDATION_FAILED = "validation_failed"
+    UNAVAILABLE_INPUT = "unavailable_input"
     DISCONNECTED_SOURCE = "disconnected_source"
     UNAVAILABLE_CAPABILITY = "unavailable_capability"
 
@@ -306,6 +317,30 @@ class DiagnosticActorId:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticTaskValidationId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_identity(self.value, "Diagnostic Task validation")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTaskApprovalId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_identity(self.value, "Diagnostic Task approval")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPolicyIdentity:
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_identity(self.value, "Diagnostic policy")
+
+
+@dataclass(frozen=True, slots=True)
 class CampaignNodeId:
     value: str
 
@@ -423,12 +458,18 @@ class ApproveDiagnosticTaskConfiguration:
     idempotency_key: DiagnosticCommandIdempotencyKey
     task_id: DiagnosticTaskId
     expected_revision: int
+    validation_id: DiagnosticTaskValidationId
+    validation_revision: int
     validated_revision: int
     configuration_content_id: DiagnosticTaskConfigurationContentId
     actor_id: DiagnosticActorId
 
     def __post_init__(self) -> None:
         _require_positive_revision(self.expected_revision, "expected_revision")
+        _require_positive_revision(
+            self.validation_revision,
+            "validation_revision",
+        )
         _require_positive_revision(self.validated_revision, "validated_revision")
 
 
@@ -540,6 +581,75 @@ class DiagnosticTasksApplicationInventoryResult:
 class DiagnosticTasksApplicationTaskLifecycle(str, Enum):
     CREATING = "creating"
     DRAFT = "draft"
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+
+
+class DiagnosticTasksApplicationValidationState(str, Enum):
+    VALID = "valid"
+    INVALID = "invalid"
+
+
+class DiagnosticTasksApplicationValidationSeverity(str, Enum):
+    INFORMATION = "information"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationConfigurationReference:
+    content_identity: DiagnosticTaskConfigurationContentId
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationStrategyReference:
+    strategy_id: StrategyUnderTestId
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationCampaignCaseReference:
+    campaign_case_id: CampaignCaseId
+
+
+DiagnosticTasksApplicationValidationReference = (
+    DiagnosticTasksApplicationConfigurationReference
+    | DiagnosticTasksApplicationStrategyReference
+    | DiagnosticTasksApplicationCampaignCaseReference
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationValidationFinding:
+    reference: DiagnosticTasksApplicationValidationReference
+    severity: DiagnosticTasksApplicationValidationSeverity
+    code: str
+    safe_explanation: str
+    retryable: bool
+    requires_different_input: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationValidation:
+    validation_id: DiagnosticTaskValidationId
+    task_handle_id: TaskHandleId
+    validation_revision: int
+    validated_revision: int
+    configuration_content_identity: DiagnosticTaskConfigurationContentId
+    state: DiagnosticTasksApplicationValidationState
+    findings: tuple[DiagnosticTasksApplicationValidationFinding, ...]
+    policy_identities: tuple[DiagnosticPolicyIdentity, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationApproval:
+    approval_id: DiagnosticTaskApprovalId
+    approved_revision: int
+    configuration_content_identity: DiagnosticTaskConfigurationContentId
+    validation_id: DiagnosticTaskValidationId
+    validation_revision: int
+    actor_identity: DiagnosticActorId
+    approved_at: datetime
+    policy_identities: tuple[DiagnosticPolicyIdentity, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,6 +658,8 @@ class DiagnosticTasksApplicationTask:
     revision: int
     lifecycle: DiagnosticTasksApplicationTaskLifecycle
     configuration: DiagnosticTaskConfiguration
+    validation: DiagnosticTasksApplicationValidation | None
+    approval: DiagnosticTasksApplicationApproval | None
     task_handles: tuple[TaskHandle, ...]
 
 
@@ -830,19 +942,74 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: ReviseDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            ReviseDiagnosticTaskConfigurationRequest,
+        )
+
+        try:
+            result = self._application.revise_diagnostic_task_configuration(
+                ReviseDiagnosticTaskConfigurationRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    task_id=command.task_id.value,
+                    expected_revision=command.expected_revision,
+                    configuration=_backend_configuration(
+                        command.configuration
+                    ),
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def validate_configuration(
         self,
         command: ValidateDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            ValidateDiagnosticTaskConfigurationRequest,
+        )
+
+        try:
+            result = self._application.validate_diagnostic_task_configuration(
+                ValidateDiagnosticTaskConfigurationRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    task_id=command.task_id.value,
+                    expected_revision=command.expected_revision,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def approve_configuration(
         self,
         command: ApproveDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            ApproveDiagnosticTaskConfigurationRequest,
+        )
+
+        try:
+            result = self._application.approve_diagnostic_task_configuration(
+                ApproveDiagnosticTaskConfigurationRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    task_id=command.task_id.value,
+                    expected_revision=command.expected_revision,
+                    validation_id=command.validation_id.value,
+                    validation_revision=command.validation_revision,
+                    validated_revision=command.validated_revision,
+                    configuration_content_id=(
+                        command.configuration_content_id.value
+                    ),
+                    actor_id=command.actor_id.value,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def start_formal_diagnostic_campaign(
         self,
@@ -895,15 +1062,44 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
             correlation_id=None,
         )
 
+    @staticmethod
+    def _disconnected(
+        command: DiagnosticTasksApplicationCommand,
+    ) -> DiagnosticTasksApplicationCommandResult:
+        return DiagnosticTasksApplicationCommandResult(
+            disposition=DiagnosticTasksCommandDisposition.REJECTED,
+            command_id=command.command_id,
+            idempotency_key=command.idempotency_key,
+            message="Strategy Diagnostics is not ready.",
+            rejection_reason=(
+                DiagnosticTasksApplicationCommandRejectionReason.DISCONNECTED_SOURCE
+            ),
+            task_handle=None,
+            current_revision=None,
+            affected_task_id=None,
+            affected_campaign_id=None,
+            affected_campaign_node_id=None,
+            retryable=True,
+            correlation_id=None,
+        )
+
     def _read_inventory(self) -> DiagnosticTasksInventory:
         configuration = self._application.v1_diagnostic_configuration()
+        configured_profiles = cast(
+            list[Mapping[str, object]],
+            configuration["supported_guardrail_profiles"],
+        )
+        configured_strategies = cast(
+            list[Mapping[str, object]],
+            configuration["supported_strategies"],
+        )
         profiles = {
             str(item["strategy_id"]): item
-            for item in configuration["supported_guardrail_profiles"]
+            for item in configured_profiles
         }
         strategies = tuple(
             _map_strategy(item, profiles[str(item["strategy_id"])])
-            for item in configuration["supported_strategies"]
+            for item in configured_strategies
         )
         transformation_catalog_version = str(
             self._application.transformation_catalog_view()["catalog_version"]
@@ -1168,6 +1364,82 @@ def _diagnostic_task_configuration_payload(
     }
 
 
+def _backend_configuration(
+    configuration: DiagnosticTaskConfiguration,
+) -> BackendDiagnosticTaskConfiguration:
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticCampaignCaseSelection as BackendCampaignCaseSelection,
+    )
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticStrategySelection as BackendStrategySelection,
+    )
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticTaskConfiguration as BackendTaskConfiguration,
+    )
+
+    return BackendTaskConfiguration(
+        content_identity=configuration.content_identity.value,
+        strategy_selections=tuple(
+            BackendStrategySelection(
+                strategy_id=item.strategy_id.value,
+                strategy_version=item.strategy_version,
+                compatibility_manifest_hash=(
+                    item.compatibility_manifest_hash
+                ),
+                guardrail_profile_id=item.guardrail_profile_id.value,
+                guardrail_profile_version=item.guardrail_profile_version,
+            )
+            for item in configuration.strategy_selections
+        ),
+        campaign_case_selections=tuple(
+            BackendCampaignCaseSelection(
+                layer=item.layer.value,
+                recipe_version_id=item.recipe_version_id.value,
+                recipe_content_hash=item.recipe_content_hash,
+                market_scenario_id=item.market_scenario_id.value,
+                campaign_case_id=item.campaign_case_id.value,
+                comparison_role=item.comparison_role.value,
+                baseline_campaign_case_id=(
+                    None
+                    if item.baseline_campaign_case_id is None
+                    else item.baseline_campaign_case_id.value
+                ),
+                execution_policy_values=tuple(
+                    (
+                        value.name,
+                        value.value,
+                        value.version,
+                        value.source,
+                    )
+                    for value in item.execution_policy_values
+                ),
+            )
+            for item in configuration.campaign_case_selections
+        ),
+    )
+
+
+def _application_validation_reference(
+    finding: BackendDiagnosticTaskValidationFinding,
+) -> DiagnosticTasksApplicationValidationReference:
+    reference_kind = finding.reference_kind.value
+    if reference_kind == "configuration":
+        return DiagnosticTasksApplicationConfigurationReference(
+            content_identity=DiagnosticTaskConfigurationContentId(
+                finding.reference_identity
+            )
+        )
+    if reference_kind == "strategy":
+        return DiagnosticTasksApplicationStrategyReference(
+            strategy_id=StrategyUnderTestId(finding.reference_identity)
+        )
+    if reference_kind == "campaign_case":
+        return DiagnosticTasksApplicationCampaignCaseReference(
+            campaign_case_id=CampaignCaseId(finding.reference_identity)
+        )
+    raise ValueError("Unsupported Diagnostic Task validation reference")
+
+
 def _map_diagnostic_task(
     snapshot: BackendDiagnosticTaskSnapshot,
 ) -> DiagnosticTasksApplicationTask:
@@ -1230,6 +1502,80 @@ def _map_diagnostic_task(
                 )
                 for item in configuration.campaign_case_selections
             ),
+        ),
+        validation=(
+            None
+            if snapshot.validation is None
+            else DiagnosticTasksApplicationValidation(
+                validation_id=DiagnosticTaskValidationId(
+                    snapshot.validation.validation_id
+                ),
+                task_handle_id=TaskHandleId(
+                    snapshot.validation.task_handle_id
+                ),
+                validation_revision=(
+                    snapshot.validation.validation_revision
+                ),
+                validated_revision=snapshot.validation.task_revision,
+                configuration_content_identity=(
+                    DiagnosticTaskConfigurationContentId(
+                        snapshot.validation.configuration_content_id
+                    )
+                ),
+                state=DiagnosticTasksApplicationValidationState(
+                    snapshot.validation.state.value
+                ),
+                findings=tuple(
+                    DiagnosticTasksApplicationValidationFinding(
+                        reference=_application_validation_reference(item),
+                        severity=(
+                            DiagnosticTasksApplicationValidationSeverity(
+                                item.severity.value
+                            )
+                        ),
+                        code=item.code,
+                        safe_explanation=item.safe_explanation,
+                        retryable=item.retryable,
+                        requires_different_input=(
+                            item.requires_different_input
+                        ),
+                    )
+                    for item in snapshot.validation.findings
+                ),
+                policy_identities=tuple(
+                    DiagnosticPolicyIdentity(item)
+                    for item in snapshot.validation.policy_identities
+                ),
+            )
+        ),
+        approval=(
+            None
+            if snapshot.approval is None
+            else DiagnosticTasksApplicationApproval(
+                approval_id=DiagnosticTaskApprovalId(
+                    snapshot.approval.approval_id
+                ),
+                approved_revision=snapshot.approval.task_revision,
+                configuration_content_identity=(
+                    DiagnosticTaskConfigurationContentId(
+                        snapshot.approval.configuration_content_id
+                    )
+                ),
+                validation_id=DiagnosticTaskValidationId(
+                    snapshot.approval.validation_id
+                ),
+                validation_revision=(
+                    snapshot.approval.validation_revision
+                ),
+                actor_identity=DiagnosticActorId(
+                    snapshot.approval.actor_id
+                ),
+                approved_at=snapshot.approval.approved_at,
+                policy_identities=tuple(
+                    DiagnosticPolicyIdentity(item)
+                    for item in snapshot.approval.policy_identities
+                ),
+            )
         ),
         task_handles=tuple(
             TaskHandle(
@@ -1313,6 +1659,15 @@ def _diagnostic_task_token(
     task: DiagnosticTasksApplicationTask,
 ) -> SourceRevisionToken:
     payload = {
+        "approval": (
+            None
+            if task.approval is None
+            else (
+                task.approval.approval_id.value,
+                task.approval.approved_revision,
+                task.approval.validation_id.value,
+            )
+        ),
         "handle_phases": [
             (item.identity.value, item.phase.value, item.progress, item.result)
             for item in task.task_handles
@@ -1320,6 +1675,17 @@ def _diagnostic_task_token(
         "lifecycle": task.lifecycle.value,
         "revision": task.revision,
         "task_id": task.task_id.value,
+        "validation": (
+            None
+            if task.validation is None
+            else (
+                task.validation.validation_id.value,
+                task.validation.validation_revision,
+                task.validation.validated_revision,
+                task.validation.state.value,
+                tuple(item.code for item in task.validation.findings),
+            )
+        ),
     }
     encoded = json.dumps(
         payload,
@@ -1349,21 +1715,33 @@ __all__ = [
     "DiagnosticCommandIdempotencyKey",
     "DiagnosticComparisonRole",
     "DiagnosticLifecycleTarget",
+    "DiagnosticPolicyIdentity",
     "DiagnosticStrategyInput",
     "DiagnosticStrategySelection",
+    "DiagnosticTaskApprovalId",
     "DiagnosticTaskConfiguration",
     "DiagnosticTaskConfigurationContentId",
     "DiagnosticTaskTarget",
+    "DiagnosticTaskValidationId",
+    "DiagnosticTasksApplicationApproval",
     "DiagnosticTasksApplicationAvailability",
+    "DiagnosticTasksApplicationCampaignCaseReference",
     "DiagnosticTasksApplicationCommand",
     "DiagnosticTasksApplicationCommandRejectionReason",
     "DiagnosticTasksApplicationCommandResult",
+    "DiagnosticTasksApplicationConfigurationReference",
     "DiagnosticTasksApplicationError",
     "DiagnosticTasksApplicationErrorCode",
     "DiagnosticTasksApplicationInventoryResult",
+    "DiagnosticTasksApplicationStrategyReference",
     "DiagnosticTasksApplicationTask",
     "DiagnosticTasksApplicationTaskLifecycle",
     "DiagnosticTasksApplicationTaskResult",
+    "DiagnosticTasksApplicationValidation",
+    "DiagnosticTasksApplicationValidationFinding",
+    "DiagnosticTasksApplicationValidationReference",
+    "DiagnosticTasksApplicationValidationSeverity",
+    "DiagnosticTasksApplicationValidationState",
     "DiagnosticTasksApplicationVersion",
     "DiagnosticTasksCommandDisposition",
     "DiagnosticTasksInventory",
