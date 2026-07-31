@@ -34,6 +34,7 @@ from .diagnostic_tasks import (
     DiagnosticCampaignAttemptHandoffSnapshot,
     DiagnosticCampaignNodeHandoffSnapshot,
     DiagnosticCampaignRunHandoffSnapshot,
+    DiagnosticEvidenceHandoffState,
     DiagnosticLifecycleOperation,
     DiagnosticLifecycleTargetKind,
     DiagnosticTaskCampaignHandoffSnapshot,
@@ -688,6 +689,8 @@ class DiagnosticsApplication:
                 continuation_claim_id,
                 handoff,
             )
+            if campaign.status == "completed":
+                self._seal_linked_diagnostic_task_evidence(campaign)
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             try:
                 self._diagnostic_tasks.release_start_continuation(
@@ -813,6 +816,17 @@ class DiagnosticsApplication:
             ): selection
             for selection in task.configuration.campaign_case_selections
         }
+        manifest_by_run_id = (
+            {}
+            if task.campaign_handoff is None
+            else {
+                run.run_id: run.reproduction_manifest_id
+                for node in task.campaign_handoff.campaign_nodes
+                for attempt in node.attempts
+                for run in attempt.runs
+                if run.reproduction_manifest_id is not None
+            }
+        )
         nodes: list[DiagnosticCampaignNodeHandoffSnapshot] = []
         for case in campaign.cases:
             selection = selections.get(
@@ -838,6 +852,9 @@ class DiagnosticsApplication:
                     DiagnosticCampaignRunHandoffSnapshot(
                         run_id=str(member["run_id"]),
                         strategy_id=str(member["strategy_id"]),
+                        reproduction_manifest_id=manifest_by_run_id.get(
+                            str(member["run_id"])
+                        ),
                     )
                     for member in member_values
                     if isinstance(member, Mapping)
@@ -902,6 +919,31 @@ class DiagnosticsApplication:
         return DiagnosticTaskCampaignHandoffSnapshot(
             campaign_id=campaign.campaign_id,
             campaign_nodes=tuple(nodes),
+            evidence_package_id=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.evidence_package_id
+            ),
+            evidence_state=(
+                DiagnosticEvidenceHandoffState.PENDING
+                if task.campaign_handoff is None
+                else task.campaign_handoff.evidence_state
+            ),
+            evidence_error_code=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.evidence_error_code
+            ),
+            evidence_error_message=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.evidence_error_message
+            ),
+            reproduction_manifest_id=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.reproduction_manifest_id
+            ),
         )
 
     @staticmethod
@@ -1810,6 +1852,8 @@ class DiagnosticsApplication:
         )
         if eligible_case_ids == ():
             self._sync_linked_diagnostic_campaign(campaign)
+            if campaign.status == "completed":
+                self._seal_linked_diagnostic_task_evidence(campaign)
             return campaign
         advanced = self._diagnostic_campaigns.advance(
             campaign_id,
@@ -1818,6 +1862,8 @@ class DiagnosticsApplication:
             eligible_case_ids=eligible_case_ids,
         )
         self._sync_linked_diagnostic_campaign(advanced)
+        if advanced.status == "completed":
+            self._seal_linked_diagnostic_task_evidence(advanced)
         return advanced
 
     def resume_diagnostic_campaign(
@@ -1836,6 +1882,8 @@ class DiagnosticsApplication:
         )
         if eligible_case_ids == ():
             self._sync_linked_diagnostic_campaign(campaign)
+            if campaign.status == "completed":
+                self._seal_linked_diagnostic_task_evidence(campaign)
             return campaign
         resumed = self._diagnostic_campaigns.resume(
             campaign_id,
@@ -1844,6 +1892,8 @@ class DiagnosticsApplication:
             eligible_case_ids=eligible_case_ids,
         )
         self._sync_linked_diagnostic_campaign(resumed)
+        if resumed.status == "completed":
+            self._seal_linked_diagnostic_task_evidence(resumed)
         return resumed
 
     def retry_diagnostic_campaign_case(
@@ -2107,15 +2157,29 @@ class DiagnosticsApplication:
         guardrail_profiles: tuple[StrategyGuardrailProfile, ...] | None = None,
     ) -> DiagnosticEvidencePackage:
         self.status()
-        package = self._diagnostic_evidence.build(
-            campaign_id,
-            (
-                guardrail_profiles
-                if guardrail_profiles is not None
-                else self.strategy_guardrail_profiles()
-            ),
-        )
-        self._reproduction.accept_evidence(package)
+        try:
+            package = self._diagnostic_evidence.build(
+                campaign_id,
+                (
+                    guardrail_profiles
+                    if guardrail_profiles is not None
+                    else self.strategy_guardrail_profiles()
+                ),
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            self._record_linked_diagnostic_evidence_failure(
+                campaign_id,
+                evidence_package_id=None,
+            )
+            raise
+        try:
+            self._reproduction.accept_evidence(package)
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            self._record_linked_diagnostic_evidence_failure(
+                campaign_id,
+                evidence_package_id=package.evidence_package_id,
+            )
+            raise
         return package
 
     def diagnostic_evidence_status(
@@ -2978,6 +3042,166 @@ class DiagnosticsApplication:
             )
         self._diagnostic_tasks.sync_campaign_progress(
             self._diagnostic_task_campaign_handoff(task, campaign)
+        )
+
+    def _seal_linked_diagnostic_task_evidence(
+        self,
+        campaign: DiagnosticCampaignSnapshot,
+    ) -> None:
+        campaign_target = self._diagnostic_tasks.lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            campaign.campaign_id,
+        )
+        if campaign_target is None:
+            return
+        task = self._diagnostic_tasks.get(campaign_target.task_id)
+        if task is None or task.campaign_handoff is None:
+            raise ValueError(
+                "Linked Diagnostic Task Campaign is unavailable."
+            )
+        if (
+            task.campaign_handoff.campaign_lifecycle
+            is not DiagnosticTaskLifecycle.COMPLETED
+        ):
+            return
+        if (
+            task.campaign_handoff.evidence_state
+            is not DiagnosticEvidenceHandoffState.PENDING
+        ):
+            return
+        package: DiagnosticEvidencePackage | None = None
+        try:
+            package = self.build_selected_diagnostic_evidence(
+                campaign.campaign_id,
+                selected_strategy_ids=tuple(
+                    item.strategy_id
+                    for item in task.configuration.strategy_selections
+                ),
+                selected_guardrail_profile_ids=tuple(
+                    item.guardrail_profile_id
+                    for item in task.configuration.strategy_selections
+                ),
+            )
+            manifests = self.reproduction_manifests(
+                package.evidence_package_id
+            )
+            handed_run_ids = tuple(
+                run.run_id
+                for node in task.campaign_handoff.campaign_nodes
+                for attempt in node.attempts
+                if attempt.attempt_id == node.active_attempt_id
+                for run in attempt.runs
+            )
+            manifest_run_ids = tuple(
+                manifest.run_id for manifest in manifests
+            )
+            manifest_ids = tuple(
+                manifest.manifest_id for manifest in manifests
+            )
+            if (
+                package.campaign_id != campaign.campaign_id
+                or not handed_run_ids
+                or len(manifests) != len(handed_run_ids)
+                or len(set(handed_run_ids)) != len(handed_run_ids)
+                or len(set(manifest_run_ids)) != len(manifest_run_ids)
+                or len(set(manifest_ids)) != len(manifest_ids)
+                or set(manifest_run_ids) != set(handed_run_ids)
+                or any(
+                    manifest.evidence_package_id
+                    != package.evidence_package_id
+                    for manifest in manifests
+                )
+            ):
+                raise ValueError(
+                    "Diagnostic Evidence identity graph does not match "
+                    "the accepted Campaign run identities"
+                )
+            manifest_by_run_id = {
+                manifest.run_id: manifest.manifest_id
+                for manifest in manifests
+            }
+            self._diagnostic_tasks.sync_campaign_progress(
+                replace(
+                    task.campaign_handoff,
+                    campaign_nodes=tuple(
+                        replace(
+                            node,
+                            attempts=tuple(
+                                replace(
+                                    attempt,
+                                    runs=tuple(
+                                        replace(
+                                            run,
+                                            reproduction_manifest_id=(
+                                                manifest_by_run_id.get(
+                                                    run.run_id
+                                                )
+                                            ),
+                                        )
+                                        for run in attempt.runs
+                                    ),
+                                )
+                                for attempt in node.attempts
+                            ),
+                        )
+                        for node in task.campaign_handoff.campaign_nodes
+                    ),
+                    evidence_state=(
+                        DiagnosticEvidenceHandoffState.AVAILABLE
+                    ),
+                    evidence_package_id=package.evidence_package_id,
+                    reproduction_manifest_id=manifests[0].manifest_id,
+                )
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            self._record_linked_diagnostic_evidence_failure(
+                campaign.campaign_id,
+                evidence_package_id=(
+                    None
+                    if package is None
+                    else package.evidence_package_id
+                ),
+            )
+
+    def _record_linked_diagnostic_evidence_failure(
+        self,
+        campaign_id: str,
+        *,
+        evidence_package_id: str | None,
+    ) -> None:
+        campaign_target = self._diagnostic_tasks.lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            campaign_id,
+        )
+        if campaign_target is None:
+            return
+        task = self._diagnostic_tasks.get(campaign_target.task_id)
+        if task is None or task.campaign_handoff is None:
+            return
+        if (
+            task.campaign_handoff.campaign_lifecycle
+            is not DiagnosticTaskLifecycle.COMPLETED
+            or task.campaign_handoff.evidence_state
+            is not DiagnosticEvidenceHandoffState.PENDING
+        ):
+            return
+        self._diagnostic_tasks.sync_campaign_progress(
+            replace(
+                task.campaign_handoff,
+                evidence_state=(
+                    DiagnosticEvidenceHandoffState.FAILED
+                    if evidence_package_id is None
+                    else DiagnosticEvidenceHandoffState.PARTIAL
+                ),
+                evidence_package_id=evidence_package_id,
+                evidence_error_code=(
+                    "diagnostic_evidence_integrity_failed"
+                ),
+                evidence_error_message=(
+                    "Diagnostic Evidence could not be sealed into an exact "
+                    "Evidence and Reproduction Manifest identity graph."
+                ),
+            )
         )
 
     def _execute_diagnostic_campaign_case(

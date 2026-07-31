@@ -32,6 +32,13 @@ class DiagnosticTaskLifecycle(str, Enum):
     COMPLETED = "completed"
 
 
+class DiagnosticEvidenceHandoffState(str, Enum):
+    PENDING = "pending"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    AVAILABLE = "available"
+
+
 class DiagnosticLifecycleTargetKind(str, Enum):
     DIAGNOSTIC_TASK = "diagnostic_task"
     FORMAL_DIAGNOSTIC_CAMPAIGN = "formal_diagnostic_campaign"
@@ -410,15 +417,22 @@ class DiagnosticTaskApprovalSnapshot:
 class DiagnosticCampaignRunHandoffSnapshot:
     run_id: str
     strategy_id: str
+    reproduction_manifest_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id.strip() or not self.strategy_id.strip():
             raise ValueError("Campaign Run and Strategy identities are required")
+        if (
+            self.reproduction_manifest_id is not None
+            and not self.reproduction_manifest_id.strip()
+        ):
+            raise ValueError("Reproduction Manifest identity cannot be blank")
 
     def to_storage_dict(self) -> dict[str, object]:
         return {
             "run_id": self.run_id,
             "strategy_id": self.strategy_id,
+            "reproduction_manifest_id": self.reproduction_manifest_id,
         }
 
 
@@ -536,6 +550,13 @@ class DiagnosticTaskCampaignHandoffSnapshot:
     campaign_lifecycle: DiagnosticTaskLifecycle = (
         DiagnosticTaskLifecycle.RUNNING
     )
+    evidence_package_id: str | None = None
+    reproduction_manifest_id: str | None = None
+    evidence_state: DiagnosticEvidenceHandoffState = (
+        DiagnosticEvidenceHandoffState.PENDING
+    )
+    evidence_error_code: str | None = None
+    evidence_error_message: str | None = None
 
     def __post_init__(self) -> None:
         if not self.campaign_id.strip():
@@ -556,10 +577,139 @@ class DiagnosticTaskCampaignHandoffSnapshot:
             for attempt in node.attempts
             for run_id in attempt.run_ids
         )
+        accepted_manifest_ids = tuple(
+            run.reproduction_manifest_id
+            for node in self.campaign_nodes
+            for attempt in node.attempts
+            if attempt.attempt_id == node.active_attempt_id
+            for run in attempt.runs
+        )
+        historical_manifest_ids = tuple(
+            run.reproduction_manifest_id
+            for node in self.campaign_nodes
+            for attempt in node.attempts
+            if attempt.attempt_id != node.active_attempt_id
+            for run in attempt.runs
+        )
         if len(set(attempt_ids)) != len(attempt_ids):
             raise ValueError("Campaign attempt identities must be globally unique")
         if len(set(run_ids)) != len(run_ids):
             raise ValueError("Strategy Run identities must be globally unique")
+        evidence_present = self.evidence_package_id is not None
+        manifest_present = self.reproduction_manifest_id is not None
+        error_present = self.evidence_error_code is not None
+        if (
+            not error_present
+            and evidence_present != manifest_present
+        ):
+            raise ValueError(
+                "Evidence Package and Reproduction Manifest identities "
+                "must become available together"
+            )
+        if self.evidence_state is DiagnosticEvidenceHandoffState.PENDING:
+            inferred_state = (
+                DiagnosticEvidenceHandoffState.AVAILABLE
+                if evidence_present and manifest_present and not error_present
+                else (
+                    DiagnosticEvidenceHandoffState.PARTIAL
+                    if evidence_present and not manifest_present and error_present
+                    else (
+                        DiagnosticEvidenceHandoffState.FAILED
+                        if not evidence_present
+                        and not manifest_present
+                        and error_present
+                        else self.evidence_state
+                    )
+                )
+            )
+            object.__setattr__(self, "evidence_state", inferred_state)
+        if (
+            self.evidence_package_id is not None
+            and not self.evidence_package_id.strip()
+        ):
+            raise ValueError("Evidence Package identity cannot be blank")
+        if (
+            self.reproduction_manifest_id is not None
+            and not self.reproduction_manifest_id.strip()
+        ):
+            raise ValueError("Reproduction Manifest identity cannot be blank")
+        if (
+            self.evidence_error_code is not None
+            and not self.evidence_error_code.strip()
+        ):
+            raise ValueError("Evidence handoff error code cannot be blank")
+        if (
+            self.evidence_error_message is not None
+            and not self.evidence_error_message.strip()
+        ):
+            raise ValueError("Evidence handoff error message cannot be blank")
+        if error_present != (self.evidence_error_message is not None):
+            raise ValueError(
+                "Evidence handoff error code and message must be present together"
+            )
+        if (
+            self.evidence_state is not DiagnosticEvidenceHandoffState.PENDING
+            and self.campaign_lifecycle is not DiagnosticTaskLifecycle.COMPLETED
+        ):
+            raise ValueError(
+                "Terminal evidence handoff requires a completed Formal Campaign"
+            )
+        if self.evidence_state is DiagnosticEvidenceHandoffState.PENDING:
+            if evidence_present or manifest_present or error_present:
+                raise ValueError(
+                    "Pending evidence handoff cannot expose identities or errors"
+                )
+        elif self.evidence_state is DiagnosticEvidenceHandoffState.FAILED:
+            if evidence_present or manifest_present or not error_present:
+                raise ValueError(
+                    "Failed evidence handoff requires only a structured error"
+                )
+        elif self.evidence_state is DiagnosticEvidenceHandoffState.PARTIAL:
+            if not evidence_present or manifest_present or not error_present:
+                raise ValueError(
+                    "Partial evidence handoff requires a sealed Evidence "
+                    "Package and structured error without a Manifest"
+                )
+        elif self.evidence_state is DiagnosticEvidenceHandoffState.AVAILABLE:
+            if not evidence_present or not manifest_present or error_present:
+                raise ValueError(
+                    "Available evidence handoff requires Package and Manifest "
+                    "identities without an error"
+                )
+            if (
+                not accepted_manifest_ids
+                or any(
+                    manifest_id is None
+                    for manifest_id in accepted_manifest_ids
+                )
+                or len(set(accepted_manifest_ids))
+                != len(accepted_manifest_ids)
+                or self.reproduction_manifest_id
+                not in accepted_manifest_ids
+                or any(
+                    manifest_id is not None
+                    for manifest_id in historical_manifest_ids
+                )
+            ):
+                raise ValueError(
+                    "Evidence handoff requires one unique Reproduction "
+                    "Manifest identity for every accepted Strategy Run "
+                    "without rewriting historical attempts"
+                )
+        if (
+            self.evidence_state
+            is not DiagnosticEvidenceHandoffState.AVAILABLE
+            and any(
+                manifest_id is not None
+                for manifest_id in (
+                    *accepted_manifest_ids,
+                    *historical_manifest_ids,
+                )
+            )
+        ):
+            raise ValueError(
+                "Run Manifest identities require available evidence"
+            )
 
     def to_storage_dict(self) -> dict[str, object]:
         return {
@@ -569,6 +719,11 @@ class DiagnosticTaskCampaignHandoffSnapshot:
             "campaign_nodes": [
                 node.to_storage_dict() for node in self.campaign_nodes
             ],
+            "evidence_package_id": self.evidence_package_id,
+            "evidence_error_code": self.evidence_error_code,
+            "evidence_error_message": self.evidence_error_message,
+            "evidence_state": self.evidence_state.value,
+            "reproduction_manifest_id": self.reproduction_manifest_id,
         }
 
     @classmethod
@@ -587,6 +742,40 @@ class DiagnosticTaskCampaignHandoffSnapshot:
             ),
             campaign_lifecycle=DiagnosticTaskLifecycle(
                 str(payload.get("campaign_lifecycle", "running"))
+            ),
+            evidence_package_id=(
+                None
+                if payload.get("evidence_package_id") is None
+                else str(payload["evidence_package_id"])
+            ),
+            evidence_state=DiagnosticEvidenceHandoffState(
+                str(
+                    payload.get(
+                        "evidence_state",
+                        (
+                            "available"
+                            if payload.get("evidence_package_id") is not None
+                            and payload.get("reproduction_manifest_id")
+                            is not None
+                            else "pending"
+                        ),
+                    )
+                )
+            ),
+            evidence_error_code=(
+                None
+                if payload.get("evidence_error_code") is None
+                else str(payload["evidence_error_code"])
+            ),
+            evidence_error_message=(
+                None
+                if payload.get("evidence_error_message") is None
+                else str(payload["evidence_error_message"])
+            ),
+            reproduction_manifest_id=(
+                None
+                if payload.get("reproduction_manifest_id") is None
+                else str(payload["reproduction_manifest_id"])
             ),
             campaign_nodes=tuple(
                 DiagnosticCampaignNodeHandoffSnapshot(
@@ -6722,6 +6911,11 @@ def _attempts_from_storage(
                     DiagnosticCampaignRunHandoffSnapshot(
                         run_id=str(run["run_id"]),
                         strategy_id=str(run["strategy_id"]),
+                        reproduction_manifest_id=(
+                            None
+                            if run.get("reproduction_manifest_id") is None
+                            else str(run["reproduction_manifest_id"])
+                        ),
                     )
                     for run in cast(
                         list[Mapping[str, object]],
@@ -6822,8 +7016,20 @@ def _attempt_history_prefix_matches(
         (
             incoming_attempt.task_handle_id
             in {None, current_attempt.task_handle_id}
-            and replace(current_attempt, task_handle_id=None)
-            == replace(incoming_attempt, task_handle_id=None)
+            and replace(current_attempt, task_handle_id=None, runs=())
+            == replace(incoming_attempt, task_handle_id=None, runs=())
+            and len(current_attempt.runs) == len(incoming_attempt.runs)
+            and all(
+                current_run.run_id == incoming_run.run_id
+                and current_run.strategy_id == incoming_run.strategy_id
+                and current_run.reproduction_manifest_id
+                in {None, incoming_run.reproduction_manifest_id}
+                for current_run, incoming_run in zip(
+                    current_attempt.runs,
+                    incoming_attempt.runs,
+                    strict=True,
+                )
+            )
         )
         for current_attempt, incoming_attempt in zip(
             current,
@@ -6844,7 +7050,30 @@ def _extend_attempt_history_preserving_bindings(
         raise ValueError(
             "Formal Diagnostic Campaign attempt history cannot regress"
         )
-    return (*current, *incoming[len(current) :])
+    enriched = tuple(
+        replace(
+            current_attempt,
+            runs=tuple(
+                replace(
+                    current_run,
+                    reproduction_manifest_id=(
+                        incoming_run.reproduction_manifest_id
+                    ),
+                )
+                for current_run, incoming_run in zip(
+                    current_attempt.runs,
+                    incoming_attempt.runs,
+                    strict=True,
+                )
+            ),
+        )
+        for current_attempt, incoming_attempt in zip(
+            current,
+            incoming[: len(current)],
+            strict=True,
+        )
+    )
+    return (*enriched, *incoming[len(current) :])
 
 
 def _complete_retry_handoff(
@@ -7113,6 +7342,26 @@ def _merge_diagnostic_campaign_progress(
 ) -> _DiagnosticCampaignProgressMerge:
     if current.campaign_id != incoming.campaign_id:
         raise ValueError("Formal Diagnostic Campaign identity cannot change")
+    current_evidence = (
+        current.evidence_state,
+        current.evidence_package_id,
+        current.reproduction_manifest_id,
+        current.evidence_error_code,
+        current.evidence_error_message,
+    )
+    incoming_evidence = (
+        incoming.evidence_state,
+        incoming.evidence_package_id,
+        incoming.reproduction_manifest_id,
+        incoming.evidence_error_code,
+        incoming.evidence_error_message,
+    )
+    if (
+        current.evidence_state is not DiagnosticEvidenceHandoffState.PENDING
+        and incoming_evidence != current_evidence
+    ):
+        raise ValueError("Terminal Diagnostic Evidence handoff cannot change")
+    evidence_changed = incoming_evidence != current_evidence
     current_node_ids = tuple(
         node.campaign_node_id for node in current.campaign_nodes
     )
@@ -7249,6 +7498,7 @@ def _merge_diagnostic_campaign_progress(
         aggregate_lifecycle = DiagnosticTaskLifecycle.RUNNING
     if (
         not progressed
+        and not evidence_changed
         and aggregate_lifecycle is campaign_target.lifecycle
     ):
         return _DiagnosticCampaignProgressMerge(
@@ -7514,6 +7764,7 @@ __all__ = [
     "DiagnosticCampaignCaseSelection",
     "DiagnosticCampaignNodeHandoffSnapshot",
     "DiagnosticCampaignRunHandoffSnapshot",
+    "DiagnosticEvidenceHandoffState",
     "DiagnosticLifecycleOperation",
     "DiagnosticLifecycleTargetKind",
     "DiagnosticLifecycleTargetSnapshot",
@@ -7536,8 +7787,8 @@ __all__ = [
     "DiagnosticTaskValidationSnapshot",
     "DiagnosticTaskValidationState",
     "InMemoryDiagnosticTaskRepository",
-    "ReviseDiagnosticTaskConfigurationRequest",
     "RetryFailedCampaignNodeRequest",
+    "ReviseDiagnosticTaskConfigurationRequest",
     "SqlDiagnosticTaskRepository",
     "StartFormalDiagnosticCampaignRequest",
     "ValidateDiagnosticTaskConfigurationRequest",

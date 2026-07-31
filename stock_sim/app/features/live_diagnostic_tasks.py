@@ -68,6 +68,7 @@ from .diagnostic_tasks_application import (
     DiagnosticTasksApplicationCommand,
     DiagnosticTasksApplicationConfigurationReference,
     DiagnosticTasksApplicationError,
+    DiagnosticTasksApplicationEvidenceHandoffState,
     DiagnosticTasksApplicationInventoryResult,
     DiagnosticTasksApplicationStrategyReference,
     DiagnosticTasksApplicationTask,
@@ -94,11 +95,13 @@ from .diagnostic_tasks_application import (
     TransformationParameterValue,
     ValidateDiagnosticTaskConfiguration,
 )
+from .evidence_and_findings import DiagnosticEvidencePackageId
 from .run_monitoring import (
     Completeness,
     DiagnosticTaskId,
     FormalDiagnosticCampaignId,
     Freshness,
+    ReproductionManifestId,
     SourceGenerationId,
     SourceKind,
     StrategyRunId,
@@ -2015,6 +2018,236 @@ class DeterministicFakeDiagnosticTasksAdapter(
         self._commands_by_id[command.command_id.value] = record
         self._commands_by_key[command.idempotency_key.value] = record
 
+    def advance_evidence_available(
+        self,
+        task_id: DiagnosticTaskId,
+    ) -> None:
+        """Deterministically complete the fake's authoritative evidence handoff."""
+
+        self._advance_fake_evidence(
+            task_id,
+            ReproductionManifestAvailability.AVAILABLE,
+        )
+
+    def advance_evidence_partial(
+        self,
+        task_id: DiagnosticTaskId,
+    ) -> None:
+        """Expose a sealed fake Package whose Manifest graph failed closed."""
+
+        self._advance_fake_evidence(
+            task_id,
+            ReproductionManifestAvailability.PARTIAL,
+        )
+
+    def advance_evidence_failed(
+        self,
+        task_id: DiagnosticTaskId,
+    ) -> None:
+        """Expose a fake evidence integrity failure without a sealed Package."""
+
+        self._advance_fake_evidence(
+            task_id,
+            ReproductionManifestAvailability.FAILED,
+        )
+
+    def _advance_fake_evidence(
+        self,
+        task_id: DiagnosticTaskId,
+        availability: ReproductionManifestAvailability,
+    ) -> None:
+        with self._lock:
+            self._ensure_open()
+            task = self._tasks.get(task_id)
+            if task is None or task.handoff.campaign_id is None:
+                raise ValueError(
+                    "A started Formal Diagnostic Campaign is required"
+                )
+            if task.handoff.reproduction_manifest_availability is availability:
+                return
+            if (
+                task.handoff.reproduction_manifest_availability
+                is not ReproductionManifestAvailability.NOT_YET_AVAILABLE
+            ):
+                raise ValueError("Terminal fake evidence handoff cannot change")
+            campaign_id = task.handoff.campaign_id
+            package_id = (
+                None
+                if availability is ReproductionManifestAvailability.FAILED
+                else DiagnosticEvidencePackageId(
+                    _stable_fake_identity(
+                        "diagnostic-evidence-package",
+                        campaign_id.value,
+                    )
+                )
+            )
+            if (
+                availability is ReproductionManifestAvailability.AVAILABLE
+                and package_id is None
+            ):
+                raise AssertionError("Available fake evidence requires a Package")
+            package_identity = (
+                "" if package_id is None else package_id.value
+            )
+            completed_nodes: list[DiagnosticCampaignNodeHandoff] = []
+            for node in task.handoff.campaign_nodes:
+                attempts = node.attempts
+                accepted_attempt_id = node.active_attempt_id
+                if not attempts:
+                    attempt_id = CampaignAttemptId(
+                        _stable_fake_identity(
+                            "diagnostic-campaign-attempt",
+                            node.campaign_node_id.value,
+                        )
+                    )
+                    attempts = (
+                        DiagnosticCampaignAttemptHandoff(
+                            attempt_id=attempt_id,
+                            runs=tuple(
+                                DiagnosticCampaignRunHandoff(
+                                    run_id=StrategyRunId(
+                                        _stable_fake_identity(
+                                            "strategy-run",
+                                            (
+                                                f"{attempt_id.value}:"
+                                                f"{strategy.strategy_id.value}"
+                                            ),
+                                        )
+                                    ),
+                                    strategy_id=strategy.strategy_id,
+                                )
+                                for strategy
+                                in task.configuration.strategy_selections
+                            ),
+                            attempt_number=1,
+                            lifecycle=DiagnosticTaskLifecycle.COMPLETED,
+                        ),
+                    )
+                    accepted_attempt_id = attempt_id
+                accepted_attempt = next(
+                    (
+                        attempt
+                        for attempt in attempts
+                        if attempt.attempt_id == accepted_attempt_id
+                    ),
+                    None,
+                )
+                if (
+                    accepted_attempt is None
+                    or accepted_attempt.lifecycle
+                    is not DiagnosticTaskLifecycle.COMPLETED
+                ):
+                    raise ValueError(
+                        "Fake evidence requires a completed accepted attempt"
+                    )
+                enriched_attempts = tuple(
+                    (
+                        attempt
+                        if (
+                            attempt.attempt_id != accepted_attempt_id
+                            or availability
+                            is not ReproductionManifestAvailability.AVAILABLE
+                        )
+                        else replace(
+                            attempt,
+                            runs=tuple(
+                                replace(
+                                    run,
+                                    reproduction_manifest_id=(
+                                        ReproductionManifestId(
+                                            _stable_fake_identity(
+                                                "reproduction-manifest",
+                                                (
+                                                    f"{package_identity}:"
+                                                    f"{run.run_id.value}"
+                                                ),
+                                            )
+                                        )
+                                    ),
+                                )
+                                for run in attempt.runs
+                            ),
+                        )
+                    )
+                    for attempt in attempts
+                )
+                completed_nodes.append(
+                    replace(
+                        node,
+                        attempts=enriched_attempts,
+                        active_attempt_id=accepted_attempt_id,
+                        revision=node.revision + 1,
+                        lifecycle=DiagnosticTaskLifecycle.COMPLETED,
+                    )
+                )
+            manifest_ids = tuple(
+                run.reproduction_manifest_id
+                for node in completed_nodes
+                for attempt in node.attempts
+                if attempt.attempt_id == node.active_attempt_id
+                for run in attempt.runs
+            )
+            if (
+                availability is ReproductionManifestAvailability.AVAILABLE
+                and (
+                    not manifest_ids
+                    or any(
+                        manifest_id is None
+                        for manifest_id in manifest_ids
+                    )
+                )
+            ):
+                raise ValueError(
+                    "Fake evidence requires one Manifest for every Strategy Run"
+                )
+            if (
+                availability is not ReproductionManifestAvailability.AVAILABLE
+                and any(
+                    manifest_id is not None
+                    for manifest_id in manifest_ids
+                )
+            ):
+                raise ValueError(
+                    "Unavailable fake evidence cannot expose Run Manifests"
+                )
+            evidence_error = (
+                None
+                if availability is ReproductionManifestAvailability.AVAILABLE
+                else StructuredFeatureError(
+                    code="diagnostic_evidence_integrity_failed",
+                    message=(
+                        "Diagnostic Evidence could not be sealed into an "
+                        "exact Evidence and Reproduction Manifest identity "
+                        "graph."
+                    ),
+                    retryable=False,
+                )
+            )
+            self._tasks[task_id] = replace(
+                task,
+                revision=task.revision + 1,
+                lifecycle=DiagnosticTaskLifecycle.COMPLETED,
+                handoff=replace(
+                    task.handoff,
+                    campaign_nodes=tuple(completed_nodes),
+                    evidence_package_id=package_id,
+                    reproduction_manifest_id=(
+                        manifest_ids[0]
+                        if availability
+                        is ReproductionManifestAvailability.AVAILABLE
+                        else None
+                    ),
+                    campaign_revision=(
+                        1
+                        if task.handoff.campaign_revision is None
+                        else task.handoff.campaign_revision + 1
+                    ),
+                    campaign_lifecycle=DiagnosticTaskLifecycle.COMPLETED,
+                    reproduction_manifest_availability=availability,
+                    evidence_error=evidence_error,
+                ),
+            )
+
     def advance_to_disconnected(self) -> None:
         with self._lock:
             self._ensure_open()
@@ -2694,10 +2927,22 @@ def _with_task_state(
     blocking_reasons = _inventory_blocking_reasons(
         state.last_reliable_inventory
     )
+    manifest_id = (
+        None
+        if presented_task is None
+        else presented_task.handoff.reproduction_manifest_id
+    )
+    manifest_availability = (
+        ReproductionManifestAvailability.NOT_YET_AVAILABLE
+        if presented_task is None
+        else presented_task.handoff.reproduction_manifest_availability
+    )
     if (
         state.task == presented_task
         and state.capabilities == capabilities
         and state.blocking_reasons == blocking_reasons
+        and state.reproduction_manifest_availability is manifest_availability
+        and state.reproduction_manifest_id == manifest_id
     ):
         return state
     return replace(
@@ -2705,6 +2950,8 @@ def _with_task_state(
         task=presented_task,
         capabilities=capabilities,
         blocking_reasons=blocking_reasons,
+        reproduction_manifest_availability=manifest_availability,
+        reproduction_manifest_id=manifest_id,
     )
 
 
@@ -2804,6 +3051,9 @@ def _task_presentation(
                                     DiagnosticCampaignRunHandoff(
                                         run_id=run.run_id,
                                         strategy_id=run.strategy_id,
+                                        reproduction_manifest_id=(
+                                            run.reproduction_manifest_id
+                                        ),
                                     )
                                     for run in attempt.runs
                                 ),
@@ -2828,8 +3078,30 @@ def _task_presentation(
                     for node in task.campaign_handoff.campaign_nodes
                 )
             ),
-            evidence_package_id=None,
-            reproduction_manifest_id=None,
+            evidence_package_id=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.evidence_package_id
+            ),
+            reproduction_manifest_id=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.reproduction_manifest_id
+            ),
+            reproduction_manifest_availability=(
+                ReproductionManifestAvailability.NOT_YET_AVAILABLE
+                if task.campaign_handoff is None
+                or task.campaign_handoff.evidence_state
+                is DiagnosticTasksApplicationEvidenceHandoffState.PENDING
+                else ReproductionManifestAvailability(
+                    task.campaign_handoff.evidence_state.value
+                )
+            ),
+            evidence_error=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.evidence_error
+            ),
             campaign_revision=(
                 None
                 if task.campaign_handoff is None
@@ -2909,6 +3181,28 @@ def _fake_task_token(
                 for item in task.task_handles
             ],
             "lifecycle": task.lifecycle.value,
+            "handoff": (
+                task.handoff.reproduction_manifest_availability.value,
+                (
+                    None
+                    if task.handoff.evidence_package_id is None
+                    else task.handoff.evidence_package_id.value
+                ),
+                (
+                    None
+                    if task.handoff.reproduction_manifest_id is None
+                    else task.handoff.reproduction_manifest_id.value
+                ),
+                (
+                    None
+                    if task.handoff.evidence_error is None
+                    else (
+                        task.handoff.evidence_error.code,
+                        task.handoff.evidence_error.message,
+                        task.handoff.evidence_error.retryable,
+                    )
+                ),
+            ),
             "revision": task.revision,
             "task_id": task.task_id.value,
             "validation": (

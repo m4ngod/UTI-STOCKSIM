@@ -1183,6 +1183,8 @@ def test_final_batch_pause_then_resume_reconciles_completed_campaign(
         }
         for node in paused.handoff.campaign_nodes
     )
+    assert paused.handoff.evidence_package_id is None
+    assert paused.handoff.reproduction_manifest_id is None
     monkeypatch.setattr(
         application,
         "_sync_linked_diagnostic_campaign",
@@ -1213,6 +1215,7 @@ def test_final_batch_pause_then_resume_reconciles_completed_campaign(
         reconciled.handoff.campaign_lifecycle
         is DiagnosticTaskLifecycle.COMPLETED
     )
+    assert reconciled.handoff.ready_for_evidence_and_findings
     assert not reconciled.capabilities.can_pause
     assert not reconciled.capabilities.can_resume
     assert not reconciled.capabilities.can_cancel

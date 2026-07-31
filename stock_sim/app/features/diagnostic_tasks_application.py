@@ -10,9 +10,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
+from .evidence_and_findings import DiagnosticEvidencePackageId
 from .run_monitoring import (
     DiagnosticTaskId,
     FormalDiagnosticCampaignId,
+    ReproductionManifestId,
     StrategyRunId,
     StrategyUnderTestId,
     StructuredFeatureError,
@@ -131,6 +133,13 @@ class DiagnosticTasksApplicationAvailability(str, Enum):
     EMPTY = "empty"
     INPUT_UNAVAILABLE = "input_unavailable"
     FAILED = "failed"
+
+
+class DiagnosticTasksApplicationEvidenceHandoffState(str, Enum):
+    PENDING = "pending"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    AVAILABLE = "available"
 
 
 class DiagnosticTasksApplicationErrorCode(str, Enum):
@@ -684,6 +693,7 @@ class DiagnosticTasksApplicationApproval:
 class DiagnosticTasksApplicationCampaignRunHandoff:
     run_id: StrategyRunId
     strategy_id: StrategyUnderTestId
+    reproduction_manifest_id: ReproductionManifestId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,6 +737,68 @@ class DiagnosticTasksApplicationCampaignHandoff:
         DiagnosticTasksApplicationCampaignNodeHandoff,
         ...,
     ]
+    evidence_package_id: DiagnosticEvidencePackageId | None = None
+    reproduction_manifest_id: ReproductionManifestId | None = None
+    evidence_state: DiagnosticTasksApplicationEvidenceHandoffState = (
+        DiagnosticTasksApplicationEvidenceHandoffState.PENDING
+    )
+    evidence_error: StructuredFeatureError | None = None
+
+    def __post_init__(self) -> None:
+        evidence_present = self.evidence_package_id is not None
+        manifest_present = self.reproduction_manifest_id is not None
+        error_present = self.evidence_error is not None
+        if not error_present and evidence_present != manifest_present:
+            raise ValueError(
+                "Evidence Package and Reproduction Manifest identities "
+                "must become available together"
+            )
+        if (
+            self.evidence_state
+            is DiagnosticTasksApplicationEvidenceHandoffState.PENDING
+        ):
+            inferred_state = (
+                DiagnosticTasksApplicationEvidenceHandoffState.AVAILABLE
+                if evidence_present and manifest_present and not error_present
+                else (
+                    DiagnosticTasksApplicationEvidenceHandoffState.PARTIAL
+                    if evidence_present and not manifest_present and error_present
+                    else (
+                        DiagnosticTasksApplicationEvidenceHandoffState.FAILED
+                        if not evidence_present
+                        and not manifest_present
+                        and error_present
+                        else self.evidence_state
+                    )
+                )
+            )
+            object.__setattr__(self, "evidence_state", inferred_state)
+        expected = {
+            DiagnosticTasksApplicationEvidenceHandoffState.PENDING: (
+                False,
+                False,
+                False,
+            ),
+            DiagnosticTasksApplicationEvidenceHandoffState.PARTIAL: (
+                True,
+                False,
+                True,
+            ),
+            DiagnosticTasksApplicationEvidenceHandoffState.FAILED: (
+                False,
+                False,
+                True,
+            ),
+            DiagnosticTasksApplicationEvidenceHandoffState.AVAILABLE: (
+                True,
+                True,
+                False,
+            ),
+        }[self.evidence_state]
+        if (evidence_present, manifest_present, error_present) != expected:
+            raise ValueError(
+                "Evidence handoff state does not match its identities and error"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1813,6 +1885,39 @@ def _map_diagnostic_task(
                         snapshot.campaign_handoff.campaign_lifecycle.value
                     )
                 ),
+                evidence_package_id=(
+                    None
+                    if snapshot.campaign_handoff.evidence_package_id is None
+                    else DiagnosticEvidencePackageId(
+                        snapshot.campaign_handoff.evidence_package_id
+                    )
+                ),
+                evidence_state=(
+                    DiagnosticTasksApplicationEvidenceHandoffState(
+                        snapshot.campaign_handoff.evidence_state.value
+                    )
+                ),
+                evidence_error=(
+                    None
+                    if snapshot.campaign_handoff.evidence_error_code is None
+                    else StructuredFeatureError(
+                        code=(
+                            snapshot.campaign_handoff.evidence_error_code
+                        ),
+                        message=(
+                            snapshot.campaign_handoff.evidence_error_message
+                            or snapshot.campaign_handoff.evidence_error_code
+                        ),
+                        retryable=False,
+                    )
+                ),
+                reproduction_manifest_id=(
+                    None
+                    if snapshot.campaign_handoff.reproduction_manifest_id is None
+                    else ReproductionManifestId(
+                        snapshot.campaign_handoff.reproduction_manifest_id
+                    )
+                ),
                 campaign_nodes=tuple(
                     DiagnosticTasksApplicationCampaignNodeHandoff(
                         campaign_node_id=CampaignNodeId(
@@ -1837,6 +1942,13 @@ def _map_diagnostic_task(
                                         run_id=StrategyRunId(run.run_id),
                                         strategy_id=StrategyUnderTestId(
                                             run.strategy_id
+                                        ),
+                                        reproduction_manifest_id=(
+                                            None
+                                            if run.reproduction_manifest_id is None
+                                            else ReproductionManifestId(
+                                                run.reproduction_manifest_id
+                                            )
                                         ),
                                     )
                                     for run in attempt.runs
@@ -1990,6 +2102,26 @@ def _diagnostic_task_token(
                 task.campaign_handoff.campaign_id.value,
                 task.campaign_handoff.campaign_revision,
                 task.campaign_handoff.campaign_lifecycle.value,
+                (
+                    None
+                    if task.campaign_handoff.evidence_package_id is None
+                    else task.campaign_handoff.evidence_package_id.value
+                ),
+                (
+                    None
+                    if task.campaign_handoff.reproduction_manifest_id is None
+                    else task.campaign_handoff.reproduction_manifest_id.value
+                ),
+                task.campaign_handoff.evidence_state.value,
+                (
+                    None
+                    if task.campaign_handoff.evidence_error is None
+                    else (
+                        task.campaign_handoff.evidence_error.code,
+                        task.campaign_handoff.evidence_error.message,
+                        task.campaign_handoff.evidence_error.retryable,
+                    )
+                ),
                 tuple(
                     (
                         node.campaign_node_id.value,
@@ -2076,6 +2208,7 @@ __all__ = [
     "DiagnosticTasksApplicationConfigurationReference",
     "DiagnosticTasksApplicationError",
     "DiagnosticTasksApplicationErrorCode",
+    "DiagnosticTasksApplicationEvidenceHandoffState",
     "DiagnosticTasksApplicationInventoryResult",
     "DiagnosticTasksApplicationStrategyReference",
     "DiagnosticTasksApplicationTask",

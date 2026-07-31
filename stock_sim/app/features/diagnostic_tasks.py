@@ -67,6 +67,8 @@ class DiagnosticTasksPresentationState(str, Enum):
 
 class ReproductionManifestAvailability(str, Enum):
     NOT_YET_AVAILABLE = "not_yet_available"
+    PARTIAL = "partial"
+    FAILED = "failed"
     AVAILABLE = "available"
 
 
@@ -203,6 +205,7 @@ class DiagnosticTaskApprovalSummary:
 class DiagnosticCampaignRunHandoff:
     run_id: StrategyRunId
     strategy_id: StrategyUnderTestId
+    reproduction_manifest_id: ReproductionManifestId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +289,10 @@ class DiagnosticTaskHandoff:
     reproduction_manifest_id: ReproductionManifestId | None
     campaign_revision: int | None = None
     campaign_lifecycle: DiagnosticTaskLifecycle | None = None
+    reproduction_manifest_availability: ReproductionManifestAvailability = (
+        ReproductionManifestAvailability.NOT_YET_AVAILABLE
+    )
+    evidence_error: StructuredFeatureError | None = None
 
     def __post_init__(self) -> None:
         if self.campaign_revision is not None and self.campaign_revision < 1:
@@ -312,6 +319,8 @@ class DiagnosticTaskHandoff:
             raise ValueError("Campaign node identities must be unique")
         attempt_ids: list[CampaignAttemptId] = []
         run_ids: list[StrategyRunId] = []
+        accepted_manifest_ids: list[ReproductionManifestId | None] = []
+        historical_manifest_ids: list[ReproductionManifestId | None] = []
         for node in self.campaign_nodes:
             selection = selected_by_case.get(node.selected_campaign_case_id)
             if (
@@ -325,24 +334,108 @@ class DiagnosticTaskHandoff:
             for attempt in node.attempts:
                 attempt_ids.append(attempt.attempt_id)
                 run_ids.extend(attempt.run_ids)
+                target = (
+                    accepted_manifest_ids
+                    if attempt.attempt_id == node.active_attempt_id
+                    else historical_manifest_ids
+                )
+                target.extend(
+                    run.reproduction_manifest_id for run in attempt.runs
+                )
         if len(set(attempt_ids)) != len(attempt_ids):
             raise ValueError("Campaign attempt identities must be globally unique")
         if len(set(run_ids)) != len(run_ids):
             raise ValueError("Strategy Run identities must be globally unique")
         evidence_present = self.evidence_package_id is not None
         manifest_present = self.reproduction_manifest_id is not None
-        if evidence_present != manifest_present:
+        error_present = self.evidence_error is not None
+        if not error_present and evidence_present != manifest_present:
             raise ValueError(
                 "Evidence Package and Reproduction Manifest identities "
                 "must become available together"
+            )
+        if (
+            self.reproduction_manifest_availability
+            is ReproductionManifestAvailability.NOT_YET_AVAILABLE
+        ):
+            inferred_availability = (
+                ReproductionManifestAvailability.AVAILABLE
+                if evidence_present and manifest_present and not error_present
+                else (
+                    ReproductionManifestAvailability.PARTIAL
+                    if evidence_present and not manifest_present and error_present
+                    else (
+                        ReproductionManifestAvailability.FAILED
+                        if not evidence_present
+                        and not manifest_present
+                        and error_present
+                        else self.reproduction_manifest_availability
+                    )
+                )
+            )
+            object.__setattr__(
+                self,
+                "reproduction_manifest_availability",
+                inferred_availability,
+            )
+        expected = {
+            ReproductionManifestAvailability.NOT_YET_AVAILABLE: (
+                False,
+                False,
+                False,
+            ),
+            ReproductionManifestAvailability.PARTIAL: (True, False, True),
+            ReproductionManifestAvailability.FAILED: (False, False, True),
+            ReproductionManifestAvailability.AVAILABLE: (True, True, False),
+        }[self.reproduction_manifest_availability]
+        if (evidence_present, manifest_present, error_present) != expected:
+            raise ValueError(
+                "Evidence handoff availability does not match its identities "
+                "and error"
             )
         if evidence_present and self.campaign_id is None:
             raise ValueError(
                 "Evidence handoff requires a Formal Diagnostic Campaign"
             )
-        if evidence_present and not run_ids:
+        if (
+            self.reproduction_manifest_availability
+            is ReproductionManifestAvailability.AVAILABLE
+            and not run_ids
+        ):
             raise ValueError(
                 "Evidence handoff requires at least one Strategy Run identity"
+            )
+        if (
+            self.reproduction_manifest_availability
+            is ReproductionManifestAvailability.AVAILABLE
+            and (
+                any(item is None for item in accepted_manifest_ids)
+                or len(set(accepted_manifest_ids))
+                != len(accepted_manifest_ids)
+                or self.reproduction_manifest_id
+                not in accepted_manifest_ids
+                or any(
+                    item is not None for item in historical_manifest_ids
+                )
+            )
+        ):
+            raise ValueError(
+                "Evidence handoff requires one unique Reproduction Manifest "
+                "identity for every Strategy Run"
+            )
+        if (
+            self.reproduction_manifest_availability
+            is not ReproductionManifestAvailability.AVAILABLE
+            and any(
+                item is not None
+                for item in (
+                    *accepted_manifest_ids,
+                    *historical_manifest_ids,
+                )
+            )
+        ):
+            raise ValueError(
+                "Run Manifest identities require an Evidence Package handoff"
             )
 
     @property
@@ -357,6 +450,8 @@ class DiagnosticTaskHandoff:
     def ready_for_evidence_and_findings(self) -> bool:
         return (
             self.ready_for_run_monitoring
+            and self.reproduction_manifest_availability
+            is ReproductionManifestAvailability.AVAILABLE
             and self.evidence_package_id is not None
             and self.reproduction_manifest_id is not None
         )
