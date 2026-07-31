@@ -134,7 +134,7 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
         adapter.resume_diagnostic_target(commands[6]),
         adapter.cancel_diagnostic_target(commands[7]),
     )
-    unavailable = (
+    invalid_retry_commands = (
         adapter.retry_failed_campaign_node(commands[8]),
     )
     assert all(not item.accepted for item in invalid_task_commands)
@@ -144,7 +144,7 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
         for item in invalid_task_commands
     )
     assert all(not item.accepted for item in invalid_lifecycle_commands)
-    assert all(not item.accepted for item in unavailable)
+    assert all(not item.accepted for item in invalid_retry_commands)
     assert not start_rejected.accepted
     assert start_rejected.rejection_reason is (
         DiagnosticTasksApplicationCommandRejectionReason.INVALID_COMMAND
@@ -156,12 +156,12 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
     )
     assert all(
         item.rejection_reason
-        is DiagnosticTasksApplicationCommandRejectionReason.NOT_YET_AVAILABLE
-        for item in unavailable
+        is DiagnosticTasksApplicationCommandRejectionReason.INVALID_COMMAND
+        for item in invalid_retry_commands
     )
     assert start_rejected.task is None
     assert all(item.task is None for item in invalid_lifecycle_commands)
-    assert all(item.task is None for item in unavailable)
+    assert all(item.task is None for item in invalid_retry_commands)
 
 
 def test_parameterized_recipe_is_not_dropped_from_authoritative_inventory() -> None:

@@ -52,7 +52,12 @@ _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION: Final = (
 _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION: Final = (
     "0016_diagnostic_task_start_continuation_claim"
 )
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0017_diagnostic_lifecycle_targets"
+_DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION: Final = (
+    "0017_diagnostic_lifecycle_targets"
+)
+DIAGNOSTIC_SCHEMA_REVISION: Final = (
+    "0018_diagnostic_campaign_attempt_history"
+)
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -71,6 +76,7 @@ _MIGRATION_REVISIONS: Final = (
     _DIAGNOSTIC_TASK_APPROVAL_REVISION,
     _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION,
     _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION,
+    _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -136,8 +142,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_diagnostic_task_campaign_handoff(connection)
             elif revision == _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION:
                 _add_diagnostic_task_start_continuation_claim(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION:
                 _create_diagnostic_lifecycle_targets(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _extend_diagnostic_campaign_attempt_history(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -734,6 +742,84 @@ def _create_strategy_run_facts(connection: Connection) -> None:
         "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id)"
         ")"
     )
+
+
+def _extend_diagnostic_campaign_attempt_history(
+    connection: Connection,
+) -> None:
+    if not inspect(connection).has_table("diagnostic_task_campaign_handoffs"):
+        return
+    rows = connection.execute(
+        text(
+            "SELECT task_id, handoff_json "
+            "FROM diagnostic_task_campaign_handoffs"
+        )
+    ).mappings()
+    for row in rows:
+        payload = json.loads(str(row["handoff_json"]))
+        if not isinstance(payload, dict):
+            raise TypeError("Diagnostic Task Campaign handoff must be an object")
+        node_values = payload.get("campaign_nodes", [])
+        if not isinstance(node_values, list):
+            raise TypeError("Diagnostic Task Campaign nodes must be a list")
+        for node_value in node_values:
+            if not isinstance(node_value, dict):
+                raise TypeError("Diagnostic Task Campaign node must be an object")
+            attempt_values = node_value.get("attempts", [])
+            if not isinstance(attempt_values, list):
+                raise TypeError("Diagnostic Campaign attempts must be a list")
+            predecessor_attempt_id: str | None = None
+            for index, attempt_value in enumerate(attempt_values, start=1):
+                if not isinstance(attempt_value, dict):
+                    raise TypeError(
+                        "Diagnostic Campaign attempt must be an object"
+                    )
+                attempt_id = str(attempt_value["attempt_id"])
+                attempt_value.setdefault("attempt_number", index)
+                attempt_value.setdefault(
+                    "predecessor_attempt_id",
+                    predecessor_attempt_id,
+                )
+                attempt_value.setdefault("task_handle_id", None)
+                lifecycle = str(
+                    attempt_value.setdefault(
+                        "lifecycle",
+                        (
+                            node_value.get("lifecycle", "completed")
+                            if index == len(attempt_values)
+                            else "completed"
+                        ),
+                    )
+                )
+                if lifecycle == "failed":
+                    attempt_value.setdefault(
+                        "failure_code",
+                        "IncompleteCampaign",
+                    )
+                    attempt_value.setdefault(
+                        "failure_message",
+                        "Campaign result is incomplete",
+                    )
+                else:
+                    attempt_value.setdefault("failure_code", None)
+                    attempt_value.setdefault("failure_message", None)
+                predecessor_attempt_id = attempt_id
+        connection.execute(
+            text(
+                "UPDATE diagnostic_task_campaign_handoffs "
+                "SET handoff_json = :handoff_json "
+                "WHERE task_id = :task_id"
+            ),
+            {
+                "handoff_json": json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                "task_id": str(row["task_id"]),
+            },
+        )
 
 
 def _add_a_share_execution_audit(connection: Connection) -> None:

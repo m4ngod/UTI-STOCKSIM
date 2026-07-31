@@ -1097,7 +1097,7 @@ def test_sql_index_and_json_artifacts_restore_a_sealed_package(
     report = initialize_diagnostic_persistence(engine)
     assert (
         report.current_revision
-        == "0017_diagnostic_lifecycle_targets"
+        == "0018_diagnostic_campaign_attempt_history"
     )
     artifacts = JsonDiagnosticEvidenceArtifactStore(
         tmp_path / "evidence-artifacts"

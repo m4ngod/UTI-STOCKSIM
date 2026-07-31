@@ -1486,6 +1486,7 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "0015_diagnostic_task_campaign_handoff",
         "0016_diagnostic_task_start_continuation_claim",
         "0017_diagnostic_lifecycle_targets",
+        "0018_diagnostic_campaign_attempt_history",
     )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"

@@ -207,8 +207,27 @@ class DiagnosticCampaignRunHandoff:
 class DiagnosticCampaignAttemptHandoff:
     attempt_id: CampaignAttemptId
     runs: tuple[DiagnosticCampaignRunHandoff, ...]
+    attempt_number: int = 1
+    lifecycle: DiagnosticTaskLifecycle = DiagnosticTaskLifecycle.COMPLETED
+    predecessor_attempt_id: CampaignAttemptId | None = None
+    task_handle_id: TaskHandleId | None = None
+    failure: StructuredFeatureError | None = None
 
     def __post_init__(self) -> None:
+        if self.attempt_number < 1:
+            raise ValueError("Campaign attempt number must be positive")
+        if self.predecessor_attempt_id == self.attempt_id:
+            raise ValueError("Campaign attempt cannot be its own predecessor")
+        if (
+            self.lifecycle is DiagnosticTaskLifecycle.FAILED
+            and self.failure is None
+        ):
+            raise ValueError("Failed Campaign attempt requires a typed failure")
+        if (
+            self.lifecycle is not DiagnosticTaskLifecycle.FAILED
+            and self.failure is not None
+        ):
+            raise ValueError("Only failed Campaign attempts expose a failure")
         if len(set(self.run_ids)) != len(self.run_ids):
             raise ValueError("Campaign attempt run identities must be unique")
         strategy_ids = tuple(item.strategy_id for item in self.runs)
@@ -239,6 +258,16 @@ class DiagnosticCampaignNodeHandoff:
         attempt_ids = tuple(item.attempt_id for item in self.attempts)
         if len(set(attempt_ids)) != len(attempt_ids):
             raise ValueError("Campaign node attempt identities must be unique")
+        for index, attempt in enumerate(self.attempts, start=1):
+            if attempt.attempt_number != index:
+                raise ValueError("Campaign node attempt numbers must be contiguous")
+            expected_predecessor = (
+                None if index == 1 else self.attempts[index - 2].attempt_id
+            )
+            if attempt.predecessor_attempt_id != expected_predecessor:
+                raise ValueError(
+                    "Campaign node attempt predecessor history must be contiguous"
+                )
         if (
             self.active_attempt_id is not None
             and self.active_attempt_id not in attempt_ids

@@ -495,16 +495,29 @@ Item {
                             }
                         }
                     }
-                }
-            }
 
-            Text {
-                Layout.fillWidth: true
-                text: "Failed-node retry remains explicitly unavailable until Issue #61."
-                color: tokens.textQuiet
-                font.pixelSize: tokens.labelSize
-                horizontalAlignment: Text.AlignRight
-                wrapMode: Text.WordWrap
+                    Text {
+                        objectName: "failedCampaignNodeAttemptHistory"
+                        Layout.fillWidth: true
+                        text: adapter.failedNodeRetryText
+                        color: tokens.textQuiet
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: "Failed Campaign node attempt history"
+                        Accessible.description: text
+                    }
+
+                    Button {
+                        objectName: "retryFailedCampaignNodeButton"
+                        text: "Retry Failed Node"
+                        enabled: adapter.canRetryFailedCampaignNode
+                        focusPolicy: Qt.StrongFocus
+                        Accessible.name: "Retry failed Campaign node attempt"
+                        Accessible.description: "Create a new typed Campaign attempt linked to the immutable failed predecessor and a persistent TaskHandle"
+                        onClicked: adapter.retryFailedCampaignNode()
+                    }
+                }
             }
         }
     }

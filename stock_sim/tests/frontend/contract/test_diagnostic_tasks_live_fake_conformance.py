@@ -810,11 +810,7 @@ def test_live_and_fake_share_one_typed_feature_conformance(
     assert all(
         result.rejection_reason
         is DiagnosticTaskCommandRejectionReason.INVALID_COMMAND
-        for result in results[:7]
-    )
-    assert (
-        results[7].rejection_reason
-        is DiagnosticTaskCommandRejectionReason.NOT_YET_AVAILABLE
+        for result in results
     )
     feature.close()
     feature.close()

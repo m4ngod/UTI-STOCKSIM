@@ -57,6 +57,7 @@ from app.features import (
     PauseDiagnosticTask,
     ResumeDiagnosticTarget,
     ResumeDiagnosticTask,
+    RetryFailedCampaignNode,
     ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
     RunMonitoringFeature,
@@ -169,6 +170,7 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def stateTitle(self) -> str:  # noqa: N802
+        presentation_state = str(self._state.presentation.value)
         return {
             "loading": "Loading authoritative inputs",
             "empty": "No authoritative inputs are registered",
@@ -176,7 +178,7 @@ class DiagnosticTasksQtAdapter(QObject):
             "degraded": "Showing last reliable authoritative inputs",
             "failed": "Authoritative input read failed",
             "input_unavailable": "Required authoritative inputs are unavailable",
-        }[self.presentationState]
+        }[presentation_state]
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def revisionText(self) -> str:  # noqa: N802
@@ -400,6 +402,13 @@ class DiagnosticTasksQtAdapter(QObject):
             }
         )
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canRetryFailedCampaignNode(self) -> bool:  # noqa: N802
+        return bool(
+            self._state.capabilities.can_retry_failed_node
+            and self._retryable_campaign_node() is not None
+        )
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskStatusText(self) -> str:  # noqa: N802
         task = self._state.task
@@ -505,6 +514,29 @@ class DiagnosticTasksQtAdapter(QObject):
         return (
             f"{node.campaign_node_id.value} · r{node.revision} · "
             f"{node.lifecycle.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def failedNodeRetryText(self) -> str:  # noqa: N802
+        node = self._retry_history_campaign_node()
+        if node is None:
+            return "No failed Campaign attempt history is available."
+        attempts = "; ".join(
+            (
+                f"attempt {attempt.attempt_number} "
+                f"{attempt.attempt_id.value} · {attempt.lifecycle.value} · "
+                "predecessor "
+                f"{attempt.predecessor_attempt_id.value if attempt.predecessor_attempt_id is not None else 'none'} · "
+                "TaskHandle "
+                f"{attempt.task_handle_id.value if attempt.task_handle_id is not None else 'none'} · "
+                "failure "
+                f"{attempt.failure.code + ': ' + attempt.failure.message if attempt.failure is not None else 'none'}"
+            )
+            for attempt in node.attempts
+        )
+        return (
+            f"Node {node.campaign_node_id.value} · r{node.revision} · "
+            f"{attempts}"
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -898,6 +930,49 @@ class DiagnosticTasksQtAdapter(QObject):
             )
         )
 
+    @Slot()
+    def retryFailedCampaignNode(self) -> None:  # noqa: N802
+        task = self._state.task
+        node = self._retryable_campaign_node()
+        attempt = (
+            None
+            if node is None or node.active_attempt_id is None
+            else next(
+                (
+                    candidate
+                    for candidate in node.attempts
+                    if candidate.attempt_id == node.active_attempt_id
+                ),
+                None,
+            )
+        )
+        if (
+            task is None
+            or node is None
+            or attempt is None
+            or not self.canRetryFailedCampaignNode
+        ):
+            self._lifecycle_unavailable("Failed Campaign node retry")
+            return
+        command_identity = uuid4().hex
+        result = self._feature.retry_failed_campaign_node(
+            RetryFailedCampaignNode(
+                command_id=DiagnosticCommandId(
+                    f"retry-failed-campaign-node-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"failed-campaign-node-retry-{command_identity}"
+                ),
+                task_id=task.task_id,
+                campaign_node_id=node.campaign_node_id,
+                failed_attempt_id=attempt.attempt_id,
+                expected_revision=node.revision,
+            )
+        )
+        self._command_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+
     def _complete_lifecycle_command(
         self,
         result: DiagnosticTasksCommandResult,
@@ -930,6 +1005,45 @@ class DiagnosticTasksQtAdapter(QObject):
                 if node.lifecycle not in terminal
             ),
             next(iter(task.handoff.campaign_nodes), None),
+        )
+
+    def _retryable_campaign_node(
+        self,
+    ) -> DiagnosticCampaignNodeHandoff | None:
+        task = self._state.task
+        if task is None:
+            return None
+        return next(
+            (
+                node
+                for node in task.handoff.campaign_nodes
+                if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+                and node.active_attempt_id is not None
+                and bool(node.attempts)
+                and node.attempts[-1].attempt_id == node.active_attempt_id
+                and node.attempts[-1].lifecycle
+                is DiagnosticTaskLifecycle.FAILED
+            ),
+            None,
+        )
+
+    def _retry_history_campaign_node(
+        self,
+    ) -> DiagnosticCampaignNodeHandoff | None:
+        retryable = self._retryable_campaign_node()
+        if retryable is not None:
+            return retryable
+        task = self._state.task
+        if task is None:
+            return None
+        return next(
+            (
+                node
+                for node in task.handoff.campaign_nodes
+                if len(node.attempts) > 1
+                or any(attempt.failure is not None for attempt in node.attempts)
+            ),
+            None,
         )
 
     def monitoring_context(self) -> RunMonitoringContext | None:

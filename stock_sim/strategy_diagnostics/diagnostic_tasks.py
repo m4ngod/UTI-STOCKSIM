@@ -348,6 +348,27 @@ class ChangeDiagnosticLifecycleRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RetryFailedCampaignNodeRequest:
+    command_id: str
+    idempotency_key: str
+    task_id: str
+    campaign_node_id: str
+    failed_attempt_id: str
+    expected_revision: int
+
+    def command_content_identity(self) -> str:
+        return _content_identity(
+            {
+                "campaign_node_id": self.campaign_node_id,
+                "command_type": "retry_failed_campaign_node",
+                "expected_revision": self.expected_revision,
+                "failed_attempt_id": self.failed_attempt_id,
+                "task_id": self.task_id,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticTaskValidationFinding:
     reference_kind: DiagnosticTaskValidationReferenceKind
     reference_identity: str
@@ -405,10 +426,27 @@ class DiagnosticCampaignRunHandoffSnapshot:
 class DiagnosticCampaignAttemptHandoffSnapshot:
     attempt_id: str
     runs: tuple[DiagnosticCampaignRunHandoffSnapshot, ...]
+    attempt_number: int = 1
+    lifecycle: DiagnosticTaskLifecycle = DiagnosticTaskLifecycle.COMPLETED
+    predecessor_attempt_id: str | None = None
+    task_handle_id: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
 
     def __post_init__(self) -> None:
         if not self.attempt_id.strip():
             raise ValueError("Campaign attempt identity is required")
+        if self.attempt_number < 1:
+            raise ValueError("Campaign attempt number must be positive")
+        if self.predecessor_attempt_id == self.attempt_id:
+            raise ValueError("Campaign attempt cannot be its own predecessor")
+        if self.task_handle_id is not None and not self.task_handle_id.strip():
+            raise ValueError("Campaign attempt TaskHandle identity is required")
+        if self.lifecycle is DiagnosticTaskLifecycle.FAILED:
+            if not (self.failure_code or "").strip():
+                raise ValueError("Failed Campaign attempt requires a failure code")
+        elif self.failure_code is not None or self.failure_message is not None:
+            raise ValueError("Only a failed Campaign attempt can expose failure")
         if len(set(self.run_ids)) != len(self.run_ids):
             raise ValueError("Campaign attempt run identities must be unique")
         strategy_ids = tuple(item.strategy_id for item in self.runs)
@@ -424,7 +462,13 @@ class DiagnosticCampaignAttemptHandoffSnapshot:
     def to_storage_dict(self) -> dict[str, object]:
         return {
             "attempt_id": self.attempt_id,
+            "attempt_number": self.attempt_number,
+            "failure_code": self.failure_code,
+            "failure_message": self.failure_message,
+            "lifecycle": self.lifecycle.value,
+            "predecessor_attempt_id": self.predecessor_attempt_id,
             "runs": [item.to_storage_dict() for item in self.runs],
+            "task_handle_id": self.task_handle_id,
         }
 
 
@@ -451,6 +495,16 @@ class DiagnosticCampaignNodeHandoffSnapshot:
         attempt_ids = tuple(item.attempt_id for item in self.attempts)
         if len(set(attempt_ids)) != len(attempt_ids):
             raise ValueError("Campaign node attempt identities must be unique")
+        for index, attempt in enumerate(self.attempts, start=1):
+            if attempt.attempt_number != index:
+                raise ValueError("Campaign node attempt numbers must be contiguous")
+            expected_predecessor = (
+                None if index == 1 else self.attempts[index - 2].attempt_id
+            )
+            if attempt.predecessor_attempt_id != expected_predecessor:
+                raise ValueError(
+                    "Campaign node attempt predecessor history must be contiguous"
+                )
         if (
             self.active_attempt_id is not None
             and self.active_attempt_id not in attempt_ids
@@ -542,24 +596,26 @@ class DiagnosticTaskCampaignHandoffSnapshot:
                         node["selected_campaign_case_id"]
                     ),
                     market_scenario_id=str(node["market_scenario_id"]),
-                    attempts=tuple(
-                        DiagnosticCampaignAttemptHandoffSnapshot(
-                            attempt_id=str(attempt["attempt_id"]),
-                            runs=tuple(
-                                DiagnosticCampaignRunHandoffSnapshot(
-                                    run_id=str(run["run_id"]),
-                                    strategy_id=str(run["strategy_id"]),
-                                )
-                                for run in cast(
-                                    list[Mapping[str, object]],
-                                    attempt["runs"],
-                                )
-                            ),
-                        )
-                        for attempt in cast(
+                    attempts=_attempts_from_storage(
+                        cast(
                             list[Mapping[str, object]],
                             node["attempts"],
-                        )
+                        ),
+                        final_lifecycle=DiagnosticTaskLifecycle(
+                            str(
+                                node.get(
+                                    "lifecycle",
+                                    (
+                                        "completed"
+                                        if cast(
+                                            list[Mapping[str, object]],
+                                            node["attempts"],
+                                        )
+                                        else "queued"
+                                    ),
+                                )
+                            )
+                        ),
                     ),
                     active_attempt_id=(
                         None
@@ -620,6 +676,21 @@ class _DiagnosticCampaignProgressMerge:
 
 
 @dataclass(frozen=True, slots=True)
+class _DiagnosticRetryCompletionMerge:
+    handoff: DiagnosticTaskCampaignHandoffSnapshot
+    attempt: DiagnosticCampaignAttemptHandoffSnapshot
+    task_revision: int
+    task_lifecycle: DiagnosticTaskLifecycle
+    target_updates: tuple[
+        tuple[
+            DiagnosticLifecycleTargetSnapshot,
+            DiagnosticLifecycleTargetSnapshot,
+        ],
+        ...,
+    ]
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticTaskHandleSnapshot:
     task_handle_id: str
     task_id: str
@@ -661,6 +732,7 @@ class DiagnosticTaskCreationResult:
     retryable: bool
     affected_campaign_id: str | None = None
     affected_campaign_node_id: str | None = None
+    affected_campaign_attempt_id: str | None = None
 
 
 DiagnosticTaskCommandResult = DiagnosticTaskCreationResult
@@ -728,6 +800,10 @@ class DiagnosticTaskRepository(Protocol):
     def pending_start_requests(
         self,
     ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]: ...
+
+    def pending_retry_requests(
+        self,
+    ) -> tuple[RetryFailedCampaignNodeRequest, ...]: ...
 
     def get_lifecycle_target(
         self,
@@ -800,6 +876,25 @@ class DiagnosticTaskRepository(Protocol):
 
     def reset_start_continuation_claims(self) -> None: ...
 
+    def accept_failed_node_retry(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task: DiagnosticTaskSnapshot,
+        queued_handle: DiagnosticTaskHandleSnapshot,
+        expected_node: DiagnosticLifecycleTargetSnapshot,
+        queued_handoff: DiagnosticTaskCampaignHandoffSnapshot,
+    ) -> bool: ...
+
+    def complete_failed_node_retry(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None: ...
+
     def accept_lifecycle(
         self,
         *,
@@ -855,6 +950,10 @@ class InMemoryDiagnosticTaskRepository:
         self._pending_start_requests: dict[
             str,
             StartFormalDiagnosticCampaignRequest,
+        ] = {}
+        self._pending_retry_requests: dict[
+            str,
+            RetryFailedCampaignNodeRequest,
         ] = {}
         self._start_continuation_claims: dict[str, str] = {}
         self._lifecycle_targets: dict[
@@ -1009,6 +1108,20 @@ class InMemoryDiagnosticTaskRepository:
                     and handle.phase is DiagnosticTaskHandlePhase.QUEUED
                     for handle in task.task_handles
                 )
+            )
+        )
+
+    def pending_retry_requests(
+        self,
+    ) -> tuple[RetryFailedCampaignNodeRequest, ...]:
+        return tuple(
+            request
+            for handle_id, request in self._pending_retry_requests.items()
+            if any(
+                handle.task_handle_id == handle_id
+                and handle.phase is DiagnosticTaskHandlePhase.QUEUED
+                for task in self._tasks.values()
+                for handle in task.task_handles
             )
         )
 
@@ -1282,6 +1395,215 @@ class InMemoryDiagnosticTaskRepository:
 
     def reset_start_continuation_claims(self) -> None:
         self._start_continuation_claims.clear()
+
+    def accept_failed_node_retry(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task: DiagnosticTaskSnapshot,
+        queued_handle: DiagnosticTaskHandleSnapshot,
+        expected_node: DiagnosticLifecycleTargetSnapshot,
+        queued_handoff: DiagnosticTaskCampaignHandoffSnapshot,
+    ) -> bool:
+        if (
+            self.find_mutation_command(
+                record.command_id,
+                record.idempotency_key,
+            )
+            is not None
+        ):
+            return False
+        payload = json.loads(command_json)
+        if not isinstance(payload, dict):
+            raise TypeError("Persisted failed-node retry command must be an object")
+        pending_request = RetryFailedCampaignNodeRequest(
+            command_id=str(payload["command_id"]),
+            idempotency_key=str(payload["idempotency_key"]),
+            task_id=str(payload["task_id"]),
+            campaign_node_id=str(payload["campaign_node_id"]),
+            failed_attempt_id=str(payload["failed_attempt_id"]),
+            expected_revision=int(cast(str | int, payload["expected_revision"])),
+        )
+        current = self._tasks.get(record.task_id)
+        current_node = self.get_lifecycle_target(
+            DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+            expected_node.target_id,
+        )
+        if (
+            current is None
+            or current.campaign_handoff is None
+            or current_node != expected_node
+            or expected_node.lifecycle is not DiagnosticTaskLifecycle.FAILED
+            or task.revision != current.revision + 1
+            or task.campaign_handoff != queued_handoff
+        ):
+            return False
+        queued_node = next(
+            (
+                node
+                for node in queued_handoff.campaign_nodes
+                if node.campaign_node_id == expected_node.target_id
+            ),
+            None,
+        )
+        if (
+            queued_node is None
+            or queued_node.revision != expected_node.revision + 1
+            or queued_node.lifecycle is not DiagnosticTaskLifecycle.QUEUED
+            or not queued_node.attempts
+            or queued_node.attempts[-1].task_handle_id
+            != queued_handle.task_handle_id
+        ):
+            return False
+        task_parent = self.get_lifecycle_target(
+            DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+            task.task_id,
+        )
+        campaign_parent = self.get_lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            queued_handoff.campaign_id,
+        )
+        if (
+            task_parent is None
+            or campaign_parent is None
+            or task_parent.revision != current.revision
+            or campaign_parent.revision
+            != current.campaign_handoff.campaign_revision
+            or current.lifecycle
+            is not current.campaign_handoff.campaign_lifecycle
+            or current.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.FAILED,
+            }
+            or task_parent.lifecycle is not current.lifecycle
+            or campaign_parent.lifecycle is not current.lifecycle
+            or queued_handoff.campaign_revision
+            != current.campaign_handoff.campaign_revision + 1
+        ):
+            return False
+        self._tasks[task.task_id] = replace(
+            task,
+            task_handles=(*current.task_handles, queued_handle),
+        )
+        self._lifecycle_targets[
+            (
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                expected_node.target_id,
+            )
+        ] = replace(
+            expected_node,
+            revision=queued_node.revision,
+            lifecycle=DiagnosticTaskLifecycle.QUEUED,
+        )
+        self._lifecycle_targets[
+            (
+                DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                task.task_id,
+            )
+        ] = replace(
+            task_parent,
+            revision=task.revision,
+            lifecycle=DiagnosticTaskLifecycle.RUNNING,
+        )
+        self._lifecycle_targets[
+            (
+                DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+                queued_handoff.campaign_id,
+            )
+        ] = replace(
+            campaign_parent,
+            revision=queued_handoff.campaign_revision,
+            lifecycle=DiagnosticTaskLifecycle.RUNNING,
+        )
+        self._store_mutation(record)
+        self._pending_retry_requests[queued_handle.task_handle_id] = pending_request
+        return True
+
+    def complete_failed_node_retry(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        for task_id, task in tuple(self._tasks.items()):
+            handle = next(
+                (
+                    candidate
+                    for candidate in task.task_handles
+                    if candidate.task_handle_id == task_handle_id
+                ),
+                None,
+            )
+            if handle is None:
+                continue
+            if handle.phase in {
+                DiagnosticTaskHandlePhase.COMPLETED,
+                DiagnosticTaskHandlePhase.FAILED,
+            }:
+                return
+            if (
+                self._start_continuation_claims.get(task_handle_id)
+                != continuation_claim_id
+            ):
+                raise ValueError(
+                    "Failed-node retry continuation is not owned by this claim"
+            )
+            if task.campaign_handoff is None:
+                raise ValueError("Diagnostic Task Campaign handoff is unavailable")
+            targets = tuple(
+                target
+                for target in self._lifecycle_targets.values()
+                if target.task_id == task_id
+            )
+            reconciliation = _reconcile_retry_completion(
+                task.campaign_handoff,
+                handoff,
+                task_handle_id,
+                task_revision=task.revision,
+                task_lifecycle=task.lifecycle,
+                targets=targets,
+            )
+            terminal_handle = _retry_terminal_handle(
+                handle,
+                reconciliation.attempt,
+                updated_at,
+            )
+            if any(
+                self._lifecycle_targets.get(
+                    (before.target_kind, before.target_id)
+                )
+                != before
+                for before, _after in reconciliation.target_updates
+            ):
+                raise ValueError(
+                    "Failed-node retry lifecycle changed concurrently"
+                )
+            self._tasks[task_id] = replace(
+                task,
+                revision=reconciliation.task_revision,
+                lifecycle=reconciliation.task_lifecycle,
+                task_handles=tuple(
+                    terminal_handle
+                    if candidate.task_handle_id == task_handle_id
+                    else candidate
+                    for candidate in task.task_handles
+                ),
+                campaign_handoff=reconciliation.handoff,
+                updated_at=updated_at,
+            )
+            for _before, after in reconciliation.target_updates:
+                self._lifecycle_targets[
+                    (after.target_kind, after.target_id)
+                ] = after
+            self._pending_retry_requests.pop(task_handle_id, None)
+            self._start_continuation_claims.pop(task_handle_id, None)
+            return
+        raise KeyError(
+            f"Unknown failed-node retry Diagnostic TaskHandle {task_handle_id!r}"
+        )
 
     def accept_lifecycle(
         self,
@@ -2189,6 +2511,43 @@ class SqlDiagnosticTaskRepository:
                 )
         return tuple(requests)
 
+    def pending_retry_requests(
+        self,
+    ) -> tuple[RetryFailedCampaignNodeRequest, ...]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT m.command_json "
+                    "FROM diagnostic_task_mutation_commands m "
+                    "JOIN diagnostic_task_handles h "
+                    "ON h.task_handle_id = m.task_handle_id "
+                    "WHERE m.command_type = 'retry_failed_campaign_node' "
+                    "AND h.phase = :handle_phase "
+                    "ORDER BY m.accepted_at_utc, m.command_id"
+                ),
+                {"handle_phase": DiagnosticTaskHandlePhase.QUEUED.value},
+            ).mappings()
+            requests: list[RetryFailedCampaignNodeRequest] = []
+            for row in rows:
+                payload = json.loads(str(row["command_json"]))
+                if not isinstance(payload, dict):
+                    raise TypeError(
+                        "Persisted failed-node retry command must be an object"
+                    )
+                requests.append(
+                    RetryFailedCampaignNodeRequest(
+                        command_id=str(payload["command_id"]),
+                        idempotency_key=str(payload["idempotency_key"]),
+                        task_id=str(payload["task_id"]),
+                        campaign_node_id=str(payload["campaign_node_id"]),
+                        failed_attempt_id=str(payload["failed_attempt_id"]),
+                        expected_revision=int(
+                            cast(str | int, payload["expected_revision"])
+                        ),
+                    )
+                )
+        return tuple(requests)
+
     def get_lifecycle_target(
         self,
         target_kind: DiagnosticLifecycleTargetKind,
@@ -2716,6 +3075,372 @@ class SqlDiagnosticTaskRepository:
                     "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
                 },
             )
+
+    def accept_failed_node_retry(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task: DiagnosticTaskSnapshot,
+        queued_handle: DiagnosticTaskHandleSnapshot,
+        expected_node: DiagnosticLifecycleTargetSnapshot,
+        queued_handoff: DiagnosticTaskCampaignHandoffSnapshot,
+    ) -> bool:
+        queued_node = next(
+            (
+                node
+                for node in queued_handoff.campaign_nodes
+                if node.campaign_node_id == expected_node.target_id
+            ),
+            None,
+        )
+        if queued_node is None:
+            return False
+        with self._engine.begin() as connection:
+            current_handoff_row = connection.execute(
+                text(
+                    "SELECT handoff_json FROM diagnostic_task_campaign_handoffs "
+                    "WHERE task_id = :task_id AND campaign_id = :campaign_id"
+                ),
+                {
+                    "task_id": task.task_id,
+                    "campaign_id": queued_handoff.campaign_id,
+                },
+            ).mappings().one_or_none()
+            if current_handoff_row is None:
+                return False
+            current_handoff = (
+                DiagnosticTaskCampaignHandoffSnapshot.from_storage_dict(
+                    cast(
+                        Mapping[str, object],
+                        json.loads(str(current_handoff_row["handoff_json"])),
+                    )
+                )
+            )
+            if current_handoff.campaign_lifecycle not in {
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.FAILED,
+            }:
+                return False
+            updated_task = connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks SET revision = :revision, "
+                    "lifecycle = :lifecycle, updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle = :expected_lifecycle"
+                ),
+                {
+                    "revision": task.revision,
+                    "lifecycle": task.lifecycle.value,
+                    "updated_at_utc": task.updated_at.isoformat(),
+                    "task_id": task.task_id,
+                    "expected_revision": task.revision - 1,
+                    "expected_lifecycle": (
+                        current_handoff.campaign_lifecycle.value
+                    ),
+                },
+            )
+            if updated_task.rowcount != 1:
+                return False
+            updated_node = connection.execute(
+                text(
+                    "UPDATE diagnostic_lifecycle_targets "
+                    "SET revision = :revision, lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE target_kind = :target_kind "
+                    "AND target_id = :target_id "
+                    "AND task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle = :expected_lifecycle"
+                ),
+                {
+                    "revision": queued_node.revision,
+                    "lifecycle": queued_node.lifecycle.value,
+                    "updated_at_utc": task.updated_at.isoformat(),
+                    "target_kind": (
+                        DiagnosticLifecycleTargetKind.CAMPAIGN_NODE.value
+                    ),
+                    "target_id": expected_node.target_id,
+                    "task_id": task.task_id,
+                    "expected_revision": expected_node.revision,
+                    "expected_lifecycle": expected_node.lifecycle.value,
+                },
+            )
+            if updated_node.rowcount != 1:
+                raise ValueError(
+                    "Failed-node retry Campaign node changed concurrently"
+                )
+            for target_kind, target_id, revision, expected_revision in (
+                (
+                    DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                    task.task_id,
+                    task.revision,
+                    task.revision - 1,
+                ),
+                (
+                    DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+                    queued_handoff.campaign_id,
+                    queued_handoff.campaign_revision,
+                    queued_handoff.campaign_revision - 1,
+                ),
+            ):
+                updated_parent = connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET revision = :revision, lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE target_kind = :target_kind "
+                        "AND target_id = :target_id "
+                        "AND task_id = :task_id "
+                        "AND revision = :expected_revision "
+                        "AND lifecycle = :expected_lifecycle"
+                    ),
+                    {
+                        "revision": revision,
+                        "lifecycle": DiagnosticTaskLifecycle.RUNNING.value,
+                        "updated_at_utc": task.updated_at.isoformat(),
+                        "target_kind": target_kind.value,
+                        "target_id": target_id,
+                        "task_id": task.task_id,
+                        "expected_revision": expected_revision,
+                        "expected_lifecycle": (
+                            current_handoff.campaign_lifecycle.value
+                        ),
+                    },
+                )
+                if updated_parent.rowcount != 1:
+                    raise ValueError(
+                        "Failed-node retry parent lifecycle changed concurrently"
+                    )
+            updated_handoff = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_campaign_handoffs "
+                    "SET handoff_json = :handoff_json, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND campaign_id = :campaign_id "
+                    "AND handoff_json = :expected_handoff_json"
+                ),
+                {
+                    "handoff_json": _canonical_json(
+                        queued_handoff.to_storage_dict()
+                    ),
+                    "updated_at_utc": task.updated_at.isoformat(),
+                    "task_id": task.task_id,
+                    "campaign_id": queued_handoff.campaign_id,
+                    "expected_handoff_json": str(
+                        current_handoff_row["handoff_json"]
+                    ),
+                },
+            )
+            if updated_handoff.rowcount != 1:
+                raise ValueError(
+                    "Failed-node retry Campaign handoff changed concurrently"
+                )
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_task_handles ("
+                    "task_handle_id, task_id, phase, progress_value, "
+                    "result_code, error_json, cancelable, created_at_utc, "
+                    "updated_at_utc"
+                    ") VALUES ("
+                    ":task_handle_id, :task_id, :phase, :progress_value, "
+                    ":result_code, :error_json, :cancelable, :created_at_utc, "
+                    ":updated_at_utc)"
+                ),
+                _handle_row(queued_handle),
+            )
+            self._insert_mutation_command(
+                connection,
+                record=record,
+                command_json=command_json,
+            )
+        return True
+
+    def complete_failed_node_retry(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT h.phase, h.task_id, h.start_continuation_claim_id, "
+                    "t.revision AS task_revision, "
+                    "t.lifecycle AS task_lifecycle, d.handoff_json "
+                    "FROM diagnostic_task_handles h "
+                    "JOIN diagnostic_tasks t ON t.task_id = h.task_id "
+                    "JOIN diagnostic_task_campaign_handoffs d "
+                    "ON d.task_id = h.task_id "
+                    "WHERE h.task_handle_id = :task_handle_id"
+                ),
+                {"task_handle_id": task_handle_id},
+            ).mappings().one_or_none()
+            if row is None:
+                raise KeyError(
+                    "Unknown failed-node retry Diagnostic TaskHandle "
+                    f"{task_handle_id!r}"
+                )
+            phase = DiagnosticTaskHandlePhase(str(row["phase"]))
+            if phase in {
+                DiagnosticTaskHandlePhase.COMPLETED,
+                DiagnosticTaskHandlePhase.FAILED,
+            }:
+                return
+            if str(row["start_continuation_claim_id"]) != continuation_claim_id:
+                raise ValueError(
+                    "Failed-node retry continuation is not owned by this claim"
+                )
+            current = DiagnosticTaskCampaignHandoffSnapshot.from_storage_dict(
+                cast(
+                    Mapping[str, object],
+                    json.loads(str(row["handoff_json"])),
+                )
+            )
+            target_rows = connection.execute(
+                text(
+                    "SELECT target_kind, target_id, task_id, revision, "
+                    "lifecycle FROM diagnostic_lifecycle_targets "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": str(row["task_id"])},
+            ).mappings()
+            targets = tuple(
+                _lifecycle_target_from_row(target_row)
+                for target_row in target_rows
+            )
+            reconciliation = _reconcile_retry_completion(
+                current,
+                handoff,
+                task_handle_id,
+                task_revision=int(
+                    cast(str | int, row["task_revision"])
+                ),
+                task_lifecycle=DiagnosticTaskLifecycle(
+                    str(row["task_lifecycle"])
+                ),
+                targets=targets,
+            )
+            terminal = _retry_terminal_handle(
+                DiagnosticTaskHandleSnapshot(
+                    task_handle_id=task_handle_id,
+                    task_id=str(row["task_id"]),
+                    phase=DiagnosticTaskHandlePhase.QUEUED,
+                    progress=0.0,
+                    result_code=None,
+                    error_code=None,
+                    error_message=None,
+                    error_retryable=False,
+                    cancelable=False,
+                    created_at=updated_at,
+                    updated_at=updated_at,
+                ),
+                reconciliation.attempt,
+                updated_at,
+            )
+            updated_handoff = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_campaign_handoffs "
+                    "SET handoff_json = :handoff_json, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND campaign_id = :campaign_id "
+                    "AND handoff_json = :expected_handoff_json"
+                ),
+                {
+                    "handoff_json": _canonical_json(
+                        reconciliation.handoff.to_storage_dict()
+                    ),
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_id": str(row["task_id"]),
+                    "campaign_id": reconciliation.handoff.campaign_id,
+                    "expected_handoff_json": str(row["handoff_json"]),
+                },
+            )
+            if updated_handoff.rowcount != 1:
+                raise ValueError(
+                    "Failed-node retry Campaign handoff changed concurrently"
+                )
+            updated_handle = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles SET phase = :phase, "
+                    "progress_value = 1.0, result_code = :result_code, "
+                    "error_json = :error_json, cancelable = 0, "
+                    "updated_at_utc = :updated_at_utc, "
+                    "start_continuation_claim_id = NULL, "
+                    "start_continuation_claimed_at_utc = NULL "
+                    "WHERE task_handle_id = :task_handle_id "
+                    "AND phase = :expected_phase "
+                    "AND start_continuation_claim_id = "
+                    ":continuation_claim_id"
+                ),
+                {
+                    "phase": terminal.phase.value,
+                    "result_code": terminal.result_code,
+                    "error_json": _handle_row(terminal)["error_json"],
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_handle_id": task_handle_id,
+                    "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                    "continuation_claim_id": continuation_claim_id,
+                },
+            )
+            if updated_handle.rowcount != 1:
+                raise ValueError(
+                    "Failed-node retry TaskHandle changed concurrently"
+                )
+            updated_task = connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks SET revision = :revision, "
+                    "lifecycle = :lifecycle, updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle = :expected_lifecycle"
+                ),
+                {
+                    "revision": reconciliation.task_revision,
+                    "lifecycle": reconciliation.task_lifecycle.value,
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_id": str(row["task_id"]),
+                    "expected_revision": int(
+                        cast(str | int, row["task_revision"])
+                    ),
+                    "expected_lifecycle": str(row["task_lifecycle"]),
+                },
+            )
+            if updated_task.rowcount != 1:
+                raise ValueError(
+                    "Failed-node retry Diagnostic Task changed concurrently"
+                )
+            for before, after in reconciliation.target_updates:
+                updated_target = connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET revision = :revision, lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE target_kind = :target_kind "
+                        "AND target_id = :target_id "
+                        "AND task_id = :task_id "
+                        "AND revision = :expected_revision "
+                        "AND lifecycle = :expected_lifecycle"
+                    ),
+                    {
+                        "revision": after.revision,
+                        "lifecycle": after.lifecycle.value,
+                        "updated_at_utc": updated_at.isoformat(),
+                        "target_kind": before.target_kind.value,
+                        "target_id": before.target_id,
+                        "task_id": str(row["task_id"]),
+                        "expected_revision": before.revision,
+                        "expected_lifecycle": before.lifecycle.value,
+                    },
+                )
+                if updated_target.rowcount != 1:
+                    raise ValueError(
+                        "Failed-node retry lifecycle target changed concurrently"
+                    )
 
     def accept_lifecycle(
         self,
@@ -3656,6 +4381,11 @@ class DiagnosticTaskService:
     ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]:
         return self._repository.pending_start_requests()
 
+    def pending_retry_requests(
+        self,
+    ) -> tuple[RetryFailedCampaignNodeRequest, ...]:
+        return self._repository.pending_retry_requests()
+
     def pending_lifecycle_requests(
         self,
     ) -> tuple[ChangeDiagnosticLifecycleRequest, ...]:
@@ -3680,6 +4410,331 @@ class DiagnosticTaskService:
         self._repository.release_start_continuation(
             task_handle_id,
             continuation_claim_id,
+        )
+
+    def retry_failed_campaign_node(
+        self,
+        request: RetryFailedCampaignNodeRequest,
+    ) -> DiagnosticTaskCommandResult:
+        if (
+            not request.command_id.strip()
+            or not request.idempotency_key.strip()
+            or not request.task_id.strip()
+            or not request.campaign_node_id.strip()
+            or not request.failed_attempt_id.strip()
+            or request.expected_revision < 1
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.INVALID_COMMAND,
+                message=(
+                    "Retry requires command, task, failed node and failed "
+                    "attempt identities plus a positive exact node revision."
+                ),
+                current_revision=None,
+            )
+        command_content_id = request.command_content_identity()
+        existing = self._find_existing_mutation(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_content_id=command_content_id,
+            task_id=request.task_id,
+            target_kind=DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+            target_id=request.campaign_node_id,
+        )
+        if existing is not None:
+            if existing.disposition is DiagnosticTaskCreationDisposition.REJECTED:
+                return existing
+            return replace(
+                existing,
+                affected_campaign_attempt_id=_retry_attempt_identity_from_task(
+                    self._repository.get_task(request.task_id),
+                    request.campaign_node_id,
+                    existing.task_handle,
+                ),
+            )
+        current = self._read_task_for_command(
+            request.command_id,
+            request.idempotency_key,
+            request.task_id,
+        )
+        if isinstance(current, DiagnosticTaskCreationResult):
+            return current
+        handoff = current.campaign_handoff
+        node = (
+            None
+            if handoff is None
+            else next(
+                (
+                    candidate
+                    for candidate in handoff.campaign_nodes
+                    if candidate.campaign_node_id
+                    == request.campaign_node_id
+                ),
+                None,
+            )
+        )
+        try:
+            node_target = self._repository.get_lifecycle_target(
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                request.campaign_node_id,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            node_target = None
+            read_failed = True
+        else:
+            read_failed = False
+        if handoff is None or node is None or node_target is None:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE
+                    if read_failed
+                    else DiagnosticTaskCreationRejectionReason.INVALID_COMMAND
+                ),
+                message=(
+                    "Failed Campaign node could not be read."
+                    if read_failed
+                    else "Failed Campaign node target is unavailable."
+                ),
+                current_revision=None,
+                retryable=read_failed,
+            )
+        if (
+            node_target.task_id != request.task_id
+            or node_target.revision != node.revision
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.INVALID_COMMAND,
+                message="Campaign node does not belong to this Diagnostic Task.",
+                current_revision=node_target.revision,
+            )
+        if node_target.revision != request.expected_revision:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.STALE_EXPECTED_REVISION
+                ),
+                message="Expected Campaign node revision is stale.",
+                current_revision=node_target.revision,
+            )
+        if (
+            current.lifecycle is not handoff.campaign_lifecycle
+            or current.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.FAILED,
+            }
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.UNAVAILABLE_INPUT
+                ),
+                message=(
+                    "Failed Campaign node retry is unavailable while the "
+                    "parent Campaign is not running or failed."
+                ),
+                current_revision=node_target.revision,
+            )
+        failed_attempt = (
+            None
+            if not node.attempts
+            else node.attempts[-1]
+        )
+        if (
+            node_target.lifecycle is not DiagnosticTaskLifecycle.FAILED
+            or node.lifecycle is not DiagnosticTaskLifecycle.FAILED
+            or node.active_attempt_id != request.failed_attempt_id
+            or failed_attempt is None
+            or failed_attempt.attempt_id != request.failed_attempt_id
+            or failed_attempt.lifecycle is not DiagnosticTaskLifecycle.FAILED
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.UNAVAILABLE_INPUT,
+                message=(
+                    "Only the exact active failed Campaign node attempt can "
+                    "be retried."
+                ),
+                current_revision=node_target.revision,
+            )
+        now = _aware(self._clock())
+        handle_id = _stable_identity(
+            "diagnostic-task-failed-node-retry-handle",
+            request.command_id,
+        )
+        attempt_number = len(node.attempts) + 1
+        attempt_id = (
+            f"{handoff.campaign_id}:{node.selected_campaign_case_id}:"
+            f"attempt-{attempt_number}"
+        )
+        queued_handle = DiagnosticTaskHandleSnapshot(
+            task_handle_id=handle_id,
+            task_id=request.task_id,
+            phase=DiagnosticTaskHandlePhase.QUEUED,
+            progress=0.0,
+            result_code=None,
+            error_code=None,
+            error_message=None,
+            error_retryable=False,
+            cancelable=False,
+            created_at=now,
+            updated_at=now,
+        )
+        queued_attempt = DiagnosticCampaignAttemptHandoffSnapshot(
+            attempt_id=attempt_id,
+            runs=(),
+            attempt_number=attempt_number,
+            lifecycle=DiagnosticTaskLifecycle.QUEUED,
+            predecessor_attempt_id=failed_attempt.attempt_id,
+            task_handle_id=handle_id,
+        )
+        queued_node = replace(
+            node,
+            attempts=(*node.attempts, queued_attempt),
+            active_attempt_id=attempt_id,
+            revision=node.revision + 1,
+            lifecycle=DiagnosticTaskLifecycle.QUEUED,
+        )
+        queued_handoff = replace(
+            handoff,
+            campaign_revision=handoff.campaign_revision + 1,
+            campaign_lifecycle=DiagnosticTaskLifecycle.RUNNING,
+            campaign_nodes=tuple(
+                queued_node
+                if candidate.campaign_node_id == node.campaign_node_id
+                else candidate
+                for candidate in handoff.campaign_nodes
+            ),
+        )
+        queued_task = replace(
+            current,
+            revision=current.revision + 1,
+            lifecycle=DiagnosticTaskLifecycle.RUNNING,
+            campaign_handoff=queued_handoff,
+            updated_at=now,
+        )
+        record = DiagnosticTaskMutationCommandRecord(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_type="retry_failed_campaign_node",
+            command_content_id=command_content_id,
+            task_id=request.task_id,
+            task_handle_id=handle_id,
+            disposition=(
+                DiagnosticTaskCreationDisposition.ASYNCHRONOUS_ACCEPTANCE
+            ),
+            message="Failed Campaign node retry accepted.",
+            current_revision=queued_node.revision,
+        )
+        command_json = _canonical_json(
+            {
+                "campaign_node_id": request.campaign_node_id,
+                "command_id": request.command_id,
+                "command_type": record.command_type,
+                "expected_revision": request.expected_revision,
+                "failed_attempt_id": request.failed_attempt_id,
+                "idempotency_key": request.idempotency_key,
+                "task_id": request.task_id,
+            }
+        )
+        try:
+            accepted = self._repository.accept_failed_node_retry(
+                record=record,
+                command_json=command_json,
+                task=queued_task,
+                queued_handle=queued_handle,
+                expected_node=node_target,
+                queued_handoff=queued_handoff,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            replay = self._find_existing_mutation(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                command_content_id=command_content_id,
+                task_id=request.task_id,
+                target_kind=DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                target_id=request.campaign_node_id,
+            )
+            if replay is not None:
+                return replace(
+                    replay,
+                    affected_campaign_attempt_id=attempt_id,
+                )
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE,
+                message=(
+                    "Retry attempt, TaskHandle, and command could not be "
+                    "persisted atomically."
+                ),
+                current_revision=node.revision,
+                retryable=True,
+            )
+        if not accepted:
+            replay = self._find_existing_mutation(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                command_content_id=command_content_id,
+                task_id=request.task_id,
+                target_kind=DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                target_id=request.campaign_node_id,
+            )
+            if replay is not None:
+                return replace(
+                    replay,
+                    affected_campaign_attempt_id=attempt_id,
+                )
+            latest = self._repository.get_lifecycle_target(
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                request.campaign_node_id,
+            )
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.STALE_EXPECTED_REVISION
+                ),
+                message="Expected Campaign node revision is stale.",
+                current_revision=(
+                    node.revision if latest is None else latest.revision
+                ),
+            )
+        return replace(
+            self._mutation_result(record, task_handle=queued_handle),
+            affected_campaign_id=handoff.campaign_id,
+            affected_campaign_node_id=node.campaign_node_id,
+            affected_campaign_attempt_id=attempt_id,
+        )
+
+    def complete_failed_node_retry(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+    ) -> None:
+        self._repository.complete_failed_node_retry(
+            task_handle_id,
+            continuation_claim_id,
+            handoff,
+            _aware(self._clock()),
         )
 
     def revise_configuration(
@@ -5623,6 +6678,434 @@ def _handle_from_row(
     )
 
 
+def _attempts_from_storage(
+    payloads: list[Mapping[str, object]],
+    *,
+    final_lifecycle: DiagnosticTaskLifecycle,
+) -> tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...]:
+    attempts: list[DiagnosticCampaignAttemptHandoffSnapshot] = []
+    for index, attempt in enumerate(payloads, start=1):
+        failure_code = (
+            None
+            if attempt.get("failure_code") is None
+            else str(attempt["failure_code"])
+        )
+        failure_message = (
+            None
+            if attempt.get("failure_message") is None
+            else str(attempt["failure_message"])
+        )
+        lifecycle_value = attempt.get("lifecycle")
+        lifecycle = (
+            DiagnosticTaskLifecycle(str(lifecycle_value))
+            if lifecycle_value is not None
+            else (
+                final_lifecycle
+                if index == len(payloads)
+                and final_lifecycle
+                in {
+                    DiagnosticTaskLifecycle.COMPLETED,
+                    DiagnosticTaskLifecycle.FAILED,
+                }
+                else DiagnosticTaskLifecycle.COMPLETED
+            )
+        )
+        if lifecycle is DiagnosticTaskLifecycle.FAILED and failure_code is None:
+            failure_code = "IncompleteCampaign"
+            failure_message = (
+                failure_message or "Campaign result is incomplete"
+            )
+        attempts.append(
+            DiagnosticCampaignAttemptHandoffSnapshot(
+                attempt_id=str(attempt["attempt_id"]),
+                runs=tuple(
+                    DiagnosticCampaignRunHandoffSnapshot(
+                        run_id=str(run["run_id"]),
+                        strategy_id=str(run["strategy_id"]),
+                    )
+                    for run in cast(
+                        list[Mapping[str, object]],
+                        attempt["runs"],
+                    )
+                ),
+                attempt_number=int(
+                    cast(str | int, attempt.get("attempt_number", index))
+                ),
+                lifecycle=lifecycle,
+                predecessor_attempt_id=(
+                    attempts[-1].attempt_id
+                    if attempt.get("predecessor_attempt_id") is None
+                    and attempts
+                    else (
+                        None
+                        if attempt.get("predecessor_attempt_id") is None
+                        else str(attempt["predecessor_attempt_id"])
+                    )
+                ),
+                task_handle_id=(
+                    None
+                    if attempt.get("task_handle_id") is None
+                    else str(attempt["task_handle_id"])
+                ),
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+        )
+    return tuple(attempts)
+
+
+def _retry_attempt_identity_from_task(
+    task: DiagnosticTaskSnapshot | None,
+    campaign_node_id: str,
+    handle: DiagnosticTaskHandleSnapshot | None,
+) -> str | None:
+    if task is None or task.campaign_handoff is None or handle is None:
+        return None
+    node = next(
+        (
+            candidate
+            for candidate in task.campaign_handoff.campaign_nodes
+            if candidate.campaign_node_id == campaign_node_id
+        ),
+        None,
+    )
+    if node is None:
+        return None
+    attempt = next(
+        (
+            candidate
+            for candidate in node.attempts
+            if candidate.task_handle_id == handle.task_handle_id
+        ),
+        None,
+    )
+    return None if attempt is None else attempt.attempt_id
+
+
+def _retry_terminal_handle(
+    handle: DiagnosticTaskHandleSnapshot,
+    attempt: DiagnosticCampaignAttemptHandoffSnapshot,
+    updated_at: datetime,
+) -> DiagnosticTaskHandleSnapshot:
+    if attempt.lifecycle is DiagnosticTaskLifecycle.COMPLETED:
+        return replace(
+            handle,
+            phase=DiagnosticTaskHandlePhase.COMPLETED,
+            progress=1.0,
+            result_code="failed_campaign_node_retry_completed",
+            error_code=None,
+            error_message=None,
+            error_retryable=False,
+            cancelable=False,
+            updated_at=updated_at,
+        )
+    if attempt.lifecycle is DiagnosticTaskLifecycle.FAILED:
+        return replace(
+            handle,
+            phase=DiagnosticTaskHandlePhase.FAILED,
+            progress=1.0,
+            result_code=None,
+            error_code=attempt.failure_code,
+            error_message=attempt.failure_message,
+            error_retryable=True,
+            cancelable=False,
+            updated_at=updated_at,
+        )
+    raise ValueError("Failed-node retry must complete with a terminal attempt")
+
+
+def _attempt_history_prefix_matches(
+    current: tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...],
+    incoming: tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...],
+) -> bool:
+    return len(current) == len(incoming) and all(
+        (
+            incoming_attempt.task_handle_id
+            in {None, current_attempt.task_handle_id}
+            and replace(current_attempt, task_handle_id=None)
+            == replace(incoming_attempt, task_handle_id=None)
+        )
+        for current_attempt, incoming_attempt in zip(
+            current,
+            incoming,
+            strict=True,
+        )
+    )
+
+
+def _extend_attempt_history_preserving_bindings(
+    current: tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...],
+    incoming: tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...],
+) -> tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...]:
+    if len(incoming) < len(current) or not _attempt_history_prefix_matches(
+        current,
+        incoming[: len(current)],
+    ):
+        raise ValueError(
+            "Formal Diagnostic Campaign attempt history cannot regress"
+        )
+    return (*current, *incoming[len(current) :])
+
+
+def _complete_retry_handoff(
+    current: DiagnosticTaskCampaignHandoffSnapshot,
+    incoming: DiagnosticTaskCampaignHandoffSnapshot,
+    task_handle_id: str,
+) -> tuple[
+    DiagnosticTaskCampaignHandoffSnapshot,
+    DiagnosticCampaignAttemptHandoffSnapshot,
+]:
+    if current.campaign_id != incoming.campaign_id:
+        raise ValueError("Formal Diagnostic Campaign identity cannot change")
+    if tuple(node.campaign_node_id for node in current.campaign_nodes) != tuple(
+        node.campaign_node_id for node in incoming.campaign_nodes
+    ):
+        raise ValueError("Formal Diagnostic Campaign nodes cannot change")
+    merged_nodes: list[DiagnosticCampaignNodeHandoffSnapshot] = []
+    completed_attempt: DiagnosticCampaignAttemptHandoffSnapshot | None = None
+    for current_node, incoming_node in zip(
+        current.campaign_nodes,
+        incoming.campaign_nodes,
+        strict=True,
+    ):
+        if (
+            current_node.campaign_case_id != incoming_node.campaign_case_id
+            or current_node.selected_campaign_case_id
+            != incoming_node.selected_campaign_case_id
+            or current_node.market_scenario_id
+            != incoming_node.market_scenario_id
+        ):
+            raise ValueError(
+                "Formal Diagnostic Campaign node identity cannot change"
+            )
+        placeholder = next(
+            (
+                attempt
+                for attempt in current_node.attempts
+                if attempt.task_handle_id == task_handle_id
+            ),
+            None,
+        )
+        if placeholder is None:
+            if (
+                len(incoming_node.attempts) != len(current_node.attempts)
+                or not _attempt_history_prefix_matches(
+                    current_node.attempts,
+                    incoming_node.attempts,
+                )
+            ):
+                raise ValueError(
+                    "Unrelated Campaign attempt history cannot change during retry"
+                )
+            merged_nodes.append(current_node)
+            continue
+        if (
+            placeholder is not current_node.attempts[-1]
+            or placeholder.lifecycle is not DiagnosticTaskLifecycle.QUEUED
+            or len(incoming_node.attempts) != len(current_node.attempts)
+            or not _attempt_history_prefix_matches(
+                current_node.attempts[:-1],
+                incoming_node.attempts[:-1],
+            )
+        ):
+            raise ValueError(
+                "Failed-node retry attempt history cannot regress or fork"
+            )
+        terminal = incoming_node.attempts[-1]
+        if (
+            terminal.attempt_id != placeholder.attempt_id
+            or terminal.attempt_number != placeholder.attempt_number
+            or terminal.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.COMPLETED,
+                DiagnosticTaskLifecycle.FAILED,
+            }
+        ):
+            raise ValueError(
+                "Failed-node retry must complete the accepted attempt identity"
+            )
+        completed_attempt = replace(
+            terminal,
+            predecessor_attempt_id=placeholder.predecessor_attempt_id,
+            task_handle_id=task_handle_id,
+        )
+        merged_nodes.append(
+            replace(
+                current_node,
+                attempts=(*current_node.attempts[:-1], completed_attempt),
+                active_attempt_id=completed_attempt.attempt_id,
+                revision=current_node.revision + 1,
+                lifecycle=completed_attempt.lifecycle,
+            )
+        )
+    if completed_attempt is None:
+        raise ValueError(
+            "Failed-node retry TaskHandle is not bound to an accepted attempt"
+        )
+    active_lifecycles = {
+        DiagnosticTaskLifecycle.QUEUED,
+        DiagnosticTaskLifecycle.RUNNING,
+        DiagnosticTaskLifecycle.PAUSED,
+        DiagnosticTaskLifecycle.RESUMING,
+        DiagnosticTaskLifecycle.CANCELING,
+    }
+    node_lifecycles = tuple(node.lifecycle for node in merged_nodes)
+    if any(lifecycle in active_lifecycles for lifecycle in node_lifecycles):
+        campaign_lifecycle = DiagnosticTaskLifecycle.RUNNING
+    elif DiagnosticTaskLifecycle.CANCELED in node_lifecycles:
+        campaign_lifecycle = DiagnosticTaskLifecycle.CANCELED
+    elif DiagnosticTaskLifecycle.FAILED in node_lifecycles:
+        campaign_lifecycle = DiagnosticTaskLifecycle.FAILED
+    else:
+        campaign_lifecycle = DiagnosticTaskLifecycle.COMPLETED
+    return (
+        replace(
+            current,
+            campaign_revision=current.campaign_revision + 1,
+            campaign_lifecycle=campaign_lifecycle,
+            campaign_nodes=tuple(merged_nodes),
+        ),
+        completed_attempt,
+    )
+
+
+def _reconcile_retry_completion(
+    current: DiagnosticTaskCampaignHandoffSnapshot,
+    incoming: DiagnosticTaskCampaignHandoffSnapshot,
+    task_handle_id: str,
+    *,
+    task_revision: int,
+    task_lifecycle: DiagnosticTaskLifecycle,
+    targets: tuple[DiagnosticLifecycleTargetSnapshot, ...],
+) -> _DiagnosticRetryCompletionMerge:
+    merged, attempt = _complete_retry_handoff(
+        current,
+        incoming,
+        task_handle_id,
+    )
+    targets_by_key = {
+        (target.target_kind, target.target_id): target
+        for target in targets
+    }
+    task_target = next(
+        (
+            target
+            for target in targets
+            if target.target_kind
+            is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+        ),
+        None,
+    )
+    campaign_target = targets_by_key.get(
+        (
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            current.campaign_id,
+        )
+    )
+    if task_target is None or campaign_target is None:
+        raise ValueError(
+            "Failed-node retry parent lifecycle is unavailable"
+        )
+    if (
+        task_target.target_id != task_target.task_id
+        or task_target.task_id != campaign_target.task_id
+        or task_target.revision != task_revision
+        or task_target.lifecycle is not task_lifecycle
+        or campaign_target.lifecycle is not task_target.lifecycle
+    ):
+        raise ValueError(
+            "Failed-node retry parent lifecycle is inconsistent"
+        )
+    parent_lifecycle = (
+        merged.campaign_lifecycle
+        if task_target.lifecycle is DiagnosticTaskLifecycle.RUNNING
+        else task_target.lifecycle
+    )
+    updated_task_target = replace(
+        task_target,
+        revision=task_target.revision + 1,
+        lifecycle=parent_lifecycle,
+    )
+    updated_campaign_target = replace(
+        campaign_target,
+        revision=campaign_target.revision + 1,
+        lifecycle=parent_lifecycle,
+    )
+    target_updates: list[
+        tuple[
+            DiagnosticLifecycleTargetSnapshot,
+            DiagnosticLifecycleTargetSnapshot,
+        ]
+    ] = [
+        (task_target, updated_task_target),
+        (campaign_target, updated_campaign_target),
+    ]
+    merged_nodes: list[DiagnosticCampaignNodeHandoffSnapshot] = []
+    retry_target_found = False
+    for node in merged.campaign_nodes:
+        target = targets_by_key.get(
+            (
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                node.campaign_node_id,
+            )
+        )
+        if target is None or target.task_id != task_target.task_id:
+            raise ValueError(
+                "Failed-node retry lifecycle node is unavailable"
+            )
+        owns_retry_attempt = any(
+            candidate.task_handle_id == task_handle_id
+            for candidate in node.attempts
+        )
+        if owns_retry_attempt:
+            if retry_target_found:
+                raise ValueError(
+                    "Failed-node retry TaskHandle is bound to multiple nodes"
+                )
+            retry_target_found = True
+            updated_target = replace(
+                target,
+                revision=target.revision + 1,
+                lifecycle=(
+                    attempt.lifecycle
+                    if target.lifecycle is DiagnosticTaskLifecycle.QUEUED
+                    else target.lifecycle
+                ),
+            )
+            target_updates.append((target, updated_target))
+            merged_nodes.append(
+                replace(
+                    node,
+                    revision=updated_target.revision,
+                    lifecycle=updated_target.lifecycle,
+                )
+            )
+            continue
+        merged_nodes.append(
+            replace(
+                node,
+                revision=target.revision,
+                lifecycle=target.lifecycle,
+            )
+        )
+    if not retry_target_found:
+        raise ValueError(
+            "Failed-node retry TaskHandle is not bound to a lifecycle node"
+        )
+    return _DiagnosticRetryCompletionMerge(
+        handoff=replace(
+            merged,
+            campaign_revision=updated_campaign_target.revision,
+            campaign_lifecycle=parent_lifecycle,
+            campaign_nodes=tuple(merged_nodes),
+        ),
+        attempt=attempt,
+        task_revision=updated_task_target.revision,
+        task_lifecycle=parent_lifecycle,
+        target_updates=tuple(target_updates),
+    )
+
+
 def _merge_diagnostic_campaign_progress(
     current: DiagnosticTaskCampaignHandoffSnapshot,
     incoming: DiagnosticTaskCampaignHandoffSnapshot,
@@ -5666,13 +7149,10 @@ def _merge_diagnostic_campaign_progress(
             raise ValueError(
                 "Formal Diagnostic Campaign node identity cannot change"
             )
-        if (
-            incoming_node.attempts[: len(current_node.attempts)]
-            != current_node.attempts
-        ):
-            raise ValueError(
-                "Formal Diagnostic Campaign attempt history cannot regress"
-            )
+        merged_attempts = _extend_attempt_history_preserving_bindings(
+            current_node.attempts,
+            incoming_node.attempts,
+        )
         target = targets_by_key.get(
             (
                 DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
@@ -5684,7 +7164,7 @@ def _merge_diagnostic_campaign_progress(
                 "Formal Diagnostic Campaign lifecycle node is unavailable"
             )
         attempts_changed = (
-            incoming_node.attempts != current_node.attempts
+            merged_attempts != current_node.attempts
             or incoming_node.active_attempt_id
             != current_node.active_attempt_id
         )
@@ -5721,6 +7201,7 @@ def _merge_diagnostic_campaign_progress(
         merged_nodes.append(
             replace(
                 incoming_node,
+                attempts=merged_attempts,
                 revision=updated_target.revision,
                 lifecycle=updated_target.lifecycle,
             )
@@ -6056,6 +7537,7 @@ __all__ = [
     "DiagnosticTaskValidationState",
     "InMemoryDiagnosticTaskRepository",
     "ReviseDiagnosticTaskConfigurationRequest",
+    "RetryFailedCampaignNodeRequest",
     "SqlDiagnosticTaskRepository",
     "StartFormalDiagnosticCampaignRequest",
     "ValidateDiagnosticTaskConfigurationRequest",

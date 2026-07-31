@@ -16,7 +16,7 @@ def test_headless_application_starts_the_diagnostics_workspace() -> None:
         "persistence_status": "not_initialized",
         "persistence_revision": None,
         "supported_persistence_revision": (
-            "0017_diagnostic_lifecycle_targets"
+            "0018_diagnostic_campaign_attempt_history"
         ),
     }
     assert application.status() == state

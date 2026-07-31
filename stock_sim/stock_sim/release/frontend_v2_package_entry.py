@@ -123,6 +123,7 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
     r"(?:Pause|Resume|Cancel) Formal Diagnostic Campaign lifecycle|"
     r"(?:Pause|Resume|Cancel) Campaign node lifecycle|"
+    r"Retry failed Campaign node attempt|"
     r"Pause diagnostic task|"
     r"Resume diagnostic task|"
     r"Cancel diagnostic task|"
@@ -1026,10 +1027,15 @@ def _run_smoke_journey(
         (
             str(diagnostic_tasks_adapter.property("strategyCatalogText")),
             str(diagnostic_tasks_adapter.property("recipeCatalogText")),
-            str(diagnostic_tasks_adapter.property("marketScenarioCatalogText")),
-            str(diagnostic_tasks_adapter.property("blockingReasonsText")),
+                str(diagnostic_tasks_adapter.property("marketScenarioCatalogText")),
+                str(diagnostic_tasks_adapter.property("blockingReasonsText")),
+                str(
+                    diagnostic_tasks_adapter.property(
+                        "reproductionManifestStatus"
+                    )
+                ),
+            )
         )
-    )
     for required_text in (
         "required fixed input",
         "compatibility",

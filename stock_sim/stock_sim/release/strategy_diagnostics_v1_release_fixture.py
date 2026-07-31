@@ -46,6 +46,7 @@ from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
 from strategy_diagnostics.market_paths import ParquetMarketPathArtifactStore
+from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
 from strategy_diagnostics.ptrade_host import (
     InProcessPTradeStrategyHost,
     PTradeStrategyHost,
@@ -713,8 +714,7 @@ def _open_file_backed_formal_v1_release_fixture(
         reopened.start()
         migration = reopened.initialize_persistence(reopened_engine)
         _require(
-            migration.current_revision
-            == "0017_diagnostic_lifecycle_targets",
+            migration.current_revision == DIAGNOSTIC_SCHEMA_REVISION,
             "The reopened V1 persistence revision is incompatible.",
         )
         reopened_campaign = reopened.diagnostic_campaign_status(

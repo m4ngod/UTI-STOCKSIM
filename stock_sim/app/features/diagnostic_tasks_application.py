@@ -578,6 +578,7 @@ class DiagnosticTasksApplicationCommandResult:
     affected_campaign_node_id: CampaignNodeId | None
     retryable: bool
     correlation_id: str | None
+    affected_campaign_attempt_id: CampaignAttemptId | None = None
 
     @property
     def accepted(self) -> bool:
@@ -689,6 +690,13 @@ class DiagnosticTasksApplicationCampaignRunHandoff:
 class DiagnosticTasksApplicationCampaignAttemptHandoff:
     attempt_id: CampaignAttemptId
     runs: tuple[DiagnosticTasksApplicationCampaignRunHandoff, ...]
+    attempt_number: int = 1
+    lifecycle: DiagnosticTasksApplicationTaskLifecycle = (
+        DiagnosticTasksApplicationTaskLifecycle.COMPLETED
+    )
+    predecessor_attempt_id: CampaignAttemptId | None = None
+    task_handle_id: TaskHandleId | None = None
+    failure: StructuredFeatureError | None = None
 
     @property
     def run_ids(self) -> tuple[StrategyRunId, ...]:
@@ -1197,7 +1205,24 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: RetryFailedCampaignNode,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            RetryFailedCampaignNodeRequest,
+        )
+
+        try:
+            result = self._application.retry_failed_diagnostic_campaign_node(
+                RetryFailedCampaignNodeRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    task_id=command.task_id.value,
+                    campaign_node_id=command.campaign_node_id.value,
+                    failed_attempt_id=command.failed_attempt_id.value,
+                    expected_revision=command.expected_revision,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     @staticmethod
     def _not_yet_available(
@@ -1808,6 +1833,36 @@ def _map_diagnostic_task(
                                     )
                                     for run in attempt.runs
                                 ),
+                                attempt_number=attempt.attempt_number,
+                                lifecycle=(
+                                    DiagnosticTasksApplicationTaskLifecycle(
+                                        attempt.lifecycle.value
+                                    )
+                                ),
+                                predecessor_attempt_id=(
+                                    None
+                                    if attempt.predecessor_attempt_id is None
+                                    else CampaignAttemptId(
+                                        attempt.predecessor_attempt_id
+                                    )
+                                ),
+                                task_handle_id=(
+                                    None
+                                    if attempt.task_handle_id is None
+                                    else TaskHandleId(attempt.task_handle_id)
+                                ),
+                                failure=(
+                                    None
+                                    if attempt.failure_code is None
+                                    else StructuredFeatureError(
+                                        code=attempt.failure_code,
+                                        message=(
+                                            attempt.failure_message
+                                            or attempt.failure_code
+                                        ),
+                                        retryable=True,
+                                    )
+                                ),
                             )
                             for attempt in node.attempts
                         ),
@@ -1894,6 +1949,11 @@ def _map_creation_result(
         ),
         retryable=result.retryable,
         correlation_id=None,
+        affected_campaign_attempt_id=(
+            None
+            if result.affected_campaign_attempt_id is None
+            else CampaignAttemptId(result.affected_campaign_attempt_id)
+        ),
     )
 
 

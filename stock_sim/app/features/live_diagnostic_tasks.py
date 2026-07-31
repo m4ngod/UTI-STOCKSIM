@@ -384,6 +384,14 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
             self._ensure_open()
         return self._application.cancel_diagnostic_target(command)
 
+    def retry_failed_campaign_node(
+        self,
+        command: RetryFailedCampaignNode,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+        return self._application.retry_failed_campaign_node(command)
+
     def subscribe(
         self,
         context: DiagnosticTasksContext,
@@ -440,11 +448,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
         ) = None,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
+        fail_first_campaign_node: bool = False,
     ) -> None:
         if inventory is not None and scripted_results is not None:
             raise ValueError("inventory and scripted_results are mutually exclusive")
         self._clock = clock or (lambda: datetime(2030, 1, 1, tzinfo=timezone.utc))
         self._freshness_threshold = freshness_threshold
+        self._fail_first_campaign_node = fail_first_campaign_node
         initial_inventory = inventory or _default_inventory()
         self._scripted_results = list(
             scripted_results
@@ -1175,6 +1185,24 @@ class DeterministicFakeDiagnosticTasksAdapter(
                                     for strategy
                                     in task.configuration.strategy_selections
                                 ),
+                                attempt_number=1,
+                                lifecycle=(
+                                    DiagnosticTaskLifecycle.FAILED
+                                    if self._fail_first_campaign_node
+                                    else DiagnosticTaskLifecycle.COMPLETED
+                                ),
+                                failure=(
+                                    StructuredFeatureError(
+                                        code="DeterministicCampaignFailure",
+                                        message=(
+                                            "Deterministic first Campaign "
+                                            "attempt failed."
+                                        ),
+                                        retryable=True,
+                                    )
+                                    if self._fail_first_campaign_node
+                                    else None
+                                ),
                             ),
                         )
                         if selection == first_case
@@ -1186,7 +1214,11 @@ class DeterministicFakeDiagnosticTasksAdapter(
                         else None
                     ),
                     lifecycle=(
-                        DiagnosticTaskLifecycle.COMPLETED
+                        (
+                            DiagnosticTaskLifecycle.FAILED
+                            if self._fail_first_campaign_node
+                            else DiagnosticTaskLifecycle.COMPLETED
+                        )
                         if selection == first_case
                         else DiagnosticTaskLifecycle.QUEUED
                     ),
@@ -1246,6 +1278,176 @@ class DeterministicFakeDiagnosticTasksAdapter(
         command: CancelDiagnosticTarget,
     ) -> DiagnosticTasksCommandResult:
         return self._change_fake_lifecycle(command, operation="cancel")
+
+    def retry_failed_campaign_node(
+        self,
+        command: RetryFailedCampaignNode,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+            content_identity = _fake_mutation_content_identity(command)
+            existing = self._fake_existing_result(command, content_identity)
+            if existing is not None:
+                return existing
+            task = self._tasks.get(command.task_id)
+            if task is None:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            node = next(
+                (
+                    candidate
+                    for candidate in task.handoff.campaign_nodes
+                    if candidate.campaign_node_id == command.campaign_node_id
+                ),
+                None,
+            )
+            if node is None:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                    affected_task_id=task.task_id,
+                )
+            if node.revision != command.expected_revision:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_EXPECTED_REVISION,
+                    current_revision=node.revision,
+                    affected_task_id=task.task_id,
+                )
+            if (
+                task.lifecycle is not task.handoff.campaign_lifecycle
+                or task.lifecycle
+                not in {
+                    DiagnosticTaskLifecycle.RUNNING,
+                    DiagnosticTaskLifecycle.FAILED,
+                }
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=node.revision,
+                    affected_task_id=task.task_id,
+                )
+            failed_attempt = (
+                None if not node.attempts else node.attempts[-1]
+            )
+            if (
+                node.lifecycle is not DiagnosticTaskLifecycle.FAILED
+                or node.active_attempt_id != command.failed_attempt_id
+                or failed_attempt is None
+                or failed_attempt.attempt_id != command.failed_attempt_id
+                or failed_attempt.lifecycle is not DiagnosticTaskLifecycle.FAILED
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=node.revision,
+                    affected_task_id=task.task_id,
+                )
+            handle_id = TaskHandleId(
+                _stable_fake_identity(
+                    "diagnostic-task-failed-node-retry-handle",
+                    command.command_id.value,
+                )
+            )
+            queued = TaskHandle(
+                identity=handle_id,
+                target_id=task.task_id,
+                phase=TaskPhase.QUEUED,
+                progress=0.0,
+                result=None,
+                error=None,
+                cancelable=False,
+            )
+            campaign_id = task.handoff.campaign_id
+            if campaign_id is None:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                    affected_task_id=task.task_id,
+                )
+            attempt_number = len(node.attempts) + 1
+            attempt_id = CampaignAttemptId(
+                f"{campaign_id.value}:"
+                f"{node.selected_campaign_case_id.value}:"
+                f"attempt-{attempt_number}"
+            )
+            attempt = DiagnosticCampaignAttemptHandoff(
+                attempt_id=attempt_id,
+                runs=tuple(
+                    DiagnosticCampaignRunHandoff(
+                        run_id=StrategyRunId(
+                            _stable_fake_identity(
+                                "strategy-run",
+                                (
+                                    f"{attempt_id.value}:"
+                                    f"{strategy.strategy_id.value}"
+                                ),
+                            )
+                        ),
+                        strategy_id=strategy.strategy_id,
+                    )
+                    for strategy in task.configuration.strategy_selections
+                ),
+                attempt_number=attempt_number,
+                lifecycle=DiagnosticTaskLifecycle.COMPLETED,
+                predecessor_attempt_id=failed_attempt.attempt_id,
+                task_handle_id=handle_id,
+            )
+            completed_handle = replace(
+                queued,
+                phase=TaskPhase.COMPLETED,
+                progress=1.0,
+                result="failed_campaign_node_retry_completed",
+            )
+            completed_node = replace(
+                node,
+                attempts=(*node.attempts, attempt),
+                active_attempt_id=attempt_id,
+                revision=node.revision + 2,
+                lifecycle=DiagnosticTaskLifecycle.COMPLETED,
+            )
+            assert task.handoff.campaign_revision is not None
+            updated = replace(
+                task,
+                revision=task.revision + 2,
+                lifecycle=DiagnosticTaskLifecycle.RUNNING,
+                task_handles=(*task.task_handles, completed_handle),
+                handoff=replace(
+                    task.handoff,
+                    campaign_revision=task.handoff.campaign_revision + 2,
+                    campaign_lifecycle=DiagnosticTaskLifecycle.RUNNING,
+                    campaign_nodes=tuple(
+                        completed_node
+                        if candidate.campaign_node_id
+                        == node.campaign_node_id
+                        else candidate
+                        for candidate in task.handoff.campaign_nodes
+                    ),
+                ),
+            )
+            self._tasks[task.task_id] = updated
+            result = DiagnosticTasksCommandResult(
+                disposition=(
+                    DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+                ),
+                command_id=command.command_id,
+                idempotency_key=command.idempotency_key,
+                message="Failed Campaign node retry accepted.",
+                rejection_reason=None,
+                task_handle=queued,
+                current_revision=node.revision + 1,
+                affected_task_id=task.task_id,
+                affected_campaign_id=task.handoff.campaign_id,
+                affected_campaign_node_id=node.campaign_node_id,
+                retryable=False,
+                correlation_id=None,
+                affected_campaign_attempt_id=attempt_id,
+            )
+            self._store_fake_command(command, content_identity, result)
+            return result
 
     def _change_fake_lifecycle(
         self,
@@ -1605,13 +1807,6 @@ _CREATE_ONLY_CAPABILITIES = replace(
     _UNAVAILABLE_CAPABILITIES,
     can_create=True,
 )
-_COMMANDS_NOT_YET_AVAILABLE = DiagnosticTasksBlockingReason(
-    code=DiagnosticTasksBlockingCode.COMMAND_NOT_YET_AVAILABLE,
-    message="Failed-node retry is not_yet_available until Issue #61.",
-    dependent_operations=("retry_failed_campaign_node",),
-)
-
-
 def _loading_view_state(
     *,
     context: DiagnosticTasksContext,
@@ -1635,7 +1830,7 @@ def _loading_view_state(
         last_reliable_inventory=None,
         task=None,
         capabilities=_UNAVAILABLE_CAPABILITIES,
-        blocking_reasons=(_COMMANDS_NOT_YET_AVAILABLE,),
+        blocking_reasons=(),
         reproduction_manifest_availability=(
             ReproductionManifestAvailability.NOT_YET_AVAILABLE
         ),
@@ -1769,7 +1964,6 @@ def _failed_or_degraded_state(
                     message=error.message,
                     dependent_operations=("read_inventory",),
                 ),
-                _COMMANDS_NOT_YET_AVAILABLE,
             ),
             reproduction_manifest_availability=(
                 ReproductionManifestAvailability.NOT_YET_AVAILABLE
@@ -1929,7 +2123,6 @@ def _inventory_blocking_reasons(
                 dependent_operations=("create_diagnostic_task",),
             )
         )
-    reasons.append(_COMMANDS_NOT_YET_AVAILABLE)
     return tuple(reasons)
 
 
@@ -2010,6 +2203,24 @@ def _capabilities(
                     DiagnosticTaskLifecycle.PAUSED,
                     DiagnosticTaskLifecycle.RESUMING,
                 }
+            ),
+            can_retry_failed_node=any(
+                (
+                    task.lifecycle is task.handoff.campaign_lifecycle
+                    and task.lifecycle
+                    in {
+                        DiagnosticTaskLifecycle.RUNNING,
+                        DiagnosticTaskLifecycle.FAILED,
+                    }
+                    and node.lifecycle is DiagnosticTaskLifecycle.FAILED
+                    and node.active_attempt_id is not None
+                    and bool(node.attempts)
+                    and node.attempts[-1].attempt_id
+                    == node.active_attempt_id
+                    and node.attempts[-1].lifecycle
+                    is DiagnosticTaskLifecycle.FAILED
+                )
+                for node in task.handoff.campaign_nodes
             ),
         )
     return _UNAVAILABLE_CAPABILITIES
@@ -2142,6 +2353,15 @@ def _task_presentation(
                                     )
                                     for run in attempt.runs
                                 ),
+                                attempt_number=attempt.attempt_number,
+                                lifecycle=DiagnosticTaskLifecycle(
+                                    attempt.lifecycle.value
+                                ),
+                                predecessor_attempt_id=(
+                                    attempt.predecessor_attempt_id
+                                ),
+                                task_handle_id=attempt.task_handle_id,
+                                failure=attempt.failure,
                             )
                             for attempt in node.attempts
                         ),

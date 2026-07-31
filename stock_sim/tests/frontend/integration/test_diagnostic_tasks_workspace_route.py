@@ -16,6 +16,8 @@ from app.event_bridge import EventBridge
 from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
     DiagnosticTaskLifecycle,
     DiagnosticTasksContext,
     LiveDiagnosticTasksAdapter,
@@ -23,11 +25,13 @@ from app.features import (
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     RunMonitoringContext,
+    StartFormalDiagnosticCampaign,
 )
 from app.ui.main_window import MainWindow
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
+    _approved_formal_task,
     _formal_live_stack,
 )
 from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
@@ -104,6 +108,74 @@ def _window(
         frontend_v2_enabled=True,
     )
     return window, run_monitoring
+
+
+def test_failed_node_retry_is_keyboard_accessible_and_exposes_attempt_lineage(
+    tmp_path,
+) -> None:
+    app = _app()
+    *_, live_feature = _formal_live_stack(tmp_path)
+    workspace = DiagnosticTasksContext.workspace()
+    live_feature.snapshot(workspace)
+    inventory = live_feature.snapshot(workspace).last_reliable_inventory
+    assert inventory is not None
+    live_feature.close()
+    diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
+        inventory=inventory,
+        fail_first_campaign_node=True,
+    )
+    approved = _approved_formal_task(diagnostic_tasks)
+    diagnostic_tasks.start_formal_diagnostic_campaign(
+        StartFormalDiagnosticCampaign(
+            command_id=DiagnosticCommandId("qml-start-command-61"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "qml-start-idempotency-61"
+            ),
+            task_id=approved.task_id,
+            expected_revision=approved.revision,
+            approved_revision=approved.revision,
+        )
+    )
+    window = MainWindow(
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=workspace,
+        run_monitoring_feature=DeterministicFakeRunMonitoringAdapter(),
+        run_monitoring_context=RunMonitoringContext.no_selection(),
+        frontend_v2_enabled=True,
+    )
+    window.show()
+    app.processEvents()
+    app.processEvents()
+    root = window.centralWidget().rootObject()
+    assert root.setProperty("activeRoute", "diagnostic_tasks")
+    app.processEvents()
+    retry_button = root.findChild(QObject, "retryFailedCampaignNodeButton")
+    attempt_history = root.findChild(
+        QObject,
+        "failedCampaignNodeAttemptHistory",
+    )
+    assert retry_button is not None
+    assert attempt_history is not None
+    assert retry_button.property("enabled") is True
+    assert retry_button.property("activeFocusOnTab") is True
+    before = attempt_history.property("text")
+    assert "attempt 1" in before
+    assert "failed" in before
+    assert "failure" in before
+
+    assert QMetaObject.invokeMethod(retry_button, "clicked")
+    app.processEvents()
+    app.processEvents()
+
+    after = attempt_history.property("text")
+    assert "attempt 1" in after
+    assert "attempt 2" in after
+    assert "completed" in after
+    assert "predecessor" in after
+    assert "TaskHandle" in after
+    assert retry_button.property("enabled") is False
+    window.close()
+    diagnostic_tasks.close()
 
 
 def test_real_diagnostic_tasks_route_renders_loading_before_first_delivery() -> None:
@@ -199,7 +271,7 @@ def test_diagnostic_tasks_is_the_active_typed_qml_workspace_route() -> None:
     assert "comparison" in market_text
     assert "execution policy" in market_text
     assert page.property("stateTitle") == "Authoritative inputs are ready"
-    assert "not_yet_available" in page.property("blockingReasonsText")
+    assert page.property("blockingReasonsText") == "No blocking reason."
     assert page.property("reproductionManifestStatus") == "not_yet_available"
     for forbidden in (
         "Buy",

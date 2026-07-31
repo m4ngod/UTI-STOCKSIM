@@ -46,6 +46,7 @@ from .diagnostic_tasks import (
     DiagnosticTaskValidationFinding,
     DiagnosticTaskValidationReferenceKind,
     DiagnosticTaskValidationSeverity,
+    RetryFailedCampaignNodeRequest,
     ReviseDiagnosticTaskConfigurationRequest,
     SqlDiagnosticTaskRepository,
     StartFormalDiagnosticCampaignRequest,
@@ -311,8 +312,10 @@ class DiagnosticsApplication:
             persistence_status="ready",
             persistence_revision=report.current_revision,
         )
-        for request in self._diagnostic_tasks.pending_start_requests():
-            self.start_formal_diagnostic_task_campaign(request)
+        for start_request in self._diagnostic_tasks.pending_start_requests():
+            self.start_formal_diagnostic_task_campaign(start_request)
+        for retry_request in self._diagnostic_tasks.pending_retry_requests():
+            self.retry_failed_diagnostic_campaign_node(retry_request)
         for lifecycle_request in (
             self._diagnostic_tasks.pending_lifecycle_requests()
         ):
@@ -575,6 +578,133 @@ class DiagnosticsApplication:
             raise ValueError("Cancel requires an explicit cancel operation")
         return self._change_diagnostic_lifecycle(request)
 
+    def retry_failed_diagnostic_campaign_node(
+        self,
+        request: RetryFailedCampaignNodeRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Retry one exact failed node as a durable new Campaign attempt."""
+
+        self.status()
+        accepted = self._diagnostic_tasks.retry_failed_campaign_node(request)
+        if accepted.disposition.value not in {
+            "asynchronous_acceptance",
+            "idempotent_replay",
+        }:
+            return accepted
+        handle = accepted.task_handle
+        if handle is None:
+            return accepted
+        if handle.phase.value != "queued":
+            return accepted
+        task = self._diagnostic_tasks.get(request.task_id)
+        if task is None or task.campaign_handoff is None:
+            return replace(
+                accepted,
+                message=(
+                    "Failed-node retry accepted; authoritative task reread "
+                    "remains queued."
+                ),
+            )
+        node = next(
+            (
+                candidate
+                for candidate in task.campaign_handoff.campaign_nodes
+                if candidate.campaign_node_id == request.campaign_node_id
+            ),
+            None,
+        )
+        attempt = (
+            None
+            if node is None
+            else next(
+                (
+                    candidate
+                    for candidate in node.attempts
+                    if candidate.task_handle_id == handle.task_handle_id
+                ),
+                None,
+            )
+        )
+        if node is None or attempt is None:
+            return replace(
+                accepted,
+                message=(
+                    "Failed-node retry accepted; persistent attempt binding "
+                    "remains queued."
+                ),
+            )
+        continuation_claim_id = uuid4().hex
+        try:
+            claimed = self._diagnostic_tasks.claim_start_continuation(
+                handle.task_handle_id,
+                continuation_claim_id,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            claimed = False
+        if not claimed:
+            return replace(
+                accepted,
+                message=(
+                    "Failed-node retry accepted; another authoritative "
+                    "continuation owns this TaskHandle."
+                ),
+            )
+        try:
+            campaign = self._diagnostic_campaigns.get(
+                task.campaign_handoff.campaign_id
+            )
+            case = next(
+                (
+                    candidate
+                    for candidate in campaign.cases
+                    if candidate.case_id == node.campaign_case_id
+                ),
+                None,
+            )
+            if case is None:
+                raise ValueError("Formal Diagnostic Campaign Case is unavailable")
+            if len(case.attempts) == attempt.attempt_number - 1:
+                campaign = self._diagnostic_campaigns.retry_case(
+                    campaign.campaign_id,
+                    case.case_id,
+                )
+            elif len(case.attempts) == attempt.attempt_number:
+                if (
+                    case.attempts[-1].attempt_number
+                    != attempt.attempt_number
+                ):
+                    raise ValueError(
+                        "Formal Diagnostic Campaign attempt history is not "
+                        "contiguous"
+                    )
+            else:
+                raise ValueError(
+                    "Formal Diagnostic Campaign attempt history conflicts "
+                    "with accepted retry"
+                )
+            handoff = self._diagnostic_task_campaign_handoff(task, campaign)
+            self._diagnostic_tasks.complete_failed_node_retry(
+                handle.task_handle_id,
+                continuation_claim_id,
+                handoff,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            try:
+                self._diagnostic_tasks.release_start_continuation(
+                    handle.task_handle_id,
+                    continuation_claim_id,
+                )
+            except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+                pass
+            return replace(
+                accepted,
+                message=(
+                    "Failed-node retry accepted; authoritative continuation "
+                    "remains queued."
+                ),
+            )
+        return accepted
+
     def _change_diagnostic_lifecycle(
         self,
         request: ChangeDiagnosticLifecycleRequest,
@@ -718,14 +848,31 @@ class DiagnosticsApplication:
                     raise ValueError(
                         "Campaign member Run and Strategy identities are required"
                     )
+                attempt_id = (
+                    f"{campaign.campaign_id}:"
+                    f"{selection.campaign_case_id}:"
+                    f"attempt-{attempt.attempt_number}"
+                )
+                failure_code, failure_message = (
+                    DiagnosticsApplication._campaign_attempt_failure(view)
+                    if attempt.status == "incomplete"
+                    else (None, None)
+                )
                 attempts.append(
                     DiagnosticCampaignAttemptHandoffSnapshot(
-                        attempt_id=(
-                            f"{campaign.campaign_id}:"
-                            f"{selection.campaign_case_id}:"
-                            f"attempt-{attempt.attempt_number}"
-                        ),
+                        attempt_id=attempt_id,
                         runs=run_handoffs,
+                        attempt_number=attempt.attempt_number,
+                        lifecycle=(
+                            DiagnosticTaskLifecycle.COMPLETED
+                            if attempt.status == "completed"
+                            else DiagnosticTaskLifecycle.FAILED
+                        ),
+                        predecessor_attempt_id=(
+                            None if not attempts else attempts[-1].attempt_id
+                        ),
+                        failure_code=failure_code,
+                        failure_message=failure_message,
                     )
                 )
             nodes.append(
@@ -755,6 +902,42 @@ class DiagnosticsApplication:
         return DiagnosticTaskCampaignHandoffSnapshot(
             campaign_id=campaign.campaign_id,
             campaign_nodes=tuple(nodes),
+        )
+
+    @staticmethod
+    def _campaign_attempt_failure(
+        view: Mapping[str, object],
+    ) -> tuple[str, str]:
+        members = view.get("members", ())
+        if isinstance(members, Sequence) and not isinstance(
+            members,
+            (str, bytes),
+        ):
+            for member in members:
+                if not isinstance(member, Mapping):
+                    continue
+                if member.get("status") == "completed":
+                    continue
+                failure_value = member.get("failure", {})
+                failure = (
+                    failure_value
+                    if isinstance(failure_value, Mapping)
+                    else {}
+                )
+                return (
+                    str(failure.get("code") or "IncompleteStrategyRun"),
+                    str(
+                        failure.get("message")
+                        or "Strategy Run result is incomplete"
+                    ),
+                )
+        failure_value = view.get("failure", {})
+        failure = (
+            failure_value if isinstance(failure_value, Mapping) else {}
+        )
+        return (
+            str(failure.get("code") or "IncompleteCampaign"),
+            str(failure.get("message") or "Campaign result is incomplete"),
         )
 
     def _validate_diagnostic_task_configuration(

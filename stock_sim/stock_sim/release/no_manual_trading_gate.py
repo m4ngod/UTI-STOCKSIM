@@ -84,6 +84,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
                 "pauseDiagnosticTaskTarget",
                 "pauseFormalDiagnosticCampaignTarget",
                 "refresh",
+                "retryFailedCampaignNode",
                 "resumeCampaignNodeTarget",
                 "resumeDiagnosticTaskTarget",
                 "resumeFormalDiagnosticCampaignTarget",

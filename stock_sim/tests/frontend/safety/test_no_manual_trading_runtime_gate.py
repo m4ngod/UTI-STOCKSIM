@@ -60,6 +60,7 @@ APPROVED_INTERACTIVE_NAMES = re.compile(
     r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
     r"(?:Pause|Resume|Cancel) Formal Diagnostic Campaign lifecycle|"
     r"(?:Pause|Resume|Cancel) Campaign node lifecycle|"
+    r"Retry failed Campaign node attempt|"
     r"Pause diagnostic task|"
     r"Resume diagnostic task|"
     r"Cancel diagnostic task|"

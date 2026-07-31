@@ -130,7 +130,7 @@ class _FormalCampaignFixtureSource(_AdmittedShockFixtureSource):
         )
 
 
-def _formal_live_stack(tmp_path):
+def _formal_live_stack(tmp_path, *, ptrade_host=None):
     source = _FormalCampaignFixtureSource()
     artifact_store = InMemoryMarketPathArtifactStore()
     engine = create_engine(
@@ -148,6 +148,7 @@ def _formal_live_stack(tmp_path):
             2,
             tzinfo=timezone.utc,
         ),
+        ptrade_host=ptrade_host,
     )
     application.start()
     application.initialize_persistence(engine)

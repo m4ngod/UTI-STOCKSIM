@@ -72,7 +72,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
 
     assert (
         first.current_revision
-        == "0017_diagnostic_lifecycle_targets"
+        == "0018_diagnostic_campaign_attempt_history"
     )
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
@@ -92,16 +92,17 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0015_diagnostic_task_campaign_handoff",
         "0016_diagnostic_task_start_continuation_claim",
         "0017_diagnostic_lifecycle_targets",
+        "0018_diagnostic_campaign_attempt_history",
     )
     assert (
         second.current_revision
-        == "0017_diagnostic_lifecycle_targets"
+        == "0018_diagnostic_campaign_attempt_history"
     )
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0017_diagnostic_lifecycle_targets"
+        == "0018_diagnostic_campaign_attempt_history"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -133,6 +134,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0015_diagnostic_task_campaign_handoff",
         "0016_diagnostic_task_start_continuation_claim",
         "0017_diagnostic_lifecycle_targets",
+        "0018_diagnostic_campaign_attempt_history",
     ]
     strategy_run_columns = {
         column["name"]
@@ -221,7 +223,7 @@ def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
 
     assert (
         report.current_revision
-        == "0017_diagnostic_lifecycle_targets"
+        == "0018_diagnostic_campaign_attempt_history"
     )
     assert report.applied_revisions == ("0014_diagnostic_task_approval",)
     with engine.connect() as connection:
@@ -283,7 +285,7 @@ def test_issue_59_migration_adds_durable_campaign_handoff_without_rewriting_0014
 
     assert (
         report.current_revision
-        == "0017_diagnostic_lifecycle_targets"
+        == "0018_diagnostic_campaign_attempt_history"
     )
     assert report.applied_revisions == (
         "0015_diagnostic_task_campaign_handoff",
@@ -425,6 +427,141 @@ def test_issue_60_migration_backfills_lifecycle_targets_idempotently(
         assert connection.execute(
             text("SELECT COUNT(*) FROM diagnostic_lifecycle_targets")
         ).scalar_one() == 4
+
+
+def test_issue_61_migration_backfills_attempt_lineage_idempotently(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'issue-60-upgrade.db'}",
+        future=True,
+    )
+    application = create_diagnostics_application()
+    application.start()
+    application.initialize_persistence(engine)
+    legacy_handoff = {
+        "campaign_id": "formal-campaign-upgrade-61",
+        "campaign_lifecycle": "failed",
+        "campaign_revision": 3,
+        "campaign_nodes": [
+            {
+                "active_attempt_id": "attempt-2-upgrade-61",
+                "attempts": [
+                    {"attempt_id": "attempt-1-upgrade-61", "runs": []},
+                    {"attempt_id": "attempt-2-upgrade-61", "runs": []},
+                ],
+                "campaign_case_id": "case-upgrade-61",
+                "campaign_node_id": "node-upgrade-61",
+                "lifecycle": "failed",
+                "market_scenario_id": "scenario-upgrade-61",
+                "revision": 4,
+                "selected_campaign_case_id": "case-upgrade-61",
+            }
+        ],
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_tasks ("
+                "task_id, creation_sequence, revision, lifecycle, "
+                "schema_version, configuration_content_id, "
+                "configuration_json, created_at_utc, updated_at_utc"
+                ") VALUES ("
+                "'diagnostic-task-upgrade-61', 1, 7, 'failed', '1.0', "
+                "'sha256:configuration-upgrade-61', '{}', "
+                "'2030-01-01T00:00:00+00:00', "
+                "'2030-01-02T00:00:00+00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_task_campaign_handoffs ("
+                "task_id, campaign_id, handoff_json, updated_at_utc"
+                ") VALUES ("
+                "'diagnostic-task-upgrade-61', "
+                "'formal-campaign-upgrade-61', :handoff_json, "
+                "'2030-01-02T00:00:00+00:00')"
+            ),
+            {
+                "handoff_json": json.dumps(
+                    legacy_handoff,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            },
+        )
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations "
+                "WHERE revision = "
+                "'0018_diagnostic_campaign_attempt_history'"
+            )
+        )
+
+    first = application.initialize_persistence(engine)
+
+    assert first.applied_revisions == (
+        "0018_diagnostic_campaign_attempt_history",
+    )
+    with engine.connect() as connection:
+        first_json = str(
+            connection.execute(
+                text(
+                    "SELECT handoff_json "
+                    "FROM diagnostic_task_campaign_handoffs "
+                    "WHERE task_id = 'diagnostic-task-upgrade-61'"
+                )
+            ).scalar_one()
+        )
+    payload = json.loads(first_json)
+    attempts = payload["campaign_nodes"][0]["attempts"]
+    assert attempts == [
+        {
+            "attempt_id": "attempt-1-upgrade-61",
+            "attempt_number": 1,
+            "failure_code": None,
+            "failure_message": None,
+            "lifecycle": "completed",
+            "predecessor_attempt_id": None,
+            "runs": [],
+            "task_handle_id": None,
+        },
+        {
+            "attempt_id": "attempt-2-upgrade-61",
+            "attempt_number": 2,
+            "failure_code": "IncompleteCampaign",
+            "failure_message": "Campaign result is incomplete",
+            "lifecycle": "failed",
+            "predecessor_attempt_id": "attempt-1-upgrade-61",
+            "runs": [],
+            "task_handle_id": None,
+        },
+    ]
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations "
+                "WHERE revision = "
+                "'0018_diagnostic_campaign_attempt_history'"
+            )
+        )
+
+    second = application.initialize_persistence(engine)
+
+    assert second.applied_revisions == (
+        "0018_diagnostic_campaign_attempt_history",
+    )
+    with engine.connect() as connection:
+        second_json = str(
+            connection.execute(
+                text(
+                    "SELECT handoff_json "
+                    "FROM diagnostic_task_campaign_handoffs "
+                    "WHERE task_id = 'diagnostic-task-upgrade-61'"
+                )
+            ).scalar_one()
+        )
+    assert second_json == first_json
 
 
 def test_admitted_segment_catalog_survives_application_restart(tmp_path: Path) -> None:

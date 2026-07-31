@@ -168,8 +168,20 @@ def test_diagnostic_tasks_1_0_freezes_complete_state_and_result_shapes() -> None
         "affected_task_id",
         "affected_campaign_id",
         "affected_campaign_node_id",
+        "affected_campaign_attempt_id",
         "retryable",
         "correlation_id",
+    }
+    assert {
+        field.name for field in fields(DiagnosticCampaignAttemptHandoff)
+    } == {
+        "attempt_id",
+        "runs",
+        "attempt_number",
+        "lifecycle",
+        "predecessor_attempt_id",
+        "task_handle_id",
+        "failure",
     }
 
 
