@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -152,7 +153,7 @@ print(
             "route_screenshots_distinct": len(
                 {diagnostic_digest, run_digest, evidence_digest}
             ) == 3,
-            "route_screenshot_sha256": {
+            "route_framebuffer_sha256": {
                 "diagnostic_tasks.png": diagnostic_digest,
                 "run_monitoring.png": run_digest,
                 "evidence_and_findings.png": evidence_digest,
@@ -211,9 +212,7 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
         environment.pop("QSG_RENDER_LOOP", None)
         environment["QSG_RHI_BACKEND"] = "d3d11"
 
-    evidence_root_value = os.environ.get(
-        "STOCKSIM_ACCESSIBLE_JOURNEY_EVIDENCE_ROOT"
-    )
+    evidence_root_value = os.environ.get("STOCKSIM_ACCESSIBLE_JOURNEY_EVIDENCE_ROOT")
     if evidence_root_value is not None:
         evidence_directory = Path(evidence_root_value) / lane
         environment["STOCKSIM_ACCESSIBLE_JOURNEY_EVIDENCE_DIR"] = str(
@@ -232,6 +231,16 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
     observation = json.loads(completed.stdout.strip().splitlines()[-1])
     if evidence_root_value is not None:
         evidence_directory.mkdir(parents=True, exist_ok=True)
+        png_sha256 = {
+            filename: hashlib.sha256(
+                (evidence_directory / filename).read_bytes()
+            ).hexdigest()
+            for filename in (
+                "diagnostic_tasks.png",
+                "run_monitoring.png",
+                "evidence_and_findings.png",
+            )
+        }
         (evidence_directory / "renderer-report.json").write_text(
             json.dumps(
                 {
@@ -240,6 +249,7 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
                         "working-tree",
                     ),
                     "lane": lane,
+                    "png_sha256": png_sha256,
                     **observation,
                 },
                 indent=2,
@@ -262,7 +272,7 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
     assert observation["diagnostic_status_role"] == "StatusBar"
     assert observation["run_scrollable"] is True
     assert observation["route_screenshots_distinct"] is True
-    assert len(set(observation["route_screenshot_sha256"].values())) == 3
+    assert len(set(observation["route_framebuffer_sha256"].values())) == 3
     assert observation["image_width"] > 0
     assert observation["image_height"] > 0
     assert observation["candidate_focus"] is True

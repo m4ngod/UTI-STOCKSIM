@@ -368,7 +368,8 @@ Rectangle {
                     Layout.maximumWidth: parent.width
                     Layout.preferredHeight: Math.max(
                         44,
-                        tokens.bodySize + tokens.spaceSm * 2
+                        evidenceRouteNavigationLabel.contentHeight
+                            + tokens.spaceSm * 2
                     )
                     radius: tokens.radiusSm
                     color: workspace.activeRoute === "evidence_and_findings"
@@ -392,6 +393,7 @@ Rectangle {
                     )
 
                     Text {
+                        id: evidenceRouteNavigationLabel
                         anchors.fill: parent
                         anchors.leftMargin: tokens.spaceMd
                         anchors.rightMargin: tokens.spaceSm

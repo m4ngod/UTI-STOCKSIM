@@ -345,11 +345,14 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
         inventory=inventory
     )
     run_monitoring = DeterministicFakeRunMonitoringAdapter()
+    evidence = DeterministicFakeEvidenceAndFindingsAdapter()
     host = JourneyWorkspaceHost(
         run_monitoring,
         context=RunMonitoringContext.no_selection(),
         diagnostic_tasks_feature=diagnostic_tasks,
         diagnostic_tasks_context=workspace,
+        evidence_feature=evidence,
+        evidence_context=EvidenceAndFindingsContext.no_selection(),
         accessibility_preferences=AccessibilityPreferences(
             text_scale=2.0,
             reduced_motion=True,
@@ -377,6 +380,10 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
         QQuickItem,
         "diagnosticTasksRouteNavigation",
     )
+    evidence_route = root.findChild(
+        QQuickItem,
+        "evidenceAndFindingsRouteNavigation",
+    )
     assert tokens is not None
     assert scroll is not None
     assert create is not None
@@ -384,12 +391,21 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
     assert actor is not None
     assert run_route is not None
     assert diagnostic_route is not None
+    assert evidence_route is not None
+    evidence_label = next(
+        child
+        for child in evidence_route.childItems()
+        if child.property("text") == "Evidence & Findings"
+    )
 
     assert create.property("activeFocus") is True
     assert create.property("activeFocusOnTab") is True
     assert create.property("focusVisible") is True
     assert create.property("height") >= tokens.property("controlHeight")
     assert configuration_actions.property("columns") == 1
+    assert evidence_label.property("contentHeight") <= (
+        evidence_route.property("height") - 2 * tokens.property("spaceSm")
+    )
     assert scroll.property("contentHeight") > scroll.property("height")
     assert scroll.property("contentY") > 0
     create_top = create.mapToItem(root, QPointF(0, 0)).y()
@@ -465,6 +481,7 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
     remounted.close()
     diagnostic_tasks.close()
     run_monitoring.close()
+    evidence.close()
 
 
 def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
