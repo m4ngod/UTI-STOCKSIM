@@ -111,6 +111,7 @@ class DiagnosticTasksQtAdapter(QObject):
     """Qt-only projection of the typed Diagnostic Tasks Feature Interface."""
 
     stateChanged = Signal()
+    announcementChanged = Signal()
     deliveryRequested = Signal(int, object)
     campaignHandoffReady = Signal(object)
     evidenceHandoffReady = Signal(object)
@@ -131,7 +132,20 @@ class DiagnosticTasksQtAdapter(QObject):
         self._last_emitted_evidence_selection: (
             tuple[str, str, str, str, str, str] | None
         ) = None
+        self._create_status = (
+            "Create is ready when all displayed authoritative inputs are ready."
+        )
+        self._command_status = (
+            "Correction, validation, and exact-revision approval are ready "
+            "when their typed capabilities are available."
+        )
+        self._last_accessibility_announcement_key = (
+            self._accessibility_announcement_key()
+        )
         self._closed = False
+        self.stateChanged.connect(
+            self._emit_accessibility_announcement_if_changed
+        )
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
@@ -454,11 +468,7 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def createStatusText(self) -> str:  # noqa: N802
-        return getattr(
-            self,
-            "_create_status",
-            "Create is ready when all displayed authoritative inputs are ready.",
-        )
+        return self._create_status
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def validationStatusText(self) -> str:  # noqa: N802
@@ -593,12 +603,7 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def commandStatusText(self) -> str:  # noqa: N802
-        return getattr(
-            self,
-            "_command_status",
-            "Correction, validation, and exact-revision approval are ready "
-            "when their typed capabilities are available.",
-        )
+        return self._command_status
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def capabilitiesText(self) -> str:  # noqa: N802
@@ -670,8 +675,11 @@ class DiagnosticTasksQtAdapter(QObject):
             )
         )
 
-    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    @Property(str, notify=announcementChanged)  # type: ignore[arg-type]
     def accessibilityAnnouncementText(self) -> str:  # noqa: N802
+        return self._build_accessibility_announcement_text()
+
+    def _build_accessibility_announcement_text(self) -> str:
         task = self._state.task
         error = self._state.error
         lifecycle = (
@@ -720,6 +728,80 @@ class DiagnosticTasksQtAdapter(QObject):
             f"{lifecycle}; {validation}; {approval}; {handle}; "
             f"{evidence}; {self.commandStatusText}{error_text}"
         )
+
+    def _accessibility_announcement_key(self) -> tuple[object, ...]:
+        task = self._state.task
+        error = self._state.error
+        latest_handle = (
+            None
+            if task is None or not task.task_handles
+            else task.task_handles[-1]
+        )
+        validation = None if task is None else task.validation
+        approval = None if task is None else task.approval
+        handoff = None if task is None else task.handoff
+        node_states = (
+            ()
+            if handoff is None
+            else tuple(
+                (
+                    node.campaign_node_id.value,
+                    node.lifecycle.value,
+                    (
+                        None
+                        if node.active_attempt_id is None
+                        else node.active_attempt_id.value
+                    ),
+                    tuple(
+                        (
+                            attempt.attempt_id.value,
+                            attempt.lifecycle.value,
+                        )
+                        for attempt in node.attempts
+                        if attempt.attempt_id == node.active_attempt_id
+                    ),
+                )
+                for node in handoff.campaign_nodes
+            )
+        )
+        return (
+            self._state.freshness.value,
+            self._state.presentation.value,
+            None if task is None else task.task_id.value,
+            None if task is None else task.lifecycle.value,
+            None if validation is None else validation.state.value,
+            (
+                None
+                if validation is None or validation.validation_id is None
+                else validation.validation_id.value
+            ),
+            None if approval is None else approval.approved_revision,
+            (
+                None
+                if latest_handle is None
+                else latest_handle.identity.value
+            ),
+            None if latest_handle is None else latest_handle.phase.value,
+            None if latest_handle is None else latest_handle.result,
+            (
+                None
+                if handoff is None or handoff.campaign_lifecycle is None
+                else handoff.campaign_lifecycle.value
+            ),
+            node_states,
+            self._state.reproduction_manifest_availability.value,
+            None if error is None else error.code,
+            self._create_status,
+            self._command_status,
+        )
+
+    @Slot()
+    def _emit_accessibility_announcement_if_changed(self) -> None:
+        key = self._accessibility_announcement_key()
+        if key == self._last_accessibility_announcement_key:
+            return
+        self._last_accessibility_announcement_key = key
+        self.announcementChanged.emit()
 
     @Slot()
     def createTask(self) -> None:  # noqa: N802

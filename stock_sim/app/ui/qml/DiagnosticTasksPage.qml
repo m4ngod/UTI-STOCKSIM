@@ -76,6 +76,10 @@ Item {
     function rememberFocus(item) {
         lastFocusedItem = item
         ensureItemVisible(item)
+        Qt.callLater(function() {
+            if (lastFocusedItem === item && item.activeFocus)
+                ensureItemVisible(item)
+        })
     }
 
     function restoreFocus() {
@@ -192,16 +196,18 @@ Item {
                 Layout.minimumWidth: 0
                 Layout.preferredHeight: Math.max(
                     138,
-                    tokens.bodySize * 4 + tokens.spaceLg * 2
+                    diagnosticTasksSummaryLayout.implicitHeight
+                        + tokens.spaceLg * 2
                 )
                 radius: tokens.radiusMd
                 color: tokens.surfaceRaised
                 border.color: tokens.border
                 Accessible.role: Accessible.StatusBar
-                Accessible.name: adapter.accessibilityAnnouncementText
+                Accessible.name: "Diagnostic Tasks status"
                 Accessible.description: adapter.accessibilitySummaryText
 
                 ColumnLayout {
+                    id: diagnosticTasksSummaryLayout
                     anchors.fill: parent
                     anchors.margins: tokens.spaceLg
                     spacing: tokens.spaceXs
@@ -354,7 +360,7 @@ Item {
                         Layout.preferredHeight: tokens.controlHeight
                         accessibleDescription: "Create one durable task from the authoritative baseline and required strategies"
                         onFocusEntered: page.rememberFocus(item)
-                        onClicked: {
+                        onInvoked: {
                             adapter.createTask()
                             Qt.callLater(function() {
                                 page.focusFirstAvailable([
@@ -416,7 +422,7 @@ Item {
                             Layout.preferredHeight: tokens.controlHeight
                             accessibleDescription: "Replace the current task revision with all displayed authoritative typed inputs"
                             onFocusEntered: page.rememberFocus(item)
-                            onClicked: {
+                            onInvoked: {
                                 adapter.reviseTask()
                                 Qt.callLater(function() {
                                     page.focusFirstAvailable([
@@ -438,7 +444,7 @@ Item {
                             Layout.preferredHeight: tokens.controlHeight
                             accessibleDescription: "Validate the exact durable task revision"
                             onFocusEntered: page.rememberFocus(item)
-                            onClicked: {
+                            onInvoked: {
                                 adapter.validateTask()
                                 Qt.callLater(function() {
                                     page.focusFirstAvailable([
@@ -492,7 +498,7 @@ Item {
                         Layout.preferredHeight: tokens.controlHeight
                         accessibleDescription: "Approve only the exact successfully validated task revision"
                         onFocusEntered: page.rememberFocus(item)
-                        onClicked: {
+                        onInvoked: {
                             adapter.approveTask(approvalActor.text)
                             Qt.callLater(function() {
                                 page.focusFirstAvailable([
@@ -514,7 +520,7 @@ Item {
                         Layout.preferredHeight: tokens.controlHeight
                         accessibleDescription: "Start the exact approved task revision and hand its real Campaign and Run identities to Run Monitoring"
                         onFocusEntered: page.rememberFocus(item)
-                        onClicked: adapter.startCampaign()
+                        onInvoked: adapter.startCampaign()
                     }
 
                     Text {
@@ -598,7 +604,7 @@ Item {
                                     Layout.preferredHeight: tokens.controlHeight
                                     accessibleName: "Pause Diagnostic Task lifecycle"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.pauseDiagnosticTaskTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -619,7 +625,7 @@ Item {
                                     Layout.preferredHeight: tokens.controlHeight
                                     accessibleName: "Resume Diagnostic Task lifecycle"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.resumeDiagnosticTaskTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -641,7 +647,7 @@ Item {
                                     accessibleName: "Cancel Diagnostic Task lifecycle"
                                     accessibleDescription: "Cancel only the typed non-transactional Diagnostic Task lifecycle target"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.cancelDiagnosticTaskTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -681,7 +687,7 @@ Item {
                                     Layout.preferredHeight: tokens.controlHeight
                                     accessibleName: "Pause Formal Diagnostic Campaign lifecycle"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.pauseFormalDiagnosticCampaignTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -702,7 +708,7 @@ Item {
                                     Layout.preferredHeight: tokens.controlHeight
                                     accessibleName: "Resume Formal Diagnostic Campaign lifecycle"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.resumeFormalDiagnosticCampaignTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -724,7 +730,7 @@ Item {
                                     accessibleName: "Cancel Formal Diagnostic Campaign lifecycle"
                                     accessibleDescription: "Cancel only the typed non-transactional Formal Diagnostic Campaign lifecycle target"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.cancelFormalDiagnosticCampaignTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -764,7 +770,7 @@ Item {
                                     Layout.preferredHeight: tokens.controlHeight
                                     accessibleName: "Pause Campaign node lifecycle"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.pauseCampaignNodeTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -785,7 +791,7 @@ Item {
                                     Layout.preferredHeight: tokens.controlHeight
                                     accessibleName: "Resume Campaign node lifecycle"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.resumeCampaignNodeTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -807,7 +813,7 @@ Item {
                                     accessibleName: "Cancel Campaign node lifecycle"
                                     accessibleDescription: "Cancel only the typed non-transactional Campaign node lifecycle target"
                                     onFocusEntered: page.rememberFocus(item)
-                                    onClicked: {
+                                    onInvoked: {
                                         adapter.cancelCampaignNodeTarget()
                                         Qt.callLater(function() {
                                             page.focusFirstAvailable([
@@ -844,7 +850,7 @@ Item {
                         accessibleName: "Retry failed Campaign node attempt"
                         accessibleDescription: "Create a new typed Campaign attempt linked to the immutable failed predecessor and a persistent TaskHandle"
                         onFocusEntered: page.rememberFocus(item)
-                        onClicked: {
+                        onInvoked: {
                             adapter.retryFailedCampaignNode()
                             Qt.callLater(function() {
                                 Qt.callLater(function() {

@@ -23,7 +23,6 @@ Rectangle {
     )
     readonly property bool focusVisible: activeFocus
     signal invoked()
-    signal clicked()
     signal focusEntered(var item)
 
     activeFocusOnTab: enabled
@@ -51,7 +50,6 @@ Rectangle {
         if (!control.enabled)
             return
         control.invoked()
-        control.clicked()
     }
 
     onActiveFocusChanged: {

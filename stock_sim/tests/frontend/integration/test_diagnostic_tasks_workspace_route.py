@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -11,7 +12,7 @@ import pytest
 from PySide6.QtCore import QMetaObject, QObject, QPointF, Qt
 from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickItem
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 from sqlalchemy import create_engine, text
 
@@ -21,10 +22,15 @@ from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DiagnosticCampaignCaseSelection,
+    DiagnosticCampaignNodeHandoff,
+    DiagnosticCampaignRunHandoff,
     DiagnosticCommandId,
     DiagnosticCommandIdempotencyKey,
     DiagnosticTaskLifecycle,
+    DiagnosticTaskPresentation,
     DiagnosticTasksContext,
+    DiagnosticTasksInventory,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsSelection,
     LiveDiagnosticTasksAdapter,
@@ -42,10 +48,16 @@ from app.ui.accessibility import AccessibilityPreferences
 from app.ui.journey_workspace import JourneyWorkspaceHost
 from app.ui.main_window import MainWindow
 from strategy_diagnostics import create_diagnostics_application
+from strategy_diagnostics.diagnostic_evidence_storage import (
+    JsonDiagnosticEvidenceArtifactStore,
+)
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
     _approved_formal_task,
     _formal_live_stack,
+)
+from tests.frontend.contract.test_diagnostic_task_failed_node_retry_live_contract import (
+    _FailFirstDecisionPTradeHost,
 )
 from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
     _persistent_three_layer_stack,
@@ -123,18 +135,73 @@ def _window(
     return window, run_monitoring
 
 
+def _formal_inventory(tmp_path: Path) -> DiagnosticTasksInventory:
+    *_, feature = _formal_live_stack(tmp_path)
+    try:
+        workspace = DiagnosticTasksContext.workspace()
+        feature.snapshot(workspace)
+        inventory = feature.snapshot(workspace).last_reliable_inventory
+        assert inventory is not None
+        return inventory
+    finally:
+        feature.close()
+
+
+@dataclass(frozen=True)
+class _EvidenceHandoff:
+    context: EvidenceAndFindingsContext
+    selected_case: DiagnosticCampaignCaseSelection
+    selected_node: DiagnosticCampaignNodeHandoff
+    selected_run: DiagnosticCampaignRunHandoff
+
+
+def _first_evidence_handoff(
+    task: DiagnosticTaskPresentation,
+) -> _EvidenceHandoff:
+    campaign_id = task.handoff.campaign_id
+    assert campaign_id is not None
+    selected_case = task.handoff.selected_cases[0]
+    selected_node = next(
+        node
+        for node in task.handoff.campaign_nodes
+        if node.selected_campaign_case_id == selected_case.campaign_case_id
+    )
+    selected_attempt = next(
+        attempt
+        for attempt in selected_node.attempts
+        if attempt.attempt_id == selected_node.active_attempt_id
+    )
+    selected_run = selected_attempt.runs[0]
+    manifest_id = selected_run.reproduction_manifest_id
+    assert manifest_id is not None
+    return _EvidenceHandoff(
+        context=EvidenceAndFindingsContext.for_selection(
+            EvidenceAndFindingsSelection(
+                campaign_id=campaign_id,
+                run_id=selected_run.run_id,
+                strategy_id=selected_run.strategy_id,
+                market_scenario_id=MarketScenarioId(
+                    selected_node.selected_campaign_case_id.value
+                ),
+                approved_recipe_id=ApprovedScenarioRecipeId(
+                    selected_case.recipe_version_id.value
+                ),
+                reproduction_manifest_id=manifest_id,
+            )
+        ),
+        selected_case=selected_case,
+        selected_node=selected_node,
+        selected_run=selected_run,
+    )
+
+
 def test_available_diagnostic_evidence_hands_exact_ids_to_evidence_route(
     tmp_path,
 ) -> None:
     app = _app()
     workspace = DiagnosticTasksContext.workspace()
-    *_, live_feature = _formal_live_stack(tmp_path)
-    live_feature.snapshot(workspace)
-    inventory = live_feature.snapshot(workspace).last_reliable_inventory
-    assert inventory is not None
-    live_feature.close()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
-        inventory=inventory
+        inventory=_formal_inventory(tmp_path)
     )
     approved = _approved_formal_task(diagnostic_tasks)
     diagnostic_tasks.start_formal_diagnostic_campaign(
@@ -151,39 +218,10 @@ def test_available_diagnostic_evidence_hands_exact_ids_to_evidence_route(
     diagnostic_tasks.advance_evidence_available(approved.task_id)
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
-    assert task.handoff.campaign_id is not None
-    selected_case = task.handoff.selected_cases[0]
-    selected_node = next(
-        node
-        for node in task.handoff.campaign_nodes
-        if node.selected_campaign_case_id == selected_case.campaign_case_id
-    )
-    selected_attempt = next(
-        attempt
-        for attempt in selected_node.attempts
-        if attempt.attempt_id == selected_node.active_attempt_id
-    )
-    selected_run = selected_attempt.runs[0]
-    assert selected_run.reproduction_manifest_id is not None
-    evidence_context = EvidenceAndFindingsContext.for_selection(
-        EvidenceAndFindingsSelection(
-            campaign_id=task.handoff.campaign_id,
-            run_id=selected_run.run_id,
-            strategy_id=selected_run.strategy_id,
-            market_scenario_id=MarketScenarioId(
-                selected_node.selected_campaign_case_id.value
-            ),
-            approved_recipe_id=ApprovedScenarioRecipeId(
-                selected_case.recipe_version_id.value
-            ),
-            reproduction_manifest_id=(
-                selected_run.reproduction_manifest_id
-            ),
-        )
-    )
+    handoff = _first_evidence_handoff(task)
     run_monitoring = DeterministicFakeRunMonitoringAdapter()
     evidence = DeterministicFakeEvidenceAndFindingsAdapter()
-    evidence.advance_to_completed(evidence_context)
+    evidence.advance_to_completed(handoff.context)
     host = JourneyWorkspaceHost(
         run_monitoring,
         context=RunMonitoringContext.no_selection(),
@@ -216,11 +254,11 @@ def test_available_diagnostic_evidence_hands_exact_ids_to_evidence_route(
     )
     for identity in (
         task.handoff.campaign_id.value,
-        selected_run.run_id.value,
-        selected_run.strategy_id.value,
-        selected_node.selected_campaign_case_id.value,
-        selected_case.recipe_version_id.value,
-        selected_run.reproduction_manifest_id.value,
+        handoff.selected_run.run_id.value,
+        handoff.selected_run.strategy_id.value,
+        handoff.selected_node.selected_campaign_case_id.value,
+        handoff.selected_case.recipe_version_id.value,
+        handoff.selected_run.reproduction_manifest_id.value,
     ):
         assert identity in announced
 
@@ -266,14 +304,7 @@ def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
     assert task.handoff.ready_for_evidence_and_findings
-    selected_node = task.handoff.campaign_nodes[0]
-    selected_attempt = next(
-        attempt
-        for attempt in selected_node.attempts
-        if attempt.attempt_id == selected_node.active_attempt_id
-    )
-    selected_run = selected_attempt.runs[0]
-    assert selected_run.reproduction_manifest_id is not None
+    handoff = _first_evidence_handoff(task)
 
     bridge = EventBridge(subscribe_backend=False)
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
@@ -315,10 +346,10 @@ def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
     assert "ready" in narrator_text.casefold()
     for identity in (
         task.handoff.campaign_id.value,
-        selected_run.run_id.value,
-        selected_run.strategy_id.value,
-        selected_node.selected_campaign_case_id.value,
-        selected_run.reproduction_manifest_id.value,
+        handoff.selected_run.run_id.value,
+        handoff.selected_run.strategy_id.value,
+        handoff.selected_node.selected_campaign_case_id.value,
+        handoff.selected_run.reproduction_manifest_id.value,
     ):
         assert identity in narrator_text
 
@@ -331,18 +362,376 @@ def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
     engine.dispose()
 
 
+def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
+    tmp_path,
+) -> None:
+    app = _app()
+    evidence_root = tmp_path / "diagnostic-evidence"
+    (
+        source,
+        artifact_store,
+        engine,
+        application,
+        diagnostic_application,
+        initial_diagnostic_tasks,
+    ) = _formal_live_stack(
+        tmp_path,
+        ptrade_host=_FailFirstDecisionPTradeHost(),
+        evidence_artifact_store=JsonDiagnosticEvidenceArtifactStore(
+            evidence_root
+        ),
+    )
+    initial_diagnostic_tasks.close()
+    bridge = EventBridge(subscribe_backend=False)
+    diagnostic_tasks = LiveDiagnosticTasksAdapter(
+        application=diagnostic_application,
+        event_bridge=bridge,
+    )
+    read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+    )
+    run_monitoring = LiveRunMonitoringAdapter(
+        application_read_model=read_model,
+        event_bridge=bridge,
+        executor=_DirectExecutor(),
+    )
+    evidence = LiveEvidenceAndFindingsAdapter(
+        application_read_model=read_model,
+        event_bridge=bridge,
+        executor=_DirectExecutor(),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    host = JourneyWorkspaceHost(
+        run_monitoring,
+        context=RunMonitoringContext.no_selection(),
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=workspace,
+        evidence_feature=evidence,
+        evidence_context=EvidenceAndFindingsContext.no_selection(),
+        accessibility_preferences=AccessibilityPreferences(
+            text_scale=2.0,
+            reduced_motion=True,
+            high_contrast=True,
+        ),
+    )
+    host.resize(1280, 720)
+    host.show()
+    app.processEvents()
+    app.processEvents()
+    root = host.rootObject()
+    diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
+    assert diagnostic_page is not None
+    diagnostic_projection = diagnostic_page.property("adapter")
+    announcement_spy = QSignalSpy(diagnostic_projection.announcementChanged)
+
+    def settle() -> None:
+        app.processEvents()
+        app.processEvents()
+
+    def traverse_to(
+        object_name: str,
+        *,
+        backward: bool = False,
+    ) -> QQuickItem:
+        target = root.findChild(QQuickItem, object_name)
+        assert target is not None
+        for _ in range(64):
+            if target.property("activeFocus") is True:
+                assert target.property("visible") is True
+                return target
+            QTest.keyClick(
+                host,
+                (
+                    Qt.Key.Key_Backtab
+                    if backward
+                    else Qt.Key.Key_Tab
+                ),
+            )
+            settle()
+        raise AssertionError(f"{object_name} is not keyboard reachable")
+
+    def activate(object_name: str) -> None:
+        item = root.findChild(QQuickItem, object_name)
+        assert item is not None
+        assert item.property("activeFocus") is True
+        assert item.property("enabled") is True
+        top = item.mapToItem(root, QPointF(0, 0)).y()
+        assert 0 <= top
+        assert top + item.property("height") <= root.property("height")
+        QTest.keyClick(host, Qt.Key.Key_Space)
+        settle()
+
+    def current_task():
+        diagnostic_tasks.snapshot(workspace)
+        state = diagnostic_tasks.snapshot(workspace)
+        assert state.task is not None
+        return state.task
+
+    activate("createDiagnosticTaskButton")
+    activate("reviseDiagnosticTaskButton")
+    activate("validateDiagnosticTaskButton")
+    actor = root.findChild(QQuickItem, "diagnosticTaskApprovalActorInput")
+    assert actor is not None
+    assert actor.property("activeFocus") is True
+    QTest.keyClicks(host, "live-qml-owner")
+    QTest.keyClick(host, Qt.Key.Key_Tab)
+    settle()
+    activate("approveDiagnosticTaskButton")
+    activate("startDiagnosticCampaignButton")
+
+    failed_task = current_task()
+    failed_node = next(
+        node
+        for node in failed_task.handoff.campaign_nodes
+        if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+    )
+    failed_attempt = failed_node.attempts[-1]
+    assert failed_attempt.failure is not None
+    assert root.property("activeRoute") == "run_monitoring"
+    failed_run = failed_attempt.runs[0]
+    assert root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == f"Run · {failed_run.run_id.value}"
+
+    announcements_before_disconnect = announcement_spy.count()
+    bridge.mark_disconnected()
+    settle()
+    assert diagnostic_projection.freshness == "disconnected"
+    assert announcement_spy.count() == announcements_before_disconnect + 1
+    announcements_before_reconnect = announcement_spy.count()
+    bridge.mark_reconnected()
+    settle()
+    diagnostic_projection.refresh()
+    settle()
+    assert diagnostic_projection.freshness == "fresh"
+    assert (
+        announcements_before_reconnect
+        < announcement_spy.count()
+        <= announcements_before_reconnect + 2
+    )
+
+    traverse_to("diagnosticTasksRouteNavigation", backward=True)
+    QTest.keyClick(host, Qt.Key.Key_Return)
+    settle()
+    traverse_to("retryFailedCampaignNodeButton")
+    activate("retryFailedCampaignNodeButton")
+    retried_task = current_task()
+    retried_node = next(
+        node
+        for node in retried_task.handoff.campaign_nodes
+        if node.campaign_node_id == failed_node.campaign_node_id
+    )
+    assert retried_node.attempts[0] == failed_attempt
+    assert len(retried_node.attempts) == 2
+    assert (
+        retried_node.attempts[-1].predecessor_attempt_id
+        == failed_attempt.attempt_id
+    )
+    assert (
+        retried_node.attempts[-1].lifecycle
+        is DiagnosticTaskLifecycle.COMPLETED
+    )
+    retry_run = retried_node.attempts[-1].runs[0]
+    assert root.property("activeRoute") == "run_monitoring"
+    assert root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == f"Run · {retry_run.run_id.value}"
+
+    traverse_to("diagnosticTasksRouteNavigation", backward=True)
+    QTest.keyClick(host, Qt.Key.Key_Return)
+    settle()
+    traverse_to("pauseDiagnosticTaskTargetButton")
+    activate("pauseDiagnosticTaskTargetButton")
+    assert current_task().lifecycle is DiagnosticTaskLifecycle.PAUSED
+    activate("resumeDiagnosticTaskTargetButton")
+
+    campaign_id = current_task().handoff.campaign_id
+    assert campaign_id is not None
+    campaign = application.advance_diagnostic_campaign(
+        campaign_id.value,
+        max_cases=64,
+        nodes_per_batch=10_000,
+    )
+    assert campaign.status == "completed"
+    diagnostic_projection.refresh()
+    settle()
+    completed_task = current_task()
+    assert completed_task.handoff.ready_for_evidence_and_findings
+    assert completed_task.handoff.evidence_package_id is not None
+    assert completed_task.handoff.reproduction_manifest_id is not None
+    accepted_run = next(
+        run
+        for node in completed_task.handoff.campaign_nodes
+        for attempt in node.attempts
+        if attempt.attempt_id == node.active_attempt_id
+        for run in attempt.runs
+        if run.reproduction_manifest_id is not None
+    )
+    manifest_id = accepted_run.reproduction_manifest_id
+    assert manifest_id is not None
+
+    traverse_to("evidenceAndFindingsRouteNavigation")
+    QTest.keyClick(host, Qt.Key.Key_Return)
+    settle()
+    evidence_status = root.findChild(QObject, "evidenceAccessibleStatus")
+    assert evidence_status is not None
+    evidence_interface = QAccessible.queryAccessibleInterface(evidence_status)
+    assert evidence_interface is not None
+    evidence_text = " ".join(
+        (
+            evidence_interface.text(QAccessible.Text.Name),
+            evidence_interface.text(QAccessible.Text.Description),
+        )
+    )
+    for identity in (
+        campaign_id.value,
+        accepted_run.run_id.value,
+        accepted_run.strategy_id.value,
+        manifest_id.value,
+        completed_task.handoff.evidence_package_id.value,
+    ):
+        assert identity in evidence_text
+
+    expected_identity_text = (
+        f"Campaign · {campaign_id.value}",
+        f"Run · {accepted_run.run_id.value}",
+        manifest_id.value,
+    )
+    host.close_adapter()
+    host.close()
+    remounted = JourneyWorkspaceHost(
+        run_monitoring,
+        context=RunMonitoringContext.no_selection(),
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=workspace,
+        evidence_feature=evidence,
+        evidence_context=EvidenceAndFindingsContext.no_selection(),
+    )
+    remounted.resize(1280, 720)
+    remounted.show()
+    settle()
+    remounted_root = remounted.rootObject()
+    assert remounted_root.findChild(
+        QObject,
+        "runMonitoringCampaignIdentity",
+    ).property("text") == expected_identity_text[0]
+    assert remounted_root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == expected_identity_text[1]
+    assert remounted_root.setProperty(
+        "activeRoute",
+        "evidence_and_findings",
+    )
+    settle()
+    remounted_status = remounted_root.findChild(
+        QObject,
+        "evidenceAccessibleStatus",
+    )
+    remounted_interface = QAccessible.queryAccessibleInterface(
+        remounted_status
+    )
+    assert remounted_interface is not None
+    assert expected_identity_text[2] in remounted_interface.text(
+        QAccessible.Text.Description
+    )
+
+    remounted.close_adapter()
+    remounted.close()
+    diagnostic_tasks.close()
+    run_monitoring.close()
+    evidence.close()
+    bridge.stop()
+
+    restarted_application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=artifact_store,
+        evidence_artifact_store=JsonDiagnosticEvidenceArtifactStore(
+            evidence_root
+        ),
+        recipe_clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+        diagnostic_task_clock=lambda: datetime(
+            2030,
+            1,
+            5,
+            tzinfo=timezone.utc,
+        ),
+    )
+    restarted_application.start()
+    restarted_application.initialize_persistence(engine)
+    restarted_bridge = EventBridge(subscribe_backend=False)
+    restarted_tasks = LiveDiagnosticTasksAdapter(
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            restarted_application
+        ),
+        event_bridge=restarted_bridge,
+    )
+    restarted_read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        restarted_application,
+        engine,
+    )
+    restarted_monitoring = LiveRunMonitoringAdapter(
+        application_read_model=restarted_read_model,
+        event_bridge=restarted_bridge,
+        executor=_DirectExecutor(),
+    )
+    restarted_evidence = LiveEvidenceAndFindingsAdapter(
+        application_read_model=restarted_read_model,
+        event_bridge=restarted_bridge,
+        executor=_DirectExecutor(),
+    )
+    reopened = JourneyWorkspaceHost(
+        restarted_monitoring,
+        context=RunMonitoringContext.no_selection(),
+        diagnostic_tasks_feature=restarted_tasks,
+        diagnostic_tasks_context=workspace,
+        evidence_feature=restarted_evidence,
+        evidence_context=EvidenceAndFindingsContext.no_selection(),
+    )
+    reopened.resize(1280, 720)
+    reopened.show()
+    settle()
+    reopened_root = reopened.rootObject()
+    assert reopened_root.findChild(
+        QObject,
+        "runMonitoringCampaignIdentity",
+    ).property("text") == expected_identity_text[0]
+    assert reopened_root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == expected_identity_text[1]
+    assert reopened_root.setProperty("activeRoute", "evidence_and_findings")
+    settle()
+    reopened_status = reopened_root.findChild(
+        QObject,
+        "evidenceAccessibleStatus",
+    )
+    reopened_interface = QAccessible.queryAccessibleInterface(reopened_status)
+    assert reopened_interface is not None
+    assert expected_identity_text[2] in reopened_interface.text(
+        QAccessible.Text.Description
+    )
+
+    reopened.close_adapter()
+    reopened.close()
+    restarted_tasks.close()
+    restarted_monitoring.close()
+    restarted_evidence.close()
+    restarted_bridge.stop()
+    engine.dispose()
+
+
 def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
     tmp_path,
 ) -> None:
     app = _app()
     workspace = DiagnosticTasksContext.workspace()
-    *_, live_feature = _formal_live_stack(tmp_path)
-    live_feature.snapshot(workspace)
-    inventory = live_feature.snapshot(workspace).last_reliable_inventory
-    assert inventory is not None
-    live_feature.close()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
-        inventory=inventory
+        inventory=_formal_inventory(tmp_path)
     )
     run_monitoring = DeterministicFakeRunMonitoringAdapter()
     evidence = DeterministicFakeEvidenceAndFindingsAdapter()
@@ -397,14 +786,34 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
         for child in evidence_route.childItems()
         if child.property("text") == "Evidence & Findings"
     )
+    journey_summary = root.findChild(
+        QQuickItem,
+        "diagnosticTasksAccessibleSummary",
+    )
+    assert journey_summary is not None
+    capabilities_label = next(
+        child
+        for child in journey_summary.findChildren(QQuickItem)
+        if str(child.property("text")).startswith("Capabilities")
+    )
 
     assert create.property("activeFocus") is True
     assert create.property("activeFocusOnTab") is True
     assert create.property("focusVisible") is True
+    assert create.metaObject().indexOfSignal("invoked()") >= 0
+    assert create.metaObject().indexOfSignal("clicked()") == -1
     assert create.property("height") >= tokens.property("controlHeight")
     assert configuration_actions.property("columns") == 1
     assert evidence_label.property("contentHeight") <= (
         evidence_route.property("height") - 2 * tokens.property("spaceSm")
+    )
+    capabilities_top = capabilities_label.mapToItem(
+        journey_summary,
+        QPointF(0, 0),
+    ).y()
+    assert (
+        capabilities_top + capabilities_label.property("contentHeight")
+        <= journey_summary.property("height") - tokens.property("spaceLg")
     )
     assert scroll.property("contentHeight") > scroll.property("height")
     assert scroll.property("contentY") > 0
@@ -489,13 +898,8 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
 ) -> None:
     app = _app()
     workspace = DiagnosticTasksContext.workspace()
-    *_, live_feature = _formal_live_stack(tmp_path)
-    live_feature.snapshot(workspace)
-    inventory = live_feature.snapshot(workspace).last_reliable_inventory
-    assert inventory is not None
-    live_feature.close()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
-        inventory=inventory,
+        inventory=_formal_inventory(tmp_path),
         fail_first_campaign_node=True,
     )
     run_monitoring = DeterministicFakeRunMonitoringAdapter()
@@ -518,16 +922,58 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     app.processEvents()
     app.processEvents()
     root = host.rootObject()
+    diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
+    assert diagnostic_page is not None
+    diagnostic_projection = diagnostic_page.property("adapter")
+    assert hasattr(diagnostic_projection, "announcementChanged")
+    announcement_spy = QSignalSpy(diagnostic_projection.announcementChanged)
+
+    def traverse_to(
+        object_name: str,
+        *,
+        backward: bool = False,
+    ) -> QQuickItem:
+        target = root.findChild(QQuickItem, object_name)
+        assert target is not None
+        visited: list[str] = []
+        for _ in range(48):
+            if target.property("activeFocus") is True:
+                assert target.property("visible") is True
+                return target
+            focused = app.focusObject()
+            visited.append(
+                "<none>"
+                if focused is None
+                else focused.objectName() or type(focused).__name__
+            )
+            QTest.keyClick(
+                host,
+                (
+                    Qt.Key.Key_Backtab
+                    if backward
+                    else Qt.Key.Key_Tab
+                ),
+            )
+            app.processEvents()
+            app.processEvents()
+        raise AssertionError(
+            f"{object_name} was not keyboard reachable; visited={visited}"
+        )
 
     def activate(object_name: str) -> QQuickItem:
         item = root.findChild(QQuickItem, object_name)
         assert item is not None
         assert item.property("enabled") is True
-        item.forceActiveFocus()
-        app.processEvents()
+        assert item.property("activeFocus") is True
+        assert item.property("visible") is True
+        item_top = item.mapToItem(root, QPointF(0, 0)).y()
+        assert 0 <= item_top
+        assert item_top + item.property("height") <= root.property("height")
+        announcement_count = announcement_spy.count()
         QTest.keyClick(host, Qt.Key.Key_Space)
         app.processEvents()
         app.processEvents()
+        assert announcement_spy.count() == announcement_count + 1
         return item
 
     activate("createDiagnosticTaskButton")
@@ -542,9 +988,13 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
         "diagnosticTaskApprovalActorInput",
     )
     assert actor is not None
-    actor.forceActiveFocus()
+    assert actor.property("activeFocus") is True
     QTest.keyClicks(host, "keyboard-research-owner")
     app.processEvents()
+    QTest.keyClick(host, Qt.Key.Key_Tab)
+    app.processEvents()
+    approve = root.findChild(QQuickItem, "approveDiagnosticTaskButton")
+    assert approve.property("activeFocus") is True
     activate("approveDiagnosticTaskButton")
     assert root.findChild(
         QQuickItem,
@@ -581,10 +1031,11 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
         "diagnosticTasksRouteNavigation",
     )
     assert diagnostic_route is not None
-    diagnostic_route.forceActiveFocus()
+    traverse_to("diagnosticTasksRouteNavigation", backward=True)
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
     assert root.property("activeRoute") == "diagnostic_tasks"
+    traverse_to("retryFailedCampaignNodeButton")
     activate("retryFailedCampaignNodeButton")
     assert root.property("activeRoute") == "run_monitoring"
     retried = diagnostic_tasks.snapshot(workspace).task
@@ -614,7 +1065,7 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     assert retry_run_identity.property("text") == (
         f"Run · {active_retry_run.run_id.value}"
     )
-    diagnostic_route.forceActiveFocus()
+    traverse_to("diagnosticTasksRouteNavigation", backward=True)
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
     app.processEvents()
@@ -638,49 +1089,22 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
 
     current = diagnostic_tasks.snapshot(workspace).task
     assert current is not None
+    announcement_count = announcement_spy.count()
     diagnostic_tasks.advance_evidence_available(current.task_id)
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
-    selected_case = task.handoff.selected_cases[0]
-    selected_node = next(
-        node
-        for node in task.handoff.campaign_nodes
-        if node.selected_campaign_case_id == selected_case.campaign_case_id
-    )
-    selected_attempt = next(
-        attempt
-        for attempt in selected_node.attempts
-        if attempt.attempt_id == selected_node.active_attempt_id
-    )
-    selected_run = selected_attempt.runs[0]
-    assert task.handoff.campaign_id is not None
-    assert selected_run.reproduction_manifest_id is not None
-    evidence_context = EvidenceAndFindingsContext.for_selection(
-        EvidenceAndFindingsSelection(
-            campaign_id=task.handoff.campaign_id,
-            run_id=selected_run.run_id,
-            strategy_id=selected_run.strategy_id,
-            market_scenario_id=MarketScenarioId(
-                selected_node.selected_campaign_case_id.value
-            ),
-            approved_recipe_id=ApprovedScenarioRecipeId(
-                selected_case.recipe_version_id.value
-            ),
-            reproduction_manifest_id=(
-                selected_run.reproduction_manifest_id
-            ),
-        )
-    )
-    evidence.advance_to_completed(evidence_context)
+    handoff = _first_evidence_handoff(task)
+    evidence.advance_to_completed(handoff.context)
     app.processEvents()
     app.processEvents()
+    assert announcement_spy.count() == announcement_count + 1
 
     evidence_route = root.findChild(
         QQuickItem,
         "evidenceAndFindingsRouteNavigation",
     )
     assert evidence_route is not None
-    evidence_route.forceActiveFocus()
+    traverse_to("evidenceAndFindingsRouteNavigation")
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
     assert root.property("activeRoute") == "evidence_and_findings"
@@ -688,7 +1112,7 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     assert candidate is not None
     assert candidate.property("activeFocus") is True
 
-    diagnostic_route.forceActiveFocus()
+    traverse_to("diagnosticTasksRouteNavigation", backward=True)
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
     summary = root.findChild(QObject, "diagnosticTasksAccessibleSummary")
@@ -705,7 +1129,18 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     assert summary_interface is not None
     assert announcement_interface is not None
     assert summary_interface.role() == QAccessible.Role.StatusBar
+    assert (
+        summary_interface.text(QAccessible.Text.Name)
+        == "Diagnostic Tasks status"
+    )
     assert announcement_interface.role() == QAccessible.Role.AlertMessage
+    semantic_announcement_count = announcement_spy.count()
+    assert semantic_announcement_count >= 9
+    diagnostic_projection.refresh()
+    diagnostic_projection.refresh()
+    app.processEvents()
+    app.processEvents()
+    assert announcement_spy.count() == semantic_announcement_count
     narrator_text = " ".join(
         (
             summary_interface.text(QAccessible.Text.Name),
@@ -716,8 +1151,8 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     for expected in (
         task.task_id.value,
         task.handoff.campaign_id.value,
-        selected_run.run_id.value,
-        selected_run.reproduction_manifest_id.value,
+        handoff.selected_run.run_id.value,
+        handoff.selected_run.reproduction_manifest_id.value,
             "TaskHandle",
             "completed",
             "Evidence available",
@@ -739,13 +1174,8 @@ def test_revision_conflict_announces_authoritative_reread_and_invalid_approval(
 ) -> None:
     app = _app()
     workspace = DiagnosticTasksContext.workspace()
-    *_, live_feature = _formal_live_stack(tmp_path)
-    live_feature.snapshot(workspace)
-    inventory = live_feature.snapshot(workspace).last_reliable_inventory
-    assert inventory is not None
-    live_feature.close()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
-        inventory=inventory
+        inventory=_formal_inventory(tmp_path)
     )
     approved = _approved_formal_task(diagnostic_tasks)
     task_context = DiagnosticTasksContext(task_id=approved.task_id)
@@ -835,14 +1265,9 @@ def test_failed_node_retry_is_keyboard_accessible_and_exposes_attempt_lineage(
     tmp_path,
 ) -> None:
     app = _app()
-    *_, live_feature = _formal_live_stack(tmp_path)
     workspace = DiagnosticTasksContext.workspace()
-    live_feature.snapshot(workspace)
-    inventory = live_feature.snapshot(workspace).last_reliable_inventory
-    assert inventory is not None
-    live_feature.close()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
-        inventory=inventory,
+        inventory=_formal_inventory(tmp_path),
         fail_first_campaign_node=True,
     )
     approved = _approved_formal_task(diagnostic_tasks)
@@ -884,7 +1309,7 @@ def test_failed_node_retry_is_keyboard_accessible_and_exposes_attempt_lineage(
     assert "failed" in before
     assert "failure" in before
 
-    assert QMetaObject.invokeMethod(retry_button, "clicked")
+    assert QMetaObject.invokeMethod(retry_button, "invoked")
     app.processEvents()
     app.processEvents()
 
@@ -1057,7 +1482,7 @@ def test_qml_create_persists_task_handle_across_remount_and_application_reopen(
     assert button is not None
     assert button.property("enabled") is True
 
-    assert QMetaObject.invokeMethod(button, "clicked")
+    assert QMetaObject.invokeMethod(button, "invoked")
     app.processEvents()
 
     task_text = page.property("taskStatusText")
@@ -1154,13 +1579,13 @@ def test_qml_corrects_validates_and_approves_exact_persisted_revision(
     assert approve_button is not None
     assert actor_input is not None
 
-    assert QMetaObject.invokeMethod(create_button, "clicked")
+    assert QMetaObject.invokeMethod(create_button, "invoked")
     app.processEvents()
     assert " · r2 · draft · " in page.property("taskStatusText")
     assert validate_button.property("enabled") is True
     assert approve_button.property("enabled") is False
 
-    assert QMetaObject.invokeMethod(validate_button, "clicked")
+    assert QMetaObject.invokeMethod(validate_button, "invoked")
     app.processEvents()
     assert "invalid" in page.property("validationStatusText")
     assert "campaign.layer.isolated_sensitivity_required" in page.property(
@@ -1171,7 +1596,7 @@ def test_qml_corrects_validates_and_approves_exact_persisted_revision(
     )
     assert approve_button.property("enabled") is False
 
-    assert QMetaObject.invokeMethod(revise_button, "clicked")
+    assert QMetaObject.invokeMethod(revise_button, "invoked")
     app.processEvents()
     assert " · r3 · draft · " in page.property("taskStatusText")
     assert "has not been validated" in page.property(
@@ -1181,7 +1606,7 @@ def test_qml_corrects_validates_and_approves_exact_persisted_revision(
         "approvalStatusText"
     )
 
-    assert QMetaObject.invokeMethod(validate_button, "clicked")
+    assert QMetaObject.invokeMethod(validate_button, "invoked")
     app.processEvents()
     assert " · r3 · awaiting_approval · " in page.property(
         "taskStatusText"
@@ -1192,7 +1617,7 @@ def test_qml_corrects_validates_and_approves_exact_persisted_revision(
     app.processEvents()
     assert approve_button.property("enabled") is True
 
-    assert QMetaObject.invokeMethod(approve_button, "clicked")
+    assert QMetaObject.invokeMethod(approve_button, "invoked")
     app.processEvents()
     task_text = page.property("taskStatusText")
     validation_text = page.property("validationStatusText")
@@ -1309,19 +1734,19 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     assert actor_input is not None
     assert start_button is not None
 
-    assert QMetaObject.invokeMethod(create_button, "clicked")
+    assert QMetaObject.invokeMethod(create_button, "invoked")
     app.processEvents()
-    assert QMetaObject.invokeMethod(revise_button, "clicked")
+    assert QMetaObject.invokeMethod(revise_button, "invoked")
     app.processEvents()
-    assert QMetaObject.invokeMethod(validate_button, "clicked")
+    assert QMetaObject.invokeMethod(validate_button, "invoked")
     app.processEvents()
     assert actor_input.setProperty("text", "qml-wave2-release-owner")
     app.processEvents()
-    assert QMetaObject.invokeMethod(approve_button, "clicked")
+    assert QMetaObject.invokeMethod(approve_button, "invoked")
     app.processEvents()
     assert start_button.property("enabled") is True
 
-    assert QMetaObject.invokeMethod(start_button, "clicked")
+    assert QMetaObject.invokeMethod(start_button, "invoked")
     app.processEvents()
     app.processEvents()
 
@@ -1382,7 +1807,7 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     assert cancel_node is not None
 
     assert pause_task.property("enabled") is True
-    assert QMetaObject.invokeMethod(pause_task, "clicked")
+    assert QMetaObject.invokeMethod(pause_task, "invoked")
     app.processEvents()
     paused_task = diagnostic_tasks.snapshot(
         DiagnosticTasksContext.workspace()
@@ -1390,24 +1815,24 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     assert paused_task is not None
     assert paused_task.lifecycle is DiagnosticTaskLifecycle.PAUSED
     assert resume_task.property("enabled") is True
-    assert QMetaObject.invokeMethod(resume_task, "clicked")
+    assert QMetaObject.invokeMethod(resume_task, "invoked")
     app.processEvents()
 
     assert pause_campaign.property("enabled") is True
-    assert QMetaObject.invokeMethod(pause_campaign, "clicked")
+    assert QMetaObject.invokeMethod(pause_campaign, "invoked")
     app.processEvents()
     assert resume_campaign.property("enabled") is True
-    assert QMetaObject.invokeMethod(resume_campaign, "clicked")
+    assert QMetaObject.invokeMethod(resume_campaign, "invoked")
     app.processEvents()
 
     assert pause_node.property("enabled") is True
-    assert QMetaObject.invokeMethod(pause_node, "clicked")
+    assert QMetaObject.invokeMethod(pause_node, "invoked")
     app.processEvents()
     assert resume_node.property("enabled") is True
-    assert QMetaObject.invokeMethod(resume_node, "clicked")
+    assert QMetaObject.invokeMethod(resume_node, "invoked")
     app.processEvents()
     assert cancel_node.property("enabled") is True
-    assert QMetaObject.invokeMethod(cancel_node, "clicked")
+    assert QMetaObject.invokeMethod(cancel_node, "invoked")
     app.processEvents()
 
     window.close()
