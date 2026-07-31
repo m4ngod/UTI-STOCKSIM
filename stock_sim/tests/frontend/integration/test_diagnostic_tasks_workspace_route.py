@@ -645,7 +645,15 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     run_monitoring.close()
     evidence.close()
     bridge.stop()
+    engine.dispose()
 
+    database_path = tmp_path / "diagnostic-task-campaign.db"
+    assert database_path.is_file()
+    restarted_engine = create_engine(
+        f"sqlite:///{database_path}",
+        future=True,
+    )
+    assert restarted_engine is not engine
     restarted_application = create_diagnostics_application(
         historical_source=source,
         market_data_source=source,
@@ -662,7 +670,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         ),
     )
     restarted_application.start()
-    restarted_application.initialize_persistence(engine)
+    restarted_application.initialize_persistence(restarted_engine)
     restarted_bridge = EventBridge(subscribe_backend=False)
     restarted_tasks = LiveDiagnosticTasksAdapter(
         application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
@@ -672,7 +680,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     )
     restarted_read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
         restarted_application,
-        engine,
+        restarted_engine,
     )
     restarted_monitoring = LiveRunMonitoringAdapter(
         application_read_model=restarted_read_model,
@@ -722,7 +730,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     restarted_monitoring.close()
     restarted_evidence.close()
     restarted_bridge.stop()
-    engine.dispose()
+    restarted_engine.dispose()
 
 
 def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
