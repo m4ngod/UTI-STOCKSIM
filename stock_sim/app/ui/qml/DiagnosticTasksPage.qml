@@ -73,13 +73,23 @@ Item {
             )
     }
 
+    function repairFocusedItemVisibility() {
+        var item = lastFocusedItem
+        if (item === null || !item.activeFocus)
+            return
+        ensureItemVisible(item)
+    }
+
+    function focusedAncestor(level) {
+        var item = lastFocusedItem
+        for (var index = 0; index < level && item !== null; ++index)
+            item = item.parent
+        return item
+    }
+
     function rememberFocus(item) {
         lastFocusedItem = item
         ensureItemVisible(item)
-        Qt.callLater(function() {
-            if (lastFocusedItem === item && item.activeFocus)
-                ensureItemVisible(item)
-        })
     }
 
     function restoreFocus() {
@@ -118,6 +128,7 @@ Item {
         clip: true
         contentWidth: width
         contentHeight: content.implicitHeight + tokens.spaceXl * 2
+        onContentHeightChanged: page.repairFocusedItemVisibility()
 
         ColumnLayout {
             id: content
@@ -867,5 +878,33 @@ Item {
                 }
             }
         }
+    }
+
+    Connections {
+        target: page.focusedAncestor(0)
+        ignoreUnknownSignals: true
+        function onYChanged() { page.repairFocusedItemVisibility() }
+        function onHeightChanged() { page.repairFocusedItemVisibility() }
+    }
+
+    Connections {
+        target: page.focusedAncestor(1)
+        ignoreUnknownSignals: true
+        function onYChanged() { page.repairFocusedItemVisibility() }
+        function onHeightChanged() { page.repairFocusedItemVisibility() }
+    }
+
+    Connections {
+        target: page.focusedAncestor(2)
+        ignoreUnknownSignals: true
+        function onYChanged() { page.repairFocusedItemVisibility() }
+        function onHeightChanged() { page.repairFocusedItemVisibility() }
+    }
+
+    Connections {
+        target: page.focusedAncestor(3)
+        ignoreUnknownSignals: true
+        function onYChanged() { page.repairFocusedItemVisibility() }
+        function onHeightChanged() { page.repairFocusedItemVisibility() }
     }
 }
