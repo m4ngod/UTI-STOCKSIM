@@ -521,7 +521,7 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
-    def evidenceHandoffText(self) -> str:  # noqa: N802
+    def evidenceHandoffText(self) -> str:
         task = self._state.task
         if task is None or task.handoff.campaign_id is None:
             return "No Evidence and Findings handoff is available."
@@ -606,7 +606,7 @@ class DiagnosticTasksQtAdapter(QObject):
         return self._command_status
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
-    def capabilitiesText(self) -> str:  # noqa: N802
+    def capabilitiesText(self) -> str:
         capabilities = (
             ("create", self.canCreate),
             ("correct", self.canRevise),
@@ -639,7 +639,7 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
-    def accessibilitySummaryText(self) -> str:  # noqa: N802
+    def accessibilitySummaryText(self) -> str:
         error = self._state.error
         manifest_id = self._state.reproduction_manifest_id
         return ". ".join(
@@ -676,7 +676,7 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     @Property(str, notify=announcementChanged)  # type: ignore[arg-type]
-    def accessibilityAnnouncementText(self) -> str:  # noqa: N802
+    def accessibilityAnnouncementText(self) -> str:
         return self._build_accessibility_announcement_text()
 
     def _build_accessibility_announcement_text(self) -> str:
