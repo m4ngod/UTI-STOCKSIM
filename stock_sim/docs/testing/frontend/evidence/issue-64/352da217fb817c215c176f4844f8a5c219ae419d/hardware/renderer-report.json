@@ -1,0 +1,32 @@
+{
+  "api": "Direct3D11",
+  "body_size": 26,
+  "candidate_focus": true,
+  "candidate_name": "Select candidate MODEL-B17",
+  "diagnostic_control_height": 76.0,
+  "diagnostic_focus": true,
+  "diagnostic_scrollable": true,
+  "diagnostic_status_role": "StatusBar",
+  "high_contrast": true,
+  "image_height": 1440,
+  "image_is_null": false,
+  "image_width": 2560,
+  "lane": "hardware",
+  "nontransparent": 2652,
+  "png_sha256": {
+    "diagnostic_tasks.png": "30a6314a984ceadf6ca1b3aac1766f953fc6a0fa890fbee401bdfa7718a34138",
+    "evidence_and_findings.png": "f02908722bb63fb53549d9109cff139559566444f48c62990359218ee2adc036",
+    "run_monitoring.png": "d4fa5b095d2c40009289c131c5ea21b6e272c7a8445c74ea3b95a2595c4aa6cf"
+  },
+  "reduced_motion": true,
+  "route_framebuffer_sha256": {
+    "diagnostic_tasks.png": "6ee821dcad68a2c43696b0976e9ea716af99a9fcd78219eb190ddfe96c77bb7a",
+    "evidence_and_findings.png": "31c99181ad14d095ade4a7c7f34bae592bf44323c4b02db792fe432c33e005c0",
+    "run_monitoring.png": "a6415b79239a48fa908b17200dd78e862618c141106ecb4356671d617561b96e"
+  },
+  "route_screenshots_distinct": true,
+  "run_scrollable": true,
+  "source_commit": "352da217fb817c215c176f4844f8a5c219ae419d",
+  "status_role": "StatusBar",
+  "text_scale": 2.0
+}
