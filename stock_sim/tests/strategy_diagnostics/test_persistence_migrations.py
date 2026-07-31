@@ -72,7 +72,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
 
     assert (
         first.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
@@ -91,16 +91,17 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0014_diagnostic_task_approval",
         "0015_diagnostic_task_campaign_handoff",
         "0016_diagnostic_task_start_continuation_claim",
+        "0017_diagnostic_lifecycle_targets",
     )
     assert (
         second.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -131,6 +132,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0014_diagnostic_task_approval",
         "0015_diagnostic_task_campaign_handoff",
         "0016_diagnostic_task_start_continuation_claim",
+        "0017_diagnostic_lifecycle_targets",
     ]
     strategy_run_columns = {
         column["name"]
@@ -168,6 +170,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "diagnostic_task_approvals",
         "diagnostic_task_mutation_commands",
         "diagnostic_task_campaign_handoffs",
+        "diagnostic_lifecycle_targets",
         "diagnostic_run_orders",
         "diagnostic_run_fills",
         "diagnostic_run_positions",
@@ -218,7 +221,7 @@ def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
 
     assert (
         report.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert report.applied_revisions == ("0014_diagnostic_task_approval",)
     with engine.connect() as connection:
@@ -280,7 +283,7 @@ def test_issue_59_migration_adds_durable_campaign_handoff_without_rewriting_0014
 
     assert (
         report.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert report.applied_revisions == (
         "0015_diagnostic_task_campaign_handoff",
@@ -299,6 +302,129 @@ def test_issue_59_migration_adds_durable_campaign_handoff_without_rewriting_0014
         "start_continuation_claim_id",
         "start_continuation_claimed_at_utc",
     }.issubset(handle_columns)
+
+
+def test_issue_60_migration_backfills_lifecycle_targets_idempotently(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'issue-59-upgrade.db'}",
+        future=True,
+    )
+    application = create_diagnostics_application()
+    application.start()
+    application.initialize_persistence(engine)
+    handoff = {
+        "campaign_id": "formal-campaign-upgrade-60",
+        "campaign_nodes": [
+            {
+                "active_attempt_id": "attempt-completed-60",
+                "attempts": [
+                    {
+                        "attempt_id": "attempt-completed-60",
+                        "runs": [],
+                    }
+                ],
+                "campaign_case_id": "case-completed-60",
+                "campaign_node_id": "node-completed-60",
+                "market_scenario_id": "scenario-completed-60",
+                "selected_campaign_case_id": "case-completed-60",
+            },
+            {
+                "active_attempt_id": None,
+                "attempts": [],
+                "campaign_case_id": "case-queued-60",
+                "campaign_node_id": "node-queued-60",
+                "market_scenario_id": "scenario-queued-60",
+                "selected_campaign_case_id": "case-queued-60",
+            },
+        ],
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_tasks ("
+                "task_id, creation_sequence, revision, lifecycle, "
+                "schema_version, configuration_content_id, "
+                "configuration_json, created_at_utc, updated_at_utc"
+                ") VALUES ("
+                "'diagnostic-task-upgrade-60', 1, 7, 'running', '1.0', "
+                "'sha256:configuration-upgrade-60', '{}', "
+                "'2030-01-01T00:00:00+00:00', "
+                "'2030-01-02T00:00:00+00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_task_campaign_handoffs ("
+                "task_id, campaign_id, handoff_json, updated_at_utc"
+                ") VALUES ("
+                "'diagnostic-task-upgrade-60', "
+                "'formal-campaign-upgrade-60', :handoff_json, "
+                "'2030-01-02T00:00:00+00:00')"
+            ),
+            {
+                "handoff_json": json.dumps(
+                    handoff,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            },
+        )
+        connection.exec_driver_sql("DROP TABLE diagnostic_lifecycle_targets")
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations "
+                "WHERE revision = '0017_diagnostic_lifecycle_targets'"
+            )
+        )
+
+    first = application.initialize_persistence(engine)
+
+    assert first.applied_revisions == (
+        "0017_diagnostic_lifecycle_targets",
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT target_kind, target_id, revision, lifecycle "
+                "FROM diagnostic_lifecycle_targets "
+                "ORDER BY target_kind, target_id"
+            )
+        ).all()
+    assert rows == [
+        ("campaign_node", "node-completed-60", 1, "completed"),
+        ("campaign_node", "node-queued-60", 1, "queued"),
+        (
+            "diagnostic_task",
+            "diagnostic-task-upgrade-60",
+            7,
+            "running",
+        ),
+        (
+            "formal_diagnostic_campaign",
+            "formal-campaign-upgrade-60",
+            1,
+            "running",
+        ),
+    ]
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations "
+                "WHERE revision = '0017_diagnostic_lifecycle_targets'"
+            )
+        )
+
+    second = application.initialize_persistence(engine)
+
+    assert second.applied_revisions == (
+        "0017_diagnostic_lifecycle_targets",
+    )
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_lifecycle_targets")
+        ).scalar_one() == 4
 
 
 def test_admitted_segment_catalog_survives_application_restart(tmp_path: Path) -> None:

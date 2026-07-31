@@ -29,14 +29,18 @@ from .diagnostic_evidence_storage import (
 )
 from .diagnostic_tasks import (
     ApproveDiagnosticTaskConfigurationRequest,
+    ChangeDiagnosticLifecycleRequest,
     CreateDiagnosticTaskRequest,
     DiagnosticCampaignAttemptHandoffSnapshot,
     DiagnosticCampaignNodeHandoffSnapshot,
     DiagnosticCampaignRunHandoffSnapshot,
+    DiagnosticLifecycleOperation,
+    DiagnosticLifecycleTargetKind,
     DiagnosticTaskCampaignHandoffSnapshot,
     DiagnosticTaskCommandResult,
     DiagnosticTaskConfiguration,
     DiagnosticTaskCreationResult,
+    DiagnosticTaskLifecycle,
     DiagnosticTaskService,
     DiagnosticTaskSnapshot,
     DiagnosticTaskValidationFinding,
@@ -309,6 +313,10 @@ class DiagnosticsApplication:
         )
         for request in self._diagnostic_tasks.pending_start_requests():
             self.start_formal_diagnostic_task_campaign(request)
+        for lifecycle_request in (
+            self._diagnostic_tasks.pending_lifecycle_requests()
+        ):
+            self._change_diagnostic_lifecycle(lifecycle_request)
         return report
 
     def status(self) -> DiagnosticsApplicationState:
@@ -537,6 +545,43 @@ class DiagnosticsApplication:
             affected_campaign_id=campaign.campaign_id,
         )
 
+    def pause_diagnostic_target(
+        self,
+        request: ChangeDiagnosticLifecycleRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Pause one exact non-order Diagnostic Task lifecycle target."""
+
+        if request.operation is not DiagnosticLifecycleOperation.PAUSE:
+            raise ValueError("Pause requires an explicit pause operation")
+        return self._change_diagnostic_lifecycle(request)
+
+    def resume_diagnostic_target(
+        self,
+        request: ChangeDiagnosticLifecycleRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Resume one exact non-order Diagnostic Task lifecycle target."""
+
+        if request.operation is not DiagnosticLifecycleOperation.RESUME:
+            raise ValueError("Resume requires an explicit resume operation")
+        return self._change_diagnostic_lifecycle(request)
+
+    def cancel_diagnostic_target(
+        self,
+        request: ChangeDiagnosticLifecycleRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Cancel one exact non-order Diagnostic Task lifecycle target."""
+
+        if request.operation is not DiagnosticLifecycleOperation.CANCEL:
+            raise ValueError("Cancel requires an explicit cancel operation")
+        return self._change_diagnostic_lifecycle(request)
+
+    def _change_diagnostic_lifecycle(
+        self,
+        request: ChangeDiagnosticLifecycleRequest,
+    ) -> DiagnosticTaskCommandResult:
+        self.status()
+        return self._diagnostic_tasks.change_lifecycle(request)
+
     def _formal_campaign_specification_for_task(
         self,
         task: DiagnosticTaskSnapshot,
@@ -700,6 +745,11 @@ class DiagnosticsApplication:
                         if not attempts
                         else attempts[-1].attempt_id
                     ),
+                    lifecycle={
+                        "planned": DiagnosticTaskLifecycle.QUEUED,
+                        "completed": DiagnosticTaskLifecycle.COMPLETED,
+                        "incomplete": DiagnosticTaskLifecycle.FAILED,
+                    }[case.status],
                 )
             )
         return DiagnosticTaskCampaignHandoffSnapshot(
@@ -1569,11 +1619,23 @@ class DiagnosticsApplication:
         nodes_per_batch: int = 10_000,
     ) -> DiagnosticCampaignSnapshot:
         self.status()
-        return self._diagnostic_campaigns.advance(
+        self._require_linked_campaign_running(campaign_id)
+        campaign = self._diagnostic_campaigns.get(campaign_id)
+        eligible_case_ids = self._linked_campaign_executable_case_ids(
+            campaign,
+            max_cases=max_cases,
+        )
+        if eligible_case_ids == ():
+            self._sync_linked_diagnostic_campaign(campaign)
+            return campaign
+        advanced = self._diagnostic_campaigns.advance(
             campaign_id,
             max_cases=max_cases,
             nodes_per_batch=nodes_per_batch,
+            eligible_case_ids=eligible_case_ids,
         )
+        self._sync_linked_diagnostic_campaign(advanced)
+        return advanced
 
     def resume_diagnostic_campaign(
         self,
@@ -1583,11 +1645,23 @@ class DiagnosticsApplication:
         nodes_per_batch: int = 10_000,
     ) -> DiagnosticCampaignSnapshot:
         self.status()
-        return self._diagnostic_campaigns.resume(
+        self._require_linked_campaign_running(campaign_id)
+        campaign = self._diagnostic_campaigns.get(campaign_id)
+        eligible_case_ids = self._linked_campaign_executable_case_ids(
+            campaign,
+            max_cases=max_cases,
+        )
+        if eligible_case_ids == ():
+            self._sync_linked_diagnostic_campaign(campaign)
+            return campaign
+        resumed = self._diagnostic_campaigns.resume(
             campaign_id,
             max_cases=max_cases,
             nodes_per_batch=nodes_per_batch,
+            eligible_case_ids=eligible_case_ids,
         )
+        self._sync_linked_diagnostic_campaign(resumed)
+        return resumed
 
     def retry_diagnostic_campaign_case(
         self,
@@ -1597,6 +1671,7 @@ class DiagnosticsApplication:
         nodes_per_batch: int = 10_000,
     ) -> DiagnosticCampaignSnapshot:
         self.status()
+        self._require_linked_campaign_running(campaign_id)
         return self._diagnostic_campaigns.retry_case(
             campaign_id,
             case_id,
@@ -2652,6 +2727,74 @@ class DiagnosticsApplication:
             order_shares=specification.order_shares,
             campaign_replica_id=campaign_replica_id,
             nodes_per_batch=nodes_per_batch,
+        )
+
+    def _require_linked_campaign_running(self, campaign_id: str) -> None:
+        target = self._diagnostic_tasks.lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            campaign_id,
+        )
+        if (
+            target is not None
+            and target.lifecycle is not DiagnosticTaskLifecycle.RUNNING
+        ):
+            raise ValueError(
+                "Linked Formal Diagnostic Campaign is not running."
+            )
+
+    def _linked_campaign_executable_case_ids(
+        self,
+        campaign: DiagnosticCampaignSnapshot,
+        *,
+        max_cases: int | None,
+    ) -> tuple[str, ...] | None:
+        campaign_target = self._diagnostic_tasks.lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            campaign.campaign_id,
+        )
+        if campaign_target is None:
+            return None
+        if max_cases is not None and max_cases <= 0:
+            raise ValueError("max cases must be positive")
+        selected: list[str] = []
+        for case in campaign.cases:
+            if case.status != "planned":
+                continue
+            target = self._diagnostic_tasks.lifecycle_target(
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                f"{campaign.campaign_id}:{case.case_id}",
+            )
+            if target is None:
+                raise ValueError(
+                    "Linked Formal Diagnostic Campaign node is unavailable."
+                )
+            if target.lifecycle not in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+            }:
+                break
+            selected.append(case.case_id)
+            if max_cases is not None and len(selected) == max_cases:
+                break
+        return tuple(selected)
+
+    def _sync_linked_diagnostic_campaign(
+        self,
+        campaign: DiagnosticCampaignSnapshot,
+    ) -> None:
+        campaign_target = self._diagnostic_tasks.lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            campaign.campaign_id,
+        )
+        if campaign_target is None:
+            return
+        task = self._diagnostic_tasks.get(campaign_target.task_id)
+        if task is None or task.campaign_handoff is None:
+            raise ValueError(
+                "Linked Diagnostic Task Campaign is unavailable."
+            )
+        self._diagnostic_tasks.sync_campaign_progress(
+            self._diagnostic_task_campaign_handoff(task, campaign)
         )
 
     def _execute_diagnostic_campaign_case(

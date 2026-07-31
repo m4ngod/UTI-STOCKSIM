@@ -16,6 +16,7 @@ from app.event_bridge import EventBridge
 from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DiagnosticTaskLifecycle,
     DiagnosticTasksContext,
     LiveDiagnosticTasksAdapter,
     LiveRunMonitoringAdapter,
@@ -549,6 +550,72 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     assert run_text is not None
     assert campaign_text.property("text") == f"Campaign · {campaign_id.value}"
     assert run_text.property("text") == f"Run · {run_id.value}"
+
+    diagnostic_navigation = root.findChild(
+        QObject,
+        "diagnosticTasksRouteNavigation",
+    )
+    assert diagnostic_navigation is not None
+    assert root.setProperty("activeRoute", "diagnostic_tasks")
+    app.processEvents()
+    assert root.property("activeRoute") == "diagnostic_tasks"
+    lifecycle_panel = root.findChild(QObject, "diagnosticLifecyclePanel")
+    pause_task = root.findChild(
+        QObject,
+        "pauseDiagnosticTaskTargetButton",
+    )
+    resume_task = root.findChild(
+        QObject,
+        "resumeDiagnosticTaskTargetButton",
+    )
+    pause_campaign = root.findChild(
+        QObject,
+        "pauseFormalDiagnosticCampaignTargetButton",
+    )
+    resume_campaign = root.findChild(
+        QObject,
+        "resumeFormalDiagnosticCampaignTargetButton",
+    )
+    pause_node = root.findChild(QObject, "pauseCampaignNodeTargetButton")
+    resume_node = root.findChild(QObject, "resumeCampaignNodeTargetButton")
+    cancel_node = root.findChild(QObject, "cancelCampaignNodeTargetButton")
+    assert lifecycle_panel is not None
+    assert pause_task is not None
+    assert resume_task is not None
+    assert pause_campaign is not None
+    assert resume_campaign is not None
+    assert pause_node is not None
+    assert resume_node is not None
+    assert cancel_node is not None
+
+    assert pause_task.property("enabled") is True
+    assert QMetaObject.invokeMethod(pause_task, "clicked")
+    app.processEvents()
+    paused_task = diagnostic_tasks.snapshot(
+        DiagnosticTasksContext.workspace()
+    ).task
+    assert paused_task is not None
+    assert paused_task.lifecycle is DiagnosticTaskLifecycle.PAUSED
+    assert resume_task.property("enabled") is True
+    assert QMetaObject.invokeMethod(resume_task, "clicked")
+    app.processEvents()
+
+    assert pause_campaign.property("enabled") is True
+    assert QMetaObject.invokeMethod(pause_campaign, "clicked")
+    app.processEvents()
+    assert resume_campaign.property("enabled") is True
+    assert QMetaObject.invokeMethod(resume_campaign, "clicked")
+    app.processEvents()
+
+    assert pause_node.property("enabled") is True
+    assert QMetaObject.invokeMethod(pause_node, "clicked")
+    app.processEvents()
+    assert resume_node.property("enabled") is True
+    assert QMetaObject.invokeMethod(resume_node, "clicked")
+    app.processEvents()
+    assert cancel_node.property("enabled") is True
+    assert QMetaObject.invokeMethod(cancel_node, "clicked")
+    app.processEvents()
 
     window.close()
     remounted = MainWindow(

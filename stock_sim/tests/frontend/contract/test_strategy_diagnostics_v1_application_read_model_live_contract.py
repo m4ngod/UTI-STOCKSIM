@@ -172,7 +172,7 @@ def _persist_formal_v1(database_path: Path, artifact_root: Path):
     migration = reopened.initialize_persistence(reopened_engine)
     assert (
         migration.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     return (
         reopened,

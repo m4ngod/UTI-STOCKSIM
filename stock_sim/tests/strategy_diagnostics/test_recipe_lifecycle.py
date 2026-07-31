@@ -925,7 +925,7 @@ def test_approved_recipe_version_survives_application_restart(tmp_path: Path) ->
 
     assert (
         migration.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert restored.to_dict() == approved.to_dict()
     assert {

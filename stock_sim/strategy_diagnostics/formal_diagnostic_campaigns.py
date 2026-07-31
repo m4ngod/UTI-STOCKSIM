@@ -1199,14 +1199,23 @@ class DiagnosticCampaignRunner:
         *,
         max_cases: int = 1,
         nodes_per_batch: int = 10_000,
+        eligible_case_ids: tuple[str, ...] | None = None,
     ) -> DiagnosticCampaignSnapshot:
         if max_cases <= 0:
             raise ValueError("max cases must be positive")
         if nodes_per_batch <= 0:
             raise ValueError("nodes per batch must be positive")
         snapshot = self.get(campaign_id)
+        eligible = (
+            None
+            if eligible_case_ids is None
+            else frozenset(eligible_case_ids)
+        )
         pending_ids = [
-            case.case_id for case in snapshot.cases if case.status == "planned"
+            case.case_id
+            for case in snapshot.cases
+            if case.status == "planned"
+            and (eligible is None or case.case_id in eligible)
         ][:max_cases]
         for case_id in pending_ids:
             snapshot = self._execute_case(
@@ -1222,6 +1231,7 @@ class DiagnosticCampaignRunner:
         *,
         max_cases: int | None = None,
         nodes_per_batch: int = 10_000,
+        eligible_case_ids: tuple[str, ...] | None = None,
     ) -> DiagnosticCampaignSnapshot:
         if max_cases is not None and max_cases <= 0:
             raise ValueError("max cases must be positive")
@@ -1236,6 +1246,7 @@ class DiagnosticCampaignRunner:
                 snapshot.pending_count if max_cases is None else max_cases
             ),
             nodes_per_batch=nodes_per_batch,
+            eligible_case_ids=eligible_case_ids,
         )
 
     def retry_case(

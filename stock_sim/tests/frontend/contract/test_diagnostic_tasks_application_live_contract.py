@@ -129,10 +129,12 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
         adapter.approve_configuration(commands[3]),
     )
     start_rejected = adapter.start_formal_diagnostic_campaign(commands[4])
-    unavailable = (
+    invalid_lifecycle_commands = (
         adapter.pause_diagnostic_target(commands[5]),
         adapter.resume_diagnostic_target(commands[6]),
         adapter.cancel_diagnostic_target(commands[7]),
+    )
+    unavailable = (
         adapter.retry_failed_campaign_node(commands[8]),
     )
     assert all(not item.accepted for item in invalid_task_commands)
@@ -141,6 +143,7 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
         is DiagnosticTasksApplicationCommandRejectionReason.INVALID_COMMAND
         for item in invalid_task_commands
     )
+    assert all(not item.accepted for item in invalid_lifecycle_commands)
     assert all(not item.accepted for item in unavailable)
     assert not start_rejected.accepted
     assert start_rejected.rejection_reason is (
@@ -148,10 +151,16 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
     )
     assert all(
         item.rejection_reason
+        is DiagnosticTasksApplicationCommandRejectionReason.INVALID_COMMAND
+        for item in invalid_lifecycle_commands
+    )
+    assert all(
+        item.rejection_reason
         is DiagnosticTasksApplicationCommandRejectionReason.NOT_YET_AVAILABLE
         for item in unavailable
     )
     assert start_rejected.task is None
+    assert all(item.task is None for item in invalid_lifecycle_commands)
     assert all(item.task is None for item in unavailable)
 
 

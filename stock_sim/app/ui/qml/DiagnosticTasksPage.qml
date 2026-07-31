@@ -336,9 +336,171 @@ Item {
                 }
             }
 
+            Rectangle {
+                objectName: "diagnosticLifecyclePanel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: lifecycleContent.implicitHeight + tokens.spaceLg * 2
+                radius: tokens.radiusMd
+                color: tokens.surface
+                border.color: tokens.border
+                Accessible.role: Accessible.Grouping
+                Accessible.name: "Diagnostic lifecycle management"
+                Accessible.description: adapter.taskStatusText + ". " + adapter.campaignLifecycleText + ". " + adapter.campaignNodeLifecycleText
+
+                ColumnLayout {
+                    id: lifecycleContent
+                    anchors.fill: parent
+                    anchors.margins: tokens.spaceLg
+                    spacing: tokens.spaceMd
+
+                    Text {
+                        text: "LIFECYCLE MANAGEMENT"
+                        color: tokens.accent
+                        font.pixelSize: tokens.labelSize
+                        font.bold: true
+                    }
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: tokens.textScale >= 1.75 ? 1 : 3
+                        columnSpacing: tokens.spaceMd
+                        rowSpacing: tokens.spaceMd
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: tokens.spaceSm
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "DIAGNOSTIC TASK\n" + adapter.taskStatusText
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            GridLayout {
+                                columns: tokens.textScale >= 1.75 ? 1 : 3
+                                columnSpacing: tokens.spaceXs
+
+                                Button {
+                                    objectName: "pauseDiagnosticTaskTargetButton"
+                                    text: "Pause Task"
+                                    enabled: adapter.canPauseTask
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Pause Diagnostic Task lifecycle"
+                                    onClicked: adapter.pauseDiagnosticTaskTarget()
+                                }
+                                Button {
+                                    objectName: "resumeDiagnosticTaskTargetButton"
+                                    text: "Resume Task"
+                                    enabled: adapter.canResumeTask
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Resume Diagnostic Task lifecycle"
+                                    onClicked: adapter.resumeDiagnosticTaskTarget()
+                                }
+                                Button {
+                                    objectName: "cancelDiagnosticTaskTargetButton"
+                                    text: "Cancel Task"
+                                    enabled: adapter.canCancelTask
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Cancel Diagnostic Task lifecycle"
+                                    Accessible.description: "Cancel only the typed non-transactional Diagnostic Task lifecycle target"
+                                    onClicked: adapter.cancelDiagnosticTaskTarget()
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: tokens.spaceSm
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "FORMAL CAMPAIGN\n" + adapter.campaignLifecycleText
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            GridLayout {
+                                columns: tokens.textScale >= 1.75 ? 1 : 3
+                                columnSpacing: tokens.spaceXs
+
+                                Button {
+                                    objectName: "pauseFormalDiagnosticCampaignTargetButton"
+                                    text: "Pause Campaign"
+                                    enabled: adapter.canPauseCampaign
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Pause Formal Diagnostic Campaign lifecycle"
+                                    onClicked: adapter.pauseFormalDiagnosticCampaignTarget()
+                                }
+                                Button {
+                                    objectName: "resumeFormalDiagnosticCampaignTargetButton"
+                                    text: "Resume Campaign"
+                                    enabled: adapter.canResumeCampaign
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Resume Formal Diagnostic Campaign lifecycle"
+                                    onClicked: adapter.resumeFormalDiagnosticCampaignTarget()
+                                }
+                                Button {
+                                    objectName: "cancelFormalDiagnosticCampaignTargetButton"
+                                    text: "Cancel Campaign"
+                                    enabled: adapter.canCancelCampaign
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Cancel Formal Diagnostic Campaign lifecycle"
+                                    Accessible.description: "Cancel only the typed non-transactional Formal Diagnostic Campaign lifecycle target"
+                                    onClicked: adapter.cancelFormalDiagnosticCampaignTarget()
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: tokens.spaceSm
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "CAMPAIGN NODE\n" + adapter.campaignNodeLifecycleText
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            GridLayout {
+                                columns: tokens.textScale >= 1.75 ? 1 : 3
+                                columnSpacing: tokens.spaceXs
+
+                                Button {
+                                    objectName: "pauseCampaignNodeTargetButton"
+                                    text: "Pause Node"
+                                    enabled: adapter.canPauseCampaignNode
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Pause Campaign node lifecycle"
+                                    onClicked: adapter.pauseCampaignNodeTarget()
+                                }
+                                Button {
+                                    objectName: "resumeCampaignNodeTargetButton"
+                                    text: "Resume Node"
+                                    enabled: adapter.canResumeCampaignNode
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Resume Campaign node lifecycle"
+                                    onClicked: adapter.resumeCampaignNodeTarget()
+                                }
+                                Button {
+                                    objectName: "cancelCampaignNodeTargetButton"
+                                    text: "Cancel Node"
+                                    enabled: adapter.canCancelCampaignNode
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Cancel Campaign node lifecycle"
+                                    Accessible.description: "Cancel only the typed non-transactional Campaign node lifecycle target"
+                                    onClicked: adapter.cancelCampaignNodeTarget()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Text {
                 Layout.fillWidth: true
-                text: "Campaign lifecycle and failed-node retry commands remain explicitly unavailable."
+                text: "Failed-node retry remains explicitly unavailable until Issue #61."
                 color: tokens.textQuiet
                 font.pixelSize: tokens.labelSize
                 horizontalAlignment: Text.AlignRight

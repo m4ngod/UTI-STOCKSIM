@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
@@ -357,19 +357,37 @@ class CampaignAttemptId:
         _require_identity(self.value, "Campaign attempt")
 
 
+class DiagnosticLifecycleTargetKind(str, Enum):
+    DIAGNOSTIC_TASK = "diagnostic_task"
+    FORMAL_DIAGNOSTIC_CAMPAIGN = "formal_diagnostic_campaign"
+    CAMPAIGN_NODE = "campaign_node"
+
+
 @dataclass(frozen=True, slots=True)
 class DiagnosticTaskTarget:
     task_id: DiagnosticTaskId
+    kind: DiagnosticLifecycleTargetKind = field(
+        init=False,
+        default=DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class FormalDiagnosticCampaignTarget:
     campaign_id: FormalDiagnosticCampaignId
+    kind: DiagnosticLifecycleTargetKind = field(
+        init=False,
+        default=DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class CampaignNodeTarget:
     campaign_node_id: CampaignNodeId
+    kind: DiagnosticLifecycleTargetKind = field(
+        init=False,
+        default=DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+    )
 
 
 DiagnosticLifecycleTarget = (
@@ -586,6 +604,12 @@ class DiagnosticTasksApplicationTaskLifecycle(str, Enum):
     APPROVED = "approved"
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
+    RESUMING = "resuming"
+    CANCELING = "canceling"
+    CANCELED = "canceled"
+    FAILED = "failed"
+    COMPLETED = "completed"
 
 
 class DiagnosticTasksApplicationValidationState(str, Enum):
@@ -682,11 +706,15 @@ class DiagnosticTasksApplicationCampaignNodeHandoff:
         ...,
     ]
     active_attempt_id: CampaignAttemptId | None
+    revision: int
+    lifecycle: DiagnosticTasksApplicationTaskLifecycle
 
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticTasksApplicationCampaignHandoff:
     campaign_id: FormalDiagnosticCampaignId
+    campaign_revision: int
+    campaign_lifecycle: DiagnosticTasksApplicationTaskLifecycle
     campaign_nodes: tuple[
         DiagnosticTasksApplicationCampaignNodeHandoff,
         ...,
@@ -1079,19 +1107,91 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: PauseDiagnosticTarget,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            ChangeDiagnosticLifecycleRequest,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticLifecycleOperation as BackendLifecycleOperation,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticLifecycleTargetKind as BackendLifecycleTargetKind,
+        )
+
+        target_kind, target_id = _lifecycle_target_identity(command.target)
+        try:
+            result = self._application.pause_diagnostic_target(
+                ChangeDiagnosticLifecycleRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    operation=BackendLifecycleOperation.PAUSE,
+                    target_kind=BackendLifecycleTargetKind(target_kind.value),
+                    target_id=target_id,
+                    expected_revision=command.expected_revision,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def resume_diagnostic_target(
         self,
         command: ResumeDiagnosticTarget,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            ChangeDiagnosticLifecycleRequest,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticLifecycleOperation as BackendLifecycleOperation,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticLifecycleTargetKind as BackendLifecycleTargetKind,
+        )
+
+        target_kind, target_id = _lifecycle_target_identity(command.target)
+        try:
+            result = self._application.resume_diagnostic_target(
+                ChangeDiagnosticLifecycleRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    operation=BackendLifecycleOperation.RESUME,
+                    target_kind=BackendLifecycleTargetKind(target_kind.value),
+                    target_id=target_id,
+                    expected_revision=command.expected_revision,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def cancel_diagnostic_target(
         self,
         command: CancelDiagnosticTarget,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            ChangeDiagnosticLifecycleRequest,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticLifecycleOperation as BackendLifecycleOperation,
+        )
+        from strategy_diagnostics.diagnostic_tasks import (
+            DiagnosticLifecycleTargetKind as BackendLifecycleTargetKind,
+        )
+
+        target_kind, target_id = _lifecycle_target_identity(command.target)
+        try:
+            result = self._application.cancel_diagnostic_target(
+                ChangeDiagnosticLifecycleRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    operation=BackendLifecycleOperation.CANCEL,
+                    target_kind=BackendLifecycleTargetKind(target_kind.value),
+                    target_id=target_id,
+                    expected_revision=command.expected_revision,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def retry_failed_campaign_node(
         self,
@@ -1477,6 +1577,16 @@ def _backend_configuration(
     )
 
 
+def _lifecycle_target_identity(
+    target: DiagnosticLifecycleTarget,
+) -> tuple[DiagnosticLifecycleTargetKind, str]:
+    if isinstance(target, DiagnosticTaskTarget):
+        return target.kind, target.task_id.value
+    if isinstance(target, FormalDiagnosticCampaignTarget):
+        return target.kind, target.campaign_id.value
+    return target.kind, target.campaign_node_id.value
+
+
 def _application_validation_reference(
     finding: BackendDiagnosticTaskValidationFinding,
 ) -> DiagnosticTasksApplicationValidationReference:
@@ -1662,6 +1772,14 @@ def _map_diagnostic_task(
                 campaign_id=FormalDiagnosticCampaignId(
                     snapshot.campaign_handoff.campaign_id
                 ),
+                campaign_revision=(
+                    snapshot.campaign_handoff.campaign_revision
+                ),
+                campaign_lifecycle=(
+                    DiagnosticTasksApplicationTaskLifecycle(
+                        snapshot.campaign_handoff.campaign_lifecycle.value
+                    )
+                ),
                 campaign_nodes=tuple(
                     DiagnosticTasksApplicationCampaignNodeHandoff(
                         campaign_node_id=CampaignNodeId(
@@ -1698,6 +1816,12 @@ def _map_diagnostic_task(
                             if node.active_attempt_id is None
                             else CampaignAttemptId(
                                 node.active_attempt_id
+                            )
+                        ),
+                        revision=node.revision,
+                        lifecycle=(
+                            DiagnosticTasksApplicationTaskLifecycle(
+                                node.lifecycle.value
                             )
                         ),
                     )
@@ -1763,7 +1887,11 @@ def _map_creation_result(
                 result.affected_campaign_id
             )
         ),
-        affected_campaign_node_id=None,
+        affected_campaign_node_id=(
+            None
+            if result.affected_campaign_node_id is None
+            else CampaignNodeId(result.affected_campaign_node_id)
+        ),
         retryable=result.retryable,
         correlation_id=None,
     )
@@ -1792,11 +1920,15 @@ def _diagnostic_task_token(
             if task.campaign_handoff is None
             else (
                 task.campaign_handoff.campaign_id.value,
+                task.campaign_handoff.campaign_revision,
+                task.campaign_handoff.campaign_lifecycle.value,
                 tuple(
                     (
                         node.campaign_node_id.value,
                         node.campaign_case_id.value,
                         node.market_scenario_id.value,
+                        node.revision,
+                        node.lifecycle.value,
                         tuple(
                             (
                                 attempt.attempt_id.value,
@@ -1854,6 +1986,7 @@ __all__ = [
     "DiagnosticCommandIdempotencyKey",
     "DiagnosticComparisonRole",
     "DiagnosticLifecycleTarget",
+    "DiagnosticLifecycleTargetKind",
     "DiagnosticPolicyIdentity",
     "DiagnosticStrategyInput",
     "DiagnosticStrategySelection",

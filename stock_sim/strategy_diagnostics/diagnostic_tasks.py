@@ -24,6 +24,24 @@ class DiagnosticTaskLifecycle(str, Enum):
     APPROVED = "approved"
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
+    RESUMING = "resuming"
+    CANCELING = "canceling"
+    CANCELED = "canceled"
+    FAILED = "failed"
+    COMPLETED = "completed"
+
+
+class DiagnosticLifecycleTargetKind(str, Enum):
+    DIAGNOSTIC_TASK = "diagnostic_task"
+    FORMAL_DIAGNOSTIC_CAMPAIGN = "formal_diagnostic_campaign"
+    CAMPAIGN_NODE = "campaign_node"
+
+
+class DiagnosticLifecycleOperation(str, Enum):
+    PAUSE = "pause"
+    RESUME = "resume"
+    CANCEL = "cancel"
 
 
 class DiagnosticTaskHandlePhase(str, Enum):
@@ -310,6 +328,26 @@ class StartFormalDiagnosticCampaignRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeDiagnosticLifecycleRequest:
+    command_id: str
+    idempotency_key: str
+    operation: DiagnosticLifecycleOperation
+    target_kind: DiagnosticLifecycleTargetKind
+    target_id: str
+    expected_revision: int
+
+    def command_content_identity(self) -> str:
+        return _content_identity(
+            {
+                "command_type": f"{self.operation.value}_diagnostic_target",
+                "expected_revision": self.expected_revision,
+                "target_id": self.target_id,
+                "target_kind": self.target_kind.value,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticTaskValidationFinding:
     reference_kind: DiagnosticTaskValidationReferenceKind
     reference_identity: str
@@ -398,6 +436,8 @@ class DiagnosticCampaignNodeHandoffSnapshot:
     market_scenario_id: str
     attempts: tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...]
     active_attempt_id: str | None
+    revision: int = 1
+    lifecycle: DiagnosticTaskLifecycle = DiagnosticTaskLifecycle.QUEUED
 
     def __post_init__(self) -> None:
         identities = (
@@ -416,6 +456,8 @@ class DiagnosticCampaignNodeHandoffSnapshot:
             and self.active_attempt_id not in attempt_ids
         ):
             raise ValueError("Active Campaign attempt must be present in history")
+        if self.revision < 1:
+            raise ValueError("Campaign node revision must be positive")
 
     def to_storage_dict(self) -> dict[str, object]:
         return {
@@ -426,7 +468,9 @@ class DiagnosticCampaignNodeHandoffSnapshot:
             "campaign_case_id": self.campaign_case_id,
             "campaign_node_id": self.campaign_node_id,
             "market_scenario_id": self.market_scenario_id,
+            "revision": self.revision,
             "selected_campaign_case_id": self.selected_campaign_case_id,
+            "lifecycle": self.lifecycle.value,
         }
 
 
@@ -434,10 +478,16 @@ class DiagnosticCampaignNodeHandoffSnapshot:
 class DiagnosticTaskCampaignHandoffSnapshot:
     campaign_id: str
     campaign_nodes: tuple[DiagnosticCampaignNodeHandoffSnapshot, ...]
+    campaign_revision: int = 1
+    campaign_lifecycle: DiagnosticTaskLifecycle = (
+        DiagnosticTaskLifecycle.RUNNING
+    )
 
     def __post_init__(self) -> None:
         if not self.campaign_id.strip():
             raise ValueError("Formal Diagnostic Campaign identity is required")
+        if self.campaign_revision < 1:
+            raise ValueError("Formal Diagnostic Campaign revision must be positive")
         node_ids = tuple(item.campaign_node_id for item in self.campaign_nodes)
         if len(set(node_ids)) != len(node_ids):
             raise ValueError("Campaign node identities must be unique")
@@ -460,6 +510,8 @@ class DiagnosticTaskCampaignHandoffSnapshot:
     def to_storage_dict(self) -> dict[str, object]:
         return {
             "campaign_id": self.campaign_id,
+            "campaign_lifecycle": self.campaign_lifecycle.value,
+            "campaign_revision": self.campaign_revision,
             "campaign_nodes": [
                 node.to_storage_dict() for node in self.campaign_nodes
             ],
@@ -469,13 +521,19 @@ class DiagnosticTaskCampaignHandoffSnapshot:
     def from_storage_dict(
         cls,
         payload: Mapping[str, object],
-    ) -> "DiagnosticTaskCampaignHandoffSnapshot":
+    ) -> DiagnosticTaskCampaignHandoffSnapshot:
         node_payloads = cast(
             list[Mapping[str, object]],
             payload["campaign_nodes"],
         )
         return cls(
             campaign_id=str(payload["campaign_id"]),
+            campaign_revision=int(
+                cast(str | int, payload.get("campaign_revision", 1))
+            ),
+            campaign_lifecycle=DiagnosticTaskLifecycle(
+                str(payload.get("campaign_lifecycle", "running"))
+            ),
             campaign_nodes=tuple(
                 DiagnosticCampaignNodeHandoffSnapshot(
                     campaign_node_id=str(node["campaign_node_id"]),
@@ -508,10 +566,57 @@ class DiagnosticTaskCampaignHandoffSnapshot:
                         if node.get("active_attempt_id") is None
                         else str(node["active_attempt_id"])
                     ),
+                    revision=int(
+                        cast(str | int, node.get("revision", 1))
+                    ),
+                    lifecycle=DiagnosticTaskLifecycle(
+                        str(
+                            node.get(
+                                "lifecycle",
+                                (
+                                    "completed"
+                                    if cast(
+                                        list[Mapping[str, object]],
+                                        node["attempts"],
+                                    )
+                                    else "queued"
+                                ),
+                            )
+                        )
+                    ),
                 )
                 for node in node_payloads
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticLifecycleTargetSnapshot:
+    target_kind: DiagnosticLifecycleTargetKind
+    target_id: str
+    task_id: str
+    revision: int
+    lifecycle: DiagnosticTaskLifecycle
+
+    def __post_init__(self) -> None:
+        if not self.target_id.strip() or not self.task_id.strip():
+            raise ValueError("Diagnostic lifecycle target identities are required")
+        if self.revision < 1:
+            raise ValueError("Diagnostic lifecycle target revision must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class _DiagnosticCampaignProgressMerge:
+    handoff: DiagnosticTaskCampaignHandoffSnapshot
+    target_updates: tuple[
+        tuple[
+            DiagnosticLifecycleTargetSnapshot,
+            DiagnosticLifecycleTargetSnapshot,
+        ],
+        ...,
+    ]
+    task_lifecycle: DiagnosticTaskLifecycle
+    changed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,6 +660,7 @@ class DiagnosticTaskCreationResult:
     affected_task_id: str | None
     retryable: bool
     affected_campaign_id: str | None = None
+    affected_campaign_node_id: str | None = None
 
 
 DiagnosticTaskCommandResult = DiagnosticTaskCreationResult
@@ -623,6 +729,16 @@ class DiagnosticTaskRepository(Protocol):
         self,
     ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]: ...
 
+    def get_lifecycle_target(
+        self,
+        target_kind: DiagnosticLifecycleTargetKind,
+        target_id: str,
+    ) -> DiagnosticLifecycleTargetSnapshot | None: ...
+
+    def pending_lifecycle_requests(
+        self,
+    ) -> tuple[ChangeDiagnosticLifecycleRequest, ...]: ...
+
     def accept_revision(
         self,
         *,
@@ -684,6 +800,32 @@ class DiagnosticTaskRepository(Protocol):
 
     def reset_start_continuation_claims(self) -> None: ...
 
+    def accept_lifecycle(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task_handle: DiagnosticTaskHandleSnapshot,
+        target: DiagnosticLifecycleTargetSnapshot,
+        task_revision: int,
+        accepted_lifecycle: DiagnosticTaskLifecycle,
+    ) -> bool: ...
+
+    def complete_lifecycle(
+        self,
+        task_handle_id: str,
+        operation: DiagnosticLifecycleOperation,
+        target: DiagnosticLifecycleTargetSnapshot,
+        final_lifecycle: DiagnosticTaskLifecycle,
+        updated_at: datetime,
+    ) -> None: ...
+
+    def sync_campaign_progress(
+        self,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None: ...
+
     def complete_start(
         self,
         task_handle_id: str,
@@ -715,6 +857,14 @@ class InMemoryDiagnosticTaskRepository:
             StartFormalDiagnosticCampaignRequest,
         ] = {}
         self._start_continuation_claims: dict[str, str] = {}
+        self._lifecycle_targets: dict[
+            tuple[DiagnosticLifecycleTargetKind, str],
+            DiagnosticLifecycleTargetSnapshot,
+        ] = {}
+        self._pending_lifecycle_requests: dict[
+            str,
+            ChangeDiagnosticLifecycleRequest,
+        ] = {}
 
     def find_command(
         self,
@@ -763,12 +913,13 @@ class InMemoryDiagnosticTaskRepository:
         return DiagnosticTaskAcceptance(created=True, record=record)
 
     def get_task(self, task_id: str) -> DiagnosticTaskSnapshot | None:
-        return self._tasks.get(task_id)
+        task = self._tasks.get(task_id)
+        return None if task is None else self._with_lifecycle_targets(task)
 
     def latest_task(self) -> DiagnosticTaskSnapshot | None:
         if not self._tasks:
             return None
-        return tuple(self._tasks.values())[-1]
+        return self._with_lifecycle_targets(tuple(self._tasks.values())[-1])
 
     def complete_creation(self, task_id: str, updated_at: datetime) -> None:
         current = self._tasks.get(task_id)
@@ -858,6 +1009,27 @@ class InMemoryDiagnosticTaskRepository:
                     and handle.phase is DiagnosticTaskHandlePhase.QUEUED
                     for handle in task.task_handles
                 )
+            )
+        )
+
+    def get_lifecycle_target(
+        self,
+        target_kind: DiagnosticLifecycleTargetKind,
+        target_id: str,
+    ) -> DiagnosticLifecycleTargetSnapshot | None:
+        return self._lifecycle_targets.get((target_kind, target_id))
+
+    def pending_lifecycle_requests(
+        self,
+    ) -> tuple[ChangeDiagnosticLifecycleRequest, ...]:
+        return tuple(
+            request
+            for handle_id, request in self._pending_lifecycle_requests.items()
+            if any(
+                handle.task_handle_id == handle_id
+                and handle.phase is DiagnosticTaskHandlePhase.QUEUED
+                for task in self._tasks.values()
+                for handle in task.task_handles
             )
         )
 
@@ -1111,6 +1283,221 @@ class InMemoryDiagnosticTaskRepository:
     def reset_start_continuation_claims(self) -> None:
         self._start_continuation_claims.clear()
 
+    def accept_lifecycle(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task_handle: DiagnosticTaskHandleSnapshot,
+        target: DiagnosticLifecycleTargetSnapshot,
+        task_revision: int,
+        accepted_lifecycle: DiagnosticTaskLifecycle,
+    ) -> bool:
+        if (
+            self.find_mutation_command(
+                record.command_id,
+                record.idempotency_key,
+            )
+            is not None
+        ):
+            return False
+        current_target = self.get_lifecycle_target(
+            target.target_kind,
+            target.target_id,
+        )
+        task = self._tasks.get(target.task_id)
+        if (
+            current_target != target
+            or task is None
+            or task.revision != task_revision
+        ):
+            return False
+        accepted_target = replace(
+            target,
+            revision=target.revision + 1,
+            lifecycle=accepted_lifecycle,
+        )
+        self._lifecycle_targets[
+            (target.target_kind, target.target_id)
+        ] = accepted_target
+        self._mirror_parent_lifecycle(
+            accepted_target,
+            lifecycle=accepted_lifecycle,
+            increment_revision=True,
+        )
+        task_lifecycle = (
+            accepted_lifecycle
+            if target.target_kind
+            in {
+                DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            }
+            else task.lifecycle
+        )
+        task = self._with_superseded_lifecycle_handles(
+            task,
+            target,
+            task_handle.updated_at,
+        )
+        self._tasks[target.task_id] = replace(
+            task,
+            revision=task.revision + 1,
+            lifecycle=task_lifecycle,
+            task_handles=(*task.task_handles, task_handle),
+            updated_at=task_handle.updated_at,
+        )
+        self._store_mutation(record)
+        payload = json.loads(command_json)
+        if not isinstance(payload, dict):
+            raise TypeError("Lifecycle command payload must be an object")
+        self._pending_lifecycle_requests[task_handle.task_handle_id] = (
+            ChangeDiagnosticLifecycleRequest(
+                command_id=str(payload["command_id"]),
+                idempotency_key=str(payload["idempotency_key"]),
+                operation=DiagnosticLifecycleOperation(
+                    str(payload["operation"])
+                ),
+                target_kind=DiagnosticLifecycleTargetKind(
+                    str(payload["target_kind"])
+                ),
+                target_id=str(payload["target_id"]),
+                expected_revision=int(
+                    cast(str | int, payload["expected_revision"])
+                ),
+            )
+        )
+        return True
+
+    def complete_lifecycle(
+        self,
+        task_handle_id: str,
+        operation: DiagnosticLifecycleOperation,
+        target: DiagnosticLifecycleTargetSnapshot,
+        final_lifecycle: DiagnosticTaskLifecycle,
+        updated_at: datetime,
+    ) -> None:
+        task = self._tasks.get(target.task_id)
+        if task is None:
+            raise KeyError(f"Unknown Diagnostic Task {target.task_id!r}")
+        handle = next(
+            (
+                candidate
+                for candidate in task.task_handles
+                if candidate.task_handle_id == task_handle_id
+            ),
+            None,
+        )
+        if handle is None:
+            raise KeyError(
+                f"Unknown lifecycle Diagnostic TaskHandle {task_handle_id!r}"
+            )
+        if handle.phase is DiagnosticTaskHandlePhase.COMPLETED:
+            return
+        current_target = self.get_lifecycle_target(
+            target.target_kind,
+            target.target_id,
+        )
+        if (
+            handle.phase is not DiagnosticTaskHandlePhase.QUEUED
+            or current_target is None
+            or current_target.revision != target.revision + 1
+        ):
+            raise ValueError("Diagnostic lifecycle completion changed concurrently")
+        completed_target = replace(
+            current_target,
+            lifecycle=final_lifecycle,
+        )
+        self._lifecycle_targets[
+            (target.target_kind, target.target_id)
+        ] = completed_target
+        self._mirror_parent_lifecycle(
+            completed_target,
+            lifecycle=final_lifecycle,
+            increment_revision=False,
+        )
+        if (
+            operation is DiagnosticLifecycleOperation.CANCEL
+            and target.target_kind
+            in {
+                DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            }
+        ):
+            self._cancel_child_nodes(target.task_id)
+        completed_handle = replace(
+            handle,
+            phase=DiagnosticTaskHandlePhase.COMPLETED,
+            progress=1.0,
+            result_code=_lifecycle_result_code(
+                operation,
+                target.target_kind,
+            ),
+            cancelable=False,
+            updated_at=updated_at,
+        )
+        task_lifecycle = (
+            final_lifecycle
+            if target.target_kind
+            in {
+                DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            }
+            else task.lifecycle
+        )
+        self._tasks[target.task_id] = replace(
+            task,
+            lifecycle=task_lifecycle,
+            task_handles=tuple(
+                completed_handle
+                if candidate.task_handle_id == task_handle_id
+                else candidate
+                for candidate in task.task_handles
+            ),
+            updated_at=updated_at,
+        )
+        self._pending_lifecycle_requests.pop(task_handle_id, None)
+
+    def sync_campaign_progress(
+        self,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        campaign_target = self.get_lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            handoff.campaign_id,
+        )
+        if campaign_target is None:
+            return
+        task = self._tasks.get(campaign_target.task_id)
+        if task is None or task.campaign_handoff is None:
+            raise ValueError("Linked Diagnostic Task Campaign is unavailable")
+        targets = tuple(
+            target
+            for target in self._lifecycle_targets.values()
+            if target.task_id == task.task_id
+        )
+        merged = _merge_diagnostic_campaign_progress(
+            task.campaign_handoff,
+            handoff,
+            targets,
+        )
+        if not merged.changed:
+            return
+        for before, after in merged.target_updates:
+            key = (before.target_kind, before.target_id)
+            if self._lifecycle_targets.get(key) != before:
+                raise ValueError(
+                    "Diagnostic lifecycle target changed concurrently"
+                )
+            self._lifecycle_targets[key] = after
+        self._tasks[task.task_id] = replace(
+            task,
+            revision=task.revision + 1,
+            lifecycle=merged.task_lifecycle,
+            campaign_handoff=merged.handoff,
+            updated_at=updated_at,
+        )
+
     def complete_start(
         self,
         task_handle_id: str,
@@ -1163,11 +1550,211 @@ class InMemoryDiagnosticTaskRepository:
                 campaign_handoff=handoff,
                 updated_at=updated_at,
             )
+            task_target = DiagnosticLifecycleTargetSnapshot(
+                target_kind=DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                target_id=task_id,
+                task_id=task_id,
+                revision=task.revision,
+                lifecycle=DiagnosticTaskLifecycle.RUNNING,
+            )
+            campaign_target = DiagnosticLifecycleTargetSnapshot(
+                target_kind=(
+                    DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+                ),
+                target_id=handoff.campaign_id,
+                task_id=task_id,
+                revision=handoff.campaign_revision,
+                lifecycle=handoff.campaign_lifecycle,
+            )
+            self._lifecycle_targets[
+                (task_target.target_kind, task_target.target_id)
+            ] = task_target
+            self._lifecycle_targets[
+                (campaign_target.target_kind, campaign_target.target_id)
+            ] = campaign_target
+            for node in handoff.campaign_nodes:
+                node_target = DiagnosticLifecycleTargetSnapshot(
+                    target_kind=DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                    target_id=node.campaign_node_id,
+                    task_id=task_id,
+                    revision=node.revision,
+                    lifecycle=node.lifecycle,
+                )
+                self._lifecycle_targets[
+                    (node_target.target_kind, node_target.target_id)
+                ] = node_target
             self._pending_start_requests.pop(task_handle_id, None)
             self._start_continuation_claims.pop(task_handle_id, None)
             return
         raise KeyError(
             f"Unknown Campaign start Diagnostic TaskHandle {task_handle_id!r}"
+        )
+
+    def _with_lifecycle_targets(
+        self,
+        task: DiagnosticTaskSnapshot,
+    ) -> DiagnosticTaskSnapshot:
+        handoff = task.campaign_handoff
+        if handoff is None:
+            return task
+        campaign = self.get_lifecycle_target(
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            handoff.campaign_id,
+        )
+        nodes = tuple(
+            replace(
+                node,
+                revision=(
+                    target.revision
+                    if (
+                        target := self.get_lifecycle_target(
+                            DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                            node.campaign_node_id,
+                        )
+                    )
+                    is not None
+                    else node.revision
+                ),
+                lifecycle=(
+                    target.lifecycle
+                    if target is not None
+                    else node.lifecycle
+                ),
+            )
+            for node in handoff.campaign_nodes
+        )
+        return replace(
+            task,
+            campaign_handoff=replace(
+                handoff,
+                campaign_revision=(
+                    handoff.campaign_revision
+                    if campaign is None
+                    else campaign.revision
+                ),
+                campaign_lifecycle=(
+                    handoff.campaign_lifecycle
+                    if campaign is None
+                    else campaign.lifecycle
+                ),
+                campaign_nodes=nodes,
+            ),
+        )
+
+    def _mirror_parent_lifecycle(
+        self,
+        target: DiagnosticLifecycleTargetSnapshot,
+        *,
+        lifecycle: DiagnosticTaskLifecycle,
+        increment_revision: bool,
+    ) -> None:
+        if target.target_kind is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE:
+            if increment_revision:
+                for key, parent in tuple(
+                    self._lifecycle_targets.items()
+                ):
+                    if (
+                        parent.task_id == target.task_id
+                        and parent.target_kind
+                        in {
+                            DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                            (
+                                DiagnosticLifecycleTargetKind
+                                .FORMAL_DIAGNOSTIC_CAMPAIGN
+                            ),
+                        }
+                    ):
+                        self._lifecycle_targets[key] = replace(
+                            parent,
+                            revision=parent.revision + 1,
+                        )
+            return
+        mirror_kind = (
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+            if target.target_kind
+            is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+            else DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+        )
+        mirror = next(
+            (
+                candidate
+                for (kind, _identity), candidate
+                in self._lifecycle_targets.items()
+                if kind is mirror_kind
+                and candidate.task_id == target.task_id
+            ),
+            None,
+        )
+        if mirror is None:
+            return
+        self._lifecycle_targets[
+            (mirror.target_kind, mirror.target_id)
+        ] = replace(
+            mirror,
+            revision=(
+                mirror.revision + 1
+                if increment_revision
+                else mirror.revision
+            ),
+            lifecycle=lifecycle,
+        )
+
+    def _cancel_child_nodes(self, task_id: str) -> None:
+        for key, target in tuple(self._lifecycle_targets.items()):
+            if (
+                target.task_id == task_id
+                and target.target_kind
+                is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+                and target.lifecycle
+                not in {
+                    DiagnosticTaskLifecycle.CANCELED,
+                    DiagnosticTaskLifecycle.COMPLETED,
+                    DiagnosticTaskLifecycle.FAILED,
+                }
+            ):
+                self._lifecycle_targets[key] = replace(
+                    target,
+                    revision=target.revision + 1,
+                    lifecycle=DiagnosticTaskLifecycle.CANCELED,
+                )
+
+    def _with_superseded_lifecycle_handles(
+        self,
+        task: DiagnosticTaskSnapshot,
+        target: DiagnosticLifecycleTargetSnapshot,
+        updated_at: datetime,
+    ) -> DiagnosticTaskSnapshot:
+        superseded: dict[str, DiagnosticLifecycleOperation] = {}
+        for handle_id, request in tuple(
+            self._pending_lifecycle_requests.items()
+        ):
+            if (
+                request.target_kind is target.target_kind
+                and request.target_id == target.target_id
+            ):
+                superseded[handle_id] = request.operation
+                self._pending_lifecycle_requests.pop(handle_id, None)
+        if not superseded:
+            return task
+        return replace(
+            task,
+            task_handles=tuple(
+                replace(
+                    handle,
+                    phase=DiagnosticTaskHandlePhase.COMPLETED,
+                    progress=1.0,
+                    result_code=_lifecycle_superseded_result_code(
+                        superseded[handle.task_handle_id],
+                        target.target_kind,
+                    ),
+                    cancelable=False,
+                    updated_at=updated_at,
+                )
+                if handle.task_handle_id in superseded
+                and handle.phase is DiagnosticTaskHandlePhase.QUEUED
+                else handle
+                for handle in task.task_handles
+            ),
         )
 
     def _store_mutation(
@@ -1397,12 +1984,23 @@ class SqlDiagnosticTaskRepository:
                 ),
                 {"task_id": task_id},
             ).mappings().one_or_none()
+            lifecycle_target_rows = connection.execute(
+                text(
+                    "SELECT target_kind, target_id, task_id, revision, "
+                    "lifecycle, updated_at_utc "
+                    "FROM diagnostic_lifecycle_targets "
+                    "WHERE task_id = :task_id "
+                    "ORDER BY target_kind, target_id"
+                ),
+                {"task_id": task_id},
+            ).mappings().all()
         return _task_from_rows(
             task_row,
             handle_rows,
             validation_row=validation_row,
             approval_row=approval_row,
             handoff_row=handoff_row,
+            lifecycle_target_rows=lifecycle_target_rows,
         )
 
     def latest_task(self) -> DiagnosticTaskSnapshot | None:
@@ -1586,6 +2184,72 @@ class SqlDiagnosticTaskRepository:
                         ),
                         approved_revision=int(
                             cast(str | int, payload["approved_revision"])
+                        ),
+                    )
+                )
+        return tuple(requests)
+
+    def get_lifecycle_target(
+        self,
+        target_kind: DiagnosticLifecycleTargetKind,
+        target_id: str,
+    ) -> DiagnosticLifecycleTargetSnapshot | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT target_kind, target_id, task_id, revision, "
+                    "lifecycle FROM diagnostic_lifecycle_targets "
+                    "WHERE target_kind = :target_kind "
+                    "AND target_id = :target_id"
+                ),
+                {
+                    "target_kind": target_kind.value,
+                    "target_id": target_id,
+                },
+            ).mappings().one_or_none()
+        return None if row is None else _lifecycle_target_from_row(row)
+
+    def pending_lifecycle_requests(
+        self,
+    ) -> tuple[ChangeDiagnosticLifecycleRequest, ...]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT m.command_json "
+                    "FROM diagnostic_task_mutation_commands m "
+                    "JOIN diagnostic_task_handles h "
+                    "ON h.task_handle_id = m.task_handle_id "
+                    "WHERE m.command_type IN ("
+                    "'pause_diagnostic_target', "
+                    "'resume_diagnostic_target', "
+                    "'cancel_diagnostic_target') "
+                    "AND h.phase = :handle_phase "
+                    "ORDER BY m.accepted_at_utc, m.command_id"
+                ),
+                {
+                    "handle_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                },
+            ).mappings()
+            requests = []
+            for row in rows:
+                payload = json.loads(str(row["command_json"]))
+                if not isinstance(payload, dict):
+                    raise TypeError(
+                        "Persisted lifecycle command must be an object"
+                    )
+                requests.append(
+                    ChangeDiagnosticLifecycleRequest(
+                        command_id=str(payload["command_id"]),
+                        idempotency_key=str(payload["idempotency_key"]),
+                        operation=DiagnosticLifecycleOperation(
+                            str(payload["operation"])
+                        ),
+                        target_kind=DiagnosticLifecycleTargetKind(
+                            str(payload["target_kind"])
+                        ),
+                        target_id=str(payload["target_id"]),
+                        expected_revision=int(
+                            cast(str | int, payload["expected_revision"])
                         ),
                     )
                 )
@@ -2013,7 +2677,7 @@ class SqlDiagnosticTaskRepository:
                     "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
                 },
             )
-        return claimed.rowcount == 1
+        return bool(claimed.rowcount == 1)
 
     def release_start_continuation(
         self,
@@ -2052,6 +2716,399 @@ class SqlDiagnosticTaskRepository:
                     "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
                 },
             )
+
+    def accept_lifecycle(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task_handle: DiagnosticTaskHandleSnapshot,
+        target: DiagnosticLifecycleTargetSnapshot,
+        task_revision: int,
+        accepted_lifecycle: DiagnosticTaskLifecycle,
+    ) -> bool:
+        with self._engine.begin() as connection:
+            updated_target = connection.execute(
+                text(
+                    "UPDATE diagnostic_lifecycle_targets "
+                    "SET revision = :revision, lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE target_kind = :target_kind "
+                    "AND target_id = :target_id "
+                    "AND task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle = :expected_lifecycle"
+                ),
+                {
+                    "revision": target.revision + 1,
+                    "lifecycle": accepted_lifecycle.value,
+                    "updated_at_utc": task_handle.updated_at.isoformat(),
+                    "target_kind": target.target_kind.value,
+                    "target_id": target.target_id,
+                    "task_id": target.task_id,
+                    "expected_revision": target.revision,
+                    "expected_lifecycle": target.lifecycle.value,
+                },
+            )
+            if updated_target.rowcount != 1:
+                return False
+            task_lifecycle = (
+                accepted_lifecycle.value
+                if target.target_kind
+                in {
+                    DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                    DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+                }
+                else None
+            )
+            updated_task = connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks "
+                    "SET revision = revision + 1, "
+                    "lifecycle = COALESCE(:lifecycle, lifecycle), "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_task_revision"
+                ),
+                {
+                    "lifecycle": task_lifecycle,
+                    "updated_at_utc": task_handle.updated_at.isoformat(),
+                    "task_id": target.task_id,
+                    "expected_task_revision": task_revision,
+                },
+            )
+            if updated_task.rowcount != 1:
+                raise ValueError(
+                    "Diagnostic Task lifecycle changed concurrently"
+                )
+            if target.target_kind is not (
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+            ):
+                mirror_kind = (
+                    DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+                    if target.target_kind
+                    is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+                    else DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+                )
+                mirrored = connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET revision = revision + 1, "
+                        "lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE target_kind = :target_kind "
+                        "AND task_id = :task_id"
+                    ),
+                    {
+                        "lifecycle": accepted_lifecycle.value,
+                        "updated_at_utc": task_handle.updated_at.isoformat(),
+                        "target_kind": mirror_kind.value,
+                        "task_id": target.task_id,
+                    },
+                )
+                if mirrored.rowcount != 1:
+                    raise ValueError(
+                        "Diagnostic lifecycle parent mirror is unavailable"
+                    )
+            else:
+                advanced_parents = connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET revision = revision + 1, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE task_id = :task_id "
+                        "AND target_kind IN (:task_kind, :campaign_kind)"
+                    ),
+                    {
+                        "updated_at_utc": task_handle.updated_at.isoformat(),
+                        "task_id": target.task_id,
+                        "task_kind": (
+                            DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK.value
+                        ),
+                        "campaign_kind": (
+                            DiagnosticLifecycleTargetKind
+                            .FORMAL_DIAGNOSTIC_CAMPAIGN.value
+                        ),
+                    },
+                )
+                if advanced_parents.rowcount != 2:
+                    raise ValueError(
+                        "Diagnostic lifecycle parent revisions are unavailable"
+                    )
+            self._supersede_pending_lifecycle_handles(
+                connection,
+                target,
+                task_handle.updated_at,
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_task_handles ("
+                    "task_handle_id, task_id, phase, progress_value, "
+                    "result_code, error_json, cancelable, created_at_utc, "
+                    "updated_at_utc"
+                    ") VALUES ("
+                    ":task_handle_id, :task_id, :phase, :progress_value, "
+                    ":result_code, :error_json, :cancelable, :created_at_utc, "
+                    ":updated_at_utc)"
+                ),
+                _handle_row(task_handle),
+            )
+            self._insert_mutation_command(
+                connection,
+                record=record,
+                command_json=command_json,
+            )
+        return True
+
+    def complete_lifecycle(
+        self,
+        task_handle_id: str,
+        operation: DiagnosticLifecycleOperation,
+        target: DiagnosticLifecycleTargetSnapshot,
+        final_lifecycle: DiagnosticTaskLifecycle,
+        updated_at: datetime,
+    ) -> None:
+        with self._engine.begin() as connection:
+            handle_row = connection.execute(
+                text(
+                    "SELECT phase, task_id FROM diagnostic_task_handles "
+                    "WHERE task_handle_id = :task_handle_id"
+                ),
+                {"task_handle_id": task_handle_id},
+            ).mappings().one_or_none()
+            if handle_row is None:
+                raise KeyError(
+                    f"Unknown lifecycle TaskHandle {task_handle_id!r}"
+                )
+            phase = DiagnosticTaskHandlePhase(str(handle_row["phase"]))
+            if phase is DiagnosticTaskHandlePhase.COMPLETED:
+                return
+            if phase is not DiagnosticTaskHandlePhase.QUEUED:
+                raise ValueError("Terminal Diagnostic TaskHandle cannot regress")
+            updated_target = connection.execute(
+                text(
+                    "UPDATE diagnostic_lifecycle_targets "
+                    "SET lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE target_kind = :target_kind "
+                    "AND target_id = :target_id "
+                    "AND task_id = :task_id "
+                    "AND revision = :revision"
+                ),
+                {
+                    "lifecycle": final_lifecycle.value,
+                    "updated_at_utc": updated_at.isoformat(),
+                    "target_kind": target.target_kind.value,
+                    "target_id": target.target_id,
+                    "task_id": target.task_id,
+                    "revision": target.revision + 1,
+                },
+            )
+            if updated_target.rowcount != 1:
+                raise ValueError(
+                    "Diagnostic lifecycle target changed concurrently"
+                )
+            if target.target_kind is not (
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+            ):
+                mirror_kind = (
+                    DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+                    if target.target_kind
+                    is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+                    else DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+                )
+                connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE target_kind = :target_kind "
+                        "AND task_id = :task_id"
+                    ),
+                    {
+                        "lifecycle": final_lifecycle.value,
+                        "updated_at_utc": updated_at.isoformat(),
+                        "target_kind": mirror_kind.value,
+                        "task_id": target.task_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        "UPDATE diagnostic_tasks SET lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE task_id = :task_id"
+                    ),
+                    {
+                        "lifecycle": final_lifecycle.value,
+                        "updated_at_utc": updated_at.isoformat(),
+                        "task_id": target.task_id,
+                    },
+                )
+            if (
+                operation is DiagnosticLifecycleOperation.CANCEL
+                and target.target_kind
+                in {
+                    DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                    DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+                }
+            ):
+                connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET revision = revision + 1, "
+                        "lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE target_kind = :target_kind "
+                        "AND task_id = :task_id "
+                        "AND lifecycle NOT IN ("
+                        ":completed, :canceled, :failed)"
+                    ),
+                    {
+                        "lifecycle": DiagnosticTaskLifecycle.CANCELED.value,
+                        "updated_at_utc": updated_at.isoformat(),
+                        "target_kind": (
+                            DiagnosticLifecycleTargetKind.CAMPAIGN_NODE.value
+                        ),
+                        "task_id": target.task_id,
+                        "completed": DiagnosticTaskLifecycle.COMPLETED.value,
+                        "canceled": DiagnosticTaskLifecycle.CANCELED.value,
+                        "failed": DiagnosticTaskLifecycle.FAILED.value,
+                    },
+                )
+            completed_handle = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles SET phase = :phase, "
+                    "progress_value = 1.0, result_code = :result_code, "
+                    "cancelable = 0, updated_at_utc = :updated_at_utc "
+                    "WHERE task_handle_id = :task_handle_id "
+                    "AND phase = :expected_phase"
+                ),
+                {
+                    "phase": DiagnosticTaskHandlePhase.COMPLETED.value,
+                    "result_code": _lifecycle_result_code(
+                        operation,
+                        target.target_kind,
+                    ),
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_handle_id": task_handle_id,
+                    "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                },
+            )
+            if completed_handle.rowcount != 1:
+                raise ValueError(
+                    "Diagnostic lifecycle TaskHandle changed concurrently"
+                )
+
+    def sync_campaign_progress(
+        self,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        with self._engine.begin() as connection:
+            handoff_row = connection.execute(
+                text(
+                    "SELECT h.task_id, h.campaign_id, h.handoff_json, "
+                    "t.revision AS task_revision "
+                    "FROM diagnostic_task_campaign_handoffs h "
+                    "JOIN diagnostic_tasks t ON t.task_id = h.task_id "
+                    "WHERE h.campaign_id = :campaign_id"
+                ),
+                {"campaign_id": handoff.campaign_id},
+            ).mappings().one_or_none()
+            if handoff_row is None:
+                return
+            current_handoff = _campaign_handoff_from_row(handoff_row)
+            target_rows = connection.execute(
+                text(
+                    "SELECT target_kind, target_id, task_id, revision, "
+                    "lifecycle FROM diagnostic_lifecycle_targets "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": str(handoff_row["task_id"])},
+            ).mappings()
+            targets = tuple(
+                _lifecycle_target_from_row(row) for row in target_rows
+            )
+            merged = _merge_diagnostic_campaign_progress(
+                current_handoff,
+                handoff,
+                targets,
+            )
+            if not merged.changed:
+                return
+            for before, after in merged.target_updates:
+                updated_target = connection.execute(
+                    text(
+                        "UPDATE diagnostic_lifecycle_targets "
+                        "SET revision = :revision, lifecycle = :lifecycle, "
+                        "updated_at_utc = :updated_at_utc "
+                        "WHERE target_kind = :target_kind "
+                        "AND target_id = :target_id "
+                        "AND task_id = :task_id "
+                        "AND revision = :expected_revision "
+                        "AND lifecycle = :expected_lifecycle"
+                    ),
+                    {
+                        "revision": after.revision,
+                        "lifecycle": after.lifecycle.value,
+                        "updated_at_utc": updated_at.isoformat(),
+                        "target_kind": before.target_kind.value,
+                        "target_id": before.target_id,
+                        "task_id": before.task_id,
+                        "expected_revision": before.revision,
+                        "expected_lifecycle": before.lifecycle.value,
+                    },
+                )
+                if updated_target.rowcount != 1:
+                    raise ValueError(
+                        "Diagnostic lifecycle target changed concurrently"
+                    )
+            updated_task = connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks "
+                    "SET revision = revision + 1, lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_revision"
+                ),
+                {
+                    "lifecycle": merged.task_lifecycle.value,
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_id": str(handoff_row["task_id"]),
+                    "expected_revision": int(
+                        cast(str | int, handoff_row["task_revision"])
+                    ),
+                },
+            )
+            if updated_task.rowcount != 1:
+                raise ValueError(
+                    "Diagnostic Task Campaign progress changed concurrently"
+                )
+            updated_handoff = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_campaign_handoffs "
+                    "SET handoff_json = :handoff_json, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND campaign_id = :campaign_id "
+                    "AND handoff_json = :expected_handoff_json"
+                ),
+                {
+                    "handoff_json": _canonical_json(
+                        merged.handoff.to_storage_dict()
+                    ),
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_id": str(handoff_row["task_id"]),
+                    "campaign_id": handoff.campaign_id,
+                    "expected_handoff_json": str(
+                        handoff_row["handoff_json"]
+                    ),
+                },
+            )
+            if updated_handoff.rowcount != 1:
+                raise ValueError(
+                    "Diagnostic Task Campaign handoff changed concurrently"
+                )
 
     def complete_start(
         self,
@@ -2165,6 +3222,125 @@ class SqlDiagnosticTaskRepository:
             if updated_task.rowcount != 1:
                 raise ValueError(
                     "Campaign start Diagnostic Task changed concurrently"
+                )
+            lifecycle_rows: list[Mapping[str, object]] = [
+                {
+                    "target_kind": (
+                        DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK.value
+                    ),
+                    "target_id": task_id,
+                    "task_id": task_id,
+                    "revision": int(
+                        connection.execute(
+                            text(
+                                "SELECT revision FROM diagnostic_tasks "
+                                "WHERE task_id = :task_id"
+                            ),
+                            {"task_id": task_id},
+                        ).scalar_one()
+                    ),
+                    "lifecycle": DiagnosticTaskLifecycle.RUNNING.value,
+                    "updated_at_utc": updated_at_utc,
+                },
+                {
+                    "target_kind": (
+                        DiagnosticLifecycleTargetKind
+                        .FORMAL_DIAGNOSTIC_CAMPAIGN.value
+                    ),
+                    "target_id": handoff.campaign_id,
+                    "task_id": task_id,
+                    "revision": handoff.campaign_revision,
+                    "lifecycle": handoff.campaign_lifecycle.value,
+                    "updated_at_utc": updated_at_utc,
+                },
+                *[
+                    {
+                        "target_kind": (
+                            DiagnosticLifecycleTargetKind.CAMPAIGN_NODE.value
+                        ),
+                        "target_id": node.campaign_node_id,
+                        "task_id": task_id,
+                        "revision": node.revision,
+                        "lifecycle": node.lifecycle.value,
+                        "updated_at_utc": updated_at_utc,
+                    }
+                    for node in handoff.campaign_nodes
+                ],
+            ]
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_lifecycle_targets ("
+                    "target_kind, target_id, task_id, revision, lifecycle, "
+                    "updated_at_utc) VALUES ("
+                    ":target_kind, :target_id, :task_id, :revision, "
+                    ":lifecycle, :updated_at_utc)"
+                ),
+                lifecycle_rows,
+            )
+
+    @staticmethod
+    def _supersede_pending_lifecycle_handles(
+        connection: Connection,
+        target: DiagnosticLifecycleTargetSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        rows = connection.execute(
+            text(
+                "SELECT m.task_handle_id, m.command_json "
+                "FROM diagnostic_task_mutation_commands m "
+                "JOIN diagnostic_task_handles h "
+                "ON h.task_handle_id = m.task_handle_id "
+                "WHERE m.task_id = :task_id "
+                "AND m.command_type IN ("
+                "'pause_diagnostic_target', "
+                "'resume_diagnostic_target', "
+                "'cancel_diagnostic_target') "
+                "AND h.phase = :phase"
+            ),
+            {
+                "task_id": target.task_id,
+                "phase": DiagnosticTaskHandlePhase.QUEUED.value,
+            },
+        ).mappings()
+        for row in rows:
+            payload = json.loads(str(row["command_json"]))
+            if not isinstance(payload, dict):
+                raise TypeError(
+                    "Persisted lifecycle command must be an object"
+                )
+            if (
+                str(payload["target_kind"]) != target.target_kind.value
+                or str(payload["target_id"]) != target.target_id
+            ):
+                continue
+            operation = DiagnosticLifecycleOperation(
+                str(payload["operation"])
+            )
+            superseded = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles "
+                    "SET phase = :phase, progress_value = 1.0, "
+                    "result_code = :result_code, cancelable = 0, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_handle_id = :task_handle_id "
+                    "AND phase = :expected_phase"
+                ),
+                {
+                    "phase": DiagnosticTaskHandlePhase.COMPLETED.value,
+                    "result_code": _lifecycle_superseded_result_code(
+                        operation,
+                        target.target_kind,
+                    ),
+                    "updated_at_utc": updated_at.isoformat(),
+                    "task_handle_id": str(row["task_handle_id"]),
+                    "expected_phase": (
+                        DiagnosticTaskHandlePhase.QUEUED.value
+                    ),
+                },
+            )
+            if superseded.rowcount != 1:
+                raise ValueError(
+                    "Pending lifecycle TaskHandle changed concurrently"
                 )
 
     @staticmethod
@@ -2456,10 +3632,34 @@ class DiagnosticTaskService:
     def latest(self) -> DiagnosticTaskSnapshot | None:
         return self._repository.latest_task()
 
+    def lifecycle_target(
+        self,
+        target_kind: DiagnosticLifecycleTargetKind,
+        target_id: str,
+    ) -> DiagnosticLifecycleTargetSnapshot | None:
+        return self._repository.get_lifecycle_target(
+            target_kind,
+            target_id,
+        )
+
+    def sync_campaign_progress(
+        self,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+    ) -> None:
+        self._repository.sync_campaign_progress(
+            handoff,
+            _aware(self._clock()),
+        )
+
     def pending_start_requests(
         self,
     ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]:
         return self._repository.pending_start_requests()
+
+    def pending_lifecycle_requests(
+        self,
+    ) -> tuple[ChangeDiagnosticLifecycleRequest, ...]:
+        return self._repository.pending_lifecycle_requests()
 
     def claim_start_continuation(
         self,
@@ -3392,6 +4592,400 @@ class DiagnosticTaskService:
             _aware(self._clock()),
         )
 
+    def change_lifecycle(
+        self,
+        request: ChangeDiagnosticLifecycleRequest,
+    ) -> DiagnosticTaskCommandResult:
+        if (
+            not request.command_id.strip()
+            or not request.idempotency_key.strip()
+            or not request.target_id.strip()
+            or request.expected_revision < 1
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=(
+                    request.target_id
+                    if request.target_kind
+                    is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+                    else ""
+                ),
+                reason=DiagnosticTaskCreationRejectionReason.INVALID_COMMAND,
+                message=(
+                    "Lifecycle command identity, target identity, and a "
+                    "positive exact target revision are required."
+                ),
+                current_revision=None,
+            )
+        try:
+            target = self._repository.get_lifecycle_target(
+                request.target_kind,
+                request.target_id,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            target = None
+            read_failed = True
+        else:
+            read_failed = False
+        if target is None:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=(
+                    request.target_id
+                    if request.target_kind
+                    is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+                    else ""
+                ),
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE
+                    if read_failed
+                    else DiagnosticTaskCreationRejectionReason.INVALID_COMMAND
+                ),
+                message=(
+                    "Diagnostic lifecycle target could not be read."
+                    if read_failed
+                    else "Diagnostic lifecycle target is unavailable."
+                ),
+                current_revision=None,
+                retryable=read_failed,
+            )
+        command_content_id = request.command_content_identity()
+        existing = self._find_existing_mutation(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_content_id=command_content_id,
+            task_id=target.task_id,
+            target_kind=request.target_kind,
+            target_id=request.target_id,
+        )
+        if existing is not None:
+            return self._continue_lifecycle_replay(request, target, existing)
+        try:
+            task = self._repository.get_task(target.task_id)
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            task = None
+            task_read_failed = True
+        else:
+            task_read_failed = False
+        if task is None:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=target.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE
+                    if task_read_failed
+                    else DiagnosticTaskCreationRejectionReason.INVALID_COMMAND
+                ),
+                message=(
+                    "Diagnostic Task lifecycle context could not be read."
+                    if task_read_failed
+                    else "Diagnostic Task lifecycle context is unavailable."
+                ),
+                current_revision=target.revision,
+                retryable=task_read_failed,
+            )
+        if target.revision != request.expected_revision:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=target.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.STALE_EXPECTED_REVISION
+                ),
+                message="Expected lifecycle target revision is stale.",
+                current_revision=target.revision,
+            )
+        if not self._lifecycle_transition_is_allowed(
+            request.operation,
+            target,
+            task,
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=target.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.INVALID_COMMAND,
+                message=(
+                    f"{request.operation.value.capitalize()} is not legal "
+                    "for the target's authoritative lifecycle."
+                ),
+                current_revision=target.revision,
+            )
+        accepted_lifecycle, final_lifecycle = (
+            self._lifecycle_transition_states(request.operation)
+        )
+        now = _aware(self._clock())
+        handle_id = _stable_identity(
+            f"diagnostic-{request.operation.value}-handle",
+            request.command_id,
+        )
+        queued_handle = DiagnosticTaskHandleSnapshot(
+            task_handle_id=handle_id,
+            task_id=target.task_id,
+            phase=DiagnosticTaskHandlePhase.QUEUED,
+            progress=0.0,
+            result_code=None,
+            error_code=None,
+            error_message=None,
+            error_retryable=False,
+            cancelable=False,
+            created_at=now,
+            updated_at=now,
+        )
+        record = DiagnosticTaskMutationCommandRecord(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_type=f"{request.operation.value}_diagnostic_target",
+            command_content_id=command_content_id,
+            task_id=target.task_id,
+            task_handle_id=handle_id,
+            disposition=(
+                DiagnosticTaskCreationDisposition.ASYNCHRONOUS_ACCEPTANCE
+            ),
+            message=(
+                f"Diagnostic lifecycle {request.operation.value} accepted."
+            ),
+            current_revision=target.revision + 1,
+        )
+        try:
+            accepted = self._repository.accept_lifecycle(
+                record=record,
+                command_json=_canonical_json(
+                    {
+                        "command_id": request.command_id,
+                        "command_type": record.command_type,
+                        "expected_revision": request.expected_revision,
+                        "idempotency_key": request.idempotency_key,
+                        "operation": request.operation.value,
+                        "target_id": request.target_id,
+                        "target_kind": request.target_kind.value,
+                    }
+                ),
+                task_handle=queued_handle,
+                target=target,
+                task_revision=task.revision,
+                accepted_lifecycle=accepted_lifecycle,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            replay = self._find_existing_mutation(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                command_content_id=command_content_id,
+                task_id=target.task_id,
+                target_kind=request.target_kind,
+                target_id=request.target_id,
+            )
+            if replay is not None:
+                return self._continue_lifecycle_replay(
+                    request,
+                    target,
+                    replay,
+                )
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=target.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE,
+                message=(
+                    "Lifecycle command and TaskHandle could not be persisted "
+                    "atomically."
+                ),
+                current_revision=target.revision,
+                retryable=True,
+            )
+        if not accepted:
+            replay = self._find_existing_mutation(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                command_content_id=command_content_id,
+                task_id=target.task_id,
+                target_kind=request.target_kind,
+                target_id=request.target_id,
+            )
+            if replay is not None:
+                return self._continue_lifecycle_replay(
+                    request,
+                    target,
+                    replay,
+                )
+            latest = self._repository.get_lifecycle_target(
+                request.target_kind,
+                request.target_id,
+            )
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=target.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.STALE_EXPECTED_REVISION
+                ),
+                message="Expected lifecycle target revision is stale.",
+                current_revision=(
+                    target.revision if latest is None else latest.revision
+                ),
+            )
+        try:
+            self._repository.complete_lifecycle(
+                handle_id,
+                request.operation,
+                target,
+                final_lifecycle,
+                _aware(self._clock()),
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            message = (
+                f"Diagnostic lifecycle {request.operation.value} accepted; "
+                "queued completion will resume when the Application restarts."
+            )
+            return replace(
+                self._lifecycle_mutation_result(
+                    record,
+                    request,
+                    queued_handle,
+                ),
+                message=message,
+            )
+        return self._lifecycle_mutation_result(
+            record,
+            request,
+            queued_handle,
+        )
+
+    def _continue_lifecycle_replay(
+        self,
+        request: ChangeDiagnosticLifecycleRequest,
+        target: DiagnosticLifecycleTargetSnapshot,
+        existing: DiagnosticTaskCommandResult,
+    ) -> DiagnosticTaskCommandResult:
+        handle = existing.task_handle
+        if (
+            existing.disposition
+            is not DiagnosticTaskCreationDisposition.IDEMPOTENT_REPLAY
+            or handle is None
+            or handle.phase is not DiagnosticTaskHandlePhase.QUEUED
+        ):
+            return existing
+        accepted_target = self._repository.get_lifecycle_target(
+            request.target_kind,
+            request.target_id,
+        )
+        if accepted_target is None:
+            return existing
+        _accepted_lifecycle, final_lifecycle = (
+            self._lifecycle_transition_states(request.operation)
+        )
+        original_target = replace(
+            accepted_target,
+            revision=request.expected_revision,
+        )
+        try:
+            self._repository.complete_lifecycle(
+                handle.task_handle_id,
+                request.operation,
+                original_target,
+                final_lifecycle,
+                _aware(self._clock()),
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            return existing
+        replay = self._find_existing_mutation(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_content_id=request.command_content_identity(),
+            task_id=target.task_id,
+            target_kind=request.target_kind,
+            target_id=request.target_id,
+        )
+        return existing if replay is None else replay
+
+    @staticmethod
+    def _lifecycle_transition_states(
+        operation: DiagnosticLifecycleOperation,
+    ) -> tuple[DiagnosticTaskLifecycle, DiagnosticTaskLifecycle]:
+        if operation is DiagnosticLifecycleOperation.PAUSE:
+            return (
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.PAUSED,
+            )
+        if operation is DiagnosticLifecycleOperation.RESUME:
+            return (
+                DiagnosticTaskLifecycle.RESUMING,
+                DiagnosticTaskLifecycle.RUNNING,
+            )
+        return (
+            DiagnosticTaskLifecycle.CANCELING,
+            DiagnosticTaskLifecycle.CANCELED,
+        )
+
+    @staticmethod
+    def _lifecycle_transition_is_allowed(
+        operation: DiagnosticLifecycleOperation,
+        target: DiagnosticLifecycleTargetSnapshot,
+        task: DiagnosticTaskSnapshot,
+    ) -> bool:
+        if task.campaign_handoff is None:
+            return False
+        if (
+            target.target_kind
+            is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+            and operation
+            in {
+                DiagnosticLifecycleOperation.PAUSE,
+                DiagnosticLifecycleOperation.RESUME,
+            }
+            and task.lifecycle is not DiagnosticTaskLifecycle.RUNNING
+        ):
+            return False
+        allowed = {
+            DiagnosticLifecycleOperation.PAUSE: {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+            },
+            DiagnosticLifecycleOperation.RESUME: {
+                DiagnosticTaskLifecycle.PAUSED,
+            },
+            DiagnosticLifecycleOperation.CANCEL: {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.RESUMING,
+            },
+        }
+        return target.lifecycle in allowed[operation]
+
+    @staticmethod
+    def _lifecycle_mutation_result(
+        record: DiagnosticTaskMutationCommandRecord,
+        request: ChangeDiagnosticLifecycleRequest,
+        task_handle: DiagnosticTaskHandleSnapshot,
+    ) -> DiagnosticTaskCommandResult:
+        return DiagnosticTaskCreationResult(
+            disposition=record.disposition,
+            command_id=record.command_id,
+            idempotency_key=record.idempotency_key,
+            message=record.message,
+            rejection_reason=None,
+            task_handle=task_handle,
+            current_revision=record.current_revision,
+            affected_task_id=record.task_id,
+            retryable=False,
+            affected_campaign_id=(
+                request.target_id
+                if request.target_kind
+                is DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+                else None
+            ),
+            affected_campaign_node_id=(
+                request.target_id
+                if request.target_kind
+                is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+                else None
+            ),
+        )
+
     def _started_configuration_mutation_rejection(
         self,
         *,
@@ -3426,6 +5020,8 @@ class DiagnosticTaskService:
         idempotency_key: str,
         command_content_id: str,
         task_id: str,
+        target_kind: DiagnosticLifecycleTargetKind | None = None,
+        target_id: str | None = None,
     ) -> DiagnosticTaskCommandResult | None:
         try:
             existing = self._repository.find_mutation_command(
@@ -3511,13 +5107,27 @@ class DiagnosticTaskService:
             message=existing.message,
             rejection_reason=None,
             task_handle=handle,
-            current_revision=task.revision,
+            current_revision=(
+                existing.current_revision
+                if target_kind is not None
+                else task.revision
+            ),
             affected_task_id=task.task_id,
             retryable=False,
             affected_campaign_id=(
-                None
-                if task.campaign_handoff is None
-                else task.campaign_handoff.campaign_id
+                target_id
+                if target_kind
+                is DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+                else (
+                    None
+                    if task.campaign_handoff is None
+                    else task.campaign_handoff.campaign_id
+                )
+            ),
+            affected_campaign_node_id=(
+                target_id
+                if target_kind is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+                else None
             ),
         )
 
@@ -3803,6 +5413,7 @@ def _task_from_rows(
     validation_row: RowMapping | None = None,
     approval_row: RowMapping | None = None,
     handoff_row: RowMapping | None = None,
+    lifecycle_target_rows: Sequence[RowMapping] = (),
 ) -> DiagnosticTaskSnapshot:
     configuration_payload = json.loads(str(task_row["configuration_json"]))
     if not isinstance(configuration_payload, dict):
@@ -3836,11 +5447,65 @@ def _task_from_rows(
         if handoff_row is None
         else _campaign_handoff_from_row(handoff_row)
     )
+    lifecycle_targets = tuple(
+        _lifecycle_target_from_row(row)
+        for row in lifecycle_target_rows
+    )
+    if campaign_handoff is not None and lifecycle_targets:
+        campaign_target = next(
+            (
+                target
+                for target in lifecycle_targets
+                if target.target_kind
+                is DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN
+                and target.target_id == campaign_handoff.campaign_id
+            ),
+            None,
+        )
+        nodes_by_id = {
+            target.target_id: target
+            for target in lifecycle_targets
+            if target.target_kind
+            is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE
+        }
+        campaign_handoff = replace(
+            campaign_handoff,
+            campaign_revision=(
+                campaign_handoff.campaign_revision
+                if campaign_target is None
+                else campaign_target.revision
+            ),
+            campaign_lifecycle=(
+                campaign_handoff.campaign_lifecycle
+                if campaign_target is None
+                else campaign_target.lifecycle
+            ),
+            campaign_nodes=tuple(
+                replace(
+                    node,
+                    revision=(
+                        nodes_by_id[node.campaign_node_id].revision
+                        if node.campaign_node_id in nodes_by_id
+                        else node.revision
+                    ),
+                    lifecycle=(
+                        nodes_by_id[node.campaign_node_id].lifecycle
+                        if node.campaign_node_id in nodes_by_id
+                        else node.lifecycle
+                    ),
+                )
+                for node in campaign_handoff.campaign_nodes
+            ),
+        )
     if revision < 1 or any(handle.task_id != task_id for handle in handles):
         raise ValueError("Persisted Diagnostic Task identity is inconsistent")
     if validation is not None and (
         validation.task_id != task_id
-        or validation.task_revision != revision
+        or validation.task_revision > revision
+        or (
+            campaign_handoff is None
+            and validation.task_revision != revision
+        )
         or validation.configuration_content_id
         != configuration.content_identity
         or validation.task_handle_id
@@ -3853,7 +5518,11 @@ def _task_from_rows(
         validation is None
         or validation.state is not DiagnosticTaskValidationState.VALID
         or approval.task_id != task_id
-        or approval.task_revision != revision
+        or approval.task_revision > revision
+        or (
+            campaign_handoff is None
+            and approval.task_revision != revision
+        )
         or approval.configuration_content_id
         != configuration.content_identity
         or approval.validation_id != validation.validation_id
@@ -3892,7 +5561,16 @@ def _task_from_rows(
             and campaign_handoff is None
         )
         or (
-            lifecycle is DiagnosticTaskLifecycle.RUNNING
+            lifecycle
+            in {
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.RESUMING,
+                DiagnosticTaskLifecycle.CANCELING,
+                DiagnosticTaskLifecycle.CANCELED,
+                DiagnosticTaskLifecycle.FAILED,
+                DiagnosticTaskLifecycle.COMPLETED,
+            }
             and approval is not None
             and campaign_handoff is not None
         )
@@ -3945,6 +5623,186 @@ def _handle_from_row(
     )
 
 
+def _merge_diagnostic_campaign_progress(
+    current: DiagnosticTaskCampaignHandoffSnapshot,
+    incoming: DiagnosticTaskCampaignHandoffSnapshot,
+    targets: tuple[DiagnosticLifecycleTargetSnapshot, ...],
+) -> _DiagnosticCampaignProgressMerge:
+    if current.campaign_id != incoming.campaign_id:
+        raise ValueError("Formal Diagnostic Campaign identity cannot change")
+    current_node_ids = tuple(
+        node.campaign_node_id for node in current.campaign_nodes
+    )
+    incoming_node_ids = tuple(
+        node.campaign_node_id for node in incoming.campaign_nodes
+    )
+    if current_node_ids != incoming_node_ids:
+        raise ValueError("Formal Diagnostic Campaign nodes cannot change")
+    targets_by_key = {
+        (target.target_kind, target.target_id): target
+        for target in targets
+    }
+    node_updates: list[
+        tuple[
+            DiagnosticLifecycleTargetSnapshot,
+            DiagnosticLifecycleTargetSnapshot,
+        ]
+    ] = []
+    merged_nodes: list[DiagnosticCampaignNodeHandoffSnapshot] = []
+    progressed = False
+    for current_node, incoming_node in zip(
+        current.campaign_nodes,
+        incoming.campaign_nodes,
+        strict=True,
+    ):
+        if (
+            current_node.campaign_case_id
+            != incoming_node.campaign_case_id
+            or current_node.selected_campaign_case_id
+            != incoming_node.selected_campaign_case_id
+            or current_node.market_scenario_id
+            != incoming_node.market_scenario_id
+        ):
+            raise ValueError(
+                "Formal Diagnostic Campaign node identity cannot change"
+            )
+        if (
+            incoming_node.attempts[: len(current_node.attempts)]
+            != current_node.attempts
+        ):
+            raise ValueError(
+                "Formal Diagnostic Campaign attempt history cannot regress"
+            )
+        target = targets_by_key.get(
+            (
+                DiagnosticLifecycleTargetKind.CAMPAIGN_NODE,
+                current_node.campaign_node_id,
+            )
+        )
+        if target is None:
+            raise ValueError(
+                "Formal Diagnostic Campaign lifecycle node is unavailable"
+            )
+        attempts_changed = (
+            incoming_node.attempts != current_node.attempts
+            or incoming_node.active_attempt_id
+            != current_node.active_attempt_id
+        )
+        updated_target = target
+        execution_terminal = (
+            bool(incoming_node.attempts)
+            and incoming_node.lifecycle
+            in {
+                DiagnosticTaskLifecycle.COMPLETED,
+                DiagnosticTaskLifecycle.FAILED,
+            }
+        )
+        if attempts_changed and not execution_terminal:
+            raise ValueError(
+                "Campaign node execution must produce a terminal result"
+            )
+        if (
+            execution_terminal
+            and target.lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.RESUMING,
+            }
+        ):
+            updated_target = replace(
+                target,
+                revision=target.revision + 1,
+                lifecycle=incoming_node.lifecycle,
+            )
+            node_updates.append((target, updated_target))
+        if attempts_changed or updated_target != target:
+            progressed = True
+        merged_nodes.append(
+            replace(
+                incoming_node,
+                revision=updated_target.revision,
+                lifecycle=updated_target.lifecycle,
+            )
+        )
+    campaign_target = targets_by_key.get(
+        (
+            DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
+            current.campaign_id,
+        )
+    )
+    task_target = next(
+        (
+            target
+            for target in targets
+            if target.target_kind
+            is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+        ),
+        None,
+    )
+    if campaign_target is None or task_target is None:
+        raise ValueError(
+            "Formal Diagnostic Campaign parent lifecycle is unavailable"
+        )
+    if campaign_target.lifecycle is not task_target.lifecycle:
+        raise ValueError(
+            "Formal Diagnostic Campaign parent lifecycle is inconsistent"
+        )
+    terminal = {
+        DiagnosticTaskLifecycle.CANCELED,
+        DiagnosticTaskLifecycle.COMPLETED,
+        DiagnosticTaskLifecycle.FAILED,
+    }
+    node_lifecycles = tuple(node.lifecycle for node in merged_nodes)
+    aggregate_lifecycle: DiagnosticTaskLifecycle
+    if campaign_target.lifecycle is not DiagnosticTaskLifecycle.RUNNING:
+        aggregate_lifecycle = campaign_target.lifecycle
+    elif all(lifecycle in terminal for lifecycle in node_lifecycles):
+        if DiagnosticTaskLifecycle.CANCELED in node_lifecycles:
+            aggregate_lifecycle = DiagnosticTaskLifecycle.CANCELED
+        elif DiagnosticTaskLifecycle.FAILED in node_lifecycles:
+            aggregate_lifecycle = DiagnosticTaskLifecycle.FAILED
+        else:
+            aggregate_lifecycle = DiagnosticTaskLifecycle.COMPLETED
+    else:
+        aggregate_lifecycle = DiagnosticTaskLifecycle.RUNNING
+    if (
+        not progressed
+        and aggregate_lifecycle is campaign_target.lifecycle
+    ):
+        return _DiagnosticCampaignProgressMerge(
+            handoff=current,
+            target_updates=(),
+            task_lifecycle=task_target.lifecycle,
+            changed=False,
+        )
+    updated_campaign_target = replace(
+        campaign_target,
+        revision=campaign_target.revision + 1,
+        lifecycle=aggregate_lifecycle,
+    )
+    updated_task_target = replace(
+        task_target,
+        revision=task_target.revision + 1,
+        lifecycle=aggregate_lifecycle,
+    )
+    return _DiagnosticCampaignProgressMerge(
+        handoff=replace(
+            incoming,
+            campaign_revision=updated_campaign_target.revision,
+            campaign_lifecycle=aggregate_lifecycle,
+            campaign_nodes=tuple(merged_nodes),
+        ),
+        target_updates=(
+            *node_updates,
+            (campaign_target, updated_campaign_target),
+            (task_target, updated_task_target),
+        ),
+        task_lifecycle=aggregate_lifecycle,
+        changed=True,
+    )
+
+
 def _campaign_handoff_from_row(
     row: RowMapping,
 ) -> DiagnosticTaskCampaignHandoffSnapshot:
@@ -3962,6 +5820,18 @@ def _campaign_handoff_from_row(
             "Persisted Diagnostic Task Campaign handoff is inconsistent"
         )
     return handoff
+
+
+def _lifecycle_target_from_row(
+    row: RowMapping,
+) -> DiagnosticLifecycleTargetSnapshot:
+    return DiagnosticLifecycleTargetSnapshot(
+        target_kind=DiagnosticLifecycleTargetKind(str(row["target_kind"])),
+        target_id=str(row["target_id"]),
+        task_id=str(row["task_id"]),
+        revision=int(cast(str | int, row["revision"])),
+        lifecycle=DiagnosticTaskLifecycle(str(row["lifecycle"])),
+    )
 
 
 def _command_record(row: RowMapping) -> DiagnosticTaskCommandRecord:
@@ -4116,6 +5986,39 @@ def _stable_identity(prefix: str, seed: str) -> str:
     return f"{prefix}-{digest}"
 
 
+def _lifecycle_result_code(
+    operation: DiagnosticLifecycleOperation,
+    target_kind: DiagnosticLifecycleTargetKind,
+) -> str:
+    target_name = {
+        DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK: "diagnostic_task",
+        DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN: (
+            "formal_diagnostic_campaign"
+        ),
+        DiagnosticLifecycleTargetKind.CAMPAIGN_NODE: "campaign_node",
+    }[target_kind]
+    completed_operation = {
+        DiagnosticLifecycleOperation.PAUSE: "paused",
+        DiagnosticLifecycleOperation.RESUME: "resumed",
+        DiagnosticLifecycleOperation.CANCEL: "canceled",
+    }[operation]
+    return f"{target_name}_{completed_operation}"
+
+
+def _lifecycle_superseded_result_code(
+    operation: DiagnosticLifecycleOperation,
+    target_kind: DiagnosticLifecycleTargetKind,
+) -> str:
+    target_name = {
+        DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK: "diagnostic_task",
+        DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN: (
+            "formal_diagnostic_campaign"
+        ),
+        DiagnosticLifecycleTargetKind.CAMPAIGN_NODE: "campaign_node",
+    }[target_kind]
+    return f"{target_name}_{operation.value}_superseded"
+
+
 def _aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -4124,11 +6027,15 @@ def _aware(value: datetime) -> datetime:
 
 __all__ = [
     "ApproveDiagnosticTaskConfigurationRequest",
+    "ChangeDiagnosticLifecycleRequest",
     "CreateDiagnosticTaskRequest",
     "DiagnosticCampaignAttemptHandoffSnapshot",
     "DiagnosticCampaignCaseSelection",
     "DiagnosticCampaignNodeHandoffSnapshot",
     "DiagnosticCampaignRunHandoffSnapshot",
+    "DiagnosticLifecycleOperation",
+    "DiagnosticLifecycleTargetKind",
+    "DiagnosticLifecycleTargetSnapshot",
     "DiagnosticStrategySelection",
     "DiagnosticTaskApprovalSnapshot",
     "DiagnosticTaskCampaignHandoffSnapshot",

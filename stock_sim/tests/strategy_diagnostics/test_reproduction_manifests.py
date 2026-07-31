@@ -675,7 +675,7 @@ def test_sql_repository_survives_restart_and_rejects_tampering(
 
     assert (
         migration.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     assert restarted.get_manifest(manifest.manifest_id) == manifest
     assert restarted.list_manifests(manifest.evidence_package_id) == (

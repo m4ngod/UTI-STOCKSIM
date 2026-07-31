@@ -95,7 +95,7 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
         "product": "Strategy Diagnostics Laboratory",
         "status": "ready",
         "supported_persistence_revision": (
-            "0016_diagnostic_task_start_continuation_claim"
+            "0017_diagnostic_lifecycle_targets"
         ),
         "workspace": "Diagnostics",
     }

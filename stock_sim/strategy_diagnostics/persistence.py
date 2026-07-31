@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final, Literal, cast
@@ -48,9 +49,10 @@ _DIAGNOSTIC_TASK_APPROVAL_REVISION: Final = "0014_diagnostic_task_approval"
 _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION: Final = (
     "0015_diagnostic_task_campaign_handoff"
 )
-DIAGNOSTIC_SCHEMA_REVISION: Final = (
+_DIAGNOSTIC_TASK_START_CONTINUATION_REVISION: Final = (
     "0016_diagnostic_task_start_continuation_claim"
 )
+DIAGNOSTIC_SCHEMA_REVISION: Final = "0017_diagnostic_lifecycle_targets"
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -68,6 +70,7 @@ _MIGRATION_REVISIONS: Final = (
     _DIAGNOSTIC_TASK_REVISION,
     _DIAGNOSTIC_TASK_APPROVAL_REVISION,
     _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION,
+    _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -131,8 +134,10 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_diagnostic_task_approval(connection)
             elif revision == _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION:
                 _create_diagnostic_task_campaign_handoff(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION:
                 _add_diagnostic_task_start_continuation_claim(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_diagnostic_lifecycle_targets(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -549,6 +554,117 @@ def _add_diagnostic_task_start_continuation_claim(
             "ALTER TABLE diagnostic_task_handles "
             "ADD COLUMN start_continuation_claimed_at_utc VARCHAR(64) NULL"
         )
+
+
+def _create_diagnostic_lifecycle_targets(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_lifecycle_targets ("
+        "target_kind VARCHAR(48) NOT NULL, "
+        "target_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "lifecycle VARCHAR(32) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(target_kind, target_id), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    existing_targets = {
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            text(
+                "SELECT target_kind, target_id "
+                "FROM diagnostic_lifecycle_targets"
+            )
+        )
+    }
+
+    def insert_target(
+        *,
+        target_kind: str,
+        target_id: str,
+        task_id: str,
+        revision: int,
+        lifecycle: str,
+        updated_at_utc: str,
+    ) -> None:
+        key = (target_kind, target_id)
+        if key in existing_targets:
+            return
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_lifecycle_targets ("
+                "target_kind, target_id, task_id, revision, lifecycle, "
+                "updated_at_utc) VALUES ("
+                ":target_kind, :target_id, :task_id, :revision, :lifecycle, "
+                ":updated_at_utc)"
+            ),
+            {
+                "target_kind": target_kind,
+                "target_id": target_id,
+                "task_id": task_id,
+                "revision": revision,
+                "lifecycle": lifecycle,
+                "updated_at_utc": updated_at_utc,
+            },
+        )
+        existing_targets.add(key)
+
+    rows = connection.execute(
+        text(
+            "SELECT t.task_id, t.revision, t.lifecycle, t.updated_at_utc, "
+            "h.campaign_id, h.handoff_json "
+            "FROM diagnostic_tasks t "
+            "JOIN diagnostic_task_campaign_handoffs h "
+            "ON h.task_id = t.task_id"
+        )
+    ).mappings()
+    for row in rows:
+        task_id = str(row["task_id"])
+        campaign_id = str(row["campaign_id"])
+        revision = int(cast(str | int, row["revision"]))
+        lifecycle = str(row["lifecycle"])
+        updated_at_utc = str(row["updated_at_utc"])
+        payload = json.loads(str(row["handoff_json"]))
+        if not isinstance(payload, dict):
+            raise TypeError("Diagnostic Task handoff must be an object")
+        insert_target(
+            target_kind="diagnostic_task",
+            target_id=task_id,
+            task_id=task_id,
+            revision=revision,
+            lifecycle=lifecycle,
+            updated_at_utc=updated_at_utc,
+        )
+        insert_target(
+            target_kind="formal_diagnostic_campaign",
+            target_id=campaign_id,
+            task_id=task_id,
+            revision=1,
+            lifecycle=lifecycle,
+            updated_at_utc=updated_at_utc,
+        )
+        nodes = cast(list[Mapping[str, object]], payload["campaign_nodes"])
+        for node in nodes:
+            attempts = cast(
+                list[Mapping[str, object]],
+                node.get("attempts", []),
+            )
+            insert_target(
+                target_kind="campaign_node",
+                target_id=str(node["campaign_node_id"]),
+                task_id=task_id,
+                revision=int(
+                    cast(str | int, node.get("revision", 1))
+                ),
+                lifecycle=str(
+                    node.get(
+                        "lifecycle",
+                        "completed" if attempts else "queued",
+                    )
+                ),
+                updated_at_utc=updated_at_utc,
+            )
 
 
 def _create_strategy_run_facts(connection: Connection) -> None:

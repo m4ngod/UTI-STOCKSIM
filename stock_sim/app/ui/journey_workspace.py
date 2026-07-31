@@ -26,27 +26,36 @@ from PySide6.QtWidgets import QWidget
 
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
+    CampaignNodeTarget,
+    CancelDiagnosticTarget,
     CancelDiagnosticTask,
     CandidateEvidence,
     CreateDiagnosticTask,
     DiagnosticActorId,
     DiagnosticCampaignCaseSelection,
     DiagnosticCampaignLayer,
+    DiagnosticCampaignNodeHandoff,
     DiagnosticCommandId,
     DiagnosticCommandIdempotencyKey,
     DiagnosticComparisonRole,
     DiagnosticStrategySelection,
     DiagnosticTaskConfiguration,
+    DiagnosticTaskLifecycle,
+    DiagnosticTasksCommandResult,
     DiagnosticTasksContext,
     DiagnosticTasksFeature,
     DiagnosticTasksViewState,
+    DiagnosticTaskTarget,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsFeature,
     EvidenceAndFindingsSubscription,
     EvidenceAndFindingsViewState,
     EvidenceCoverage,
     EvidenceDimension,
+    FormalDiagnosticCampaignTarget,
+    PauseDiagnosticTarget,
     PauseDiagnosticTask,
+    ResumeDiagnosticTarget,
     ResumeDiagnosticTask,
     ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
@@ -304,6 +313,93 @@ class DiagnosticTasksQtAdapter(QObject):
     def canStartCampaign(self) -> bool:  # noqa: N802
         return bool(self._state.capabilities.can_start_campaign)
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canPauseTask(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_pause)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResumeTask(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_resume)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCancelTask(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_cancel)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canPauseCampaign(self) -> bool:  # noqa: N802
+        task = self._state.task
+        return bool(
+            task is not None
+            and task.handoff.campaign_id is not None
+            and task.handoff.campaign_lifecycle
+            is DiagnosticTaskLifecycle.RUNNING
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResumeCampaign(self) -> bool:  # noqa: N802
+        task = self._state.task
+        return bool(
+            task is not None
+            and task.handoff.campaign_id is not None
+            and task.handoff.campaign_lifecycle
+            is DiagnosticTaskLifecycle.PAUSED
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCancelCampaign(self) -> bool:  # noqa: N802
+        task = self._state.task
+        return bool(
+            task is not None
+            and task.handoff.campaign_id is not None
+            and task.handoff.campaign_lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.RESUMING,
+            }
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canPauseCampaignNode(self) -> bool:  # noqa: N802
+        task = self._state.task
+        node = self._actionable_campaign_node()
+        return bool(
+            task is not None
+            and task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+            and node is not None
+            and node.lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+            }
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResumeCampaignNode(self) -> bool:  # noqa: N802
+        task = self._state.task
+        node = self._actionable_campaign_node()
+        return bool(
+            task is not None
+            and task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+            and node is not None
+            and node.lifecycle is DiagnosticTaskLifecycle.PAUSED
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCancelCampaignNode(self) -> bool:  # noqa: N802
+        node = self._actionable_campaign_node()
+        return bool(
+            node is not None
+            and node.lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.RESUMING,
+            }
+        )
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskStatusText(self) -> str:  # noqa: N802
         task = self._state.task
@@ -386,6 +482,29 @@ class DiagnosticTasksQtAdapter(QObject):
         return (
             f"Campaign {selection.campaign_id.value} · "
             f"Run {selection.run_id.value if selection.run_id is not None else 'pending'}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def campaignLifecycleText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or task.handoff.campaign_id is None:
+            return "No Formal Diagnostic Campaign lifecycle is available."
+        lifecycle = task.handoff.campaign_lifecycle
+        revision = task.handoff.campaign_revision
+        return (
+            f"{task.handoff.campaign_id.value} · "
+            f"r{revision if revision is not None else 'unknown'} · "
+            f"{lifecycle.value if lifecycle is not None else 'unknown'}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def campaignNodeLifecycleText(self) -> str:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None:
+            return "No actionable Campaign node is available."
+        return (
+            f"{node.campaign_node_id.value} · r{node.revision} · "
+            f"{node.lifecycle.value}"
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -559,6 +678,259 @@ class DiagnosticTasksQtAdapter(QObject):
         self.refresh()
         self.stateChanged.emit()
         self._emit_monitoring_handoff_if_ready()
+
+    @Slot()
+    def pauseDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canPauseTask:
+            self._lifecycle_unavailable("Task pause")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.pause_diagnostic_target(
+                PauseDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"pause-diagnostic-task-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-task-pause-{command_identity}"
+                    ),
+                    target=DiagnosticTaskTarget(task.task_id),
+                    expected_revision=task.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def resumeDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canResumeTask:
+            self._lifecycle_unavailable("Task resume")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.resume_diagnostic_target(
+                ResumeDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"resume-diagnostic-task-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-task-resume-{command_identity}"
+                    ),
+                    target=DiagnosticTaskTarget(task.task_id),
+                    expected_revision=task.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def cancelDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canCancelTask:
+            self._lifecycle_unavailable("Task cancel")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.cancel_diagnostic_target(
+                CancelDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"cancel-diagnostic-task-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-task-cancel-{command_identity}"
+                    ),
+                    target=DiagnosticTaskTarget(task.task_id),
+                    expected_revision=task.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def pauseFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if (
+            task is None
+            or task.handoff.campaign_id is None
+            or task.handoff.campaign_revision is None
+            or not self.canPauseCampaign
+        ):
+            self._lifecycle_unavailable("Campaign pause")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.pause_diagnostic_target(
+                PauseDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"pause-diagnostic-campaign-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-campaign-pause-{command_identity}"
+                    ),
+                    target=FormalDiagnosticCampaignTarget(
+                        task.handoff.campaign_id
+                    ),
+                    expected_revision=task.handoff.campaign_revision,
+                )
+            )
+        )
+
+    @Slot()
+    def resumeFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if (
+            task is None
+            or task.handoff.campaign_id is None
+            or task.handoff.campaign_revision is None
+            or not self.canResumeCampaign
+        ):
+            self._lifecycle_unavailable("Campaign resume")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.resume_diagnostic_target(
+                ResumeDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"resume-diagnostic-campaign-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-campaign-resume-{command_identity}"
+                    ),
+                    target=FormalDiagnosticCampaignTarget(
+                        task.handoff.campaign_id
+                    ),
+                    expected_revision=task.handoff.campaign_revision,
+                )
+            )
+        )
+
+    @Slot()
+    def cancelFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if (
+            task is None
+            or task.handoff.campaign_id is None
+            or task.handoff.campaign_revision is None
+            or not self.canCancelCampaign
+        ):
+            self._lifecycle_unavailable("Campaign cancel")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.cancel_diagnostic_target(
+                CancelDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"cancel-diagnostic-campaign-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-campaign-cancel-{command_identity}"
+                    ),
+                    target=FormalDiagnosticCampaignTarget(
+                        task.handoff.campaign_id
+                    ),
+                    expected_revision=task.handoff.campaign_revision,
+                )
+            )
+        )
+
+    @Slot()
+    def pauseCampaignNodeTarget(self) -> None:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None or not self.canPauseCampaignNode:
+            self._lifecycle_unavailable("Campaign node pause")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.pause_diagnostic_target(
+                PauseDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"pause-campaign-node-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"campaign-node-pause-{command_identity}"
+                    ),
+                    target=CampaignNodeTarget(node.campaign_node_id),
+                    expected_revision=node.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def resumeCampaignNodeTarget(self) -> None:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None or not self.canResumeCampaignNode:
+            self._lifecycle_unavailable("Campaign node resume")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.resume_diagnostic_target(
+                ResumeDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"resume-campaign-node-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"campaign-node-resume-{command_identity}"
+                    ),
+                    target=CampaignNodeTarget(node.campaign_node_id),
+                    expected_revision=node.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def cancelCampaignNodeTarget(self) -> None:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None or not self.canCancelCampaignNode:
+            self._lifecycle_unavailable("Campaign node cancel")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.cancel_diagnostic_target(
+                CancelDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"cancel-campaign-node-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"campaign-node-cancel-{command_identity}"
+                    ),
+                    target=CampaignNodeTarget(node.campaign_node_id),
+                    expected_revision=node.revision,
+                )
+            )
+        )
+
+    def _complete_lifecycle_command(
+        self,
+        result: DiagnosticTasksCommandResult,
+    ) -> None:
+        self._command_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+
+    def _lifecycle_unavailable(self, operation: str) -> None:
+        self._command_status = (
+            f"{operation} is unavailable for the authoritative lifecycle."
+        )
+        self.stateChanged.emit()
+
+    def _actionable_campaign_node(
+        self,
+    ) -> DiagnosticCampaignNodeHandoff | None:
+        task = self._state.task
+        if task is None:
+            return None
+        terminal = {
+            DiagnosticTaskLifecycle.CANCELED,
+            DiagnosticTaskLifecycle.COMPLETED,
+            DiagnosticTaskLifecycle.FAILED,
+        }
+        return next(
+            (
+                node
+                for node in task.handoff.campaign_nodes
+                if node.lifecycle not in terminal
+            ),
+            next(iter(task.handoff.campaign_nodes), None),
+        )
 
     def monitoring_context(self) -> RunMonitoringContext | None:
         task = self._state.task

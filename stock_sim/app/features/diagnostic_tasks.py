@@ -230,8 +230,12 @@ class DiagnosticCampaignNodeHandoff:
     market_scenario_id: MaterializedMarketScenarioId
     attempts: tuple[DiagnosticCampaignAttemptHandoff, ...]
     active_attempt_id: CampaignAttemptId | None
+    revision: int = 1
+    lifecycle: DiagnosticTaskLifecycle = DiagnosticTaskLifecycle.QUEUED
 
     def __post_init__(self) -> None:
+        if self.revision < 1:
+            raise ValueError("Campaign node revision must be positive")
         attempt_ids = tuple(item.attempt_id for item in self.attempts)
         if len(set(attempt_ids)) != len(attempt_ids):
             raise ValueError("Campaign node attempt identities must be unique")
@@ -249,8 +253,22 @@ class DiagnosticTaskHandoff:
     campaign_nodes: tuple[DiagnosticCampaignNodeHandoff, ...]
     evidence_package_id: DiagnosticEvidencePackageId | None
     reproduction_manifest_id: ReproductionManifestId | None
+    campaign_revision: int | None = None
+    campaign_lifecycle: DiagnosticTaskLifecycle | None = None
 
     def __post_init__(self) -> None:
+        if self.campaign_revision is not None and self.campaign_revision < 1:
+            raise ValueError("Formal Campaign revision must be positive")
+        if (
+            self.campaign_id is None
+            and (
+                self.campaign_revision is not None
+                or self.campaign_lifecycle is not None
+            )
+        ):
+            raise ValueError(
+                "Formal Campaign lifecycle requires a Campaign identity"
+            )
         selected_by_case = {
             item.campaign_case_id: item for item in self.selected_cases
         }

@@ -714,7 +714,7 @@ def _open_file_backed_formal_v1_release_fixture(
         migration = reopened.initialize_persistence(reopened_engine)
         _require(
             migration.current_revision
-            == "0016_diagnostic_task_start_continuation_claim",
+            == "0017_diagnostic_lifecycle_targets",
             "The reopened V1 persistence revision is incompatible.",
         )
         reopened_campaign = reopened.diagnostic_campaign_status(

@@ -550,7 +550,7 @@ def test_partial_campaign_resumes_after_repository_restart(
     migration = initialize_diagnostic_persistence(engine)
     assert (
         migration.current_revision
-        == "0016_diagnostic_task_start_continuation_claim"
+        == "0017_diagnostic_lifecycle_targets"
     )
     compound = _campaign_case(
         _transformation("trend-regime", 1),

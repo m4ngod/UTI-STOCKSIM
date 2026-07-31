@@ -46,6 +46,7 @@ from .diagnostic_tasks_application import (
     CampaignAttemptId,
     CampaignCaseId,
     CampaignNodeId,
+    CampaignNodeTarget,
     CancelDiagnosticTarget,
     CreateDiagnosticTask,
     DiagnosticCampaignLayer,
@@ -65,8 +66,10 @@ from .diagnostic_tasks_application import (
     DiagnosticTasksApplicationValidationReference,
     DiagnosticTasksCommandDisposition,
     DiagnosticTasksInventory,
+    DiagnosticTaskTarget,
     DiagnosticTaskValidationId,
     ExecutionPolicyValue,
+    FormalDiagnosticCampaignTarget,
     GuardrailProfileId,
     GuardrailThresholdInput,
     HistoricalMarketSegmentId,
@@ -356,6 +359,30 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         with self._lock:
             self._ensure_open()
         return self._application.start_formal_diagnostic_campaign(command)
+
+    def pause_diagnostic_target(
+        self,
+        command: PauseDiagnosticTarget,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+        return self._application.pause_diagnostic_target(command)
+
+    def resume_diagnostic_target(
+        self,
+        command: ResumeDiagnosticTarget,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+        return self._application.resume_diagnostic_target(command)
+
+    def cancel_diagnostic_target(
+        self,
+        command: CancelDiagnosticTarget,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+        return self._application.cancel_diagnostic_target(command)
 
     def subscribe(
         self,
@@ -1158,6 +1185,11 @@ class DeterministicFakeDiagnosticTasksAdapter(
                         if selection == first_case
                         else None
                     ),
+                    lifecycle=(
+                        DiagnosticTaskLifecycle.COMPLETED
+                        if selection == first_case
+                        else DiagnosticTaskLifecycle.QUEUED
+                    ),
                 )
                 for selection in task.configuration.campaign_case_selections
             )
@@ -1173,6 +1205,8 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     campaign_nodes=nodes,
                     evidence_package_id=None,
                     reproduction_manifest_id=None,
+                    campaign_revision=1,
+                    campaign_lifecycle=DiagnosticTaskLifecycle.RUNNING,
                 ),
             )
             self._tasks[task.task_id] = running
@@ -1189,6 +1223,248 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 affected_task_id=task.task_id,
                 affected_campaign_id=campaign_id,
                 affected_campaign_node_id=None,
+                retryable=False,
+                correlation_id=None,
+            )
+            self._store_fake_command(command, content_identity, result)
+            return result
+
+    def pause_diagnostic_target(
+        self,
+        command: PauseDiagnosticTarget,
+    ) -> DiagnosticTasksCommandResult:
+        return self._change_fake_lifecycle(command, operation="pause")
+
+    def resume_diagnostic_target(
+        self,
+        command: ResumeDiagnosticTarget,
+    ) -> DiagnosticTasksCommandResult:
+        return self._change_fake_lifecycle(command, operation="resume")
+
+    def cancel_diagnostic_target(
+        self,
+        command: CancelDiagnosticTarget,
+    ) -> DiagnosticTasksCommandResult:
+        return self._change_fake_lifecycle(command, operation="cancel")
+
+    def _change_fake_lifecycle(
+        self,
+        command: (
+            PauseDiagnosticTarget
+            | ResumeDiagnosticTarget
+            | CancelDiagnosticTarget
+        ),
+        *,
+        operation: str,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+            content_identity = _fake_mutation_content_identity(command)
+            existing = self._fake_existing_result(
+                command,
+                content_identity,
+            )
+            if existing is not None:
+                return existing
+            target = command.target
+            node: DiagnosticCampaignNodeHandoff | None = None
+            if isinstance(target, DiagnosticTaskTarget):
+                task = self._tasks.get(target.task_id)
+            elif isinstance(target, FormalDiagnosticCampaignTarget):
+                task = next(
+                    (
+                        candidate
+                        for candidate in self._tasks.values()
+                        if candidate.handoff.campaign_id
+                        == target.campaign_id
+                    ),
+                    None,
+                )
+            else:
+                located = next(
+                    (
+                        (candidate, candidate_node)
+                        for candidate in self._tasks.values()
+                        for candidate_node in candidate.handoff.campaign_nodes
+                        if candidate_node.campaign_node_id
+                        == target.campaign_node_id
+                    ),
+                    None,
+                )
+                if located is None:
+                    task = None
+                else:
+                    task, node = located
+            if task is None or task.handoff.campaign_id is None:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            if isinstance(target, DiagnosticTaskTarget):
+                target_revision = task.revision
+                target_lifecycle = task.lifecycle
+                target_name = "diagnostic_task"
+            elif isinstance(target, FormalDiagnosticCampaignTarget):
+                target_revision = task.handoff.campaign_revision or 1
+                target_lifecycle = (
+                    task.handoff.campaign_lifecycle or task.lifecycle
+                )
+                target_name = "formal_diagnostic_campaign"
+            else:
+                if node is None:
+                    return _fake_rejection(
+                        command,
+                        DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                    )
+                target_revision = node.revision
+                target_lifecycle = node.lifecycle
+                target_name = "campaign_node"
+            if target_revision != command.expected_revision:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_EXPECTED_REVISION,
+                    current_revision=target_revision,
+                    affected_task_id=task.task_id,
+                )
+            allowed = {
+                "pause": {
+                    DiagnosticTaskLifecycle.QUEUED,
+                    DiagnosticTaskLifecycle.RUNNING,
+                },
+                "resume": {DiagnosticTaskLifecycle.PAUSED},
+                "cancel": {
+                    DiagnosticTaskLifecycle.QUEUED,
+                    DiagnosticTaskLifecycle.RUNNING,
+                    DiagnosticTaskLifecycle.PAUSED,
+                    DiagnosticTaskLifecycle.RESUMING,
+                },
+            }
+            if (
+                target_lifecycle not in allowed[operation]
+                or (
+                    node is not None
+                    and operation in {"pause", "resume"}
+                    and task.lifecycle
+                    is not DiagnosticTaskLifecycle.RUNNING
+                )
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                    current_revision=target_revision,
+                    affected_task_id=task.task_id,
+                )
+            final_lifecycle = {
+                "pause": DiagnosticTaskLifecycle.PAUSED,
+                "resume": DiagnosticTaskLifecycle.RUNNING,
+                "cancel": DiagnosticTaskLifecycle.CANCELED,
+            }[operation]
+            handle_id = TaskHandleId(
+                _stable_fake_identity(
+                    f"diagnostic-{operation}-handle",
+                    command.command_id.value,
+                )
+            )
+            queued = TaskHandle(
+                identity=handle_id,
+                target_id=task.task_id,
+                phase=TaskPhase.QUEUED,
+                progress=0.0,
+                result=None,
+                error=None,
+                cancelable=False,
+            )
+            completed = replace(
+                queued,
+                phase=TaskPhase.COMPLETED,
+                progress=1.0,
+                result=f"{target_name}_{operation}d"
+                if operation != "cancel"
+                else f"{target_name}_canceled",
+            )
+            handoff = task.handoff
+            if node is None:
+                updated_nodes = handoff.campaign_nodes
+                if operation == "cancel":
+                    terminal = {
+                        DiagnosticTaskLifecycle.CANCELED,
+                        DiagnosticTaskLifecycle.COMPLETED,
+                        DiagnosticTaskLifecycle.FAILED,
+                    }
+                    updated_nodes = tuple(
+                        candidate
+                        if candidate.lifecycle in terminal
+                        else replace(
+                            candidate,
+                            revision=candidate.revision + 1,
+                            lifecycle=DiagnosticTaskLifecycle.CANCELED,
+                        )
+                        for candidate in updated_nodes
+                    )
+                updated_handoff = replace(
+                    handoff,
+                    campaign_revision=(
+                        (handoff.campaign_revision or 1) + 1
+                    ),
+                    campaign_lifecycle=final_lifecycle,
+                    campaign_nodes=updated_nodes,
+                )
+                updated = replace(
+                    task,
+                    revision=task.revision + 1,
+                    lifecycle=final_lifecycle,
+                    task_handles=(*task.task_handles, completed),
+                    handoff=updated_handoff,
+                )
+            else:
+                updated_handoff = replace(
+                    handoff,
+                    campaign_revision=(
+                        (handoff.campaign_revision or 1) + 1
+                    ),
+                    campaign_nodes=tuple(
+                        replace(
+                            candidate,
+                            revision=candidate.revision + 1,
+                            lifecycle=final_lifecycle,
+                        )
+                        if candidate.campaign_node_id
+                        == node.campaign_node_id
+                        else candidate
+                        for candidate in handoff.campaign_nodes
+                    ),
+                )
+                updated = replace(
+                    task,
+                    revision=task.revision + 1,
+                    task_handles=(*task.task_handles, completed),
+                    handoff=updated_handoff,
+                )
+            self._tasks[task.task_id] = updated
+            result = DiagnosticTasksCommandResult(
+                disposition=(
+                    DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+                ),
+                command_id=command.command_id,
+                idempotency_key=command.idempotency_key,
+                message=f"Diagnostic lifecycle {operation} accepted.",
+                rejection_reason=None,
+                task_handle=queued,
+                current_revision=target_revision + 1,
+                affected_task_id=task.task_id,
+                affected_campaign_id=(
+                    target.campaign_id
+                    if isinstance(
+                        target,
+                        FormalDiagnosticCampaignTarget,
+                    )
+                    else None
+                ),
+                affected_campaign_node_id=(
+                    target.campaign_node_id
+                    if isinstance(target, CampaignNodeTarget)
+                    else None
+                ),
                 retryable=False,
                 correlation_id=None,
             )
@@ -1255,7 +1531,18 @@ class DeterministicFakeDiagnosticTasksAdapter(
             command_id=command.command_id,
             idempotency_key=command.idempotency_key,
             task_handle=handle,
-            current_revision=None if task is None else task.revision,
+            current_revision=(
+                result.current_revision
+                if isinstance(
+                    command,
+                    (
+                        PauseDiagnosticTarget,
+                        ResumeDiagnosticTarget,
+                        CancelDiagnosticTarget,
+                    ),
+                )
+                else None if task is None else task.revision
+            ),
         )
 
     def _store_fake_command(
@@ -1320,15 +1607,8 @@ _CREATE_ONLY_CAPABILITIES = replace(
 )
 _COMMANDS_NOT_YET_AVAILABLE = DiagnosticTasksBlockingReason(
     code=DiagnosticTasksBlockingCode.COMMAND_NOT_YET_AVAILABLE,
-    message=(
-        "Lifecycle and retry commands are not_yet_available after Issue #59."
-    ),
-    dependent_operations=(
-        "pause_diagnostic_target",
-        "resume_diagnostic_target",
-        "cancel_diagnostic_target",
-        "retry_failed_campaign_node",
-    ),
+    message="Failed-node retry is not_yet_available until Issue #61.",
+    dependent_operations=("retry_failed_campaign_node",),
 )
 
 
@@ -1713,6 +1993,24 @@ def _capabilities(
                 == task.configuration.content_identity
                 and task.handoff.campaign_id is None
             ),
+            can_pause=(
+                task.handoff.campaign_id is not None
+                and task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+            ),
+            can_resume=(
+                task.handoff.campaign_id is not None
+                and task.lifecycle is DiagnosticTaskLifecycle.PAUSED
+            ),
+            can_cancel=(
+                task.handoff.campaign_id is not None
+                and task.lifecycle
+                in {
+                    DiagnosticTaskLifecycle.QUEUED,
+                    DiagnosticTaskLifecycle.RUNNING,
+                    DiagnosticTaskLifecycle.PAUSED,
+                    DiagnosticTaskLifecycle.RESUMING,
+                }
+            ),
         )
     return _UNAVAILABLE_CAPABILITIES
 
@@ -1848,12 +2146,28 @@ def _task_presentation(
                             for attempt in node.attempts
                         ),
                         active_attempt_id=node.active_attempt_id,
+                        revision=node.revision,
+                        lifecycle=DiagnosticTaskLifecycle(
+                            node.lifecycle.value
+                        ),
                     )
                     for node in task.campaign_handoff.campaign_nodes
                 )
             ),
             evidence_package_id=None,
             reproduction_manifest_id=None,
+            campaign_revision=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.campaign_revision
+            ),
+            campaign_lifecycle=(
+                None
+                if task.campaign_handoff is None
+                else DiagnosticTaskLifecycle(
+                    task.campaign_handoff.campaign_lifecycle.value
+                )
+            ),
         ),
     )
 

@@ -76,8 +76,17 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
         "DiagnosticTasksQtAdapter": frozenset(
             {
                 "approveTask",
+                "cancelCampaignNodeTarget",
+                "cancelDiagnosticTaskTarget",
+                "cancelFormalDiagnosticCampaignTarget",
                 "createTask",
+                "pauseCampaignNodeTarget",
+                "pauseDiagnosticTaskTarget",
+                "pauseFormalDiagnosticCampaignTarget",
                 "refresh",
+                "resumeCampaignNodeTarget",
+                "resumeDiagnosticTaskTarget",
+                "resumeFormalDiagnosticCampaignTarget",
                 "reviseTask",
                 "startCampaign",
                 "validateTask",

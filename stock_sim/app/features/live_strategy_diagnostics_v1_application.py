@@ -110,6 +110,7 @@ _SUPPORTED_MIGRATIONS = frozenset(
         "0013_diagnostic_tasks",
         "0014_diagnostic_task_approval",
         "0015_diagnostic_task_campaign_handoff",
+        "0016_diagnostic_task_start_continuation_claim",
         DIAGNOSTIC_SCHEMA_REVISION,
     }
 )
