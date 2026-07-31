@@ -1483,6 +1483,8 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "0012_reproduction_manifests",
         "0013_diagnostic_tasks",
         "0014_diagnostic_task_approval",
+        "0015_diagnostic_task_campaign_handoff",
+        "0016_diagnostic_task_start_continuation_claim",
     )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"

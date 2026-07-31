@@ -636,7 +636,7 @@ def test_live_and_fake_share_revision_validation_approval_conformance(
             expected_revision=4,
             approved_revision=4,
         )
-    ).rejection_reason is DiagnosticTaskCommandRejectionReason.NOT_YET_AVAILABLE
+    ).rejection_reason is DiagnosticTaskCommandRejectionReason.STALE_APPROVAL
     feature.close()
 
 
@@ -810,12 +810,12 @@ def test_live_and_fake_share_one_typed_feature_conformance(
     assert all(
         result.rejection_reason
         is DiagnosticTaskCommandRejectionReason.INVALID_COMMAND
-        for result in results[:3]
+        for result in results[:4]
     )
     assert all(
         result.rejection_reason
         is DiagnosticTaskCommandRejectionReason.NOT_YET_AVAILABLE
-        for result in results[3:]
+        for result in results[4:]
     )
     feature.close()
     feature.close()

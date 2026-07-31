@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final, Literal, cast
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -44,7 +44,13 @@ _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION: Final = (
 _DIAGNOSTIC_EVIDENCE_REVISION: Final = "0011_diagnostic_evidence"
 _REPRODUCTION_MANIFEST_REVISION: Final = "0012_reproduction_manifests"
 _DIAGNOSTIC_TASK_REVISION: Final = "0013_diagnostic_tasks"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0014_diagnostic_task_approval"
+_DIAGNOSTIC_TASK_APPROVAL_REVISION: Final = "0014_diagnostic_task_approval"
+_DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION: Final = (
+    "0015_diagnostic_task_campaign_handoff"
+)
+DIAGNOSTIC_SCHEMA_REVISION: Final = (
+    "0016_diagnostic_task_start_continuation_claim"
+)
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -60,6 +66,8 @@ _MIGRATION_REVISIONS: Final = (
     _DIAGNOSTIC_EVIDENCE_REVISION,
     _REPRODUCTION_MANIFEST_REVISION,
     _DIAGNOSTIC_TASK_REVISION,
+    _DIAGNOSTIC_TASK_APPROVAL_REVISION,
+    _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -119,8 +127,12 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_reproduction_manifests(connection)
             elif revision == _DIAGNOSTIC_TASK_REVISION:
                 _create_diagnostic_tasks(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _DIAGNOSTIC_TASK_APPROVAL_REVISION:
                 _create_diagnostic_task_approval(connection)
+            elif revision == _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION:
+                _create_diagnostic_task_campaign_handoff(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _add_diagnostic_task_start_continuation_claim(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -501,6 +513,42 @@ def _create_diagnostic_task_approval(connection: Connection) -> None:
         "REFERENCES diagnostic_task_handles(task_handle_id)"
         ")"
     )
+
+
+def _create_diagnostic_task_campaign_handoff(
+    connection: Connection,
+) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_campaign_handoffs ("
+        "task_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "campaign_id VARCHAR(96) UNIQUE NOT NULL, "
+        "handoff_json TEXT NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(campaign_id) REFERENCES diagnostic_campaigns(campaign_id)"
+        ")"
+    )
+
+
+def _add_diagnostic_task_start_continuation_claim(
+    connection: Connection,
+) -> None:
+    handle_columns = {
+        str(column["name"])
+        for column in inspect(connection).get_columns(
+            "diagnostic_task_handles"
+        )
+    }
+    if "start_continuation_claim_id" not in handle_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE diagnostic_task_handles "
+            "ADD COLUMN start_continuation_claim_id VARCHAR(96) NULL"
+        )
+    if "start_continuation_claimed_at_utc" not in handle_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE diagnostic_task_handles "
+            "ADD COLUMN start_continuation_claimed_at_utc VARCHAR(64) NULL"
+        )
 
 
 def _create_strategy_run_facts(connection: Connection) -> None:

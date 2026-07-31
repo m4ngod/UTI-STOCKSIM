@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from .run_monitoring import (
     DiagnosticTaskId,
     FormalDiagnosticCampaignId,
+    StrategyRunId,
     StrategyUnderTestId,
     StructuredFeatureError,
     TaskHandle,
@@ -583,6 +584,8 @@ class DiagnosticTasksApplicationTaskLifecycle(str, Enum):
     DRAFT = "draft"
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
+    QUEUED = "queued"
+    RUNNING = "running"
 
 
 class DiagnosticTasksApplicationValidationState(str, Enum):
@@ -653,6 +656,44 @@ class DiagnosticTasksApplicationApproval:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationCampaignRunHandoff:
+    run_id: StrategyRunId
+    strategy_id: StrategyUnderTestId
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationCampaignAttemptHandoff:
+    attempt_id: CampaignAttemptId
+    runs: tuple[DiagnosticTasksApplicationCampaignRunHandoff, ...]
+
+    @property
+    def run_ids(self) -> tuple[StrategyRunId, ...]:
+        return tuple(item.run_id for item in self.runs)
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationCampaignNodeHandoff:
+    campaign_node_id: CampaignNodeId
+    campaign_case_id: CampaignCaseId
+    selected_campaign_case_id: CampaignCaseId
+    market_scenario_id: MaterializedMarketScenarioId
+    attempts: tuple[
+        DiagnosticTasksApplicationCampaignAttemptHandoff,
+        ...,
+    ]
+    active_attempt_id: CampaignAttemptId | None
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTasksApplicationCampaignHandoff:
+    campaign_id: FormalDiagnosticCampaignId
+    campaign_nodes: tuple[
+        DiagnosticTasksApplicationCampaignNodeHandoff,
+        ...,
+    ]
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticTasksApplicationTask:
     task_id: DiagnosticTaskId
     revision: int
@@ -661,6 +702,7 @@ class DiagnosticTasksApplicationTask:
     validation: DiagnosticTasksApplicationValidation | None
     approval: DiagnosticTasksApplicationApproval | None
     task_handles: tuple[TaskHandle, ...]
+    campaign_handoff: DiagnosticTasksApplicationCampaignHandoff | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1015,7 +1057,23 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: StartFormalDiagnosticCampaign,
     ) -> DiagnosticTasksApplicationCommandResult:
-        return self._not_yet_available(command)
+        from strategy_diagnostics.diagnostic_tasks import (
+            StartFormalDiagnosticCampaignRequest,
+        )
+
+        try:
+            result = self._application.start_formal_diagnostic_task_campaign(
+                StartFormalDiagnosticCampaignRequest(
+                    command_id=command.command_id.value,
+                    idempotency_key=command.idempotency_key.value,
+                    task_id=command.task_id.value,
+                    expected_revision=command.expected_revision,
+                    approved_revision=command.approved_revision,
+                )
+            )
+        except RuntimeError:
+            return self._disconnected(command)
+        return _map_creation_result(result)
 
     def pause_diagnostic_target(
         self,
@@ -1597,6 +1655,56 @@ def _map_diagnostic_task(
             )
             for item in snapshot.task_handles
         ),
+        campaign_handoff=(
+            None
+            if snapshot.campaign_handoff is None
+            else DiagnosticTasksApplicationCampaignHandoff(
+                campaign_id=FormalDiagnosticCampaignId(
+                    snapshot.campaign_handoff.campaign_id
+                ),
+                campaign_nodes=tuple(
+                    DiagnosticTasksApplicationCampaignNodeHandoff(
+                        campaign_node_id=CampaignNodeId(
+                            node.campaign_node_id
+                        ),
+                        campaign_case_id=CampaignCaseId(
+                            node.campaign_case_id
+                        ),
+                        selected_campaign_case_id=CampaignCaseId(
+                            node.selected_campaign_case_id
+                        ),
+                        market_scenario_id=MaterializedMarketScenarioId(
+                            node.market_scenario_id
+                        ),
+                        attempts=tuple(
+                            DiagnosticTasksApplicationCampaignAttemptHandoff(
+                                attempt_id=CampaignAttemptId(
+                                    attempt.attempt_id
+                                ),
+                                runs=tuple(
+                                    DiagnosticTasksApplicationCampaignRunHandoff(
+                                        run_id=StrategyRunId(run.run_id),
+                                        strategy_id=StrategyUnderTestId(
+                                            run.strategy_id
+                                        ),
+                                    )
+                                    for run in attempt.runs
+                                ),
+                            )
+                            for attempt in node.attempts
+                        ),
+                        active_attempt_id=(
+                            None
+                            if node.active_attempt_id is None
+                            else CampaignAttemptId(
+                                node.active_attempt_id
+                            )
+                        ),
+                    )
+                    for node in snapshot.campaign_handoff.campaign_nodes
+                ),
+            )
+        ),
     )
 
 
@@ -1648,7 +1756,13 @@ def _map_creation_result(
         ),
         current_revision=result.current_revision,
         affected_task_id=task_id,
-        affected_campaign_id=None,
+        affected_campaign_id=(
+            None
+            if result.affected_campaign_id is None
+            else FormalDiagnosticCampaignId(
+                result.affected_campaign_id
+            )
+        ),
         affected_campaign_node_id=None,
         retryable=result.retryable,
         correlation_id=None,
@@ -1673,6 +1787,31 @@ def _diagnostic_task_token(
             for item in task.task_handles
         ],
         "lifecycle": task.lifecycle.value,
+        "campaign_handoff": (
+            None
+            if task.campaign_handoff is None
+            else (
+                task.campaign_handoff.campaign_id.value,
+                tuple(
+                    (
+                        node.campaign_node_id.value,
+                        node.campaign_case_id.value,
+                        node.market_scenario_id.value,
+                        tuple(
+                            (
+                                attempt.attempt_id.value,
+                                tuple(
+                                    run_id.value
+                                    for run_id in attempt.run_ids
+                                ),
+                            )
+                            for attempt in node.attempts
+                        ),
+                    )
+                    for node in task.campaign_handoff.campaign_nodes
+                ),
+            )
+        ),
         "revision": task.revision,
         "task_id": task.task_id.value,
         "validation": (
@@ -1725,7 +1864,11 @@ __all__ = [
     "DiagnosticTaskValidationId",
     "DiagnosticTasksApplicationApproval",
     "DiagnosticTasksApplicationAvailability",
+    "DiagnosticTasksApplicationCampaignAttemptHandoff",
     "DiagnosticTasksApplicationCampaignCaseReference",
+    "DiagnosticTasksApplicationCampaignHandoff",
+    "DiagnosticTasksApplicationCampaignNodeHandoff",
+    "DiagnosticTasksApplicationCampaignRunHandoff",
     "DiagnosticTasksApplicationCommand",
     "DiagnosticTasksApplicationCommandRejectionReason",
     "DiagnosticTasksApplicationCommandResult",

@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from threading import RLock
 
 from .diagnostic_tasks import (
+    DiagnosticCampaignAttemptHandoff,
     DiagnosticCampaignCaseSelectionReference,
+    DiagnosticCampaignNodeHandoff,
+    DiagnosticCampaignRunHandoff,
     DiagnosticConfigurationContentReference,
     DiagnosticConfigurationFieldReference,
     DiagnosticStrategySelectionReference,
@@ -40,7 +43,9 @@ from .diagnostic_tasks_application import (
     ApproveDiagnosticTaskConfiguration,
     ApprovedScenarioRecipeInput,
     ApprovedScenarioRecipeVersionId,
+    CampaignAttemptId,
     CampaignCaseId,
+    CampaignNodeId,
     CancelDiagnosticTarget,
     CreateDiagnosticTask,
     DiagnosticCampaignLayer,
@@ -81,9 +86,11 @@ from .diagnostic_tasks_application import (
 from .run_monitoring import (
     Completeness,
     DiagnosticTaskId,
+    FormalDiagnosticCampaignId,
     Freshness,
     SourceGenerationId,
     SourceKind,
+    StrategyRunId,
     StrategyUnderTestId,
     StructuredFeatureError,
     Subscription,
@@ -341,6 +348,14 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         with self._lock:
             self._ensure_open()
         return self._application.approve_configuration(command)
+
+    def start_formal_diagnostic_campaign(
+        self,
+        command: StartFormalDiagnosticCampaign,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+        return self._application.start_formal_diagnostic_campaign(command)
 
     def subscribe(
         self,
@@ -686,6 +701,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     current_revision=task.revision,
                     affected_task_id=task.task_id,
                 )
+            if _fake_configuration_locked(task):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
             if (
                 command.configuration == task.configuration
                 or not _configuration_matches_inventory(
@@ -756,6 +778,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 return _fake_rejection(
                     command,
                     DiagnosticTaskCommandRejectionReason.STALE_EXPECTED_REVISION,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            if _fake_configuration_locked(task):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
                     current_revision=task.revision,
                     affected_task_id=task.task_id,
                 )
@@ -873,6 +902,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     current_revision=task.revision,
                     affected_task_id=task.task_id,
                 )
+            if _fake_configuration_locked(task):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
             validation = task.validation
             if (
                 validation.validation_id is None
@@ -975,6 +1011,183 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 current_revision=task.revision,
                 affected_task_id=task.task_id,
                 affected_campaign_id=None,
+                affected_campaign_node_id=None,
+                retryable=False,
+                correlation_id=None,
+            )
+            self._store_fake_command(command, content_identity, result)
+            return result
+
+    def start_formal_diagnostic_campaign(
+        self,
+        command: StartFormalDiagnosticCampaign,
+    ) -> DiagnosticTasksCommandResult:
+        with self._lock:
+            self._ensure_open()
+            content_identity = _fake_mutation_content_identity(command)
+            existing = self._fake_existing_result(
+                command,
+                content_identity,
+            )
+            if existing is not None:
+                return existing
+            task = self._tasks.get(command.task_id)
+            if task is None:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            if task.revision != command.expected_revision:
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_EXPECTED_REVISION,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            if (
+                task.lifecycle is not DiagnosticTaskLifecycle.APPROVED
+                or task.approval is None
+                or task.approval.approved_revision
+                != command.approved_revision
+                or command.approved_revision != task.revision
+                or task.approval.configuration_content_identity
+                != task.configuration.content_identity
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_APPROVAL,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            layers = tuple(
+                selection.layer
+                for selection in task.configuration.campaign_case_selections
+            )
+            if (
+                layers.count(DiagnosticCampaignLayer.BASELINE) != 1
+                or layers.count(
+                    DiagnosticCampaignLayer.ISOLATED_SENSITIVITY
+                )
+                < 12
+                or layers.count(DiagnosticCampaignLayer.COMPOUND) < 1
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            campaign_id = FormalDiagnosticCampaignId(
+                _stable_fake_identity(
+                    "diagnostic-campaign",
+                    (
+                        f"{task.task_id.value}:"
+                        f"{command.approved_revision}"
+                    ),
+                )
+            )
+            handle_id = TaskHandleId(
+                _stable_fake_identity(
+                    "diagnostic-task-campaign-start-handle",
+                    command.command_id.value,
+                )
+            )
+            queued = TaskHandle(
+                identity=handle_id,
+                target_id=task.task_id,
+                phase=TaskPhase.QUEUED,
+                progress=0.0,
+                result=None,
+                error=None,
+                cancelable=False,
+            )
+            completed = replace(
+                queued,
+                phase=TaskPhase.COMPLETED,
+                progress=1.0,
+                result="formal_diagnostic_campaign_started",
+            )
+            first_case = task.configuration.campaign_case_selections[0]
+            attempt_id = CampaignAttemptId(
+                _stable_fake_identity(
+                    "diagnostic-campaign-attempt",
+                    command.command_id.value,
+                )
+            )
+            nodes = tuple(
+                DiagnosticCampaignNodeHandoff(
+                    campaign_node_id=CampaignNodeId(
+                        _stable_fake_identity(
+                            "diagnostic-campaign-node",
+                            (
+                                f"{campaign_id.value}:"
+                                f"{selection.campaign_case_id.value}"
+                            ),
+                        )
+                    ),
+                    campaign_case_id=selection.campaign_case_id,
+                    selected_campaign_case_id=selection.campaign_case_id,
+                    market_scenario_id=selection.market_scenario_id,
+                    attempts=(
+                        (
+                            DiagnosticCampaignAttemptHandoff(
+                                attempt_id=attempt_id,
+                                runs=tuple(
+                                    DiagnosticCampaignRunHandoff(
+                                        run_id=StrategyRunId(
+                                            _stable_fake_identity(
+                                                "strategy-run",
+                                                (
+                                                    f"{attempt_id.value}:"
+                                                    f"{strategy.strategy_id.value}"
+                                                ),
+                                            )
+                                        ),
+                                        strategy_id=strategy.strategy_id,
+                                    )
+                                    for strategy
+                                    in task.configuration.strategy_selections
+                                ),
+                            ),
+                        )
+                        if selection == first_case
+                        else ()
+                    ),
+                    active_attempt_id=(
+                        attempt_id
+                        if selection == first_case
+                        else None
+                    ),
+                )
+                for selection in task.configuration.campaign_case_selections
+            )
+            running = replace(
+                task,
+                lifecycle=DiagnosticTaskLifecycle.RUNNING,
+                task_handles=(*task.task_handles, completed),
+                handoff=DiagnosticTaskHandoff(
+                    campaign_id=campaign_id,
+                    selected_cases=(
+                        task.configuration.campaign_case_selections
+                    ),
+                    campaign_nodes=nodes,
+                    evidence_package_id=None,
+                    reproduction_manifest_id=None,
+                ),
+            )
+            self._tasks[task.task_id] = running
+            result = DiagnosticTasksCommandResult(
+                disposition=(
+                    DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+                ),
+                command_id=command.command_id,
+                idempotency_key=command.idempotency_key,
+                message="Formal Diagnostic Campaign start accepted.",
+                rejection_reason=None,
+                task_handle=queued,
+                current_revision=task.revision,
+                affected_task_id=task.task_id,
+                affected_campaign_id=campaign_id,
                 affected_campaign_node_id=None,
                 retryable=False,
                 correlation_id=None,
@@ -1108,11 +1321,9 @@ _CREATE_ONLY_CAPABILITIES = replace(
 _COMMANDS_NOT_YET_AVAILABLE = DiagnosticTasksBlockingReason(
     code=DiagnosticTasksBlockingCode.COMMAND_NOT_YET_AVAILABLE,
     message=(
-        "Start, lifecycle, and retry commands are not_yet_available after "
-        "Issue #58."
+        "Lifecycle and retry commands are not_yet_available after Issue #59."
     ),
     dependent_operations=(
-        "start_formal_diagnostic_campaign",
         "pause_diagnostic_target",
         "resume_diagnostic_target",
         "cancel_diagnostic_target",
@@ -1494,6 +1705,14 @@ def _capabilities(
                 and validation_handle.result
                 == "diagnostic_task_configuration_valid"
             ),
+            can_start_campaign=(
+                task.lifecycle is DiagnosticTaskLifecycle.APPROVED
+                and task.approval is not None
+                and task.approval.approved_revision == task.revision
+                and task.approval.configuration_content_identity
+                == task.configuration.content_identity
+                and task.handoff.campaign_id is None
+            ),
         )
     return _UNAVAILABLE_CAPABILITIES
 
@@ -1598,9 +1817,41 @@ def _task_presentation(
         task_handles=task.task_handles,
         capabilities=_CREATE_ONLY_CAPABILITIES,
         handoff=DiagnosticTaskHandoff(
-            campaign_id=None,
+            campaign_id=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.campaign_id
+            ),
             selected_cases=task.configuration.campaign_case_selections,
-            campaign_nodes=(),
+            campaign_nodes=(
+                ()
+                if task.campaign_handoff is None
+                else tuple(
+                    DiagnosticCampaignNodeHandoff(
+                        campaign_node_id=node.campaign_node_id,
+                        campaign_case_id=node.campaign_case_id,
+                        selected_campaign_case_id=(
+                            node.selected_campaign_case_id
+                        ),
+                        market_scenario_id=node.market_scenario_id,
+                        attempts=tuple(
+                            DiagnosticCampaignAttemptHandoff(
+                                attempt_id=attempt.attempt_id,
+                                runs=tuple(
+                                    DiagnosticCampaignRunHandoff(
+                                        run_id=run.run_id,
+                                        strategy_id=run.strategy_id,
+                                    )
+                                    for run in attempt.runs
+                                ),
+                            )
+                            for attempt in node.attempts
+                        ),
+                        active_attempt_id=node.active_attempt_id,
+                    )
+                    for node in task.campaign_handoff.campaign_nodes
+                )
+            ),
             evidence_package_id=None,
             reproduction_manifest_id=None,
         ),
@@ -2192,6 +2443,17 @@ def _fake_rejection(
     )
 
 
+def _fake_configuration_locked(task: DiagnosticTaskPresentation) -> bool:
+    return (
+        task.lifecycle
+        in {
+            DiagnosticTaskLifecycle.QUEUED,
+            DiagnosticTaskLifecycle.RUNNING,
+        }
+        or task.handoff.campaign_id is not None
+    )
+
+
 def _stable_fake_identity(prefix: str, seed: str) -> str:
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
     return f"{prefix}-{digest}"
@@ -2211,8 +2473,13 @@ def _fake_command_content_identity(
 def _fake_mutation_content_identity(
     command: DiagnosticTasksApplicationCommand,
 ) -> str:
+    semantic_fields = tuple(
+        (field.name, getattr(command, field.name))
+        for field in fields(command)
+        if field.name not in {"command_id", "idempotency_key"}
+    )
     return hashlib.sha256(
-        f"{type(command).__name__}:{command!r}".encode()
+        f"{type(command).__name__}:{semantic_fields!r}".encode()
     ).hexdigest()
 
 

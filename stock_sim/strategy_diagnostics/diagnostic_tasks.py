@@ -22,6 +22,8 @@ class DiagnosticTaskLifecycle(str, Enum):
     DRAFT = "draft"
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
+    QUEUED = "queued"
+    RUNNING = "running"
 
 
 class DiagnosticTaskHandlePhase(str, Enum):
@@ -289,6 +291,25 @@ class ApproveDiagnosticTaskConfigurationRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class StartFormalDiagnosticCampaignRequest:
+    command_id: str
+    idempotency_key: str
+    task_id: str
+    expected_revision: int
+    approved_revision: int
+
+    def command_content_identity(self) -> str:
+        return _content_identity(
+            {
+                "approved_revision": self.approved_revision,
+                "command_type": "start_formal_diagnostic_campaign",
+                "expected_revision": self.expected_revision,
+                "task_id": self.task_id,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticTaskValidationFinding:
     reference_kind: DiagnosticTaskValidationReferenceKind
     reference_identity: str
@@ -327,6 +348,173 @@ class DiagnosticTaskApprovalSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticCampaignRunHandoffSnapshot:
+    run_id: str
+    strategy_id: str
+
+    def __post_init__(self) -> None:
+        if not self.run_id.strip() or not self.strategy_id.strip():
+            raise ValueError("Campaign Run and Strategy identities are required")
+
+    def to_storage_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "strategy_id": self.strategy_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticCampaignAttemptHandoffSnapshot:
+    attempt_id: str
+    runs: tuple[DiagnosticCampaignRunHandoffSnapshot, ...]
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id.strip():
+            raise ValueError("Campaign attempt identity is required")
+        if len(set(self.run_ids)) != len(self.run_ids):
+            raise ValueError("Campaign attempt run identities must be unique")
+        strategy_ids = tuple(item.strategy_id for item in self.runs)
+        if len(set(strategy_ids)) != len(strategy_ids):
+            raise ValueError(
+                "Campaign attempt Strategy identities must be unique"
+            )
+
+    @property
+    def run_ids(self) -> tuple[str, ...]:
+        return tuple(item.run_id for item in self.runs)
+
+    def to_storage_dict(self) -> dict[str, object]:
+        return {
+            "attempt_id": self.attempt_id,
+            "runs": [item.to_storage_dict() for item in self.runs],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticCampaignNodeHandoffSnapshot:
+    campaign_node_id: str
+    campaign_case_id: str
+    selected_campaign_case_id: str
+    market_scenario_id: str
+    attempts: tuple[DiagnosticCampaignAttemptHandoffSnapshot, ...]
+    active_attempt_id: str | None
+
+    def __post_init__(self) -> None:
+        identities = (
+            self.campaign_node_id,
+            self.campaign_case_id,
+            self.selected_campaign_case_id,
+            self.market_scenario_id,
+        )
+        if any(not identity.strip() for identity in identities):
+            raise ValueError("Campaign node handoff identities are required")
+        attempt_ids = tuple(item.attempt_id for item in self.attempts)
+        if len(set(attempt_ids)) != len(attempt_ids):
+            raise ValueError("Campaign node attempt identities must be unique")
+        if (
+            self.active_attempt_id is not None
+            and self.active_attempt_id not in attempt_ids
+        ):
+            raise ValueError("Active Campaign attempt must be present in history")
+
+    def to_storage_dict(self) -> dict[str, object]:
+        return {
+            "active_attempt_id": self.active_attempt_id,
+            "attempts": [
+                attempt.to_storage_dict() for attempt in self.attempts
+            ],
+            "campaign_case_id": self.campaign_case_id,
+            "campaign_node_id": self.campaign_node_id,
+            "market_scenario_id": self.market_scenario_id,
+            "selected_campaign_case_id": self.selected_campaign_case_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTaskCampaignHandoffSnapshot:
+    campaign_id: str
+    campaign_nodes: tuple[DiagnosticCampaignNodeHandoffSnapshot, ...]
+
+    def __post_init__(self) -> None:
+        if not self.campaign_id.strip():
+            raise ValueError("Formal Diagnostic Campaign identity is required")
+        node_ids = tuple(item.campaign_node_id for item in self.campaign_nodes)
+        if len(set(node_ids)) != len(node_ids):
+            raise ValueError("Campaign node identities must be unique")
+        attempt_ids = tuple(
+            attempt.attempt_id
+            for node in self.campaign_nodes
+            for attempt in node.attempts
+        )
+        run_ids = tuple(
+            run_id
+            for node in self.campaign_nodes
+            for attempt in node.attempts
+            for run_id in attempt.run_ids
+        )
+        if len(set(attempt_ids)) != len(attempt_ids):
+            raise ValueError("Campaign attempt identities must be globally unique")
+        if len(set(run_ids)) != len(run_ids):
+            raise ValueError("Strategy Run identities must be globally unique")
+
+    def to_storage_dict(self) -> dict[str, object]:
+        return {
+            "campaign_id": self.campaign_id,
+            "campaign_nodes": [
+                node.to_storage_dict() for node in self.campaign_nodes
+            ],
+        }
+
+    @classmethod
+    def from_storage_dict(
+        cls,
+        payload: Mapping[str, object],
+    ) -> "DiagnosticTaskCampaignHandoffSnapshot":
+        node_payloads = cast(
+            list[Mapping[str, object]],
+            payload["campaign_nodes"],
+        )
+        return cls(
+            campaign_id=str(payload["campaign_id"]),
+            campaign_nodes=tuple(
+                DiagnosticCampaignNodeHandoffSnapshot(
+                    campaign_node_id=str(node["campaign_node_id"]),
+                    campaign_case_id=str(node["campaign_case_id"]),
+                    selected_campaign_case_id=str(
+                        node["selected_campaign_case_id"]
+                    ),
+                    market_scenario_id=str(node["market_scenario_id"]),
+                    attempts=tuple(
+                        DiagnosticCampaignAttemptHandoffSnapshot(
+                            attempt_id=str(attempt["attempt_id"]),
+                            runs=tuple(
+                                DiagnosticCampaignRunHandoffSnapshot(
+                                    run_id=str(run["run_id"]),
+                                    strategy_id=str(run["strategy_id"]),
+                                )
+                                for run in cast(
+                                    list[Mapping[str, object]],
+                                    attempt["runs"],
+                                )
+                            ),
+                        )
+                        for attempt in cast(
+                            list[Mapping[str, object]],
+                            node["attempts"],
+                        )
+                    ),
+                    active_attempt_id=(
+                        None
+                        if node.get("active_attempt_id") is None
+                        else str(node["active_attempt_id"])
+                    ),
+                )
+                for node in node_payloads
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticTaskHandleSnapshot:
     task_handle_id: str
     task_id: str
@@ -352,6 +540,7 @@ class DiagnosticTaskSnapshot:
     updated_at: datetime
     validation: DiagnosticTaskValidationSnapshot | None = None
     approval: DiagnosticTaskApprovalSnapshot | None = None
+    campaign_handoff: DiagnosticTaskCampaignHandoffSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +554,7 @@ class DiagnosticTaskCreationResult:
     current_revision: int | None
     affected_task_id: str | None
     retryable: bool
+    affected_campaign_id: str | None = None
 
 
 DiagnosticTaskCommandResult = DiagnosticTaskCreationResult
@@ -429,6 +619,10 @@ class DiagnosticTaskRepository(Protocol):
         idempotency_key: str,
     ) -> DiagnosticTaskMutationCommandRecord | None: ...
 
+    def pending_start_requests(
+        self,
+    ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]: ...
+
     def accept_revision(
         self,
         *,
@@ -465,6 +659,39 @@ class DiagnosticTaskRepository(Protocol):
         expected_revision: int,
     ) -> bool: ...
 
+    def accept_start(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task: DiagnosticTaskSnapshot,
+        queued_handle: DiagnosticTaskHandleSnapshot,
+        expected_revision: int,
+    ) -> bool: ...
+
+    def claim_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        claimed_at: datetime,
+    ) -> bool: ...
+
+    def release_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+    ) -> None: ...
+
+    def reset_start_continuation_claims(self) -> None: ...
+
+    def complete_start(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None: ...
+
 
 class InMemoryDiagnosticTaskRepository:
     def __init__(self) -> None:
@@ -483,6 +710,11 @@ class InMemoryDiagnosticTaskRepository:
             str,
             DiagnosticTaskMutationCommandRecord,
         ] = {}
+        self._pending_start_requests: dict[
+            str,
+            StartFormalDiagnosticCampaignRequest,
+        ] = {}
+        self._start_continuation_claims: dict[str, str] = {}
 
     def find_command(
         self,
@@ -612,6 +844,23 @@ class InMemoryDiagnosticTaskRepository:
             current_revision=self._tasks[creation.task_id].revision,
         )
 
+    def pending_start_requests(
+        self,
+    ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]:
+        return tuple(
+            request
+            for handle_id, request in self._pending_start_requests.items()
+            if (
+                (task := self._tasks.get(request.task_id)) is not None
+                and task.lifecycle is DiagnosticTaskLifecycle.QUEUED
+                and any(
+                    handle.task_handle_id == handle_id
+                    and handle.phase is DiagnosticTaskHandlePhase.QUEUED
+                    for handle in task.task_handles
+                )
+            )
+        )
+
     def accept_revision(
         self,
         *,
@@ -630,7 +879,17 @@ class InMemoryDiagnosticTaskRepository:
         ):
             return False
         current = self._tasks.get(task.task_id)
-        if current is None or current.revision != expected_revision:
+        if (
+            current is None
+            or current.revision != expected_revision
+            or current.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.DRAFT,
+                DiagnosticTaskLifecycle.AWAITING_APPROVAL,
+                DiagnosticTaskLifecycle.APPROVED,
+            }
+            or current.campaign_handoff is not None
+        ):
             return False
         self._tasks[task.task_id] = task
         self._store_mutation(record)
@@ -656,7 +915,17 @@ class InMemoryDiagnosticTaskRepository:
         ):
             return False
         current = self._tasks.get(task.task_id)
-        if current is None or current.revision != expected_revision:
+        if (
+            current is None
+            or current.revision != expected_revision
+            or current.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.DRAFT,
+                DiagnosticTaskLifecycle.AWAITING_APPROVAL,
+                DiagnosticTaskLifecycle.APPROVED,
+            }
+            or current.campaign_handoff is not None
+        ):
             return False
         self._tasks[task.task_id] = replace(
             task,
@@ -762,6 +1031,144 @@ class InMemoryDiagnosticTaskRepository:
         self._tasks[task.task_id] = replace(task, approval=approval)
         self._store_mutation(record)
         return True
+
+    def accept_start(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task: DiagnosticTaskSnapshot,
+        queued_handle: DiagnosticTaskHandleSnapshot,
+        expected_revision: int,
+    ) -> bool:
+        del command_json
+        if (
+            self.find_mutation_command(
+                record.command_id,
+                record.idempotency_key,
+            )
+            is not None
+        ):
+            return False
+        current = self._tasks.get(task.task_id)
+        if (
+            current is None
+            or current.revision != expected_revision
+            or current.lifecycle is not DiagnosticTaskLifecycle.APPROVED
+            or current.approval is None
+            or current.approval.task_revision != expected_revision
+            or current.campaign_handoff is not None
+        ):
+            return False
+        self._tasks[task.task_id] = replace(
+            task,
+            task_handles=(*task.task_handles, queued_handle),
+        )
+        self._store_mutation(record)
+        self._pending_start_requests[queued_handle.task_handle_id] = (
+            StartFormalDiagnosticCampaignRequest(
+                command_id=record.command_id,
+                idempotency_key=record.idempotency_key,
+                task_id=record.task_id,
+                expected_revision=expected_revision,
+                approved_revision=expected_revision,
+            )
+        )
+        return True
+
+    def claim_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        claimed_at: datetime,
+    ) -> bool:
+        del claimed_at
+        queued = any(
+            handle.task_handle_id == task_handle_id
+            and handle.phase is DiagnosticTaskHandlePhase.QUEUED
+            for task in self._tasks.values()
+            for handle in task.task_handles
+        )
+        if not queued:
+            return False
+        existing = self._start_continuation_claims.setdefault(
+            task_handle_id,
+            continuation_claim_id,
+        )
+        return existing == continuation_claim_id
+
+    def release_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+    ) -> None:
+        if (
+            self._start_continuation_claims.get(task_handle_id)
+            == continuation_claim_id
+        ):
+            self._start_continuation_claims.pop(task_handle_id, None)
+
+    def reset_start_continuation_claims(self) -> None:
+        self._start_continuation_claims.clear()
+
+    def complete_start(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        for task_id, task in tuple(self._tasks.items()):
+            handle = next(
+                (
+                    candidate
+                    for candidate in task.task_handles
+                    if candidate.task_handle_id == task_handle_id
+                ),
+                None,
+            )
+            if handle is None:
+                continue
+            if (
+                handle.phase is DiagnosticTaskHandlePhase.COMPLETED
+                and task.campaign_handoff == handoff
+            ):
+                return
+            if (
+                self._start_continuation_claims.get(task_handle_id)
+                != continuation_claim_id
+            ):
+                raise ValueError(
+                    "Campaign start continuation is not owned by this claim"
+                )
+            if handle.phase is not DiagnosticTaskHandlePhase.QUEUED:
+                raise ValueError("Terminal Diagnostic TaskHandle cannot regress")
+            completed = replace(
+                handle,
+                phase=DiagnosticTaskHandlePhase.COMPLETED,
+                progress=1.0,
+                result_code="formal_diagnostic_campaign_started",
+                cancelable=False,
+                updated_at=updated_at,
+            )
+            self._tasks[task_id] = replace(
+                task,
+                lifecycle=DiagnosticTaskLifecycle.RUNNING,
+                task_handles=tuple(
+                    completed
+                    if candidate.task_handle_id == task_handle_id
+                    else candidate
+                    for candidate in task.task_handles
+                ),
+                campaign_handoff=handoff,
+                updated_at=updated_at,
+            )
+            self._pending_start_requests.pop(task_handle_id, None)
+            self._start_continuation_claims.pop(task_handle_id, None)
+            return
+        raise KeyError(
+            f"Unknown Campaign start Diagnostic TaskHandle {task_handle_id!r}"
+        )
 
     def _store_mutation(
         self,
@@ -981,11 +1388,21 @@ class SqlDiagnosticTaskRepository:
                 ),
                 {"task_id": task_id},
             ).mappings().one_or_none()
+            handoff_row = connection.execute(
+                text(
+                    "SELECT task_id, campaign_id, handoff_json, "
+                    "updated_at_utc "
+                    "FROM diagnostic_task_campaign_handoffs "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            ).mappings().one_or_none()
         return _task_from_rows(
             task_row,
             handle_rows,
             validation_row=validation_row,
             approval_row=approval_row,
+            handoff_row=handoff_row,
         )
 
     def latest_task(self) -> DiagnosticTaskSnapshot | None:
@@ -1127,6 +1544,53 @@ class SqlDiagnosticTaskRepository:
             ).mappings().one_or_none()
         return None if row is None else _mutation_command_record(row)
 
+    def pending_start_requests(
+        self,
+    ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT m.command_json "
+                    "FROM diagnostic_task_mutation_commands m "
+                    "JOIN diagnostic_tasks t ON t.task_id = m.task_id "
+                    "JOIN diagnostic_task_handles h "
+                    "ON h.task_handle_id = m.task_handle_id "
+                    "WHERE m.command_type = "
+                    "'start_formal_diagnostic_campaign' "
+                    "AND t.lifecycle = :task_lifecycle "
+                    "AND h.phase = :handle_phase "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM diagnostic_task_campaign_handoffs d "
+                    "WHERE d.task_id = t.task_id) "
+                    "ORDER BY m.accepted_at_utc, m.command_id"
+                ),
+                {
+                    "task_lifecycle": DiagnosticTaskLifecycle.QUEUED.value,
+                    "handle_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                },
+            ).mappings()
+            requests: list[StartFormalDiagnosticCampaignRequest] = []
+            for row in rows:
+                payload = json.loads(str(row["command_json"]))
+                if not isinstance(payload, dict):
+                    raise TypeError(
+                        "Persisted Campaign start command must be an object"
+                    )
+                requests.append(
+                    StartFormalDiagnosticCampaignRequest(
+                        command_id=str(payload["command_id"]),
+                        idempotency_key=str(payload["idempotency_key"]),
+                        task_id=str(payload["task_id"]),
+                        expected_revision=int(
+                            cast(str | int, payload["expected_revision"])
+                        ),
+                        approved_revision=int(
+                            cast(str | int, payload["approved_revision"])
+                        ),
+                    )
+                )
+        return tuple(requests)
+
     def accept_revision(
         self,
         *,
@@ -1143,7 +1607,14 @@ class SqlDiagnosticTaskRepository:
                     "configuration_content_id = :configuration_content_id, "
                     "configuration_json = :configuration_json, "
                     "updated_at_utc = :updated_at_utc "
-                    "WHERE task_id = :task_id AND revision = :expected_revision"
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle IN ("
+                    ":draft_lifecycle, :awaiting_lifecycle, "
+                    ":approved_lifecycle) "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM diagnostic_task_campaign_handoffs h "
+                    "WHERE h.task_id = :task_id)"
                 ),
                 {
                     "revision": task.revision,
@@ -1157,6 +1628,13 @@ class SqlDiagnosticTaskRepository:
                     "updated_at_utc": task.updated_at.isoformat(),
                     "task_id": task.task_id,
                     "expected_revision": expected_revision,
+                    "draft_lifecycle": DiagnosticTaskLifecycle.DRAFT.value,
+                    "awaiting_lifecycle": (
+                        DiagnosticTaskLifecycle.AWAITING_APPROVAL.value
+                    ),
+                    "approved_lifecycle": (
+                        DiagnosticTaskLifecycle.APPROVED.value
+                    ),
                 },
             )
             if updated.rowcount != 1:
@@ -1227,13 +1705,27 @@ class SqlDiagnosticTaskRepository:
                 text(
                     "UPDATE diagnostic_tasks SET lifecycle = :lifecycle, "
                     "updated_at_utc = :updated_at_utc "
-                    "WHERE task_id = :task_id AND revision = :expected_revision"
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle IN ("
+                    ":draft_lifecycle, :awaiting_lifecycle, "
+                    ":approved_lifecycle) "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM diagnostic_task_campaign_handoffs h "
+                    "WHERE h.task_id = :task_id)"
                 ),
                 {
                     "lifecycle": task.lifecycle.value,
                     "updated_at_utc": task.updated_at.isoformat(),
                     "task_id": task.task_id,
                     "expected_revision": expected_revision,
+                    "draft_lifecycle": DiagnosticTaskLifecycle.DRAFT.value,
+                    "awaiting_lifecycle": (
+                        DiagnosticTaskLifecycle.AWAITING_APPROVAL.value
+                    ),
+                    "approved_lifecycle": (
+                        DiagnosticTaskLifecycle.APPROVED.value
+                    ),
                 },
             )
             if updated.rowcount != 1:
@@ -1439,6 +1931,242 @@ class SqlDiagnosticTaskRepository:
             )
         return True
 
+    def accept_start(
+        self,
+        *,
+        record: DiagnosticTaskMutationCommandRecord,
+        command_json: str,
+        task: DiagnosticTaskSnapshot,
+        queued_handle: DiagnosticTaskHandleSnapshot,
+        expected_revision: int,
+    ) -> bool:
+        with self._engine.begin() as connection:
+            updated = connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks SET lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND revision = :expected_revision "
+                    "AND lifecycle = :expected_lifecycle "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM diagnostic_task_campaign_handoffs h "
+                    "WHERE h.task_id = :task_id"
+                    ") AND EXISTS ("
+                    "SELECT 1 FROM diagnostic_task_approvals a "
+                    "WHERE a.task_id = :task_id "
+                    "AND a.task_revision = :expected_revision "
+                    "AND a.invalidated_at_utc IS NULL)"
+                ),
+                {
+                    "lifecycle": task.lifecycle.value,
+                    "updated_at_utc": task.updated_at.isoformat(),
+                    "task_id": task.task_id,
+                    "expected_revision": expected_revision,
+                    "expected_lifecycle": (
+                        DiagnosticTaskLifecycle.APPROVED.value
+                    ),
+                },
+            )
+            if updated.rowcount != 1:
+                return False
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_task_handles ("
+                    "task_handle_id, task_id, phase, progress_value, "
+                    "result_code, error_json, cancelable, created_at_utc, "
+                    "updated_at_utc"
+                    ") VALUES ("
+                    ":task_handle_id, :task_id, :phase, :progress_value, "
+                    ":result_code, :error_json, :cancelable, :created_at_utc, "
+                    ":updated_at_utc)"
+                ),
+                _handle_row(queued_handle),
+            )
+            self._insert_mutation_command(
+                connection,
+                record=record,
+                command_json=command_json,
+            )
+        return True
+
+    def claim_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        claimed_at: datetime,
+    ) -> bool:
+        with self._engine.begin() as connection:
+            claimed = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles "
+                    "SET start_continuation_claim_id = "
+                    ":continuation_claim_id, "
+                    "start_continuation_claimed_at_utc = :claimed_at_utc "
+                    "WHERE task_handle_id = :task_handle_id "
+                    "AND phase = :expected_phase "
+                    "AND start_continuation_claim_id IS NULL"
+                ),
+                {
+                    "continuation_claim_id": continuation_claim_id,
+                    "claimed_at_utc": claimed_at.isoformat(),
+                    "task_handle_id": task_handle_id,
+                    "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                },
+            )
+        return claimed.rowcount == 1
+
+    def release_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+    ) -> None:
+        with self._engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles "
+                    "SET start_continuation_claim_id = NULL, "
+                    "start_continuation_claimed_at_utc = NULL "
+                    "WHERE task_handle_id = :task_handle_id "
+                    "AND phase = :expected_phase "
+                    "AND start_continuation_claim_id = "
+                    ":continuation_claim_id"
+                ),
+                {
+                    "task_handle_id": task_handle_id,
+                    "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                    "continuation_claim_id": continuation_claim_id,
+                },
+            )
+
+    def reset_start_continuation_claims(self) -> None:
+        with self._engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles "
+                    "SET start_continuation_claim_id = NULL, "
+                    "start_continuation_claimed_at_utc = NULL "
+                    "WHERE phase = :expected_phase "
+                    "AND start_continuation_claim_id IS NOT NULL"
+                ),
+                {
+                    "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                },
+            )
+
+    def complete_start(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+        updated_at: datetime,
+    ) -> None:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT h.phase, h.task_id, t.lifecycle, "
+                    "h.start_continuation_claim_id "
+                    "FROM diagnostic_task_handles h "
+                    "JOIN diagnostic_tasks t ON t.task_id = h.task_id "
+                    "WHERE h.task_handle_id = :task_handle_id"
+                ),
+                {"task_handle_id": task_handle_id},
+            ).mappings().one_or_none()
+            if row is None:
+                raise KeyError(
+                    "Unknown Campaign start Diagnostic TaskHandle "
+                    f"{task_handle_id!r}"
+                )
+            task_id = str(row["task_id"])
+            phase = DiagnosticTaskHandlePhase(str(row["phase"]))
+            existing = connection.execute(
+                text(
+                    "SELECT campaign_id, handoff_json "
+                    "FROM diagnostic_task_campaign_handoffs "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            ).mappings().one_or_none()
+            handoff_json = _canonical_json(handoff.to_storage_dict())
+            if phase is DiagnosticTaskHandlePhase.COMPLETED:
+                if (
+                    existing is not None
+                    and str(existing["campaign_id"]) == handoff.campaign_id
+                    and str(existing["handoff_json"]) == handoff_json
+                ):
+                    return
+                raise ValueError(
+                    "Completed Campaign start handoff cannot be replaced"
+                )
+            if (
+                str(row["start_continuation_claim_id"])
+                != continuation_claim_id
+            ):
+                raise ValueError(
+                    "Campaign start continuation is not owned by this claim"
+                )
+            if phase is not DiagnosticTaskHandlePhase.QUEUED:
+                raise ValueError("Terminal Diagnostic TaskHandle cannot regress")
+            if existing is not None:
+                raise ValueError("Diagnostic Task already has a Campaign handoff")
+            updated_at_utc = updated_at.isoformat()
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_task_campaign_handoffs ("
+                    "task_id, campaign_id, handoff_json, updated_at_utc"
+                    ") VALUES ("
+                    ":task_id, :campaign_id, :handoff_json, :updated_at_utc)"
+                ),
+                {
+                    "task_id": task_id,
+                    "campaign_id": handoff.campaign_id,
+                    "handoff_json": handoff_json,
+                    "updated_at_utc": updated_at_utc,
+                },
+            )
+            updated_handle = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_handles SET phase = :phase, "
+                    "progress_value = 1.0, result_code = :result_code, "
+                    "cancelable = 0, updated_at_utc = :updated_at_utc, "
+                    "start_continuation_claim_id = NULL, "
+                    "start_continuation_claimed_at_utc = NULL "
+                    "WHERE task_handle_id = :task_handle_id "
+                    "AND phase = :expected_phase "
+                    "AND start_continuation_claim_id = "
+                    ":continuation_claim_id"
+                ),
+                {
+                    "phase": DiagnosticTaskHandlePhase.COMPLETED.value,
+                    "result_code": "formal_diagnostic_campaign_started",
+                    "updated_at_utc": updated_at_utc,
+                    "task_handle_id": task_handle_id,
+                    "expected_phase": DiagnosticTaskHandlePhase.QUEUED.value,
+                    "continuation_claim_id": continuation_claim_id,
+                },
+            )
+            if updated_handle.rowcount != 1:
+                raise ValueError(
+                    "Campaign start Diagnostic TaskHandle changed concurrently"
+                )
+            updated_task = connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks SET lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND lifecycle = :expected_lifecycle"
+                ),
+                {
+                    "lifecycle": DiagnosticTaskLifecycle.RUNNING.value,
+                    "updated_at_utc": updated_at_utc,
+                    "task_id": task_id,
+                    "expected_lifecycle": DiagnosticTaskLifecycle.QUEUED.value,
+                },
+            )
+            if updated_task.rowcount != 1:
+                raise ValueError(
+                    "Campaign start Diagnostic Task changed concurrently"
+                )
+
     @staticmethod
     def _insert_mutation_command(
         connection: Connection,
@@ -1585,6 +2313,7 @@ class DiagnosticTaskService:
 
     def replace_repository(self, repository: DiagnosticTaskRepository) -> None:
         self._repository = repository
+        self._repository.reset_start_continuation_claims()
         self._repository.recover_pending(_aware(self._clock()))
 
     def create(
@@ -1727,6 +2456,32 @@ class DiagnosticTaskService:
     def latest(self) -> DiagnosticTaskSnapshot | None:
         return self._repository.latest_task()
 
+    def pending_start_requests(
+        self,
+    ) -> tuple[StartFormalDiagnosticCampaignRequest, ...]:
+        return self._repository.pending_start_requests()
+
+    def claim_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+    ) -> bool:
+        return self._repository.claim_start_continuation(
+            task_handle_id,
+            continuation_claim_id,
+            _aware(self._clock()),
+        )
+
+    def release_start_continuation(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+    ) -> None:
+        self._repository.release_start_continuation(
+            task_handle_id,
+            continuation_claim_id,
+        )
+
     def revise_configuration(
         self,
         request: ReviseDiagnosticTaskConfigurationRequest,
@@ -1770,6 +2525,13 @@ class DiagnosticTaskService:
                 message="Expected revision is stale.",
                 current_revision=current.revision,
             )
+        locked = self._started_configuration_mutation_rejection(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            current=current,
+        )
+        if locked is not None:
+            return locked
         if (
             not request.command_id.strip()
             or not request.idempotency_key.strip()
@@ -1938,6 +2700,13 @@ class DiagnosticTaskService:
                 message="Expected revision is stale.",
                 current_revision=current.revision,
             )
+        locked = self._started_configuration_mutation_rejection(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            current=current,
+        )
+        if locked is not None:
+            return locked
         try:
             findings = self._configuration_validation(
                 current.configuration
@@ -2154,6 +2923,13 @@ class DiagnosticTaskService:
                 message="Expected revision is stale.",
                 current_revision=current.revision,
             )
+        locked = self._started_configuration_mutation_rejection(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            current=current,
+        )
+        if locked is not None:
+            return locked
         validation = current.validation
         if (
             validation is None
@@ -2383,6 +3159,266 @@ class DiagnosticTaskService:
             )
         return self._mutation_result(record)
 
+    def preflight_start(
+        self,
+        request: StartFormalDiagnosticCampaignRequest,
+    ) -> DiagnosticTaskSnapshot | DiagnosticTaskCommandResult:
+        if (
+            not request.command_id.strip()
+            or not request.idempotency_key.strip()
+            or request.expected_revision < 1
+            or request.approved_revision < 1
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.INVALID_COMMAND,
+                message=(
+                    "Command identity and positive exact revisions are required."
+                ),
+                current_revision=None,
+            )
+        command_content_id = request.command_content_identity()
+        existing = self._find_existing_mutation(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_content_id=command_content_id,
+            task_id=request.task_id,
+        )
+        if existing is not None:
+            return existing
+        current = self._read_task_for_command(
+            request.command_id,
+            request.idempotency_key,
+            request.task_id,
+        )
+        if isinstance(current, DiagnosticTaskCreationResult):
+            return current
+        if current.revision != request.expected_revision:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=(
+                    DiagnosticTaskCreationRejectionReason.STALE_EXPECTED_REVISION
+                ),
+                message="Expected revision is stale.",
+                current_revision=current.revision,
+            )
+        approval = current.approval
+        if (
+            approval is None
+            or current.lifecycle is not DiagnosticTaskLifecycle.APPROVED
+            or request.approved_revision != current.revision
+            or approval.task_revision != request.approved_revision
+            or approval.configuration_content_id
+            != current.configuration.content_identity
+        ):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.STALE_APPROVAL,
+                message="Campaign start requires the exact current approval.",
+                current_revision=current.revision,
+            )
+        layers = tuple(
+            selection.layer
+            for selection in current.configuration.campaign_case_selections
+        )
+        formal_shape = (
+            layers.count("baseline") == 1
+            and layers.count("isolated_sensitivity") >= 12
+            and layers.count("compound") >= 1
+        )
+        try:
+            authoritative = self._configuration_validator(
+                current.configuration
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            authoritative = False
+        if not formal_shape or not authoritative:
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.UNAVAILABLE_INPUT,
+                message=(
+                    "A complete authoritative Formal Diagnostic Campaign "
+                    "configuration is required."
+                ),
+                current_revision=current.revision,
+            )
+        return current
+
+    def accept_start(
+        self,
+        request: StartFormalDiagnosticCampaignRequest,
+    ) -> DiagnosticTaskCommandResult:
+        preflight = self.preflight_start(request)
+        if isinstance(preflight, DiagnosticTaskCreationResult):
+            return preflight
+        current = preflight
+        now = _aware(self._clock())
+        handle_id = _stable_identity(
+            "diagnostic-task-campaign-start-handle",
+            request.command_id,
+        )
+        queued_handle = DiagnosticTaskHandleSnapshot(
+            task_handle_id=handle_id,
+            task_id=request.task_id,
+            phase=DiagnosticTaskHandlePhase.QUEUED,
+            progress=0.0,
+            result_code=None,
+            error_code=None,
+            error_message=None,
+            error_retryable=False,
+            cancelable=False,
+            created_at=now,
+            updated_at=now,
+        )
+        queued_task = replace(
+            current,
+            lifecycle=DiagnosticTaskLifecycle.QUEUED,
+            updated_at=now,
+        )
+        record = DiagnosticTaskMutationCommandRecord(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            command_type="start_formal_diagnostic_campaign",
+            command_content_id=request.command_content_identity(),
+            task_id=request.task_id,
+            task_handle_id=handle_id,
+            disposition=(
+                DiagnosticTaskCreationDisposition.ASYNCHRONOUS_ACCEPTANCE
+            ),
+            message="Formal Diagnostic Campaign start accepted.",
+            current_revision=current.revision,
+        )
+        try:
+            accepted = self._repository.accept_start(
+                record=record,
+                command_json=_canonical_json(
+                    {
+                        "approved_revision": request.approved_revision,
+                        "command_id": request.command_id,
+                        "command_type": record.command_type,
+                        "expected_revision": request.expected_revision,
+                        "idempotency_key": request.idempotency_key,
+                        "task_id": request.task_id,
+                    }
+                ),
+                task=queued_task,
+                queued_handle=queued_handle,
+                expected_revision=request.expected_revision,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            replay = self._find_existing_mutation(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                command_content_id=request.command_content_identity(),
+                task_id=request.task_id,
+            )
+            if replay is not None:
+                return replay
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE,
+                message=(
+                    "Campaign start command and TaskHandle could not be "
+                    "persisted atomically."
+                ),
+                current_revision=current.revision,
+                retryable=True,
+            )
+        if not accepted:
+            replay = self._find_existing_mutation(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                command_content_id=request.command_content_identity(),
+                task_id=request.task_id,
+            )
+            if replay is not None:
+                return replay
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.STALE_APPROVAL,
+                message="Campaign start requires the exact current approval.",
+                current_revision=current.revision,
+            )
+        return self._mutation_result(
+            record,
+            task_handle=queued_handle,
+        )
+
+    def reject_start_unavailable(
+        self,
+        request: StartFormalDiagnosticCampaignRequest,
+        *,
+        message: str,
+        retryable: bool = False,
+    ) -> DiagnosticTaskCommandResult:
+        try:
+            current = self._repository.get_task(request.task_id)
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            current = None
+        return self._mutation_rejected(
+            command_id=request.command_id,
+            idempotency_key=request.idempotency_key,
+            task_id=request.task_id,
+            reason=DiagnosticTaskCreationRejectionReason.UNAVAILABLE_INPUT,
+            message=message,
+            current_revision=(
+                None if current is None else current.revision
+            ),
+            retryable=retryable,
+        )
+
+    def complete_start(
+        self,
+        task_handle_id: str,
+        continuation_claim_id: str,
+        handoff: DiagnosticTaskCampaignHandoffSnapshot,
+    ) -> None:
+        self._repository.complete_start(
+            task_handle_id,
+            continuation_claim_id,
+            handoff,
+            _aware(self._clock()),
+        )
+
+    def _started_configuration_mutation_rejection(
+        self,
+        *,
+        command_id: str,
+        idempotency_key: str,
+        current: DiagnosticTaskSnapshot,
+    ) -> DiagnosticTaskCommandResult | None:
+        if (
+            current.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+            }
+            and current.campaign_handoff is None
+        ):
+            return None
+        return self._mutation_rejected(
+            command_id=command_id,
+            idempotency_key=idempotency_key,
+            task_id=current.task_id,
+            reason=DiagnosticTaskCreationRejectionReason.INVALID_COMMAND,
+            message=(
+                "A Campaign-started Diagnostic Task configuration is immutable."
+            ),
+            current_revision=current.revision,
+        )
+
     def _find_existing_mutation(
         self,
         *,
@@ -2478,6 +3514,11 @@ class DiagnosticTaskService:
             current_revision=task.revision,
             affected_task_id=task.task_id,
             retryable=False,
+            affected_campaign_id=(
+                None
+                if task.campaign_handoff is None
+                else task.campaign_handoff.campaign_id
+            ),
         )
 
     def _read_task_for_command(
@@ -2761,6 +3802,7 @@ def _task_from_rows(
     *,
     validation_row: RowMapping | None = None,
     approval_row: RowMapping | None = None,
+    handoff_row: RowMapping | None = None,
 ) -> DiagnosticTaskSnapshot:
     configuration_payload = json.loads(str(task_row["configuration_json"]))
     if not isinstance(configuration_payload, dict):
@@ -2788,6 +3830,11 @@ def _task_from_rows(
     )
     approval = (
         None if approval_row is None else _approval_from_row(approval_row)
+    )
+    campaign_handoff = (
+        None
+        if handoff_row is None
+        else _campaign_handoff_from_row(handoff_row)
     )
     if revision < 1 or any(handle.task_id != task_id for handle in handles):
         raise ValueError("Persisted Diagnostic Task identity is inconsistent")
@@ -2836,8 +3883,18 @@ def _task_from_rows(
             and approval is None
         )
         or (
-            lifecycle is DiagnosticTaskLifecycle.APPROVED
+            lifecycle
+            in {
+                DiagnosticTaskLifecycle.APPROVED,
+                DiagnosticTaskLifecycle.QUEUED,
+            }
             and approval is not None
+            and campaign_handoff is None
+        )
+        or (
+            lifecycle is DiagnosticTaskLifecycle.RUNNING
+            and approval is not None
+            and campaign_handoff is not None
         )
     )
     if not lifecycle_consistent:
@@ -2854,6 +3911,7 @@ def _task_from_rows(
         updated_at=datetime.fromisoformat(str(task_row["updated_at_utc"])),
         validation=validation,
         approval=approval,
+        campaign_handoff=campaign_handoff,
     )
 
 
@@ -2885,6 +3943,25 @@ def _handle_from_row(
         created_at=datetime.fromisoformat(str(row["created_at_utc"])),
         updated_at=datetime.fromisoformat(str(row["updated_at_utc"])),
     )
+
+
+def _campaign_handoff_from_row(
+    row: RowMapping,
+) -> DiagnosticTaskCampaignHandoffSnapshot:
+    payload = json.loads(str(row["handoff_json"]))
+    if not isinstance(payload, Mapping):
+        raise ValueError("Diagnostic Task Campaign handoff must be an object")
+    handoff = DiagnosticTaskCampaignHandoffSnapshot.from_storage_dict(
+        cast(Mapping[str, object], payload)
+    )
+    if (
+        handoff.campaign_id != str(row["campaign_id"])
+        or not str(row["task_id"]).strip()
+    ):
+        raise ValueError(
+            "Persisted Diagnostic Task Campaign handoff is inconsistent"
+        )
+    return handoff
 
 
 def _command_record(row: RowMapping) -> DiagnosticTaskCommandRecord:
@@ -3048,9 +4125,13 @@ def _aware(value: datetime) -> datetime:
 __all__ = [
     "ApproveDiagnosticTaskConfigurationRequest",
     "CreateDiagnosticTaskRequest",
+    "DiagnosticCampaignAttemptHandoffSnapshot",
     "DiagnosticCampaignCaseSelection",
+    "DiagnosticCampaignNodeHandoffSnapshot",
+    "DiagnosticCampaignRunHandoffSnapshot",
     "DiagnosticStrategySelection",
     "DiagnosticTaskApprovalSnapshot",
+    "DiagnosticTaskCampaignHandoffSnapshot",
     "DiagnosticTaskCommandResult",
     "DiagnosticTaskConfiguration",
     "DiagnosticTaskCreationDisposition",
@@ -3069,5 +4150,6 @@ __all__ = [
     "InMemoryDiagnosticTaskRepository",
     "ReviseDiagnosticTaskConfigurationRequest",
     "SqlDiagnosticTaskRepository",
+    "StartFormalDiagnosticCampaignRequest",
     "ValidateDiagnosticTaskConfigurationRequest",
 ]

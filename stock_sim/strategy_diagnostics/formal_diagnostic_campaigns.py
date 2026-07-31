@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
-import hashlib
-import json
 from typing import Callable, Literal, Mapping, Protocol, TypeAlias, cast
 
 from sqlalchemy import text
@@ -17,7 +17,6 @@ from .isolated_sensitivity_sets import (
     IsolatedSensitivitySetSpecification,
     SensitivityCampaignCase,
 )
-
 
 DIAGNOSTIC_CAMPAIGN_SCHEMA_VERSION = "diagnostic-campaign.v1"
 DiagnosticCampaignType = Literal[
@@ -279,6 +278,58 @@ class DiagnosticCampaignCase:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticCampaignStrategySelection:
+    """One exact approved Strategy and guardrail profile for a Campaign."""
+
+    strategy_id: str
+    strategy_version: str
+    compatibility_manifest_hash: str
+    guardrail_profile_id: str
+    guardrail_profile_version: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not value.strip()
+            for value in (
+                self.strategy_id,
+                self.strategy_version,
+                self.compatibility_manifest_hash,
+                self.guardrail_profile_id,
+                self.guardrail_profile_version,
+            )
+        ):
+            raise ValueError(
+                "Diagnostic Campaign Strategy identities must not be blank"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "compatibility_manifest_hash": self.compatibility_manifest_hash,
+            "guardrail_profile_id": self.guardrail_profile_id,
+            "guardrail_profile_version": self.guardrail_profile_version,
+            "strategy_id": self.strategy_id,
+            "strategy_version": self.strategy_version,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, object],
+    ) -> "DiagnosticCampaignStrategySelection":
+        return cls(
+            strategy_id=str(payload["strategy_id"]),
+            strategy_version=str(payload["strategy_version"]),
+            compatibility_manifest_hash=str(
+                payload["compatibility_manifest_hash"]
+            ),
+            guardrail_profile_id=str(payload["guardrail_profile_id"]),
+            guardrail_profile_version=str(
+                payload["guardrail_profile_version"]
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticCampaignSpecification:
     """Complete formal selection or explicitly non-attributive experiment."""
 
@@ -288,6 +339,10 @@ class DiagnosticCampaignSpecification:
     compound_cases: tuple[DiagnosticCampaignCase, ...]
     initial_cash: Decimal
     order_shares: int
+    approved_strategies: tuple[
+        DiagnosticCampaignStrategySelection,
+        ...,
+    ] = ()
 
     def __post_init__(self) -> None:
         if not self.campaign_replica_id.strip():
@@ -296,6 +351,19 @@ class DiagnosticCampaignSpecification:
             raise ValueError("initial cash must be positive")
         if self.order_shares <= 0:
             raise ValueError("order shares must be positive")
+        if self.approved_strategies:
+            if len(self.approved_strategies) != 2:
+                raise ValueError(
+                    "Formal Campaign execution requires exactly two "
+                    "approved Strategies"
+                )
+            strategy_ids = tuple(
+                item.strategy_id for item in self.approved_strategies
+            )
+            if len(set(strategy_ids)) != len(strategy_ids):
+                raise ValueError(
+                    "Diagnostic Campaign Strategies must be unique"
+                )
         if self.isolated_sensitivity_set is not None:
             if (
                 self.initial_cash
@@ -381,7 +449,7 @@ class DiagnosticCampaignSpecification:
                     "control_case_ids": controls,
                 }
             )
-        return {
+        payload: dict[str, object] = {
             "schema_version": DIAGNOSTIC_CAMPAIGN_SCHEMA_VERSION,
             "campaign_replica_id": self.campaign_replica_id,
             "campaign_type": self.campaign_type,
@@ -426,6 +494,15 @@ class DiagnosticCampaignSpecification:
             ],
             "comparison_relationships": relationships,
         }
+        if self.approved_strategies:
+            payload["approved_strategies"] = [
+                item.to_dict()
+                for item in sorted(
+                    self.approved_strategies,
+                    key=lambda candidate: candidate.strategy_id,
+                )
+            ]
+        return payload
 
     @classmethod
     def from_dict(
@@ -437,6 +514,10 @@ class DiagnosticCampaignSpecification:
         baseline_value = payload.get("baseline_case")
         isolated_value = payload.get("isolated_sensitivity_set")
         compound_values = cast(list[object], payload["compound_cases"])
+        strategy_values = cast(
+            list[object],
+            payload.get("approved_strategies", []),
+        )
         return cls(
             campaign_replica_id=str(payload["campaign_replica_id"]),
             baseline_case=(
@@ -461,6 +542,12 @@ class DiagnosticCampaignSpecification:
             ),
             initial_cash=Decimal(str(payload["initial_cash"])),
             order_shares=int(str(payload["order_shares"])),
+            approved_strategies=tuple(
+                DiagnosticCampaignStrategySelection.from_dict(
+                    cast(Mapping[str, object], item)
+                )
+                for item in strategy_values
+            ),
         )
 
 
@@ -1219,13 +1306,13 @@ class DiagnosticCampaignRunner:
 
 
 __all__ = [
-    "CampaignTransformation",
     "DIAGNOSTIC_CAMPAIGN_SCHEMA_VERSION",
+    "CampaignTransformation",
+    "DiagnosticCampaignCase",
     "DiagnosticCampaignCaseAttempt",
     "DiagnosticCampaignCaseExecutor",
     "DiagnosticCampaignCaseSnapshot",
     "DiagnosticCampaignCaseStatus",
-    "DiagnosticCampaignCase",
     "DiagnosticCampaignExecutionLayer",
     "DiagnosticCampaignLayer",
     "DiagnosticCampaignRepository",
@@ -1233,6 +1320,7 @@ __all__ = [
     "DiagnosticCampaignSnapshot",
     "DiagnosticCampaignSpecification",
     "DiagnosticCampaignStatus",
+    "DiagnosticCampaignStrategySelection",
     "DiagnosticCampaignType",
     "InMemoryDiagnosticCampaignRepository",
     "SqlDiagnosticCampaignRepository",

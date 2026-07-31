@@ -654,7 +654,10 @@ def test_ai_audit_survives_restart_and_links_subsequent_approval(
     restarted.initialize_persistence(engine)
     audit = restarted.get_ai_recipe_audit(authored.attempt.attempt_id)
 
-    assert migration.current_revision == "0014_diagnostic_task_approval"
+    assert (
+        migration.current_revision
+        == "0016_diagnostic_task_start_continuation_claim"
+    )
     assert audit.attempt.provider == "deterministic-fake"
     assert audit.attempt.model == "deterministic-recipe-fixture.v1"
     assert audit.attempt.prompt_template_version == "ai-recipe-assistant.v1"

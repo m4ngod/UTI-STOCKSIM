@@ -19,6 +19,7 @@ Item {
     readonly property string createStatusText: adapter.createStatusText
     readonly property string validationStatusText: adapter.validationStatusText
     readonly property string approvalStatusText: adapter.approvalStatusText
+    readonly property string campaignHandoffText: adapter.campaignHandoffText
     readonly property string commandStatusText: adapter.commandStatusText
 
     Flickable {
@@ -300,6 +301,28 @@ Item {
                         onClicked: adapter.approveTask(approvalActor.text)
                     }
 
+                    Button {
+                        id: startCampaignButton
+                        objectName: "startDiagnosticCampaignButton"
+                        text: "Start Formal Diagnostic Campaign"
+                        enabled: adapter.canStartCampaign
+                        focusPolicy: Qt.StrongFocus
+                        Accessible.name: text
+                        Accessible.description: "Start the exact approved task revision and hand its real Campaign and Run identities to Run Monitoring"
+                        onClicked: adapter.startCampaign()
+                    }
+
+                    Text {
+                        objectName: "diagnosticCampaignHandoffStatus"
+                        Layout.fillWidth: true
+                        text: adapter.campaignHandoffText
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: text
+                    }
+
                     Text {
                         objectName: "diagnosticTaskCommandStatus"
                         Layout.fillWidth: true
@@ -315,7 +338,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: "Campaign launch, lifecycle, and retry commands remain explicitly unavailable."
+                text: "Campaign lifecycle and failed-node retry commands remain explicitly unavailable."
                 color: tokens.textQuiet
                 font.pixelSize: tokens.labelSize
                 horizontalAlignment: Text.AlignRight

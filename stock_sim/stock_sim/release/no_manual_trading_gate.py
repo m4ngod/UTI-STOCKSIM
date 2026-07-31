@@ -79,6 +79,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
                 "createTask",
                 "refresh",
                 "reviseTask",
+                "startCampaign",
                 "validateTask",
             }
         ),

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import cast
+from uuid import uuid4
 
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from .baostock_source import BaoStockHistoricalSource
 from .diagnostic_evidence import (
@@ -28,6 +30,10 @@ from .diagnostic_evidence_storage import (
 from .diagnostic_tasks import (
     ApproveDiagnosticTaskConfigurationRequest,
     CreateDiagnosticTaskRequest,
+    DiagnosticCampaignAttemptHandoffSnapshot,
+    DiagnosticCampaignNodeHandoffSnapshot,
+    DiagnosticCampaignRunHandoffSnapshot,
+    DiagnosticTaskCampaignHandoffSnapshot,
     DiagnosticTaskCommandResult,
     DiagnosticTaskConfiguration,
     DiagnosticTaskCreationResult,
@@ -38,6 +44,7 @@ from .diagnostic_tasks import (
     DiagnosticTaskValidationSeverity,
     ReviseDiagnosticTaskConfigurationRequest,
     SqlDiagnosticTaskRepository,
+    StartFormalDiagnosticCampaignRequest,
     ValidateDiagnosticTaskConfigurationRequest,
 )
 from .execution_conditions import (
@@ -52,6 +59,7 @@ from .formal_diagnostic_campaigns import (
     DiagnosticCampaignRunner,
     DiagnosticCampaignSnapshot,
     DiagnosticCampaignSpecification,
+    DiagnosticCampaignStrategySelection,
     SqlDiagnosticCampaignRepository,
 )
 from .historical_segments import (
@@ -299,6 +307,8 @@ class DiagnosticsApplication:
             persistence_status="ready",
             persistence_revision=report.current_revision,
         )
+        for request in self._diagnostic_tasks.pending_start_requests():
+            self.start_formal_diagnostic_task_campaign(request)
         return report
 
     def status(self) -> DiagnosticsApplicationState:
@@ -403,6 +413,299 @@ class DiagnosticsApplication:
 
         self.status()
         return self._diagnostic_tasks.approve_configuration(request)
+
+    def start_formal_diagnostic_task_campaign(
+        self,
+        request: StartFormalDiagnosticCampaignRequest,
+    ) -> DiagnosticTaskCommandResult:
+        """Start the exact approved task as one real Formal Campaign."""
+
+        self.status()
+        preflight = self._diagnostic_tasks.preflight_start(request)
+        if isinstance(preflight, DiagnosticTaskCreationResult):
+            if (
+                preflight.disposition.value != "idempotent_replay"
+                or preflight.affected_campaign_id is not None
+            ):
+                return preflight
+            task = self._diagnostic_tasks.get(request.task_id)
+            if task is None:
+                return self._diagnostic_tasks.reject_start_unavailable(
+                    request,
+                    message="The accepted Diagnostic Task is unavailable.",
+                    retryable=True,
+                )
+            accepted = preflight
+        else:
+            task = preflight
+            accepted = None
+        try:
+            specification = self._formal_campaign_specification_for_task(
+                task,
+                request.approved_revision,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            return self._diagnostic_tasks.reject_start_unavailable(
+                request,
+                message=(
+                    "The exact approved Campaign Cases cannot form an "
+                    "authoritative Formal Diagnostic Campaign."
+                ),
+            )
+        if accepted is None:
+            accepted = self._diagnostic_tasks.accept_start(request)
+            if accepted.disposition.value not in {
+                "asynchronous_acceptance",
+                "idempotent_replay",
+            }:
+                return accepted
+            if accepted.affected_campaign_id is not None:
+                return accepted
+        isolated = specification.isolated_sensitivity_set
+        if isolated is None:
+            return self._diagnostic_tasks.reject_start_unavailable(
+                request,
+                message=(
+                    "A Formal Diagnostic Campaign requires its isolated "
+                    "sensitivity layer."
+                ),
+            )
+        handle = accepted.task_handle
+        if handle is None:
+            return self._diagnostic_tasks.reject_start_unavailable(
+                request,
+                message=(
+                    "Accepted Campaign start requires a persistent TaskHandle."
+                ),
+                retryable=True,
+            )
+        continuation_claim_id = uuid4().hex
+        try:
+            claimed = self._diagnostic_tasks.claim_start_continuation(
+                handle.task_handle_id,
+                continuation_claim_id,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            claimed = False
+        if not claimed:
+            return replace(
+                accepted,
+                message=(
+                    "Formal Diagnostic Campaign start accepted; another "
+                    "authoritative continuation owns this TaskHandle."
+                ),
+                affected_campaign_id=specification.campaign_id,
+            )
+        try:
+            self._isolated_sensitivity_sets.plan(isolated)
+            campaign = self._diagnostic_campaigns.plan(specification)
+            if not any(case.attempts for case in campaign.cases):
+                campaign = self._diagnostic_campaigns.advance(
+                    campaign.campaign_id,
+                    max_cases=1,
+                )
+            handoff = self._diagnostic_task_campaign_handoff(
+                task,
+                campaign,
+            )
+            self._diagnostic_tasks.complete_start(
+                handle.task_handle_id,
+                continuation_claim_id,
+                handoff,
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            try:
+                self._diagnostic_tasks.release_start_continuation(
+                    handle.task_handle_id,
+                    continuation_claim_id,
+                )
+            except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+                pass
+            # The queued acceptance remains durable and safe to retry. Planning
+            # identities are deterministic, so a lost response cannot create a
+            # second Campaign.
+            return replace(
+                accepted,
+                message=(
+                    "Formal Diagnostic Campaign start accepted; authoritative "
+                    "continuation remains queued."
+                ),
+                affected_campaign_id=specification.campaign_id,
+            )
+        return replace(
+            accepted,
+            affected_campaign_id=campaign.campaign_id,
+        )
+
+    def _formal_campaign_specification_for_task(
+        self,
+        task: DiagnosticTaskSnapshot,
+        approved_revision: int,
+    ) -> DiagnosticCampaignSpecification:
+        baseline: DiagnosticCampaignCase | None = None
+        isolated_by_family: dict[str, list[SensitivityCampaignCase]] = {
+            family: [] for family in ISOLATED_SENSITIVITY_FAMILIES
+        }
+        compounds: list[DiagnosticCampaignCase] = []
+        for selection in task.configuration.campaign_case_selections:
+            anchor = (
+                selection.recipe_version_id,
+                selection.market_scenario_id,
+            )
+            selected_case = self.create_diagnostic_campaign_case(*anchor)
+            if (
+                selected_case.case_id != selection.campaign_case_id
+                or selected_case.recipe_content_hash
+                != selection.recipe_content_hash
+            ):
+                raise ValueError(
+                    "Selected Campaign Case identity is no longer authoritative"
+                )
+            if selection.layer == "baseline":
+                if baseline is not None:
+                    raise ValueError(
+                        "Formal Diagnostic Campaign requires one baseline"
+                    )
+                baseline = selected_case
+            elif selection.layer == "isolated_sensitivity":
+                isolated = self.create_isolated_sensitivity_case(*anchor)
+                isolated_by_family[isolated.transformation_family].append(
+                    isolated
+                )
+            elif selection.layer == "compound":
+                compounds.append(selected_case)
+            else:
+                raise ValueError("Unsupported Diagnostic Campaign layer")
+        isolated_specification = IsolatedSensitivitySetSpecification(
+            sensitivity_set_replica_id=(
+                f"{task.task_id}:revision-{approved_revision}:isolated"
+            ),
+            sweeps=tuple(
+                SensitivitySweepDefinition(
+                    transformation_family=family,
+                    transformation_id=family_cases[0].transformation_id,
+                    transformation_implementation_version=(
+                        family_cases[0].transformation_implementation_version
+                    ),
+                    levels=tuple(family_cases),
+                )
+                for family in ISOLATED_SENSITIVITY_FAMILIES
+                if (family_cases := isolated_by_family[family])
+            ),
+            initial_cash=Decimal("100000"),
+            order_shares=1000,
+        )
+        specification = DiagnosticCampaignSpecification(
+            campaign_replica_id=(
+                f"{task.task_id}:revision-{approved_revision}:formal"
+            ),
+            baseline_case=baseline,
+            isolated_sensitivity_set=isolated_specification,
+            compound_cases=tuple(compounds),
+            initial_cash=Decimal("100000"),
+            order_shares=1000,
+            approved_strategies=tuple(
+                DiagnosticCampaignStrategySelection(
+                    strategy_id=selection.strategy_id,
+                    strategy_version=selection.strategy_version,
+                    compatibility_manifest_hash=(
+                        selection.compatibility_manifest_hash
+                    ),
+                    guardrail_profile_id=selection.guardrail_profile_id,
+                    guardrail_profile_version=(
+                        selection.guardrail_profile_version
+                    ),
+                )
+                for selection in task.configuration.strategy_selections
+            ),
+        )
+        specification = DiagnosticCampaignSpecification.from_dict(
+            specification.to_dict()
+        )
+        if specification.campaign_type != "formal_diagnostic_campaign":
+            raise ValueError("Approved task does not define a Formal Campaign")
+        return specification
+
+    @staticmethod
+    def _diagnostic_task_campaign_handoff(
+        task: DiagnosticTaskSnapshot,
+        campaign: DiagnosticCampaignSnapshot,
+    ) -> DiagnosticTaskCampaignHandoffSnapshot:
+        selections = {
+            (
+                selection.recipe_version_id,
+                selection.market_scenario_id,
+            ): selection
+            for selection in task.configuration.campaign_case_selections
+        }
+        nodes: list[DiagnosticCampaignNodeHandoffSnapshot] = []
+        for case in campaign.cases:
+            selection = selections.get(
+                (
+                    case.specification.recipe_version_id,
+                    case.specification.materialization_hash,
+                )
+            )
+            if selection is None:
+                raise ValueError(
+                    "Formal Campaign Case is not in the approved task"
+                )
+            attempts: list[DiagnosticCampaignAttemptHandoffSnapshot] = []
+            for attempt in case.attempts:
+                view = attempt.to_dict()
+                member_values = view.get("members", ())
+                if not isinstance(member_values, Sequence) or isinstance(
+                    member_values,
+                    (str, bytes),
+                ):
+                    raise ValueError("Campaign members must be an ordered list")
+                run_handoffs = tuple(
+                    DiagnosticCampaignRunHandoffSnapshot(
+                        run_id=str(member["run_id"]),
+                        strategy_id=str(member["strategy_id"]),
+                    )
+                    for member in member_values
+                    if isinstance(member, Mapping)
+                    and isinstance(member.get("run_id"), str)
+                    and isinstance(member.get("strategy_id"), str)
+                )
+                if len(run_handoffs) != len(member_values):
+                    raise ValueError(
+                        "Campaign member Run and Strategy identities are required"
+                    )
+                attempts.append(
+                    DiagnosticCampaignAttemptHandoffSnapshot(
+                        attempt_id=(
+                            f"{campaign.campaign_id}:"
+                            f"{selection.campaign_case_id}:"
+                            f"attempt-{attempt.attempt_number}"
+                        ),
+                        runs=run_handoffs,
+                    )
+                )
+            nodes.append(
+                DiagnosticCampaignNodeHandoffSnapshot(
+                    campaign_node_id=(
+                        f"{campaign.campaign_id}:"
+                        f"{case.case_id}"
+                    ),
+                    campaign_case_id=case.case_id,
+                    selected_campaign_case_id=(
+                        selection.campaign_case_id
+                    ),
+                    market_scenario_id=selection.market_scenario_id,
+                    attempts=tuple(attempts),
+                    active_attempt_id=(
+                        None
+                        if not attempts
+                        else attempts[-1].attempt_id
+                    ),
+                )
+            )
+        return DiagnosticTaskCampaignHandoffSnapshot(
+            campaign_id=campaign.campaign_id,
+            campaign_nodes=tuple(nodes),
+        )
 
     def _validate_diagnostic_task_configuration(
         self,
@@ -2258,27 +2561,68 @@ class DiagnosticsApplication:
         order_shares: int,
         campaign_replica_id: str,
         nodes_per_batch: int = 10_000,
+        approved_strategies: tuple[
+            DiagnosticCampaignStrategySelection,
+            ...,
+        ] = (),
     ) -> BaselineCampaignSnapshot:
         """Run both V1 representative strategies on isolated path replicas."""
 
+        if approved_strategies:
+            if len(approved_strategies) != 2:
+                raise ValueError(
+                    "Baseline Campaign requires exactly two approved Strategies"
+                )
+            ordered = tuple(
+                sorted(
+                    approved_strategies,
+                    key=lambda candidate: candidate.strategy_id,
+                )
+            )
+            strategy_members = (
+                (
+                    ordered[0].strategy_id,
+                    ordered[0].strategy_version,
+                    ordered[0].strategy_id,
+                ),
+                (
+                    ordered[1].strategy_id,
+                    ordered[1].strategy_version,
+                    ordered[1].strategy_id,
+                ),
+            )
+        else:
+            strategy_members = (
+                (
+                    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
+                    QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+                    "quentx",
+                ),
+                (
+                    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+                    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+                    "live-minute",
+                ),
+            )
+        first, second = strategy_members
         specifications = (
             self._baseline_strategy_run_specification(
                 recipe_version_id,
                 materialization_hash,
                 initial_cash=initial_cash,
                 order_shares=order_shares,
-                replica_id=f"{campaign_replica_id}:quentx",
-                strategy_id=QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
-                strategy_version=QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+                replica_id=f"{campaign_replica_id}:{first[2]}",
+                strategy_id=first[0],
+                strategy_version=first[1],
             ),
             self._baseline_strategy_run_specification(
                 recipe_version_id,
                 materialization_hash,
                 initial_cash=initial_cash,
                 order_shares=order_shares,
-                replica_id=f"{campaign_replica_id}:live-minute",
-                strategy_id=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
-                strategy_version=LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+                replica_id=f"{campaign_replica_id}:{second[2]}",
+                strategy_id=second[0],
+                strategy_version=second[1],
             ),
         )
         campaign = BaselineCampaignSpecification(
@@ -2329,6 +2673,7 @@ class DiagnosticsApplication:
             order_shares=specification.order_shares,
             campaign_replica_id=campaign_replica_id,
             nodes_per_batch=nodes_per_batch,
+            approved_strategies=specification.approved_strategies,
         )
 
     def _baseline_strategy_run_specification(

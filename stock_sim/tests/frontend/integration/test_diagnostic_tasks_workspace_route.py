@@ -12,18 +12,28 @@ from PySide6.QtCore import QMetaObject, QObject
 from PySide6.QtWidgets import QApplication
 from sqlalchemy import create_engine, text
 
+from app.event_bridge import EventBridge
 from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeRunMonitoringAdapter,
     DiagnosticTasksContext,
     LiveDiagnosticTasksAdapter,
+    LiveRunMonitoringAdapter,
+    LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+    RunMonitoringContext,
 )
 from app.ui.main_window import MainWindow
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
+    _formal_live_stack,
+)
 from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
     _persistent_three_layer_stack,
+)
+from tests.frontend.contract.test_strategy_diagnostics_v1_run_monitoring_live_contract import (
+    _DirectExecutor,
 )
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
     _baseline_payload,
@@ -459,3 +469,162 @@ def test_qml_corrects_validates_and_approves_exact_persisted_revision(
     restarted_window.close()
     restarted_feature.close()
     restarted_monitoring.close()
+
+
+def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
+    tmp_path,
+) -> None:
+    app = _app()
+    (
+        source,
+        artifact_store,
+        engine,
+        application,
+        _application_adapter,
+        diagnostic_tasks,
+    ) = _formal_live_stack(tmp_path)
+    bridge = EventBridge(subscribe_backend=False)
+    run_monitoring = LiveRunMonitoringAdapter(
+        application_read_model=LiveStrategyDiagnosticsV1ApplicationAdapter(
+            application,
+            engine,
+        ),
+        event_bridge=bridge,
+        executor=_DirectExecutor(),
+    )
+    window = MainWindow(
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
+        run_monitoring_feature=run_monitoring,
+        run_monitoring_context=RunMonitoringContext.no_selection(),
+        frontend_v2_enabled=True,
+    )
+    window.show()
+    app.processEvents()
+    root = window.centralWidget().rootObject()
+    create_button = root.findChild(QObject, "createDiagnosticTaskButton")
+    revise_button = root.findChild(QObject, "reviseDiagnosticTaskButton")
+    validate_button = root.findChild(QObject, "validateDiagnosticTaskButton")
+    approve_button = root.findChild(QObject, "approveDiagnosticTaskButton")
+    actor_input = root.findChild(QObject, "diagnosticTaskApprovalActorInput")
+    start_button = root.findChild(QObject, "startDiagnosticCampaignButton")
+    assert create_button is not None
+    assert revise_button is not None
+    assert validate_button is not None
+    assert approve_button is not None
+    assert actor_input is not None
+    assert start_button is not None
+
+    assert QMetaObject.invokeMethod(create_button, "clicked")
+    app.processEvents()
+    assert QMetaObject.invokeMethod(revise_button, "clicked")
+    app.processEvents()
+    assert QMetaObject.invokeMethod(validate_button, "clicked")
+    app.processEvents()
+    assert actor_input.setProperty("text", "qml-wave2-release-owner")
+    app.processEvents()
+    assert QMetaObject.invokeMethod(approve_button, "clicked")
+    app.processEvents()
+    assert start_button.property("enabled") is True
+
+    assert QMetaObject.invokeMethod(start_button, "clicked")
+    app.processEvents()
+    app.processEvents()
+
+    task = diagnostic_tasks.snapshot(DiagnosticTasksContext.workspace()).task
+    assert task is not None
+    assert task.handoff.ready_for_run_monitoring
+    campaign_id = task.handoff.campaign_id
+    assert campaign_id is not None
+    run_id = next(
+        run.run_id
+        for node in task.handoff.campaign_nodes
+        for attempt in node.attempts
+        for run in attempt.runs
+    )
+    campaign_text = root.findChild(QObject, "runMonitoringCampaignIdentity")
+    run_text = root.findChild(QObject, "runMonitoringRunIdentity")
+    assert root.property("activeRoute") == "run_monitoring"
+    assert campaign_text is not None
+    assert run_text is not None
+    assert campaign_text.property("text") == f"Campaign · {campaign_id.value}"
+    assert run_text.property("text") == f"Run · {run_id.value}"
+
+    window.close()
+    remounted = MainWindow(
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
+        run_monitoring_feature=run_monitoring,
+        run_monitoring_context=RunMonitoringContext.no_selection(),
+        frontend_v2_enabled=True,
+    )
+    remounted.show()
+    app.processEvents()
+    app.processEvents()
+    remounted_root = remounted.centralWidget().rootObject()
+    assert remounted_root.property("activeRoute") == "run_monitoring"
+    assert remounted_root.findChild(
+        QObject,
+        "runMonitoringCampaignIdentity",
+    ).property("text") == f"Campaign · {campaign_id.value}"
+    assert remounted_root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == f"Run · {run_id.value}"
+    remounted.close()
+    diagnostic_tasks.close()
+    run_monitoring.close()
+    bridge.stop()
+
+    restarted_application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=artifact_store,
+        recipe_clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+        diagnostic_task_clock=lambda: datetime(
+            2030,
+            1,
+            3,
+            tzinfo=timezone.utc,
+        ),
+    )
+    restarted_application.start()
+    restarted_application.initialize_persistence(engine)
+    restarted_tasks = LiveDiagnosticTasksAdapter(
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            restarted_application
+        )
+    )
+    restarted_bridge = EventBridge(subscribe_backend=False)
+    restarted_monitoring = LiveRunMonitoringAdapter(
+        application_read_model=LiveStrategyDiagnosticsV1ApplicationAdapter(
+            restarted_application,
+            engine,
+        ),
+        event_bridge=restarted_bridge,
+        executor=_DirectExecutor(),
+    )
+    reopened = MainWindow(
+        diagnostic_tasks_feature=restarted_tasks,
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
+        run_monitoring_feature=restarted_monitoring,
+        run_monitoring_context=RunMonitoringContext.no_selection(),
+        frontend_v2_enabled=True,
+    )
+    reopened.show()
+    app.processEvents()
+    app.processEvents()
+    reopened_root = reopened.centralWidget().rootObject()
+    assert reopened_root.property("activeRoute") == "run_monitoring"
+    assert reopened_root.findChild(
+        QObject,
+        "runMonitoringCampaignIdentity",
+    ).property("text") == f"Campaign · {campaign_id.value}"
+    assert reopened_root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == f"Run · {run_id.value}"
+    reopened.close()
+    restarted_tasks.close()
+    restarted_monitoring.close()
+    restarted_bridge.stop()

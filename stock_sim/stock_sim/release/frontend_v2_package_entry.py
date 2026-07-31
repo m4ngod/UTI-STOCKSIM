@@ -16,7 +16,6 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
-
 PRODUCTION_PATH = (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
@@ -116,6 +115,11 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
+    r"Create Diagnostic Task|"
+    r"Correct Configuration|"
+    r"Validate Configuration|"
+    r"Approve Configuration|"
+    r"Start Formal Diagnostic Campaign|"
     r"Pause diagnostic task|"
     r"Resume diagnostic task|"
     r"Cancel diagnostic task|"
@@ -552,7 +556,7 @@ def _collect_qml_identity_checkpoint(
             "Provenance",
             "Context",
         ):
-            tab = _focus_accessible_name_with_keyboard(
+            _focus_accessible_name_with_keyboard(
                 app=app,
                 host=host,
                 accessible_name=f"Show {tab_name.casefold()} tab",

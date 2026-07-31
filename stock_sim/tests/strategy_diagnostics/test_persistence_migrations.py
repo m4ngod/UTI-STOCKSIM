@@ -70,7 +70,10 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
     first = application.initialize_persistence(engine)
     second = application.initialize_persistence(engine)
 
-    assert first.current_revision == "0014_diagnostic_task_approval"
+    assert (
+        first.current_revision
+        == "0016_diagnostic_task_start_continuation_claim"
+    )
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
         "0002_historical_segment_catalog",
@@ -86,13 +89,18 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0012_reproduction_manifests",
         "0013_diagnostic_tasks",
         "0014_diagnostic_task_approval",
+        "0015_diagnostic_task_campaign_handoff",
+        "0016_diagnostic_task_start_continuation_claim",
     )
-    assert second.current_revision == "0014_diagnostic_task_approval"
+    assert (
+        second.current_revision
+        == "0016_diagnostic_task_start_continuation_claim"
+    )
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0014_diagnostic_task_approval"
+        == "0016_diagnostic_task_start_continuation_claim"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -121,6 +129,8 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0012_reproduction_manifests",
         "0013_diagnostic_tasks",
         "0014_diagnostic_task_approval",
+        "0015_diagnostic_task_campaign_handoff",
+        "0016_diagnostic_task_start_continuation_claim",
     ]
     strategy_run_columns = {
         column["name"]
@@ -157,6 +167,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "diagnostic_task_validations",
         "diagnostic_task_approvals",
         "diagnostic_task_mutation_commands",
+        "diagnostic_task_campaign_handoffs",
         "diagnostic_run_orders",
         "diagnostic_run_fills",
         "diagnostic_run_positions",
@@ -205,7 +216,10 @@ def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
 
     report = application.initialize_persistence(engine)
 
-    assert report.current_revision == "0014_diagnostic_task_approval"
+    assert (
+        report.current_revision
+        == "0016_diagnostic_task_start_continuation_claim"
+    )
     assert report.applied_revisions == ("0014_diagnostic_task_approval",)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -230,6 +244,61 @@ def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
                 "FROM diagnostic_task_command_identities"
             )
         ).scalar_one() == 0
+
+
+def test_issue_59_migration_adds_durable_campaign_handoff_without_rewriting_0014(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'issue-58-upgrade.db'}",
+        future=True,
+    )
+    application = create_diagnostics_application()
+    application.start()
+    application.initialize_persistence(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "DROP TABLE diagnostic_task_campaign_handoffs"
+        )
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations "
+                "WHERE revision IN ("
+                "'0015_diagnostic_task_campaign_handoff', "
+                "'0016_diagnostic_task_start_continuation_claim')"
+            )
+        )
+        revision_count = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM diagnostic_schema_migrations "
+                "WHERE revision = '0014_diagnostic_task_approval'"
+            )
+        ).scalar_one()
+    assert revision_count == 1
+
+    report = application.initialize_persistence(engine)
+
+    assert (
+        report.current_revision
+        == "0016_diagnostic_task_start_continuation_claim"
+    )
+    assert report.applied_revisions == (
+        "0015_diagnostic_task_campaign_handoff",
+        "0016_diagnostic_task_start_continuation_claim",
+    )
+    assert "diagnostic_task_campaign_handoffs" in set(
+        inspect(engine).get_table_names()
+    )
+    handle_columns = {
+        column["name"]
+        for column in inspect(engine).get_columns(
+            "diagnostic_task_handles"
+        )
+    }
+    assert {
+        "start_continuation_claim_id",
+        "start_continuation_claimed_at_utc",
+    }.issubset(handle_columns)
 
 
 def test_admitted_segment_catalog_survives_application_restart(tmp_path: Path) -> None:

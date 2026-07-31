@@ -198,19 +198,35 @@ class DiagnosticTaskApprovalSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticCampaignRunHandoff:
+    run_id: StrategyRunId
+    strategy_id: StrategyUnderTestId
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticCampaignAttemptHandoff:
     attempt_id: CampaignAttemptId
-    run_ids: tuple[StrategyRunId, ...]
+    runs: tuple[DiagnosticCampaignRunHandoff, ...]
 
     def __post_init__(self) -> None:
         if len(set(self.run_ids)) != len(self.run_ids):
             raise ValueError("Campaign attempt run identities must be unique")
+        strategy_ids = tuple(item.strategy_id for item in self.runs)
+        if len(set(strategy_ids)) != len(strategy_ids):
+            raise ValueError(
+                "Campaign attempt Strategy identities must be unique"
+            )
+
+    @property
+    def run_ids(self) -> tuple[StrategyRunId, ...]:
+        return tuple(item.run_id for item in self.runs)
 
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticCampaignNodeHandoff:
     campaign_node_id: CampaignNodeId
     campaign_case_id: CampaignCaseId
+    selected_campaign_case_id: CampaignCaseId
     market_scenario_id: MaterializedMarketScenarioId
     attempts: tuple[DiagnosticCampaignAttemptHandoff, ...]
     active_attempt_id: CampaignAttemptId | None
@@ -248,7 +264,7 @@ class DiagnosticTaskHandoff:
         attempt_ids: list[CampaignAttemptId] = []
         run_ids: list[StrategyRunId] = []
         for node in self.campaign_nodes:
-            selection = selected_by_case.get(node.campaign_case_id)
+            selection = selected_by_case.get(node.selected_campaign_case_id)
             if (
                 selection is None
                 or selection.market_scenario_id != node.market_scenario_id
@@ -427,6 +443,7 @@ __all__ = [
     "DiagnosticCampaignAttemptHandoff",
     "DiagnosticCampaignCaseSelectionReference",
     "DiagnosticCampaignNodeHandoff",
+    "DiagnosticCampaignRunHandoff",
     "DiagnosticConfigurationContentReference",
     "DiagnosticConfigurationFieldReference",
     "DiagnosticStrategySelectionReference",

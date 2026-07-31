@@ -548,7 +548,10 @@ def test_partial_campaign_resumes_after_repository_restart(
 ) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'formal-campaign.db'}")
     migration = initialize_diagnostic_persistence(engine)
-    assert migration.current_revision == "0014_diagnostic_task_approval"
+    assert (
+        migration.current_revision
+        == "0016_diagnostic_task_start_continuation_claim"
+    )
     compound = _campaign_case(
         _transformation("trend-regime", 1),
         _transformation("volatility", 2),

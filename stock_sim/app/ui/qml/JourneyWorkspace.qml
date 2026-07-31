@@ -691,6 +691,7 @@ Rectangle {
                                 font.bold: true
                             }
                             Text {
+                                objectName: "runMonitoringCampaignIdentity"
                                 Layout.fillWidth: true
                                 text: "Campaign · " + runMonitoring.campaignIdentity
                                 color: tokens.textPrimary
@@ -698,6 +699,7 @@ Rectangle {
                                 wrapMode: Text.WrapAnywhere
                             }
                             Text {
+                                objectName: "runMonitoringRunIdentity"
                                 Layout.fillWidth: true
                                 text: "Run · " + runMonitoring.runIdentity
                                 color: tokens.textPrimary

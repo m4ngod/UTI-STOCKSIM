@@ -51,7 +51,9 @@ from app.features import (
     ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
     RunMonitoringFeature,
+    RunMonitoringSelection,
     RunMonitoringViewState,
+    StartFormalDiagnosticCampaign,
     Subscription,
     ValidateDiagnosticTaskConfiguration,
 )
@@ -96,6 +98,7 @@ class DiagnosticTasksQtAdapter(QObject):
 
     stateChanged = Signal()
     deliveryRequested = Signal(int, object)
+    campaignHandoffReady = Signal(object)
 
     def __init__(
         self,
@@ -109,6 +112,7 @@ class DiagnosticTasksQtAdapter(QObject):
         self._context = context or DiagnosticTasksContext.workspace()
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
+        self._last_emitted_monitoring_selection: tuple[str, str] | None = None
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
@@ -135,6 +139,7 @@ class DiagnosticTasksQtAdapter(QObject):
             return
         self._state = state
         self.stateChanged.emit()
+        self._emit_monitoring_handoff_if_ready()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
@@ -295,6 +300,10 @@ class DiagnosticTasksQtAdapter(QObject):
     def canApprove(self) -> bool:  # noqa: N802
         return bool(self._state.capabilities.can_approve)
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canStartCampaign(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_start_campaign)
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskStatusText(self) -> str:  # noqa: N802
         task = self._state.task
@@ -366,6 +375,17 @@ class DiagnosticTasksQtAdapter(QObject):
             f"{approval.validation_revision} · actor "
             f"{approval.actor_identity.value} · "
             f"{approval.approved_at.isoformat()}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def campaignHandoffText(self) -> str:  # noqa: N802
+        context = self.monitoring_context()
+        if context is None or context.selection is None:
+            return "No Formal Diagnostic Campaign has been handed off."
+        selection = context.selection
+        return (
+            f"Campaign {selection.campaign_id.value} · "
+            f"Run {selection.run_id.value if selection.run_id is not None else 'pending'}"
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -506,6 +526,71 @@ class DiagnosticTasksQtAdapter(QObject):
         self.refresh()
         self.stateChanged.emit()
 
+    @Slot()
+    def startCampaign(self) -> None:  # noqa: N802
+        task = self._state.task
+        approval = None if task is None else task.approval
+        if (
+            task is None
+            or approval is None
+            or not self.canStartCampaign
+            or approval.approved_revision != task.revision
+        ):
+            self._command_status = (
+                "Campaign start requires the exact approved task revision."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.start_formal_diagnostic_campaign(
+            StartFormalDiagnosticCampaign(
+                command_id=DiagnosticCommandId(
+                    f"start-diagnostic-campaign-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-campaign-start-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                approved_revision=approval.approved_revision,
+            )
+        )
+        self._command_status = result.message
+        self.refresh()
+        self.stateChanged.emit()
+        self._emit_monitoring_handoff_if_ready()
+
+    def monitoring_context(self) -> RunMonitoringContext | None:
+        task = self._state.task
+        if task is None:
+            return None
+        handoff = task.handoff
+        if handoff.campaign_id is None:
+            return None
+        for node in handoff.campaign_nodes:
+            for attempt in node.attempts:
+                for run in attempt.runs:
+                    return RunMonitoringContext.for_run(
+                        RunMonitoringSelection(
+                            campaign_id=handoff.campaign_id,
+                            run_id=run.run_id,
+                        )
+                    )
+        return None
+
+    def _emit_monitoring_handoff_if_ready(self) -> None:
+        context = self.monitoring_context()
+        if context is None or context.selection is None:
+            return
+        selection = context.selection
+        if selection.run_id is None:
+            return
+        identity = (selection.campaign_id.value, selection.run_id.value)
+        if identity == self._last_emitted_monitoring_selection:
+            return
+        self._last_emitted_monitoring_selection = identity
+        self.campaignHandoffReady.emit(context)
+
     def _configuration_from_inventory(
         self,
         *,
@@ -645,6 +730,24 @@ class RunMonitoringQtAdapter(QObject):
         self._state = state
         self.stateChanged.emit()
 
+    def select_context(self, context: RunMonitoringContext) -> None:
+        if self._closed:
+            return
+        if context == self._context:
+            return
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._mount_generation = _next_mount_generation()
+        self._context = context
+        self._state = self._feature.snapshot(context)
+        self._subscription = self._feature.subscribe(
+            context,
+            self._queue_state,
+        )
+        self.stateChanged.emit()
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802 - QML property convention
         return str(self._state.presentation.value)
@@ -695,11 +798,11 @@ class RunMonitoringQtAdapter(QObject):
     def sourceGenerationText(self) -> str:  # noqa: N802
         return f"g{self._state.source.generation.value}"
 
-    @Property(int, constant=True)
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def mountGeneration(self) -> int:  # noqa: N802
         return self._mount_generation.value
 
-    @Property(str, constant=True)
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def mountGenerationText(self) -> str:  # noqa: N802
         return f"m{self._mount_generation.value}"
 
@@ -1884,6 +1987,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             context=context,
             parent=self,
         )
+        if self._diagnostic_tasks is not None:
+            self._diagnostic_tasks.campaignHandoffReady.connect(
+                self._open_run_monitoring_handoff
+            )
         self.rootContext().setContextProperty(
             "runMonitoring",
             self._run_monitoring,
@@ -1905,6 +2012,22 @@ class JourneyWorkspaceHost(QQuickWidget):
         if self.status() == QQuickWidget.Status.Error:
             details = "; ".join(error.toString() for error in self.errors())
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
+        if self._diagnostic_tasks is not None:
+            monitoring_context = self._diagnostic_tasks.monitoring_context()
+            if monitoring_context is not None:
+                self._open_run_monitoring_handoff(monitoring_context)
+
+    @Slot(object)
+    def _open_run_monitoring_handoff(
+        self,
+        context: RunMonitoringContext,
+    ) -> None:
+        if self._workspace_closed or not isinstance(context, RunMonitoringContext):
+            return
+        self._run_monitoring.select_context(context)
+        root = self.rootObject()
+        if root is not None:
+            root.setProperty("activeRoute", "run_monitoring")
 
     def close_adapter(self) -> None:
         if self._workspace_closed:

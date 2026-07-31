@@ -242,11 +242,12 @@ def test_configuration_cases_and_handoff_keep_all_authoritative_identities_linke
     node = DiagnosticCampaignNodeHandoff(
         campaign_node_id=CampaignNodeId("campaign-node-56"),
         campaign_case_id=baseline_case,
+        selected_campaign_case_id=baseline_case,
         market_scenario_id=scenario_id,
         attempts=(
             DiagnosticCampaignAttemptHandoff(
                 attempt_id=CampaignAttemptId("campaign-attempt-56"),
-                run_ids=(),
+                runs=(),
             ),
         ),
         active_attempt_id=CampaignAttemptId("campaign-attempt-56"),
@@ -294,6 +295,7 @@ def test_handoff_rejects_broken_attempt_and_selected_case_identity_graphs() -> N
         DiagnosticCampaignNodeHandoff(
             campaign_node_id=node_id,
             campaign_case_id=case_id,
+            selected_campaign_case_id=case_id,
             market_scenario_id=scenario_id,
             attempts=(),
             active_attempt_id=attempt_id,
@@ -302,11 +304,12 @@ def test_handoff_rejects_broken_attempt_and_selected_case_identity_graphs() -> N
     node = DiagnosticCampaignNodeHandoff(
         campaign_node_id=node_id,
         campaign_case_id=case_id,
+        selected_campaign_case_id=case_id,
         market_scenario_id=scenario_id,
         attempts=(
             DiagnosticCampaignAttemptHandoff(
                 attempt_id=attempt_id,
-                run_ids=(),
+                runs=(),
             ),
         ),
         active_attempt_id=attempt_id,
