@@ -1,7 +1,8 @@
-# Strategy Diagnostics V1 + Frontend V2 integration runbook
+# Strategy Diagnostics V1 + Frontend V2 Wave 2 integration runbook
 
-This runbook reproduces the Issue #52 integration quality gate. It is not the
-Issue #53 release-certification procedure.
+This runbook reproduces the Issue #65 source-level integration gate.
+It does not claim T08, T09, or T10 and is not the Issue #66 installed offline
+release-certification procedure.
 
 ## Preconditions
 
@@ -20,10 +21,11 @@ python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
 ```
 
 This validates the checked-in union manifest, both contract documents, the
-Application read-model 1.0 boundary, the Run Monitoring 1.2 and Evidence &
-Findings 1.1 two-interface registry, and the absence of synthetic dictionary
-producers across the persisted Application-to-QML tracer's complete source
-closure.
+`StrategyDiagnosticsV1ApplicationReadModel` 1.0 boundary,
+`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0,
+`DiagnosticTasksFeature` 1.0, `RunMonitoringFeature` 1.2, and
+`EvidenceAndFindingsFeature` 1.1. It also rejects forbidden types and
+substitutes across the exact persisted product tracer.
 
 ## Gate execution
 
@@ -42,8 +44,13 @@ python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
 
 The gate deliberately uses separate pytest processes for:
 
-1. shared fake/live Feature conformance and static architecture;
-2. the file-backed persisted Application-to-QML tracer;
+1. Seam 2, including unchanged-body live/fake conformance and static
+   architecture in `test_diagnostic_tasks_live_fake_conformance.py`;
+2. Seam 1, the source-bound file-backed tracer suite whose primary
+   Application-to-QML path is
+   `test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence`, plus
+   exact live targets for input/revision, command/idempotency, lifecycle/retry,
+   connection-generation, disposal, and no-late-callback edges;
 3. Strategy Diagnostics V1 regression under the pinned interpreter;
 4. root-package lazy-import isolation under a clean system Python 3.11;
 5. Frontend V2 contract;
@@ -51,7 +58,8 @@ The gate deliberately uses separate pytest processes for:
 7. Frontend V2 unit tests against a fresh temporary SQLite database;
 8. EventBridge unit tests in their own fresh-database process;
 9. no-manual-trading safety;
-10. performance and packaging contracts.
+10. performance and packaging preflight, including the typed Diagnostic Tasks
+    command and persistent `TaskHandle` observation load.
 
 The gate creates and removes the temporary unit-test databases itself. On
 Windows it uses the `py -3.11` launcher for the lazy-import probe because the
@@ -76,6 +84,7 @@ flake.
   injection, dictionary-based live certification fixtures, HTTP/IPC, and new
   Feature Interfaces.
 
-Issue #53 must independently produce the specified T08/T09/T10, package,
-sandbox, rollback, and release artifacts before any release certification is
-claimed.
+Seam 3 remains owned by Issue #66. It must independently produce T08/T09/T10,
+same-source QML and Widgets packages, clean-room reports, checksums, dependency
+manifests, screenshots, logs, tag, assets, and remote verification before any
+Wave 2 release certification is claimed.

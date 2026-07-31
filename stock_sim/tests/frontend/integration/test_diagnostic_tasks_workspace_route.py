@@ -468,6 +468,64 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         assert state.task is not None
         return state.task
 
+    def durable_identity_graph(task) -> tuple[str, ...]:
+        identities = [
+            task.task_id.value,
+            task.configuration.content_identity.value,
+            *(
+                selection.strategy_id.value
+                for selection in task.configuration.strategy_selections
+            ),
+            *(
+                selection.guardrail_profile_id.value
+                for selection in task.configuration.strategy_selections
+            ),
+            *(
+                selection.recipe_version_id.value
+                for selection in task.configuration.campaign_case_selections
+            ),
+            *(
+                selection.market_scenario_id.value
+                for selection in task.configuration.campaign_case_selections
+            ),
+            *(
+                selection.campaign_case_id.value
+                for selection in task.configuration.campaign_case_selections
+            ),
+            *(handle.identity.value for handle in task.task_handles),
+        ]
+        handoff = task.handoff
+        if handoff.campaign_id is not None:
+            identities.append(handoff.campaign_id.value)
+        for node in handoff.campaign_nodes:
+            identities.extend(
+                (
+                    node.campaign_node_id.value,
+                    node.selected_campaign_case_id.value,
+                    node.market_scenario_id.value,
+                )
+            )
+            for attempt in node.attempts:
+                identities.append(attempt.attempt_id.value)
+                if attempt.task_handle_id is not None:
+                    identities.append(attempt.task_handle_id.value)
+                for run in attempt.runs:
+                    identities.extend(
+                        (
+                            run.run_id.value,
+                            run.strategy_id.value,
+                        )
+                    )
+                    if run.reproduction_manifest_id is not None:
+                        identities.append(
+                            run.reproduction_manifest_id.value
+                        )
+        if handoff.evidence_package_id is not None:
+            identities.append(handoff.evidence_package_id.value)
+        if handoff.reproduction_manifest_id is not None:
+            identities.append(handoff.reproduction_manifest_id.value)
+        return tuple(sorted(set(identities)))
+
     activate("createDiagnosticTaskButton")
     activate("reviseDiagnosticTaskButton")
     activate("validateDiagnosticTaskButton")
@@ -572,6 +630,8 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     )
     manifest_id = accepted_run.reproduction_manifest_id
     assert manifest_id is not None
+    expected_durable_identity_graph = durable_identity_graph(completed_task)
+    assert len(expected_durable_identity_graph) >= 50
 
     traverse_to("evidenceAndFindingsRouteNavigation")
     QTest.keyClick(host, Qt.Key.Key_Return)
@@ -704,6 +764,17 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     reopened.show()
     settle()
     reopened_root = reopened.rootObject()
+    restarted_tasks.snapshot(workspace)
+    reopened_task_state = restarted_tasks.snapshot(workspace)
+    assert reopened_task_state.task is not None
+    assert (
+        durable_identity_graph(reopened_task_state.task)
+        == expected_durable_identity_graph
+    )
+    assert (
+        reopened_task_state.task.lifecycle
+        is DiagnosticTaskLifecycle.COMPLETED
+    )
     assert reopened_root.findChild(
         QObject,
         "runMonitoringCampaignIdentity",

@@ -1,15 +1,19 @@
 # Strategy Diagnostics V1 ↔ Frontend V2 Integration Contract Vertical Slice
 
 These release notes describe only the Integration Contract Vertical Slice
-defined by GitHub issue #47 and submitted to the issue #53 release gates. The
-candidate joins the previously certified Frontend V2 Wave 1 presentation with
-persisted Strategy Diagnostics V1 results through one in-process typed
-Application read-model boundary.
+defined by GitHub issue #47, extended through the Wave 2 source-level gate in
+Issue #65, and submitted to the Issue #66 release gates. The current source
+candidate joins persisted Strategy Diagnostics V1 commands and results through
+typed in-process Application boundaries.
 
 ## Included scope
 
+- `DiagnosticTasksFeature` 1.0 is active.
 - `RunMonitoringFeature` 1.2 is active.
 - `EvidenceAndFindingsFeature` 1.1 is active.
+- `StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0 creates, validates,
+  approves, and starts real persisted Diagnostic Tasks and Formal Diagnostic
+  Campaigns through the production QML route.
 - A persisted V1 Formal Diagnostic Campaign, selected Strategy Run, sealed
   Diagnostic Evidence Package, and Reproduction Manifest are reopened from
   SQLite, JSON, and Parquet storage by the real `DiagnosticsApplication`.
@@ -31,15 +35,12 @@ reopens sealed backend state in-process.
 
 ## Explicitly not included
 
-- Diagnostic Tasks creation and launch are not complete.
 - Strategy Library is not complete.
 - Scenario Lab is not complete.
 - System Health is not complete.
-- Waves 2–4 are not complete.
+- Waves 3–4 are not complete.
 
-No later Feature Module is active or claimed by this release. A separate
-readiness decision is required before Wave 2 `DiagnosticTasksFeature` work may
-begin.
+No later Feature Module is active or claimed by this source candidate.
 
 ## Certification boundary
 
@@ -77,9 +78,10 @@ rollback artifact.
   QML journey in hardware and software renderer lanes, and launch the real
   read-only legacy Widgets rollback executable.
 
-Source changes alone do not certify the candidate. Certification exists only
-after the retained issue-53 evidence and GitHub release bind the immutable
-source commit to the checksums of both offline archives.
+Source changes alone do not certify the Wave 2 candidate. The Issue #65 result
+is not an installed Wave 2 release-certification claim. Certification exists
+only after Issue #66 binds its immutable source commit, clean-room evidence,
+and GitHub release to the checksums of both offline archives.
 
 ## Certified candidate
 
@@ -124,6 +126,8 @@ GitHub server digests, local digests, sizes, and distributed start, middle,
 and tail byte ranges were independently matched for both assets. The retained
 `release-asset-verification.json` records those checks.
 
-This certification remains limited to the two active Feature Interfaces named
-above. It does not certify Diagnostic Tasks, Strategy Library, Scenario Lab,
-System Health, or any other Wave 2–4 scope.
+This historical Wave 1 certification remains limited to the two Feature
+Interfaces and immutable source commit it named. It does not certify the
+current Wave 2 source candidate; Issue #66 must certify Diagnostic Tasks and
+all three active Feature Interfaces. Strategy Library, Scenario Lab, System
+Health, and Waves 3–4 remain outside scope.

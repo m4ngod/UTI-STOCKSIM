@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import inspect
 import subprocess
+from array import array
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import (
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
+)
 from pathlib import Path
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
+
+import pytest
 
 from app.features import (
     DiagnosticTasksFeature,
@@ -15,7 +23,9 @@ from app.features import (
 )
 from stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate import (
     INTEGRATION_GATE_GROUPS,
+    PERSISTED_PRODUCT_TRACER,
     REQUIRED_CONTRACT_DOCUMENTS,
+    REQUIRED_CONTRACT_MARKERS,
     run_integration_gate,
     validate_integration_gate,
 )
@@ -64,21 +74,45 @@ def _transitive_interface_graph(*interfaces: type[object]) -> set[object]:
     return visited
 
 
-def test_all_three_active_features_and_diagnostic_tasks_application_have_clean_public_type_graphs():
-    public_graph = _transitive_interface_graph(
-        DiagnosticTasksFeature,
-        RunMonitoringFeature,
-        EvidenceAndFindingsFeature,
-        StrategyDiagnosticsV1DiagnosticTasksApplication,
+def _public_type_graph_violations(
+    public_graph: set[object],
+) -> tuple[str, ...]:
+    violations: list[str] = []
+    mutable_concrete_types = {
+        list,
+        set,
+        dict,
+        bytearray,
+        deque,
+        array,
+    }
+    mutable_abstract_types = (
+        MutableMapping,
+        MutableSequence,
+        MutableSet,
     )
-
-    assert Any not in public_graph
-    assert dict not in public_graph
-    assert Mapping not in public_graph
     for public_type in public_graph:
-        module = getattr(public_type, "__module__", "")
-        name = getattr(public_type, "__name__", "")
-        assert not module.startswith(
+        candidate = get_origin(public_type) or public_type
+        if candidate is Any:
+            violations.append("Any")
+            continue
+        if candidate is Mapping:
+            violations.append("Mapping")
+            continue
+        if candidate in mutable_concrete_types:
+            violations.append(getattr(candidate, "__name__", repr(candidate)))
+            continue
+        if inspect.isclass(candidate) and any(
+            issubclass(candidate, mutable_family)
+            for mutable_family in mutable_abstract_types
+        ):
+            violations.append(
+                f"mutable collection {candidate.__module__}.{candidate.__name__}"
+            )
+            continue
+        module = getattr(candidate, "__module__", "")
+        name = getattr(candidate, "__name__", "")
+        if module.startswith(
             (
                 "strategy_diagnostics",
                 "sqlalchemy",
@@ -90,9 +124,47 @@ def test_all_three_active_features_and_diagnostic_tasks_application_have_clean_p
                 "queue",
                 "threading",
             )
-        )
-        assert name != "EventBridge"
-        assert "Repository" not in name
+        ):
+            violations.append(f"forbidden module {module}.{name}")
+        if name in {"EventBridge", "RuntimeGateway"}:
+            violations.append(name)
+        if any(
+            marker in name
+            for marker in ("Repository", "Database", "ArtifactStore")
+        ):
+            violations.append(name)
+    return tuple(violations)
+
+
+def test_all_three_active_features_and_diagnostic_tasks_application_have_clean_public_type_graphs():
+    public_graph = _transitive_interface_graph(
+        DiagnosticTasksFeature,
+        RunMonitoringFeature,
+        EvidenceAndFindingsFeature,
+        StrategyDiagnosticsV1DiagnosticTasksApplication,
+    )
+
+    assert _public_type_graph_violations(public_graph) == ()
+
+
+@pytest.mark.parametrize(
+    "forbidden_type",
+    (
+        list[str],
+        set[str],
+        dict[str, str],
+        bytearray,
+        deque[str],
+        array,
+        MutableMapping[str, str],
+        MutableSequence[str],
+        MutableSet[str],
+    ),
+)
+def test_public_type_graph_guard_rejects_every_mutable_collection_family(
+    forbidden_type: object,
+) -> None:
+    assert _public_type_graph_violations({forbidden_type})
 
 
 def test_integration_gate_is_complete_and_repository_valid():
@@ -116,12 +188,72 @@ def test_integration_gate_is_complete_and_repository_valid():
     assert groups["strategy-diagnostics-v1-lazy-import-isolation"].clean_python
     assert groups["frontend-v2-unit"].fresh_sqlite
     assert groups["frontend-v2-event-bridge"].fresh_sqlite
+    assert (
+        groups["persisted-application-qml-tracer"].pytest_targets
+        == PERSISTED_PRODUCT_TRACER.pytest_targets
+    )
+    assert (
+        f"--deselect={PERSISTED_PRODUCT_TRACER.pytest_target}"
+        in groups["frontend-v2-integration-e2e-accessibility"].pytest_args
+    )
+    assert all(
+        f"--ignore={target}" in groups["frontend-v2-contract"].pytest_args
+        for target in groups["shared-feature-conformance"].pytest_targets[:-1]
+    )
     assert {
         Path(
             "docs/contracts/integration/strategy-diagnostics-v1-frontend-v2-contract.md"
         ),
         Path("docs/testing/integration/strategy-diagnostics-v1-frontend-v2-runbook.md"),
     } == set(REQUIRED_CONTRACT_DOCUMENTS)
+    assert set(REQUIRED_CONTRACT_MARKERS) == set(REQUIRED_CONTRACT_DOCUMENTS)
+    assert tuple(
+        category.requirement
+        for category in PERSISTED_PRODUCT_TRACER.coverage
+    ) == (
+        "authoritative-input-and-exact-revision",
+        "command-identity-idempotency-and-recovery",
+        "lifecycle-retry-terminal-and-order-isolation",
+        "connection-generation-disposal-and-no-late-callback",
+    )
+    assert all(
+        category.pytest_targets
+        for category in PERSISTED_PRODUCT_TRACER.coverage
+    )
+    assert len(PERSISTED_PRODUCT_TRACER.pytest_targets) == len(
+        set(PERSISTED_PRODUCT_TRACER.pytest_targets)
+    )
+
+
+def test_wave2_gate_freezes_the_complete_product_tracer_and_contract_language():
+    assert PERSISTED_PRODUCT_TRACER.source_path == Path(
+        "tests/frontend/integration/test_diagnostic_tasks_workspace_route.py"
+    )
+    assert PERSISTED_PRODUCT_TRACER.function_name == (
+        "test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence"
+    )
+    assert {
+        "LiveDiagnosticTasksAdapter",
+        "LiveRunMonitoringAdapter",
+        "LiveEvidenceAndFindingsAdapter",
+        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "JourneyWorkspaceHost",
+        "create_diagnostics_application",
+        "create_engine",
+        "engine.dispose()",
+        "restarted_engine",
+    } <= set(PERSISTED_PRODUCT_TRACER.required_markers)
+    assert {
+        "DeterministicFakeDiagnosticTasksAdapter",
+        "DictionaryFixtureApplicationReadModel",
+        "_LiveJourneyQueries",
+        "Repository",
+        "session.execute",
+    } <= set(PERSISTED_PRODUCT_TRACER.forbidden_markers)
+
+    for document, markers in REQUIRED_CONTRACT_MARKERS.items():
+        source = (PROJECT_ROOT / document).read_text(encoding="utf-8")
+        assert all(marker in source for marker in markers)
 
 
 def test_persisted_journey_certification_has_no_synthetic_dictionary_producer():

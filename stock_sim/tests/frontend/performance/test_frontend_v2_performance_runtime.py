@@ -1,16 +1,17 @@
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from time import perf_counter_ns
 from types import SimpleNamespace
 
 import pytest
 
-from stock_sim.release import frontend_v2_performance_runtime
-from stock_sim.release import strategy_diagnostics_v1_release_fixture
-
+from stock_sim.release import (
+    frontend_v2_performance_runtime,
+    strategy_diagnostics_v1_release_fixture,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -406,6 +407,7 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["schema_version"] == 2
     assert report["status"] == "smoke"
     assert report["lane"] == "software"
     assert report["graphics_api"] == "Software"
@@ -430,12 +432,47 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
     }
     assert report["production_path"] == [
         "PerformanceLoadProjectionReadModel",
+        "DeterministicFakeDiagnosticTasksAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
         "JourneyWorkspaceHost",
         "EvidenceChart.qml",
     ]
+    wave2_load = report["wave2_diagnostic_tasks"]
+    assert wave2_load["feature_interface"] == "DiagnosticTasksFeature/1.0"
+    assert wave2_load["application_interface"] == (
+        "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
+    )
+    assert wave2_load["adapter"] == "DeterministicFakeDiagnosticTasksAdapter"
+    assert wave2_load["accepted_command_ids"] == [
+        "performance-create-diagnostic-task",
+        "performance-validate-diagnostic-task",
+        "performance-approve-diagnostic-task",
+        "performance-start-diagnostic-campaign",
+    ]
+    assert wave2_load["result_command_ids"] == (
+        wave2_load["accepted_command_ids"]
+    )
+    assert wave2_load["accepted_command_observed"] is True
+    assert wave2_load["task_handle_observed"] is True
+    assert wave2_load["task_handle_ids"]
+    assert wave2_load["handoff_observed"] is True
+    assert wave2_load["terminal_observed"] is True
+    assert wave2_load["executed_during_active_load"] is True
+    assert wave2_load["source_events_before_command"] > 0
+    assert (
+        wave2_load["source_events_after_command"]
+        >= wave2_load["source_events_before_command"]
+    )
+    assert wave2_load["observed_before_load"] is True
+    assert wave2_load["observed_after_load"] is True
+    assert wave2_load["task_lifecycle"] == "completed"
+    identity_graph = wave2_load["identity_graph"]
+    assert len(identity_graph) == len(set(identity_graph))
+    assert len(identity_graph) >= 8
+    assert set(wave2_load["accepted_command_ids"]) <= set(identity_graph)
+    assert set(wave2_load["task_handle_ids"]) <= set(identity_graph)
     assert report["integrated_v1_probe"] is None
     assert report["metrics"]["event_to_visible"]["count"] > 0
     assert report["metrics"]["input_response"]["count"] > 0
