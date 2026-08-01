@@ -8,7 +8,15 @@ Rectangle {
 
     property bool diagnosticTasksAvailable: diagnosticTasks !== null
     property string activeRoute: "diagnostic_tasks"
+    property bool diagnosticTasksPageActivated: (
+        initialJourneyRoute === "diagnostic_tasks"
+    )
     property bool evidenceAvailable: evidenceAndFindings !== null
+    property string diagnosticTasksInventoryState: (
+        diagnosticTasksAvailable
+            ? diagnosticTasks.presentationState
+            : "unavailable"
+    )
     property var designSystem: tokens
     readonly property var evidenceInitialFocusItem: (
         evidencePageLoader.item === null
@@ -153,8 +161,13 @@ Rectangle {
         Qt.callLater(restoreActiveRouteFocus)
     }
 
-    onActiveRouteChanged: Qt.callLater(restoreActiveRouteFocus)
+    onActiveRouteChanged: {
+        if (activeRoute === "diagnostic_tasks")
+            diagnosticTasksPageActivated = true
+        Qt.callLater(restoreActiveRouteFocus)
+    }
     Component.onCompleted: {
+        activeRoute = initialJourneyRoute
         if (!diagnosticTasksAvailable)
             activeRoute = "run_monitoring"
         Qt.callLater(restoreActiveRouteFocus)
@@ -262,6 +275,8 @@ Rectangle {
                     Accessible.name: "Open Diagnostic Tasks"
                     Accessible.description: (
                         "Navigate to authoritative Diagnostic Tasks inputs"
+                        + ", inventory "
+                        + workspace.diagnosticTasksInventoryState
                     )
                     Accessible.role: Accessible.Button
                     Accessible.focusable: true
@@ -493,13 +508,21 @@ Rectangle {
                 objectName: "diagnosticTasksPageLoader"
                 anchors.fill: parent
                 active: workspace.diagnosticTasksAvailable
+                    && workspace.diagnosticTasksPageActivated
                 visible: workspace.activeRoute === "diagnostic_tasks"
-                sourceComponent: Component {
-                    DiagnosticTasksPage {
-                        adapter: diagnosticTasks
-                        tokens: workspace.designSystem
+                function ensureLoaded() {
+                    if (active && status === Loader.Null) {
+                        setSource(
+                            Qt.resolvedUrl("DiagnosticTasksPage.qml"),
+                            {
+                                "adapter": diagnosticTasks,
+                                "tokens": workspace.designSystem
+                            }
+                        )
                     }
                 }
+                onActiveChanged: ensureLoaded()
+                Component.onCompleted: ensureLoaded()
             }
 
             Flickable {

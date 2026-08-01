@@ -2851,8 +2851,17 @@ class JourneyWorkspaceHost(QQuickWidget):
         evidence_context: EvidenceAndFindingsContext | None = None,
         accessibility_preferences: AccessibilityPreferences | None = None,
         parent: QWidget | None = None,
+        initial_route: str = "diagnostic_tasks",
     ) -> None:
         super().__init__(parent)
+        if initial_route not in {
+            "diagnostic_tasks",
+            "run_monitoring",
+            "evidence_and_findings",
+        }:
+            raise ValueError(
+                f"Unsupported Journey Workspace route: {initial_route!r}"
+            )
         self.setObjectName("journeyWorkspaceHost")
         self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self._workspace_closed = False
@@ -2863,6 +2872,10 @@ class JourneyWorkspaceHost(QQuickWidget):
         self.rootContext().setContextProperty(
             "accessibilitySettings",
             self._accessibility_settings,
+        )
+        self.rootContext().setContextProperty(
+            "initialJourneyRoute",
+            initial_route,
         )
         self._diagnostic_tasks = (
             DiagnosticTasksQtAdapter(

@@ -1722,21 +1722,28 @@ def _qml_observes_ready_inventory(
 ) -> bool:
     root = host.rootObject()
     adapter = host._diagnostic_tasks
-    if (
-        root is None
-        or adapter is None
-        or not root.setProperty("activeRoute", "diagnostic_tasks")
-    ):
+    if root is None or adapter is None:
         return False
     app.processEvents()
     app.processEvents()
+    route = root.findChild(
+        QObject,
+        "diagnosticTasksRouteNavigation",
+    )
+    if route is None:
+        return False
+    accessible = QAccessible.queryAccessibleInterface(route)
+    if accessible is None:
+        return False
+    observed_text = " ".join(
+        (
+            accessible.text(QAccessible.Text.Name),
+            accessible.text(QAccessible.Text.Description),
+        )
+    ).lower()
     return bool(
         adapter.presentationState == "ready"
-        and root.findChild(
-            QObject,
-            "diagnosticTasksAccessibleSummary",
-        )
-        is not None
+        and "inventory ready" in observed_text
     )
 
 
@@ -1854,6 +1861,7 @@ def run_performance_lane(
             diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
             evidence_feature=evidence_feature,
             evidence_context=evidence_context,
+            initial_route="evidence_and_findings",
         )
         root = host.rootObject()
         if root is None:
