@@ -1372,7 +1372,10 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
             _map_recipe(item, transformation_catalog_version)
             for item in approved
         )
-        paths = self._application.list_materialized_market_paths()
+        campaign_case_inventory = (
+            self._application.read_diagnostic_campaign_case_inventory()
+        )
+        paths = campaign_case_inventory.materialized_paths
         approved_by_id = {item.version_id: item for item in approved}
         paths_by_hash = {item.artifact_hash: item for item in paths}
         scenarios = tuple(
@@ -1381,7 +1384,7 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                 paths_by_hash[case.materialization_hash],
                 case,
             )
-            for case in self._application.list_available_diagnostic_campaign_cases()
+            for case in campaign_case_inventory.available_cases
         )
         return DiagnosticTasksInventory(
             strategies=tuple(
