@@ -33,10 +33,16 @@ from stock_sim.release.no_manual_trading_gate import (
 from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
     FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
     FORMAL_V1_RELEASE_FIXTURE_DIRNAME,
+    WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME,
     SealedFormalV1ReleaseFixtureManifest,
+    SealedWave2ReleaseInputFixtureManifest,
     create_sealed_formal_v1_release_fixture,
+    create_sealed_wave2_release_input_fixture,
     extract_sealed_formal_v1_release_fixture_archive,
+    extract_sealed_wave2_release_input_fixture_archive,
     write_sealed_formal_v1_release_fixture_archive,
+    write_sealed_wave2_release_input_fixture_archive,
 )
 
 
@@ -150,6 +156,14 @@ _PRODUCTION_JOURNEY_PATH = (
     "LiveEvidenceAndFindingsAdapter",
     "JourneyWorkspaceHost",
 )
+_WAVE2_RELEASE_FIXTURE_KIND = "authoritative_writable_wave2_inputs"
+_WAVE2_ACCEPTED_COMMAND_KINDS = (
+    "create_diagnostic_task",
+    "revise_configuration",
+    "validate_configuration",
+    "approve_configuration",
+    "start_formal_diagnostic_campaign",
+)
 _EXPECTED_CLEAN_ROOM_JOURNEY = (
     (
         "launched_terminal_run",
@@ -255,6 +269,33 @@ REAL_V1_IDENTITY_FIELDS = (
     "approved_recipe_identity",
     "evidence_package_identity",
     "reproduction_manifest_identity",
+)
+_CROSS_LANE_STABLE_FIELDS = (
+    "fixture_kind",
+    "task_created_after_install",
+    "campaign_created_after_install",
+    "accepted_command_kinds",
+    "writable_persistence_verified",
+    "application_reopened",
+    "background_continuation_verified",
+    "task_cancel_order_isolation_verified",
+    "persistence_kind",
+    "persistence_reopened",
+    "application_read_model_interface",
+    "active_feature_interfaces",
+    "campaign_status",
+    "run_status",
+    "evidence_status",
+    "keyboard_navigation_verified",
+    "accessibility_preferences_verified",
+    "old_generation_rejected",
+    "authoritative_reconnect_verified",
+    "routes_rendered",
+    "production_path",
+    "connection_transitions",
+    "manual_trading_action_count",
+    "read_only_context_visible",
+    "clean_exit",
 )
 
 
@@ -375,6 +416,16 @@ class RendererLaneEvidence:
     journey_stages: tuple[str, ...]
     routes_rendered: tuple[str, ...]
     production_path: tuple[str, ...]
+    fixture_kind: str
+    task_created_after_install: bool
+    campaign_created_after_install: bool
+    diagnostic_task_identity: str
+    accepted_command_kinds: tuple[str, ...]
+    task_handle_identities: tuple[str, ...]
+    writable_persistence_verified: bool
+    application_reopened: bool
+    background_continuation_verified: bool
+    task_cancel_order_isolation_verified: bool
     campaign_identity: str
     case_identity: str
     run_identity: str
@@ -1238,6 +1289,72 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
+def _installed_wave2_smoke_failures(
+    payload: Mapping[str, Any],
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    if payload.get("fixture_kind") != _WAVE2_RELEASE_FIXTURE_KIND:
+        failures.append(
+            "did not use the authoritative writable Wave 2 input fixture"
+        )
+    for field_name, message in (
+        (
+            "task_created_after_install",
+            "did not create a Diagnostic Task after install",
+        ),
+        (
+            "campaign_created_after_install",
+            "did not create a Formal Diagnostic Campaign after install",
+        ),
+        (
+            "writable_persistence_verified",
+            "did not verify writable persistence",
+        ),
+        (
+            "application_reopened",
+            "did not reopen the Application over persisted state",
+        ),
+        (
+            "background_continuation_verified",
+            "did not keep the Campaign nonterminal through route, "
+            "disconnect, and Application-reopen recovery",
+        ),
+        (
+            "task_cancel_order_isolation_verified",
+            "did not verify Diagnostic Task cancel/order isolation",
+        ),
+    ):
+        if payload.get(field_name) is not True:
+            failures.append(message)
+    diagnostic_task_identity = payload.get("diagnostic_task_identity")
+    if (
+        not isinstance(diagnostic_task_identity, str)
+        or not diagnostic_task_identity.strip()
+    ):
+        failures.append("Diagnostic Task identity is unavailable")
+    if tuple(payload.get("accepted_command_kinds", ())) != (
+        _WAVE2_ACCEPTED_COMMAND_KINDS
+    ):
+        failures.append(
+            "did not accept the exact create/revise/validate/approve/start "
+            "command journey"
+        )
+    task_handle_identities = payload.get("task_handle_identities")
+    if (
+        not isinstance(task_handle_identities, (list, tuple))
+        or len(task_handle_identities) < 3
+        or any(
+            not isinstance(identity, str) or not identity.strip()
+            for identity in task_handle_identities
+        )
+        or len(set(task_handle_identities)) != len(task_handle_identities)
+    ):
+        failures.append(
+            "persistent TaskHandle identities are incomplete or invalid"
+        )
+    return tuple(failures)
+
+
 def _real_v1_smoke_failures(
     payload: Mapping[str, Any],
 ) -> tuple[str, ...]:
@@ -1365,13 +1482,27 @@ def _real_v1_smoke_failures(
             for identities in identity_sets.values()
             for identity in identities
         }
+        if payload.get("fixture_kind") == _WAVE2_RELEASE_FIXTURE_KIND:
+            diagnostic_task_identity = payload.get(
+                "diagnostic_task_identity"
+            )
+            task_handle_identities = payload.get(
+                "task_handle_identities"
+            )
+            if isinstance(diagnostic_task_identity, str):
+                flattened_identity_graph.add(diagnostic_task_identity)
+            if isinstance(task_handle_identities, (list, tuple)):
+                flattened_identity_graph.update(
+                    str(identity)
+                    for identity in task_handle_identities
+                )
         if persisted_identity_sets_valid:
             flattened_identity_graph.update(
                 str(identity)
                 for identity in (
-                    *persisted_manifest_identities,
-                    *persisted_run_identities,
-                    *raw_artifact_hashes,
+                    tuple(persisted_manifest_identities or ())
+                    + tuple(persisted_run_identities or ())
+                    + tuple(raw_artifact_hashes or ())
                 )
             )
         if (
@@ -1527,6 +1658,10 @@ def verify_clean_room_report(
             f"{lane_name} renderer {failure}"
             for failure in _real_v1_smoke_failures(lane)
         )
+        failures.extend(
+            f"{lane_name} renderer {failure}"
+            for failure in _installed_wave2_smoke_failures(lane)
+        )
         if lane.get("source_commit") != expected_source_commit:
             failures.append(
                 f"{lane_name} renderer source commit does not match"
@@ -1544,7 +1679,7 @@ def verify_clean_room_report(
             "evidence_and_findings",
         ):
             failures.append(
-                f"{lane_name} renderer did not render both Wave 1 routes"
+                f"{lane_name} renderer did not render all three active routes"
             )
         observations = lane.get("observations")
         observed_journey = (
@@ -1594,22 +1729,7 @@ def verify_clean_room_report(
         software_lane,
         dict,
     ):
-        for field_name in (
-            *REAL_V1_IDENTITY_FIELDS,
-            "artifact_hashes",
-            "application_read_model_interface",
-            "active_feature_interfaces",
-            "expected_identity_graph",
-            "feature_identity_graph",
-            "evidence_identity_sets",
-            "persisted_manifest_identities",
-            "persisted_run_identities",
-            "raw_artifact_hashes",
-            "keyboard_navigation_verified",
-            "accessibility_preferences_verified",
-            "old_generation_rejected",
-            "authoritative_reconnect_verified",
-        ):
+        for field_name in _CROSS_LANE_STABLE_FIELDS:
             if hardware_lane.get(field_name) != software_lane.get(
                 field_name
             ):
@@ -1840,18 +1960,7 @@ def write_renderer_evidence(
         expected_graphics_api="Software",
         expected_source_commit=source_commit,
     )
-    for field_name in (
-        *REAL_V1_IDENTITY_FIELDS,
-        "artifact_hashes",
-        "application_read_model_interface",
-        "active_feature_interfaces",
-        "evidence_identity_sets",
-        "persisted_manifest_identities",
-        "persisted_run_identities",
-        "raw_artifact_hashes",
-        "expected_identity_graph",
-        "feature_identity_graph",
-    ):
+    for field_name in _CROSS_LANE_STABLE_FIELDS:
         if getattr(hardware, field_name) != getattr(
             software,
             field_name,
@@ -1936,6 +2045,7 @@ def _load_renderer_lane(
         payload.get("connection_transitions", ())
     )
     real_v1_failures = _real_v1_smoke_failures(payload)
+    installed_wave2_failures = _installed_wave2_smoke_failures(payload)
     if (
         routes_rendered
         != ("diagnostic_tasks", "run_monitoring", "evidence_and_findings")
@@ -1943,14 +2053,16 @@ def _load_renderer_lane(
         or connection_transitions
         != _EXPECTED_CONNECTION_TRANSITIONS
         or real_v1_failures
+        or installed_wave2_failures
         or payload.get("manual_trading_action_count") != 0
         or payload.get("read_only_context_visible") is not True
         or errors
         or payload.get("clean_exit") is not True
     ):
         detail = (
-            ": " + "; ".join(real_v1_failures)
-            if real_v1_failures
+            ": "
+            + "; ".join((*real_v1_failures, *installed_wave2_failures))
+            if real_v1_failures or installed_wave2_failures
             else ""
         )
         raise RuntimeError(
@@ -1964,6 +2076,20 @@ def _load_renderer_lane(
         ),
         routes_rendered=routes_rendered,
         production_path=production_path,
+        fixture_kind=str(payload["fixture_kind"]),
+        task_created_after_install=True,
+        campaign_created_after_install=True,
+        diagnostic_task_identity=str(payload["diagnostic_task_identity"]),
+        accepted_command_kinds=tuple(
+            str(value) for value in payload["accepted_command_kinds"]
+        ),
+        task_handle_identities=tuple(
+            str(value) for value in payload["task_handle_identities"]
+        ),
+        writable_persistence_verified=True,
+        application_reopened=True,
+        background_continuation_verified=True,
+        task_cancel_order_isolation_verified=True,
         campaign_identity=str(payload["campaign_identity"]),
         case_identity=str(payload["case_identity"]),
         run_identity=str(payload["run_identity"]),
@@ -2345,7 +2471,7 @@ def build_frontend_v2_release(
         if plan.kind is PackageKind.WIDGETS_ROLLBACK
     )
     deploy_scanned_qml_runtime(qml_plan)
-    stage_packaged_formal_v1_release_fixture(qml_plan)
+    stage_packaged_wave2_release_input_fixture(qml_plan)
 
     smoke_root = output_root / "evidence" / "smoke"
     _run_packaged_smoke(
@@ -2444,6 +2570,50 @@ def stage_packaged_formal_v1_release_fixture(
         if verified != manifest:
             raise RuntimeError(
                 "Packaged V1 release fixture changed during archive staging"
+            )
+    return verified
+
+
+def stage_packaged_wave2_release_input_fixture(
+    plan: PackageBuildPlan,
+) -> SealedWave2ReleaseInputFixtureManifest:
+    """Stage source-bound inputs; installed commands create all task state."""
+
+    if plan.kind is not PackageKind.QML_JOURNEY:
+        raise ValueError(
+            "Wave 2 authoritative inputs belong only to the QML journey "
+            "package"
+        )
+    destination = (
+        plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+    if destination.exists():
+        raise RuntimeError(
+            "Packaged Wave 2 input fixture already exists: "
+            f"{destination}"
+        )
+    with tempfile.TemporaryDirectory(
+        prefix="uti-wave2-inputs-",
+        dir=PROJECT_ROOT.parent,
+    ) as temporary_root:
+        staged = (
+            Path(temporary_root) / WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME
+        )
+        manifest = create_sealed_wave2_release_input_fixture(
+            bundle_root=staged,
+            source_commit=plan.source_commit,
+        )
+        write_sealed_wave2_release_input_fixture_archive(
+            bundle_root=staged,
+            archive_path=destination,
+        )
+        verified = extract_sealed_wave2_release_input_fixture_archive(
+            archive_path=destination,
+            bundle_root=Path(temporary_root) / "verified",
+        )
+        if verified != manifest:
+            raise RuntimeError(
+                "Packaged Wave 2 input fixture changed during staging"
             )
     return verified
 
@@ -3240,6 +3410,7 @@ __all__ = [
     "load_toolchain_lock",
     "main",
     "stage_packaged_formal_v1_release_fixture",
+    "stage_packaged_wave2_release_input_fixture",
     "toolchain_evidence_identity",
     "verify_safety_gate_evidence",
     "verify_clean_room_report",

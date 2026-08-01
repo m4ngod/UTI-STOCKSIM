@@ -151,6 +151,10 @@ _CLEAN_ROOM_IDENTITY_GRAPH = sorted(
         "RECIPE-RC-001",
         "EVIDENCE-RC-001",
         "RM-RC-001",
+        "DT-RC-001",
+        "TASK-HANDLE-CREATE-RC-001",
+        "TASK-HANDLE-VALIDATE-RC-001",
+        "TASK-HANDLE-START-RC-001",
         *_CLEAN_ROOM_MANIFEST_IDENTITIES,
         *_CLEAN_ROOM_RUN_IDENTITIES,
         *_CLEAN_ROOM_RAW_ARTIFACT_HASHES,
@@ -254,6 +258,26 @@ def _clean_room_lane(root, lane, graphics_api):
             "LiveEvidenceAndFindingsAdapter",
             "JourneyWorkspaceHost",
         ],
+        "fixture_kind": "authoritative_writable_wave2_inputs",
+        "task_created_after_install": True,
+        "campaign_created_after_install": True,
+        "diagnostic_task_identity": "DT-RC-001",
+        "accepted_command_kinds": [
+            "create_diagnostic_task",
+            "revise_configuration",
+            "validate_configuration",
+            "approve_configuration",
+            "start_formal_diagnostic_campaign",
+        ],
+        "task_handle_identities": [
+            "TASK-HANDLE-CREATE-RC-001",
+            "TASK-HANDLE-VALIDATE-RC-001",
+            "TASK-HANDLE-START-RC-001",
+        ],
+        "writable_persistence_verified": True,
+        "application_reopened": True,
+        "background_continuation_verified": True,
+        "task_cancel_order_isolation_verified": True,
         "campaign_identity": "FDC-RC-001",
         "case_identity": "CASE-RC-001",
         "run_identity": "RUN-RC-001",
@@ -996,6 +1020,77 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     )
 
 
+def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
+    hardware = _clean_room_lane(tmp_path, "hardware", "Direct3D11")
+    software = _clean_room_lane(tmp_path, "software", "Software")
+    software["diagnostic_task_identity"] = "DT-RC-SOFTWARE"
+    software["task_handle_identities"] = [
+        "TASK-HANDLE-CREATE-RC-SOFTWARE",
+        "TASK-HANDLE-VALIDATE-RC-SOFTWARE",
+        "TASK-HANDLE-START-RC-SOFTWARE",
+    ]
+    software["persisted_run_identities"] = [
+        "RUN-RC-001",
+        "RUN-RC-SOFTWARE",
+    ]
+    replacements = {
+        "DT-RC-001": "DT-RC-SOFTWARE",
+        "TASK-HANDLE-CREATE-RC-001": (
+            "TASK-HANDLE-CREATE-RC-SOFTWARE"
+        ),
+        "TASK-HANDLE-VALIDATE-RC-001": (
+            "TASK-HANDLE-VALIDATE-RC-SOFTWARE"
+        ),
+        "TASK-HANDLE-START-RC-001": (
+            "TASK-HANDLE-START-RC-SOFTWARE"
+        ),
+        "RUN-RC-002": "RUN-RC-SOFTWARE",
+    }
+    software_graph = sorted(
+        replacements.get(identity, identity)
+        for identity in software["expected_identity_graph"]
+    )
+    software["expected_identity_graph"] = software_graph
+    software["feature_identity_graph"] = software_graph
+    software["qml_identity_graph_checkpoints"] = {
+        stage: software_graph for stage, *_ in _CLEAN_ROOM_JOURNEY
+    }
+    report_path = tmp_path / "lane-local-clean-room-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "source_commit": "abc123",
+                "archive_sha256": "sha256:package",
+                "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
+                "architecture": "AMD64",
+                "user_name": "WDAGUtilityAccount",
+                "is_windows_sandbox": True,
+                "network_enumeration_succeeded": True,
+                "network_adapters_up": [],
+                "python_on_path": False,
+                "python_installations": [],
+                "compiler_on_path": False,
+                "compiler_installations": [],
+                "dependency_cache_present": False,
+                "dependency_cache_paths": [],
+                "install_succeeded": True,
+                "renderer_lanes": {
+                    "hardware": hardware,
+                    "software": software,
+                },
+            }
+        ),
+        encoding="utf-8-sig",
+    )
+
+    assert verify_clean_room_report(
+        report_path,
+        expected_source_commit="abc123",
+        expected_archive_sha256="sha256:package",
+    ) == ()
+
+
 def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     tmp_path,
     monkeypatch,
@@ -1314,7 +1409,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     )
 
 
-def test_renderer_evidence_retains_both_lanes_environment_and_lock(
+def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
     tmp_path,
 ):
     reports = {}
@@ -1342,6 +1437,26 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                         "LiveEvidenceAndFindingsAdapter",
                         "JourneyWorkspaceHost",
                     ],
+                    "fixture_kind": "authoritative_writable_wave2_inputs",
+                    "task_created_after_install": True,
+                    "campaign_created_after_install": True,
+                    "diagnostic_task_identity": "DT-RC-001",
+                    "accepted_command_kinds": [
+                        "create_diagnostic_task",
+                        "revise_configuration",
+                        "validate_configuration",
+                        "approve_configuration",
+                        "start_formal_diagnostic_campaign",
+                    ],
+                    "task_handle_identities": [
+                        "TASK-HANDLE-CREATE-RC-001",
+                        "TASK-HANDLE-VALIDATE-RC-001",
+                        "TASK-HANDLE-START-RC-001",
+                    ],
+                    "writable_persistence_verified": True,
+                    "application_reopened": True,
+                    "background_continuation_verified": True,
+                    "task_cancel_order_isolation_verified": True,
                     "campaign_identity": "FDC-RC-001",
                     "case_identity": "CASE-RC-001",
                     "run_identity": "RUN-RC-001",
@@ -1466,16 +1581,32 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
     software_payload = json.loads(
         reports["software"].read_text(encoding="utf-8")
     )
+    software_payload["diagnostic_task_identity"] = "DT-RC-SOFTWARE"
+    software_payload["task_handle_identities"] = [
+        "TASK-HANDLE-CREATE-RC-SOFTWARE",
+        "TASK-HANDLE-VALIDATE-RC-SOFTWARE",
+        "TASK-HANDLE-START-RC-SOFTWARE",
+    ]
     software_payload["persisted_run_identities"] = [
         "RUN-RC-001",
         "RUN-RC-OTHER",
     ]
+    replacements = {
+        "DT-RC-001": "DT-RC-SOFTWARE",
+        "TASK-HANDLE-CREATE-RC-001": (
+            "TASK-HANDLE-CREATE-RC-SOFTWARE"
+        ),
+        "TASK-HANDLE-VALIDATE-RC-001": (
+            "TASK-HANDLE-VALIDATE-RC-SOFTWARE"
+        ),
+        "TASK-HANDLE-START-RC-001": (
+            "TASK-HANDLE-START-RC-SOFTWARE"
+        ),
+        "RUN-RC-002": "RUN-RC-OTHER",
+    }
     drifted_graph = sorted(
-        (
-            set(software_payload["expected_identity_graph"])
-            - {"RUN-RC-002"}
-        )
-        | {"RUN-RC-OTHER"}
+        replacements.get(identity, identity)
+        for identity in software_payload["expected_identity_graph"]
     )
     software_payload["expected_identity_graph"] = drifted_graph
     software_payload["feature_identity_graph"] = drifted_graph
@@ -1487,16 +1618,20 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
         encoding="utf-8",
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="same real V1 persisted run identities",
-    ):
-        write_renderer_evidence(
-            hardware_report=reports["hardware"],
-            software_report=reports["software"],
-            source_commit="abc123",
-            evidence_dir=tmp_path / "drifted-evidence",
-        )
+    lane_local_evidence = write_renderer_evidence(
+        hardware_report=reports["hardware"],
+        software_report=reports["software"],
+        source_commit="abc123",
+        evidence_dir=tmp_path / "lane-local-evidence",
+    )
+    assert (
+        lane_local_evidence.hardware.diagnostic_task_identity
+        != lane_local_evidence.software.diagnostic_task_identity
+    )
+    assert (
+        lane_local_evidence.hardware.task_handle_identities
+        != lane_local_evidence.software.task_handle_identities
+    )
 
 
 def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
@@ -2172,6 +2307,11 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "schema_version = 3" in script
     assert '"--source-commit=$SourceCommit"' in script
     assert "production_path" in script
+    assert (
+        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter"
+        in script
+    )
+    assert "LiveDiagnosticTasksAdapter" in script
     assert "real_v1_identity_valid" in script
     assert "campaign_identity" in script
     assert "evidence_package_identity" in script
@@ -2199,6 +2339,39 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "accessibility_preferences_verified" in script
     assert "old_generation_rejected" in script
     assert "authoritative_reconnect_verified" in script
+    assert "fixture_kind" in script
+    assert "task_created_after_install" in script
+    assert "campaign_created_after_install" in script
+    assert "diagnostic_task_identity" in script
+    assert "accepted_command_kinds" in script
+    assert "task_handle_identities" in script
+    assert "writable_persistence_verified" in script
+    assert "application_reopened" in script
+    assert "background_continuation_verified" in script
+    assert "task_cancel_order_isolation_verified" in script
+    assert (
+        "$rendererLanes.hardware.campaign_identity -eq"
+        not in script
+    )
+    assert (
+        "$rendererLanes.hardware.diagnostic_task_identity -eq"
+        not in script
+    )
+    assert (
+        "$rendererLanes.hardware.task_handle_identities -join"
+        not in script
+    )
+    assert (
+        "$rendererLanes.hardware.artifact_hashes -join"
+        not in script
+    )
+    assert "installed_wave2_journey_valid" in script
+    assert (
+        "DiagnosticTasksFeature/1.0|"
+        "RunMonitoringFeature/1.2|"
+        "EvidenceAndFindingsFeature/1.1"
+        in script
+    )
     assert "$smoke.persistence_reopened -is [bool]" in script
     assert "$smoke.read_only_context_visible -is [bool]" in script
     assert "$smoke.clean_exit -is [bool]" in script

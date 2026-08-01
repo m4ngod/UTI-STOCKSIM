@@ -10,6 +10,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 import pytest
+from sqlalchemy import text
 
 from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
@@ -22,6 +23,7 @@ from stock_sim.release.frontend_v2_performance import (
 )
 from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
     FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
 )
 
 
@@ -127,6 +129,10 @@ _IDENTITY_GRAPH = sorted(
         "RECIPE-RC-001",
         "EVIDENCE-RC-001",
         "RM-RC-001",
+        "DT-RC-001",
+        "TASK-HANDLE-CREATE-RC-001",
+        "TASK-HANDLE-VALIDATE-RC-001",
+        "TASK-HANDLE-START-RC-001",
         *_PERSISTED_MANIFEST_IDENTITIES,
         *_PERSISTED_RUN_IDENTITIES,
         *_RAW_ARTIFACT_HASHES,
@@ -273,6 +279,8 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
 ):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from sqlalchemy import text
+
     from stock_sim.release import (
         strategy_diagnostics_v1_release_fixture as fixture_module,
     )
@@ -338,6 +346,155 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
         for path in report_dir.rglob("*")
         if path.name == "strategy-diagnostics-v1.sqlite3"
     )
+
+
+def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from stock_sim.release.frontend_v2_package_entry import (
+        RendererLane,
+        run_smoke_journey,
+    )
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_wave2_release_input_fixture,
+    )
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        _open_file_backed_wave2_release_input_fixture,
+        extract_sealed_wave2_release_input_fixture_archive,
+        open_sealed_wave2_release_input_fixture,
+    )
+
+    source_commit = "b" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    manifest = stage_packaged_wave2_release_input_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+    original_archive_hash = hashlib.sha256(
+        fixture_archive.read_bytes()
+    ).hexdigest()
+
+    assert manifest.initial_diagnostic_task_count == 0
+    assert manifest.initial_formal_campaign_count == 0
+    assert manifest.authoritative_input_identities
+
+    audited_bundle = tmp_path / "audited-wave2-input-fixture"
+    extract_sealed_wave2_release_input_fixture_archive(
+        archive_path=fixture_archive,
+        bundle_root=audited_bundle,
+    )
+    audited_fixture = open_sealed_wave2_release_input_fixture(
+        bundle_root=audited_bundle,
+        expected_source_commit=source_commit,
+    )
+    try:
+        assert audited_fixture.persisted_diagnostic_task_count == (
+            manifest.initial_diagnostic_task_count
+        )
+        assert audited_fixture.persisted_formal_campaign_count == (
+            manifest.initial_formal_campaign_count
+        )
+        with audited_fixture.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_campaigns ("
+                    "campaign_id, campaign_type, status, schema_version, "
+                    "specification_json, snapshot_json, updated_at_utc"
+                    ") VALUES ("
+                    "'unexpected-campaign', 'formal', 'planned', "
+                    "'diagnostic_campaign.v1', '{}', '{}', "
+                    "'2026-08-01T00:00:00+00:00'"
+                    ")"
+                )
+            )
+    finally:
+        audited_fixture.close()
+    with pytest.raises(
+        RuntimeError,
+        match="pre-created Formal Campaign",
+    ):
+        _open_file_backed_wave2_release_input_fixture(
+            database_path=(
+                audited_bundle / "strategy-diagnostics-v1.sqlite3"
+            ),
+            artifact_root=audited_bundle / "artifacts",
+        )
+
+    report_dir = tmp_path / "installed-wave2-smoke"
+    result = run_smoke_journey(
+        report_dir=report_dir,
+        renderer_lane=RendererLane.SOFTWARE,
+        source_commit=source_commit,
+        capture_images=False,
+        fixture_archive_path=fixture_archive,
+    )
+
+    assert result.source_commit == source_commit
+    assert result.fixture_kind == "authoritative_writable_wave2_inputs"
+    assert result.task_created_after_install is True
+    assert result.campaign_created_after_install is True
+    assert result.diagnostic_task_identity
+    assert result.campaign_identity
+    assert result.accepted_command_kinds == (
+        "create_diagnostic_task",
+        "revise_configuration",
+        "validate_configuration",
+        "approve_configuration",
+        "start_formal_diagnostic_campaign",
+    )
+    assert len(result.task_handle_identities) >= 3
+    assert result.writable_persistence_verified is True
+    assert result.application_reopened is True
+    assert result.background_continuation_verified is True
+    assert result.task_cancel_order_isolation_verified is True
+    assert result.campaign_status == "completed"
+    assert result.evidence_status == "sealed"
+    assert result.errors == ()
+    assert result.clean_exit is True
+    assert hashlib.sha256(fixture_archive.read_bytes()).hexdigest() == (
+        original_archive_hash
+    )
+    assert not tuple(
+        path
+        for path in report_dir.rglob("*")
+        if path.name == "strategy-diagnostics-v1.sqlite3"
+    )
+
+
+def test_wave2_smoke_clears_and_restores_stale_route_identities(
+    monkeypatch,
+):
+    from stock_sim.release.frontend_v2_package_entry import (
+        _configure_wave2_smoke_environment,
+        _restore_environment,
+    )
+
+    identity_names = (
+        "STOCKSIM_FRONTEND_V2_CAMPAIGN_ID",
+        "STOCKSIM_FRONTEND_V2_RUN_ID",
+        "STOCKSIM_FRONTEND_V2_STRATEGY_ID",
+        "STOCKSIM_FRONTEND_V2_MARKET_SCENARIO_ID",
+        "STOCKSIM_FRONTEND_V2_APPROVED_RECIPE_ID",
+        "STOCKSIM_FRONTEND_V2_EVIDENCE_PACKAGE_ID",
+        "STOCKSIM_FRONTEND_V2_REPRODUCTION_MANIFEST_ID",
+    )
+    for name in identity_names:
+        monkeypatch.setenv(name, f"stale-{name.casefold()}")
+
+    previous = _configure_wave2_smoke_environment()
+    try:
+        assert all(name not in os.environ for name in identity_names)
+    finally:
+        _restore_environment(previous)
+
+    assert all(os.environ[name].startswith("stale-") for name in identity_names)
 
 
 def test_sealed_v1_fixture_manifest_rejects_storage_tampering(tmp_path):
@@ -568,6 +725,10 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.run_status == "completed"
     assert result.evidence_status == "sealed"
     assert result.expected_identity_graph
+    assert result.diagnostic_task_identity in result.expected_identity_graph
+    assert set(result.task_handle_identities).issubset(
+        result.expected_identity_graph
+    )
     assert (
         result.feature_identity_graph
         == result.expected_identity_graph
@@ -577,6 +738,10 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     }
     assert all(
         checkpoint == result.expected_identity_graph
+        for checkpoint in result.qml_identity_graph_checkpoints.values()
+    )
+    assert all(
+        set(result.task_handle_identities).issubset(checkpoint)
         for checkpoint in result.qml_identity_graph_checkpoints.values()
     )
     assert set(result.evidence_identity_sets) == {
@@ -775,7 +940,7 @@ assert result.clean_exit is True
         text=True,
         encoding="utf-8",
         errors="backslashreplace",
-        timeout=120,
+        timeout=480,
         check=False,
     )
 
@@ -875,6 +1040,26 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "LiveEvidenceAndFindingsAdapter",
                 "JourneyWorkspaceHost",
             ],
+            "fixture_kind": "authoritative_writable_wave2_inputs",
+            "task_created_after_install": True,
+            "campaign_created_after_install": True,
+            "diagnostic_task_identity": "DT-RC-001",
+            "accepted_command_kinds": [
+                "create_diagnostic_task",
+                "revise_configuration",
+                "validate_configuration",
+                "approve_configuration",
+                "start_formal_diagnostic_campaign",
+            ],
+            "task_handle_identities": [
+                "TASK-HANDLE-CREATE-RC-001",
+                "TASK-HANDLE-VALIDATE-RC-001",
+                "TASK-HANDLE-START-RC-001",
+            ],
+            "writable_persistence_verified": True,
+            "application_reopened": True,
+            "background_continuation_verified": True,
+            "task_cancel_order_isolation_verified": True,
             "campaign_identity": "FDC-RC-001",
             "case_identity": "CASE-RC-001",
             "run_identity": "RUN-RC-001",
@@ -988,7 +1173,75 @@ def test_clean_room_report_requires_the_complete_production_journey(
         expected_archive_sha256="sha256:package",
     ) == ()
 
-    compromised = json.loads(report_path.read_text(encoding="utf-8"))
+    baseline = json.loads(report_path.read_text(encoding="utf-8"))
+    for field_name, compromised_value, expected_failure in (
+        (
+            "fixture_kind",
+            "sealed_completed_v1",
+            "did not use the authoritative writable Wave 2 input fixture",
+        ),
+        (
+            "task_created_after_install",
+            False,
+            "did not create a Diagnostic Task after install",
+        ),
+        (
+            "campaign_created_after_install",
+            False,
+            "did not create a Formal Diagnostic Campaign after install",
+        ),
+        (
+            "diagnostic_task_identity",
+            "",
+            "Diagnostic Task identity is unavailable",
+        ),
+        (
+            "accepted_command_kinds",
+            ["create_diagnostic_task"],
+            "did not accept the exact create/revise/validate/approve/start",
+        ),
+        (
+            "task_handle_identities",
+            ["duplicated-handle", "duplicated-handle"],
+            "persistent TaskHandle identities are incomplete or invalid",
+        ),
+        (
+            "writable_persistence_verified",
+            False,
+            "did not verify writable persistence",
+        ),
+        (
+            "application_reopened",
+            False,
+            "did not reopen the Application over persisted state",
+        ),
+        (
+            "background_continuation_verified",
+            False,
+            "did not keep the Campaign nonterminal through route",
+        ),
+        (
+            "task_cancel_order_isolation_verified",
+            False,
+            "did not verify Diagnostic Task cancel/order isolation",
+        ),
+    ):
+        compromised = json.loads(json.dumps(baseline))
+        compromised["renderer_lanes"]["software"][field_name] = (
+            compromised_value
+        )
+        report_path.write_text(json.dumps(compromised), encoding="utf-8")
+        assert any(
+            failure.startswith("software renderer")
+            and expected_failure in failure
+            for failure in verify_clean_room_report(
+                report_path,
+                expected_source_commit="abc123",
+                expected_archive_sha256="sha256:package",
+            )
+        )
+
+    compromised = json.loads(json.dumps(baseline))
     compromised["renderer_lanes"]["software"]["production_path"] = [
         "DeterministicFakeRunMonitoringAdapter",
         "JourneyWorkspaceHost",
@@ -1482,13 +1735,13 @@ def test_release_packaging_has_no_secondary_process_fixture_path():
     assert "SubprocessPTradeStrategyHost" not in source
 
 
-def test_compiled_smoke_defaults_to_the_packaged_sealed_v1_fixture(
+def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     tmp_path,
     monkeypatch,
 ):
     from stock_sim.release import frontend_v2_package_entry as package_entry
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
-        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
 
     executable = tmp_path / "installed" / "UTI-Frontend-V2.exe"
@@ -1501,6 +1754,26 @@ def test_compiled_smoke_defaults_to_the_packaged_sealed_v1_fixture(
         clean_exit = True
         manual_trading_action_count = 0
         read_only_context_visible = True
+        fixture_kind = "authoritative_writable_wave2_inputs"
+        task_created_after_install = True
+        campaign_created_after_install = True
+        diagnostic_task_identity = "diagnostic-task-installed"
+        accepted_command_kinds = (
+            "create_diagnostic_task",
+            "revise_configuration",
+            "validate_configuration",
+            "approve_configuration",
+            "start_formal_diagnostic_campaign",
+        )
+        task_handle_identities = (
+            "diagnostic-task-handle-create",
+            "diagnostic-task-handle-validate",
+            "diagnostic-task-handle-start",
+        )
+        writable_persistence_verified = True
+        application_reopened = True
+        background_continuation_verified = True
+        task_cancel_order_isolation_verified = True
 
     def record_smoke(**arguments):
         observed.update(arguments)
@@ -1519,7 +1792,47 @@ def test_compiled_smoke_defaults_to_the_packaged_sealed_v1_fixture(
 
     assert exit_code == 0
     assert observed["fixture_archive_path"] == (
-        executable.parent / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+        executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+
+    class MissingTaskHandlesSmoke(PassingSmoke):
+        task_handle_identities = ()
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: MissingTaskHandlesSmoke(),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'incomplete-report'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 1
+    )
+
+    class MissingBackgroundContinuationSmoke(PassingSmoke):
+        background_continuation_verified = False
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: MissingBackgroundContinuationSmoke(),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'no-background-report'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 1
     )
 
 
@@ -1662,7 +1975,7 @@ raise SystemExit(
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=240,
+        timeout=900,
     )
 
     assert completed.returncode == 0, completed.stderr
