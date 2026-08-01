@@ -1511,6 +1511,48 @@ def test_diagnostic_tasks_is_the_active_typed_qml_workspace_route() -> None:
     run_monitoring.close()
 
 
+def test_workspace_loads_only_the_selected_initial_route_then_retains_visits(
+) -> None:
+    app = _app()
+    diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter()
+    run_monitoring = DeterministicFakeRunMonitoringAdapter()
+    evidence = DeterministicFakeEvidenceAndFindingsAdapter()
+    host = JourneyWorkspaceHost(
+        run_monitoring,
+        context=RunMonitoringContext.no_selection(),
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
+        evidence_feature=evidence,
+        evidence_context=EvidenceAndFindingsContext.no_selection(),
+        initial_route="evidence_and_findings",
+    )
+    host.show()
+    app.processEvents()
+    app.processEvents()
+    root = host.rootObject()
+
+    assert root.property("activeRoute") == "evidence_and_findings"
+    assert root.findChild(QObject, "evidenceResearchFlickable") is not None
+    assert root.findChild(QObject, "diagnosticTasksPage") is None
+
+    assert root.setProperty("activeRoute", "diagnostic_tasks")
+    app.processEvents()
+    app.processEvents()
+    diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
+    assert diagnostic_page is not None
+
+    assert root.setProperty("activeRoute", "evidence_and_findings")
+    app.processEvents()
+    app.processEvents()
+    assert root.findChild(QObject, "diagnosticTasksPage") is diagnostic_page
+
+    host.close_adapter()
+    host.close()
+    diagnostic_tasks.close()
+    run_monitoring.close()
+    evidence.close()
+
+
 def test_qml_create_persists_task_handle_across_remount_and_application_reopen(
     tmp_path,
 ) -> None:
