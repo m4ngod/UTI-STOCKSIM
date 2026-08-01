@@ -94,7 +94,7 @@ def test_frame_gate_caps_commits_and_never_coalesces_away_terminal_revision():
     assert gate.committedRevision == 5
 
 
-def test_qt_adapter_commits_chart_narrative_and_table_on_one_frame_deadline():
+def test_qt_adapter_publishes_semantics_before_capped_chart_frame_deadline():
     _app()
     now = [0]
     feature = DeterministicFakeEvidenceAndFindingsAdapter()
@@ -114,8 +114,8 @@ def test_qt_adapter_commits_chart_narrative_and_table_on_one_frame_deadline():
     adapter.setViewportIntent("sensitivity")
 
     assert adapter.selectedCandidateIdentity == "MODEL-A04"
-    assert "MODEL-B17" in adapter.chartNarrativeText
-    assert "MODEL-B17" in adapter.chartTableText
+    assert "MODEL-A04" in adapter.chartNarrativeText
+    assert "MODEL-A04" in adapter.chartTableText
     assert adapter.chartFrameSequence == initial_sequence
     assert adapter.chartInteractionEnabled is False
 
@@ -134,7 +134,8 @@ def test_qt_adapter_commits_chart_narrative_and_table_on_one_frame_deadline():
     adapter.selectChartOverlay("OV-MODEL-A04-DRAWDOWN")
 
     assert adapter.chartInteractionEnabled is False
-    assert "OV-MODEL-A04-DRAWDOWN" not in adapter.chartNarrativeText
+    assert "OV-MODEL-A04-DRAWDOWN" in adapter.chartNarrativeText
+    assert "OV-MODEL-A04-DRAWDOWN" in adapter.chartTableText
 
     now[0] = 100_000_000
     adapter.flush_chart_frames()
