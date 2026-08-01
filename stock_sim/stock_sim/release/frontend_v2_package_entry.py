@@ -8,8 +8,8 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -374,6 +374,18 @@ def _key_click(host: Any, key: Any, modifiers: Any) -> None:
             host,
             QKeyEvent(event_type, key, modifiers),
         )
+
+
+@contextmanager
+def _serialized_application_access(
+    application: Any,
+) -> Iterator[None]:
+    from app.features._diagnostics_application_access import (
+        shared_diagnostics_application_access_gate,
+    )
+
+    with shared_diagnostics_application_access_gate(application):
+        yield
 
 
 def _focus_with_keyboard(
@@ -871,9 +883,10 @@ def _start_installed_wave2_commands(
             "Installed QML did not start a Formal Diagnostic Campaign"
         )
 
-    started_campaign = application.diagnostic_campaign_status(
-        running.handoff.campaign_id.value
-    )
+    with _serialized_application_access(application):
+        started_campaign = application.diagnostic_campaign_status(
+            running.handoff.campaign_id.value
+        )
     first_incomplete = next(
         (
             case
@@ -943,11 +956,12 @@ def _complete_installed_wave2_campaign(
             "Installed nonterminal Diagnostic Task is unavailable after reopen"
         )
 
-    completed_campaign = application.advance_diagnostic_campaign(
-        running.handoff.campaign_id.value,
-        max_cases=64,
-        nodes_per_batch=10_000,
-    )
+    with _serialized_application_access(application):
+        completed_campaign = application.advance_diagnostic_campaign(
+            running.handoff.campaign_id.value,
+            max_cases=64,
+            nodes_per_batch=10_000,
+        )
     if completed_campaign.status != "completed":
         raise RuntimeError(
             "Installed Formal Diagnostic Campaign did not reach terminal "
@@ -1021,7 +1035,9 @@ def _assert_running_wave2_public_state(
     campaign_id: str,
     task_handle_identities: tuple[str, ...],
 ) -> Any:
-    task = application.get_diagnostic_task(diagnostic_task_id)
+    with _serialized_application_access(application):
+        task = application.get_diagnostic_task(diagnostic_task_id)
+        campaign = application.diagnostic_campaign_status(campaign_id)
     if task is None:
         raise RuntimeError(
             "The installed Diagnostic Task is unavailable through public "
@@ -1031,7 +1047,6 @@ def _assert_running_wave2_public_state(
     observed_handles = tuple(
         handle.task_handle_id for handle in task.task_handles
     )
-    campaign = application.diagnostic_campaign_status(campaign_id)
     task_lifecycle = getattr(task.lifecycle, "value", str(task.lifecycle))
     campaign_lifecycle = (
         None
@@ -1085,12 +1100,13 @@ def _completed_wave2_fixture(
             "Completed installed task lacks Campaign/evidence/manifest handoff"
         )
     application = input_fixture.application
-    package = application.diagnostic_evidence_status(
-        evidence_package_id.value
-    )
-    manifests = tuple(
-        application.reproduction_manifests(evidence_package_id.value)
-    )
+    with _serialized_application_access(application):
+        package = application.diagnostic_evidence_status(
+            evidence_package_id.value
+        )
+        manifests = tuple(
+            application.reproduction_manifests(evidence_package_id.value)
+        )
     selected_manifest = next(
         (
             candidate
@@ -1103,15 +1119,17 @@ def _completed_wave2_fixture(
         raise RuntimeError(
             "Installed Reproduction Manifest did not resolve publicly"
         )
-    selected_run = application.strategy_run_status(
-        selected_manifest.run_id
-    )
+    with _serialized_application_access(application):
+        selected_run = application.strategy_run_status(
+            selected_manifest.run_id
+        )
+        campaign = application.diagnostic_campaign_status(
+            campaign_id.value
+        )
     return FileBackedFormalV1ReleaseFixture(
         application=application,
         engine=input_fixture.engine,
-        campaign=application.diagnostic_campaign_status(
-            campaign_id.value
-        ),
+        campaign=campaign,
         selected_run=selected_run,
         evidence_package=package,
         selected_manifest=selected_manifest,
@@ -1959,9 +1977,10 @@ def _run_smoke_journey(
             fixture.close,
         )
         lifecycle_checks.append(_closed_check(fixture))
-        reopened_task = fixture.application.get_diagnostic_task(
-            diagnostic_task_identity
-        )
+        with _serialized_application_access(fixture.application):
+            reopened_task = fixture.application.get_diagnostic_task(
+                diagnostic_task_identity
+            )
         reopened_task_identity = (
             None if reopened_task is None else reopened_task.task_id
         )
