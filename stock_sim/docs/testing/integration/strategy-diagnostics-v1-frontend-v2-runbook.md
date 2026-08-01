@@ -35,6 +35,18 @@ Run every group:
 python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate
 ```
 
+On Windows hosts where file scanners contend with repeated DuckDB Parquet
+publishes, use an existing short temporary root outside the checkout:
+
+```powershell
+python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
+  --temporary-parent C:\Temp
+```
+
+The override fails closed unless the supplied path is an existing directory.
+It changes only the isolated pytest and SQLite scratch location; the checked-in
+groups, product persistence adapters, and source candidate remain unchanged.
+
 Run one reproducible group while investigating:
 
 ```powershell

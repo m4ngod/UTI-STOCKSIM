@@ -610,6 +610,7 @@ def run_integration_gate(
     *,
     python_executable: str = sys.executable,
     group_names: Sequence[str] = (),
+    temporary_parent: Path | None = None,
 ) -> tuple[IntegrationGateExecution, ...]:
     """Run the checked-in groups in isolation and stop on the first failure."""
 
@@ -628,7 +629,10 @@ def run_integration_gate(
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     environment.setdefault("QT_QUICK_BACKEND", "software")
-    temporary_parent = _worktree_sibling_temporary_parent(root)
+    resolved_temporary_parent = _integration_gate_temporary_parent(
+        root,
+        temporary_parent,
+    )
     executions: list[IntegrationGateExecution] = []
     for group_index, group in enumerate(INTEGRATION_GATE_GROUPS, start=1):
         if selected and group.name not in selected:
@@ -642,7 +646,7 @@ def run_integration_gate(
         # checkout instead of under the much deeper user TEMP hierarchy.
         with TemporaryDirectory(
             prefix=f"uti-g{group_index:02d}-",
-            dir=temporary_parent,
+            dir=resolved_temporary_parent,
         ) as temporary_root:
             group_root = Path(temporary_root).resolve()
             command = (
@@ -691,6 +695,21 @@ def _worktree_sibling_temporary_parent(project_root: Path) -> Path:
     )
 
 
+def _integration_gate_temporary_parent(
+    project_root: Path,
+    configured: Path | None,
+) -> Path:
+    if configured is None:
+        return _worktree_sibling_temporary_parent(project_root)
+    candidate = configured.resolve()
+    if not candidate.is_dir():
+        raise ValueError(
+            "integration-gate temporary parent must be an existing directory: "
+            f"{candidate}"
+        )
+    return candidate
+
+
 def _interpreter_command(
     python_executable: str,
     *,
@@ -727,6 +746,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         dest="groups",
     )
+    parser.add_argument(
+        "--temporary-parent",
+        type=Path,
+        help=(
+            "Existing short directory in which isolated pytest roots are "
+            "created; defaults to the worktree parent."
+        ),
+    )
     arguments = parser.parse_args(argv)
     validation = validate_integration_gate(arguments.project_root)
     if not validation.ok:
@@ -739,6 +766,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     executions = run_integration_gate(
         arguments.project_root,
         group_names=arguments.groups,
+        temporary_parent=arguments.temporary_parent,
     )
     for execution in executions:
         print(f"{execution.group}: exit {execution.returncode}")

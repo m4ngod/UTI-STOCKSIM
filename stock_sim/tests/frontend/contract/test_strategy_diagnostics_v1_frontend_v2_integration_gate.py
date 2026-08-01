@@ -332,3 +332,46 @@ def test_gate_neutralizes_external_pytest_configuration(
     assert "PYTEST_ADDOPTS" not in environment
     assert "PYTEST_PLUGINS" not in environment
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+
+
+def test_gate_uses_explicit_existing_short_temporary_parent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    temporary_parent = tmp_path / "short-gate-temp"
+    temporary_parent.mkdir()
+
+    def _completed(command, *, cwd, env, check):
+        captured.update(command=command, cwd=cwd, env=env, check=check)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", _completed)
+
+    executions = run_integration_gate(
+        PROJECT_ROOT,
+        group_names=("frontend-v2-event-bridge",),
+        temporary_parent=temporary_parent,
+    )
+
+    assert len(executions) == 1
+    command = captured["command"]
+    assert isinstance(command, tuple)
+    basetemp_argument = next(
+        argument
+        for argument in command
+        if isinstance(argument, str) and argument.startswith("--basetemp=")
+    )
+    basetemp = Path(basetemp_argument.split("=", maxsplit=1)[1])
+    assert basetemp.parent.parent == temporary_parent.resolve()
+
+
+def test_gate_rejects_missing_explicit_temporary_parent(tmp_path: Path) -> None:
+    missing_parent = tmp_path / "missing-gate-temp"
+
+    with pytest.raises(ValueError, match="temporary parent must be an existing"):
+        run_integration_gate(
+            PROJECT_ROOT,
+            group_names=("frontend-v2-event-bridge",),
+            temporary_parent=missing_parent,
+        )
