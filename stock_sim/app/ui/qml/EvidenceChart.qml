@@ -16,6 +16,10 @@ Item {
     property string selectedFindingIdentity: ""
     property string selectedBreakpointIdentity: ""
     property int frameSequence: 0
+    property int paintRequestSequence: 1
+    property int paintedPaintSequence: 0
+    property int paintedFrameSequence: 0
+    property int paintedAcceptedRevision: 0
     property bool interactionEnabled: true
     property color seriesColor: "#76B7FF"
     property color overlayColor: "#8290A3"
@@ -29,6 +33,10 @@ Item {
     signal pointStepRequested(int direction)
     signal focusEntered(var item)
 
+    function requestSeriesPaint() {
+        paintRequestSequence += 1
+    }
+
     Accessible.role: Accessible.Graphic
     Accessible.name: "Diagnostic evidence chart"
     Accessible.description: accessibleDescription
@@ -37,10 +45,17 @@ Item {
         id: evidenceSeriesCanvas
         objectName: "evidenceChartSeriesShape"
         anchors.fill: parent
+        property int requestedPaintSequence: chart.paintRequestSequence
+        property int paintingPaintSequence: 0
+        property int paintingFrameSequence: 0
+        property int paintingAcceptedRevision: 0
         renderTarget: Canvas.Image
         renderStrategy: Canvas.Threaded
 
         onPaint: {
+            paintingPaintSequence = requestedPaintSequence
+            paintingFrameSequence = chart.frameSequence
+            paintingAcceptedRevision = chart.acceptedRevision
             var context = getContext("2d")
             context.reset()
             if (chart.normalizedPoints.length < 2)
@@ -68,19 +83,27 @@ Item {
             context.stroke()
         }
 
-        onWidthChanged: requestPaint()
-        onHeightChanged: requestPaint()
+        onPainted: {
+            if (paintingPaintSequence < chart.paintedPaintSequence)
+                return
+            chart.paintedPaintSequence = paintingPaintSequence
+            chart.paintedFrameSequence = paintingFrameSequence
+            chart.paintedAcceptedRevision = paintingAcceptedRevision
+        }
+        onRequestedPaintSequenceChanged: requestPaint()
+        onWidthChanged: chart.requestSeriesPaint()
+        onHeightChanged: chart.requestSeriesPaint()
     }
 
     Connections {
         target: chart
 
         function onNormalizedPointsChanged() {
-            evidenceSeriesCanvas.requestPaint()
+            chart.requestSeriesPaint()
         }
 
         function onSeriesColorChanged() {
-            evidenceSeriesCanvas.requestPaint()
+            chart.requestSeriesPaint()
         }
     }
 

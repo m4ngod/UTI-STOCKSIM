@@ -1049,6 +1049,23 @@ class _MetricRecorder:
                 self.terminal_visible_ms = (visible_ns - accepted_ns) / 1_000_000
 
 
+def _canvas_revision_ready_for_composition(renderer: QObject) -> int:
+    """Return only a revision whose latest curve paint is acknowledged."""
+
+    accepted_revision = int(renderer.property("acceptedRevision") or 0)
+    requested_paint = int(renderer.property("paintRequestSequence") or 0)
+    painted_paint = int(renderer.property("paintedPaintSequence") or 0)
+    painted_frame = int(renderer.property("paintedFrameSequence") or 0)
+    if (
+        accepted_revision < 1
+        or requested_paint < 1
+        or painted_paint < requested_paint
+        or painted_frame < 1
+    ):
+        return 0
+    return accepted_revision
+
+
 class _QtPerformanceProbe(QObject):
     renderedFrameObserved = Signal(int, object)
 
@@ -1191,8 +1208,8 @@ class _QtPerformanceProbe(QObject):
 
     @Slot()
     def before_synchronize(self) -> None:
-        self._synchronized_revision = int(
-            self._renderer.property("acceptedRevision") or 0
+        self._synchronized_revision = _canvas_revision_ready_for_composition(
+            self._renderer
         )
 
     @Slot()
@@ -1216,7 +1233,11 @@ class _QtPerformanceProbe(QObject):
         )
         if revision > 0:
             self._recorder.record_visible_revision(revision, visible_ns)
-        if self._usable_state_ms is None and self._fixture_is_usable():
+        if (
+            self._usable_state_ms is None
+            and revision > 0
+            and self._fixture_is_usable()
+        ):
             self._usable_state_ms = (visible_ns - self._process_started_ns) / 1_000_000
             self.read_only_context_visible = bool(
                 self._context_panel.property("visible")

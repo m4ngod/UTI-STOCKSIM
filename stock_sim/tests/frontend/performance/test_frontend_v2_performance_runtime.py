@@ -16,6 +16,52 @@ from stock_sim.release import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def test_visibility_waits_for_canvas_paint_acknowledgment_before_composition():
+    class Renderer:
+        def __init__(self):
+            self.values = {
+                "acceptedRevision": 7,
+                "paintRequestSequence": 3,
+                "paintedPaintSequence": 2,
+                "paintedFrameSequence": 10,
+            }
+
+        def property(self, name):
+            return self.values[name]
+
+    renderer = Renderer()
+
+    assert (
+        frontend_v2_performance_runtime
+        ._canvas_revision_ready_for_composition(renderer)
+        == 0
+    )
+
+    renderer.values["paintedPaintSequence"] = 3
+    renderer.values["paintedFrameSequence"] = 11
+
+    assert (
+        frontend_v2_performance_runtime
+        ._canvas_revision_ready_for_composition(renderer)
+        == 7
+    )
+
+    renderer.values["acceptedRevision"] = 8
+    assert (
+        frontend_v2_performance_runtime
+        ._canvas_revision_ready_for_composition(renderer)
+        == 8
+    )
+
+    renderer.values["acceptedRevision"] = 9
+    renderer.values["paintRequestSequence"] = 4
+    assert (
+        frontend_v2_performance_runtime
+        ._canvas_revision_ready_for_composition(renderer)
+        == 0
+    )
+
+
 def test_runtime_release_decision_delegates_to_central_validator(monkeypatch):
     report = {
         "lane": "hardware",
