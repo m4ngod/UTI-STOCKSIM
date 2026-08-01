@@ -14,6 +14,7 @@ from strategy_diagnostics.ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST,
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
+    PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,
     PTRADE_SUBPROCESS_HOST_VERSION,
     PTradeRunAudit,
     QUENTX_SCENARIO_NATIVE_MANIFEST,
@@ -38,6 +39,7 @@ def _run_specification(
     strategy_version: str,
     manifest_hash: str,
     replica_id: str,
+    host_adapter_version: str = PTRADE_SUBPROCESS_HOST_VERSION,
 ) -> StrategyRunSpecification:
     resolved = resolve_execution_conditions(
         RequestedExecutionAssumptions(
@@ -67,7 +69,7 @@ def _run_specification(
         replica_id=replica_id,
         code_identity="strategy-diagnostics.v1",
         ptrade_manifest_hash=manifest_hash,
-        ptrade_host_adapter_version=PTRADE_SUBPROCESS_HOST_VERSION,
+        ptrade_host_adapter_version=host_adapter_version,
         commission_bps=resolved.effective.commission_bps,
         resolved_execution_conditions=resolved,
     )
@@ -132,7 +134,9 @@ def _snapshot(
             execution_resolution=resolved,
             strategy_id=specification.strategy_id,
             strategy_version=specification.strategy_version,
-            host_adapter_versions=(PTRADE_SUBPROCESS_HOST_VERSION,),
+            host_adapter_versions=(
+                specification.ptrade_host_adapter_version,
+            ),
         ),
         failure_code="RuntimeError" if failure_message else None,
         failure_message=failure_message,
@@ -378,15 +382,60 @@ def test_campaign_rejects_non_comparable_or_reused_replica_inputs(
         )
 
 
-def test_campaign_requires_the_production_subprocess_host_for_global_isolation() -> None:
+def test_campaign_rejects_the_contract_test_only_in_process_host() -> None:
     specification = _campaign_specification()
     changed = replace(
         specification.strategy_runs[1],
         ptrade_host_adapter_version="ptrade-in-process-host.v1",
     )
 
-    with pytest.raises(ValueError, match="subprocess isolation"):
+    with pytest.raises(ValueError, match="contract-test-only"):
         BaselineCampaignSpecification(
             campaign_replica_id="baseline-campaign-invalid-host",
             strategy_runs=(specification.strategy_runs[0], changed),
         )
+
+
+def test_campaign_accepts_the_explicit_embedded_production_host() -> None:
+    subprocess_specification = _campaign_specification()
+    embedded_specification = BaselineCampaignSpecification(
+        campaign_replica_id="baseline-campaign-embedded",
+        strategy_runs=tuple(
+            replace(
+                item,
+                replica_id=f"{item.replica_id}-embedded",
+                ptrade_host_adapter_version=(
+                    PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION
+                ),
+            )
+            for item in subprocess_specification.strategy_runs
+        ),
+    )
+    first, second = tuple(
+        _snapshot(item) for item in embedded_specification.strategy_runs
+    )
+
+    campaign = BaselineCampaignRunner(
+        _RecordingEngine((first, second))
+    ).run(embedded_specification)
+
+    assert campaign.status == "completed"
+    assert campaign.subprocess_isolation_verified is False
+    assert campaign.production_host_verified is True
+    assert campaign.to_dict()["isolation"] == {
+        "execution_order": "sequential",
+        "verification_status": "verified",
+        "fresh_subprocess_per_callback": False,
+        "embedded_single_process": True,
+        "unique_run_ids": True,
+        "unique_replica_ids": True,
+        "private_state_by_run_id": [first.run_id, second.run_id],
+        "isolated_surfaces": [
+            "strategy_globals",
+            "strategy_cache",
+            "orders",
+            "fills",
+            "account",
+            "failure",
+        ],
+    }

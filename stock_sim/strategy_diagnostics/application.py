@@ -105,8 +105,8 @@ from .ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
+    EmbeddedProductionPTradeStrategyHost,
     PTradeStrategyHost,
-    SubprocessPTradeStrategyHost,
     ptrade_manifest_for,
 )
 from .recipes import (
@@ -237,7 +237,7 @@ class DiagnosticsApplication:
         self._recipe_assistant = recipe_assistant
         self._strategy_runs = StrategyRunEngine(
             self._load_reference_path,
-            ptrade_host=ptrade_host or SubprocessPTradeStrategyHost(),
+            ptrade_host=ptrade_host or EmbeddedProductionPTradeStrategyHost(),
         )
         self._isolated_sensitivity_sets = IsolatedSensitivitySetRunner(
             self._execute_isolated_sensitivity_case

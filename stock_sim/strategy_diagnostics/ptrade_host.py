@@ -16,6 +16,7 @@ import random
 import subprocess
 import sys
 import tempfile
+from threading import Lock
 from types import MappingProxyType, ModuleType
 from typing import Callable, Final, Literal, Mapping, Protocol, Sequence, cast
 
@@ -26,8 +27,12 @@ from .market_paths import InstrumentState, MarketPathNode, ScenarioMarketSnapsho
 
 PTRADE_SURFACE_VERSION: Final = "ptrade_surface.v1"
 PTRADE_IN_PROCESS_HOST_VERSION: Final = "ptrade-in-process-host.v1"
+PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION: Final = (
+    "ptrade-embedded-production-host.v1"
+)
 PTRADE_SUBPROCESS_HOST_VERSION: Final = "ptrade-subprocess-host.v1"
 PTRADE_SUBPROCESS_PROTOCOL_VERSION: Final = "ptrade-subprocess-json.v1"
+_STRATEGY_MODULE_LOAD_LOCK = Lock()
 REFERENCE_PTRADE_STRATEGY_ID: Final = "anchored-ranked-candidate-reference"
 REFERENCE_PTRADE_STRATEGY_VERSION: Final = (
     "anchored-ranked-candidate-reference.v1"
@@ -1051,7 +1056,7 @@ class PTradeWorkerTransport(Protocol):
 
 
 class InProcessPTradeStrategyHost:
-    """Deterministic contract-test adapter; production uses the subprocess host."""
+    """Deterministic contract-test adapter, never an approved production host."""
 
     @property
     def adapter_version(self) -> str:
@@ -1061,6 +1066,20 @@ class InProcessPTradeStrategyHost:
         return _execute_strategy_invocation(
             invocation,
             host_adapter_version=PTRADE_IN_PROCESS_HOST_VERSION,
+        )
+
+
+class EmbeddedProductionPTradeStrategyHost:
+    """Run registered immutable strategies in the product's single process."""
+
+    @property
+    def adapter_version(self) -> str:
+        return PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION
+
+    def invoke(self, invocation: PTradeHostInvocation) -> PTradeHostResult:
+        return _execute_strategy_invocation(
+            invocation,
+            host_adapter_version=PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,
         )
 
 
@@ -1622,16 +1641,17 @@ def _load_strategy_module(
     # prevents aliases such as ``reader = open`` from capturing the real file
     # API before the PTrade surface is injected.
     setattr(module, "__builtins__", _formal_strategy_builtins())
-    previous = sys.modules.get(manifest.strategy_module)
-    sys.modules[manifest.strategy_module] = module
-    try:
-        code = compile(source, str(source_path), "exec")
-        exec(code, module.__dict__)
-    finally:
-        if previous is None:
-            sys.modules.pop(manifest.strategy_module, None)
-        else:
-            sys.modules[manifest.strategy_module] = previous
+    with _STRATEGY_MODULE_LOAD_LOCK:
+        previous = sys.modules.get(manifest.strategy_module)
+        sys.modules[manifest.strategy_module] = module
+        try:
+            code = compile(source, str(source_path), "exec")
+            exec(code, module.__dict__)
+        finally:
+            if previous is None:
+                sys.modules.pop(manifest.strategy_module, None)
+            else:
+                sys.modules[manifest.strategy_module] = previous
     return module
 
 
@@ -1992,7 +2012,9 @@ def _instrument_state_from_dict(payload: Mapping[str, object]) -> InstrumentStat
 
 
 __all__ = [
+    "EmbeddedProductionPTradeStrategyHost",
     "InProcessPTradeStrategyHost",
+    "PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION",
     "PTRADE_IN_PROCESS_HOST_VERSION",
     "PTRADE_SUBPROCESS_HOST_VERSION",
     "PTRADE_SURFACE_VERSION",

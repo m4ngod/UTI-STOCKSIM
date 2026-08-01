@@ -9,7 +9,10 @@ import hashlib
 import json
 from typing import Literal, Protocol
 
-from .ptrade_host import PTRADE_SUBPROCESS_HOST_VERSION
+from .ptrade_host import (
+    PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,
+    PTRADE_SUBPROCESS_HOST_VERSION,
+)
 from .strategy_runs import (
     EquityPoint,
     StrategyRunSnapshot,
@@ -21,6 +24,12 @@ CampaignStatus = Literal["completed", "incomplete"]
 RANDOM_SOURCE_VERSION = "materialization_seed+decision_index.v1"
 BASELINE_CAMPAIGN_COMMISSION_BPS = Decimal("3")
 BASELINE_CAMPAIGN_SLIPPAGE_BPS = Decimal("5")
+_PRODUCTION_PTRADE_HOST_VERSIONS = frozenset(
+    {
+        PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,
+        PTRADE_SUBPROCESS_HOST_VERSION,
+    }
+)
 
 
 def _canonical_hash(payload: object) -> str:
@@ -58,11 +67,14 @@ class BaselineCampaignSpecification:
         if first.run_id == second.run_id:
             raise ValueError("Baseline Campaign run ids must be unique")
         if any(
-            item.ptrade_host_adapter_version != PTRADE_SUBPROCESS_HOST_VERSION
+            item.ptrade_host_adapter_version
+            not in _PRODUCTION_PTRADE_HOST_VERSIONS
             for item in self.strategy_runs
         ):
             raise ValueError(
-                "Baseline Campaign requires production subprocess isolation"
+                "Baseline Campaign requires the embedded registered-immutable "
+                "or legacy subprocess production PTrade host; the raw "
+                "in-process adapter is contract-test-only"
             )
         comparisons: tuple[tuple[str, object, object], ...] = (
             ("recipe version", first.recipe_version_id, second.recipe_version_id),
@@ -247,6 +259,28 @@ class BaselineCampaignSnapshot:
 
     @property
     def subprocess_isolation_verified(self) -> bool:
+        return bool(
+            self.production_host_verified
+            and all(
+                item.specification.ptrade_host_adapter_version
+                == PTRADE_SUBPROCESS_HOST_VERSION
+                for item in self.members
+            )
+        )
+
+    @property
+    def embedded_production_host_verified(self) -> bool:
+        return bool(
+            self.production_host_verified
+            and all(
+                item.specification.ptrade_host_adapter_version
+                == PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION
+                for item in self.members
+            )
+        )
+
+    @property
+    def production_host_verified(self) -> bool:
         for member in self.members:
             snapshot = member.snapshot
             if snapshot is None or snapshot.ptrade_audit is None:
@@ -259,7 +293,9 @@ class BaselineCampaignSnapshot:
                 or audit.strategy_id != specification.strategy_id
                 or audit.strategy_version != specification.strategy_version
                 or audit.host_adapter_versions
-                != (PTRADE_SUBPROCESS_HOST_VERSION,)
+                != (specification.ptrade_host_adapter_version,)
+                or specification.ptrade_host_adapter_version
+                not in _PRODUCTION_PTRADE_HOST_VERSIONS
             ):
                 return False
         return True
@@ -269,7 +305,7 @@ class BaselineCampaignSnapshot:
         if (
             self.completed_count == 2
             and self.identical_observed_timeline
-            and self.subprocess_isolation_verified
+            and self.production_host_verified
         ):
             return "completed"
         return "incomplete"
@@ -282,6 +318,55 @@ class BaselineCampaignSnapshot:
             label = "2/2 runs complete; comparison incomplete"
         timelines = tuple(_equity_times(item.snapshot) for item in self.members)
         observed_count = len(timelines[0]) if timelines[0] == timelines[1] else 0
+        isolation: dict[str, object] = {
+            "execution_order": "sequential",
+            "verification_status": (
+                "verified"
+                if self.production_host_verified
+                else "unverified"
+            ),
+            "fresh_subprocess_per_callback": (
+                self.subprocess_isolation_verified
+            ),
+        }
+        if self.embedded_production_host_verified:
+            isolation["embedded_single_process"] = True
+            isolated_surfaces = [
+                "strategy_globals",
+                "strategy_cache",
+                "orders",
+                "fills",
+                "account",
+                "failure",
+            ]
+        elif self.subprocess_isolation_verified:
+            isolated_surfaces = [
+                "strategy_process",
+                "strategy_globals",
+                "strategy_cache",
+                "orders",
+                "fills",
+                "account",
+                "failure",
+            ]
+        else:
+            isolated_surfaces = []
+        isolation.update(
+            {
+                "unique_run_ids": len(
+                    {item.specification.run_id for item in self.members}
+                )
+                == 2,
+                "unique_replica_ids": len(
+                    {item.specification.replica_id for item in self.members}
+                )
+                == 2,
+                "private_state_by_run_id": [
+                    item.specification.run_id for item in self.members
+                ],
+                "isolated_surfaces": isolated_surfaces,
+            }
+        )
         return {
             "campaign_id": self.campaign_id,
             "campaign_replica_id": self.specification.campaign_replica_id,
@@ -315,41 +400,7 @@ class BaselineCampaignSnapshot:
                     else []
                 ),
             },
-            "isolation": {
-                "execution_order": "sequential",
-                "verification_status": (
-                    "verified"
-                    if self.subprocess_isolation_verified
-                    else "unverified"
-                ),
-                "fresh_subprocess_per_callback": (
-                    self.subprocess_isolation_verified
-                ),
-                "unique_run_ids": len(
-                    {item.specification.run_id for item in self.members}
-                )
-                == 2,
-                "unique_replica_ids": len(
-                    {item.specification.replica_id for item in self.members}
-                )
-                == 2,
-                "private_state_by_run_id": [
-                    item.specification.run_id for item in self.members
-                ],
-                "isolated_surfaces": (
-                    [
-                        "strategy_process",
-                        "strategy_globals",
-                        "strategy_cache",
-                        "orders",
-                        "fills",
-                        "account",
-                        "failure",
-                    ]
-                    if self.subprocess_isolation_verified
-                    else []
-                ),
-            },
+            "isolation": isolation,
             "members": [item.to_dict() for item in self.members],
             "equity_overlay": [
                 _curve_series(item, drawdown=False) for item in self.members
