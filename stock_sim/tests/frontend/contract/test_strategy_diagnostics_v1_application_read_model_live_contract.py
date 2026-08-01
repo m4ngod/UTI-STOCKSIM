@@ -17,6 +17,7 @@ from app.features import (
     EvidenceAndFindingsContext,
     FormalDiagnosticCampaignId,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
+    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     ReproductionManifestId,
     StrategyDiagnosticsV1ApplicationReadModel,
     StrategyRunId,
@@ -96,6 +97,66 @@ def test_live_adapter_serializes_reads_across_feature_consumers(
             sentinel,
             sentinel,
         )
+    assert maximum_active == 1
+
+
+def test_live_application_adapters_serialize_shared_backend_reads(
+    monkeypatch,
+) -> None:
+    application = create_diagnostics_application(
+        artifact_store=InMemoryMarketPathArtifactStore()
+    )
+    application.start()
+    engine = create_engine("sqlite:///:memory:", future=True)
+    read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+    )
+    diagnostic_tasks = (
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            application
+        )
+    )
+    barrier = Barrier(3)
+    active = 0
+    maximum_active = 0
+    counter_lock = Lock()
+    authoritative_status = application.status
+
+    def tracked_public_status():
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        sleep(0.05)
+        result = authoritative_status()
+        with counter_lock:
+            active -= 1
+        return result
+
+    monkeypatch.setattr(application, "status", tracked_public_status)
+    selector = V1JourneySelector(
+        campaign_id=FormalDiagnosticCampaignId("missing-campaign"),
+        run_id=StrategyRunId("missing-run"),
+    )
+
+    def invoke(action):
+        barrier.wait()
+        return action()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (
+            executor.submit(
+                invoke,
+                lambda: read_model.resolve_journey(selector),
+            ),
+            executor.submit(invoke, diagnostic_tasks.read_inventory),
+        )
+        barrier.wait()
+        assert futures[0].result().availability is (
+            ApplicationReadAvailability.FAILED
+        )
+        assert futures[1].result().inventory is not None
     assert maximum_active == 1
 
 
