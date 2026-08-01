@@ -155,25 +155,27 @@ class _EvidenceHandoff:
     selected_run: DiagnosticCampaignRunHandoff
 
 
-def _first_evidence_handoff(
+def _authoritative_evidence_handoff(
     task: DiagnosticTaskPresentation,
 ) -> _EvidenceHandoff:
     campaign_id = task.handoff.campaign_id
     assert campaign_id is not None
-    selected_case = task.handoff.selected_cases[0]
-    selected_node = next(
-        node
-        for node in task.handoff.campaign_nodes
-        if node.selected_campaign_case_id == selected_case.campaign_case_id
-    )
-    selected_attempt = next(
-        attempt
-        for attempt in selected_node.attempts
-        if attempt.attempt_id == selected_node.active_attempt_id
-    )
-    selected_run = selected_attempt.runs[0]
-    manifest_id = selected_run.reproduction_manifest_id
+    manifest_id = task.handoff.reproduction_manifest_id
     assert manifest_id is not None
+    selected_node, selected_run = next(
+        (node, run)
+        for node in task.handoff.campaign_nodes
+        for attempt in node.attempts
+        if attempt.attempt_id == node.active_attempt_id
+        for run in attempt.runs
+        if run.reproduction_manifest_id == manifest_id
+    )
+    selected_case = next(
+        selected
+        for selected in task.handoff.selected_cases
+        if selected.campaign_case_id
+        == selected_node.selected_campaign_case_id
+    )
     return _EvidenceHandoff(
         context=EvidenceAndFindingsContext.for_selection(
             EvidenceAndFindingsSelection(
@@ -181,7 +183,7 @@ def _first_evidence_handoff(
                 run_id=selected_run.run_id,
                 strategy_id=selected_run.strategy_id,
                 market_scenario_id=MarketScenarioId(
-                    selected_node.selected_campaign_case_id.value
+                    selected_node.campaign_case_id.value
                 ),
                 approved_recipe_id=ApprovedScenarioRecipeId(
                     selected_case.recipe_version_id.value
@@ -218,7 +220,7 @@ def test_available_diagnostic_evidence_hands_exact_ids_to_evidence_route(
     diagnostic_tasks.advance_evidence_available(approved.task_id)
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
-    handoff = _first_evidence_handoff(task)
+    handoff = _authoritative_evidence_handoff(task)
     run_monitoring = DeterministicFakeRunMonitoringAdapter()
     evidence = DeterministicFakeEvidenceAndFindingsAdapter()
     evidence.advance_to_completed(handoff.context)
@@ -256,7 +258,7 @@ def test_available_diagnostic_evidence_hands_exact_ids_to_evidence_route(
         task.handoff.campaign_id.value,
         handoff.selected_run.run_id.value,
         handoff.selected_run.strategy_id.value,
-        handoff.selected_node.selected_campaign_case_id.value,
+        handoff.selected_node.campaign_case_id.value,
         handoff.selected_case.recipe_version_id.value,
         handoff.selected_run.reproduction_manifest_id.value,
     ):
@@ -304,7 +306,7 @@ def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
     assert task.handoff.ready_for_evidence_and_findings
-    handoff = _first_evidence_handoff(task)
+    handoff = _authoritative_evidence_handoff(task)
 
     bridge = EventBridge(subscribe_backend=False)
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
@@ -348,7 +350,7 @@ def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
         task.handoff.campaign_id.value,
         handoff.selected_run.run_id.value,
         handoff.selected_run.strategy_id.value,
-        handoff.selected_node.selected_campaign_case_id.value,
+        handoff.selected_node.campaign_case_id.value,
         handoff.selected_run.reproduction_manifest_id.value,
     ):
         assert identity in narrator_text
@@ -620,14 +622,10 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert completed_task.handoff.ready_for_evidence_and_findings
     assert completed_task.handoff.evidence_package_id is not None
     assert completed_task.handoff.reproduction_manifest_id is not None
-    accepted_run = next(
-        run
-        for node in completed_task.handoff.campaign_nodes
-        for attempt in node.attempts
-        if attempt.attempt_id == node.active_attempt_id
-        for run in attempt.runs
-        if run.reproduction_manifest_id is not None
+    authoritative_handoff = _authoritative_evidence_handoff(
+        completed_task
     )
+    accepted_run = authoritative_handoff.selected_run
     manifest_id = accepted_run.reproduction_manifest_id
     assert manifest_id is not None
     expected_durable_identity_graph = durable_identity_graph(completed_task)
@@ -1172,7 +1170,7 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     diagnostic_tasks.advance_evidence_available(current.task_id)
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
-    handoff = _first_evidence_handoff(task)
+    handoff = _authoritative_evidence_handoff(task)
     evidence.advance_to_completed(handoff.context)
     app.processEvents()
     app.processEvents()

@@ -36,7 +36,10 @@ from app.features import (
     V1JourneySelector,
     ValidateDiagnosticTaskConfiguration,
 )
-from strategy_diagnostics import create_diagnostics_application
+from strategy_diagnostics import (
+    PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,
+    create_diagnostics_application,
+)
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.frontend.contract.test_diagnostic_task_creation_live_contract import (
     _command,
@@ -666,6 +669,62 @@ def test_start_exact_approved_revision_persists_one_formal_campaign_and_handoff(
     )
     assert reopened.strategy_run_status(run_id.value).run_id == run_id.value
     reopened_feature.close()
+
+
+def test_default_start_uses_the_single_process_production_host(
+    tmp_path,
+) -> None:
+    (
+        _source,
+        _artifact_store,
+        _engine,
+        application,
+        _application_adapter,
+        feature,
+    ) = _formal_live_stack(tmp_path)
+    approved_task = _approved_formal_task(feature)
+
+    accepted = feature.start_formal_diagnostic_campaign(
+        StartFormalDiagnosticCampaign(
+            command_id=DiagnosticCommandId(
+                "start-command-59-embedded-production"
+            ),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "start-idempotency-59-embedded-production"
+            ),
+            task_id=approved_task.task_id,
+            expected_revision=approved_task.revision,
+            approved_revision=approved_task.revision,
+        )
+    )
+
+    assert accepted.disposition is (
+        DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+    )
+    assert accepted.affected_campaign_id is not None
+    campaign = application.diagnostic_campaign_status(
+        accepted.affected_campaign_id.value
+    )
+    assert campaign.completed_count == 1
+    completed_case = next(
+        case for case in campaign.cases if case.status == "completed"
+    )
+    completed_attempt = completed_case.attempts[-1]
+    completed_runs = tuple(
+        application.strategy_run_status(str(member["run_id"]))
+        for member in completed_attempt.to_dict()["members"]
+    )
+    assert {
+        run.specification.ptrade_host_adapter_version
+        for run in completed_runs
+    } == {PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION}
+    assert all(
+        run.ptrade_audit is not None
+        and run.ptrade_audit.host_adapter_versions
+        == (PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,)
+        for run in completed_runs
+    )
+    feature.close()
 
 
 def test_retry_after_handoff_persistence_failure_does_not_advance_another_case(

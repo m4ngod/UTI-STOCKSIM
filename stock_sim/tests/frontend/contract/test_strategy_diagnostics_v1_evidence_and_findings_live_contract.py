@@ -320,6 +320,7 @@ def test_real_sealed_v1_evidence_is_visible_in_production_qml(
     )
     root = window.centralWidget().rootObject()
     root.setProperty("activeRoute", "evidence_and_findings")
+    qt_adapter = window.centralWidget()._evidence_and_findings
 
     deadline = monotonic() + 5
     while monotonic() < deadline:
@@ -329,6 +330,10 @@ def test_real_sealed_v1_evidence_is_visible_in_production_qml(
             state.presentation
             is EvidenceAndFindingsPresentationState.READY
             and state.last_reliable_data is not None
+            and qt_adapter.hasReliableData
+            and package.evidence_package_id
+            in qt_adapter.pinnedIdentitiesText
+            and manifest.manifest_id in qt_adapter.pinnedIdentitiesText
         ):
             break
         sleep(0.01)
@@ -512,7 +517,6 @@ def test_real_sealed_v1_evidence_is_visible_in_production_qml(
         for identity in uncharted_curve_ids
     )
 
-    qt_adapter = window.centralWidget()._evidence_and_findings
     assert package.evidence_package_id in qt_adapter.pinnedIdentitiesText
     assert manifest.manifest_id in qt_adapter.pinnedIdentitiesText
     assert comparison_ids

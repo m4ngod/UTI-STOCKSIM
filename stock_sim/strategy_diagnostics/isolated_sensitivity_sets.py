@@ -19,7 +19,6 @@ from .execution_conditions import (
 from .ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_VERSION,
-    PTRADE_SUBPROCESS_HOST_VERSION,
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_VERSION,
     ptrade_manifest_for,
@@ -1149,7 +1148,9 @@ def _validate_campaign_assignment(
             code_identity="strategy-diagnostics.v1",
             ptrade_surface_version=manifest.surface_version,
             ptrade_manifest_hash=manifest.content_hash,
-            ptrade_host_adapter_version=PTRADE_SUBPROCESS_HOST_VERSION,
+            ptrade_host_adapter_version=(
+                run_specification.ptrade_host_adapter_version
+            ),
             commission_bps=(
                 expected_execution_conditions.effective.commission_bps
             ),
@@ -1197,7 +1198,10 @@ def _validate_campaign_assignment(
             or shared_market_nodes.get("identical_observed_timeline") is not True
             or not isinstance(isolation, Mapping)
             or isolation.get("verification_status") != "verified"
-            or isolation.get("fresh_subprocess_per_callback") is not True
+            or (
+                isolation.get("fresh_subprocess_per_callback") is not True
+                and isolation.get("embedded_single_process") is not True
+            )
         ):
             raise ValueError(
                 "Completed sensitivity campaign lacks complete, comparable, "

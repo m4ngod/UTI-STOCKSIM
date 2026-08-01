@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import random
 import sys
+from threading import Event, Lock
 from types import ModuleType
 
 import pytest
@@ -17,8 +19,10 @@ from strategy_diagnostics import InstrumentState, MarketPathNode, ScenarioMarket
 import strategy_diagnostics.ptrade_host as ptrade_host_module
 from strategy_diagnostics.ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_MANIFEST,
+    PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION,
     PTRADE_SUBPROCESS_HOST_VERSION,
     PTRADE_SURFACE_VERSION,
+    EmbeddedProductionPTradeStrategyHost,
     InProcessPTradeStrategyHost,
     PTradeCompatibilityError,
     PTradeHostInvocation,
@@ -454,6 +458,97 @@ def test_in_process_host_runs_reference_lifecycle_and_signed_share_order() -> No
     assert handled.lifecycle_events == ("handle_data",)
     assert handled.order_requests == ()
     assert handled.log_records[-1].message.endswith("callback completed.")
+    assert "strategy_diagnostics.reference_ptrade_strategy" not in sys.modules
+
+
+def test_embedded_production_host_uses_fresh_modules_in_the_product_process() -> None:
+    invocation = _invocation()
+    host = EmbeddedProductionPTradeStrategyHost()
+
+    first = host.invoke(invocation)
+    second = host.invoke(invocation)
+
+    assert host.adapter_version == PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION
+    assert first.host_adapter_version == PTRADE_EMBEDDED_PRODUCTION_HOST_VERSION
+    assert first.process_id == second.process_id == os.getpid()
+    assert first.worker_global_counter == second.worker_global_counter == 2
+    assert first.random_probe == second.random_probe
+    assert first.order_requests == second.order_requests
+    assert "strategy_diagnostics.reference_ptrade_strategy" not in sys.modules
+
+
+def test_embedded_production_host_serializes_temporary_module_registration(
+    monkeypatch,
+) -> None:
+    class RecordingLock:
+        def __init__(self) -> None:
+            self._delegate = Lock()
+            self._attempt_count_lock = Lock()
+            self._attempt_count = 0
+            self.second_acquire_attempted = Event()
+
+        def __enter__(self):
+            with self._attempt_count_lock:
+                self._attempt_count += 1
+                if self._attempt_count == 2:
+                    self.second_acquire_attempted.set()
+            self._delegate.acquire()
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> bool:
+            self._delegate.release()
+            return False
+
+    invocation = _invocation()
+    host = EmbeddedProductionPTradeStrategyHost()
+    recording_lock = RecordingLock()
+    first_compile_entered = Event()
+    second_compile_entered = Event()
+    release_first_compile = Event()
+    call_lock = Lock()
+    compile_calls = 0
+    real_compile = compile
+
+    def gated_compile(*args, **kwargs):
+        nonlocal compile_calls
+        with call_lock:
+            compile_calls += 1
+            call_number = compile_calls
+        if call_number == 1:
+            first_compile_entered.set()
+            if not release_first_compile.wait(timeout=5):
+                raise TimeoutError(
+                    "first embedded module compile was not released"
+                )
+        else:
+            second_compile_entered.set()
+        return real_compile(*args, **kwargs)
+
+    monkeypatch.setattr(
+        ptrade_host_module,
+        "compile",
+        gated_compile,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ptrade_host_module,
+        "_STRATEGY_MODULE_LOAD_LOCK",
+        recording_lock,
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(host.invoke, invocation)
+        assert first_compile_entered.wait(timeout=5)
+        second_future = executor.submit(host.invoke, invocation)
+        assert recording_lock.second_acquire_attempted.wait(timeout=5)
+        try:
+            assert second_compile_entered.is_set() is False
+        finally:
+            release_first_compile.set()
+        first = first_future.result(timeout=5)
+        second = second_future.result(timeout=5)
+
+    assert second_compile_entered.is_set()
+    assert first == second
     assert "strategy_diagnostics.reference_ptrade_strategy" not in sys.modules
 
 
