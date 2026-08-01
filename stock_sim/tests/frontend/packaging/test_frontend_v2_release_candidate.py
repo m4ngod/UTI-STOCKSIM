@@ -1712,6 +1712,97 @@ def test_default_installed_entry_uses_the_production_app_context():
     ) < source.index("    bridge.start()")
 
 
+def test_installed_entry_avoids_compiled_qt_test_and_accessibility_introspection():
+    source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    ).read_text(encoding="utf-8")
+
+    assert "QTest" not in source
+    assert "QAccessible" not in source
+    assert "QKeyEvent" in source
+
+
+def test_packaged_accessible_names_have_one_authoritative_qml_source():
+    entry_source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    ).read_text(encoding="utf-8")
+    journey_source = (
+        PROJECT_ROOT / "app" / "ui" / "qml" / "JourneyWorkspace.qml"
+    ).read_text(encoding="utf-8")
+    chart_source = (
+        PROJECT_ROOT / "app" / "ui" / "qml" / "EvidenceChart.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "_PACKAGED_ACCESSIBLE_NAME_BY_OBJECT_NAME" not in entry_source
+    assert journey_source.count(
+        "Accessible.name: accessibleName"
+    ) == 3
+    assert journey_source.count(
+        "Accessible.description: accessibleDescription"
+    ) == 3
+    assert "Accessible.name: accessibleName" in chart_source
+    assert "Accessible.description: accessibleDescription" in chart_source
+
+
+def test_packaged_no_trading_inventory_fails_closed_without_semantics():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _unapproved_interactive_action_count,
+    )
+
+    class MetaObject:
+        def __init__(self, property_names):
+            self.property_names = frozenset(property_names)
+
+        def indexOfProperty(self, property_name):
+            return 0 if property_name in self.property_names else -1
+
+    class Item:
+        def __init__(self, **properties):
+            self.properties = properties
+            self._meta = MetaObject(properties)
+
+        def metaObject(self):
+            return self._meta
+
+        def property(self, property_name):
+            return self.properties.get(property_name)
+
+    class Root(Item):
+        def __init__(self, children):
+            super().__init__(
+                objectName="root",
+                activeFocusOnTab=False,
+            )
+            self.children = children
+
+        def findChildren(self, _object_type):
+            return self.children
+
+    approved_action = Item(
+        objectName="approvedAction",
+        activeFocusOnTab=True,
+        accessibleName="Open Diagnostic Tasks",
+    )
+    missing_semantics = Item(
+        objectName="unknownKeyboardAction",
+        activeFocusOnTab=True,
+    )
+    known_text_input = Item(
+        objectName="diagnosticTaskApprovalActorInput",
+        activeFocusOnTab=True,
+    )
+
+    assert _unapproved_interactive_action_count(
+        Root((approved_action, missing_semantics, known_text_input))
+    ) == 1
+
+
 def test_release_certification_does_not_expand_the_application_command_api():
     import inspect
 
@@ -1866,12 +1957,11 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
             events.append("adapter")
             self._workspace_closed = True
 
-        def deleteLater(self):
-            events.append("host-delete")
-            self.deleted = True
-
     class Window:
         deleted = False
+
+        def __init__(self, host):
+            self.host = host
 
         def close(self):
             events.append("window")
@@ -1879,6 +1969,7 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
         def deleteLater(self):
             events.append("window-delete")
             self.deleted = True
+            self.host.deleted = True
 
         def isVisible(self):
             if self.deleted:
@@ -1902,7 +1993,7 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
         },
     )()
     host = Host()
-    window = Window()
+    window = Window(host)
     monkeypatch.setattr(
         shiboken6,
         "isValid",
@@ -1922,7 +2013,6 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
         "run-feature",
         "evidence-feature",
         "window",
-        "host-delete",
         "window-delete",
         "deferred-delete",
         "process-events",

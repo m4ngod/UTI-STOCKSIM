@@ -145,6 +145,9 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Show (?:findings|assumptions|provenance|context) tab"
     r")$"
 )
+_PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
+    {"diagnosticTaskApprovalActorInput"}
+)
 
 
 class RendererLane(str, Enum):
@@ -376,6 +379,26 @@ def _key_click(host: Any, key: Any, modifiers: Any) -> None:
         )
 
 
+def _type_text_with_keyboard(host: Any, text: str) -> None:
+    from PySide6.QtCore import QCoreApplication, QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    for character in text:
+        for event_type in (
+            QEvent.Type.KeyPress,
+            QEvent.Type.KeyRelease,
+        ):
+            QCoreApplication.sendEvent(
+                host,
+                QKeyEvent(
+                    event_type,
+                    Qt.Key.Key_unknown,
+                    Qt.KeyboardModifier.NoModifier,
+                    character,
+                ),
+            )
+
+
 @contextmanager
 def _serialized_application_access(
     application: Any,
@@ -455,9 +478,24 @@ def _navigate_route(
         )
 
 
+def _qml_semantic_values(item: Any) -> tuple[str, ...]:
+    meta = item.metaObject()
+    values: list[str] = []
+    for property_name in (
+        "text",
+        "accessibleName",
+        "accessibleDescription",
+    ):
+        if meta.indexOfProperty(property_name) < 0:
+            continue
+        value = item.property(property_name)
+        if value:
+            values.append(str(value))
+    return tuple(dict.fromkeys(values))
+
+
 def _visible_and_accessible_text(root: Any) -> str:
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QAccessible
 
     rendered: list[str] = []
     for item in (root, *root.findChildren(QObject)):
@@ -467,22 +505,8 @@ def _visible_and_accessible_text(root: Any) -> str:
             if meta.indexOfProperty("visible") >= 0
             else True
         )
-        if (
-            visible
-            and meta.indexOfProperty("text") >= 0
-            and item.property("text")
-        ):
-            rendered.append(str(item.property("text")))
-        interface = QAccessible.queryAccessibleInterface(item)
-        if interface is None or not interface.isValid():
-            continue
-        for kind in (
-            QAccessible.Text.Name,
-            QAccessible.Text.Description,
-        ):
-            value = interface.text(kind)
-            if value:
-                rendered.append(value)
+        if visible:
+            rendered.extend(_qml_semantic_values(item))
     return "\n".join(rendered)
 
 
@@ -493,7 +517,6 @@ def _focus_accessible_name_with_keyboard(
     accessible_name: str,
 ) -> Any:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QAccessible
 
     quick_window = host.quickWindow()
     if quick_window is None:
@@ -511,12 +534,9 @@ def _focus_accessible_name_with_keyboard(
             )
             app.processEvents()
             continue
-        interface = QAccessible.queryAccessibleInterface(item)
-        if (
-            interface is not None
-            and interface.isValid()
-            and interface.text(QAccessible.Text.Name).casefold()
-            == accessible_name.casefold()
+        if any(
+            value.casefold() == accessible_name.casefold()
+            for value in _qml_semantic_values(item)
         ):
             return item
         _key_click(
@@ -538,7 +558,6 @@ def _keyboard_accessible_focus_cycle(
     steps: int = 120,
 ) -> str:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QAccessible
 
     quick_window = host.quickWindow()
     if quick_window is None:
@@ -547,14 +566,7 @@ def _keyboard_accessible_focus_cycle(
     for _ in range(steps):
         item = quick_window.activeFocusItem()
         if item is not None:
-            interface = QAccessible.queryAccessibleInterface(item)
-            if interface is not None and interface.isValid():
-                rendered.extend(
-                    (
-                        interface.text(QAccessible.Text.Name),
-                        interface.text(QAccessible.Text.Description),
-                    )
-                )
+            rendered.extend(_qml_semantic_values(item))
         _key_click(
             host,
             Qt.Key.Key_Tab,
@@ -572,7 +584,6 @@ def _collect_qml_identity_checkpoint(
     expected: tuple[str, ...],
 ) -> tuple[str, ...]:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QAccessible
 
     _navigate_route(
         app=app,
@@ -605,17 +616,15 @@ def _collect_qml_identity_checkpoint(
     if not candidate_controls:
         raise RuntimeError("No QML Evidence candidate control is available")
     for candidate in candidate_controls:
-        candidate_interface = QAccessible.queryAccessibleInterface(candidate)
-        if candidate_interface is None or not candidate_interface.isValid():
+        candidate_name = str(candidate.property("accessibleName") or "")
+        if not candidate_name:
             raise RuntimeError(
-                "Evidence candidate lacks a valid accessible interface"
+                "Evidence candidate lacks a packaged accessible name"
             )
         candidate = _focus_accessible_name_with_keyboard(
             app=app,
             host=host,
-            accessible_name=candidate_interface.text(
-                QAccessible.Text.Name
-            ),
+            accessible_name=candidate_name,
         )
         _key_click(
             host,
@@ -730,24 +739,22 @@ def _accessibility_preferences_verified(root: Any) -> bool:
 
 def _accessible_announcement(root: Any, object_name: str) -> str:
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QAccessible
 
     item = root.findChild(QObject, object_name)
     if item is None:
         raise RuntimeError(
             f"Accessible status object is unavailable: {object_name}"
         )
-    interface = QAccessible.queryAccessibleInterface(item)
-    if interface is None or not interface.isValid():
+    values = [
+        value
+        for child in (item, *item.findChildren(QObject))
+        for value in _qml_semantic_values(child)
+    ]
+    if not values:
         raise RuntimeError(
-            f"Accessible status interface is unavailable: {object_name}"
+            f"Accessible status content is unavailable: {object_name}"
         )
-    return " ".join(
-        (
-            interface.text(QAccessible.Text.Name),
-            interface.text(QAccessible.Text.Description),
-        )
-    ).strip()
+    return " ".join(dict.fromkeys(values))
 
 
 def _start_installed_wave2_commands(
@@ -760,7 +767,6 @@ def _start_installed_wave2_commands(
 ) -> tuple[Any, tuple[str, ...]]:
     from PySide6.QtCore import Qt
     from PySide6.QtQuick import QQuickItem
-    from PySide6.QtTest import QTest
 
     from app.features import (
         DiagnosticTaskLifecycle,
@@ -861,7 +867,7 @@ def _start_installed_wave2_commands(
         host=host,
         target=actor,
     )
-    QTest.keyClicks(host, "installed-release-owner")
+    _type_text_with_keyboard(host, "installed-release-owner")
     app.processEvents()
     activate(
         "approveDiagnosticTaskButton",
@@ -1804,7 +1810,7 @@ def _run_smoke_journey(
                 if identity not in checkpoint
             )
             raise RuntimeError(
-                f"{stage}: QML/QAccessible identity graph is missing "
+                f"{stage}: QML semantic identity graph is missing "
                 f"{missing}"
             )
 
@@ -2194,7 +2200,6 @@ def _close_mount(
             context.evidence_and_findings_feature.close,
         ),
         ("MainWindow", window.close),
-        ("QML Host deferred delete", host.deleteLater),
         ("MainWindow deferred delete", window.deleteLater),
         (
             "Qt deferred-delete delivery",
@@ -2386,19 +2391,25 @@ def _snapshot_observed_state(
 
 def _unapproved_interactive_action_count(root: Any) -> int:
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QAccessible
 
     count = 0
     for item in (root, *root.findChildren(QObject)):
-        interface = QAccessible.queryAccessibleInterface(item)
-        if interface is None or not interface.isValid():
+        meta = item.metaObject()
+        object_name = str(item.property("objectName") or "")
+        if object_name in _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES:
             continue
-        if interface.role() not in {
-            QAccessible.Role.Button,
-            QAccessible.Role.Slider,
-        }:
+        if meta.indexOfProperty("accessibleName") >= 0:
+            name = str(item.property("accessibleName") or "").strip()
+        else:
+            name = ""
+        keyboard_action = bool(
+            meta.indexOfProperty("activeFocusOnTab") >= 0
+            and item.property("activeFocusOnTab")
+        )
+        if not name:
+            if keyboard_action:
+                count += 1
             continue
-        name = interface.text(QAccessible.Text.Name).strip()
         if not _APPROVED_INTERACTIVE_NAMES.fullmatch(name):
             count += 1
     return count
