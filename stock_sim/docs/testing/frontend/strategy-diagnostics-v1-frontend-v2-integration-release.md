@@ -14,15 +14,18 @@ typed in-process Application boundaries.
 - `StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0 creates, validates,
   approves, and starts real persisted Diagnostic Tasks and Formal Diagnostic
   Campaigns through the production QML route.
-- A persisted V1 Formal Diagnostic Campaign, selected Strategy Run, sealed
-  Diagnostic Evidence Package, and Reproduction Manifest are reopened from
-  SQLite, JSON, and Parquet storage by the real `DiagnosticsApplication`.
+- The installed package starts from an authoritative input fixture containing
+  zero Diagnostic Tasks and zero Formal Diagnostic Campaigns. Each renderer
+  lane copies it to writable local storage, then creates the Task and Campaign
+  through the real `DiagnosticsApplication`.
 - `LiveStrategyDiagnosticsV1ApplicationAdapter` maps those backend-owned
   results to immutable typed frontend read values.
-- The installed QML Journey retains exact Campaign, Case, Run, Strategy,
-  Approved Recipe, Evidence Package, Manifest, and artifact identities across
-  launch, navigation, disconnection, authoritative reconnection, terminal
-  presentation, remount, and clean exit.
+- The installed QML Journey retains exact Task, TaskHandle, Campaign, Case,
+  Run, Strategy, Approved Recipe, Evidence Package, Manifest, and artifact
+  identities within each renderer lane. It keeps the Campaign nonterminal
+  through three-route navigation, disconnection, authoritative reconnection,
+  stale-generation rejection, remount, and Application reopen before
+  continuing to terminal Evidence/Manifest presentation and clean exit.
 - The same-source legacy Widgets rollback package remains available as the
   independent recovery path.
 
@@ -30,8 +33,8 @@ Orders, fills, positions, and account details remain read-only diagnostic
 context. This release includes no manual trading, order entry, cancel,
 replace, bulk-order, Buy, or Sell capability. It introduces no HTTP, REST,
 OpenAPI, WebSocket, IPC, queue, second frontend process, or generic frontend
-façade. The installed QML executable has no PTrade worker entry and only
-reopens sealed backend state in-process.
+façade. The installed QML executable has no PTrade worker entry. It executes
+the public backend behavior and all live Feature Adapters in one process.
 
 ## Explicitly not included
 
@@ -63,20 +66,46 @@ rollback artifact.
 - The installed QML executable must retain the exact typed Feature identity
   graph at every launch, disconnected, stale reconnect, fresh reconnect, and
   remount checkpoint through the rendered QML/QAccessible object graph.
-- The build creates the Formal Campaign through the real public
-  `DiagnosticsApplication`, closes and reopens its SQLite/JSON/Parquet state,
-  seals every retained file and backend identity into
-  `strategy-diagnostics-v1-fixture.zip`, and binds that archive to the same
-  source commit. Formal Campaign creation preserves the V1 backend's existing
-  mandatory isolated PTrade execution policy; this is build-time domain
-  execution, not an installed frontend service or integration façade. The
-  installed executable verifies and extracts a temporary copy, reopens it
-  read-only through the real Application and live adapter, and removes the
-  copy on exit. It never ships a worker entry or regenerates the campaign
-  during installed smoke.
+- The build seals authoritative datasets, recipes, and materialized paths into
+  `strategy-diagnostics-v1-wave2-input-fixture.zip`, binds it to the same
+  source commit, and proves that it initially contains no Task or Campaign.
+  The installed executable verifies and extracts a writable temporary copy,
+  then uses the typed create, revise, validate, approve, and start commands.
+  While the Campaign is still nonterminal, it traverses all three routes,
+  disconnects and reconnects, rejects an old generation, closes the
+  Application, and reopens the same persisted Task, TaskHandles, and
+  Campaign. Only then does it advance the real Campaign and receive
+  backend-generated Evidence and Reproduction Manifest identities. Hardware
+  and software lanes validate their own complete identity graphs; generated
+  Task/Campaign/Run/Evidence UUIDs are not required to match across the two
+  independent installed processes.
 - The offline Windows Sandbox must install both same-source archives, run the
   QML journey in hardware and software renderer lanes, and launch the real
   read-only legacy Widgets rollback executable.
+
+## Wave 2 release procedure
+
+1. Freeze a clean source commit on formal `master` and run the required T08
+   suite with JUnit output.
+2. Run and certify both continuous 60-second T10 lanes. The certifier must
+   produce the same-source T09 no-manual-trading report.
+3. Build both archives from that exact clean commit:
+   `python -m stock_sim.release.frontend_v2_packaging --output-root
+   <OUTPUT_ROOT> --source-commit <SOURCE_COMMIT>`.
+4. Launch `scripts/run_frontend_v2_windows_sandbox.ps1` with the QML archive,
+   Widgets archive, both checksums, source commit, and a new evidence
+   directory. Networking remains disabled; package and scripts are mapped
+   read-only; only evidence output is writable.
+5. Require both installed renderer reports to show the exact three-route
+   production path, post-install Task/Campaign creation, five accepted typed
+   command kinds, at least three distinct persistent TaskHandles, writable
+   persistence, nonterminal three-route/disconnect/Application-reopen
+   continuation, task-cancel/order isolation, zero manual trading actions,
+   and a clean exit.
+6. Run the packaging command again with
+   `--certify-clean-room-report`, `--accessibility-junit`, and
+   `--performance-evidence-dir`. Publish only the two archives and evidence
+   whose local and remote sizes and SHA-256 digests match.
 
 Source changes alone do not certify the Wave 2 candidate. The Issue #65 result
 is not an installed Wave 2 release-certification claim. Certification exists

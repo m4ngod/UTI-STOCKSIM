@@ -303,13 +303,26 @@ if ($installSucceeded) {
     $expectedProductionPath = @(
         "DiagnosticsApplication",
         "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
         "JourneyWorkspaceHost"
     )
-    $expectedRoutes = @("run_monitoring", "evidence_and_findings")
+    $expectedRoutes = @(
+        "diagnostic_tasks",
+        "run_monitoring",
+        "evidence_and_findings"
+    )
+    $expectedAcceptedCommandKinds = @(
+        "create_diagnostic_task",
+        "revise_configuration",
+        "validate_configuration",
+        "approve_configuration",
+        "start_formal_diagnostic_campaign"
+    )
     $expectedTransitions = @(
         "connected",
         "disconnected",
@@ -437,6 +450,41 @@ if ($installSucceeded) {
                 ($connectionTransitions -join "|") -eq
                     ($expectedTransitions -join "|")
             )
+            $acceptedCommandKinds = @($smoke.accepted_command_kinds)
+            $taskHandleIdentities = @($smoke.task_handle_identities)
+            $taskHandleIdentitiesValid = (
+                $taskHandleIdentities.Count -ge 3 -and
+                @(
+                    $taskHandleIdentities |
+                        Where-Object {
+                            [string]::IsNullOrWhiteSpace([string]$_)
+                        }
+                ).Count -eq 0 -and
+                @($taskHandleIdentities | Sort-Object -Unique).Count -eq
+                    $taskHandleIdentities.Count
+            )
+            $installedWave2JourneyValid = (
+                [string]$smoke.fixture_kind -eq
+                    "authoritative_writable_wave2_inputs" -and
+                $smoke.task_created_after_install -is [bool] -and
+                $smoke.task_created_after_install -eq $true -and
+                $smoke.campaign_created_after_install -is [bool] -and
+                $smoke.campaign_created_after_install -eq $true -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$smoke.diagnostic_task_identity
+                ) -and
+                ($acceptedCommandKinds -join "|") -eq
+                    ($expectedAcceptedCommandKinds -join "|") -and
+                $taskHandleIdentitiesValid -and
+                $smoke.writable_persistence_verified -is [bool] -and
+                $smoke.writable_persistence_verified -eq $true -and
+                $smoke.application_reopened -is [bool] -and
+                $smoke.application_reopened -eq $true -and
+                $smoke.background_continuation_verified -is [bool] -and
+                $smoke.background_continuation_verified -eq $true -and
+                $smoke.task_cancel_order_isolation_verified -is [bool] -and
+                $smoke.task_cancel_order_isolation_verified -eq $true
+            )
             $artifactHashes = @($smoke.artifact_hashes)
             $artifactHashesValid = (
                 $artifactHashes.Count -gt 0 -and
@@ -516,6 +564,8 @@ if ($installSucceeded) {
             $identitySetsValid = $true
             $flattenedIdentityGraph = @(
                 $identityValues +
+                    @([string]$smoke.diagnostic_task_identity) +
+                    $taskHandleIdentities +
                     $persistedManifestIdentities +
                     $persistedRunIdentities +
                     $rawArtifactHashes
@@ -592,14 +642,15 @@ if ($installSucceeded) {
                 [string]$smoke.application_read_model_interface -eq
                     "StrategyDiagnosticsV1ApplicationReadModel/1.0" -and
                 ($activeFeatureInterfaces -join "|") -eq
-                    "RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1" -and
+                    "DiagnosticTasksFeature/1.0|RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1" -and
                 [string]$smoke.campaign_status -eq "completed" -and
                 [string]$smoke.run_status -eq "completed" -and
                 [string]$smoke.evidence_status -eq "sealed" -and
                 $featureIdentityGraphMatches -and
                 $identitySetsValid -and
                 $identityCheckpointsValid -and
-                $releaseBehaviorValid
+                $releaseBehaviorValid -and
+                $installedWave2JourneyValid
             )
             $rendererLanes[$lane] = [ordered]@{
                 exit_code = $exitCode
@@ -610,6 +661,39 @@ if ($installSucceeded) {
                 source_commit = [string]$smoke.source_commit
                 production_path = $productionPath
                 production_path_matches = $productionPathMatches
+                fixture_kind = [string]$smoke.fixture_kind
+                task_created_after_install = (
+                    $smoke.task_created_after_install -is [bool] -and
+                    $smoke.task_created_after_install -eq $true
+                )
+                campaign_created_after_install = (
+                    $smoke.campaign_created_after_install -is [bool] -and
+                    $smoke.campaign_created_after_install -eq $true
+                )
+                diagnostic_task_identity = (
+                    [string]$smoke.diagnostic_task_identity
+                )
+                accepted_command_kinds = $acceptedCommandKinds
+                task_handle_identities = $taskHandleIdentities
+                writable_persistence_verified = (
+                    $smoke.writable_persistence_verified -is [bool] -and
+                    $smoke.writable_persistence_verified -eq $true
+                )
+                application_reopened = (
+                    $smoke.application_reopened -is [bool] -and
+                    $smoke.application_reopened -eq $true
+                )
+                background_continuation_verified = (
+                    $smoke.background_continuation_verified -is [bool] -and
+                    $smoke.background_continuation_verified -eq $true
+                )
+                task_cancel_order_isolation_verified = (
+                    $smoke.task_cancel_order_isolation_verified -is [bool] -and
+                    $smoke.task_cancel_order_isolation_verified -eq $true
+                )
+                installed_wave2_journey_valid = (
+                    $installedWave2JourneyValid
+                )
                 campaign_identity = [string]$smoke.campaign_identity
                 case_identity = [string]$smoke.case_identity
                 run_identity = [string]$smoke.run_identity
@@ -719,6 +803,17 @@ if ($installSucceeded) {
                 source_commit = ""
                 production_path = @()
                 production_path_matches = $false
+                fixture_kind = ""
+                task_created_after_install = $false
+                campaign_created_after_install = $false
+                diagnostic_task_identity = ""
+                accepted_command_kinds = @()
+                task_handle_identities = @()
+                writable_persistence_verified = $false
+                application_reopened = $false
+                background_continuation_verified = $false
+                task_cancel_order_isolation_verified = $false
+                installed_wave2_journey_valid = $false
                 campaign_identity = ""
                 case_identity = ""
                 run_identity = ""
@@ -826,6 +921,7 @@ $gatePassed = (
     $rendererLanes.hardware.source_commit_matches -and
     $rendererLanes.hardware.production_path_matches -and
     $rendererLanes.hardware.real_v1_identity_valid -and
+    $rendererLanes.hardware.installed_wave2_journey_valid -and
     $rendererLanes.hardware.routes_match -and
     $rendererLanes.hardware.connection_transitions_match -and
     $rendererLanes.hardware.states_match -and
@@ -839,6 +935,7 @@ $gatePassed = (
     $rendererLanes.software.source_commit_matches -and
     $rendererLanes.software.production_path_matches -and
     $rendererLanes.software.real_v1_identity_valid -and
+    $rendererLanes.software.installed_wave2_journey_valid -and
     $rendererLanes.software.routes_match -and
     $rendererLanes.software.connection_transitions_match -and
     $rendererLanes.software.states_match -and
@@ -847,22 +944,8 @@ $gatePassed = (
     $rendererLanes.software.read_only_context_visible -and
     $rendererLanes.software.clean_exit -and
     $rendererLanes.software.errors.Count -eq 0 -and
-    $rendererLanes.hardware.campaign_identity -eq
-        $rendererLanes.software.campaign_identity -and
-    $rendererLanes.hardware.case_identity -eq
-        $rendererLanes.software.case_identity -and
-    $rendererLanes.hardware.run_identity -eq
-        $rendererLanes.software.run_identity -and
-    $rendererLanes.hardware.strategy_identity -eq
-        $rendererLanes.software.strategy_identity -and
-    $rendererLanes.hardware.approved_recipe_identity -eq
-        $rendererLanes.software.approved_recipe_identity -and
-    $rendererLanes.hardware.evidence_package_identity -eq
-        $rendererLanes.software.evidence_package_identity -and
-    $rendererLanes.hardware.reproduction_manifest_identity -eq
-        $rendererLanes.software.reproduction_manifest_identity -and
-    ($rendererLanes.hardware.artifact_hashes -join "|") -eq
-        ($rendererLanes.software.artifact_hashes -join "|")
+    ($rendererLanes.hardware.accepted_command_kinds -join "|") -eq
+        ($rendererLanes.software.accepted_command_kinds -join "|")
 )
 if (-not $gatePassed) {
     exit 1
