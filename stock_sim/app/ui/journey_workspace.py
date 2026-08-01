@@ -1915,6 +1915,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
     stateChanged = Signal()
     localStateChanged = Signal()
     chartPresentationChanged = Signal()
+    chartSemanticsChanged = Signal()
     chartGeometryChanged = Signal()
     chartInteractionChanged = Signal()
     deliveryRequested = Signal(int, object)
@@ -1955,6 +1956,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self._chart_timer.timeout.connect(self.flush_chart_frames)
         self._repair_local_selection()
         self._chart_presentation = self._build_chart_presentation()
+        self._chart_semantic_presentation = self._chart_presentation
         self._chart_frame_sequence = 1
         initial_gate = self._chart_frame_gate.offer(
             self._chart_presentation.frame,
@@ -2032,6 +2034,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
             max_frames_per_second=20
         )
         self._chart_presentation = self._build_chart_presentation()
+        self._chart_semantic_presentation = self._chart_presentation
         self._chart_frame_sequence += 1
         initial_gate = self._chart_frame_gate.offer(
             self._chart_presentation.frame,
@@ -2048,6 +2051,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self.stateChanged.emit()
         self.localStateChanged.emit()
         self.chartPresentationChanged.emit()
+        self.chartSemanticsChanged.emit()
         self.chartGeometryChanged.emit()
         self._sync_chart_interaction_enabled()
 
@@ -2310,17 +2314,17 @@ class EvidenceAndFindingsQtAdapter(QObject):
             else sample.key.policy.value
         )
 
-    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(str, notify=chartSemanticsChanged)  # type: ignore[arg-type]
     def chartNarrativeText(self) -> str:  # noqa: N802
-        return self._chart_presentation.narrative_text
+        return self._chart_semantic_presentation.narrative_text
 
-    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(str, notify=chartSemanticsChanged)  # type: ignore[arg-type]
     def chartTableText(self) -> str:  # noqa: N802
-        return self._chart_presentation.table_text
+        return self._chart_semantic_presentation.table_text
 
-    @Property(str, notify=chartPresentationChanged)  # type: ignore[arg-type]
+    @Property(str, notify=chartSemanticsChanged)  # type: ignore[arg-type]
     def chartAccessibleText(self) -> str:  # noqa: N802
-        return self._chart_presentation.accessible_text
+        return self._chart_semantic_presentation.accessible_text
 
     @Property("QVariantList", notify=chartGeometryChanged)  # type: ignore[arg-type]
     def chartOverlayIdentities(self) -> list[str]:  # noqa: N802
@@ -2703,6 +2707,8 @@ class EvidenceAndFindingsQtAdapter(QObject):
         )
         if not result.accepted:
             self._pending_chart_presentations.pop()
+        elif local:
+            self._publish_chart_semantics(presentation)
         self._apply_chart_gate_result(result)
 
     def flush_chart_frames(self) -> None:
@@ -2735,6 +2741,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
                 != presentation.selected_overlay_identity
             )
             self._chart_presentation = presentation
+            self._publish_chart_semantics(presentation)
             self._chart_frame_sequence += 1
             if geometry_changed:
                 self.chartGeometryChanged.emit()
@@ -2745,6 +2752,20 @@ class EvidenceAndFindingsQtAdapter(QObject):
         else:
             self._chart_timer.start(max(1, ceil(due_in_ns / 1_000_000)))
         self._sync_chart_interaction_enabled()
+
+    def _publish_chart_semantics(
+        self,
+        presentation: EvidenceChartPresentation,
+    ) -> None:
+        current = self._chart_semantic_presentation
+        self._chart_semantic_presentation = presentation
+        if (
+            current.narrative_text == presentation.narrative_text
+            and current.table_text == presentation.table_text
+            and current.accessible_text == presentation.accessible_text
+        ):
+            return
+        self.chartSemanticsChanged.emit()
 
     @staticmethod
     def _same_chart_paint_work(

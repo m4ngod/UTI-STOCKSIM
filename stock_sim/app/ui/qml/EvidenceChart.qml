@@ -1,5 +1,4 @@
 import QtQuick 2.15
-import QtQuick.Shapes 1.15
 
 Item {
     id: chart
@@ -17,6 +16,10 @@ Item {
     property string selectedFindingIdentity: ""
     property string selectedBreakpointIdentity: ""
     property int frameSequence: 0
+    property int paintRequestSequence: 1
+    property int paintedPaintSequence: 0
+    property int paintedFrameSequence: 0
+    property int paintedAcceptedRevision: 0
     property bool interactionEnabled: true
     property color seriesColor: "#76B7FF"
     property color overlayColor: "#8290A3"
@@ -26,46 +29,91 @@ Item {
     property color focusColor: "#76B7FF"
     property int labelPixelSize: 11
     property string accessibleDescription: ""
-    readonly property var mappedPoints: {
-        var output = []
-        var plotWidth = Math.max(width - 16, 1)
-        var plotHeight = Math.max(height - 16, 1)
-        for (var index = 0; index < normalizedPoints.length; ++index) {
-            var point = normalizedPoints[index]
-            output.push(
-                Qt.point(
-                    8 + Number(point.x) * plotWidth,
-                    8 + (1 - Number(point.y)) * plotHeight
-                )
-            )
-        }
-        return output
-    }
-
     signal pointSelected(real ratio)
     signal pointStepRequested(int direction)
     signal focusEntered(var item)
+
+    function requestSeriesPaint() {
+        paintRequestSequence += 1
+    }
 
     Accessible.role: Accessible.Graphic
     Accessible.name: "Diagnostic evidence chart"
     Accessible.description: accessibleDescription
 
-    Shape {
-        id: evidenceSeriesShape
+    Canvas {
+        id: evidenceSeriesCanvas
         objectName: "evidenceChartSeriesShape"
         anchors.fill: parent
-        asynchronous: false
+        property int requestedPaintSequence: chart.paintRequestSequence
+        property var inFlightPaintTokens: []
+        renderTarget: Canvas.Image
+        renderStrategy: Canvas.Threaded
 
-        ShapePath {
-            fillColor: "transparent"
-            strokeColor: chart.seriesColor
-            strokeWidth: 1.5
-            capStyle: ShapePath.FlatCap
-            joinStyle: ShapePath.BevelJoin
+        function capturePaintToken() {
+            inFlightPaintTokens = inFlightPaintTokens.concat([{
+                paintSequence: requestedPaintSequence,
+                frameSequence: chart.frameSequence,
+                acceptedRevision: chart.acceptedRevision
+            }])
+        }
 
-            PathPolyline {
-                path: chart.mappedPoints
+        function acknowledgeOldestPaintToken() {
+            if (inFlightPaintTokens.length === 0)
+                return
+            var token = inFlightPaintTokens[0]
+            inFlightPaintTokens = inFlightPaintTokens.slice(1)
+            if (token.paintSequence < chart.paintedPaintSequence)
+                return
+            chart.paintedPaintSequence = token.paintSequence
+            chart.paintedFrameSequence = token.frameSequence
+            chart.paintedAcceptedRevision = token.acceptedRevision
+        }
+
+        onPaint: {
+            capturePaintToken()
+            var context = getContext("2d")
+            context.reset()
+            if (chart.normalizedPoints.length < 2)
+                return
+            var plotWidth = Math.max(width - 16, 1)
+            var plotHeight = Math.max(height - 16, 1)
+            context.strokeStyle = chart.seriesColor
+            context.lineWidth = 1.5
+            context.lineCap = "butt"
+            context.lineJoin = "bevel"
+            context.beginPath()
+            for (
+                var index = 0;
+                index < chart.normalizedPoints.length;
+                ++index
+            ) {
+                var point = chart.normalizedPoints[index]
+                var x = 8 + Number(point.x) * plotWidth
+                var y = 8 + (1 - Number(point.y)) * plotHeight
+                if (index === 0)
+                    context.moveTo(x, y)
+                else
+                    context.lineTo(x, y)
             }
+            context.stroke()
+        }
+
+        onPainted: acknowledgeOldestPaintToken()
+        onRequestedPaintSequenceChanged: requestPaint()
+        onWidthChanged: chart.requestSeriesPaint()
+        onHeightChanged: chart.requestSeriesPaint()
+    }
+
+    Connections {
+        target: chart
+
+        function onNormalizedPointsChanged() {
+            chart.requestSeriesPaint()
+        }
+
+        function onSeriesColorChanged() {
+            chart.requestSeriesPaint()
         }
     }
 
