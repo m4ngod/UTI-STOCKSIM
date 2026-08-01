@@ -1329,6 +1329,7 @@ class DiagnosticTasksQtAdapter(QObject):
         handoff = task.handoff
         if handoff.campaign_id is None:
             return None
+        authoritative_manifest_id = handoff.reproduction_manifest_id
         for node in handoff.campaign_nodes:
             active_attempt = next(
                 (
@@ -1340,6 +1341,12 @@ class DiagnosticTasksQtAdapter(QObject):
             )
             if active_attempt is not None:
                 for run in active_attempt.runs:
+                    if (
+                        authoritative_manifest_id is not None
+                        and run.reproduction_manifest_id
+                        != authoritative_manifest_id
+                    ):
+                        continue
                     return RunMonitoringContext.for_run(
                         RunMonitoringSelection(
                             campaign_id=handoff.campaign_id,
@@ -1354,6 +1361,9 @@ class DiagnosticTasksQtAdapter(QObject):
             return None
         handoff = task.handoff
         if handoff.campaign_id is None:
+            return None
+        authoritative_manifest_id = handoff.reproduction_manifest_id
+        if authoritative_manifest_id is None:
             return None
         selected_cases = {
             item.campaign_case_id: item
@@ -1374,7 +1384,10 @@ class DiagnosticTasksQtAdapter(QObject):
             if active_attempt is None:
                 continue
             for run in active_attempt.runs:
-                if run.reproduction_manifest_id is None:
+                if (
+                    run.reproduction_manifest_id
+                    != authoritative_manifest_id
+                ):
                     continue
                 return EvidenceAndFindingsContext.for_selection(
                     EvidenceAndFindingsSelection(
@@ -1382,7 +1395,7 @@ class DiagnosticTasksQtAdapter(QObject):
                         run_id=run.run_id,
                         strategy_id=run.strategy_id,
                         market_scenario_id=MarketScenarioId(
-                            node.selected_campaign_case_id.value
+                            node.campaign_case_id.value
                         ),
                         approved_recipe_id=ApprovedScenarioRecipeId(
                             selected_case.recipe_version_id.value
