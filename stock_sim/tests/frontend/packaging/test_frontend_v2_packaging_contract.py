@@ -2525,6 +2525,7 @@ def test_clean_room_renderer_lane_reset_removes_stale_evidence(
             capture_output=True,
             check=False,
             text=True,
+            errors="backslashreplace",
         )
 
     completed = invoke_reset(lane_dir)
