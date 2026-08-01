@@ -60,8 +60,8 @@ Item {
             fillColor: "transparent"
             strokeColor: chart.seriesColor
             strokeWidth: 1.5
-            capStyle: ShapePath.RoundCap
-            joinStyle: ShapePath.RoundJoin
+            capStyle: ShapePath.FlatCap
+            joinStyle: ShapePath.BevelJoin
 
             PathPolyline {
                 path: chart.mappedPoints
