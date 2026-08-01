@@ -15,12 +15,12 @@ import os
 import platform
 from array import array
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from math import ceil, sin
 from pathlib import Path
-from threading import RLock, local
 from tempfile import TemporaryDirectory
+from threading import RLock, local
 from time import perf_counter_ns
 from typing import Any, cast
 
@@ -33,21 +33,38 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QAccessible, QKeyEvent
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtWidgets import QApplication
 
 from app.event_bridge import EventBridge, EventBridgeBatch
 from app.features import (
     APPLICATION_READ_MODEL_INTERFACE_VERSION,
+    DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
     ApplicationReadAvailability,
     ApplicationReadError,
     ApplicationReadErrorCode,
     ApplicationReadModelVersion,
     ApplicationReadResult,
+    ApproveDiagnosticTaskConfiguration,
     ApprovedScenarioRecipeId,
+    CreateDiagnosticTask,
+    DeterministicFakeDiagnosticTasksAdapter,
+    DiagnosticActorId,
+    DiagnosticCampaignCaseSelection,
+    DiagnosticCampaignLayer,
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
+    DiagnosticComparisonRole,
     DiagnosticEvidencePackageId,
+    DiagnosticStrategySelection,
     DiagnosticTaskCapabilities,
+    DiagnosticTaskConfiguration,
+    DiagnosticTaskId,
+    DiagnosticTaskPresentation,
+    DiagnosticTasksContext,
+    DiagnosticTasksFeature,
+    DiagnosticTasksInventory,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsData,
     EvidenceAndFindingsSelection,
@@ -69,10 +86,12 @@ from app.features import (
     ScenarioSetId,
     SimulationTime,
     SourceRevisionToken,
+    StartFormalDiagnosticCampaign,
     StrategyRunId,
     StrategyUnderTestId,
     TerminalOutcome,
     V1JourneySelector,
+    ValidateDiagnosticTaskConfiguration,
     WallTime,
 )
 from app.ui.journey_workspace import JourneyWorkspaceHost
@@ -87,6 +106,8 @@ from .frontend_v2_performance import (
     REAL_V1_PERFORMANCE_PRODUCTION_PATH,
     REFERENCE_FIXTURE,
     REFERENCE_MEASUREMENT_PROTOCOL,
+    WAVE2_PERFORMANCE_COMMAND_IDS,
+    WAVE2_PERFORMANCE_PRODUCTION_PATH,
     build_performance_metric,
     reference_fixture_digest,
     validate_performance_lane,
@@ -1041,6 +1062,7 @@ class _QtPerformanceProbe(QObject):
         bridge: EventBridge,
         duration_seconds: float,
         process_started_ns: int,
+        on_measurement_active: Callable[[], None],
         on_finished: Callable[[], None],
     ) -> None:
         super().__init__(host)
@@ -1068,6 +1090,7 @@ class _QtPerformanceProbe(QObject):
         self._bridge = bridge
         self._duration_seconds = duration_seconds
         self._process_started_ns = process_started_ns
+        self._on_measurement_active = on_measurement_active
         self._on_finished = on_finished
         self._measurement_started_ns: int | None = None
         self._measurement_ended_ns: int | None = None
@@ -1158,6 +1181,14 @@ class _QtPerformanceProbe(QObject):
     def source_events(self) -> int:
         return self._source_events
 
+    @property
+    def measurement_active(self) -> bool:
+        return (
+            self._measurement_started_ns is not None
+            and self._measurement_ended_ns is None
+            and self._source_events > 0
+        )
+
     @Slot()
     def before_synchronize(self) -> None:
         self._synchronized_revision = int(
@@ -1228,9 +1259,32 @@ class _QtPerformanceProbe(QObject):
         self._memory_timer.start()
         self._input_timer.start()
         QTimer.singleShot(
+            REFERENCE_FIXTURE.source_cadence_ms
+            + max(1, REFERENCE_FIXTURE.source_cadence_ms // 2),
+            self._run_measurement_active_load,
+        )
+        QTimer.singleShot(
             max(1, ceil(self._duration_seconds * 1_000)),
             self._publish_terminal,
         )
+
+    @Slot()
+    def _run_measurement_active_load(self) -> None:
+        if self._measurement_ended_ns is not None:
+            self.errors.append(
+                "Wave 2 command load missed the active measurement window"
+            )
+            return
+        if self._measurement_started_ns is None or self._source_events < 1:
+            QTimer.singleShot(1, self._run_measurement_active_load)
+            return
+        try:
+            self._on_measurement_active()
+        except BaseException as error:
+            self.errors.append(
+                "Wave 2 command load failed: "
+                f"{type(error).__name__}: {error}"
+            )
 
     @Slot()
     def _publish_source_event(self) -> None:
@@ -1375,6 +1429,317 @@ class _QtPerformanceProbe(QObject):
         return cast(QObject, item)
 
 
+def _diagnostic_configuration(
+    inventory: DiagnosticTasksInventory,
+) -> DiagnosticTaskConfiguration:
+    recipe_by_id = {
+        item.recipe_version_id: item for item in inventory.approved_recipes
+    }
+    baseline_case_id = next(
+        item.campaign_case_id
+        for item in inventory.market_scenarios
+        if item.layer is DiagnosticCampaignLayer.BASELINE
+    )
+    return DiagnosticTaskConfiguration.create(
+        strategy_selections=tuple(
+            DiagnosticStrategySelection(
+                strategy_id=item.strategy_id,
+                strategy_version=item.strategy_version,
+                compatibility_manifest_hash=item.compatibility_manifest_hash,
+                guardrail_profile_id=item.guardrail_profile_id,
+                guardrail_profile_version=item.guardrail_profile_version,
+            )
+            for item in inventory.strategies
+        ),
+        campaign_case_selections=tuple(
+            DiagnosticCampaignCaseSelection(
+                layer=item.layer,
+                recipe_version_id=item.recipe_version_id,
+                recipe_content_hash=recipe_by_id[
+                    item.recipe_version_id
+                ].content_hash,
+                market_scenario_id=item.market_scenario_id,
+                campaign_case_id=item.campaign_case_id,
+                comparison_role=(
+                    DiagnosticComparisonRole.CONTROL
+                    if item.layer is DiagnosticCampaignLayer.BASELINE
+                    else DiagnosticComparisonRole.COMPARE_TO_BASELINE
+                ),
+                baseline_campaign_case_id=(
+                    None
+                    if item.layer is DiagnosticCampaignLayer.BASELINE
+                    else baseline_case_id
+                ),
+                execution_policy_values=item.execution_policy_values,
+            )
+            for item in inventory.market_scenarios
+        ),
+    )
+
+
+def _wave2_performance_feature() -> DeterministicFakeDiagnosticTasksAdapter:
+    seed = DeterministicFakeDiagnosticTasksAdapter()
+    workspace = DiagnosticTasksContext.workspace()
+    seed.snapshot(workspace)
+    inventory = seed.snapshot(workspace).last_reliable_inventory
+    seed.close()
+    if inventory is None:
+        raise RuntimeError("Diagnostic Tasks seed inventory is unavailable")
+    baseline = inventory.market_scenarios[0]
+    isolated = tuple(
+        replace(
+            baseline,
+            market_scenario_id=type(baseline.market_scenario_id)(
+                f"sha256:performance-isolated-scenario-{index:02d}"
+            ),
+            campaign_case_id=type(baseline.campaign_case_id)(
+                f"performance-isolated-campaign-case-{index:02d}"
+            ),
+            layer=DiagnosticCampaignLayer.ISOLATED_SENSITIVITY,
+            comparison_requirement="compare_to_baseline",
+        )
+        for index in range(1, 13)
+    )
+    compound = replace(
+        baseline,
+        market_scenario_id=type(baseline.market_scenario_id)(
+            "sha256:performance-compound-scenario"
+        ),
+        campaign_case_id=type(baseline.campaign_case_id)(
+            "performance-compound-campaign-case"
+        ),
+        layer=DiagnosticCampaignLayer.COMPOUND,
+        comparison_requirement="compare_to_baseline",
+    )
+    return DeterministicFakeDiagnosticTasksAdapter(
+        inventory=replace(
+            inventory,
+            market_scenarios=(baseline, *isolated, compound),
+        )
+    )
+
+
+def _read_diagnostic_task(
+    feature: DiagnosticTasksFeature,
+    task_id: DiagnosticTaskId,
+) -> DiagnosticTaskPresentation:
+    context = DiagnosticTasksContext(task_id=task_id)
+    feature.snapshot(context)
+    state = feature.snapshot(context)
+    if state.task is None:
+        raise RuntimeError("Diagnostic Tasks performance task is unavailable")
+    return state.task
+
+
+def _identity_graph(
+    task: DiagnosticTaskPresentation,
+    command_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    identities = [
+        *command_ids,
+        task.task_id.value,
+        *(handle.identity.value for handle in task.task_handles),
+    ]
+    handoff = task.handoff
+    if handoff.campaign_id is not None:
+        identities.append(handoff.campaign_id.value)
+    for node in handoff.campaign_nodes:
+        identities.append(node.campaign_node_id.value)
+        for attempt in node.attempts:
+            identities.append(attempt.attempt_id.value)
+            for run in attempt.runs:
+                identities.append(run.run_id.value)
+                if run.reproduction_manifest_id is not None:
+                    identities.append(run.reproduction_manifest_id.value)
+    if handoff.evidence_package_id is not None:
+        identities.append(handoff.evidence_package_id.value)
+    if handoff.reproduction_manifest_id is not None:
+        identities.append(handoff.reproduction_manifest_id.value)
+    return tuple(dict.fromkeys(identities))
+
+
+def _prepare_wave2_diagnostic_task_load(
+    feature: DeterministicFakeDiagnosticTasksAdapter,
+) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    inventory = feature.snapshot(workspace).last_reliable_inventory
+    if inventory is None:
+        raise RuntimeError("Diagnostic Tasks performance inventory is unavailable")
+    configuration = _diagnostic_configuration(inventory)
+    accepted_command_ids = WAVE2_PERFORMANCE_COMMAND_IDS
+    create = feature.create_diagnostic_task(
+        CreateDiagnosticTask(
+            command_id=DiagnosticCommandId(accepted_command_ids[0]),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "performance-create-diagnostic-task-key"
+            ),
+            configuration=configuration,
+        )
+    )
+    if create.affected_task_id is None:
+        raise RuntimeError(f"Diagnostic Task create failed: {create.message}")
+    task_id = create.affected_task_id
+    task = _read_diagnostic_task(feature, task_id)
+    validate = feature.validate_configuration(
+        ValidateDiagnosticTaskConfiguration(
+            command_id=DiagnosticCommandId(accepted_command_ids[1]),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "performance-validate-diagnostic-task-key"
+            ),
+            task_id=task_id,
+            expected_revision=task.revision,
+        )
+    )
+    task = _read_diagnostic_task(feature, task_id)
+    validation = task.validation
+    if (
+        validation.validation_id is None
+        or validation.validation_revision is None
+        or validation.validated_revision is None
+        or validation.configuration_content_identity is None
+    ):
+        raise RuntimeError("Diagnostic Task validation did not become durable")
+    approve = feature.approve_configuration(
+        ApproveDiagnosticTaskConfiguration(
+            command_id=DiagnosticCommandId(accepted_command_ids[2]),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "performance-approve-diagnostic-task-key"
+            ),
+            task_id=task_id,
+            expected_revision=task.revision,
+            validation_id=validation.validation_id,
+            validation_revision=validation.validation_revision,
+            validated_revision=validation.validated_revision,
+            configuration_content_id=(
+                validation.configuration_content_identity
+            ),
+            actor_id=DiagnosticActorId("performance-release-owner"),
+        )
+    )
+    task = _read_diagnostic_task(feature, task_id)
+    start = feature.start_formal_diagnostic_campaign(
+        StartFormalDiagnosticCampaign(
+            command_id=DiagnosticCommandId(accepted_command_ids[3]),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "performance-start-diagnostic-campaign-key"
+            ),
+            task_id=task_id,
+            expected_revision=task.revision,
+            approved_revision=task.revision,
+        )
+    )
+    feature.advance_evidence_available(task_id)
+    task = _read_diagnostic_task(feature, task_id)
+    feature.snapshot(workspace)
+    feature.snapshot(workspace)
+    results = (create, validate, approve, start)
+    result_command_ids = tuple(
+        result.command_id.value for result in results
+    )
+    graph = _identity_graph(task, result_command_ids)
+    qml_observation_graph = tuple(
+        identity
+        for identity in graph
+        if identity not in result_command_ids
+        and all(
+            identity != node.campaign_node_id.value
+            for node in task.handoff.campaign_nodes
+        )
+    )
+    handles = tuple(
+        result.task_handle
+        for result in results
+        if result.task_handle is not None
+    )
+    return (
+        {
+            "feature_interface": (
+                f"DiagnosticTasksFeature/{feature.interface_version.render()}"
+            ),
+            "application_interface": (
+                "StrategyDiagnosticsV1DiagnosticTasksApplication/"
+                f"{DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION.render()}"
+            ),
+            "adapter": type(feature).__name__,
+            "accepted_command_ids": list(accepted_command_ids),
+            "result_command_ids": list(result_command_ids),
+            "accepted_command_observed": (
+                result_command_ids == accepted_command_ids
+                and all(result.accepted for result in results)
+            ),
+            "task_handle_observed": bool(handles)
+            and all(
+                handle.identity.value in graph
+                for handle in handles
+            ),
+            "task_handle_ids": [
+                handle.identity.value for handle in handles
+            ],
+            "handoff_observed": task.handoff.ready_for_run_monitoring,
+            "terminal_observed": task.lifecycle.value == "completed",
+            "executed_during_active_load": False,
+            "source_events_before_command": 0,
+            "source_events_after_command": 0,
+            "observed_before_load": False,
+            "observed_after_load": False,
+            "task_lifecycle": task.lifecycle.value,
+            "identity_graph": list(graph),
+        },
+        graph,
+        qml_observation_graph,
+    )
+
+
+def _qml_observes_identity_graph(
+    host: JourneyWorkspaceHost,
+    app: QApplication,
+    identity_graph: tuple[str, ...],
+) -> bool:
+    root = host.rootObject()
+    if root is None or not root.setProperty("activeRoute", "diagnostic_tasks"):
+        return False
+    app.processEvents()
+    app.processEvents()
+    summary = root.findChild(QObject, "diagnosticTasksAccessibleSummary")
+    if summary is None:
+        return False
+    accessible = QAccessible.queryAccessibleInterface(summary)
+    if accessible is None:
+        return False
+    observed_text = " ".join(
+        (
+            accessible.text(QAccessible.Text.Name),
+            accessible.text(QAccessible.Text.Description),
+        )
+    )
+    return all(identity in observed_text for identity in identity_graph)
+
+
+def _qml_observes_ready_inventory(
+    host: JourneyWorkspaceHost,
+    app: QApplication,
+) -> bool:
+    root = host.rootObject()
+    adapter = host._diagnostic_tasks
+    if (
+        root is None
+        or adapter is None
+        or not root.setProperty("activeRoute", "diagnostic_tasks")
+    ):
+        return False
+    app.processEvents()
+    app.processEvents()
+    return bool(
+        adapter.presentationState == "ready"
+        and root.findChild(
+            QObject,
+            "diagnosticTasksAccessibleSummary",
+        )
+        is not None
+    )
+
+
 def run_performance_lane(
     *,
     lane: str,
@@ -1391,8 +1756,40 @@ def run_performance_lane(
             "A certifying performance lane requires real V1 preflight "
             "evidence"
         )
-    app = QApplication.instance() or QApplication([])
+    existing_app = QApplication.instance()
+    app = (
+        QApplication([])
+        if existing_app is None
+        else cast(QApplication, existing_app)
+    )
     queries = _PerformanceLoadProjectionReadModel()
+    diagnostic_tasks = _wave2_performance_feature()
+    wave2_diagnostic_tasks: dict[str, Any] = {
+        "feature_interface": (
+            f"DiagnosticTasksFeature/"
+            f"{diagnostic_tasks.interface_version.render()}"
+        ),
+        "application_interface": (
+            "StrategyDiagnosticsV1DiagnosticTasksApplication/"
+            f"{DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION.render()}"
+        ),
+        "adapter": type(diagnostic_tasks).__name__,
+        "accepted_command_ids": list(WAVE2_PERFORMANCE_COMMAND_IDS),
+        "result_command_ids": [],
+        "accepted_command_observed": False,
+        "task_handle_observed": False,
+        "task_handle_ids": [],
+        "handoff_observed": False,
+        "terminal_observed": False,
+        "executed_during_active_load": False,
+        "source_events_before_command": 0,
+        "source_events_after_command": 0,
+        "observed_before_load": False,
+        "observed_after_load": False,
+        "task_lifecycle": "not_started",
+        "identity_graph": [],
+    }
+    wave2_qml_observation_graph: tuple[str, ...] = ()
     recorder = _MetricRecorder(queries)
     bridge = EventBridge(
         flush_interval_ms=REFERENCE_FIXTURE.source_cadence_ms,
@@ -1412,6 +1809,26 @@ def run_performance_lane(
     def quit_app() -> None:
         finished[0] = True
         app.quit()
+
+    def run_wave2_active_load() -> None:
+        nonlocal wave2_qml_observation_graph
+        if probe is None or not probe.measurement_active:
+            raise RuntimeError(
+                "Wave 2 commands were not started inside the active load"
+            )
+        source_events_before = probe.source_events
+        report, _identity_graph_value, qml_graph = (
+            _prepare_wave2_diagnostic_task_load(diagnostic_tasks)
+        )
+        report["executed_during_active_load"] = probe.measurement_active
+        report["source_events_before_command"] = source_events_before
+        report["source_events_after_command"] = probe.source_events
+        report["observed_before_load"] = wave2_diagnostic_tasks[
+            "observed_before_load"
+        ]
+        wave2_diagnostic_tasks.clear()
+        wave2_diagnostic_tasks.update(report)
+        wave2_qml_observation_graph = qml_graph
 
     try:
         run_feature = LiveRunMonitoringAdapter(
@@ -1433,18 +1850,34 @@ def run_performance_lane(
         host = JourneyWorkspaceHost(
             run_feature,
             context=_run_context(),
+            diagnostic_tasks_feature=diagnostic_tasks,
+            diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
             evidence_feature=evidence_feature,
             evidence_context=evidence_context,
         )
         root = host.rootObject()
         if root is None:
             raise RuntimeError("Journey Workspace QML did not load")
-        root.setProperty("activeRoute", "evidence_and_findings")
         evidence_qt_adapter = host._evidence_and_findings
         if evidence_qt_adapter is None:
             raise RuntimeError(
                 "Evidence & Findings Qt Adapter is unavailable"
             )
+        diagnostic_qt_adapter = host._diagnostic_tasks
+        if diagnostic_qt_adapter is None:
+            raise RuntimeError("Diagnostic Tasks Qt Adapter is unavailable")
+        wave2_diagnostic_tasks["observed_before_load"] = (
+            _qml_observes_ready_inventory(host, app)
+        )
+        diagnostic_qt_adapter.campaignHandoffReady.disconnect(
+            host._open_run_monitoring_handoff
+        )
+        diagnostic_qt_adapter.evidenceHandoffReady.disconnect(
+            host._open_evidence_and_findings_handoff
+        )
+        host._run_monitoring.select_context(_run_context())
+        evidence_qt_adapter.select_context(evidence_context)
+        root.setProperty("activeRoute", "evidence_and_findings")
         evidence_qt_adapter.setActiveTab("context")
 
         bridge.start()
@@ -1467,6 +1900,7 @@ def run_performance_lane(
             bridge=bridge,
             duration_seconds=duration_seconds,
             process_started_ns=process_started_ns,
+            on_measurement_active=run_wave2_active_load,
             on_finished=quit_app,
         )
         host.quickWindow().beforeSynchronizing.connect(
@@ -1487,6 +1921,20 @@ def run_performance_lane(
         if not finished[0]:
             probe.errors.append("Performance lane watchdog expired")
         observed_fixture = probe.observed_fixture
+        qml_observed_after_load = (
+            _qml_observes_identity_graph(
+                host,
+                app,
+                wave2_qml_observation_graph,
+            )
+        )
+        wave2_diagnostic_tasks["observed_after_load"] = (
+            qml_observed_after_load
+        )
+        wave2_diagnostic_tasks["task_handle_observed"] = bool(
+            wave2_diagnostic_tasks.get("task_handle_observed")
+            and qml_observed_after_load
+        )
     finally:
         cleanup_actions: tuple[
             tuple[str, Callable[[], None]],
@@ -1509,6 +1957,10 @@ def run_performance_lane(
                 (
                     "Journey Workspace host",
                     host.close if host is not None else None,
+                ),
+                (
+                    "Diagnostic Tasks Feature",
+                    diagnostic_tasks.close,
                 ),
                 (
                     "Run Monitoring Feature",
@@ -1558,6 +2010,7 @@ def run_performance_lane(
         recorder=recorder,
         observed_fixture=observed_fixture,
         real_v1_evidence=integrated_v1_evidence,
+        wave2_diagnostic_tasks=wave2_diagnostic_tasks,
     )
     return report
 
@@ -1571,6 +2024,7 @@ def _build_report(
     recorder: _MetricRecorder,
     observed_fixture: Mapping[str, int],
     real_v1_evidence: Mapping[str, Any] | None,
+    wave2_diagnostic_tasks: Mapping[str, Any],
 ) -> dict[str, Any]:
     event_metric = build_performance_metric(recorder.event_to_visible_ms)
     input_metric = build_performance_metric(recorder.input_response_ms)
@@ -1595,7 +2049,7 @@ def _build_report(
         )
     terminal_visible_ms = recorder.terminal_visible_ms
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "smoke" if smoke else "passed",
         "lane": lane,
         "graphics_api": probe.graphics_api,
@@ -1606,19 +2060,13 @@ def _build_report(
         "measurement": asdict(REFERENCE_MEASUREMENT_PROTOCOL),
         "observed_fixture": dict(observed_fixture),
         "sampling_policy": "uniform_endpoints_v1",
-        "production_path": [
-            "PerformanceLoadProjectionReadModel",
-            "EventBridge",
-            "LiveRunMonitoringAdapter",
-            "LiveEvidenceAndFindingsAdapter",
-            "JourneyWorkspaceHost",
-            "EvidenceChart.qml",
-        ],
+        "production_path": list(WAVE2_PERFORMANCE_PRODUCTION_PATH),
         "integrated_v1_probe": (
             None
             if real_v1_evidence is None
             else dict(real_v1_evidence)
         ),
+        "wave2_diagnostic_tasks": dict(wave2_diagnostic_tasks),
         "start_marker": SOURCE_MARKER,
         "end_marker": END_MARKER,
         "started_at": probe.started_at.isoformat(),

@@ -41,8 +41,13 @@ EVIDENCE_AND_FINDINGS_INTERFACE_VERSION = FeatureInterfaceVersion(
     major=1,
     minor=1,
 )
+DIAGNOSTIC_TASKS_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=0)
 
 ACTIVE_FEATURE_INTERFACES = (
+    FeatureInterfaceDescriptor(
+        name=FeatureModuleName.DIAGNOSTIC_TASKS,
+        version=DIAGNOSTIC_TASKS_INTERFACE_VERSION,
+    ),
     FeatureInterfaceDescriptor(
         name=FeatureModuleName.RUN_MONITORING,
         version=RUN_MONITORING_INTERFACE_VERSION,
@@ -56,6 +61,7 @@ ACTIVE_FEATURE_INTERFACES = (
 
 __all__ = [
     "ACTIVE_FEATURE_INTERFACES",
+    "DIAGNOSTIC_TASKS_INTERFACE_VERSION",
     "EVIDENCE_AND_FINDINGS_INTERFACE_VERSION",
     "RUN_MONITORING_INTERFACE_VERSION",
     "FeatureInterfaceDescriptor",

@@ -1,19 +1,15 @@
-from copy import deepcopy
-from dataclasses import asdict, dataclass
 import hashlib
 import json
-from pathlib import Path
 import subprocess
+from copy import deepcopy
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import pytest
 
 from stock_sim.release import frontend_v2_performance
 from stock_sim.release.frontend_v2_packaging import (
     REAL_V1_IDENTITY_FIELDS,
-)
-from stock_sim.release.no_manual_trading_gate import (
-    audit_python_imports,
-    audit_python_text,
 )
 from stock_sim.release.frontend_v2_performance import (
     PERFORMANCE_THRESHOLDS,
@@ -24,7 +20,10 @@ from stock_sim.release.frontend_v2_performance import (
     reference_fixture_digest,
     validate_performance_lane,
 )
-
+from stock_sim.release.no_manual_trading_gate import (
+    audit_python_imports,
+    audit_python_text,
+)
 
 SOURCE_COMMIT = "a" * 40
 TOOLCHAIN_DIGEST = f"sha256:{'b' * 64}"
@@ -105,7 +104,7 @@ def _sample_metric(
 
 def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "passed",
         "lane": lane,
         "graphics_api": (
@@ -139,6 +138,15 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         "started_at": "2026-07-26T12:00:00+00:00",
         "ended_at": "2026-07-26T12:01:00+00:00",
         "duration_seconds": 60.0,
+        "production_path": [
+            "PerformanceLoadProjectionReadModel",
+            "DeterministicFakeDiagnosticTasksAdapter",
+            "EventBridge",
+            "LiveRunMonitoringAdapter",
+            "LiveEvidenceAndFindingsAdapter",
+            "JourneyWorkspaceHost",
+            "EvidenceChart.qml",
+        ],
         "integrated_v1_probe": _passing_real_v1_probe(),
         "machine": {
             "operating_system": "Windows 11",
@@ -176,6 +184,52 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         },
         "accepted_revisions": [1, 2, 4, 7],
         "revisions_strictly_monotonic": True,
+        "wave2_diagnostic_tasks": {
+            "feature_interface": "DiagnosticTasksFeature/1.0",
+            "application_interface": (
+                "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
+            ),
+            "adapter": "DeterministicFakeDiagnosticTasksAdapter",
+            "accepted_command_ids": [
+                "performance-create-diagnostic-task",
+                "performance-validate-diagnostic-task",
+                "performance-approve-diagnostic-task",
+                "performance-start-diagnostic-campaign",
+            ],
+            "result_command_ids": [
+                "performance-create-diagnostic-task",
+                "performance-validate-diagnostic-task",
+                "performance-approve-diagnostic-task",
+                "performance-start-diagnostic-campaign",
+            ],
+            "accepted_command_observed": True,
+            "task_handle_observed": True,
+            "task_handle_ids": [
+                "diagnostic-task-handle-performance",
+            ],
+            "handoff_observed": True,
+            "terminal_observed": True,
+            "executed_during_active_load": True,
+            "source_events_before_command": 2,
+            "source_events_after_command": 2,
+            "observed_before_load": True,
+            "observed_after_load": True,
+            "task_lifecycle": "completed",
+            "identity_graph": [
+                "performance-create-diagnostic-task",
+                "performance-validate-diagnostic-task",
+                "performance-approve-diagnostic-task",
+                "performance-start-diagnostic-campaign",
+                "diagnostic-task-performance",
+                "diagnostic-task-handle-performance",
+                "formal-diagnostic-campaign-performance",
+                "campaign-node-performance",
+                "campaign-attempt-performance",
+                "strategy-run-performance",
+                "diagnostic-evidence-package-performance",
+                "reproduction-manifest-performance",
+            ],
+        },
         "terminal": {
             "phase": "completed",
             "source_revision": 1_201,
@@ -476,6 +530,12 @@ def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
             "hardware terminal revision was not observed",
         ),
         (
+            lambda report: report["wave2_diagnostic_tasks"].update(
+                task_handle_observed=False
+            ),
+            "hardware Wave 2 TaskHandle observation is incomplete",
+        ),
+        (
             lambda report: report["terminal"].update(visible_ms=100.001),
             "hardware terminal visibility exceeds 100.0 ms: 100.001 ms",
         ),
@@ -647,6 +707,77 @@ def test_certification_requires_two_independent_lanes_and_the_safety_gate():
         "hardware and software real V1 probes do not identify the "
         "same persisted workload"
     ) in mismatched.failures
+
+
+def test_performance_certification_rejects_mismatched_wave2_workloads():
+    hardware = _passing_lane_report("hardware")
+    software = _passing_lane_report("software")
+    wave2 = software["wave2_diagnostic_tasks"]
+    identity_graph = wave2["identity_graph"]
+    identity_graph[-1] = "different-reproduction-manifest-performance"
+
+    certification = certify_performance_evidence(
+        hardware,
+        software,
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert (
+        "hardware and software Wave 2 probes do not identify the "
+        "same Diagnostic Task workload"
+    ) in certification.failures
+
+
+def test_performance_certification_rejects_schema1_without_wave2_load():
+    hardware = _passing_lane_report("hardware")
+    software = _passing_lane_report("software")
+    for report in (hardware, software):
+        report["schema_version"] = 1
+        del report["production_path"]
+        del report["wave2_diagnostic_tasks"]
+
+    certification = certify_performance_evidence(
+        hardware,
+        software,
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert "hardware lane schema version is invalid" in certification.failures
+    assert (
+        "hardware Wave 2 TaskHandle observation is incomplete"
+        in certification.failures
+    )
+    assert "software lane schema version is invalid" in certification.failures
+
+
+def test_performance_certification_blocks_malformed_wave2_sequence():
+    hardware = _passing_lane_report("hardware")
+    software = _passing_lane_report("software")
+    hardware["wave2_diagnostic_tasks"]["accepted_command_ids"] = 7
+
+    certification = certify_performance_evidence(
+        hardware,
+        software,
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert (
+        "hardware Wave 2 TaskHandle observation is incomplete"
+        in certification.failures
+    )
+    assert (
+        "hardware and software Wave 2 probes do not identify the "
+        "same Diagnostic Task workload"
+    ) in certification.failures
 
 
 @pytest.mark.parametrize("identity_field", REAL_V1_IDENTITY_FIELDS)

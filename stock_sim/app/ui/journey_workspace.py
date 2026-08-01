@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
 from math import ceil
 from pathlib import Path
 from threading import Lock
 from time import monotonic_ns
-from typing import Callable
+from typing import cast
+from uuid import uuid4
 
 from PySide6.QtCore import (
     Property,
@@ -24,21 +26,52 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QWidget
 
 from app.features import (
+    ApproveDiagnosticTaskConfiguration,
+    ApprovedScenarioRecipeId,
+    CampaignNodeTarget,
+    CancelDiagnosticTarget,
     CancelDiagnosticTask,
     CandidateEvidence,
+    CreateDiagnosticTask,
+    DiagnosticActorId,
+    DiagnosticCampaignCaseSelection,
+    DiagnosticCampaignLayer,
+    DiagnosticCampaignNodeHandoff,
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
+    DiagnosticComparisonRole,
+    DiagnosticStrategySelection,
+    DiagnosticTaskConfiguration,
+    DiagnosticTaskLifecycle,
+    DiagnosticTasksCommandResult,
+    DiagnosticTasksContext,
+    DiagnosticTasksFeature,
+    DiagnosticTasksViewState,
+    DiagnosticTaskTarget,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsFeature,
+    EvidenceAndFindingsSelection,
     EvidenceAndFindingsSubscription,
     EvidenceAndFindingsViewState,
     EvidenceCoverage,
     EvidenceDimension,
+    FormalDiagnosticCampaignTarget,
+    MarketScenarioId,
+    PauseDiagnosticTarget,
     PauseDiagnosticTask,
+    ResumeDiagnosticTarget,
     ResumeDiagnosticTask,
+    RetryFailedCampaignNode,
+    ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
     RunMonitoringFeature,
+    RunMonitoringSelection,
     RunMonitoringViewState,
+    StartFormalDiagnosticCampaign,
     Subscription,
+    ValidateDiagnosticTaskConfiguration,
 )
+
 from .accessibility import (
     AccessibilityPreferences,
     AccessibilitySettingsQtAdapter,
@@ -54,7 +87,6 @@ from .evidence_chart import (
     advance_evidence_chart_presentation_revision,
     build_evidence_chart_presentation,
 )
-
 
 _QML_ROOT = Path(__file__).resolve().parent / "qml"
 _MOUNT_GENERATIONS = count(1)
@@ -73,6 +105,1418 @@ class ViewMountGenerationId:
 def _next_mount_generation() -> ViewMountGenerationId:
     with _MOUNT_GENERATION_LOCK:
         return ViewMountGenerationId(next(_MOUNT_GENERATIONS))
+
+
+class DiagnosticTasksQtAdapter(QObject):
+    """Qt-only projection of the typed Diagnostic Tasks Feature Interface."""
+
+    stateChanged = Signal()
+    announcementChanged = Signal()
+    deliveryRequested = Signal(int, object)
+    campaignHandoffReady = Signal(object)
+    evidenceHandoffReady = Signal(object)
+
+    def __init__(
+        self,
+        feature: DiagnosticTasksFeature,
+        *,
+        context: DiagnosticTasksContext | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._feature = feature
+        self._context = context or DiagnosticTasksContext.workspace()
+        self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._last_emitted_monitoring_selection: tuple[str, str] | None = None
+        self._last_emitted_evidence_selection: (
+            tuple[str, str, str, str, str, str] | None
+        ) = None
+        self._create_status = (
+            "Create is ready when all displayed authoritative inputs are ready."
+        )
+        self._command_status = (
+            "Correction, validation, and exact-revision approval are ready "
+            "when their typed capabilities are available."
+        )
+        self._last_accessibility_announcement_key = (
+            self._accessibility_announcement_key()
+        )
+        self._closed = False
+        self.stateChanged.connect(
+            self._emit_accessibility_announcement_if_changed
+        )
+        self.deliveryRequested.connect(
+            self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subscription: Subscription | None = feature.subscribe(
+            self._context,
+            self._queue_state,
+        )
+
+    def _queue_state(self, state: DiagnosticTasksViewState) -> None:
+        if not self._closed:
+            self.deliveryRequested.emit(self._mount_generation.value, state)
+
+    @Slot(int, object)
+    def _accept_state(
+        self,
+        mount_generation: int,
+        state: DiagnosticTasksViewState,
+    ) -> None:
+        if self._closed or mount_generation != self._mount_generation.value:
+            return
+        if state.context != self._context or state.revision <= self._state.revision:
+            return
+        self._state = state
+        self.stateChanged.emit()
+        self._emit_monitoring_handoff_if_ready()
+        self._emit_evidence_handoff_if_ready()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def presentationState(self) -> str:  # noqa: N802
+        return str(self._state.presentation.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshness(self) -> str:
+        return str(self._state.freshness.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusText(self) -> str:  # noqa: N802
+        error = self._state.error
+        details = (
+            f"{self.freshness} · {self.presentationState} · "
+            f"{self._state.completeness.value}"
+        )
+        return (
+            details
+            if error is None
+            else (
+                f"{details} · structured error {error.code}: "
+                f"{error.message} · retryable "
+                f"{str(error.retryable).lower()}"
+            )
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def stateTitle(self) -> str:  # noqa: N802
+        presentation_state = str(self._state.presentation.value)
+        return {
+            "loading": "Loading authoritative inputs",
+            "empty": "No authoritative inputs are registered",
+            "ready": "Authoritative inputs are ready",
+            "degraded": "Showing last reliable authoritative inputs",
+            "failed": "Authoritative input read failed",
+            "input_unavailable": "Required authoritative inputs are unavailable",
+        }[presentation_state]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def revisionText(self) -> str:  # noqa: N802
+        return f"r{self._state.revision}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceText(self) -> str:  # noqa: N802
+        return (
+            f"{self._state.source.identity} · "
+            f"g{self._state.source.generation.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def strategyCatalogText(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.strategies:
+            return "No authoritative Strategy Under Test is available."
+        return "\n".join(
+            (
+                f"{item.strategy_id.value}@{item.strategy_version} · "
+                f"{'required fixed input' if item.required else 'optional input'} · "
+                f"compatibility {item.compatibility_surface_version} "
+                f"{item.compatibility_manifest_hash} · "
+                f"module {item.strategy_module} · "
+                f"guardrail {item.guardrail_profile_id.value}@"
+                f"{item.guardrail_profile_version} · thresholds "
+                + ", ".join(
+                    f"{threshold.metric_name} {threshold.operator} {threshold.value}"
+                    for threshold in item.guardrail_thresholds
+                )
+            )
+            for item in inventory.strategies
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def recipeCatalogText(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.approved_recipes:
+            return "No approved Scenario Recipe version is available."
+        return "\n".join(
+            (
+                f"{item.recipe_id} · {item.recipe_version_id.value} · "
+                f"{item.content_hash} · schema {item.schema_version} · "
+                f"catalog {item.transformation_catalog_version}"
+            )
+            for item in inventory.approved_recipes
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def marketScenarioCatalogText(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.market_scenarios:
+            return "No materialized Market Scenario is available."
+        return "\n".join(
+            (
+                f"{item.market_scenario_id.value} · {item.layer.value} · "
+                f"case {item.campaign_case_id.value} · "
+                f"source {item.historical_segment_id.value} "
+                f"{item.historical_segment_content_hash} · "
+                f"snapshot {item.source_snapshot_id.value} · "
+                f"seed {item.materialization_seed} · "
+                f"materializer {item.materialization_provenance.expander_version} "
+                f"{item.materialization_provenance.source_resolution}->"
+                f"{item.materialization_provenance.runtime_resolution} · "
+                f"numeric tolerance "
+                f"{item.materialization_provenance.numeric_tolerance} · "
+                f"normalization "
+                f"{item.materialization_provenance.normalization_provenance} · "
+                f"reconstructed "
+                f"{str(item.materialization_provenance.reconstructed).lower()} · "
+                f"transformations {item.transformation_catalog_version}/"
+                + (
+                    ", ".join(
+                        f"{transformation.transformation_id} "
+                        f"[{transformation.family}]@"
+                        f"{transformation.implementation_version} "
+                        + (
+                            "("
+                            + ", ".join(
+                                f"{parameter.name}={parameter.value}"
+                                for parameter in transformation.parameters
+                            )
+                            + ")"
+                            if transformation.parameters
+                            else "(no parameters)"
+                        )
+                        for transformation in item.applied_transformations
+                    )
+                    or "baseline (no applied transformations)"
+                )
+                + " · "
+                f"market rules {item.market_rule_profile_version} · "
+                f"comparison {item.comparison_requirement} · "
+                "execution policy "
+                + ", ".join(
+                    f"{value.name}={value.value}@{value.version} "
+                    f"from {value.source}"
+                    for value in item.execution_policy_values
+                )
+            )
+            for item in inventory.market_scenarios
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def reproductionManifestStatus(self) -> str:  # noqa: N802
+        return str(self._state.reproduction_manifest_availability.value)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def blockingReasonsText(self) -> str:  # noqa: N802
+        if not self._state.blocking_reasons:
+            return "No blocking reason."
+        return "\n".join(
+            f"{reason.code.value}: {reason.message}"
+            for reason in self._state.blocking_reasons
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCreate(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_create)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canRevise(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_revise)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canValidate(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_validate)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canApprove(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_approve)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canStartCampaign(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_start_campaign)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canPauseTask(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_pause)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResumeTask(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_resume)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCancelTask(self) -> bool:  # noqa: N802
+        return bool(self._state.capabilities.can_cancel)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canPauseCampaign(self) -> bool:  # noqa: N802
+        task = self._state.task
+        return bool(
+            task is not None
+            and task.handoff.campaign_id is not None
+            and task.handoff.campaign_lifecycle
+            is DiagnosticTaskLifecycle.RUNNING
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResumeCampaign(self) -> bool:  # noqa: N802
+        task = self._state.task
+        return bool(
+            task is not None
+            and task.handoff.campaign_id is not None
+            and task.handoff.campaign_lifecycle
+            is DiagnosticTaskLifecycle.PAUSED
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCancelCampaign(self) -> bool:  # noqa: N802
+        task = self._state.task
+        return bool(
+            task is not None
+            and task.handoff.campaign_id is not None
+            and task.handoff.campaign_lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.RESUMING,
+            }
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canPauseCampaignNode(self) -> bool:  # noqa: N802
+        task = self._state.task
+        node = self._actionable_campaign_node()
+        return bool(
+            task is not None
+            and task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+            and node is not None
+            and node.lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+            }
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResumeCampaignNode(self) -> bool:  # noqa: N802
+        task = self._state.task
+        node = self._actionable_campaign_node()
+        return bool(
+            task is not None
+            and task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+            and node is not None
+            and node.lifecycle is DiagnosticTaskLifecycle.PAUSED
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCancelCampaignNode(self) -> bool:  # noqa: N802
+        node = self._actionable_campaign_node()
+        return bool(
+            node is not None
+            and node.lifecycle
+            in {
+                DiagnosticTaskLifecycle.QUEUED,
+                DiagnosticTaskLifecycle.RUNNING,
+                DiagnosticTaskLifecycle.PAUSED,
+                DiagnosticTaskLifecycle.RESUMING,
+            }
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canRetryFailedCampaignNode(self) -> bool:  # noqa: N802
+        return bool(
+            self._state.capabilities.can_retry_failed_node
+            and self._retryable_campaign_node() is not None
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def taskStatusText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None:
+            return "No durable Diagnostic Task has been created."
+        return (
+            f"{task.task_id.value} · r{task.revision} · "
+            f"{task.lifecycle.value} · configuration "
+            f"{task.configuration.content_identity.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def taskHandleText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or not task.task_handles:
+            return "No persistent TaskHandle is available."
+        return "\n".join(
+            (
+                f"{handle.identity.value} · {handle.phase.value} · "
+                f"{handle.progress:.0%} · "
+                f"{handle.result or 'pending'} · "
+                f"cancelable {str(handle.cancelable).lower()}"
+            )
+            for handle in task.task_handles
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def createStatusText(self) -> str:  # noqa: N802
+        return self._create_status
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def validationStatusText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None:
+            return "No Diagnostic Task revision is available for validation."
+        validation = task.validation
+        if validation.validation_id is None:
+            return f"Task r{task.revision} has not been validated."
+        findings = (
+            "no findings"
+            if not validation.findings
+            else "; ".join(
+                f"{item.severity.value} {item.code.value}: "
+                f"{item.safe_explanation}"
+                for item in validation.findings
+            )
+        )
+        return (
+            f"{validation.state.value} · validation "
+            f"{validation.validation_id.value}@"
+            f"{validation.validation_revision} · task "
+            f"r{validation.validated_revision} · {findings}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def approvalStatusText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or task.approval is None:
+            return "No exact-revision approval is active."
+        approval = task.approval
+        return (
+            f"{approval.approval_id.value} · task "
+            f"r{approval.approved_revision} · validation "
+            f"{approval.validation_id.value}@"
+            f"{approval.validation_revision} · actor "
+            f"{approval.actor_identity.value} · "
+            f"{approval.approved_at.isoformat()}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def campaignHandoffText(self) -> str:  # noqa: N802
+        context = self.monitoring_context()
+        if context is None or context.selection is None:
+            return "No Formal Diagnostic Campaign has been handed off."
+        selection = context.selection
+        return (
+            f"Campaign {selection.campaign_id.value} · "
+            f"Run {selection.run_id.value if selection.run_id is not None else 'pending'}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def evidenceHandoffText(self) -> str:
+        task = self._state.task
+        if task is None or task.handoff.campaign_id is None:
+            return "No Evidence and Findings handoff is available."
+        handoff = task.handoff
+        run_lines = tuple(
+            (
+                f"Campaign Case {node.selected_campaign_case_id.value}; "
+                f"Market Scenario {node.market_scenario_id.value}; "
+                f"attempt {attempt.attempt_id.value}; "
+                f"Run {run.run_id.value}; "
+                f"Strategy Under Test {run.strategy_id.value}; "
+                "Reproduction Manifest "
+                f"{run.reproduction_manifest_id.value if run.reproduction_manifest_id is not None else 'not yet available'}"
+            )
+            for node in handoff.campaign_nodes
+            for attempt in node.attempts
+            if attempt.attempt_id == node.active_attempt_id
+            for run in attempt.runs
+        )
+        return " · ".join(
+            (
+                (
+                    f"Evidence Package "
+                    f"{handoff.evidence_package_id.value if handoff.evidence_package_id is not None else 'not yet available'}"
+                ),
+                (
+                    f"Top Reproduction Manifest "
+                    f"{handoff.reproduction_manifest_id.value if handoff.reproduction_manifest_id is not None else 'not yet available'}"
+                ),
+                *run_lines,
+            )
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def campaignLifecycleText(self) -> str:  # noqa: N802
+        task = self._state.task
+        if task is None or task.handoff.campaign_id is None:
+            return "No Formal Diagnostic Campaign lifecycle is available."
+        lifecycle = task.handoff.campaign_lifecycle
+        revision = task.handoff.campaign_revision
+        return (
+            f"{task.handoff.campaign_id.value} · "
+            f"r{revision if revision is not None else 'unknown'} · "
+            f"{lifecycle.value if lifecycle is not None else 'unknown'}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def campaignNodeLifecycleText(self) -> str:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None:
+            return "No actionable Campaign node is available."
+        return (
+            f"{node.campaign_node_id.value} · r{node.revision} · "
+            f"{node.lifecycle.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def failedNodeRetryText(self) -> str:  # noqa: N802
+        node = self._retry_history_campaign_node()
+        if node is None:
+            return "No failed Campaign attempt history is available."
+        attempts = "; ".join(
+            (
+                f"attempt {attempt.attempt_number} "
+                f"{attempt.attempt_id.value} · {attempt.lifecycle.value} · "
+                "predecessor "
+                f"{attempt.predecessor_attempt_id.value if attempt.predecessor_attempt_id is not None else 'none'} · "
+                "TaskHandle "
+                f"{attempt.task_handle_id.value if attempt.task_handle_id is not None else 'none'} · "
+                "failure "
+                f"{attempt.failure.code + ': ' + attempt.failure.message if attempt.failure is not None else 'none'}"
+            )
+            for attempt in node.attempts
+        )
+        return (
+            f"Node {node.campaign_node_id.value} · r{node.revision} · "
+            f"{attempts}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def commandStatusText(self) -> str:  # noqa: N802
+        return self._command_status
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def capabilitiesText(self) -> str:
+        capabilities = (
+            ("create", self.canCreate),
+            ("correct", self.canRevise),
+            ("validate", self.canValidate),
+            ("approve", self.canApprove),
+            ("start Campaign", self.canStartCampaign),
+            (
+                "pause",
+                self.canPauseTask
+                or self.canPauseCampaign
+                or self.canPauseCampaignNode,
+            ),
+            (
+                "resume",
+                self.canResumeTask
+                or self.canResumeCampaign
+                or self.canResumeCampaignNode,
+            ),
+            (
+                "cancel diagnostic target",
+                self.canCancelTask
+                or self.canCancelCampaign
+                or self.canCancelCampaignNode,
+            ),
+            ("retry failed node", self.canRetryFailedCampaignNode),
+        )
+        return "Capabilities · " + " · ".join(
+            f"{name} {'available' if available else 'unavailable'}"
+            for name, available in capabilities
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def accessibilitySummaryText(self) -> str:
+        error = self._state.error
+        manifest_id = self._state.reproduction_manifest_id
+        return ". ".join(
+            (
+                (
+                    f"Diagnostic Tasks {self.presentationState}; "
+                    f"freshness {self.freshness}; "
+                    f"view revision {self.revisionText}; "
+                    f"source {self.sourceText}"
+                ),
+                cast(str, self.taskStatusText),
+                f"Validation {self.validationStatusText}",
+                f"Approval {self.approvalStatusText}",
+                f"TaskHandle {self.taskHandleText}",
+                cast(str, self.campaignHandoffText),
+                cast(str, self.evidenceHandoffText),
+                cast(str, self.campaignLifecycleText),
+                cast(str, self.campaignNodeLifecycleText),
+                (
+                    "Reproduction Manifest "
+                    f"{self.reproductionManifestStatus} · "
+                    f"{manifest_id.value if manifest_id is not None else 'no identity'}"
+                ),
+                cast(str, self.capabilitiesText),
+                (
+                    "No structured error."
+                    if error is None
+                    else (
+                        f"Structured error {error.code}: {error.message}; "
+                        f"retryable {str(error.retryable).lower()}."
+                    )
+                ),
+            )
+        )
+
+    @Property(str, notify=announcementChanged)  # type: ignore[arg-type]
+    def accessibilityAnnouncementText(self) -> str:
+        return self._build_accessibility_announcement_text()
+
+    def _build_accessibility_announcement_text(self) -> str:
+        task = self._state.task
+        error = self._state.error
+        lifecycle = (
+            "No Diagnostic Task"
+            if task is None
+            else f"Diagnostic Task {task.lifecycle.value}"
+        )
+        validation = (
+            "validation unavailable"
+            if task is None
+            else f"validation {task.validation.state.value}"
+        )
+        approval = (
+            "approval unavailable"
+            if task is None or task.approval is None
+            else (
+                "approval bound to exact task revision "
+                f"r{task.approval.approved_revision}"
+            )
+        )
+        latest_handle = (
+            None
+            if task is None or not task.task_handles
+            else task.task_handles[-1]
+        )
+        handle = (
+            "no TaskHandle"
+            if latest_handle is None
+            else (
+                f"TaskHandle {latest_handle.identity.value} "
+                f"{latest_handle.phase.value} "
+                f"{latest_handle.progress:.0%}"
+            )
+        )
+        evidence = (
+            "Evidence "
+            + cast(str, self.reproductionManifestStatus).replace("_", " ")
+        )
+        error_text = (
+            ""
+            if error is None
+            else f"; structured error {error.code}: {error.message}"
+        )
+        return (
+            f"Diagnostic Tasks update; freshness {self.freshness}; "
+            f"{lifecycle}; {validation}; {approval}; {handle}; "
+            f"{evidence}; {self.commandStatusText}{error_text}"
+        )
+
+    def _accessibility_announcement_key(self) -> tuple[object, ...]:
+        task = self._state.task
+        error = self._state.error
+        latest_handle = (
+            None
+            if task is None or not task.task_handles
+            else task.task_handles[-1]
+        )
+        validation = None if task is None else task.validation
+        approval = None if task is None else task.approval
+        handoff = None if task is None else task.handoff
+        node_states = (
+            ()
+            if handoff is None
+            else tuple(
+                (
+                    node.campaign_node_id.value,
+                    node.lifecycle.value,
+                    (
+                        None
+                        if node.active_attempt_id is None
+                        else node.active_attempt_id.value
+                    ),
+                    tuple(
+                        (
+                            attempt.attempt_id.value,
+                            attempt.lifecycle.value,
+                        )
+                        for attempt in node.attempts
+                        if attempt.attempt_id == node.active_attempt_id
+                    ),
+                )
+                for node in handoff.campaign_nodes
+            )
+        )
+        return (
+            self._state.freshness.value,
+            self._state.presentation.value,
+            None if task is None else task.task_id.value,
+            None if task is None else task.lifecycle.value,
+            None if validation is None else validation.state.value,
+            (
+                None
+                if validation is None or validation.validation_id is None
+                else validation.validation_id.value
+            ),
+            None if approval is None else approval.approved_revision,
+            (
+                None
+                if latest_handle is None
+                else latest_handle.identity.value
+            ),
+            None if latest_handle is None else latest_handle.phase.value,
+            None if latest_handle is None else latest_handle.result,
+            (
+                None
+                if handoff is None or handoff.campaign_lifecycle is None
+                else handoff.campaign_lifecycle.value
+            ),
+            node_states,
+            self._state.reproduction_manifest_availability.value,
+            None if error is None else error.code,
+            self._create_status,
+            self._command_status,
+        )
+
+    @Slot()
+    def _emit_accessibility_announcement_if_changed(self) -> None:
+        key = self._accessibility_announcement_key()
+        if key == self._last_accessibility_announcement_key:
+            return
+        self._last_accessibility_announcement_key = key
+        self.announcementChanged.emit()
+
+    @Slot()
+    def createTask(self) -> None:  # noqa: N802
+        configuration = self._configuration_from_inventory(
+            include_all_cases=False
+        )
+        if configuration is None or not self.canCreate:
+            self._create_status = (
+                "Diagnostic Task creation requires all authoritative inputs."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.create_diagnostic_task(
+            CreateDiagnosticTask(
+                command_id=DiagnosticCommandId(
+                    f"create-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-create-{command_identity}"
+                ),
+                configuration=configuration,
+            )
+        )
+        self._create_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot()
+    def reviseTask(self) -> None:  # noqa: N802
+        task = self._state.task
+        configuration = self._configuration_from_inventory(
+            include_all_cases=True
+        )
+        if task is None or configuration is None or not self.canRevise:
+            self._command_status = (
+                "Configuration correction is unavailable for this task state."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.revise_configuration(
+            ReviseDiagnosticTaskConfiguration(
+                command_id=DiagnosticCommandId(
+                    f"revise-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-revise-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                configuration=configuration,
+            )
+        )
+        self._command_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot()
+    def validateTask(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canValidate:
+            self._command_status = (
+                "Validation is unavailable for this task state."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.validate_configuration(
+            ValidateDiagnosticTaskConfiguration(
+                command_id=DiagnosticCommandId(
+                    f"validate-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-validate-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+            )
+        )
+        self._command_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot(str)
+    def approveTask(self, actor_identity: str) -> None:  # noqa: N802
+        task = self._state.task
+        actor = actor_identity.strip()
+        if task is None or not self.canApprove or not actor:
+            self._command_status = (
+                "Approval requires a valid exact revision and an actor identity."
+            )
+            self.stateChanged.emit()
+            return
+        validation = task.validation
+        if (
+            validation.validation_id is None
+            or validation.validation_revision is None
+            or validation.validated_revision is None
+            or validation.configuration_content_identity is None
+        ):
+            self._command_status = (
+                "Approval requires a valid exact revision."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.approve_configuration(
+            ApproveDiagnosticTaskConfiguration(
+                command_id=DiagnosticCommandId(
+                    f"approve-diagnostic-task-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-task-approve-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                validation_id=validation.validation_id,
+                validation_revision=validation.validation_revision,
+                validated_revision=validation.validated_revision,
+                configuration_content_id=(
+                    validation.configuration_content_identity
+                ),
+                actor_id=DiagnosticActorId(actor),
+            )
+        )
+        self._command_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+
+    @Slot()
+    def startCampaign(self) -> None:  # noqa: N802
+        task = self._state.task
+        approval = None if task is None else task.approval
+        if (
+            task is None
+            or approval is None
+            or not self.canStartCampaign
+            or approval.approved_revision != task.revision
+        ):
+            self._command_status = (
+                "Campaign start requires the exact approved task revision."
+            )
+            self.stateChanged.emit()
+            return
+        command_identity = uuid4().hex
+        result = self._feature.start_formal_diagnostic_campaign(
+            StartFormalDiagnosticCampaign(
+                command_id=DiagnosticCommandId(
+                    f"start-diagnostic-campaign-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"diagnostic-campaign-start-{command_identity}"
+                ),
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                approved_revision=approval.approved_revision,
+            )
+        )
+        self._command_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+        self._emit_monitoring_handoff_if_ready()
+
+    @Slot()
+    def pauseDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canPauseTask:
+            self._lifecycle_unavailable("Task pause")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.pause_diagnostic_target(
+                PauseDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"pause-diagnostic-task-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-task-pause-{command_identity}"
+                    ),
+                    target=DiagnosticTaskTarget(task.task_id),
+                    expected_revision=task.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def resumeDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canResumeTask:
+            self._lifecycle_unavailable("Task resume")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.resume_diagnostic_target(
+                ResumeDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"resume-diagnostic-task-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-task-resume-{command_identity}"
+                    ),
+                    target=DiagnosticTaskTarget(task.task_id),
+                    expected_revision=task.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def cancelDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if task is None or not self.canCancelTask:
+            self._lifecycle_unavailable("Task cancel")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.cancel_diagnostic_target(
+                CancelDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"cancel-diagnostic-task-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-task-cancel-{command_identity}"
+                    ),
+                    target=DiagnosticTaskTarget(task.task_id),
+                    expected_revision=task.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def pauseFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if (
+            task is None
+            or task.handoff.campaign_id is None
+            or task.handoff.campaign_revision is None
+            or not self.canPauseCampaign
+        ):
+            self._lifecycle_unavailable("Campaign pause")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.pause_diagnostic_target(
+                PauseDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"pause-diagnostic-campaign-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-campaign-pause-{command_identity}"
+                    ),
+                    target=FormalDiagnosticCampaignTarget(
+                        task.handoff.campaign_id
+                    ),
+                    expected_revision=task.handoff.campaign_revision,
+                )
+            )
+        )
+
+    @Slot()
+    def resumeFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if (
+            task is None
+            or task.handoff.campaign_id is None
+            or task.handoff.campaign_revision is None
+            or not self.canResumeCampaign
+        ):
+            self._lifecycle_unavailable("Campaign resume")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.resume_diagnostic_target(
+                ResumeDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"resume-diagnostic-campaign-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-campaign-resume-{command_identity}"
+                    ),
+                    target=FormalDiagnosticCampaignTarget(
+                        task.handoff.campaign_id
+                    ),
+                    expected_revision=task.handoff.campaign_revision,
+                )
+            )
+        )
+
+    @Slot()
+    def cancelFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        task = self._state.task
+        if (
+            task is None
+            or task.handoff.campaign_id is None
+            or task.handoff.campaign_revision is None
+            or not self.canCancelCampaign
+        ):
+            self._lifecycle_unavailable("Campaign cancel")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.cancel_diagnostic_target(
+                CancelDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"cancel-diagnostic-campaign-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"diagnostic-campaign-cancel-{command_identity}"
+                    ),
+                    target=FormalDiagnosticCampaignTarget(
+                        task.handoff.campaign_id
+                    ),
+                    expected_revision=task.handoff.campaign_revision,
+                )
+            )
+        )
+
+    @Slot()
+    def pauseCampaignNodeTarget(self) -> None:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None or not self.canPauseCampaignNode:
+            self._lifecycle_unavailable("Campaign node pause")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.pause_diagnostic_target(
+                PauseDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"pause-campaign-node-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"campaign-node-pause-{command_identity}"
+                    ),
+                    target=CampaignNodeTarget(node.campaign_node_id),
+                    expected_revision=node.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def resumeCampaignNodeTarget(self) -> None:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None or not self.canResumeCampaignNode:
+            self._lifecycle_unavailable("Campaign node resume")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.resume_diagnostic_target(
+                ResumeDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"resume-campaign-node-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"campaign-node-resume-{command_identity}"
+                    ),
+                    target=CampaignNodeTarget(node.campaign_node_id),
+                    expected_revision=node.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def cancelCampaignNodeTarget(self) -> None:  # noqa: N802
+        node = self._actionable_campaign_node()
+        if node is None or not self.canCancelCampaignNode:
+            self._lifecycle_unavailable("Campaign node cancel")
+            return
+        command_identity = uuid4().hex
+        self._complete_lifecycle_command(
+            self._feature.cancel_diagnostic_target(
+                CancelDiagnosticTarget(
+                    command_id=DiagnosticCommandId(
+                        f"cancel-campaign-node-{command_identity}"
+                    ),
+                    idempotency_key=DiagnosticCommandIdempotencyKey(
+                        f"campaign-node-cancel-{command_identity}"
+                    ),
+                    target=CampaignNodeTarget(node.campaign_node_id),
+                    expected_revision=node.revision,
+                )
+            )
+        )
+
+    @Slot()
+    def retryFailedCampaignNode(self) -> None:  # noqa: N802
+        task = self._state.task
+        node = self._retryable_campaign_node()
+        attempt = (
+            None
+            if node is None or node.active_attempt_id is None
+            else next(
+                (
+                    candidate
+                    for candidate in node.attempts
+                    if candidate.attempt_id == node.active_attempt_id
+                ),
+                None,
+            )
+        )
+        if (
+            task is None
+            or node is None
+            or attempt is None
+            or not self.canRetryFailedCampaignNode
+        ):
+            self._lifecycle_unavailable("Failed Campaign node retry")
+            return
+        command_identity = uuid4().hex
+        result = self._feature.retry_failed_campaign_node(
+            RetryFailedCampaignNode(
+                command_id=DiagnosticCommandId(
+                    f"retry-failed-campaign-node-{command_identity}"
+                ),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    f"failed-campaign-node-retry-{command_identity}"
+                ),
+                task_id=task.task_id,
+                campaign_node_id=node.campaign_node_id,
+                failed_attempt_id=attempt.attempt_id,
+                expected_revision=node.revision,
+            )
+        )
+        self._command_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+
+    def _complete_lifecycle_command(
+        self,
+        result: DiagnosticTasksCommandResult,
+    ) -> None:
+        self._command_status = self._command_result_text(result)
+        self.refresh()
+        self.stateChanged.emit()
+
+    @staticmethod
+    def _command_result_text(
+        result: DiagnosticTasksCommandResult,
+    ) -> str:
+        reason = result.rejection_reason
+        if reason is None:
+            return result.message
+        current_revision = (
+            ""
+            if result.current_revision is None
+            else (
+                " Authoritative current revision "
+                f"r{result.current_revision}."
+            )
+        )
+        return (
+            f"{result.message} Rejection "
+            f"{reason.value.replace('_', ' ')}."
+            f"{current_revision}"
+        )
+
+    def _lifecycle_unavailable(self, operation: str) -> None:
+        self._command_status = (
+            f"{operation} is unavailable for the authoritative lifecycle."
+        )
+        self.stateChanged.emit()
+
+    def _actionable_campaign_node(
+        self,
+    ) -> DiagnosticCampaignNodeHandoff | None:
+        task = self._state.task
+        if task is None:
+            return None
+        terminal = {
+            DiagnosticTaskLifecycle.CANCELED,
+            DiagnosticTaskLifecycle.COMPLETED,
+            DiagnosticTaskLifecycle.FAILED,
+        }
+        return next(
+            (
+                node
+                for node in task.handoff.campaign_nodes
+                if node.lifecycle not in terminal
+            ),
+            next(iter(task.handoff.campaign_nodes), None),
+        )
+
+    def _retryable_campaign_node(
+        self,
+    ) -> DiagnosticCampaignNodeHandoff | None:
+        task = self._state.task
+        if task is None:
+            return None
+        return next(
+            (
+                node
+                for node in task.handoff.campaign_nodes
+                if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+                and node.active_attempt_id is not None
+                and bool(node.attempts)
+                and node.attempts[-1].attempt_id == node.active_attempt_id
+                and node.attempts[-1].lifecycle
+                is DiagnosticTaskLifecycle.FAILED
+            ),
+            None,
+        )
+
+    def _retry_history_campaign_node(
+        self,
+    ) -> DiagnosticCampaignNodeHandoff | None:
+        retryable = self._retryable_campaign_node()
+        if retryable is not None:
+            return retryable
+        task = self._state.task
+        if task is None:
+            return None
+        return next(
+            (
+                node
+                for node in task.handoff.campaign_nodes
+                if len(node.attempts) > 1
+                or any(attempt.failure is not None for attempt in node.attempts)
+            ),
+            None,
+        )
+
+    def monitoring_context(self) -> RunMonitoringContext | None:
+        task = self._state.task
+        if task is None:
+            return None
+        handoff = task.handoff
+        if handoff.campaign_id is None:
+            return None
+        for node in handoff.campaign_nodes:
+            active_attempt = next(
+                (
+                    attempt
+                    for attempt in node.attempts
+                    if attempt.attempt_id == node.active_attempt_id
+                ),
+                None,
+            )
+            if active_attempt is not None:
+                for run in active_attempt.runs:
+                    return RunMonitoringContext.for_run(
+                        RunMonitoringSelection(
+                            campaign_id=handoff.campaign_id,
+                            run_id=run.run_id,
+                        )
+                    )
+        return None
+
+    def evidence_context(self) -> EvidenceAndFindingsContext | None:
+        task = self._state.task
+        if task is None or not task.handoff.ready_for_evidence_and_findings:
+            return None
+        handoff = task.handoff
+        if handoff.campaign_id is None:
+            return None
+        selected_cases = {
+            item.campaign_case_id: item
+            for item in handoff.selected_cases
+        }
+        for node in handoff.campaign_nodes:
+            selected_case = selected_cases.get(node.selected_campaign_case_id)
+            if selected_case is None or node.active_attempt_id is None:
+                continue
+            active_attempt = next(
+                (
+                    item
+                    for item in node.attempts
+                    if item.attempt_id == node.active_attempt_id
+                ),
+                None,
+            )
+            if active_attempt is None:
+                continue
+            for run in active_attempt.runs:
+                if run.reproduction_manifest_id is None:
+                    continue
+                return EvidenceAndFindingsContext.for_selection(
+                    EvidenceAndFindingsSelection(
+                        campaign_id=handoff.campaign_id,
+                        run_id=run.run_id,
+                        strategy_id=run.strategy_id,
+                        market_scenario_id=MarketScenarioId(
+                            node.selected_campaign_case_id.value
+                        ),
+                        approved_recipe_id=ApprovedScenarioRecipeId(
+                            selected_case.recipe_version_id.value
+                        ),
+                        reproduction_manifest_id=(
+                            run.reproduction_manifest_id
+                        ),
+                    )
+                )
+        return None
+
+    def _emit_monitoring_handoff_if_ready(self) -> None:
+        context = self.monitoring_context()
+        if context is None or context.selection is None:
+            return
+        selection = context.selection
+        if selection.run_id is None:
+            return
+        identity = (selection.campaign_id.value, selection.run_id.value)
+        if identity == self._last_emitted_monitoring_selection:
+            return
+        self._last_emitted_monitoring_selection = identity
+        self.campaignHandoffReady.emit(context)
+
+    def _emit_evidence_handoff_if_ready(self) -> None:
+        context = self.evidence_context()
+        if context is None or context.selection is None:
+            return
+        selection = context.selection
+        if (
+            selection.strategy_id is None
+            or selection.market_scenario_id is None
+            or selection.approved_recipe_id is None
+            or selection.reproduction_manifest_id is None
+        ):
+            return
+        identity = (
+            selection.campaign_id.value,
+            selection.run_id.value,
+            selection.strategy_id.value,
+            selection.market_scenario_id.value,
+            selection.approved_recipe_id.value,
+            selection.reproduction_manifest_id.value,
+        )
+        if identity == self._last_emitted_evidence_selection:
+            return
+        self._last_emitted_evidence_selection = identity
+        self.evidenceHandoffReady.emit(context)
+
+    def _configuration_from_inventory(
+        self,
+        *,
+        include_all_cases: bool,
+    ) -> DiagnosticTaskConfiguration | None:
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not inventory.market_scenarios:
+            return None
+        recipe_by_id = {
+            item.recipe_version_id: item
+            for item in inventory.approved_recipes
+        }
+        baseline_case_id = next(
+            (
+                item.campaign_case_id
+                for item in inventory.market_scenarios
+                if item.layer is DiagnosticCampaignLayer.BASELINE
+            ),
+            None,
+        )
+        if baseline_case_id is None:
+            return None
+        selected_scenarios = tuple(
+            item
+            for item in inventory.market_scenarios
+            if include_all_cases
+            or item.layer is DiagnosticCampaignLayer.BASELINE
+        )
+        return DiagnosticTaskConfiguration.create(
+            strategy_selections=tuple(
+                DiagnosticStrategySelection(
+                    strategy_id=item.strategy_id,
+                    strategy_version=item.strategy_version,
+                    compatibility_manifest_hash=(
+                        item.compatibility_manifest_hash
+                    ),
+                    guardrail_profile_id=item.guardrail_profile_id,
+                    guardrail_profile_version=item.guardrail_profile_version,
+                )
+                for item in inventory.strategies
+            ),
+            campaign_case_selections=tuple(
+                DiagnosticCampaignCaseSelection(
+                    layer=item.layer,
+                    recipe_version_id=item.recipe_version_id,
+                    recipe_content_hash=recipe_by_id[
+                        item.recipe_version_id
+                    ].content_hash,
+                    market_scenario_id=item.market_scenario_id,
+                    campaign_case_id=item.campaign_case_id,
+                    comparison_role=(
+                        DiagnosticComparisonRole.CONTROL
+                        if item.layer is DiagnosticCampaignLayer.BASELINE
+                        else DiagnosticComparisonRole.COMPARE_TO_BASELINE
+                    ),
+                    baseline_campaign_case_id=(
+                        None
+                        if item.layer is DiagnosticCampaignLayer.BASELINE
+                        else baseline_case_id
+                    ),
+                    execution_policy_values=item.execution_policy_values,
+                )
+                for item in selected_scenarios
+            ),
+        )
+
+    @Slot()
+    def refresh(self) -> None:
+        self._accept_state(
+            self._mount_generation.value,
+            self._feature.snapshot(self._context),
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        try:
+            self.deliveryRequested.disconnect(self._accept_state)
+        except (RuntimeError, TypeError):
+            pass
 
 
 class RunMonitoringQtAdapter(QObject):
@@ -127,6 +1571,24 @@ class RunMonitoringQtAdapter(QObject):
         self._state = state
         self.stateChanged.emit()
 
+    def select_context(self, context: RunMonitoringContext) -> None:
+        if self._closed:
+            return
+        if context == self._context:
+            return
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._mount_generation = _next_mount_generation()
+        self._context = context
+        self._state = self._feature.snapshot(context)
+        self._subscription = self._feature.subscribe(
+            context,
+            self._queue_state,
+        )
+        self.stateChanged.emit()
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802 - QML property convention
         return str(self._state.presentation.value)
@@ -177,11 +1639,11 @@ class RunMonitoringQtAdapter(QObject):
     def sourceGenerationText(self) -> str:  # noqa: N802
         return f"g{self._state.source.generation.value}"
 
-    @Property(int, constant=True)
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def mountGeneration(self) -> int:  # noqa: N802
         return self._mount_generation.value
 
-    @Property(str, constant=True)
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def mountGenerationText(self) -> str:  # noqa: N802
         return f"m{self._mount_generation.value}"
 
@@ -535,6 +1997,47 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self.stateChanged.emit()
         self.localStateChanged.emit()
 
+    def select_context(self, context: EvidenceAndFindingsContext) -> None:
+        if self._closed or context == self._context:
+            return
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._mount_generation = _next_mount_generation()
+        self._context = context
+        self._state = self._feature.snapshot(context)
+        self._selected_candidate = ""
+        self._selected_finding = ""
+        self._selected_point_source_index = None
+        self._selected_overlay = ""
+        self._selected_breakpoint = ""
+        self._repair_local_selection()
+        self._chart_timer.stop()
+        self._pending_chart_presentations.clear()
+        self._chart_frame_gate = EvidenceChartFrameGate(
+            max_frames_per_second=20
+        )
+        self._chart_presentation = self._build_chart_presentation()
+        self._chart_frame_sequence += 1
+        initial_gate = self._chart_frame_gate.offer(
+            self._chart_presentation.frame,
+            now_ns=self._chart_clock(),
+        )
+        if not initial_gate.committed:
+            raise RuntimeError(
+                "Selected Evidence chart presentation was not committed"
+            )
+        self._subscription = self._feature.subscribe(
+            context,
+            self._queue_state,
+        )
+        self.stateChanged.emit()
+        self.localStateChanged.emit()
+        self.chartPresentationChanged.emit()
+        self.chartGeometryChanged.emit()
+        self._sync_chart_interaction_enabled()
+
     def _repair_local_selection(self) -> None:
         data = self._state.last_reliable_data
         candidates = () if data is None else data.candidates
@@ -726,13 +2229,13 @@ class EvidenceAndFindingsQtAdapter(QObject):
                 for point in curve.points
             )
             lines.append(
-                (
+
                     f"{curve.identity} · transformation "
                     f"{curve.transformation_family} / {curve.transformation_id} · "
                     f"strategy {curve.strategy_id.value}@{curve.strategy_version} · "
                     f"metric {curve.metric_name} / unit {curve.unit} · "
                     f"axis {axis} · {points}"
-                )
+
             )
         return "\n".join(lines)
 
@@ -1329,6 +2832,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         feature: RunMonitoringFeature,
         *,
         context: RunMonitoringContext | None = None,
+        diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
+        diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
         evidence_context: EvidenceAndFindingsContext | None = None,
         accessibility_preferences: AccessibilityPreferences | None = None,
@@ -1346,11 +2851,28 @@ class JourneyWorkspaceHost(QQuickWidget):
             "accessibilitySettings",
             self._accessibility_settings,
         )
+        self._diagnostic_tasks = (
+            DiagnosticTasksQtAdapter(
+                diagnostic_tasks_feature,
+                context=diagnostic_tasks_context,
+                parent=self,
+            )
+            if diagnostic_tasks_feature is not None
+            else None
+        )
+        self.rootContext().setContextProperty(
+            "diagnosticTasks",
+            self._diagnostic_tasks,
+        )
         self._run_monitoring = RunMonitoringQtAdapter(
             feature,
             context=context,
             parent=self,
         )
+        if self._diagnostic_tasks is not None:
+            self._diagnostic_tasks.campaignHandoffReady.connect(
+                self._open_run_monitoring_handoff
+            )
         self.rootContext().setContextProperty(
             "runMonitoring",
             self._run_monitoring,
@@ -1368,15 +2890,56 @@ class JourneyWorkspaceHost(QQuickWidget):
             "evidenceAndFindings",
             self._evidence_and_findings,
         )
+        if (
+            self._diagnostic_tasks is not None
+            and self._evidence_and_findings is not None
+        ):
+            self._diagnostic_tasks.evidenceHandoffReady.connect(
+                self._open_evidence_and_findings_handoff
+            )
         self.setSource(QUrl.fromLocalFile(str(_QML_ROOT / "JourneyWorkspace.qml")))
         if self.status() == QQuickWidget.Status.Error:
             details = "; ".join(error.toString() for error in self.errors())
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
+        if self._diagnostic_tasks is not None:
+            monitoring_context = self._diagnostic_tasks.monitoring_context()
+            if monitoring_context is not None:
+                self._open_run_monitoring_handoff(monitoring_context)
+            evidence_context = self._diagnostic_tasks.evidence_context()
+            if evidence_context is not None:
+                self._open_evidence_and_findings_handoff(evidence_context)
+
+    @Slot(object)
+    def _open_run_monitoring_handoff(
+        self,
+        context: RunMonitoringContext,
+    ) -> None:
+        if self._workspace_closed or not isinstance(context, RunMonitoringContext):
+            return
+        self._run_monitoring.select_context(context)
+        root = self.rootObject()
+        if root is not None:
+            root.setProperty("activeRoute", "run_monitoring")
+
+    @Slot(object)
+    def _open_evidence_and_findings_handoff(
+        self,
+        context: EvidenceAndFindingsContext,
+    ) -> None:
+        if (
+            self._workspace_closed
+            or self._evidence_and_findings is None
+            or not isinstance(context, EvidenceAndFindingsContext)
+        ):
+            return
+        self._evidence_and_findings.select_context(context)
 
     def close_adapter(self) -> None:
         if self._workspace_closed:
             return
         self._workspace_closed = True
+        if self._diagnostic_tasks is not None:
+            self._diagnostic_tasks.close()
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
@@ -1384,6 +2947,7 @@ class JourneyWorkspaceHost(QQuickWidget):
 
 
 __all__ = [
+    "DiagnosticTasksQtAdapter",
     "EvidenceAndFindingsQtAdapter",
     "JourneyWorkspaceHost",
     "RunMonitoringQtAdapter",

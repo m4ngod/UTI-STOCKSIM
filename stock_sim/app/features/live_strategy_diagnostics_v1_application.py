@@ -106,6 +106,12 @@ _SUPPORTED_MIGRATIONS = frozenset(
         "0009_isolated_sensitivity_sets",
         "0010_formal_diagnostic_campaigns",
         "0011_diagnostic_evidence",
+        "0012_reproduction_manifests",
+        "0013_diagnostic_tasks",
+        "0014_diagnostic_task_approval",
+        "0015_diagnostic_task_campaign_handoff",
+        "0016_diagnostic_task_start_continuation_claim",
+        "0017_diagnostic_lifecycle_targets",
         DIAGNOSTIC_SCHEMA_REVISION,
     }
 )

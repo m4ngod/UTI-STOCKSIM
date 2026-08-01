@@ -1095,7 +1095,10 @@ def test_sql_index_and_json_artifacts_restore_a_sealed_package(
     campaign, executor = _formal_campaign()
     engine = create_engine(f"sqlite:///{tmp_path / 'evidence.db'}")
     report = initialize_diagnostic_persistence(engine)
-    assert report.current_revision == "0012_reproduction_manifests"
+    assert (
+        report.current_revision
+        == "0018_diagnostic_campaign_attempt_history"
+    )
     artifacts = JsonDiagnosticEvidenceArtifactStore(
         tmp_path / "evidence-artifacts"
     )

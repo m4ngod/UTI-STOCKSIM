@@ -304,6 +304,35 @@ def test_unclassified_public_command_makes_surface_incomplete() -> None:
     )
 
 
+def test_wave_2_diagnostic_commands_are_classified_without_becoming_v1_required() -> None:
+    wave_2_commands = (
+        "approve_diagnostic_task_configuration",
+        "cancel_diagnostic_target",
+        "create_diagnostic_task",
+        "get_diagnostic_task",
+        "list_approved_scenario_recipes",
+        "list_available_diagnostic_campaign_cases",
+        "list_materialized_market_paths",
+        "pause_diagnostic_target",
+        "resume_diagnostic_target",
+        "retry_failed_diagnostic_campaign_node",
+        "revise_diagnostic_task_configuration",
+        "start_formal_diagnostic_task_campaign",
+        "validate_diagnostic_task_configuration",
+    )
+    inventory = V1ProductSurfaceInventory(
+        V1_REQUIRED_APPLICATION_COMMANDS + wave_2_commands
+    )
+
+    assert inventory.status == "verified"
+    assert inventory.missing_required_commands == ()
+    assert inventory.unclassified_commands == ()
+    assert inventory.present_excluded_capabilities == ()
+    assert not set(wave_2_commands).intersection(
+        V1_REQUIRED_APPLICATION_COMMANDS
+    )
+
+
 def test_one_observed_cadence_cannot_claim_30_and_60_minute_support() -> None:
     facts = _passing_facts()
     incomplete = replace(facts, supported_decision_cadences=(30,))

@@ -456,6 +456,8 @@ class ScenarioRecipeRepository(Protocol):
 
     def list_versions(self, recipe_id: str) -> tuple[ApprovedScenarioRecipeVersion, ...]: ...
 
+    def list_all_versions(self) -> tuple[ApprovedScenarioRecipeVersion, ...]: ...
+
 
 class InMemoryScenarioRecipeRepository:
     def __init__(self) -> None:
@@ -543,6 +545,14 @@ class InMemoryScenarioRecipeRepository:
                     if version.recipe_id == recipe_id
                 ),
                 key=lambda item: item.version_number,
+            )
+        )
+
+    def list_all_versions(self) -> tuple[ApprovedScenarioRecipeVersion, ...]:
+        return tuple(
+            sorted(
+                self._versions.values(),
+                key=lambda item: (item.recipe_id, item.version_number),
             )
         )
 
@@ -848,6 +858,11 @@ class RecipeWorkbench:
                 "Only an approved Scenario Recipe Version can be materialized"
             )
         return version
+
+    def list_approved_versions(self) -> tuple[ApprovedScenarioRecipeVersion, ...]:
+        """Return every immutable approved recipe in canonical order."""
+
+        return self._repository.list_all_versions()
 
     def _now(self) -> datetime:
         value = self._clock()

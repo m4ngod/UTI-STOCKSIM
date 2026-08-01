@@ -54,8 +54,13 @@ FORBIDDEN_RUNTIME_MEMBERS = (
 )
 APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
+    r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
+    r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
+    r"(?:Pause|Resume|Cancel) Formal Diagnostic Campaign lifecycle|"
+    r"(?:Pause|Resume|Cancel) Campaign node lifecycle|"
+    r"Retry failed Campaign node attempt|"
     r"Pause diagnostic task|"
     r"Resume diagnostic task|"
     r"Cancel diagnostic task|"
@@ -430,6 +435,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
         if item.objectName().endswith("RouteNavigation")
     }
     assert route_objects == {
+        "diagnosticTasksRouteNavigation",
         "runMonitoringRouteNavigation",
         "evidenceAndFindingsRouteNavigation",
     }

@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
-from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from math import ceil
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter_ns
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from .frontend_v2_packaging import (
     REAL_V1_IDENTITY_FIELDS,
@@ -128,6 +129,23 @@ REAL_V1_PERFORMANCE_PRODUCTION_PATH = (
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
 )
 
+WAVE2_PERFORMANCE_PRODUCTION_PATH = (
+    "PerformanceLoadProjectionReadModel",
+    "DeterministicFakeDiagnosticTasksAdapter",
+    "EventBridge",
+    "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
+    "JourneyWorkspaceHost",
+    "EvidenceChart.qml",
+)
+
+WAVE2_PERFORMANCE_COMMAND_IDS = (
+    "performance-create-diagnostic-task",
+    "performance-validate-diagnostic-task",
+    "performance-approve-diagnostic-task",
+    "performance-start-diagnostic-campaign",
+)
+
 
 def reference_fixture_digest() -> str:
     payload = json.dumps(
@@ -235,7 +253,7 @@ def validate_performance_lane(
     expected_api = (
         "Direct3D11" if expected_lane == "hardware" else "Software"
     )
-    if report.get("schema_version") != 1:
+    if report.get("schema_version") != 2:
         failures.append(f"{expected_lane} lane schema version is invalid")
     if report.get("status") != "passed":
         failures.append(f"{expected_lane} lane status is not passed")
@@ -313,6 +331,12 @@ def validate_performance_lane(
             report.get("integrated_v1_probe"),
             expected_lane=expected_lane,
             renderer_started_at=report.get("started_at"),
+        )
+    )
+    failures.extend(
+        _validate_wave2_diagnostic_task_load(
+            report,
+            expected_lane=expected_lane,
         )
     )
 
@@ -573,6 +597,15 @@ def certify_performance_evidence(
             "hardware and software real V1 probes do not identify the "
             "same persisted workload"
         )
+    if _wave2_workload_identity(
+        hardware_report.get("wave2_diagnostic_tasks")
+    ) != _wave2_workload_identity(
+        software_report.get("wave2_diagnostic_tasks")
+    ):
+        failures.append(
+            "hardware and software Wave 2 probes do not identify the "
+            "same Diagnostic Task workload"
+        )
     if (
         expected_fixture_archive_digest is not None
         and observed_fixture_archive_digest
@@ -780,6 +813,99 @@ def _validate_real_v1_performance_probe(
     if not isinstance(errors, list) or errors:
         fail("reported runtime errors")
     return tuple(failures)
+
+
+def _validate_wave2_diagnostic_task_load(
+    report: Mapping[str, Any],
+    *,
+    expected_lane: str,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    if report.get("production_path") != list(
+        WAVE2_PERFORMANCE_PRODUCTION_PATH
+    ):
+        failures.append(
+            f"{expected_lane} Wave 2 performance production path does not match"
+        )
+    load = _mapping(report.get("wave2_diagnostic_tasks"))
+    if (
+        load.get("feature_interface") != "DiagnosticTasksFeature/1.0"
+        or load.get("application_interface")
+        != "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
+        or load.get("adapter") != "DeterministicFakeDiagnosticTasksAdapter"
+    ):
+        failures.append(
+            f"{expected_lane} Wave 2 Diagnostic Tasks contract does not match"
+        )
+    observation_flags = (
+        "accepted_command_observed",
+        "task_handle_observed",
+        "handoff_observed",
+        "terminal_observed",
+        "observed_before_load",
+        "observed_after_load",
+    )
+    if (
+        load.get("accepted_command_ids")
+        != list(WAVE2_PERFORMANCE_COMMAND_IDS)
+        or load.get("result_command_ids")
+        != list(WAVE2_PERFORMANCE_COMMAND_IDS)
+        or any(load.get(name) is not True for name in observation_flags)
+        or load.get("executed_during_active_load") is not True
+        or load.get("task_lifecycle") != "completed"
+    ):
+        failures.append(
+            f"{expected_lane} Wave 2 TaskHandle observation is incomplete"
+        )
+    identity_graph = load.get("identity_graph")
+    task_handle_ids = load.get("task_handle_ids")
+    source_events_before = _positive_count(
+        load.get("source_events_before_command")
+    )
+    source_events_after = _positive_count(
+        load.get("source_events_after_command")
+    )
+    if (
+        not isinstance(identity_graph, list)
+        or len(identity_graph) < 8
+        or len(identity_graph) != len(set(identity_graph))
+        or any(
+            not isinstance(identity, str) or not identity
+            for identity in identity_graph
+        )
+        or not set(WAVE2_PERFORMANCE_COMMAND_IDS).issubset(identity_graph)
+        or not isinstance(task_handle_ids, list)
+        or not task_handle_ids
+        or not set(task_handle_ids).issubset(identity_graph)
+        or source_events_before is None
+        or source_events_after is None
+        or source_events_after < source_events_before
+    ):
+        failures.append(
+            f"{expected_lane} Wave 2 identity graph is incomplete "
+            "or non-canonical"
+        )
+    return tuple(failures)
+
+
+def _wave2_workload_identity(value: Any) -> tuple[Any, ...]:
+    load = _mapping(value)
+    return (
+        load.get("feature_interface"),
+        load.get("application_interface"),
+        load.get("adapter"),
+        _sequence_identity(load.get("accepted_command_ids")),
+        _sequence_identity(load.get("result_command_ids")),
+        _sequence_identity(load.get("task_handle_ids")),
+        load.get("task_lifecycle"),
+        _sequence_identity(load.get("identity_graph")),
+    )
+
+
+def _sequence_identity(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return ("<invalid-sequence>", type(value).__name__)
 
 
 def _aware_datetime(value: Any) -> datetime | None:
@@ -1163,8 +1289,8 @@ __all__ = [
     "PERFORMANCE_THRESHOLDS",
     "REFERENCE_FIXTURE",
     "REFERENCE_MEASUREMENT_PROTOCOL",
-    "PerformanceFixture",
     "PerformanceCertification",
+    "PerformanceFixture",
     "PerformanceMeasurementProtocol",
     "PerformanceThresholds",
     "build_performance_metric",

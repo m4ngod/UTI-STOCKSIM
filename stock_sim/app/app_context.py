@@ -10,22 +10,28 @@ from typing import TYPE_CHECKING, Any
 from app.event_bridge import EventBridge, start_frontend_bridge
 from app.features import (
     ApprovedScenarioRecipeId,
+    DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
     DiagnosticEvidencePackageId,
+    DiagnosticTasksContext,
+    DiagnosticTasksFeature,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsFeature,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
+    LiveDiagnosticTasksAdapter,
     LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
+    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     MarketScenarioId,
     ReproductionManifestId,
     RunMonitoringContext,
     RunMonitoringFeature,
     RunMonitoringSelection,
     StrategyDiagnosticsV1ApplicationReadModel,
+    StrategyDiagnosticsV1DiagnosticTasksApplication,
     StrategyRunId,
     StrategyUnderTestId,
     V1JourneySelector,
@@ -77,6 +83,11 @@ class AppContext:
     training_arena_service: TrainingArenaService | None
     arena_experiment_runner: ArenaExperimentRunner | None
     strategy_diagnostics_read_model: StrategyDiagnosticsV1ApplicationReadModel | None
+    strategy_diagnostics_tasks_application: (
+        StrategyDiagnosticsV1DiagnosticTasksApplication | None
+    )
+    diagnostic_tasks_feature: DiagnosticTasksFeature
+    diagnostic_tasks_context: DiagnosticTasksContext
     run_monitoring_feature: RunMonitoringFeature
     run_monitoring_context: RunMonitoringContext
     evidence_and_findings_feature: EvidenceAndFindingsFeature
@@ -91,6 +102,9 @@ def build_app_context(
     runtime_gateway: Any | None = None,
     strategy_diagnostics_read_model: (
         StrategyDiagnosticsV1ApplicationReadModel | None
+    ) = None,
+    strategy_diagnostics_tasks_application: (
+        StrategyDiagnosticsV1DiagnosticTasksApplication | None
     ) = None,
     legacy_read_only: bool = False,
 ) -> AppContext:
@@ -151,7 +165,11 @@ def build_app_context(
         arena_experiment_runner = legacy_context.arena_experiment_runner
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
+    diagnostic_tasks_context = DiagnosticTasksContext.workspace()
     if resolved_mode == "fake":
+        diagnostic_tasks_feature: DiagnosticTasksFeature = (
+            DeterministicFakeDiagnosticTasksAdapter()
+        )
         run_monitoring_feature: RunMonitoringFeature = (
             DeterministicFakeRunMonitoringAdapter()
         )
@@ -160,8 +178,27 @@ def build_app_context(
         )
     else:
         live_bridge = event_bridge or start_frontend_bridge()
-        if strategy_diagnostics_read_model is None:
-            strategy_diagnostics_read_model = _build_strategy_diagnostics_read_model()
+        if (
+            strategy_diagnostics_read_model is None
+            and strategy_diagnostics_tasks_application is None
+        ):
+            (
+                strategy_diagnostics_read_model,
+                strategy_diagnostics_tasks_application,
+            ) = _build_strategy_diagnostics_adapters()
+        else:
+            if strategy_diagnostics_read_model is None:
+                strategy_diagnostics_read_model = (
+                    _build_strategy_diagnostics_read_model()
+                )
+            if strategy_diagnostics_tasks_application is None:
+                strategy_diagnostics_tasks_application = (
+                    _build_strategy_diagnostics_tasks_application()
+                )
+        diagnostic_tasks_feature = LiveDiagnosticTasksAdapter(
+            application=strategy_diagnostics_tasks_application,
+            event_bridge=live_bridge,
+        )
         journey_selector = _v1_journey_selector_from_environment(
             run_monitoring_context
         )
@@ -198,6 +235,11 @@ def build_app_context(
         training_arena_service=training_arena_service,
         arena_experiment_runner=arena_experiment_runner,
         strategy_diagnostics_read_model=strategy_diagnostics_read_model,
+        strategy_diagnostics_tasks_application=(
+            strategy_diagnostics_tasks_application
+        ),
+        diagnostic_tasks_feature=diagnostic_tasks_feature,
+        diagnostic_tasks_context=diagnostic_tasks_context,
         run_monitoring_feature=run_monitoring_feature,
         run_monitoring_context=run_monitoring_context,
         evidence_and_findings_feature=evidence_and_findings_feature,
@@ -226,6 +268,9 @@ def reset_app_context(
     strategy_diagnostics_read_model: (
         StrategyDiagnosticsV1ApplicationReadModel | None
     ) = None,
+    strategy_diagnostics_tasks_application: (
+        StrategyDiagnosticsV1DiagnosticTasksApplication | None
+    ) = None,
     legacy_read_only: bool = False,
 ) -> AppContext:
     global _app_context
@@ -237,9 +282,13 @@ def reset_app_context(
             event_bridge=event_bridge,
             runtime_gateway=runtime_gateway,
             strategy_diagnostics_read_model=strategy_diagnostics_read_model,
+            strategy_diagnostics_tasks_application=(
+                strategy_diagnostics_tasks_application
+            ),
             legacy_read_only=legacy_read_only,
         )
         if previous is not None:
+            previous.diagnostic_tasks_feature.close()
             previous.run_monitoring_feature.close()
             previous.evidence_and_findings_feature.close()
         return _app_context
@@ -385,6 +434,32 @@ def _build_strategy_diagnostics_read_model() -> (
     application.start()
     application.initialize_persistence(engine)
     return LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine)
+
+
+def _build_strategy_diagnostics_tasks_application() -> (
+    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter
+):
+    from strategy_diagnostics import create_diagnostics_application
+
+    application = create_diagnostics_application()
+    application.start()
+    return LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application)
+
+
+def _build_strategy_diagnostics_adapters() -> tuple[
+    LiveStrategyDiagnosticsV1ApplicationAdapter,
+    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+]:
+    from persistence.models_imports import engine
+    from strategy_diagnostics import create_diagnostics_application
+
+    application = create_diagnostics_application()
+    application.start()
+    application.initialize_persistence(engine)
+    return (
+        LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application),
+    )
 
 
 __all__ = ["AppContext", "build_app_context", "get_app_context", "reset_app_context"]

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Final, Literal, cast
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -30,7 +31,6 @@ from .recipes import (
     TransformationProposalV1,
 )
 
-
 _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
 _SCENARIO_RECIPE_REVISION: Final = "0003_scenario_recipe_lifecycle"
 _AI_RECIPE_ASSISTANT_REVISION: Final = "0004_ai_recipe_assistant"
@@ -43,7 +43,21 @@ _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION: Final = (
     "0010_formal_diagnostic_campaigns"
 )
 _DIAGNOSTIC_EVIDENCE_REVISION: Final = "0011_diagnostic_evidence"
-DIAGNOSTIC_SCHEMA_REVISION: Final = "0012_reproduction_manifests"
+_REPRODUCTION_MANIFEST_REVISION: Final = "0012_reproduction_manifests"
+_DIAGNOSTIC_TASK_REVISION: Final = "0013_diagnostic_tasks"
+_DIAGNOSTIC_TASK_APPROVAL_REVISION: Final = "0014_diagnostic_task_approval"
+_DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION: Final = (
+    "0015_diagnostic_task_campaign_handoff"
+)
+_DIAGNOSTIC_TASK_START_CONTINUATION_REVISION: Final = (
+    "0016_diagnostic_task_start_continuation_claim"
+)
+_DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION: Final = (
+    "0017_diagnostic_lifecycle_targets"
+)
+DIAGNOSTIC_SCHEMA_REVISION: Final = (
+    "0018_diagnostic_campaign_attempt_history"
+)
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
     "0001_diagnostics_baseline",
@@ -57,6 +71,12 @@ _MIGRATION_REVISIONS: Final = (
     _ISOLATED_SENSITIVITY_REVISION,
     _FORMAL_DIAGNOSTIC_CAMPAIGN_REVISION,
     _DIAGNOSTIC_EVIDENCE_REVISION,
+    _REPRODUCTION_MANIFEST_REVISION,
+    _DIAGNOSTIC_TASK_REVISION,
+    _DIAGNOSTIC_TASK_APPROVAL_REVISION,
+    _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION,
+    _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION,
+    _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -83,6 +103,12 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 text(f"SELECT revision FROM {_MIGRATION_TABLE}")
             ).scalars()
         )
+        unknown_revisions = existing_revisions.difference(_MIGRATION_REVISIONS)
+        if unknown_revisions:
+            raise ValueError(
+                "incompatible diagnostic schema revision: "
+                + ", ".join(sorted(unknown_revisions))
+            )
         for revision in _MIGRATION_REVISIONS:
             if revision in existing_revisions:
                 continue
@@ -106,8 +132,20 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _create_diagnostic_campaigns(connection)
             elif revision == _DIAGNOSTIC_EVIDENCE_REVISION:
                 _create_diagnostic_evidence(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _REPRODUCTION_MANIFEST_REVISION:
                 _create_reproduction_manifests(connection)
+            elif revision == _DIAGNOSTIC_TASK_REVISION:
+                _create_diagnostic_tasks(connection)
+            elif revision == _DIAGNOSTIC_TASK_APPROVAL_REVISION:
+                _create_diagnostic_task_approval(connection)
+            elif revision == _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION:
+                _create_diagnostic_task_campaign_handoff(connection)
+            elif revision == _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION:
+                _add_diagnostic_task_start_continuation_claim(connection)
+            elif revision == _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION:
+                _create_diagnostic_lifecycle_targets(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _extend_diagnostic_campaign_attempt_history(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -321,6 +359,322 @@ def _create_reproduction_manifests(connection: Connection) -> None:
     )
 
 
+def _create_diagnostic_tasks(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_sequences ("
+        "sequence_name VARCHAR(64) PRIMARY KEY NOT NULL, "
+        "next_value BIGINT NOT NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO diagnostic_task_sequences (sequence_name, next_value) "
+        "SELECT 'diagnostic_task_creation', 0 "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM diagnostic_task_sequences "
+        "WHERE sequence_name = 'diagnostic_task_creation'"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_tasks ("
+        "task_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "creation_sequence BIGINT UNIQUE NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "lifecycle VARCHAR(32) NOT NULL, "
+        "schema_version VARCHAR(64) NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "configuration_json TEXT NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_handles ("
+        "task_handle_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "phase VARCHAR(32) NOT NULL, "
+        "progress_value REAL NOT NULL, "
+        "result_code VARCHAR(128) NULL, "
+        "error_json TEXT NULL, "
+        "cancelable INTEGER NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_commands ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_key VARCHAR(128) UNIQUE NOT NULL, "
+        "command_type VARCHAR(64) NOT NULL, "
+        "command_content_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_handle_id VARCHAR(96) NOT NULL, "
+        "disposition VARCHAR(32) NOT NULL, "
+        "command_json TEXT NOT NULL, "
+        "acceptance_json TEXT NOT NULL, "
+        "accepted_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+
+
+def _create_diagnostic_task_approval(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_configuration_revisions ("
+        "task_id VARCHAR(96) NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "configuration_json TEXT NOT NULL, "
+        "accepted_command_id VARCHAR(96) NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(task_id, revision), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_command_identities ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_key VARCHAR(128) UNIQUE NOT NULL, "
+        "command_type VARCHAR(64) NOT NULL, "
+        "command_content_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_handle_id VARCHAR(96) NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO diagnostic_task_command_identities ("
+        "command_id, idempotency_key, command_type, command_content_id, "
+        "task_id, task_handle_id"
+        ") SELECT command_id, idempotency_key, command_type, "
+        "command_content_id, task_id, task_handle_id "
+        "FROM diagnostic_task_commands "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM diagnostic_task_command_identities i "
+        "WHERE i.command_id = diagnostic_task_commands.command_id "
+        "OR i.idempotency_key = "
+        "diagnostic_task_commands.idempotency_key"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO diagnostic_task_configuration_revisions ("
+        "task_id, revision, configuration_content_id, configuration_json, "
+        "accepted_command_id, created_at_utc"
+        ") SELECT task_id, revision, configuration_content_id, "
+        "configuration_json, NULL, updated_at_utc FROM diagnostic_tasks "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM diagnostic_task_configuration_revisions r "
+        "WHERE r.task_id = diagnostic_tasks.task_id "
+        "AND r.revision = diagnostic_tasks.revision"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_validations ("
+        "validation_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "validation_revision INTEGER NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "state VARCHAR(32) NOT NULL, "
+        "findings_json TEXT NOT NULL, "
+        "policy_identities_json TEXT NOT NULL, "
+        "task_handle_id VARCHAR(96) UNIQUE NOT NULL, "
+        "validated_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_approvals ("
+        "approval_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "validation_id VARCHAR(96) NOT NULL, "
+        "validation_revision INTEGER NOT NULL, "
+        "actor_id VARCHAR(128) NOT NULL, "
+        "policy_identities_json TEXT NOT NULL, "
+        "approved_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(validation_id) "
+        "REFERENCES diagnostic_task_validations(validation_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_mutation_commands ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_key VARCHAR(128) UNIQUE NOT NULL, "
+        "command_type VARCHAR(64) NOT NULL, "
+        "command_content_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_handle_id VARCHAR(96) NULL, "
+        "disposition VARCHAR(32) NOT NULL, "
+        "message TEXT NOT NULL, "
+        "current_revision INTEGER NOT NULL, "
+        "command_json TEXT NOT NULL, "
+        "result_json TEXT NOT NULL, "
+        "accepted_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_task_handles(task_handle_id)"
+        ")"
+    )
+
+
+def _create_diagnostic_task_campaign_handoff(
+    connection: Connection,
+) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_task_campaign_handoffs ("
+        "task_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "campaign_id VARCHAR(96) UNIQUE NOT NULL, "
+        "handoff_json TEXT NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id), "
+        "FOREIGN KEY(campaign_id) REFERENCES diagnostic_campaigns(campaign_id)"
+        ")"
+    )
+
+
+def _add_diagnostic_task_start_continuation_claim(
+    connection: Connection,
+) -> None:
+    handle_columns = {
+        str(column["name"])
+        for column in inspect(connection).get_columns(
+            "diagnostic_task_handles"
+        )
+    }
+    if "start_continuation_claim_id" not in handle_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE diagnostic_task_handles "
+            "ADD COLUMN start_continuation_claim_id VARCHAR(96) NULL"
+        )
+    if "start_continuation_claimed_at_utc" not in handle_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE diagnostic_task_handles "
+            "ADD COLUMN start_continuation_claimed_at_utc VARCHAR(64) NULL"
+        )
+
+
+def _create_diagnostic_lifecycle_targets(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_lifecycle_targets ("
+        "target_kind VARCHAR(48) NOT NULL, "
+        "target_id VARCHAR(96) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "lifecycle VARCHAR(32) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(target_kind, target_id), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    existing_targets = {
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            text(
+                "SELECT target_kind, target_id "
+                "FROM diagnostic_lifecycle_targets"
+            )
+        )
+    }
+
+    def insert_target(
+        *,
+        target_kind: str,
+        target_id: str,
+        task_id: str,
+        revision: int,
+        lifecycle: str,
+        updated_at_utc: str,
+    ) -> None:
+        key = (target_kind, target_id)
+        if key in existing_targets:
+            return
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_lifecycle_targets ("
+                "target_kind, target_id, task_id, revision, lifecycle, "
+                "updated_at_utc) VALUES ("
+                ":target_kind, :target_id, :task_id, :revision, :lifecycle, "
+                ":updated_at_utc)"
+            ),
+            {
+                "target_kind": target_kind,
+                "target_id": target_id,
+                "task_id": task_id,
+                "revision": revision,
+                "lifecycle": lifecycle,
+                "updated_at_utc": updated_at_utc,
+            },
+        )
+        existing_targets.add(key)
+
+    rows = connection.execute(
+        text(
+            "SELECT t.task_id, t.revision, t.lifecycle, t.updated_at_utc, "
+            "h.campaign_id, h.handoff_json "
+            "FROM diagnostic_tasks t "
+            "JOIN diagnostic_task_campaign_handoffs h "
+            "ON h.task_id = t.task_id"
+        )
+    ).mappings()
+    for row in rows:
+        task_id = str(row["task_id"])
+        campaign_id = str(row["campaign_id"])
+        revision = int(cast(str | int, row["revision"]))
+        lifecycle = str(row["lifecycle"])
+        updated_at_utc = str(row["updated_at_utc"])
+        payload = json.loads(str(row["handoff_json"]))
+        if not isinstance(payload, dict):
+            raise TypeError("Diagnostic Task handoff must be an object")
+        insert_target(
+            target_kind="diagnostic_task",
+            target_id=task_id,
+            task_id=task_id,
+            revision=revision,
+            lifecycle=lifecycle,
+            updated_at_utc=updated_at_utc,
+        )
+        insert_target(
+            target_kind="formal_diagnostic_campaign",
+            target_id=campaign_id,
+            task_id=task_id,
+            revision=1,
+            lifecycle=lifecycle,
+            updated_at_utc=updated_at_utc,
+        )
+        nodes = cast(list[Mapping[str, object]], payload["campaign_nodes"])
+        for node in nodes:
+            attempts = cast(
+                list[Mapping[str, object]],
+                node.get("attempts", []),
+            )
+            insert_target(
+                target_kind="campaign_node",
+                target_id=str(node["campaign_node_id"]),
+                task_id=task_id,
+                revision=int(
+                    cast(str | int, node.get("revision", 1))
+                ),
+                lifecycle=str(
+                    node.get(
+                        "lifecycle",
+                        "completed" if attempts else "queued",
+                    )
+                ),
+                updated_at_utc=updated_at_utc,
+            )
+
+
 def _create_strategy_run_facts(connection: Connection) -> None:
     connection.exec_driver_sql(
         "CREATE TABLE IF NOT EXISTS diagnostic_strategy_runs ("
@@ -388,6 +742,84 @@ def _create_strategy_run_facts(connection: Connection) -> None:
         "FOREIGN KEY(run_id) REFERENCES diagnostic_strategy_runs(run_id)"
         ")"
     )
+
+
+def _extend_diagnostic_campaign_attempt_history(
+    connection: Connection,
+) -> None:
+    if not inspect(connection).has_table("diagnostic_task_campaign_handoffs"):
+        return
+    rows = connection.execute(
+        text(
+            "SELECT task_id, handoff_json "
+            "FROM diagnostic_task_campaign_handoffs"
+        )
+    ).mappings()
+    for row in rows:
+        payload = json.loads(str(row["handoff_json"]))
+        if not isinstance(payload, dict):
+            raise TypeError("Diagnostic Task Campaign handoff must be an object")
+        node_values = payload.get("campaign_nodes", [])
+        if not isinstance(node_values, list):
+            raise TypeError("Diagnostic Task Campaign nodes must be a list")
+        for node_value in node_values:
+            if not isinstance(node_value, dict):
+                raise TypeError("Diagnostic Task Campaign node must be an object")
+            attempt_values = node_value.get("attempts", [])
+            if not isinstance(attempt_values, list):
+                raise TypeError("Diagnostic Campaign attempts must be a list")
+            predecessor_attempt_id: str | None = None
+            for index, attempt_value in enumerate(attempt_values, start=1):
+                if not isinstance(attempt_value, dict):
+                    raise TypeError(
+                        "Diagnostic Campaign attempt must be an object"
+                    )
+                attempt_id = str(attempt_value["attempt_id"])
+                attempt_value.setdefault("attempt_number", index)
+                attempt_value.setdefault(
+                    "predecessor_attempt_id",
+                    predecessor_attempt_id,
+                )
+                attempt_value.setdefault("task_handle_id", None)
+                lifecycle = str(
+                    attempt_value.setdefault(
+                        "lifecycle",
+                        (
+                            node_value.get("lifecycle", "completed")
+                            if index == len(attempt_values)
+                            else "completed"
+                        ),
+                    )
+                )
+                if lifecycle == "failed":
+                    attempt_value.setdefault(
+                        "failure_code",
+                        "IncompleteCampaign",
+                    )
+                    attempt_value.setdefault(
+                        "failure_message",
+                        "Campaign result is incomplete",
+                    )
+                else:
+                    attempt_value.setdefault("failure_code", None)
+                    attempt_value.setdefault("failure_message", None)
+                predecessor_attempt_id = attempt_id
+        connection.execute(
+            text(
+                "UPDATE diagnostic_task_campaign_handoffs "
+                "SET handoff_json = :handoff_json "
+                "WHERE task_id = :task_id"
+            ),
+            {
+                "handoff_json": json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                "task_id": str(row["task_id"]),
+            },
+        )
 
 
 def _add_a_share_execution_audit(connection: Connection) -> None:
@@ -1117,6 +1549,19 @@ class SqlScenarioRecipeRepository:
                     "WHERE recipe_id = :recipe_id ORDER BY version_number"
                 ),
                 {"recipe_id": recipe_id},
+            ).scalars().all()
+        versions = tuple(self.get_version(str(item)) for item in version_ids)
+        if any(version is None for version in versions):
+            raise ValueError("Scenario Recipe Version index is inconsistent")
+        return tuple(version for version in versions if version is not None)
+
+    def list_all_versions(self) -> tuple[ApprovedScenarioRecipeVersion, ...]:
+        with self._engine.connect() as connection:
+            version_ids = connection.execute(
+                text(
+                    "SELECT version_id FROM diagnostic_recipe_versions "
+                    "ORDER BY recipe_id, version_number"
+                )
             ).scalars().all()
         versions = tuple(self.get_version(str(item)) for item in version_ids)
         if any(version is None for version in versions):

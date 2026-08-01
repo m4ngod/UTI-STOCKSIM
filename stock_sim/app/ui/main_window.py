@@ -21,6 +21,8 @@ from typing import (
 
 if TYPE_CHECKING:
     from app.features import (
+        DiagnosticTasksContext,
+        DiagnosticTasksFeature,
         EvidenceAndFindingsContext,
         EvidenceAndFindingsFeature,
         RunMonitoringContext,
@@ -76,6 +78,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(
         self,
         *,
+        diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
+        diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         run_monitoring_feature: RunMonitoringFeature | None = None,
         run_monitoring_context: RunMonitoringContext | None = None,
         evidence_and_findings_feature: EvidenceAndFindingsFeature | None = None,
@@ -123,6 +127,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             layout_store = layout_module.LayoutPersistence(
                 path=layout_path
             )
+        self._diagnostic_tasks_feature = diagnostic_tasks_feature
+        self._diagnostic_tasks_context = diagnostic_tasks_context
         self._run_monitoring_feature = run_monitoring_feature
         self._run_monitoring_context = run_monitoring_context
         self._evidence_and_findings_feature = evidence_and_findings_feature
@@ -187,6 +193,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         workspace = JourneyWorkspaceHost(
             self._run_monitoring_feature,
             context=self._run_monitoring_context,
+            diagnostic_tasks_feature=self._diagnostic_tasks_feature,
+            diagnostic_tasks_context=self._diagnostic_tasks_context,
             evidence_feature=self._evidence_and_findings_feature,
             evidence_context=self._evidence_and_findings_context,
             parent=self,

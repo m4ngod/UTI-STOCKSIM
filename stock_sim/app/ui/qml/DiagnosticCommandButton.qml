@@ -3,13 +3,21 @@ import QtQuick 2.15
 Rectangle {
     id: control
 
+    property var tokens: null
     property string text: ""
-    property color enabledTextColor: "white"
-    property color disabledTextColor: "gray"
-    property color standardBorderColor: "gray"
-    property color focusColor: "white"
-    property real focusBorderWidth: 2
-    property real labelSize: 12
+    property string accessibleName: text
+    property color enabledTextColor: tokens === null
+        ? "white" : tokens.textPrimary
+    property color disabledTextColor: tokens === null
+        ? "gray" : tokens.textQuiet
+    property color standardBorderColor: tokens === null
+        ? "gray" : tokens.border
+    property color focusColor: tokens === null
+        ? "white" : tokens.focus
+    property real focusBorderWidth: tokens === null
+        ? 2 : tokens.focusWidth
+    property real labelSize: tokens === null
+        ? 12 : tokens.labelSize
     property string accessibleDescription: (
         "Controls the diagnostic task lifecycle only; never submits an order."
     )
@@ -19,19 +27,29 @@ Rectangle {
 
     activeFocusOnTab: enabled
     implicitWidth: Math.max(144, label.implicitWidth + 24)
-    implicitHeight: Math.max(38, label.implicitHeight + 12)
+    implicitHeight: Math.max(
+        tokens === null ? 38 : tokens.controlHeight,
+        label.implicitHeight + (tokens === null ? 12 : tokens.spaceSm)
+    )
+    radius: tokens === null ? 0 : tokens.radiusSm
+    color: tokens === null ? "transparent" : tokens.surfaceRaised
     opacity: enabled ? 1.0 : 0.55
     scale: 1.0
     border.color: activeFocus ? focusColor : standardBorderColor
     border.width: activeFocus ? focusBorderWidth : 1
-    Accessible.name: text
+    Accessible.name: accessibleName
     Accessible.description: accessibleDescription
     Accessible.role: Accessible.Button
     Accessible.focusable: enabled
     Accessible.focused: activeFocus
     Accessible.onPressAction: {
-        if (control.enabled)
-            control.invoked()
+        control.activate()
+    }
+
+    function activate() {
+        if (!control.enabled)
+            return
+        control.invoked()
     }
 
     onActiveFocusChanged: {
@@ -43,7 +61,7 @@ Rectangle {
         if (event.key === Qt.Key_Return
                 || event.key === Qt.Key_Enter
                 || event.key === Qt.Key_Space) {
-            control.invoked()
+            control.activate()
             event.accepted = true
         }
     }
@@ -56,12 +74,15 @@ Rectangle {
             ? control.enabledTextColor
             : control.disabledTextColor
         font.pixelSize: control.labelSize
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
     }
 
     MouseArea {
         id: pointer
         anchors.fill: parent
         enabled: control.enabled
-        onClicked: control.invoked()
+        cursorShape: Qt.PointingHandCursor
+        onClicked: control.activate()
     }
 }

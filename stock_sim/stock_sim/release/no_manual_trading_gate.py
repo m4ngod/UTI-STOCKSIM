@@ -1,6 +1,6 @@
 """Mandatory Frontend V2 no-manual-trading release gate.
 
-The gate is deliberately stricter than a text search. It reflects the two
+The gate is deliberately stricter than a text search. It reflects the three
 active Feature Interfaces, parses QML Adapter slots and Journey source,
 inspects live/fake Adapter surfaces and runtime calls, and records immutable
 evidence that packaging certification can require.
@@ -10,27 +10,44 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import asdict, dataclass
-from functools import lru_cache
 import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
-from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
 import xml.etree.ElementTree as ET
-
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
+from functools import lru_cache
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 POLICY_VERSION = "frontend-v2-no-manual-trading-v1"
 
 ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
+            "DiagnosticTasksFeature": frozenset(
+                {
+                    "interface_version",
+                    "snapshot",
+                    "subscribe",
+                    "create_diagnostic_task",
+                    "revise_configuration",
+                    "validate_configuration",
+                    "approve_configuration",
+                    "start_formal_diagnostic_campaign",
+                    "pause_diagnostic_target",
+                    "resume_diagnostic_target",
+                    "cancel_diagnostic_target",
+                    "retry_failed_campaign_node",
+                    "close",
+                }
+            ),
             "RunMonitoringFeature": frozenset(
                 {
                     "interface_version",
@@ -56,6 +73,26 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
 
 QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
     {
+        "DiagnosticTasksQtAdapter": frozenset(
+            {
+                "approveTask",
+                "cancelCampaignNodeTarget",
+                "cancelDiagnosticTaskTarget",
+                "cancelFormalDiagnosticCampaignTarget",
+                "createTask",
+                "pauseCampaignNodeTarget",
+                "pauseDiagnosticTaskTarget",
+                "pauseFormalDiagnosticCampaignTarget",
+                "refresh",
+                "retryFailedCampaignNode",
+                "resumeCampaignNodeTarget",
+                "resumeDiagnosticTaskTarget",
+                "resumeFormalDiagnosticCampaignTarget",
+                "reviseTask",
+                "startCampaign",
+                "validateTask",
+            }
+        ),
         "RunMonitoringQtAdapter": frozenset(
             {
                 "refresh",
@@ -83,6 +120,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
 
 JOURNEY_ROUTE_ALLOWLIST = frozenset(
     {
+        "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
     }
@@ -107,6 +145,9 @@ TELEMETRY_EVENT_ALLOWLIST: frozenset[str] = frozenset()
 RUNTIME_GATEWAY_CALL_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
+            # Diagnostic Tasks consumes only its typed in-process Application
+            # Interface; RuntimeGateway is never an approved authority.
+            "LiveDiagnosticTasksAdapter": frozenset(),
             # Issue #50 moved Run Monitoring to the typed in-process
             # Strategy Diagnostics V1 read model. Any RuntimeGateway call is
             # now unapproved for this adapter.
@@ -938,6 +979,9 @@ def audit_no_manual_trading_gate(
         / "test_no_manual_trading_runtime_gate.py"
     )
     live_sources = {
+        "LiveDiagnosticTasksAdapter": (
+            project_root / "app" / "features" / "live_diagnostic_tasks.py"
+        ),
         "LiveRunMonitoringAdapter": (
             project_root / "app" / "features" / "live_run_monitoring.py"
         ),
@@ -955,10 +999,13 @@ def audit_no_manual_trading_gate(
     )
 
     from app.features import (
+        DeterministicFakeDiagnosticTasksAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,
         DeterministicFakeRunMonitoringAdapter,
+        DiagnosticTasksFeature,
         EvidenceAndFindingsFeature,
         FillEvidenceTrace,
+        LiveDiagnosticTasksAdapter,
         LiveEvidenceAndFindingsAdapter,
         LiveRunMonitoringAdapter,
         OrderEvidenceTrace,
@@ -969,6 +1016,7 @@ def audit_no_manual_trading_gate(
     from app.features.run_monitoring import _diagnostic_task_transition
 
     interfaces: Mapping[str, type[Any]] = {
+        "DiagnosticTasksFeature": DiagnosticTasksFeature,
         "RunMonitoringFeature": RunMonitoringFeature,
         "EvidenceAndFindingsFeature": EvidenceAndFindingsFeature,
     }
@@ -1084,6 +1132,8 @@ def audit_no_manual_trading_gate(
         )
 
     adapter_types = (
+        DeterministicFakeDiagnosticTasksAdapter,
+        LiveDiagnosticTasksAdapter,
         DeterministicFakeRunMonitoringAdapter,
         LiveRunMonitoringAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,
@@ -1323,13 +1373,13 @@ __all__ = [
     "DIAGNOSTIC_TASK_CONTROLLER_ALLOWLIST",
     "JOURNEY_ROUTE_ALLOWLIST",
     "JOURNEY_SHORTCUT_KEY_ALLOWLIST",
-    "NoManualTradingGateReport",
     "POLICY_VERSION",
     "QML_ADAPTER_SLOT_ALLOWLIST",
     "REQUIRED_GATE_SURFACES",
-    "RUNTIME_NEGATIVE_TEST_CASE_ALLOWLIST",
     "RUNTIME_GATEWAY_CALL_ALLOWLIST",
+    "RUNTIME_NEGATIVE_TEST_CASE_ALLOWLIST",
     "TELEMETRY_EVENT_ALLOWLIST",
+    "NoManualTradingGateReport",
     "audit_feature_interface",
     "audit_no_manual_trading_gate",
     "audit_python_imports",

@@ -9,44 +9,45 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from strategy_diagnostics.formal_strategy_sources import (
-    FORMAL_STRATEGY_SOURCE_BINDINGS,
-)
 from stock_sim.release.frontend_v2_packaging import (
-    AccessibilityGateEvidence,
     EXPECTED_TOOLCHAIN,
+    PROJECT_QML_ROOT,
+    PROJECT_ROOT,
+    AccessibilityGateEvidence,
     LockedPlatform,
     MandatoryReleaseGateEvidence,
     PackageKind,
     PerformanceGateEvidence,
-    PROJECT_QML_ROOT,
-    PROJECT_ROOT,
+    SafetyGateEvidence,
     audit_frontend_v2_surface,
     audit_nuitka_dependency_report,
     audit_packaged_formal_strategy_sources,
     certify_frontend_v2_release,
     classify_windows_operating_system,
-    create_package_build_plans,
     create_deterministic_package_archive,
+    create_package_build_plans,
     deploy_scanned_qml_runtime,
     load_toolchain_lock,
-    main as packaging_main,
     resolve_qml_dependency_closure,
     scan_qml_dependencies,
-    SafetyGateEvidence,
     toolchain_evidence_identity,
+    verify_clean_room_report,
     verify_release_source,
     verify_running_toolchain,
-    verify_clean_room_report,
     write_package_evidence,
     write_renderer_evidence,
+)
+from stock_sim.release.frontend_v2_packaging import (
+    main as packaging_main,
 )
 from stock_sim.release.no_manual_trading_gate import (
     POLICY_VERSION,
     REQUIRED_GATE_SURFACES,
     audit_no_manual_trading_gate,
 )
-
+from strategy_diagnostics.formal_strategy_sources import (
+    FORMAL_STRATEGY_SOURCE_BINDINGS,
+)
 
 _CLEAN_ROOM_JOURNEY = (
     (
@@ -245,6 +246,8 @@ def _clean_room_lane(root, lane, graphics_api):
         "production_path": [
             "DiagnosticsApplication",
             "FileBackedV1Persistence",
+            "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+            "LiveDiagnosticTasksAdapter",
             "LiveStrategyDiagnosticsV1ApplicationAdapter",
             "EventBridge",
             "LiveRunMonitoringAdapter",
@@ -265,6 +268,7 @@ def _clean_room_lane(root, lane, graphics_api):
             "StrategyDiagnosticsV1ApplicationReadModel/1.0"
         ),
         "active_feature_interfaces": [
+            "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
         ],
@@ -294,6 +298,7 @@ def _clean_room_lane(root, lane, graphics_api):
         "old_generation_rejected": True,
         "authoritative_reconnect_verified": True,
         "routes_rendered": [
+            "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
         ],
@@ -408,11 +413,12 @@ def test_integration_release_notes_keep_later_modules_and_waves_incomplete():
     assert "Integration Contract Vertical Slice" in release_notes
     assert "`RunMonitoringFeature` 1.2" in release_notes
     assert "`EvidenceAndFindingsFeature` 1.1" in release_notes
-    assert "Diagnostic Tasks creation and launch are not complete" in release_notes
+    assert "`DiagnosticTasksFeature` 1.0 is active" in release_notes
+    assert "not an installed Wave 2 release-certification claim" in release_notes
     assert "Strategy Library is not complete" in release_notes
     assert "Scenario Lab is not complete" in release_notes
     assert "System Health is not complete" in release_notes
-    assert "Waves 2–4 are not complete" in release_notes
+    assert "Waves 3–4 are not complete" in release_notes
     assert "manual trading" in release_notes.casefold()
     assert "HTTP" in release_notes
     assert "Widgets rollback" in release_notes
@@ -447,6 +453,7 @@ def test_qml_dependencies_are_discovered_from_source_imports_not_a_handwritten_l
         for dependency in project_manifest.dependencies
     } == {
         ("QtQuick", "2.15"),
+        ("QtQuick.Controls", "2.15"),
         ("QtQuick.Layouts", "1.15"),
         ("QtQuick.Shapes", "1.15"),
     }
@@ -1327,6 +1334,8 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "production_path": [
                         "DiagnosticsApplication",
                         "FileBackedV1Persistence",
+                        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+                        "LiveDiagnosticTasksAdapter",
                         "LiveStrategyDiagnosticsV1ApplicationAdapter",
                         "EventBridge",
                         "LiveRunMonitoringAdapter",
@@ -1347,6 +1356,7 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                         "StrategyDiagnosticsV1ApplicationReadModel/1.0"
                     ),
                     "active_feature_interfaces": [
+                        "DiagnosticTasksFeature/1.0",
                         "RunMonitoringFeature/1.2",
                         "EvidenceAndFindingsFeature/1.1",
                     ],
@@ -1386,6 +1396,7 @@ def test_renderer_evidence_retains_both_lanes_environment_and_lock(
                     "old_generation_rejected": True,
                     "authoritative_reconnect_verified": True,
                     "routes_rendered": [
+                        "diagnostic_tasks",
                         "run_monitoring",
                         "evidence_and_findings",
                     ],

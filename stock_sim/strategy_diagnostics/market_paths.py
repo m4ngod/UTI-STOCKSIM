@@ -403,6 +403,8 @@ class MarketPathArtifactStore(Protocol):
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath: ...
 
+    def list_paths(self) -> tuple[MaterializedMarketPath, ...]: ...
+
 
 class InMemoryMarketPathArtifactStore:
     def __init__(self) -> None:
@@ -420,6 +422,14 @@ class InMemoryMarketPathArtifactStore:
             return self._paths[artifact_hash]
         except KeyError as exc:
             raise KeyError("unknown Materialized Market Path artifact") from exc
+
+    def list_paths(self) -> tuple[MaterializedMarketPath, ...]:
+        return tuple(
+            sorted(
+                self._paths.values(),
+                key=lambda item: item.artifact_hash,
+            )
+        )
 
 
 class ParquetMarketPathArtifactStore:
@@ -533,6 +543,23 @@ class ParquetMarketPathArtifactStore:
         if _canonical_hash(_materialized_content(path)) != artifact_hash:
             raise ValueError("stored Materialized Market Path failed hash verification")
         return path
+
+    def list_paths(self) -> tuple[MaterializedMarketPath, ...]:
+        if not self._root.exists():
+            return ()
+        hashes = tuple(
+            sorted(
+                entry.name
+                for entry in self._root.iterdir()
+                if entry.is_dir()
+                and len(entry.name) == 64
+                and all(
+                    character in "0123456789abcdef"
+                    for character in entry.name
+                )
+            )
+        )
+        return tuple(self.get(artifact_hash) for artifact_hash in hashes)
 
     def _artifact_directory(self, artifact_hash: str) -> Path:
         if len(artifact_hash) != 64 or any(
@@ -1303,6 +1330,9 @@ class ScenarioMaterializer:
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath:
         return self._artifact_store.get(artifact_hash)
+
+    def list_materialized_paths(self) -> tuple[MaterializedMarketPath, ...]:
+        return self._artifact_store.list_paths()
 
 
 __all__ = [
