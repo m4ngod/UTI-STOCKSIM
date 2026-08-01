@@ -46,16 +46,32 @@ Item {
         objectName: "evidenceChartSeriesShape"
         anchors.fill: parent
         property int requestedPaintSequence: chart.paintRequestSequence
-        property int paintingPaintSequence: 0
-        property int paintingFrameSequence: 0
-        property int paintingAcceptedRevision: 0
+        property var inFlightPaintTokens: []
         renderTarget: Canvas.Image
         renderStrategy: Canvas.Threaded
 
+        function capturePaintToken() {
+            inFlightPaintTokens = inFlightPaintTokens.concat([{
+                paintSequence: requestedPaintSequence,
+                frameSequence: chart.frameSequence,
+                acceptedRevision: chart.acceptedRevision
+            }])
+        }
+
+        function acknowledgeOldestPaintToken() {
+            if (inFlightPaintTokens.length === 0)
+                return
+            var token = inFlightPaintTokens[0]
+            inFlightPaintTokens = inFlightPaintTokens.slice(1)
+            if (token.paintSequence < chart.paintedPaintSequence)
+                return
+            chart.paintedPaintSequence = token.paintSequence
+            chart.paintedFrameSequence = token.frameSequence
+            chart.paintedAcceptedRevision = token.acceptedRevision
+        }
+
         onPaint: {
-            paintingPaintSequence = requestedPaintSequence
-            paintingFrameSequence = chart.frameSequence
-            paintingAcceptedRevision = chart.acceptedRevision
+            capturePaintToken()
             var context = getContext("2d")
             context.reset()
             if (chart.normalizedPoints.length < 2)
@@ -83,13 +99,7 @@ Item {
             context.stroke()
         }
 
-        onPainted: {
-            if (paintingPaintSequence < chart.paintedPaintSequence)
-                return
-            chart.paintedPaintSequence = paintingPaintSequence
-            chart.paintedFrameSequence = paintingFrameSequence
-            chart.paintedAcceptedRevision = paintingAcceptedRevision
-        }
+        onPainted: acknowledgeOldestPaintToken()
         onRequestedPaintSequenceChanged: requestPaint()
         onWidthChanged: chart.requestSeriesPaint()
         onHeightChanged: chart.requestSeriesPaint()
