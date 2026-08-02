@@ -354,6 +354,7 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
 ):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from stock_sim.release import frontend_v2_package_entry as release_entry
     from stock_sim.release.frontend_v2_package_entry import (
         RendererLane,
         run_smoke_journey,
@@ -367,6 +368,7 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
         extract_sealed_wave2_release_input_fixture_archive,
         open_sealed_wave2_release_input_fixture,
     )
+    from strategy_diagnostics.application import DiagnosticsApplication
 
     source_commit = "b" * 40
     qml_plan = create_package_build_plans(
@@ -427,6 +429,47 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
             artifact_root=audited_bundle / "artifacts",
         )
 
+    active_mounts: set[int] = set()
+    terminal_advance_quiesced = False
+    create_production_window = release_entry._create_production_window
+    close_mount = release_entry._close_mount
+    advance_campaign = DiagnosticsApplication.advance_diagnostic_campaign
+
+    def observed_create_production_window(**arguments):
+        created = create_production_window(**arguments)
+        active_mounts.add(id(created[2]))
+        return created
+
+    def observed_close_mount(**arguments):
+        close_mount(**arguments)
+        active_mounts.discard(id(arguments["host"]))
+
+    def observed_advance_campaign(self, *arguments, **keyword_arguments):
+        nonlocal terminal_advance_quiesced
+        if keyword_arguments.get("max_cases") == 64:
+            terminal_advance_quiesced = True
+            assert not active_mounts, (
+                "Installed background completion must not race live QML "
+                "Adapter executor threads"
+            )
+        return advance_campaign(self, *arguments, **keyword_arguments)
+
+    monkeypatch.setattr(
+        release_entry,
+        "_create_production_window",
+        observed_create_production_window,
+    )
+    monkeypatch.setattr(
+        release_entry,
+        "_close_mount",
+        observed_close_mount,
+    )
+    monkeypatch.setattr(
+        DiagnosticsApplication,
+        "advance_diagnostic_campaign",
+        observed_advance_campaign,
+    )
+
     report_dir = tmp_path / "installed-wave2-smoke"
     result = run_smoke_journey(
         report_dir=report_dir,
@@ -453,6 +496,8 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
     assert result.writable_persistence_verified is True
     assert result.application_reopened is True
     assert result.background_continuation_verified is True
+    assert terminal_advance_quiesced is True
+    assert not active_mounts
     assert result.task_cancel_order_isolation_verified is True
     assert result.campaign_status == "completed"
     assert result.evidence_status == "sealed"
@@ -2351,6 +2396,42 @@ def test_smoke_application_shutdown_survives_earlier_cleanup_error(
     assert errors == [
         "QApplication closeAllWindows failed: RuntimeError",
     ]
+
+
+def test_terminal_campaign_does_not_advance_after_mount_quiescence_failure():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _advance_installed_wave2_campaign_after_mount_quiescence,
+    )
+
+    class Application:
+        advanced = False
+
+        def advance_diagnostic_campaign(self, *_arguments, **_keyword_arguments):
+            self.advanced = True
+            raise AssertionError(
+                "backend continuation must remain blocked after close failure"
+            )
+
+    application = Application()
+    cleanup_errors: list[str] = []
+
+    def failed_mount_close() -> None:
+        cleanup_errors.append(
+            "Run Monitoring Feature cleanup failed: RuntimeError"
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="terminal continuation mount quiescence failed",
+    ):
+        _advance_installed_wave2_campaign_after_mount_quiescence(
+            application=application,
+            campaign_id="diagnostic-campaign-quiescence-probe",
+            close_mount=failed_mount_close,
+            cleanup_errors=cleanup_errors,
+        )
+
+    assert application.advanced is False
 
 
 def test_only_compiled_smoke_bypasses_interpreter_static_teardown():

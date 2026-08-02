@@ -926,6 +926,35 @@ def _start_installed_wave2_commands(
     return running, WAVE2_ACCEPTED_COMMAND_KINDS
 
 
+def _advance_installed_wave2_campaign_after_mount_quiescence(
+    *,
+    application: Any,
+    campaign_id: str,
+    close_mount: Callable[[], None],
+    cleanup_errors: list[str],
+) -> None:
+    previous_error_count = len(cleanup_errors)
+    close_mount()
+    mount_errors = tuple(cleanup_errors[previous_error_count:])
+    if mount_errors:
+        raise RuntimeError(
+            "Installed terminal continuation mount quiescence failed: "
+            + "; ".join(mount_errors)
+        )
+    with _serialized_application_access(application):
+        completed_campaign = application.advance_diagnostic_campaign(
+            campaign_id,
+            max_cases=64,
+            nodes_per_batch=10_000,
+        )
+    if completed_campaign.status != "completed":
+        raise RuntimeError(
+            "Installed Formal Diagnostic Campaign did not reach terminal "
+            f"state: status={completed_campaign.status}; cases="
+            f"{tuple((case.layer, case.status) for case in completed_campaign.cases)}"
+        )
+
+
 def _complete_installed_wave2_campaign(
     *,
     app: Any,
@@ -957,24 +986,12 @@ def _complete_installed_wave2_campaign(
         feature.snapshot(workspace)
         return feature.snapshot(workspace).task
 
-    running = current_task()
-    if running is None or running.handoff.campaign_id is None:
+    terminal_task = current_task()
+    if terminal_task is None or terminal_task.handoff.campaign_id is None:
         raise RuntimeError(
-            "Installed nonterminal Diagnostic Task is unavailable after reopen"
+            "Installed terminal Diagnostic Task is unavailable after remount"
         )
 
-    with _serialized_application_access(application):
-        completed_campaign = application.advance_diagnostic_campaign(
-            running.handoff.campaign_id.value,
-            max_cases=64,
-            nodes_per_batch=10_000,
-        )
-    if completed_campaign.status != "completed":
-        raise RuntimeError(
-            "Installed Formal Diagnostic Campaign did not reach terminal "
-            f"state: status={completed_campaign.status}; cases="
-            f"{tuple((case.layer, case.status) for case in completed_campaign.cases)}"
-        )
     projection.refresh()
     _settle_until(
         app,
@@ -1745,6 +1762,47 @@ def _run_smoke_journey(
             )
         background_continuation_verified = True
 
+        _advance_installed_wave2_campaign_after_mount_quiescence(
+            application=input_fixture.application,
+            campaign_id=campaign_id,
+            close_mount=close_initial_mount,
+            cleanup_errors=cleanup_errors,
+        )
+        read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
+            input_fixture.application,
+            input_fixture.engine,
+        )
+        diagnostic_tasks_application = (
+            LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+                input_fixture.application
+            )
+        )
+        context, window, host = _create_production_window(
+            event_bridge=bridge,
+            strategy_diagnostics_read_model=read_model,
+            strategy_diagnostics_tasks_application=(
+                diagnostic_tasks_application
+            ),
+            settings_path=report_dir / "frontend-v2-settings.json",
+        )
+        close_initial_mount = register_mount(
+            context=context,
+            window=window,
+            host=host,
+        )
+        window.setObjectName("frontendV2PackageTerminalRemountWindow")
+        window.resize(1280, 720)
+        window.show()
+        app.processEvents()
+        root = host.rootObject()
+        if root is None:
+            raise RuntimeError(
+                "Terminal remounted Journey Workspace is unavailable"
+            )
+        accessibility_preferences.append(
+            _accessibility_preferences_verified(root)
+        )
+
         (
             completed_task,
             cancel_order_isolation_verified,
@@ -2386,12 +2444,28 @@ def _mount_is_closed(
         getattr(host, "_workspace_closed", False)
         and getattr(context.diagnostic_tasks_feature, "_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
+        and _owned_executor_is_stopped(context.run_monitoring_feature)
         and getattr(
             context.evidence_and_findings_feature,
             "_closed",
             False,
         )
+        and _owned_executor_is_stopped(
+            context.evidence_and_findings_feature
+        )
         and not window.isVisible()
+    )
+
+
+def _owned_executor_is_stopped(feature: Any) -> bool:
+    if not getattr(feature, "_owns_executor", False):
+        return True
+    executor = getattr(feature, "_executor", None)
+    if executor is None:
+        return False
+    return all(
+        not thread.is_alive()
+        for thread in tuple(getattr(executor, "_threads", ()))
     )
 
 
