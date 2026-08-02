@@ -351,6 +351,8 @@ class FileBackedFormalV1ReleaseFixture:
         return tuple(sorted(values))
 
     def close(self) -> None:
+        if self._closed:
+            return
         self.engine.dispose()
         object.__setattr__(self, "_closed", True)
 
@@ -397,6 +399,8 @@ class FileBackedWave2ReleaseInputFixture:
     _closed: bool = field(default=False, init=False, compare=False)
 
     def close(self) -> None:
+        if self._closed:
+            return
         self.engine.dispose()
         object.__setattr__(self, "_closed", True)
 

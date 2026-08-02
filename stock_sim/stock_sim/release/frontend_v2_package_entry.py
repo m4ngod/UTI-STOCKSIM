@@ -2199,6 +2199,18 @@ def _run_smoke_journey(
             cancel_order_isolation_verified
         ),
     )
+    _record_cleanup(
+        cleanup_errors,
+        "EventBridge pre-fixture quiescence",
+        bridge.stop,
+    )
+    try:
+        app.processEvents()
+    except BaseException as error:
+        cleanup_errors.append(
+            "Qt event drain after EventBridge stop failed: "
+            f"{type(error).__name__}"
+        )
     return result
 
 

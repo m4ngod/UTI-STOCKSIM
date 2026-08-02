@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from threading import Event, RLock, Thread
+from threading import Event, RLock, Thread, current_thread
 import time
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -206,8 +206,11 @@ class EventBridge:
                 self._redis_subscriber.stop()
             except Exception:
                 pass
-        if self._th:
-            self._th.join(timeout=1)
+        thread = self._th
+        if thread is not None and thread is not current_thread():
+            thread.join()
+        if thread is not None and not thread.is_alive():
+            self._th = None
         self.flush(force=True)
         self._disable_local_subscription()
 

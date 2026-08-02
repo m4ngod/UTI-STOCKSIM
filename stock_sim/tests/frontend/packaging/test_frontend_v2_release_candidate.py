@@ -1927,6 +1927,119 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     )
 
 
+def test_release_smoke_stops_bridge_before_final_fixture_disposal(
+    tmp_path,
+    monkeypatch,
+):
+    from app.event_bridge import EventBridge
+    from stock_sim.release.frontend_v2_package_entry import (
+        RendererLane,
+        run_smoke_journey,
+    )
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_formal_v1_release_fixture,
+    )
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+        FileBackedFormalV1ReleaseFixture,
+    )
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    bridge_stopped = False
+    start_bridge = EventBridge.start
+    stop_bridge = EventBridge.stop
+    close_fixture = FileBackedFormalV1ReleaseFixture.close
+    source_commit = "c" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    stage_packaged_formal_v1_release_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+
+    def observed_stop(bridge):
+        nonlocal bridge_stopped
+        stop_bridge(bridge)
+        bridge_stopped = True
+
+    def observed_close(fixture):
+        assert bridge_stopped, (
+            "The EventBridge thread must stop before final fixture disposal"
+        )
+        assert observed_bridge._running is False
+        assert (
+            observed_bridge._th is None
+            or not observed_bridge._th.is_alive()
+        )
+        close_fixture(fixture)
+
+    monkeypatch.setattr(EventBridge, "stop", observed_stop)
+    monkeypatch.setattr(
+        FileBackedFormalV1ReleaseFixture,
+        "close",
+        observed_close,
+    )
+    observed_bridge = None
+
+    def capture_bridge_start(bridge):
+        nonlocal observed_bridge
+        observed_bridge = bridge
+        start_bridge(bridge)
+
+    monkeypatch.setattr(EventBridge, "start", capture_bridge_start)
+
+    result = run_smoke_journey(
+        report_dir=tmp_path / "bridge-before-fixture",
+        renderer_lane=RendererLane.SOFTWARE,
+        source_commit=source_commit,
+        capture_images=False,
+        fixture_archive_path=fixture_archive,
+    )
+
+    assert result.clean_exit is True
+    assert result.errors == ()
+
+
+def test_release_file_backed_fixture_close_is_idempotent(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_formal_v1_release_fixture,
+        create_file_backed_wave2_release_input_fixture,
+    )
+
+    fixtures = (
+        create_file_backed_formal_v1_release_fixture(
+            database_path=tmp_path / "formal" / "fixture.sqlite3",
+            artifact_root=tmp_path / "formal" / "artifacts",
+        ),
+        create_file_backed_wave2_release_input_fixture(
+            database_path=tmp_path / "wave2" / "fixture.sqlite3",
+            artifact_root=tmp_path / "wave2" / "artifacts",
+        ),
+    )
+    for fixture in fixtures:
+        dispose_calls = 0
+        dispose = fixture.engine.dispose
+
+        def observed_dispose():
+            nonlocal dispose_calls
+            dispose_calls += 1
+            dispose()
+
+        monkeypatch.setattr(fixture.engine, "dispose", observed_dispose)
+        fixture.close()
+        fixture.close()
+
+        assert dispose_calls == 1
+        assert fixture.closed is True
+
+
 def test_release_smoke_quiesces_qml_before_closing_live_features():
     from stock_sim.release.frontend_v2_package_entry import (
         _close_mount,
