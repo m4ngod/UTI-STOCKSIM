@@ -1388,6 +1388,32 @@ def _run_smoke_journey(
         lambda: _restore_environment(previous_environment),
     )
     lifecycle_checks.append(_environment_restored_check(previous_environment))
+    retired_mounts: list[tuple[Any, dict[str, bool]]] = []
+    mount_closers: list[Callable[[], None]] = []
+
+    def release_retired_mounts() -> None:
+        for mounted_window, state in tuple(retired_mounts):
+            release_error_count = len(cleanup_errors)
+            _release_closed_mount(
+                app=app,
+                window=mounted_window,
+                errors=cleanup_errors,
+            )
+            state["released"] = (
+                len(cleanup_errors) == release_error_count
+            )
+        retired_mounts.clear()
+
+    # ExitStack callbacks run in reverse registration order. Mount callbacks
+    # are registered below, so an exceptional exit first quiesces each mount,
+    # then stops the shared EventBridge, and only then forces deferred native
+    # QObject deletion.
+    cleanup.callback(
+        _record_cleanup,
+        cleanup_errors,
+        "retired QML mounts",
+        release_retired_mounts,
+    )
     cleanup.callback(
         _record_cleanup,
         cleanup_errors,
@@ -1447,19 +1473,12 @@ def _run_smoke_journey(
                     cleanup_errors.append(
                         "QML mount lifecycle audit failed before release"
                     )
-                release_error_count = len(cleanup_errors)
-                _release_closed_mount(
-                    app=app,
-                    window=mounted_window,
-                    errors=cleanup_errors,
-                )
-                state["released"] = (
-                    len(cleanup_errors) == release_error_count
-                )
+                retired_mounts.append((mounted_window, state))
             finally:
                 mount_objects.clear()
 
         cleanup.callback(close_mount)
+        mount_closers.append(close_mount)
 
         def mount_closed() -> bool:
             return bool(
@@ -2209,6 +2228,16 @@ def _run_smoke_journey(
     except BaseException as error:
         cleanup_errors.append(
             "Qt event drain after EventBridge stop failed: "
+            f"{type(error).__name__}"
+        )
+    for close_mount in reversed(tuple(mount_closers)):
+        close_mount()
+    release_retired_mounts()
+    try:
+        app.processEvents()
+    except BaseException as error:
+        cleanup_errors.append(
+            "Qt event drain after retired mount release failed: "
             f"{type(error).__name__}"
         )
     return result

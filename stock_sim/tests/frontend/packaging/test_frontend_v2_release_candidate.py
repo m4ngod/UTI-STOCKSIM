@@ -1932,10 +1932,8 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
     monkeypatch,
 ):
     from app.event_bridge import EventBridge
-    from stock_sim.release.frontend_v2_package_entry import (
-        RendererLane,
-        run_smoke_journey,
-    )
+    from stock_sim.release import frontend_v2_package_entry as release_entry
+    from stock_sim.release.frontend_v2_package_entry import RendererLane
     from stock_sim.release.frontend_v2_packaging import (
         create_package_build_plans,
         stage_packaged_formal_v1_release_fixture,
@@ -1948,9 +1946,13 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
     bridge_stopped = False
+    quiesced_mount_count = 0
+    released_mount_count = 0
     start_bridge = EventBridge.start
     stop_bridge = EventBridge.stop
     close_fixture = FileBackedFormalV1ReleaseFixture.close
+    close_mount = release_entry._close_mount
+    release_closed_mount = release_entry._release_closed_mount
     source_commit = "c" * 40
     qml_plan = create_package_build_plans(
         output_root=tmp_path / "packages",
@@ -1970,6 +1972,13 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
         assert bridge_stopped, (
             "The EventBridge thread must stop before final fixture disposal"
         )
+        assert quiesced_mount_count > 0
+        assert released_mount_count == quiesced_mount_count, (
+            "Every retired native QML mount must be released before final "
+            "fixture disposal; "
+            f"quiesced={quiesced_mount_count}, "
+            f"released={released_mount_count}"
+        )
         assert observed_bridge._running is False
         assert (
             observed_bridge._th is None
@@ -1977,7 +1986,36 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
         )
         close_fixture(fixture)
 
+    def observed_close_mount(**kwargs):
+        nonlocal quiesced_mount_count
+        close_mount(**kwargs)
+        quiesced_mount_count += 1
+
+    def observed_release_closed_mount(**kwargs):
+        nonlocal released_mount_count
+        assert bridge_stopped, (
+            "Native QML objects must not be force-released while the "
+            "EventBridge worker is still alive"
+        )
+        assert observed_bridge is not None
+        assert (
+            observed_bridge._th is None
+            or not observed_bridge._th.is_alive()
+        )
+        release_closed_mount(**kwargs)
+        released_mount_count += 1
+
     monkeypatch.setattr(EventBridge, "stop", observed_stop)
+    monkeypatch.setattr(
+        release_entry,
+        "_close_mount",
+        observed_close_mount,
+    )
+    monkeypatch.setattr(
+        release_entry,
+        "_release_closed_mount",
+        observed_release_closed_mount,
+    )
     monkeypatch.setattr(
         FileBackedFormalV1ReleaseFixture,
         "close",
@@ -1992,7 +2030,7 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
 
     monkeypatch.setattr(EventBridge, "start", capture_bridge_start)
 
-    result = run_smoke_journey(
+    result = release_entry.run_smoke_journey(
         report_dir=tmp_path / "bridge-before-fixture",
         renderer_lane=RendererLane.SOFTWARE,
         source_commit=source_commit,
