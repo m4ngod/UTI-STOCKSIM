@@ -2222,6 +2222,135 @@ raise SystemExit(
     ]
 
 
+def test_release_smoke_main_shuts_down_its_owned_qapplication(tmp_path):
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_wave2_release_input_fixture,
+    )
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    )
+
+    source_commit = "d" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    stage_packaged_wave2_release_input_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+    script = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["QT_QUICK_BACKEND"] = "software"
+
+from PySide6.QtWidgets import QApplication
+from stock_sim.release.frontend_v2_package_entry import main
+
+exit_code = main(
+    (
+        "--renderer-lane",
+        "software",
+        "--smoke-report-dir",
+        str(Path(sys.argv[1]) / "main-owned-application"),
+        "--fixture-archive",
+        sys.argv[2],
+        "--source-commit",
+        sys.argv[3],
+        "--no-images",
+    )
+)
+print(
+    json.dumps(
+        {
+            "application_shutdown": QApplication.instance() is None,
+            "exit_code": exit_code,
+        },
+        sort_keys=True,
+    )
+)
+raise SystemExit(
+    0
+    if exit_code == 0 and QApplication.instance() is None
+    else 1
+)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONFAULTHANDLER"] = "1"
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path),
+            str(fixture_archive),
+            source_commit,
+        ),
+        cwd=PROJECT_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=900,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "application_shutdown": True,
+        "exit_code": 0,
+    }
+
+
+def test_smoke_application_shutdown_survives_earlier_cleanup_error(
+    monkeypatch,
+):
+    from PySide6.QtWidgets import QApplication
+    from stock_sim.release.frontend_v2_package_entry import (
+        _shutdown_smoke_application,
+    )
+
+    events: list[str] = []
+
+    class Application:
+        shutdown_complete = False
+
+        def closeAllWindows(self):
+            events.append("close-all-windows")
+            raise RuntimeError("window cleanup failed")
+
+        def processEvents(self):
+            events.append("process-events")
+
+        def shutdown(self):
+            events.append("shutdown")
+            self.shutdown_complete = True
+
+    app = Application()
+    monkeypatch.setattr(
+        QApplication,
+        "instance",
+        lambda: None if app.shutdown_complete else app,
+    )
+    errors: list[str] = []
+
+    _shutdown_smoke_application(errors)
+
+    assert events == [
+        "close-all-windows",
+        "process-events",
+        "shutdown",
+    ]
+    assert errors == [
+        "QApplication closeAllWindows failed: RuntimeError",
+    ]
+
+
 def test_production_window_factory_closes_features_when_window_fails(
     tmp_path,
     monkeypatch,

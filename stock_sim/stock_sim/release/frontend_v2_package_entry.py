@@ -1206,6 +1206,28 @@ def run_smoke_journey(
     return finalized
 
 
+def _shutdown_smoke_application(errors: list[str]) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for label, action in (
+        ("closeAllWindows", app.closeAllWindows),
+        ("processEvents", app.processEvents),
+        ("shutdown", app.shutdown),
+    ):
+        try:
+            action()
+        except BaseException as error:
+            errors.append(
+                f"QApplication {label} failed: "
+                f"{type(error).__name__}"
+            )
+    if QApplication.instance() is not None:
+        errors.append("QApplication remained alive after shutdown")
+
+
 def _run_wave2_smoke_journey(
     *,
     report_dir: Path,
@@ -2625,20 +2647,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
     if arguments.smoke_report_dir is not None:
+        from PySide6.QtWidgets import QApplication
+
+        owns_application = QApplication.instance() is None
         fixture_archive_path = arguments.fixture_archive
         if fixture_archive_path is None and "__compiled__" in globals():
             fixture_archive_path = _installed_fixture_archive_path()
-        result = run_smoke_journey(
-            report_dir=arguments.smoke_report_dir,
-            renderer_lane=renderer_lane,
-            source_commit=arguments.source_commit,
-            capture_images=not arguments.no_images,
-            fixture_archive_path=fixture_archive_path,
-        )
+        shutdown_errors: list[str] = []
+        try:
+            result = run_smoke_journey(
+                report_dir=arguments.smoke_report_dir,
+                renderer_lane=renderer_lane,
+                source_commit=arguments.source_commit,
+                capture_images=not arguments.no_images,
+                fixture_archive_path=fixture_archive_path,
+            )
+        finally:
+            if owns_application:
+                _shutdown_smoke_application(shutdown_errors)
         return (
             0
             if (
-                not result.errors
+                not shutdown_errors
+                and not result.errors
                 and result.clean_exit
                 and result.manual_trading_action_count == 0
                 and result.read_only_context_visible
