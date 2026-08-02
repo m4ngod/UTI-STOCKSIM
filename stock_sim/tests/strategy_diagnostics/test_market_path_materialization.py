@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import errno
 from pathlib import Path
+from threading import Barrier, Event, Lock
 
 import pytest
 
@@ -764,6 +767,271 @@ def test_content_addressed_path_survives_artifact_store_restart(tmp_path: Path) 
     assert restored == materialized
     assert restored.to_preview_dict() == materialized.to_preview_dict()
     assert reopened_store.list_paths() == (materialized,)
+
+
+def test_parquet_store_retries_transient_directory_publish_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_replace = Path.replace
+    publish_attempts = 0
+
+    def replace_with_one_transient_conflict(
+        source: Path,
+        target: Path,
+    ) -> Path:
+        nonlocal publish_attempts
+        if source.name.startswith(".staging-"):
+            publish_attempts += 1
+            if publish_attempts == 1:
+                raise PermissionError(
+                    errno.EACCES,
+                    "transient directory publish conflict",
+                )
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", replace_with_one_transient_conflict)
+
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(tmp_path / "market-paths"),
+    ).materialize_baseline(_segment(), seed=17)
+
+    assert publish_attempts == 2
+    assert (
+        ParquetMarketPathArtifactStore(tmp_path / "market-paths").get(
+            materialized.artifact_hash
+        )
+        == materialized
+    )
+
+
+def test_parquet_store_bounds_publish_retries_and_cleans_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import strategy_diagnostics.market_paths as market_paths_module
+
+    root = tmp_path / "market-paths"
+    publish_attempts = 0
+    conflict = PermissionError(
+        errno.EACCES,
+        "persistent directory publish conflict",
+    )
+
+    def replace_with_persistent_conflict(
+        source: Path,
+        target: Path,
+    ) -> Path:
+        nonlocal publish_attempts
+        del target
+        if source.name.startswith(".staging-"):
+            publish_attempts += 1
+            raise conflict
+        raise AssertionError("unexpected replace outside staging publication")
+
+    monkeypatch.setattr(Path, "replace", replace_with_persistent_conflict)
+    monkeypatch.setattr(market_paths_module, "sleep", lambda _: None)
+
+    with pytest.raises(PermissionError) as captured:
+        ScenarioMaterializer(
+            source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+            artifact_store=ParquetMarketPathArtifactStore(root),
+        ).materialize_baseline(_segment(), seed=17)
+
+    assert captured.value is conflict
+    assert publish_attempts == 5
+    assert tuple(root.glob(".staging-*")) == ()
+
+
+def test_parquet_store_propagates_non_retryable_publish_error_immediately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import strategy_diagnostics.market_paths as market_paths_module
+
+    root = tmp_path / "market-paths"
+    publish_attempts = 0
+    denied = PermissionError(
+        errno.EPERM,
+        "non-retryable directory publish error",
+    )
+
+    def replace_with_non_retryable_error(
+        source: Path,
+        target: Path,
+    ) -> Path:
+        nonlocal publish_attempts
+        del target
+        if source.name.startswith(".staging-"):
+            publish_attempts += 1
+            raise denied
+        raise AssertionError("unexpected replace outside staging publication")
+
+    def fail_if_sleeping(delay: float) -> None:
+        raise AssertionError(f"non-retryable error slept for {delay}")
+
+    monkeypatch.setattr(Path, "replace", replace_with_non_retryable_error)
+    monkeypatch.setattr(market_paths_module, "sleep", fail_if_sleeping)
+
+    with pytest.raises(PermissionError) as captured:
+        ScenarioMaterializer(
+            source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+            artifact_store=ParquetMarketPathArtifactStore(root),
+        ).materialize_baseline(_segment(), seed=17)
+
+    assert captured.value is denied
+    assert publish_attempts == 1
+    assert tuple(root.glob(".staging-*")) == ()
+
+
+def test_reopened_parquet_store_reuses_verified_immutable_path_within_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    root = tmp_path / "market-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(root),
+    ).materialize_baseline(_segment(), seed=17)
+    original_connect = duckdb.connect
+    connect_count = 0
+
+    def counting_connect(*args, **kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(duckdb, "connect", counting_connect)
+    reopened_store = ParquetMarketPathArtifactStore(root)
+
+    assert reopened_store.list_paths() == (materialized,)
+    assert reopened_store.get(materialized.artifact_hash) == materialized
+    assert connect_count == 0
+    manifest_path = root / materialized.artifact_hash / "manifest.json"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+
+    assert reopened_store.get(materialized.artifact_hash) == materialized
+    assert connect_count == 1
+
+
+def test_parquet_store_serializes_parallel_first_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    written_root = tmp_path / "written-market-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(written_root),
+    ).materialize_baseline(_segment(), seed=17)
+    root = tmp_path / "cold-market-paths"
+    written_root.rename(root)
+    original_connect = duckdb.connect
+    callers_ready = Barrier(3)
+    first_connect_entered = Event()
+    second_connect_entered = Event()
+    release_connect = Event()
+    counter_guard = Lock()
+    connect_count = 0
+    active_connects = 0
+    maximum_active = 0
+
+    def blocking_connect(*args, **kwargs):
+        nonlocal connect_count, active_connects, maximum_active
+        with counter_guard:
+            connect_count += 1
+            active_connects += 1
+            maximum_active = max(maximum_active, active_connects)
+            if connect_count == 1:
+                first_connect_entered.set()
+            else:
+                second_connect_entered.set()
+        try:
+            if not release_connect.wait(timeout=5):
+                raise TimeoutError("test did not release DuckDB connect")
+            return original_connect(*args, **kwargs)
+        finally:
+            with counter_guard:
+                active_connects -= 1
+
+    monkeypatch.setattr(duckdb, "connect", blocking_connect)
+    reopened_store = ParquetMarketPathArtifactStore(root)
+
+    def load_path():
+        callers_ready.wait()
+        return reopened_store.get(materialized.artifact_hash)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(load_path)
+        second = executor.submit(load_path)
+        callers_ready.wait()
+        assert first_connect_entered.wait(timeout=5)
+        try:
+            assert not second_connect_entered.wait(timeout=0.5)
+        finally:
+            release_connect.set()
+        restored = (first.result(timeout=5), second.result(timeout=5))
+
+    assert restored == (materialized, materialized)
+    assert connect_count == 1
+    assert maximum_active == 1
+
+
+def test_parquet_store_does_not_publish_cache_after_mid_read_invalidation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    written_root = tmp_path / "written-market-paths"
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(written_root),
+    ).materialize_baseline(_segment(), seed=17)
+    root = tmp_path / "cold-market-paths"
+    written_root.rename(root)
+    original_connect = duckdb.connect
+    first_connect_entered = Event()
+    release_connect = Event()
+    connect_count = 0
+
+    def blocking_connect(*args, **kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        if connect_count == 1:
+            first_connect_entered.set()
+            if not release_connect.wait(timeout=5):
+                raise TimeoutError("test did not release DuckDB connect")
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(duckdb, "connect", blocking_connect)
+    reopened_store = ParquetMarketPathArtifactStore(root)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(
+            reopened_store.get,
+            materialized.artifact_hash,
+        )
+        assert first_connect_entered.wait(timeout=5)
+        manifest_path = root / materialized.artifact_hash / "manifest.json"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+        release_connect.set()
+        first_result = first.result(timeout=5)
+
+    second_result = reopened_store.get(materialized.artifact_hash)
+
+    assert first_result == materialized
+    assert second_result == materialized
+    assert connect_count == 2
 
 
 def test_parquet_store_idempotently_accepts_equivalent_feature_map_order(

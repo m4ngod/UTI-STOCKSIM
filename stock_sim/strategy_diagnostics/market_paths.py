@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
+from threading import RLock
+from time import sleep
 from typing import Iterable, Mapping, Protocol, cast
 
 from .historical_segments import HistoricalMarketSegment
@@ -432,11 +435,47 @@ class InMemoryMarketPathArtifactStore:
         )
 
 
+_MarketPathFingerprint = tuple[tuple[int, int], ...]
+_PROCESS_VERIFIED_MARKET_PATHS: dict[
+    tuple[str, str],
+    tuple[MaterializedMarketPath, _MarketPathFingerprint],
+] = {}
+_PROCESS_VERIFIED_MARKET_PATHS_LOCK = RLock()
+_PROCESS_VERIFIED_MARKET_PATHS_LIMIT = 256
+_ATOMIC_DIRECTORY_PUBLISH_RETRY_DELAYS = (0.05, 0.10, 0.20, 0.40)
+_RETRYABLE_DIRECTORY_PUBLISH_ERRNOS = frozenset((errno.EACCES, errno.EBUSY))
+_RETRYABLE_DIRECTORY_PUBLISH_WINERRORS = frozenset((5, 32, 33))
+
+
+def _publish_staging_directory(staging: Path, destination: Path) -> None:
+    for delay in _ATOMIC_DIRECTORY_PUBLISH_RETRY_DELAYS:
+        try:
+            staging.replace(destination)
+            return
+        except PermissionError as exc:
+            if (
+                exc.errno not in _RETRYABLE_DIRECTORY_PUBLISH_ERRNOS
+                and getattr(exc, "winerror", None)
+                not in _RETRYABLE_DIRECTORY_PUBLISH_WINERRORS
+            ):
+                raise
+            sleep(delay)
+    staging.replace(destination)
+
+
 class ParquetMarketPathArtifactStore:
     """Content-addressed local Parquet adapter hidden behind the store port."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._cache_root = os.path.normcase(
+            str(root.resolve(strict=False))
+        )
+        self._verified_paths = _PROCESS_VERIFIED_MARKET_PATHS
+        # Application reopen creates a new store for the same persistent root.
+        # Share one process-local guard so verified immutable content survives
+        # that composition-root replacement without another native Parquet read.
+        self._lock = _PROCESS_VERIFIED_MARKET_PATHS_LOCK
 
     @classmethod
     def from_environment(cls) -> "ParquetMarketPathArtifactStore":
@@ -451,30 +490,61 @@ class ParquetMarketPathArtifactStore:
         return cls(root)
 
     def put(self, path: MaterializedMarketPath) -> MaterializedMarketPath:
-        if _canonical_hash(_materialized_content(path)) != path.artifact_hash:
-            raise ValueError("Materialized Market Path content hash is invalid")
-        self._root.mkdir(parents=True, exist_ok=True)
-        destination = self._artifact_directory(path.artifact_hash)
-        if destination.is_dir():
-            existing = self.get(path.artifact_hash)
-            if _materialized_content(existing) != _materialized_content(path):
-                raise ValueError("immutable Materialized Market Path identity collision")
-            return existing
-        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=self._root))
-        try:
-            self._write_parquet(path, staging)
-            (staging / "manifest.json").write_text(
-                _json_dumps(_manifest_payload(path)),
-                encoding="utf-8",
-            )
-            staging.replace(destination)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
-        return self.get(path.artifact_hash)
+        with self._lock:
+            if _canonical_hash(_materialized_content(path)) != path.artifact_hash:
+                raise ValueError("Materialized Market Path content hash is invalid")
+            self._root.mkdir(parents=True, exist_ok=True)
+            destination = self._artifact_directory(path.artifact_hash)
+            if destination.is_dir():
+                existing = self.get(path.artifact_hash)
+                if _materialized_content(existing) != _materialized_content(path):
+                    raise ValueError(
+                        "immutable Materialized Market Path identity collision"
+                    )
+                return existing
+            staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=self._root))
+            try:
+                self._write_parquet(path, staging)
+                (staging / "manifest.json").write_text(
+                    _json_dumps(_manifest_payload(path)),
+                    encoding="utf-8",
+                )
+                _publish_staging_directory(staging, destination)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
+            return self.get(path.artifact_hash)
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath:
-        artifact_directory = self._artifact_directory(artifact_hash)
+        with self._lock:
+            artifact_directory = self._artifact_directory(artifact_hash)
+            fingerprint = self._artifact_fingerprint(artifact_directory)
+            cache_key = (self._cache_root, artifact_hash)
+            cached = self._verified_paths.get(cache_key)
+            if fingerprint and cached is not None and cached[1] == fingerprint:
+                return cached[0]
+            path = self._load_verified_path(artifact_hash, artifact_directory)
+            verified_fingerprint = self._artifact_fingerprint(
+                artifact_directory
+            )
+            if fingerprint and verified_fingerprint == fingerprint:
+                if (
+                    cache_key not in self._verified_paths
+                    and len(self._verified_paths)
+                    >= _PROCESS_VERIFIED_MARKET_PATHS_LIMIT
+                ):
+                    oldest_key = next(iter(self._verified_paths))
+                    self._verified_paths.pop(oldest_key, None)
+                self._verified_paths[cache_key] = (path, fingerprint)
+            else:
+                self._verified_paths.pop(cache_key, None)
+            return path
+
+    def _load_verified_path(
+        self,
+        artifact_hash: str,
+        artifact_directory: Path,
+    ) -> MaterializedMarketPath:
         try:
             manifest = json.loads(
                 (artifact_directory / "manifest.json").read_text(encoding="utf-8")
@@ -545,21 +615,22 @@ class ParquetMarketPathArtifactStore:
         return path
 
     def list_paths(self) -> tuple[MaterializedMarketPath, ...]:
-        if not self._root.exists():
-            return ()
-        hashes = tuple(
-            sorted(
-                entry.name
-                for entry in self._root.iterdir()
-                if entry.is_dir()
-                and len(entry.name) == 64
-                and all(
-                    character in "0123456789abcdef"
-                    for character in entry.name
+        with self._lock:
+            if not self._root.exists():
+                return ()
+            hashes = tuple(
+                sorted(
+                    entry.name
+                    for entry in self._root.iterdir()
+                    if entry.is_dir()
+                    and len(entry.name) == 64
+                    and all(
+                        character in "0123456789abcdef"
+                        for character in entry.name
+                    )
                 )
             )
-        )
-        return tuple(self.get(artifact_hash) for artifact_hash in hashes)
+            return tuple(self.get(artifact_hash) for artifact_hash in hashes)
 
     def _artifact_directory(self, artifact_hash: str) -> Path:
         if len(artifact_hash) != 64 or any(
@@ -567,6 +638,25 @@ class ParquetMarketPathArtifactStore:
         ):
             raise ValueError("artifact_hash must be lowercase SHA-256")
         return self._root / artifact_hash
+
+    @staticmethod
+    def _artifact_fingerprint(
+        directory: Path,
+    ) -> tuple[tuple[int, int], ...]:
+        try:
+            fingerprint: list[tuple[int, int]] = []
+            for path in (
+                directory / "manifest.json",
+                directory / "nodes.parquet",
+                directory / "instrument_states.parquet",
+            ):
+                file_stat = path.stat()
+                fingerprint.append(
+                    (file_stat.st_size, file_stat.st_mtime_ns)
+                )
+            return tuple(fingerprint)
+        except OSError:
+            return ()
 
     @staticmethod
     def _write_parquet(path: MaterializedMarketPath, directory: Path) -> None:
