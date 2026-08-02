@@ -1224,16 +1224,22 @@ def run_smoke_journey(
     return finalized
 
 
-def _shutdown_smoke_application(errors: list[str]) -> None:
+def _shutdown_smoke_application(
+    errors: list[str],
+    *,
+    run_static_teardown: bool = True,
+) -> None:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance()
     if app is None:
         return
-    for label, action in (
+    actions: tuple[tuple[str, Callable[[], Any]], ...] = (
         ("closeAllWindows", app.closeAllWindows),
-        ("shutdown", app.shutdown),
-    ):
+    )
+    if run_static_teardown:
+        actions += (("shutdown", app.shutdown),)
+    for label, action in actions:
         try:
             action()
         except BaseException as error:
@@ -1241,7 +1247,7 @@ def _shutdown_smoke_application(errors: list[str]) -> None:
                 f"QApplication {label} failed: "
                 f"{type(error).__name__}"
             )
-    if QApplication.instance() is not None:
+    if run_static_teardown and QApplication.instance() is not None:
         errors.append("QApplication remained alive after shutdown")
 
 
@@ -2371,8 +2377,10 @@ def _schedule_closed_mount_release(
     observed_errors = errors if errors is not None else []
     # Queue ownership release, but do not force DeferredDelete delivery here.
     # Nuitka/PySide6 can corrupt the native heap when a compiled QML graph is
-    # synchronously deleted mid-runtime. A fresh CLI process completes these
-    # queued deletions through its owned QApplication.shutdown() boundary.
+    # synchronously deleted mid-runtime. Source smoke completes Qt static
+    # teardown through QApplication.shutdown(). Compiled smoke separately
+    # verifies mount, Feature, bridge, and fixture quiescence, then leaves final
+    # native-object reclamation to its immediate OS-level process exit.
     try:
         window.deleteLater()
     except BaseException as error:
@@ -2730,7 +2738,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         finally:
             if owns_application:
-                _shutdown_smoke_application(shutdown_errors)
+                _shutdown_smoke_application(
+                    shutdown_errors,
+                    run_static_teardown="__compiled__" not in globals(),
+                )
         return (
             0
             if (

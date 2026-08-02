@@ -2398,6 +2398,38 @@ def test_smoke_application_shutdown_survives_earlier_cleanup_error(
     ]
 
 
+def test_compiled_smoke_defers_static_qt_shutdown_to_process_exit(
+    monkeypatch,
+):
+    from PySide6.QtWidgets import QApplication
+    from stock_sim.release.frontend_v2_package_entry import (
+        _shutdown_smoke_application,
+    )
+
+    events: list[str] = []
+
+    class Application:
+        def closeAllWindows(self):
+            events.append("close-all-windows")
+
+        def shutdown(self):
+            raise AssertionError(
+                "compiled smoke must terminate before Qt static shutdown"
+            )
+
+    app = Application()
+    monkeypatch.setattr(QApplication, "instance", lambda: app)
+    errors: list[str] = []
+
+    _shutdown_smoke_application(
+        errors,
+        run_static_teardown=False,
+    )
+
+    assert events == ["close-all-windows"]
+    assert errors == []
+
+
 def test_terminal_campaign_does_not_advance_after_mount_quiescence_failure():
     from stock_sim.release.frontend_v2_package_entry import (
         _advance_installed_wave2_campaign_after_mount_quiescence,
