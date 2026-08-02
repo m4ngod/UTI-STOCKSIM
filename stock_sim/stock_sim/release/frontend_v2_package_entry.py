@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
@@ -1163,6 +1164,38 @@ def _completed_wave2_fixture(
     )
 
 
+def _close_release_fixture(
+    fixture: Any,
+    *,
+    defer_native_teardown: bool,
+) -> None:
+    if defer_native_teardown:
+        fixture.close(dispose_engine=False)
+        return
+    fixture.close()
+
+
+def _packaged_fixture_persistence_root(
+    *,
+    report_dir: Path,
+    cleanup: ExitStack,
+    lifecycle_checks: list[Callable[[], bool]],
+    defer_native_teardown: bool,
+    temporary_directory_prefix: str,
+) -> Path:
+    if defer_native_teardown:
+        return report_dir / "v1-persistence"
+    runtime_root = Path(
+        cleanup.enter_context(
+            tempfile.TemporaryDirectory(
+                prefix=temporary_directory_prefix,
+            )
+        )
+    )
+    lifecycle_checks.append(_path_absent_check(runtime_root))
+    return runtime_root / "v1-persistence"
+
+
 def run_smoke_journey(
     *,
     report_dir: Path,
@@ -1170,6 +1203,7 @@ def run_smoke_journey(
     source_commit: str = "development-smoke",
     capture_images: bool = True,
     fixture_archive_path: Path | None = None,
+    defer_native_teardown: bool = False,
 ) -> PackageSmokeResult:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
@@ -1192,6 +1226,7 @@ def run_smoke_journey(
                 cleanup=cleanup,
                 cleanup_errors=cleanup_errors,
                 lifecycle_checks=lifecycle_checks,
+                defer_native_teardown=defer_native_teardown,
             )
         else:
             result = _run_smoke_journey(
@@ -1203,6 +1238,7 @@ def run_smoke_journey(
                 cleanup=cleanup,
                 cleanup_errors=cleanup_errors,
                 lifecycle_checks=lifecycle_checks,
+                defer_native_teardown=defer_native_teardown,
             )
     clean_exit = bool(
         not cleanup_errors
@@ -1261,6 +1297,7 @@ def _run_wave2_smoke_journey(
     cleanup: ExitStack,
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
+    defer_native_teardown: bool,
 ) -> PackageSmokeResult:
     return _run_smoke_journey(
         report_dir=report_dir,
@@ -1272,6 +1309,7 @@ def _run_wave2_smoke_journey(
         cleanup_errors=cleanup_errors,
         lifecycle_checks=lifecycle_checks,
         wave2_mode=True,
+        defer_native_teardown=defer_native_teardown,
     )
 
 
@@ -1286,6 +1324,7 @@ def _run_smoke_journey(
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
     wave2_mode: bool = False,
+    defer_native_teardown: bool = False,
 ) -> PackageSmokeResult:
     from PySide6.QtWidgets import QApplication
 
@@ -1317,15 +1356,13 @@ def _run_smoke_journey(
             artifact_root=persistence_root / "artifacts",
         )
     elif wave2_mode:
-        runtime_root = Path(
-            cleanup.enter_context(
-                tempfile.TemporaryDirectory(prefix="uti-wave2-runtime-")
-            )
+        persistence_root = _packaged_fixture_persistence_root(
+            report_dir=report_dir,
+            cleanup=cleanup,
+            lifecycle_checks=lifecycle_checks,
+            defer_native_teardown=defer_native_teardown,
+            temporary_directory_prefix="uti-wave2-runtime-",
         )
-        lifecycle_checks.append(
-            _path_absent_check(runtime_root)
-        )
-        persistence_root = runtime_root / "v1-persistence"
         if fixture_archive_path is None:
             raise RuntimeError("Wave 2 input fixture archive is unavailable")
         extract_sealed_wave2_release_input_fixture_archive(
@@ -1345,15 +1382,13 @@ def _run_smoke_journey(
             artifact_root=persistence_root / "artifacts",
         )
     else:
-        runtime_root = Path(
-            cleanup.enter_context(
-                tempfile.TemporaryDirectory(prefix="uti-v1-runtime-")
-            )
+        persistence_root = _packaged_fixture_persistence_root(
+            report_dir=report_dir,
+            cleanup=cleanup,
+            lifecycle_checks=lifecycle_checks,
+            defer_native_teardown=defer_native_teardown,
+            temporary_directory_prefix="uti-v1-runtime-",
         )
-        lifecycle_checks.append(
-            _path_absent_check(runtime_root)
-        )
-        persistence_root = runtime_root / "v1-persistence"
         extract_sealed_formal_v1_release_fixture_archive(
             archive_path=fixture_archive_path,
             bundle_root=persistence_root,
@@ -1366,7 +1401,11 @@ def _run_smoke_journey(
         _record_cleanup,
         cleanup_errors,
         "Strategy Diagnostics V1 fixture",
-        fixture.close,
+        partial(
+            _close_release_fixture,
+            fixture,
+            defer_native_teardown=defer_native_teardown,
+        ),
     )
     lifecycle_checks.append(_closed_check(fixture))
     if wave2_mode:
@@ -1688,7 +1727,10 @@ def _run_smoke_journey(
             )
 
         close_initial_mount()
-        input_fixture.close()
+        _close_release_fixture(
+            input_fixture,
+            defer_native_teardown=defer_native_teardown,
+        )
         fixture = reopen_active_wave2_release_input_fixture(
             bundle_root=persistence_root,
             diagnostic_task_id=diagnostic_task_identity,
@@ -1698,7 +1740,11 @@ def _run_smoke_journey(
             _record_cleanup,
             cleanup_errors,
             "reopened active installed Wave 2 fixture",
-            fixture.close,
+            partial(
+                _close_release_fixture,
+                fixture,
+                defer_native_teardown=defer_native_teardown,
+            ),
         )
         lifecycle_checks.append(_closed_check(fixture))
         input_fixture = fixture
@@ -2103,7 +2149,10 @@ def _run_smoke_journey(
     close_initial_mount()
 
     if wave2_mode:
-        input_fixture.close()
+        _close_release_fixture(
+            input_fixture,
+            defer_native_teardown=defer_native_teardown,
+        )
         fixture = reopen_completed_wave2_release_fixture(
             bundle_root=persistence_root,
             campaign_id=campaign_id,
@@ -2114,7 +2163,11 @@ def _run_smoke_journey(
             _record_cleanup,
             cleanup_errors,
             "reopened installed Wave 2 fixture",
-            fixture.close,
+            partial(
+                _close_release_fixture,
+                fixture,
+                defer_native_teardown=defer_native_teardown,
+            ),
         )
         lifecycle_checks.append(_closed_check(fixture))
         with _serialized_application_access(fixture.application):
@@ -2738,6 +2791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_commit=arguments.source_commit,
                 capture_images=not arguments.no_images,
                 fixture_archive_path=fixture_archive_path,
+                defer_native_teardown="__compiled__" in globals(),
             )
         finally:
             if owns_application:

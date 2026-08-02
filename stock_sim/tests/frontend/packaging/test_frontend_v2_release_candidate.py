@@ -1930,6 +1930,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     assert observed["fixture_archive_path"] == (
         executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
     )
+    assert observed["defer_native_teardown"] is True
 
     class MissingTaskHandlesSmoke(PassingSmoke):
         task_handle_identities = ()
@@ -2124,6 +2125,79 @@ def test_release_file_backed_fixture_close_is_idempotent(
 
         assert dispose_calls == 1
         assert fixture.closed is True
+
+
+def test_compiled_release_fixture_close_defers_native_engine_disposal(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_formal_v1_release_fixture,
+        create_file_backed_wave2_release_input_fixture,
+    )
+
+    fixtures = (
+        create_file_backed_formal_v1_release_fixture(
+            database_path=tmp_path / "formal" / "fixture.sqlite3",
+            artifact_root=tmp_path / "formal" / "artifacts",
+        ),
+        create_file_backed_wave2_release_input_fixture(
+            database_path=tmp_path / "wave2" / "fixture.sqlite3",
+            artifact_root=tmp_path / "wave2" / "artifacts",
+        ),
+    )
+    for fixture in fixtures:
+        dispose_calls = 0
+
+        def observed_dispose():
+            nonlocal dispose_calls
+            dispose_calls += 1
+
+        monkeypatch.setattr(fixture.engine, "dispose", observed_dispose)
+        fixture.close(dispose_engine=False)
+        fixture.close(dispose_engine=False)
+
+        assert dispose_calls == 0
+        assert fixture.closed is True
+        assert fixture.engine_disposed is False
+
+        fixture.close()
+
+        assert dispose_calls == 1
+        assert fixture.engine_disposed is True
+
+
+def test_compiled_fixture_persistence_is_owned_by_the_report_directory(
+    tmp_path,
+):
+    from contextlib import ExitStack
+
+    from sqlalchemy import create_engine, text
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _packaged_fixture_persistence_root,
+    )
+
+    report_dir = tmp_path / "installed-smoke-report"
+    lifecycle_checks = []
+    with ExitStack() as cleanup:
+        persistence_root = _packaged_fixture_persistence_root(
+            report_dir=report_dir,
+            cleanup=cleanup,
+            lifecycle_checks=lifecycle_checks,
+            defer_native_teardown=True,
+            temporary_directory_prefix="uti-wave2-runtime-",
+        )
+        persistence_root.mkdir(parents=True)
+        database_path = persistence_root / "fixture.sqlite3"
+        engine = create_engine(f"sqlite:///{database_path}")
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE probe (value INTEGER)"))
+
+    assert persistence_root == report_dir / "v1-persistence"
+    assert database_path.exists()
+    assert lifecycle_checks == []
+    engine.dispose()
 
 
 def test_release_smoke_quiesces_qml_before_closing_live_features():
