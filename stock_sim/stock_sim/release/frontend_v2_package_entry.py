@@ -927,6 +927,22 @@ def _start_installed_wave2_commands(
     return running, WAVE2_ACCEPTED_COMMAND_KINDS
 
 
+def _quiesce_installed_wave2_mount(
+    *,
+    close_mount: Callable[[], None],
+    cleanup_errors: list[str],
+    operation: str,
+) -> None:
+    previous_error_count = len(cleanup_errors)
+    close_mount()
+    mount_errors = tuple(cleanup_errors[previous_error_count:])
+    if mount_errors:
+        raise RuntimeError(
+            f"Installed {operation} mount quiescence failed: "
+            + "; ".join(mount_errors)
+        )
+
+
 def _advance_installed_wave2_campaign_after_mount_quiescence(
     *,
     application: Any,
@@ -934,14 +950,11 @@ def _advance_installed_wave2_campaign_after_mount_quiescence(
     close_mount: Callable[[], None],
     cleanup_errors: list[str],
 ) -> None:
-    previous_error_count = len(cleanup_errors)
-    close_mount()
-    mount_errors = tuple(cleanup_errors[previous_error_count:])
-    if mount_errors:
-        raise RuntimeError(
-            "Installed terminal continuation mount quiescence failed: "
-            + "; ".join(mount_errors)
-        )
+    _quiesce_installed_wave2_mount(
+        close_mount=close_mount,
+        cleanup_errors=cleanup_errors,
+        operation="terminal continuation",
+    )
     with _serialized_application_access(application):
         completed_campaign = application.advance_diagnostic_campaign(
             campaign_id,
@@ -1726,7 +1739,11 @@ def _run_smoke_journey(
                 "typed Feature state"
             )
 
-        close_initial_mount()
+        _quiesce_installed_wave2_mount(
+            close_mount=close_initial_mount,
+            cleanup_errors=cleanup_errors,
+            operation="active Application reopen",
+        )
         _close_release_fixture(
             input_fixture,
             defer_native_teardown=defer_native_teardown,
@@ -1754,79 +1771,137 @@ def _run_smoke_journey(
             campaign_id=campaign_id,
             task_handle_identities=task_handle_identities,
         )
-        read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
-            input_fixture.application,
-            input_fixture.engine,
-        )
-        diagnostic_tasks_application = (
-            LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-                input_fixture.application
-            )
-        )
         application_reopened = True
-        context, window, host = _create_production_window(
-            event_bridge=bridge,
-            strategy_diagnostics_read_model=read_model,
-            strategy_diagnostics_tasks_application=(
-                diagnostic_tasks_application
-            ),
-            settings_path=report_dir / "frontend-v2-settings.json",
-        )
-        close_initial_mount = register_mount(
-            context=context,
-            window=window,
-            host=host,
-        )
-        window.setObjectName("frontendV2PackageActiveRemountWindow")
-        window.resize(1280, 720)
-        window.show()
-        app.processEvents()
-        root = host.rootObject()
-        if root is None:
-            raise RuntimeError(
-                "Nonterminal remounted Journey Workspace is unavailable"
-            )
-        accessibility_preferences.append(
-            _accessibility_preferences_verified(root)
-        )
-        for route in (
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
-            _navigate_route(
-                app=app,
-                host=host,
-                root=root,
-                route=route,
-            )
-            expected_route = route
-            _settle_until(
-                app,
-                lambda: root.property("activeRoute") == expected_route,
-                f"reopened nonterminal {route} route",
-            )
-            _assert_running_wave2_public_state(
-                application=input_fixture.application,
-                diagnostic_task_id=diagnostic_task_identity,
-                campaign_id=campaign_id,
-                task_handle_identities=task_handle_identities,
-            )
-        background_continuation_verified = True
-
         _advance_installed_wave2_campaign_after_mount_quiescence(
             application=input_fixture.application,
             campaign_id=campaign_id,
             close_mount=close_initial_mount,
             cleanup_errors=cleanup_errors,
         )
+        with _serialized_application_access(input_fixture.application):
+            completed_backend_task = (
+                input_fixture.application.get_diagnostic_task(
+                    diagnostic_task_identity
+                )
+            )
+        completed_backend_handoff = (
+            None
+            if completed_backend_task is None
+            else completed_backend_task.campaign_handoff
+        )
+        completed_backend_handles = (
+            ()
+            if completed_backend_task is None
+            else tuple(
+                handle.task_handle_id
+                for handle in completed_backend_task.task_handles
+            )
+        )
+        if (
+            completed_backend_task is None
+            or completed_backend_handoff is None
+            or completed_backend_handles != task_handle_identities
+            or completed_backend_handoff.campaign_id != campaign_id
+            or completed_backend_handoff.evidence_package_id is None
+            or completed_backend_handoff.reproduction_manifest_id is None
+        ):
+            raise RuntimeError(
+                "Installed background continuation did not preserve the "
+                "Diagnostic Task, TaskHandles, Campaign, evidence, and "
+                "Reproduction Manifest identities"
+            )
+        evidence_package_id = (
+            completed_backend_handoff.evidence_package_id
+        )
+        manifest_id = (
+            completed_backend_handoff.reproduction_manifest_id
+        )
+        background_continuation_verified = True
+
+        _close_release_fixture(
+            input_fixture,
+            defer_native_teardown=defer_native_teardown,
+        )
+        fixture = reopen_completed_wave2_release_fixture(
+            bundle_root=persistence_root,
+            campaign_id=campaign_id,
+            evidence_package_id=evidence_package_id,
+            selected_manifest_id=manifest_id,
+        )
+        cleanup.callback(
+            _record_cleanup,
+            cleanup_errors,
+            "reopened installed Wave 2 fixture",
+            partial(
+                _close_release_fixture,
+                fixture,
+                defer_native_teardown=defer_native_teardown,
+            ),
+        )
+        lifecycle_checks.append(_closed_check(fixture))
+        with _serialized_application_access(fixture.application):
+            reopened_task = fixture.application.get_diagnostic_task(
+                diagnostic_task_identity
+            )
+        reopened_task_identity = (
+            None if reopened_task is None else reopened_task.task_id
+        )
+        reopened_handle_identities = (
+            ()
+            if reopened_task is None
+            else tuple(
+                handle.task_handle_id
+                for handle in reopened_task.task_handles
+            )
+        )
+        reopened_campaign_identity = (
+            None
+            if reopened_task is None
+            or reopened_task.campaign_handoff is None
+            else reopened_task.campaign_handoff.campaign_id
+        )
+        reopened_evidence_identity = (
+            None
+            if reopened_task is None
+            or reopened_task.campaign_handoff is None
+            else reopened_task.campaign_handoff.evidence_package_id
+        )
+        reopened_manifest_identity = (
+            None
+            if reopened_task is None
+            or reopened_task.campaign_handoff is None
+            else reopened_task.campaign_handoff.reproduction_manifest_id
+        )
+        writable_persistence_verified = bool(
+            reopened_task is not None
+            and reopened_task_identity == diagnostic_task_identity
+            and reopened_handle_identities == task_handle_identities
+            and reopened_campaign_identity == campaign_id
+            and reopened_evidence_identity == evidence_package_id
+            and reopened_manifest_identity == manifest_id
+        )
+        if not writable_persistence_verified:
+            raise RuntimeError(
+                "Installed task/Campaign/TaskHandle identities did not "
+                "survive a real Application reopen; "
+                f"task={reopened_task_identity!r}/"
+                f"{diagnostic_task_identity!r}, "
+                f"handles={reopened_handle_identities!r}/"
+                f"{task_handle_identities!r}, "
+                f"campaign={reopened_campaign_identity!r}/"
+                f"{campaign_id!r}, "
+                f"evidence={reopened_evidence_identity!r}/"
+                f"{evidence_package_id!r}, "
+                f"manifest={reopened_manifest_identity!r}/"
+                f"{manifest_id!r}"
+            )
         read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
-            input_fixture.application,
-            input_fixture.engine,
+            fixture.application,
+            fixture.engine,
         )
         diagnostic_tasks_application = (
             LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-                input_fixture.application
+                fixture.application
             )
         )
         context, window, host = _create_production_window(
@@ -1863,7 +1938,7 @@ def _run_smoke_journey(
             app=app,
             host=host,
             context=context,
-            application=input_fixture.application,
+            application=fixture.application,
             diagnostic_task_id=diagnostic_task_identity,
         )
         completed_handle_identities = tuple(
@@ -1875,11 +1950,11 @@ def _run_smoke_journey(
                 "Installed TaskHandle identities changed while the Campaign "
                 "continued to terminal state"
             )
-        fixture = _completed_wave2_fixture(
-            input_fixture=input_fixture,
-            task=completed_task,
-            selected_manifest_id=selected_manifest_id,
-        )
+        if selected_manifest_id != fixture.selected_manifest.manifest_id:
+            raise RuntimeError(
+                "Installed QML projection selected a different "
+                "Reproduction Manifest after Application reopen"
+            )
         specification = fixture.selected_run.specification
         campaign_id = fixture.campaign.campaign_id
         case_id = fixture.selected_manifest.case_id
@@ -2146,120 +2221,38 @@ def _run_smoke_journey(
         )
     )
 
-    close_initial_mount()
-
-    if wave2_mode:
-        _close_release_fixture(
-            input_fixture,
-            defer_native_teardown=defer_native_teardown,
+    if not wave2_mode:
+        _quiesce_installed_wave2_mount(
+            close_mount=close_initial_mount,
+            cleanup_errors=cleanup_errors,
+            operation="sealed V1 remount",
         )
-        fixture = reopen_completed_wave2_release_fixture(
-            bundle_root=persistence_root,
-            campaign_id=campaign_id,
-            evidence_package_id=evidence_package_id,
-            selected_manifest_id=manifest_id,
-        )
-        cleanup.callback(
-            _record_cleanup,
-            cleanup_errors,
-            "reopened installed Wave 2 fixture",
-            partial(
-                _close_release_fixture,
-                fixture,
-                defer_native_teardown=defer_native_teardown,
+        context, window, host = _create_production_window(
+            event_bridge=bridge,
+            strategy_diagnostics_read_model=read_model,
+            strategy_diagnostics_tasks_application=(
+                diagnostic_tasks_application
             ),
+            settings_path=report_dir / "frontend-v2-settings.json",
         )
-        lifecycle_checks.append(_closed_check(fixture))
-        with _serialized_application_access(fixture.application):
-            reopened_task = fixture.application.get_diagnostic_task(
-                diagnostic_task_identity
-            )
-        reopened_task_identity = (
-            None if reopened_task is None else reopened_task.task_id
+        register_mount(
+            context=context,
+            window=window,
+            host=host,
         )
-        reopened_handle_identities = (
-            ()
-            if reopened_task is None
-            else tuple(
-                handle.task_handle_id
-                for handle in reopened_task.task_handles
-            )
-        )
-        reopened_campaign_identity = (
-            None
-            if reopened_task is None
-            or reopened_task.campaign_handoff is None
-            else reopened_task.campaign_handoff.campaign_id
-        )
-        reopened_evidence_identity = (
-            None
-            if reopened_task is None
-            or reopened_task.campaign_handoff is None
-            else reopened_task.campaign_handoff.evidence_package_id
-        )
-        reopened_manifest_identity = (
-            None
-            if reopened_task is None
-            or reopened_task.campaign_handoff is None
-            else reopened_task.campaign_handoff.reproduction_manifest_id
-        )
-        writable_persistence_verified = bool(
-            reopened_task is not None
-            and reopened_task_identity == diagnostic_task_identity
-            and reopened_handle_identities == task_handle_identities
-            and reopened_campaign_identity == campaign_id
-            and reopened_evidence_identity == evidence_package_id
-            and reopened_manifest_identity == manifest_id
-        )
-        if not writable_persistence_verified:
+        window.setObjectName("frontendV2PackageRemountWindow")
+        window.resize(1280, 720)
+        window.show()
+        app.processEvents()
+        root = host.rootObject()
+        if root is None:
             raise RuntimeError(
-                "Installed task/Campaign/TaskHandle identities did not "
-                "survive a real Application reopen; "
-                f"task={reopened_task_identity!r}/"
-                f"{diagnostic_task_identity!r}, "
-                f"handles={reopened_handle_identities!r}/"
-                f"{task_handle_identities!r}, "
-                f"campaign={reopened_campaign_identity!r}/"
-                f"{campaign_id!r}, "
-                f"evidence={reopened_evidence_identity!r}/"
-                f"{evidence_package_id!r}, "
-                f"manifest={reopened_manifest_identity!r}/"
-                f"{manifest_id!r}"
+                "Remounted Journey Workspace root object is unavailable"
             )
-        read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
-            fixture.application,
-            fixture.engine,
+        accessibility_preferences.append(
+            _accessibility_preferences_verified(root)
         )
-        diagnostic_tasks_application = (
-            LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-                fixture.application
-            )
-        )
-        application_reopened = True
 
-    context, window, host = _create_production_window(
-        event_bridge=bridge,
-        strategy_diagnostics_read_model=read_model,
-        strategy_diagnostics_tasks_application=diagnostic_tasks_application,
-        settings_path=report_dir / "frontend-v2-settings.json",
-    )
-    register_mount(
-        context=context,
-        window=window,
-        host=host,
-    )
-    window.setObjectName("frontendV2PackageRemountWindow")
-    window.resize(1280, 720)
-    window.show()
-    app.processEvents()
-    root = host.rootObject()
-    if root is None:
-        raise RuntimeError(
-            "Remounted Journey Workspace root object is unavailable"
-        )
-    accessibility_preferences.append(
-        _accessibility_preferences_verified(root)
-    )
     observe(*EXPECTED_JOURNEY[8])
     observe(*EXPECTED_JOURNEY[9])
 

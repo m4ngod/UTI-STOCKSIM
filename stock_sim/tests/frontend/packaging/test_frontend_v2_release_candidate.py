@@ -282,6 +282,7 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
     from sqlalchemy import text
 
     from stock_sim.release import (
+        frontend_v2_package_entry as release_entry,
         strategy_diagnostics_v1_release_fixture as fixture_module,
     )
     from stock_sim.release.frontend_v2_package_entry import (
@@ -319,6 +320,19 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
         "create_file_backed_formal_v1_release_fixture",
         reject_runtime_generation,
     )
+    created_mount_count = 0
+    create_production_window = release_entry._create_production_window
+
+    def observed_create_production_window(**arguments):
+        nonlocal created_mount_count
+        created_mount_count += 1
+        return create_production_window(**arguments)
+
+    monkeypatch.setattr(
+        release_entry,
+        "_create_production_window",
+        observed_create_production_window,
+    )
     report_dir = tmp_path / "installed-smoke"
     result = run_smoke_journey(
         report_dir=report_dir,
@@ -338,6 +352,7 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
     assert result.persistence_reopened is True
     assert result.errors == ()
     assert result.clean_exit is True
+    assert created_mount_count == 2
     assert hashlib.sha256(fixture_archive.read_bytes()).hexdigest() == (
         original_archive_hash
     )
@@ -430,13 +445,16 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
         )
 
     active_mounts: set[int] = set()
+    created_mount_count = 0
     terminal_advance_quiesced = False
     create_production_window = release_entry._create_production_window
     close_mount = release_entry._close_mount
     advance_campaign = DiagnosticsApplication.advance_diagnostic_campaign
 
     def observed_create_production_window(**arguments):
+        nonlocal created_mount_count
         created = create_production_window(**arguments)
+        created_mount_count += 1
         active_mounts.add(id(created[2]))
         return created
 
@@ -497,6 +515,7 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
     assert result.application_reopened is True
     assert result.background_continuation_verified is True
     assert terminal_advance_quiesced is True
+    assert created_mount_count == 2
     assert not active_mounts
     assert result.task_cancel_order_isolation_verified is True
     assert result.campaign_status == "completed"
@@ -2538,6 +2557,29 @@ def test_terminal_campaign_does_not_advance_after_mount_quiescence_failure():
         )
 
     assert application.advanced is False
+
+
+def test_mount_quiescence_failure_is_reported_before_application_reopen():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _quiesce_installed_wave2_mount,
+    )
+
+    cleanup_errors: list[str] = []
+
+    def failed_mount_close() -> None:
+        cleanup_errors.append(
+            "Run Monitoring Feature cleanup failed: RuntimeError"
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="active Application reopen mount quiescence failed",
+    ):
+        _quiesce_installed_wave2_mount(
+            close_mount=failed_mount_close,
+            cleanup_errors=cleanup_errors,
+            operation="active Application reopen",
+        )
 
 
 def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
