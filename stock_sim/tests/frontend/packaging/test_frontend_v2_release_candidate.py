@@ -2491,7 +2491,7 @@ def test_smoke_application_shutdown_survives_earlier_cleanup_error(
     ]
 
 
-def test_compiled_smoke_defers_static_qt_shutdown_to_process_exit(
+def test_compiled_smoke_defers_all_qt_shutdown_to_process_exit(
     monkeypatch,
 ):
     from PySide6.QtWidgets import QApplication
@@ -2503,7 +2503,9 @@ def test_compiled_smoke_defers_static_qt_shutdown_to_process_exit(
 
     class Application:
         def closeAllWindows(self):
-            events.append("close-all-windows")
+            raise AssertionError(
+                "compiled smoke must terminate before Qt window teardown"
+            )
 
         def shutdown(self):
             raise AssertionError(
@@ -2516,10 +2518,10 @@ def test_compiled_smoke_defers_static_qt_shutdown_to_process_exit(
 
     _shutdown_smoke_application(
         errors,
-        run_static_teardown=False,
+        run_qt_teardown=False,
     )
 
-    assert events == ["close-all-windows"]
+    assert events == []
     assert errors == []
 
 

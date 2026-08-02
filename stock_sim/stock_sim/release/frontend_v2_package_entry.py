@@ -1276,18 +1276,19 @@ def run_smoke_journey(
 def _shutdown_smoke_application(
     errors: list[str],
     *,
-    run_static_teardown: bool = True,
+    run_qt_teardown: bool = True,
 ) -> None:
     from PySide6.QtWidgets import QApplication
 
+    if not run_qt_teardown:
+        return
     app = QApplication.instance()
     if app is None:
         return
     actions: tuple[tuple[str, Callable[[], Any]], ...] = (
         ("closeAllWindows", app.closeAllWindows),
+        ("shutdown", app.shutdown),
     )
-    if run_static_teardown:
-        actions += (("shutdown", app.shutdown),)
     for label, action in actions:
         try:
             action()
@@ -1296,7 +1297,7 @@ def _shutdown_smoke_application(
                 f"QApplication {label} failed: "
                 f"{type(error).__name__}"
             )
-    if run_static_teardown and QApplication.instance() is not None:
+    if QApplication.instance() is not None:
         errors.append("QApplication remained alive after shutdown")
 
 
@@ -2790,7 +2791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if owns_application:
                 _shutdown_smoke_application(
                     shutdown_errors,
-                    run_static_teardown="__compiled__" not in globals(),
+                    run_qt_teardown="__compiled__" not in globals(),
                 )
         return (
             0
