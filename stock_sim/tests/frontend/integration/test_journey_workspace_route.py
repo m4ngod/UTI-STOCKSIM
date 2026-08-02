@@ -491,7 +491,6 @@ def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
         "window-hide",
         "process-events",
         "run-adapter",
-        "qml-root-destroyed",
         "process-events",
         "window-close",
         "process-events",
@@ -500,7 +499,7 @@ def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
         "evidence-feature",
         "process-events",
     ]
-    assert host.rootObject() is None
+    assert host.rootObject() is root
     assert host._workspace_closed is True
     assert diagnostic_feature.closed is True
     assert evidence_feature.closed is True

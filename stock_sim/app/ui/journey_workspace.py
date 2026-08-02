@@ -2981,7 +2981,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             return
         self._evidence_and_findings.select_context(context)
 
-    def close_adapter(self) -> None:
+    def close_adapter(self, *, unload_qml: bool = True) -> None:
         if self._workspace_closed:
             return
         self._workspace_closed = True
@@ -2990,7 +2990,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
-        self.setSource(QUrl())
+        if unload_qml:
+            self.setSource(QUrl())
 
 
 __all__ = [

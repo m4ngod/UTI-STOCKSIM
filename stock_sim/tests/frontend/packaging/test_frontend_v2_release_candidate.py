@@ -2147,8 +2147,8 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
     class Host:
         _workspace_closed = False
 
-        def close_adapter(self):
-            events.append("adapter")
+        def close_adapter(self, *, unload_qml=True):
+            events.append(f"adapter:unload={unload_qml}")
             self._workspace_closed = True
 
     class Window:
@@ -2203,7 +2203,7 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
     assert events == [
         "window-hide",
         "process-events",
-        "adapter",
+        "adapter:unload=False",
         "process-events",
         "window",
         "process-events",

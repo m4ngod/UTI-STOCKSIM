@@ -2335,15 +2335,18 @@ def _close_mount(
     errors: list[str] | None = None,
 ) -> None:
     observed_errors = errors if errors is not None else []
-    # Hide and drain first so Qt Quick has stopped rendering. Then unload QML
-    # while its context adapters are alive, close the window after the adapter
-    # shutdown is idempotent, and only then close the typed Features. The smoke
-    # journey retains Python references for its final lifecycle audit, so
-    # deferred C++ deletion must not be forced here.
+    # Hide and drain first so Qt Quick has stopped rendering. Quiesce every QML
+    # Adapter without synchronously unloading the compiled native object graph,
+    # close the window, and only then close the typed Features. The smoke
+    # journey retains Python references for its final lifecycle audit; native
+    # object reclamation is deferred to the owning process-exit boundary.
     for label, action in (
         ("MainWindow hide", window.hide),
         ("Qt event drain before QML teardown", app.processEvents),
-        ("QML Adapter", host.close_adapter),
+        (
+            "QML Adapter",
+            lambda: host.close_adapter(unload_qml=False),
+        ),
         ("Qt event drain after QML teardown", app.processEvents),
         ("MainWindow", window.close),
         ("Qt event drain after MainWindow close", app.processEvents),
