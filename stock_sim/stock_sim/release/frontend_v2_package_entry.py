@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -2624,7 +2625,7 @@ def _installed_fixture_archive_path() -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "--renderer-lane",
         choices=tuple(lane.value for lane in RendererLane),
@@ -2688,5 +2689,55 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _run_interactive()
 
 
+def _run_process_entry(
+    *,
+    compiled: bool,
+    arguments: Sequence[str],
+    run: Callable[[], int] = main,
+    terminate: Callable[[int], None] = os._exit,
+) -> None:
+    compiled_smoke = bool(
+        compiled
+        and any(
+            argument == "--smoke-report-dir"
+            or argument.startswith("--smoke-report-dir=")
+            for argument in arguments
+        )
+    )
+    if not compiled_smoke:
+        raise SystemExit(run())
+
+    try:
+        exit_code = int(run())
+    except SystemExit as error:
+        if error.code is None:
+            exit_code = 0
+        elif isinstance(error.code, int):
+            exit_code = error.code
+        else:
+            exit_code = 1
+            try:
+                print(error.code, file=sys.stderr)
+            except BaseException:
+                pass
+    except BaseException:
+        exit_code = 1
+        try:
+            traceback.print_exc(file=sys.stderr)
+        except BaseException:
+            pass
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except BaseException:
+            exit_code = 1
+    terminate(exit_code)
+    raise RuntimeError("OS-level process termination unexpectedly returned")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _run_process_entry(
+        compiled="__compiled__" in globals(),
+        arguments=tuple(sys.argv[1:]),
+    )

@@ -2353,6 +2353,112 @@ def test_smoke_application_shutdown_survives_earlier_cleanup_error(
     ]
 
 
+def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir=C:/release-report",),
+            run=lambda: 0,
+            terminate=terminated.append,
+        )
+
+    assert terminated == [0]
+    with pytest.raises(SystemExit) as source_exit:
+        _run_process_entry(
+            compiled=False,
+            arguments=("--smoke-report-dir=C:/release-report",),
+            run=lambda: 1,
+            terminate=terminated.append,
+        )
+    assert source_exit.value.code == 1
+    with pytest.raises(SystemExit) as interactive_exit:
+        _run_process_entry(
+            compiled=True,
+            arguments=(),
+            run=lambda: 2,
+            terminate=terminated.append,
+        )
+    assert interactive_exit.value.code == 2
+    assert terminated == [0]
+
+
+def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+
+    def fail_smoke() -> int:
+        raise RuntimeError("smoke failed before returning")
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir", "C:/release-report"),
+            run=fail_smoke,
+            terminate=terminated.append,
+        )
+
+    assert terminated == [1]
+    assert "RuntimeError: smoke failed before returning" in capsys.readouterr().err
+
+
+def test_compiled_smoke_preserves_argparse_exit_code():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+
+    def reject_arguments() -> int:
+        raise SystemExit(2)
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir",),
+            run=reject_arguments,
+            terminate=terminated.append,
+        )
+
+    assert terminated == [2]
+
+
+def test_smoke_mode_rejects_an_abbreviated_selector(tmp_path, monkeypatch):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: pytest.fail(
+            "an abbreviated selector must not enter smoke mode"
+        ),
+    )
+
+    with pytest.raises(SystemExit) as rejected:
+        package_entry.main(
+            ("--smoke-report", str(tmp_path / "abbreviated-report"))
+        )
+
+    assert rejected.value.code == 2
+
+
 def test_production_window_factory_closes_features_when_window_fails(
     tmp_path,
     monkeypatch,
