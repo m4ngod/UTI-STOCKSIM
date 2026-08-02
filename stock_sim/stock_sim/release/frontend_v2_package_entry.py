@@ -2792,8 +2792,10 @@ def _run_process_entry(
     if not compiled_smoke:
         raise SystemExit(run())
 
+    completed_normally = False
     try:
         exit_code = int(run())
+        completed_normally = True
     except SystemExit as error:
         if error.code is None:
             exit_code = 0
@@ -2811,6 +2813,12 @@ def _run_process_entry(
             traceback.print_exc(file=sys.stderr)
         except BaseException:
             pass
+
+    if completed_normally and exit_code == 0:
+        terminate(0)
+        raise RuntimeError(
+            "OS-level process termination unexpectedly returned"
+        )
 
     for stream in (sys.stdout, sys.stderr):
         try:

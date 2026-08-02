@@ -2504,6 +2504,77 @@ def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
     assert terminated == [0]
 
 
+def test_successful_compiled_smoke_exits_before_python_stream_teardown(
+    monkeypatch,
+):
+    import stock_sim.release.frontend_v2_package_entry as package_entry
+
+    events: list[str] = []
+
+    class Stream:
+        def __init__(self, label: str) -> None:
+            self._label = label
+
+        def flush(self) -> None:
+            events.append(f"flush:{self._label}")
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(package_entry.sys, "stdout", Stream("stdout"))
+            patch.setattr(package_entry.sys, "stderr", Stream("stderr"))
+            package_entry._run_process_entry(
+                compiled=True,
+                arguments=("--smoke-report-dir=C:/release-report",),
+                run=lambda: events.append("run") or 0,
+                terminate=lambda code: events.append(f"terminate:{code}"),
+            )
+
+    assert events == ["run", "terminate:0"]
+
+
+def test_compiled_smoke_system_exit_zero_flushes_diagnostics(
+    monkeypatch,
+):
+    import stock_sim.release.frontend_v2_package_entry as package_entry
+
+    events: list[str] = []
+
+    class Stream:
+        def __init__(self, label: str) -> None:
+            self._label = label
+
+        def flush(self) -> None:
+            events.append(f"flush:{self._label}")
+
+    def show_help() -> int:
+        events.append("run")
+        raise SystemExit(0)
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(package_entry.sys, "stdout", Stream("stdout"))
+            patch.setattr(package_entry.sys, "stderr", Stream("stderr"))
+            package_entry._run_process_entry(
+                compiled=True,
+                arguments=("--smoke-report-dir=C:/release-report", "--help"),
+                run=show_help,
+                terminate=lambda code: events.append(f"terminate:{code}"),
+            )
+
+    assert events == [
+        "run",
+        "flush:stdout",
+        "flush:stderr",
+        "terminate:0",
+    ]
+
+
 def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
     from stock_sim.release.frontend_v2_package_entry import (
         _run_process_entry,
