@@ -1422,25 +1422,50 @@ def _run_smoke_journey(
         window: Any,
         host: Any,
     ) -> Callable[[], None]:
-        state = {"closed": False}
+        mount_objects = [context, window, host]
+        state = {"attempted": False, "closed": False, "released": False}
 
         def close_mount() -> None:
-            if state["closed"]:
+            if state["attempted"]:
                 return
-            _close_mount(
-                app=app,
-                context=context,
-                window=window,
-                host=host,
-                errors=cleanup_errors,
-            )
-            state["closed"] = True
+            state["attempted"] = True
+            mounted_context, mounted_window, mounted_host = mount_objects
+            try:
+                _close_mount(
+                    app=app,
+                    context=mounted_context,
+                    window=mounted_window,
+                    host=mounted_host,
+                    errors=cleanup_errors,
+                )
+                state["closed"] = _mount_is_closed(
+                    mounted_context,
+                    mounted_window,
+                    mounted_host,
+                )
+                if not state["closed"]:
+                    cleanup_errors.append(
+                        "QML mount lifecycle audit failed before release"
+                    )
+                release_error_count = len(cleanup_errors)
+                _release_closed_mount(
+                    app=app,
+                    window=mounted_window,
+                    errors=cleanup_errors,
+                )
+                state["released"] = (
+                    len(cleanup_errors) == release_error_count
+                )
+            finally:
+                mount_objects.clear()
 
         cleanup.callback(close_mount)
+
         def mount_closed() -> bool:
             return bool(
                 state["closed"]
-                and _mount_is_closed(context, window, host)
+                and state["released"]
+                and not mount_objects
             )
 
         lifecycle_checks.append(mount_closed)
@@ -2208,6 +2233,33 @@ def _close_mount(
             context.evidence_and_findings_feature.close,
         ),
         ("Qt event drain after Feature teardown", app.processEvents),
+    ):
+        try:
+            action()
+        except BaseException as error:
+            observed_errors.append(
+                f"{label} cleanup failed: {type(error).__name__}"
+            )
+    if errors is None and observed_errors:
+        raise RuntimeError("; ".join(observed_errors))
+
+
+def _release_closed_mount(
+    *,
+    app: Any,
+    window: Any,
+    errors: list[str] | None = None,
+) -> None:
+    from PySide6.QtCore import QEvent
+
+    observed_errors = errors if errors is not None else []
+    for label, action in (
+        ("MainWindow deferred delete", window.deleteLater),
+        (
+            "Qt deferred QObject deletion",
+            lambda: app.sendPostedEvents(None, QEvent.Type.DeferredDelete),
+        ),
+        ("Qt event drain after QObject deletion", app.processEvents),
     ):
         try:
             action()

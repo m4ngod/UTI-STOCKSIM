@@ -401,7 +401,10 @@ def test_route_flag_off_preserves_the_legacy_widgets_workspace():
 def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
     monkeypatch,
 ):
-    from stock_sim.release.frontend_v2_package_entry import _close_mount
+    from stock_sim.release.frontend_v2_package_entry import (
+        _close_mount,
+        _release_closed_mount,
+    )
 
     app = _app()
     events: list[str] = []
@@ -506,3 +509,8 @@ def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
     adapter.deliveryRequested.emit(adapter._mount_generation.value, late_state)
     original_process_events()
     assert state_change_count == state_changes_before_late_delivery
+
+    window_destroyed: list[bool] = []
+    window.destroyed.connect(lambda *_: window_destroyed.append(True))
+    _release_closed_mount(app=app, window=window)
+    assert window_destroyed == [True]
