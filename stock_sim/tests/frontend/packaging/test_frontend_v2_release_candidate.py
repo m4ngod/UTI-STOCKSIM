@@ -1947,12 +1947,14 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
     bridge_stopped = False
     quiesced_mount_count = 0
-    released_mount_count = 0
+    scheduled_mount_count = 0
     start_bridge = EventBridge.start
     stop_bridge = EventBridge.stop
     close_fixture = FileBackedFormalV1ReleaseFixture.close
     close_mount = release_entry._close_mount
-    release_closed_mount = release_entry._release_closed_mount
+    schedule_closed_mount_release = (
+        release_entry._schedule_closed_mount_release
+    )
     source_commit = "c" * 40
     qml_plan = create_package_build_plans(
         output_root=tmp_path / "packages",
@@ -1973,11 +1975,12 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
             "The EventBridge thread must stop before final fixture disposal"
         )
         assert quiesced_mount_count > 0
-        assert released_mount_count == quiesced_mount_count, (
-            "Every retired native QML mount must be released before final "
+        assert scheduled_mount_count == quiesced_mount_count, (
+            "Every retired native QML mount must be scheduled for owned "
+            "application shutdown before final "
             "fixture disposal; "
             f"quiesced={quiesced_mount_count}, "
-            f"released={released_mount_count}"
+            f"scheduled={scheduled_mount_count}"
         )
         assert observed_bridge._running is False
         assert (
@@ -1991,8 +1994,8 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
         close_mount(**kwargs)
         quiesced_mount_count += 1
 
-    def observed_release_closed_mount(**kwargs):
-        nonlocal released_mount_count
+    def observed_schedule_closed_mount_release(**kwargs):
+        nonlocal scheduled_mount_count
         assert bridge_stopped, (
             "Native QML objects must not be force-released while the "
             "EventBridge worker is still alive"
@@ -2002,8 +2005,8 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
             observed_bridge._th is None
             or not observed_bridge._th.is_alive()
         )
-        release_closed_mount(**kwargs)
-        released_mount_count += 1
+        schedule_closed_mount_release(**kwargs)
+        scheduled_mount_count += 1
 
     monkeypatch.setattr(EventBridge, "stop", observed_stop)
     monkeypatch.setattr(
@@ -2013,8 +2016,8 @@ def test_release_smoke_stops_bridge_before_final_fixture_disposal(
     )
     monkeypatch.setattr(
         release_entry,
-        "_release_closed_mount",
-        observed_release_closed_mount,
+        "_schedule_closed_mount_release",
+        observed_schedule_closed_mount_release,
     )
     monkeypatch.setattr(
         FileBackedFormalV1ReleaseFixture,
@@ -2343,7 +2346,6 @@ def test_smoke_application_shutdown_survives_earlier_cleanup_error(
 
     assert events == [
         "close-all-windows",
-        "process-events",
         "shutdown",
     ]
     assert errors == [

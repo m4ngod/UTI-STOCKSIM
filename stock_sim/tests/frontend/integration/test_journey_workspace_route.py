@@ -403,7 +403,7 @@ def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
 ):
     from stock_sim.release.frontend_v2_package_entry import (
         _close_mount,
-        _release_closed_mount,
+        _schedule_closed_mount_release,
     )
 
     app = _app()
@@ -512,5 +512,7 @@ def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
 
     window_destroyed: list[bool] = []
     window.destroyed.connect(lambda *_: window_destroyed.append(True))
-    _release_closed_mount(app=app, window=window)
-    assert window_destroyed == [True]
+    events_before_release = tuple(events)
+    _schedule_closed_mount_release(app=app, window=window)
+    assert tuple(events) == events_before_release
+    assert window_destroyed == []

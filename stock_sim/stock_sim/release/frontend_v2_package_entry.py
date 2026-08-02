@@ -1214,7 +1214,6 @@ def _shutdown_smoke_application(errors: list[str]) -> None:
         return
     for label, action in (
         ("closeAllWindows", app.closeAllWindows),
-        ("processEvents", app.processEvents),
         ("shutdown", app.shutdown),
     ):
         try:
@@ -1413,28 +1412,28 @@ def _run_smoke_journey(
     retired_mounts: list[tuple[Any, dict[str, bool]]] = []
     mount_closers: list[Callable[[], None]] = []
 
-    def release_retired_mounts() -> None:
+    def schedule_retired_mount_releases() -> None:
         for mounted_window, state in tuple(retired_mounts):
             release_error_count = len(cleanup_errors)
-            _release_closed_mount(
+            _schedule_closed_mount_release(
                 app=app,
                 window=mounted_window,
                 errors=cleanup_errors,
             )
-            state["released"] = (
+            state["release_scheduled"] = (
                 len(cleanup_errors) == release_error_count
             )
         retired_mounts.clear()
 
     # ExitStack callbacks run in reverse registration order. Mount callbacks
     # are registered below, so an exceptional exit first quiesces each mount,
-    # then stops the shared EventBridge, and only then forces deferred native
-    # QObject deletion.
+    # then stops the shared EventBridge, and only then schedules deferred
+    # native QObject deletion for the owning QApplication.
     cleanup.callback(
         _record_cleanup,
         cleanup_errors,
-        "retired QML mounts",
-        release_retired_mounts,
+        "retired QML mount release scheduling",
+        schedule_retired_mount_releases,
     )
     cleanup.callback(
         _record_cleanup,
@@ -1471,7 +1470,11 @@ def _run_smoke_journey(
         host: Any,
     ) -> Callable[[], None]:
         mount_objects = [context, window, host]
-        state = {"attempted": False, "closed": False, "released": False}
+        state = {
+            "attempted": False,
+            "closed": False,
+            "release_scheduled": False,
+        }
 
         def close_mount() -> None:
             if state["attempted"]:
@@ -1505,7 +1508,7 @@ def _run_smoke_journey(
         def mount_closed() -> bool:
             return bool(
                 state["closed"]
-                and state["released"]
+                and state["release_scheduled"]
                 and not mount_objects
             )
 
@@ -2254,14 +2257,7 @@ def _run_smoke_journey(
         )
     for close_mount in reversed(tuple(mount_closers)):
         close_mount()
-    release_retired_mounts()
-    try:
-        app.processEvents()
-    except BaseException as error:
-        cleanup_errors.append(
-            "Qt event drain after retired mount release failed: "
-            f"{type(error).__name__}"
-        )
+    schedule_retired_mount_releases()
     return result
 
 
@@ -2307,29 +2303,24 @@ def _close_mount(
         raise RuntimeError("; ".join(observed_errors))
 
 
-def _release_closed_mount(
+def _schedule_closed_mount_release(
     *,
     app: Any,
     window: Any,
     errors: list[str] | None = None,
 ) -> None:
-    from PySide6.QtCore import QEvent
-
     observed_errors = errors if errors is not None else []
-    for label, action in (
-        ("MainWindow deferred delete", window.deleteLater),
-        (
-            "Qt deferred QObject deletion",
-            lambda: app.sendPostedEvents(None, QEvent.Type.DeferredDelete),
-        ),
-        ("Qt event drain after QObject deletion", app.processEvents),
-    ):
-        try:
-            action()
-        except BaseException as error:
-            observed_errors.append(
-                f"{label} cleanup failed: {type(error).__name__}"
-            )
+    # Queue ownership release, but do not force DeferredDelete delivery here.
+    # Nuitka/PySide6 can corrupt the native heap when a compiled QML graph is
+    # synchronously deleted mid-runtime. A fresh CLI process completes these
+    # queued deletions through its owned QApplication.shutdown() boundary.
+    try:
+        window.deleteLater()
+    except BaseException as error:
+        observed_errors.append(
+            "MainWindow deferred delete cleanup failed: "
+            f"{type(error).__name__}"
+        )
     if errors is None and observed_errors:
         raise RuntimeError("; ".join(observed_errors))
 
