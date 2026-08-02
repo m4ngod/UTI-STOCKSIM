@@ -1927,11 +1927,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     )
 
 
-def test_release_smoke_joins_live_features_before_deleting_qt_mount(
-    monkeypatch,
-):
-    import shiboken6
-
+def test_release_smoke_joins_live_features_without_forcing_qt_object_deletion():
     from stock_sim.release.frontend_v2_package_entry import (
         _close_mount,
         _mount_is_closed,
@@ -1951,34 +1947,33 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
 
     class Host:
         _workspace_closed = False
-        deleted = False
 
         def close_adapter(self):
             events.append("adapter")
             self._workspace_closed = True
 
     class Window:
-        deleted = False
-
-        def __init__(self, host):
-            self.host = host
+        visible = True
 
         def close(self):
             events.append("window")
+            self.visible = False
 
         def deleteLater(self):
-            events.append("window-delete")
-            self.deleted = True
-            self.host.deleted = True
+            raise AssertionError(
+                "A mounted QObject must not be deleted while Python "
+                "references remain live"
+            )
 
         def isVisible(self):
-            if self.deleted:
-                raise RuntimeError("wrapped C++ object is deleted")
-            return False
+            return self.visible
 
     class App:
         def sendPostedEvents(self, *_args):
-            events.append("deferred-delete")
+            raise AssertionError(
+                "The release journey must not force deferred QObject "
+                "deletion"
+            )
 
         def processEvents(self):
             events.append("process-events")
@@ -1993,12 +1988,7 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
         },
     )()
     host = Host()
-    window = Window(host)
-    monkeypatch.setattr(
-        shiboken6,
-        "isValid",
-        lambda item: not item.deleted,
-    )
+    window = Window()
 
     _close_mount(
         app=App(),
@@ -2013,8 +2003,6 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
         "run-feature",
         "evidence-feature",
         "window",
-        "window-delete",
-        "deferred-delete",
         "process-events",
     ]
     assert _mount_is_closed(context, window, host) is True

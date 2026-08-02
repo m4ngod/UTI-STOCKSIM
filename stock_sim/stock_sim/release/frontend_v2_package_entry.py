@@ -2185,9 +2185,11 @@ def _close_mount(
     host: Any,
     errors: list[str] | None = None,
 ) -> None:
-    from PySide6.QtCore import QEvent
-
     observed_errors = errors if errors is not None else []
+    # The smoke journey retains Python references to each mount for its final
+    # lifecycle audit.  Closing the window is the ownership-safe boundary;
+    # forcing deferred C++ deletion while those wrappers remain live corrupts
+    # compiled PySide6 teardown.
     for label, action in (
         ("QML Adapter", host.close_adapter),
         (
@@ -2200,11 +2202,6 @@ def _close_mount(
             context.evidence_and_findings_feature.close,
         ),
         ("MainWindow", window.close),
-        ("MainWindow deferred delete", window.deleteLater),
-        (
-            "Qt deferred-delete delivery",
-            lambda: app.sendPostedEvents(None, QEvent.Type.DeferredDelete),
-        ),
         ("Qt event drain", app.processEvents),
     ):
         try:
@@ -2273,8 +2270,6 @@ def _mount_is_closed(
     window: Any,
     host: Any,
 ) -> bool:
-    from shiboken6 import isValid
-
     return bool(
         getattr(host, "_workspace_closed", False)
         and getattr(context.diagnostic_tasks_feature, "_closed", False)
@@ -2284,8 +2279,7 @@ def _mount_is_closed(
             "_closed",
             False,
         )
-        and not isValid(host)
-        and not isValid(window)
+        and not window.isVisible()
     )
 
 
