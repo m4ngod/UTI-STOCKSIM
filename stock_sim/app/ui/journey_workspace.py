@@ -2985,12 +2985,12 @@ class JourneyWorkspaceHost(QQuickWidget):
         if self._workspace_closed:
             return
         self._workspace_closed = True
-        self.setSource(QUrl())
         if self._diagnostic_tasks is not None:
             self._diagnostic_tasks.close()
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
+        self.setSource(QUrl())
 
 
 __all__ = [

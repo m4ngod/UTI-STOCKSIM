@@ -490,8 +490,8 @@ def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
     assert events == [
         "window-hide",
         "process-events",
-        "qml-root-destroyed",
         "run-adapter",
+        "qml-root-destroyed",
         "process-events",
         "window-close",
         "process-events",
