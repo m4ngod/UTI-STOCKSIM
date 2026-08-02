@@ -1927,7 +1927,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     )
 
 
-def test_release_smoke_joins_live_features_without_forcing_qt_object_deletion():
+def test_release_smoke_quiesces_qml_before_closing_live_features():
     from stock_sim.release.frontend_v2_package_entry import (
         _close_mount,
         _mount_is_closed,
@@ -1954,6 +1954,10 @@ def test_release_smoke_joins_live_features_without_forcing_qt_object_deletion():
 
     class Window:
         visible = True
+
+        def hide(self):
+            events.append("window-hide")
+            self.visible = False
 
         def close(self):
             events.append("window")
@@ -1998,11 +2002,15 @@ def test_release_smoke_joins_live_features_without_forcing_qt_object_deletion():
     )
 
     assert events == [
+        "window-hide",
+        "process-events",
         "adapter",
+        "process-events",
+        "window",
+        "process-events",
         "diagnostic-feature",
         "run-feature",
         "evidence-feature",
-        "window",
         "process-events",
     ]
     assert _mount_is_closed(context, window, host) is True

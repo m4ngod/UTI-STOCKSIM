@@ -2186,12 +2186,18 @@ def _close_mount(
     errors: list[str] | None = None,
 ) -> None:
     observed_errors = errors if errors is not None else []
-    # The smoke journey retains Python references to each mount for its final
-    # lifecycle audit.  Closing the window is the ownership-safe boundary;
-    # forcing deferred C++ deletion while those wrappers remain live corrupts
-    # compiled PySide6 teardown.
+    # Hide and drain first so Qt Quick has stopped rendering. Then unload QML
+    # while its context adapters are alive, close the window after the adapter
+    # shutdown is idempotent, and only then close the typed Features. The smoke
+    # journey retains Python references for its final lifecycle audit, so
+    # deferred C++ deletion must not be forced here.
     for label, action in (
+        ("MainWindow hide", window.hide),
+        ("Qt event drain before QML teardown", app.processEvents),
         ("QML Adapter", host.close_adapter),
+        ("Qt event drain after QML teardown", app.processEvents),
+        ("MainWindow", window.close),
+        ("Qt event drain after MainWindow close", app.processEvents),
         (
             "Diagnostic Tasks Feature",
             context.diagnostic_tasks_feature.close,
@@ -2201,8 +2207,7 @@ def _close_mount(
             "Evidence and Findings Feature",
             context.evidence_and_findings_feature.close,
         ),
-        ("MainWindow", window.close),
-        ("Qt event drain", app.processEvents),
+        ("Qt event drain after Feature teardown", app.processEvents),
     ):
         try:
             action()

@@ -1,5 +1,6 @@
 import gc
 import os
+from dataclasses import replace
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -395,3 +396,113 @@ def test_route_flag_off_preserves_the_legacy_widgets_workspace():
     assert window.findChildren(QQuickWidget) == []
 
     feature.close()
+
+
+def test_release_close_mount_quiesces_real_qml_route_before_shutdown(
+    monkeypatch,
+):
+    from stock_sim.release.frontend_v2_package_entry import _close_mount
+
+    app = _app()
+    events: list[str] = []
+    state_change_count = 0
+    feature = DeterministicFakeRunMonitoringAdapter()
+    window = MainWindow(
+        run_monitoring_feature=feature,
+        frontend_v2_enabled=True,
+    )
+    host = window.centralWidget()
+    root = host.rootObject()
+    adapter = host._run_monitoring
+    assert root is not None
+
+    root.destroyed.connect(lambda *_: events.append("qml-root-destroyed"))
+
+    def observe_state_change() -> None:
+        nonlocal state_change_count
+        state_change_count += 1
+
+    adapter.stateChanged.connect(observe_state_change)
+    original_adapter_close = adapter.close
+
+    def close_adapter() -> None:
+        events.append("run-adapter")
+        original_adapter_close()
+
+    monkeypatch.setattr(adapter, "close", close_adapter)
+
+    class ClosingFeature:
+        def __init__(self, name: str) -> None:
+            self._name = name
+            self.closed = False
+
+        def close(self) -> None:
+            events.append(self._name)
+            self.closed = True
+
+    diagnostic_feature = ClosingFeature("diagnostic-feature")
+    evidence_feature = ClosingFeature("evidence-feature")
+    original_feature_close = feature.close
+
+    def close_run_feature() -> None:
+        events.append("run-feature")
+        original_feature_close()
+
+    monkeypatch.setattr(feature, "close", close_run_feature)
+    context = SimpleNamespace(
+        diagnostic_tasks_feature=diagnostic_feature,
+        run_monitoring_feature=feature,
+        evidence_and_findings_feature=evidence_feature,
+    )
+    original_hide = window.hide
+    original_close = window.close
+    original_process_events = app.processEvents
+
+    def hide_window() -> None:
+        events.append("window-hide")
+        original_hide()
+
+    def close_window() -> bool:
+        events.append("window-close")
+        return original_close()
+
+    def process_events() -> None:
+        events.append("process-events")
+        original_process_events()
+
+    monkeypatch.setattr(window, "hide", hide_window)
+    monkeypatch.setattr(window, "close", close_window)
+    monkeypatch.setattr(app, "processEvents", process_events)
+    window.show()
+    original_process_events()
+    late_state = replace(adapter._state, revision=adapter._state.revision + 1)
+
+    _close_mount(
+        app=app,
+        context=context,
+        window=window,
+        host=host,
+    )
+
+    assert events == [
+        "window-hide",
+        "process-events",
+        "qml-root-destroyed",
+        "run-adapter",
+        "process-events",
+        "window-close",
+        "process-events",
+        "diagnostic-feature",
+        "run-feature",
+        "evidence-feature",
+        "process-events",
+    ]
+    assert host.rootObject() is None
+    assert host._workspace_closed is True
+    assert diagnostic_feature.closed is True
+    assert evidence_feature.closed is True
+
+    state_changes_before_late_delivery = state_change_count
+    adapter.deliveryRequested.emit(adapter._mount_generation.value, late_state)
+    original_process_events()
+    assert state_change_count == state_changes_before_late_delivery
