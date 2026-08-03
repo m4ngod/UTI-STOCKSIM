@@ -554,15 +554,22 @@ def _focus_accessible_name_with_keyboard(
     host: Any,
     accessible_name: str,
 ) -> Any:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QObject, Qt
 
     quick_window = host.quickWindow()
     if quick_window is None:
         raise RuntimeError("Journey Workspace Quick Window is unavailable")
+    content_item = quick_window.contentItem()
+    keyboard_search_limit = 120
+    if content_item is not None:
+        keyboard_search_limit = max(
+            keyboard_search_limit,
+            len(content_item.findChildren(QObject)) + 1,
+        )
     if not host.hasFocus():
         host.setFocus(Qt.FocusReason.TabFocusReason)
         app.processEvents()
-    for _ in range(120):
+    for _ in range(keyboard_search_limit):
         item = quick_window.activeFocusItem()
         if item is None:
             _key_click(
@@ -585,7 +592,7 @@ def _focus_accessible_name_with_keyboard(
         app.processEvents()
     raise RuntimeError(
         "Keyboard focus did not reach accessible control "
-        f"{accessible_name!r}"
+        f"{accessible_name!r} after {keyboard_search_limit} steps"
     )
 
 
