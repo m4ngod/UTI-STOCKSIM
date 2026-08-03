@@ -3939,10 +3939,15 @@ class SqlDiagnosticTaskRepository:
                     "WHERE task_id = :task_id"
                 ),
                 {"task_id": str(handoff_row["task_id"])},
-            ).mappings()
-            targets = tuple(
-                _lifecycle_target_from_row(row) for row in target_rows
-            )
+            ).mappings().all()
+            materialized_targets: list[
+                DiagnosticLifecycleTargetSnapshot
+            ] = []
+            for row in target_rows:
+                materialized_targets.append(
+                    _lifecycle_target_from_row(row)
+                )
+            targets = tuple(materialized_targets)
             merged = _merge_diagnostic_campaign_progress(
                 current_handoff,
                 handoff,

@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.engine.result import MappingResult
 
 from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
@@ -449,9 +450,11 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
     active_mounts: set[int] = set()
     created_mount_count = 0
     terminal_advance_quiesced = False
+    terminal_mapping_iteration_active = False
     create_production_window = release_entry._create_production_window
     close_mount = release_entry._close_mount
     advance_campaign = DiagnosticsApplication.advance_diagnostic_campaign
+    mapping_result_iter = MappingResult.__iter__
 
     def observed_create_production_window(**arguments):
         nonlocal created_mount_count
@@ -466,13 +469,26 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
 
     def observed_advance_campaign(self, *arguments, **keyword_arguments):
         nonlocal terminal_advance_quiesced
+        nonlocal terminal_mapping_iteration_active
         if keyword_arguments.get("max_cases") == 64:
             terminal_advance_quiesced = True
             assert not active_mounts, (
                 "Installed background completion must not race live QML "
                 "Adapter executor threads"
             )
-        return advance_campaign(self, *arguments, **keyword_arguments)
+            terminal_mapping_iteration_active = True
+        try:
+            return advance_campaign(self, *arguments, **keyword_arguments)
+        finally:
+            terminal_mapping_iteration_active = False
+
+    def reject_live_terminal_mapping_iteration(self):
+        if terminal_mapping_iteration_active:
+            raise AssertionError(
+                "Installed terminal continuation must materialize SQLAlchemy "
+                "mapping rows before Python-level iteration"
+            )
+        return mapping_result_iter(self)
 
     monkeypatch.setattr(
         release_entry,
@@ -488,6 +504,11 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
         DiagnosticsApplication,
         "advance_diagnostic_campaign",
         observed_advance_campaign,
+    )
+    monkeypatch.setattr(
+        MappingResult,
+        "__iter__",
+        reject_live_terminal_mapping_iteration,
     )
 
     report_dir = tmp_path / "installed-wave2-smoke"
