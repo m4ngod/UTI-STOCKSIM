@@ -2226,6 +2226,24 @@ def test_compiled_smoke_retains_deferred_fixture_until_process_exit():
         ]
 
 
+def test_release_serialization_uses_the_shared_application_gate_directly():
+    from app.features._diagnostics_application_access import (
+        shared_diagnostics_application_access_gate,
+    )
+    from stock_sim.release.frontend_v2_package_entry import (
+        _serialized_application_access,
+    )
+
+    class Application:
+        pass
+
+    application = Application()
+
+    assert _serialized_application_access(application) is (
+        shared_diagnostics_application_access_gate(application)
+    )
+
+
 def test_compiled_smoke_retains_production_mount_owners_until_process_exit(
     tmp_path,
 ):

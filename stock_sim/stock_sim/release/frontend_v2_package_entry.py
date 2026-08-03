@@ -10,8 +10,8 @@ import re
 import sys
 import tempfile
 import traceback
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from enum import Enum
 from functools import partial
@@ -439,16 +439,14 @@ def _type_text_with_keyboard(host: Any, text: str) -> None:
             )
 
 
-@contextmanager
 def _serialized_application_access(
     application: Any,
-) -> Iterator[None]:
+) -> Any:
     from app.features._diagnostics_application_access import (
         shared_diagnostics_application_access_gate,
     )
 
-    with shared_diagnostics_application_access_gate(application):
-        yield
+    return shared_diagnostics_application_access_gate(application)
 
 
 def _focus_with_keyboard(
