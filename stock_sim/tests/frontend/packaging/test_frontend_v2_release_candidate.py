@@ -2653,6 +2653,35 @@ def test_successful_compiled_smoke_exits_before_python_stream_teardown(
     assert events == ["run", "terminate:0"]
 
 
+def test_compiled_smoke_suspends_cyclic_gc_until_os_termination_returns():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    events: list[str] = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir=C:/release-report",),
+            run=lambda: events.append("run") or 0,
+            terminate=lambda code: events.append(f"terminate:{code}"),
+            cyclic_gc_enabled=lambda: True,
+            suspend_cyclic_gc=lambda: events.append("suspend-gc"),
+            resume_cyclic_gc=lambda: events.append("resume-gc"),
+        )
+
+    assert events == [
+        "suspend-gc",
+        "run",
+        "terminate:0",
+        "resume-gc",
+    ]
+
+
 def test_compiled_smoke_system_exit_zero_flushes_diagnostics(
     monkeypatch,
 ):

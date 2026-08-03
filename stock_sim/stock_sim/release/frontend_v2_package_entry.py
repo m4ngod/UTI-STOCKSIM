@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import re
@@ -2831,6 +2832,9 @@ def _run_process_entry(
     arguments: Sequence[str],
     run: Callable[[], int] = main,
     terminate: Callable[[int], None] = os._exit,
+    cyclic_gc_enabled: Callable[[], bool] = gc.isenabled,
+    suspend_cyclic_gc: Callable[[], None] = gc.disable,
+    resume_cyclic_gc: Callable[[], None] = gc.enable,
 ) -> None:
     compiled_smoke = bool(
         compiled
@@ -2842,6 +2846,10 @@ def _run_process_entry(
     )
     if not compiled_smoke:
         raise SystemExit(run())
+
+    cyclic_gc_was_suspended = cyclic_gc_enabled()
+    if cyclic_gc_was_suspended:
+        suspend_cyclic_gc()
 
     completed_normally = False
     try:
@@ -2867,6 +2875,8 @@ def _run_process_entry(
 
     if completed_normally and exit_code == 0:
         terminate(0)
+        if cyclic_gc_was_suspended:
+            resume_cyclic_gc()
         raise RuntimeError(
             "OS-level process termination unexpectedly returned"
         )
@@ -2877,6 +2887,8 @@ def _run_process_entry(
         except BaseException:
             exit_code = 1
     terminate(exit_code)
+    if cyclic_gc_was_suspended:
+        resume_cyclic_gc()
     raise RuntimeError("OS-level process termination unexpectedly returned")
 
 
