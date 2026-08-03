@@ -7,7 +7,16 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
-from typing import Any, Callable, Final, Literal, Mapping, Protocol, cast
+from typing import (
+    Any,
+    Callable,
+    Final,
+    Literal,
+    Mapping,
+    Protocol,
+    TypeVar,
+    cast,
+)
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
@@ -1868,6 +1877,15 @@ def _strategy_run_state_to_dict(state: _StrategyRunState) -> dict[str, object]:
     return payload
 
 
+_EagerValue = TypeVar("_EagerValue")
+
+
+def _eager_tuple(items: list[_EagerValue]) -> tuple[_EagerValue, ...]:
+    """Freeze an already materialized persistence-boundary collection."""
+
+    return tuple(items)
+
+
 def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
     specification_payload = cast(dict[str, Any], payload["specification"])
     specification = StrategyRunSpecification(
@@ -1879,12 +1897,12 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         transformation_catalog_version=str(
             specification_payload["transformation_catalog_version"]
         ),
-        transformation_implementation_versions=tuple(
+        transformation_implementation_versions=_eager_tuple([
             str(item)
             for item in specification_payload[
                 "transformation_implementation_versions"
             ]
-        ),
+        ]),
         market_rule_profile_version=str(
             specification_payload["market_rule_profile_version"]
         ),
@@ -1918,14 +1936,11 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
                 PTRADE_IN_PROCESS_HOST_VERSION,
             )
         ),
-        ptrade_identity_pinned=all(
-            name in specification_payload
-            for name in (
-                "ptrade_surface_version",
-                "ptrade_manifest_hash",
-                "ptrade_host_adapter_version",
-            )
-        ),
+        ptrade_identity_pinned={
+            "ptrade_surface_version",
+            "ptrade_manifest_hash",
+            "ptrade_host_adapter_version",
+        }.issubset(specification_payload),
         commission_bps=Decimal(
             str(specification_payload.get("commission_bps", "3"))
         ),
@@ -1938,15 +1953,12 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         sell_stamp_duty_bps=Decimal(
             str(specification_payload.get("sell_stamp_duty_bps", "5"))
         ),
-        execution_economics_pinned=all(
-            name in specification_payload
-            for name in (
-                "commission_bps",
-                "minimum_commission",
-                "transfer_fee_bps",
-                "sell_stamp_duty_bps",
-            )
-        ),
+        execution_economics_pinned={
+            "commission_bps",
+            "minimum_commission",
+            "transfer_fee_bps",
+            "sell_stamp_duty_bps",
+        }.issubset(specification_payload),
         resolved_execution_conditions=(
             ResolvedExecutionConditions.from_dict(
                 cast(
@@ -1962,7 +1974,7 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         ),
         engine_version=str(specification_payload["engine_version"]),
     )
-    orders = tuple(
+    orders = _eager_tuple([
         StrategyOrder(
             order_id=str(item["order_id"]),
             instrument=str(item["instrument"]),
@@ -2034,8 +2046,8 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             ),
         )
         for item in cast(list[dict[str, Any]], payload["orders"])
-    )
-    fills = tuple(
+    ])
+    fills = _eager_tuple([
         PrivateFill(
             fill_id=str(item["fill_id"]),
             order_id=str(item["order_id"]),
@@ -2073,8 +2085,8 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             ),
         )
         for item in cast(list[dict[str, Any]], payload["fills"])
-    )
-    positions = tuple(
+    ])
+    positions = _eager_tuple([
         _LedgerPosition(
             instrument=str(item["instrument"]),
             shares=int(item["shares"]),
@@ -2089,8 +2101,8 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             ),
         )
         for item in cast(list[dict[str, Any]], payload["positions"])
-    )
-    equity_curve = tuple(
+    ])
+    equity_curve = _eager_tuple([
         EquityPoint(
             simulation_time=datetime.fromisoformat(str(item["simulation_time"])),
             cash=Decimal(str(item["cash"])),
@@ -2098,7 +2110,7 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
             equity=Decimal(str(item["equity"])),
         )
         for item in cast(list[dict[str, Any]], payload["equity_curve"])
-    )
+    ])
     current_simulation_time = payload.get("current_simulation_time")
     ptrade_runtime_payload = payload.get("ptrade_runtime_state")
     ptrade_audit_payload = payload.get("ptrade_host_audit")
@@ -2106,9 +2118,9 @@ def _strategy_run_state_from_dict(payload: dict[str, Any]) -> _StrategyRunState:
         specification=specification,
         status=_parse_run_status(str(payload["status"])),
         next_node_index=int(payload["processed_node_count"]),
-        decision_times=tuple(
+        decision_times=_eager_tuple([
             datetime.fromisoformat(str(item)) for item in payload["decision_times"]
-        ),
+        ]),
         orders=orders,
         fills=fills,
         cash=Decimal(str(payload["cash"])),
