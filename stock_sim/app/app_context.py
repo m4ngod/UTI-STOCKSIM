@@ -13,6 +13,7 @@ from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DeterministicFakeStrategyLibraryAdapter,
     DiagnosticEvidencePackageId,
     DiagnosticTasksContext,
     DiagnosticTasksFeature,
@@ -23,6 +24,8 @@ from app.features import (
     LiveDiagnosticTasksAdapter,
     LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
+    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+    LiveStrategyLibraryAdapter,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     MarketScenarioId,
@@ -32,6 +35,9 @@ from app.features import (
     RunMonitoringSelection,
     StrategyDiagnosticsV1ApplicationReadModel,
     StrategyDiagnosticsV1DiagnosticTasksApplication,
+    StrategyDiagnosticsV1StrategyLibraryApplication,
+    StrategyLibraryContext,
+    StrategyLibraryFeature,
     StrategyRunId,
     StrategyUnderTestId,
     V1JourneySelector,
@@ -86,6 +92,11 @@ class AppContext:
     strategy_diagnostics_tasks_application: (
         StrategyDiagnosticsV1DiagnosticTasksApplication | None
     )
+    strategy_diagnostics_library_application: (
+        StrategyDiagnosticsV1StrategyLibraryApplication | None
+    )
+    strategy_library_feature: StrategyLibraryFeature
+    strategy_library_context: StrategyLibraryContext
     diagnostic_tasks_feature: DiagnosticTasksFeature
     diagnostic_tasks_context: DiagnosticTasksContext
     run_monitoring_feature: RunMonitoringFeature
@@ -105,6 +116,9 @@ def build_app_context(
     ) = None,
     strategy_diagnostics_tasks_application: (
         StrategyDiagnosticsV1DiagnosticTasksApplication | None
+    ) = None,
+    strategy_diagnostics_library_application: (
+        StrategyDiagnosticsV1StrategyLibraryApplication | None
     ) = None,
     legacy_read_only: bool = False,
 ) -> AppContext:
@@ -166,7 +180,11 @@ def build_app_context(
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
     diagnostic_tasks_context = DiagnosticTasksContext.workspace()
+    strategy_library_context = StrategyLibraryContext()
     if resolved_mode == "fake":
+        strategy_library_feature: StrategyLibraryFeature = (
+            DeterministicFakeStrategyLibraryAdapter()
+        )
         diagnostic_tasks_feature: DiagnosticTasksFeature = (
             DeterministicFakeDiagnosticTasksAdapter()
         )
@@ -181,10 +199,12 @@ def build_app_context(
         if (
             strategy_diagnostics_read_model is None
             and strategy_diagnostics_tasks_application is None
+            and strategy_diagnostics_library_application is None
         ):
             (
                 strategy_diagnostics_read_model,
                 strategy_diagnostics_tasks_application,
+                strategy_diagnostics_library_application,
             ) = _build_strategy_diagnostics_adapters()
         else:
             if strategy_diagnostics_read_model is None:
@@ -195,6 +215,14 @@ def build_app_context(
                 strategy_diagnostics_tasks_application = (
                     _build_strategy_diagnostics_tasks_application()
                 )
+            if strategy_diagnostics_library_application is None:
+                strategy_diagnostics_library_application = (
+                    _build_strategy_diagnostics_library_application()
+                )
+        strategy_library_feature = LiveStrategyLibraryAdapter(
+            application=strategy_diagnostics_library_application,
+            event_bridge=live_bridge,
+        )
         diagnostic_tasks_feature = LiveDiagnosticTasksAdapter(
             application=strategy_diagnostics_tasks_application,
             event_bridge=live_bridge,
@@ -238,6 +266,11 @@ def build_app_context(
         strategy_diagnostics_tasks_application=(
             strategy_diagnostics_tasks_application
         ),
+        strategy_diagnostics_library_application=(
+            strategy_diagnostics_library_application
+        ),
+        strategy_library_feature=strategy_library_feature,
+        strategy_library_context=strategy_library_context,
         diagnostic_tasks_feature=diagnostic_tasks_feature,
         diagnostic_tasks_context=diagnostic_tasks_context,
         run_monitoring_feature=run_monitoring_feature,
@@ -271,6 +304,9 @@ def reset_app_context(
     strategy_diagnostics_tasks_application: (
         StrategyDiagnosticsV1DiagnosticTasksApplication | None
     ) = None,
+    strategy_diagnostics_library_application: (
+        StrategyDiagnosticsV1StrategyLibraryApplication | None
+    ) = None,
     legacy_read_only: bool = False,
 ) -> AppContext:
     global _app_context
@@ -285,9 +321,13 @@ def reset_app_context(
             strategy_diagnostics_tasks_application=(
                 strategy_diagnostics_tasks_application
             ),
+            strategy_diagnostics_library_application=(
+                strategy_diagnostics_library_application
+            ),
             legacy_read_only=legacy_read_only,
         )
         if previous is not None:
+            previous.strategy_library_feature.close()
             previous.diagnostic_tasks_feature.close()
             previous.run_monitoring_feature.close()
             previous.evidence_and_findings_feature.close()
@@ -446,9 +486,22 @@ def _build_strategy_diagnostics_tasks_application() -> (
     return LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application)
 
 
+def _build_strategy_diagnostics_library_application() -> (
+    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter
+):
+    from strategy_diagnostics import create_diagnostics_application
+
+    application = create_diagnostics_application()
+    application.start()
+    return LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+        application
+    )
+
+
 def _build_strategy_diagnostics_adapters() -> tuple[
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
 ]:
     from persistence.models_imports import engine
     from strategy_diagnostics import create_diagnostics_application
@@ -459,6 +512,7 @@ def _build_strategy_diagnostics_adapters() -> tuple[
     return (
         LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application),
+        LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(application),
     )
 
 

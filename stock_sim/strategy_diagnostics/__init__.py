@@ -7,6 +7,18 @@ from .application import (
     DiagnosticsApplicationState,
     create_diagnostics_application,
 )
+from .strategy_inventory import (
+    StrategyInventoryAvailability,
+    StrategyInventoryCompatibility,
+    StrategyInventoryDependency,
+    StrategyInventoryDependencyKind,
+    StrategyInventoryDisplay,
+    StrategyInventoryReason,
+    StrategyInventoryReasonCode,
+    StrategyInventorySource,
+    StrategyUnderTestInventory,
+    StrategyUnderTestInventoryEntry,
+)
 from .baostock_source import BaoStockHistoricalSource, BaoStockSourceLayout
 from .execution import (
     A_SHARE_CASH_EQUITY_EXECUTION_POLICY_VERSION,
@@ -255,6 +267,16 @@ __all__ = [
     "DiagnosticCampaignCaseInventory",
     "DiagnosticsApplication",
     "DiagnosticsApplicationState",
+    "StrategyInventoryAvailability",
+    "StrategyInventoryCompatibility",
+    "StrategyInventoryDependency",
+    "StrategyInventoryDependencyKind",
+    "StrategyInventoryDisplay",
+    "StrategyInventoryReason",
+    "StrategyInventoryReasonCode",
+    "StrategyInventorySource",
+    "StrategyUnderTestInventory",
+    "StrategyUnderTestInventoryEntry",
     "DeterministicFakeAIRecipeAssistant",
     "OpenAIResponsesHTTPTransport",
     "OpenAIResponsesRecipeAssistant",

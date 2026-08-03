@@ -19,7 +19,11 @@ from app.features import (
     DiagnosticTasksFeature,
     EvidenceAndFindingsFeature,
     RunMonitoringFeature,
+    StrategyLibraryFeature,
     StrategyDiagnosticsV1DiagnosticTasksApplication,
+)
+from app.features.strategy_library_application import (
+    StrategyDiagnosticsV1StrategyLibraryApplication,
 )
 from stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate import (
     INTEGRATION_GATE_GROUPS,
@@ -136,12 +140,14 @@ def _public_type_graph_violations(
     return tuple(violations)
 
 
-def test_all_three_active_features_and_diagnostic_tasks_application_have_clean_public_type_graphs():
+def test_all_four_active_features_and_application_interfaces_have_clean_public_type_graphs():
     public_graph = _transitive_interface_graph(
         DiagnosticTasksFeature,
         RunMonitoringFeature,
         EvidenceAndFindingsFeature,
+        StrategyLibraryFeature,
         StrategyDiagnosticsV1DiagnosticTasksApplication,
+        StrategyDiagnosticsV1StrategyLibraryApplication,
     )
 
     assert _public_type_graph_violations(public_graph) == ()
@@ -211,6 +217,7 @@ def test_integration_gate_is_complete_and_repository_valid():
         category.requirement
         for category in PERSISTED_PRODUCT_TRACER.coverage
     ) == (
+        "authoritative-strategy-library-slice",
         "authoritative-input-and-exact-revision",
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",

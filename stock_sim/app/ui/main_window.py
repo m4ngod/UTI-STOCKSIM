@@ -27,6 +27,8 @@ if TYPE_CHECKING:
         EvidenceAndFindingsFeature,
         RunMonitoringContext,
         RunMonitoringFeature,
+        StrategyLibraryContext,
+        StrategyLibraryFeature,
     )
 
 try:  # PySide6 可选
@@ -78,6 +80,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(
         self,
         *,
+        strategy_library_feature: StrategyLibraryFeature | None = None,
+        strategy_library_context: StrategyLibraryContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         run_monitoring_feature: RunMonitoringFeature | None = None,
@@ -127,6 +131,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             layout_store = layout_module.LayoutPersistence(
                 path=layout_path
             )
+        self._strategy_library_feature = strategy_library_feature
+        self._strategy_library_context = strategy_library_context
         self._diagnostic_tasks_feature = diagnostic_tasks_feature
         self._diagnostic_tasks_context = diagnostic_tasks_context
         self._run_monitoring_feature = run_monitoring_feature
@@ -193,10 +199,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         workspace = JourneyWorkspaceHost(
             self._run_monitoring_feature,
             context=self._run_monitoring_context,
+            strategy_library_feature=self._strategy_library_feature,
+            strategy_library_context=self._strategy_library_context,
             diagnostic_tasks_feature=self._diagnostic_tasks_feature,
             diagnostic_tasks_context=self._diagnostic_tasks_context,
             evidence_feature=self._evidence_and_findings_feature,
             evidence_context=self._evidence_and_findings_context,
+            initial_route=(
+                "strategy_library"
+                if self._strategy_library_feature is not None
+                else "diagnostic_tasks"
+            ),
             parent=self,
         )
         self.setCentralWidget(workspace)  # type: ignore[attr-defined]

@@ -110,6 +110,15 @@ def _start_frontend(*, headless: bool):
     app = QApplication.instance() or QApplication([])
     try:
         app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
+        strategy_library_feature = getattr(
+            context,
+            "strategy_library_feature",
+            None,
+        )
+        if strategy_library_feature is not None:
+            app.aboutToQuit.connect(  # type: ignore[attr-defined]
+                strategy_library_feature.close
+            )
         diagnostic_tasks_feature = getattr(
             context,
             "diagnostic_tasks_feature",
@@ -130,6 +139,16 @@ def _start_frontend(*, headless: bool):
     except Exception:
         pass
     mw = MainWindow(
+        strategy_library_feature=getattr(
+            context,
+            "strategy_library_feature",
+            None,
+        ),
+        strategy_library_context=getattr(
+            context,
+            "strategy_library_context",
+            None,
+        ),
         diagnostic_tasks_feature=getattr(
             context,
             "diagnostic_tasks_feature",
