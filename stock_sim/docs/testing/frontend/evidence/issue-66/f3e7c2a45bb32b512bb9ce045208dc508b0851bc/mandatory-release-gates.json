@@ -1,0 +1,30 @@
+{
+  "accessibility": {
+    "issue_number": 43,
+    "issue_url": "https://github.com/m4ngod/UTI-STOCKSIM/issues/43",
+    "junit_sha256": "sha256:71aac981f23a53525857a7345e79c25dbc147772c79e4ff7d0b8feca8369122c",
+    "source_commit": "f3e7c2a45bb32b512bb9ce045208dc508b0851bc",
+    "status": "passed",
+    "test_count": 18
+  },
+  "performance": {
+    "certification_sha256": "sha256:5492f7cff8adc2433bf34e9ad2cdf1a58545827450c269552b493a2f8ecc80c9",
+    "fixture_archive_sha256": "sha256:303aaa41c5d3383c31441228ca399b1d21348f731ec0f437a7373e3e13efefbf",
+    "hardware_report_sha256": "sha256:1273851823e9ab880323f4a77a3c0929d038e093fddc4bbbf4e70f7d676bd678",
+    "issue_number": 45,
+    "issue_url": "https://github.com/m4ngod/UTI-STOCKSIM/issues/45",
+    "safety_report_sha256": "sha256:13c2e8fd0cb24eed54b50cf0ce671daad190626438ae0f488de3b8c64251243f",
+    "software_report_sha256": "sha256:995580c1a8b6733beeba956c9d67106f792f2c1d8d56100c290e0bfb38e06ee2",
+    "source_commit": "f3e7c2a45bb32b512bb9ce045208dc508b0851bc",
+    "status": "certified"
+  },
+  "safety": {
+    "issue_number": 44,
+    "issue_url": "https://github.com/m4ngod/UTI-STOCKSIM/issues/44",
+    "report_sha256": "sha256:13c2e8fd0cb24eed54b50cf0ce671daad190626438ae0f488de3b8c64251243f",
+    "source_commit": "f3e7c2a45bb32b512bb9ce045208dc508b0851bc",
+    "status": "passed"
+  },
+  "source_commit": "f3e7c2a45bb32b512bb9ce045208dc508b0851bc",
+  "toolchain_identity": "sha256:0868789918094ea360bf7a636d90a15f655e60725a0c2dd700f4fb05af1eb737"
+}

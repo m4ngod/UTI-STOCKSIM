@@ -1,0 +1,150 @@
+{
+  "adapter_modes": [
+    "deterministic_fake",
+    "live"
+  ],
+  "checked_surfaces": [
+    "feature_interfaces",
+    "qml_adapter_slots",
+    "qml_object_tree",
+    "journey_navigation",
+    "shortcut_allowlist",
+    "telemetry_registry",
+    "runtime_dispatch_live",
+    "runtime_dispatch_deterministic_fake",
+    "read_only_diagnostic_context",
+    "release_blocking"
+  ],
+  "feature_members": [
+    [
+      "DiagnosticTasksFeature",
+      [
+        "approve_configuration",
+        "cancel_diagnostic_target",
+        "close",
+        "create_diagnostic_task",
+        "interface_version",
+        "pause_diagnostic_target",
+        "resume_diagnostic_target",
+        "retry_failed_campaign_node",
+        "revise_configuration",
+        "snapshot",
+        "start_formal_diagnostic_campaign",
+        "subscribe",
+        "validate_configuration"
+      ]
+    ],
+    [
+      "EvidenceAndFindingsFeature",
+      [
+        "close",
+        "interface_version",
+        "snapshot",
+        "subscribe"
+      ]
+    ],
+    [
+      "RunMonitoringFeature",
+      [
+        "cancel_diagnostic_task",
+        "close",
+        "interface_version",
+        "pause_diagnostic_task",
+        "resume_diagnostic_task",
+        "snapshot",
+        "subscribe"
+      ]
+    ]
+  ],
+  "findings": [],
+  "policy_version": "frontend-v2-no-manual-trading-v1",
+  "qml_adapter_slots": [
+    [
+      "DiagnosticTasksQtAdapter",
+      [
+        "approveTask",
+        "cancelCampaignNodeTarget",
+        "cancelDiagnosticTaskTarget",
+        "cancelFormalDiagnosticCampaignTarget",
+        "createTask",
+        "pauseCampaignNodeTarget",
+        "pauseDiagnosticTaskTarget",
+        "pauseFormalDiagnosticCampaignTarget",
+        "refresh",
+        "resumeCampaignNodeTarget",
+        "resumeDiagnosticTaskTarget",
+        "resumeFormalDiagnosticCampaignTarget",
+        "retryFailedCampaignNode",
+        "reviseTask",
+        "startCampaign",
+        "validateTask"
+      ]
+    ],
+    [
+      "EvidenceAndFindingsQtAdapter",
+      [
+        "selectCandidate",
+        "selectChartBreakpoint",
+        "selectChartOverlay",
+        "selectChartPointAtRatio",
+        "selectFinding",
+        "setActiveTab",
+        "setEvidenceFilter",
+        "setSortOrder",
+        "setViewportIntent",
+        "stepChartPoint"
+      ]
+    ],
+    [
+      "RunMonitoringQtAdapter",
+      [
+        "cancelDiagnosticTask",
+        "pauseDiagnosticTask",
+        "refresh",
+        "resumeDiagnosticTask"
+      ]
+    ]
+  ],
+  "routes": [
+    "diagnostic_tasks",
+    "evidence_and_findings",
+    "run_monitoring"
+  ],
+  "runtime_gateway_calls": [
+    [
+      "LiveDiagnosticTasksAdapter",
+      []
+    ],
+    [
+      "LiveEvidenceAndFindingsAdapter",
+      []
+    ],
+    [
+      "LiveRunMonitoringAdapter",
+      []
+    ]
+  ],
+  "runtime_test_cases": [
+    "test_live_cancel_diagnostic_task_cannot_reach_order_cancellation",
+    "test_order_and_fill_evidence_renders_only_as_non_editable_context[deterministic_fake]",
+    "test_order_and_fill_evidence_renders_only_as_non_editable_context[live]",
+    "test_qml_object_tree_navigation_and_runtime_surface_are_safe[deterministic_fake]",
+    "test_qml_object_tree_navigation_and_runtime_surface_are_safe[live]"
+  ],
+  "runtime_test_exit_code": 0,
+  "runtime_test_file_digest": "sha256:6fbc443092086af2168101f7a86316bdb0dfbf84edad680dc9ccd67664f65e31",
+  "schema_version": 1,
+  "shortcut_keys": [
+    "End",
+    "Enter",
+    "Home",
+    "Left",
+    "Return",
+    "Right",
+    "Space"
+  ],
+  "source_commit": "f3e7c2a45bb32b512bb9ce045208dc508b0851bc",
+  "source_digest": "sha256:43edfa3dd284e682c1a0ad64441e170487f634740dd7e101c3f5be1b4ed081e7",
+  "status": "passed",
+  "telemetry_events": []
+}
