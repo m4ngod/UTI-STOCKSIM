@@ -944,11 +944,30 @@ def _quiesce_installed_wave2_mount(
         )
 
 
+def _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
+    *,
+    close_mount: Callable[[], None],
+    stop_event_bridge: Callable[[], None],
+    close_fixture: Callable[[], None],
+    reopen_fixture: Callable[[], Any],
+    cleanup_errors: list[str],
+) -> Any:
+    _quiesce_installed_wave2_mount(
+        close_mount=close_mount,
+        cleanup_errors=cleanup_errors,
+        operation="active Application reopen",
+    )
+    stop_event_bridge()
+    close_fixture()
+    return reopen_fixture()
+
+
 def _advance_installed_wave2_campaign_after_mount_quiescence(
     *,
     application: Any,
     campaign_id: str,
     close_mount: Callable[[], None],
+    stop_event_bridge: Callable[[], None],
     cleanup_errors: list[str],
 ) -> None:
     _quiesce_installed_wave2_mount(
@@ -956,6 +975,7 @@ def _advance_installed_wave2_campaign_after_mount_quiescence(
         cleanup_errors=cleanup_errors,
         operation="terminal continuation",
     )
+    stop_event_bridge()
     with _serialized_application_access(application):
         completed_campaign = application.advance_diagnostic_campaign(
             campaign_id,
@@ -1741,19 +1761,23 @@ def _run_smoke_journey(
                 "typed Feature state"
             )
 
-        _quiesce_installed_wave2_mount(
-            close_mount=close_initial_mount,
-            cleanup_errors=cleanup_errors,
-            operation="active Application reopen",
-        )
-        _close_release_fixture(
-            input_fixture,
-            defer_native_teardown=defer_native_teardown,
-        )
-        fixture = reopen_active_wave2_release_input_fixture(
-            bundle_root=persistence_root,
-            diagnostic_task_id=diagnostic_task_identity,
-            campaign_id=campaign_id,
+        fixture = (
+            _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
+                close_mount=close_initial_mount,
+                stop_event_bridge=bridge.stop,
+                close_fixture=partial(
+                    _close_release_fixture,
+                    input_fixture,
+                    defer_native_teardown=defer_native_teardown,
+                ),
+                reopen_fixture=partial(
+                    reopen_active_wave2_release_input_fixture,
+                    bundle_root=persistence_root,
+                    diagnostic_task_id=diagnostic_task_identity,
+                    campaign_id=campaign_id,
+                ),
+                cleanup_errors=cleanup_errors,
+            )
         )
         cleanup.callback(
             _record_cleanup,
@@ -1778,6 +1802,7 @@ def _run_smoke_journey(
             application=input_fixture.application,
             campaign_id=campaign_id,
             close_mount=close_initial_mount,
+            stop_event_bridge=bridge.stop,
             cleanup_errors=cleanup_errors,
         )
         with _serialized_application_access(input_fixture.application):
@@ -1897,6 +1922,7 @@ def _run_smoke_journey(
                 f"manifest={reopened_manifest_identity!r}/"
                 f"{manifest_id!r}"
             )
+        bridge.start()
         read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
             fixture.application,
             fixture.engine,

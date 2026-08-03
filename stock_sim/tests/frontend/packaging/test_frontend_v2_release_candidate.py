@@ -2555,10 +2555,71 @@ def test_terminal_campaign_does_not_advance_after_mount_quiescence_failure():
             application=application,
             campaign_id="diagnostic-campaign-quiescence-probe",
             close_mount=failed_mount_close,
+            stop_event_bridge=lambda: pytest.fail(
+                "EventBridge must remain running until mount close succeeds"
+            ),
             cleanup_errors=cleanup_errors,
         )
 
     assert application.advanced is False
+
+
+def test_terminal_campaign_stops_event_bridge_before_backend_continuation():
+    from types import SimpleNamespace
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _advance_installed_wave2_campaign_after_mount_quiescence,
+    )
+
+    events: list[str] = []
+
+    class Application:
+        def advance_diagnostic_campaign(self, *_arguments, **_keyword_arguments):
+            events.append("advance-campaign")
+            return SimpleNamespace(status="completed", cases=())
+
+    _advance_installed_wave2_campaign_after_mount_quiescence(
+        application=Application(),
+        campaign_id="diagnostic-campaign-background-probe",
+        close_mount=lambda: events.append("close-mount"),
+        stop_event_bridge=lambda: events.append("stop-event-bridge"),
+        cleanup_errors=[],
+    )
+
+    assert events == [
+        "close-mount",
+        "stop-event-bridge",
+        "advance-campaign",
+    ]
+
+
+def test_application_reopen_stops_event_bridge_before_fixture_transition():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _reopen_active_installed_wave2_fixture_after_frontend_quiescence,
+    )
+
+    events: list[str] = []
+    reopened_fixture = object()
+
+    observed_fixture = (
+        _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
+            close_mount=lambda: events.append("close-mount"),
+            stop_event_bridge=lambda: events.append("stop-event-bridge"),
+            close_fixture=lambda: events.append("close-fixture"),
+            reopen_fixture=lambda: (
+                events.append("reopen-fixture") or reopened_fixture
+            ),
+            cleanup_errors=[],
+        )
+    )
+
+    assert observed_fixture is reopened_fixture
+    assert events == [
+        "close-mount",
+        "stop-event-bridge",
+        "close-fixture",
+        "reopen-fixture",
+    ]
 
 
 def test_mount_quiescence_failure_is_reported_before_application_reopen():
