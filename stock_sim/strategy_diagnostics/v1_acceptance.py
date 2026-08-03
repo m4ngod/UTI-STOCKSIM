@@ -116,6 +116,7 @@ V1_ALLOWED_APPLICATION_COMMANDS = (
     "plan_diagnostic_campaign",
     "plan_isolated_sensitivity_set",
     "preview_reference_market_path",
+    "read_diagnostic_campaign_case_inventory",
     "recipe_authoring_capabilities",
     "recommend_historical_segments",
     "reproduce_strategy_run",
