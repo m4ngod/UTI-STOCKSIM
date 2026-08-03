@@ -156,7 +156,46 @@ and tail byte ranges were independently matched for both assets. The retained
 `release-asset-verification.json` records those checks.
 
 This historical Wave 1 certification remains limited to the two Feature
-Interfaces and immutable source commit it named. It does not certify the
-current Wave 2 source candidate; Issue #66 must certify Diagnostic Tasks and
-all three active Feature Interfaces. Strategy Library, Scenario Lab, System
-Health, and Waves 3–4 remain outside scope.
+Interfaces and immutable source commit it named. It did not certify the
+Wave 2 source candidate; the separate Issue #66 certification of Diagnostic
+Tasks and all three active Feature Interfaces is recorded below. Strategy
+Library, Scenario Lab, System Health, and Waves 3–4 remain outside scope.
+
+## Wave 2 certified candidate
+
+Issue #66 certified the immutable Wave 2 prerelease on 2026-08-03:
+
+- Source commit:
+  `f3e7c2a45bb32b512bb9ce045208dc508b0851bc`
+- Release tag:
+  `strategy-diagnostics-v1-frontend-v2-wave2-rc-f3e7c2a45bb3`
+- GitHub prerelease:
+  <https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/strategy-diagnostics-v1-frontend-v2-wave2-rc-f3e7c2a45bb3>
+- Retained evidence:
+  `docs/testing/frontend/evidence/issue-66/f3e7c2a45bb32b512bb9ce045208dc508b0851bc/`
+
+The same source commit passed T08 with 18 tests, the T09 no-manual-trading
+gate, certified Direct3D 11 and Software T10 lanes, and the installed
+Windows 11 Sandbox black-box journey. The clean room had no network adapters
+up, Python, compiler, or dependency cache. It created a real persisted
+Diagnostic Task and Formal Diagnostic Campaign after install, preserved
+TaskHandles and identities across disconnect/reconnect, remount, and
+Application reopen, reached terminal Evidence & Findings state, launched the
+real Widgets rollback, and exited cleanly.
+
+The published offline archives are:
+
+- `qml-journey-f3e7c2a45bb3.zip`
+  (`sha256:75a9dbc884dbcc513acd936d0567a94f02ecb78efdc466fe7370ecded9478070`,
+  215638255 bytes)
+- `widgets-rollback-f3e7c2a45bb3.zip`
+  (`sha256:83a748d2fb850b69f8083ea5275a7315a453aa78bac50fea22cc1ff4c02d7a97`,
+  200485698 bytes)
+
+GitHub server digests, local digests, sizes, and distributed start, middle,
+and tail byte ranges match for both assets. The certified registry contains
+exactly Diagnostic Tasks 1.0, Run Monitoring 1.2, and Evidence & Findings
+1.1. No manual-trading capability is present, legacy Widgets remains
+available, and Strategy Library, Scenario Lab, System Health, the complete
+Journey Rail, Waves 3–4, manual trading, and legacy deletion remain
+incomplete and outside scope.

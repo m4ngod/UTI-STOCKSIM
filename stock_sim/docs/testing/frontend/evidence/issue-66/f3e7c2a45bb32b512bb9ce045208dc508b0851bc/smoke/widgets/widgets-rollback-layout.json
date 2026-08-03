@@ -1,0 +1,1 @@
+{"panels": {"diagnostics": {"open": true, "order": 0}, "account": {"open": true, "order": 1}, "market": {"open": true, "order": 2}, "agents": {"open": true, "order": 3}, "arena": {"open": true, "order": 4}, "leaderboard": {"open": true, "order": 5}, "clock": {"open": true, "order": 6}, "orders": {"open": true, "order": 7}}, "workspace": {"active_page": "orders"}}
