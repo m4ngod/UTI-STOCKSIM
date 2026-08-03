@@ -38,6 +38,43 @@ WAVE2_ACCEPTED_COMMAND_KINDS = (
     "start_formal_diagnostic_campaign",
 )
 
+# Compiled smoke terminates the process immediately after its report is
+# accepted. Keep deferred PySide/SQLAlchemy owners strongly reachable until
+# that boundary: releasing their final Python wrapper references while main()
+# returns can run native destructors before _run_process_entry() terminates.
+_PROCESS_EXIT_RETAINED_NATIVE_RESOURCES: list[Any] = []
+
+
+def _retain_native_resources_until_process_exit(*resources: Any) -> None:
+    _PROCESS_EXIT_RETAINED_NATIVE_RESOURCES.extend(resources)
+
+
+def _terminate_compiled_smoke_process(exit_code: int) -> None:
+    if os.name != "nt":
+        os._exit(exit_code)
+
+    # os._exit() still crosses the Windows CRT/DLL detach boundary. A
+    # quiesced Nuitka/PySide smoke can otherwise report success and then trip
+    # a latent Qt static-destructor access violation before the parent
+    # observes its exit code. TerminateProcess is intentionally restricted to
+    # the compiled certification path after all typed resources have passed
+    # their logical lifecycle audit; interactive and source paths retain
+    # normal QApplication/Python teardown.
+    import ctypes
+
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_current_process: Any = kernel32.GetCurrentProcess
+    get_current_process.argtypes = ()
+    get_current_process.restype = ctypes.c_void_p
+    terminate_process: Any = kernel32.TerminateProcess
+    terminate_process.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+    terminate_process.restype = ctypes.c_int
+    process = get_current_process()
+    if not terminate_process(process, exit_code):
+        raise ctypes.WinError(ctypes.get_last_error())
+    raise RuntimeError("Windows process termination unexpectedly returned")
+
+
 EXPECTED_JOURNEY = (
     (
         "launched_terminal_run",
@@ -1204,6 +1241,7 @@ def _close_release_fixture(
     defer_native_teardown: bool,
 ) -> None:
     if defer_native_teardown:
+        _retain_native_resources_until_process_exit(fixture)
         fixture.close(dispose_engine=False)
         return
     fixture.close()
@@ -1598,6 +1636,12 @@ def _run_smoke_journey(
                     )
                 retired_mounts.append((mounted_window, state))
             finally:
+                if defer_native_teardown:
+                    _retain_native_resources_until_process_exit(
+                        mounted_context,
+                        mounted_window,
+                        mounted_host,
+                    )
                 mount_objects.clear()
 
         cleanup.callback(close_mount)
@@ -2857,7 +2901,7 @@ def _run_process_entry(
     compiled: bool,
     arguments: Sequence[str],
     run: Callable[[], int] = main,
-    terminate: Callable[[int], None] = os._exit,
+    terminate: Callable[[int], None] = _terminate_compiled_smoke_process,
     cyclic_gc_enabled: Callable[[], bool] = gc.isenabled,
     suspend_cyclic_gc: Callable[[], None] = gc.disable,
     resume_cyclic_gc: Callable[[], None] = gc.enable,

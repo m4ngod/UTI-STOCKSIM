@@ -4,9 +4,11 @@ from dataclasses import asdict
 import hashlib
 import json
 import os
-from shutil import copy2
+from pathlib import Path
+from shutil import copy2, rmtree
 import subprocess
 import sys
+from tempfile import mkdtemp
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -2184,6 +2186,173 @@ def test_compiled_release_fixture_close_defers_native_engine_disposal(
 
         assert dispose_calls == 1
         assert fixture.engine_disposed is True
+
+
+def test_compiled_smoke_retains_deferred_fixture_until_process_exit():
+    import gc
+    import weakref
+
+    from stock_sim.release import frontend_v2_package_entry as release_entry
+
+    class DeferredFixture:
+        def __init__(self) -> None:
+            self.closed = False
+            self.dispose_engine = None
+
+        def close(self, *, dispose_engine=True) -> None:
+            self.closed = True
+            self.dispose_engine = dispose_engine
+
+    fixture = DeferredFixture()
+    fixture_reference = weakref.ref(fixture)
+    retained_count = len(
+        release_entry._PROCESS_EXIT_RETAINED_NATIVE_RESOURCES
+    )
+
+    try:
+        release_entry._close_release_fixture(
+            fixture,
+            defer_native_teardown=True,
+        )
+        del fixture
+        gc.collect()
+
+        assert fixture_reference() is not None
+        assert fixture_reference().closed is True
+        assert fixture_reference().dispose_engine is False
+    finally:
+        del release_entry._PROCESS_EXIT_RETAINED_NATIVE_RESOURCES[
+            retained_count:
+        ]
+
+
+def test_compiled_smoke_retains_production_mount_owners_until_process_exit(
+    tmp_path,
+):
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_wave2_release_input_fixture,
+    )
+
+    audit_path = tmp_path / "compiled-process-lifetime-audit.json"
+    source_commit = "d" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    stage_packaged_wave2_release_input_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+    short_runtime_root = Path(mkdtemp(prefix="uti-i62-"))
+    script = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["QT_QUICK_BACKEND"] = "software"
+
+from stock_sim.release import frontend_v2_package_entry as release_entry
+
+created_mount_ids = []
+closed_fixture_ids = []
+create_production_window = release_entry._create_production_window
+close_release_fixture = release_entry._close_release_fixture
+
+def observed_create_production_window(**arguments):
+    created = create_production_window(**arguments)
+    created_mount_ids.append(tuple(id(owner) for owner in created))
+    return created
+
+def observed_close_release_fixture(fixture, *, defer_native_teardown):
+    closed_fixture_ids.append(id(fixture))
+    close_release_fixture(
+        fixture,
+        defer_native_teardown=defer_native_teardown,
+    )
+
+release_entry._create_production_window = observed_create_production_window
+release_entry._close_release_fixture = observed_close_release_fixture
+result = release_entry.run_smoke_journey(
+    report_dir=Path(sys.argv[1]),
+    renderer_lane=release_entry.RendererLane.SOFTWARE,
+    source_commit=sys.argv[3],
+    capture_images=False,
+    fixture_archive_path=Path(sys.argv[4]),
+    defer_native_teardown=True,
+)
+retained_ids = {
+    id(resource)
+    for resource in release_entry._PROCESS_EXIT_RETAINED_NATIVE_RESOURCES
+}
+payload = {
+    "clean_exit": result.clean_exit,
+    "errors": list(result.errors),
+    "mount_count": len(created_mount_ids),
+    "mount_owners_retained": all(
+        owner_id in retained_ids
+        for mount_ids in created_mount_ids
+        for owner_id in mount_ids
+    ),
+    "fixture_count": len(set(closed_fixture_ids)),
+    "fixtures_retained": all(
+        fixture_id in retained_ids
+        for fixture_id in closed_fixture_ids
+    ),
+}
+Path(sys.argv[2]).write_text(
+    json.dumps(payload, sort_keys=True),
+    encoding="utf-8",
+)
+release_entry._run_process_entry(
+    compiled=True,
+    arguments=("--smoke-report-dir=" + sys.argv[1],),
+    run=lambda: (
+        0
+        if (
+            payload["clean_exit"]
+            and not payload["errors"]
+            and payload["mount_count"] == 2
+            and payload["mount_owners_retained"]
+            and payload["fixture_count"] >= 3
+            and payload["fixtures_retained"]
+        )
+        else 1
+    ),
+)
+"""
+    try:
+        completed = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                script,
+                str(short_runtime_root / "report"),
+                str(audit_path),
+                source_commit,
+                str(fixture_archive),
+            ),
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=900,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(audit_path.read_text(encoding="utf-8")) == {
+            "clean_exit": True,
+            "errors": [],
+            "fixture_count": 3,
+            "fixtures_retained": True,
+            "mount_count": 2,
+            "mount_owners_retained": True,
+        }
+    finally:
+        rmtree(short_runtime_root, ignore_errors=True)
 
 
 def test_compiled_fixture_persistence_is_owned_by_the_report_directory(
