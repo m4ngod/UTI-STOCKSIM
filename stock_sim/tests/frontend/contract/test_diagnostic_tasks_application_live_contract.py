@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.features import (
     DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
     DiagnosticCampaignLayer,
@@ -11,7 +13,9 @@ from app.features import (
     StrategyDiagnosticsV1DiagnosticTasksApplication,
 )
 from strategy_diagnostics import create_diagnostics_application
-from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from strategy_diagnostics.market_paths import (
+    InMemoryMarketPathArtifactStore,
+)
 from tests.frontend.contract.test_diagnostic_tasks_live_fake_conformance import (
     _unavailable_commands,
 )
@@ -19,8 +23,6 @@ from tests.strategy_diagnostics.test_recipe_lifecycle import (
     _baseline_payload,
     _RecipeFixtureSource,
 )
-
-
 def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_public_behavior() -> None:
     source = _RecipeFixtureSource()
     application = create_diagnostics_application(
@@ -162,6 +164,49 @@ def test_live_application_adapter_reads_authoritative_typed_inputs_only_from_pub
     assert start_rejected.task is None
     assert all(item.task is None for item in invalid_lifecycle_commands)
     assert all(item.task is None for item in invalid_retry_commands)
+
+
+def test_live_inventory_reuses_one_authoritative_materialized_path_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _RecipeFixtureSource()
+    artifact_store = InMemoryMarketPathArtifactStore()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=artifact_store,
+        recipe_clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    application.start()
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    draft = application.create_manual_recipe_draft(
+        _baseline_payload(admission.segment.segment_id),
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(draft.draft_id).is_valid
+    approved = application.approve_recipe_draft(draft.draft_id, actor="owner")
+    application.materialize_baseline_reference_path(approved.version_id)
+    list_calls: list[None] = []
+    authoritative_list = application.list_materialized_market_paths
+
+    def counted_authoritative_list() -> object:
+        list_calls.append(None)
+        return authoritative_list()
+
+    monkeypatch.setattr(
+        application,
+        "list_materialized_market_paths",
+        counted_authoritative_list,
+    )
+
+    result = LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+        application
+    ).read_inventory()
+
+    assert result.inventory is not None
+    assert len(result.inventory.market_scenarios) == 1
+    assert len(list_calls) == 1
 
 
 def test_parameterized_recipe_is_not_dropped_from_authoritative_inventory() -> None:

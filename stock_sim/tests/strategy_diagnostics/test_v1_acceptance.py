@@ -314,6 +314,7 @@ def test_wave_2_diagnostic_commands_are_classified_without_becoming_v1_required(
         "list_available_diagnostic_campaign_cases",
         "list_materialized_market_paths",
         "pause_diagnostic_target",
+        "read_diagnostic_campaign_case_inventory",
         "resume_diagnostic_target",
         "retry_failed_diagnostic_campaign_node",
         "revise_diagnostic_task_configuration",

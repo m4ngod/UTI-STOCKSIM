@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from threading import RLock
 from typing import Any, cast
 
 from sqlalchemy import text
@@ -28,6 +27,9 @@ from strategy_diagnostics.formal_diagnostic_campaigns import (
 from strategy_diagnostics.reproduction import ReproductionManifest
 from strategy_diagnostics.strategy_runs import StrategyRunSnapshot
 
+from ._diagnostics_application_access import (
+    shared_diagnostics_application_access_gate,
+)
 from .evidence_and_findings import (
     ApprovedScenarioRecipeId,
     CandidateEvidence,
@@ -283,7 +285,9 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
         self._engine = engine
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._provider_version = provider_version
-        self._read_lock = RLock()
+        self._read_lock = shared_diagnostics_application_access_gate(
+            application
+        )
 
     @property
     def interface_version(self) -> ApplicationReadModelVersion:

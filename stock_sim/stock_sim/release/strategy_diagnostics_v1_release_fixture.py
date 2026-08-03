@@ -241,6 +241,11 @@ class FileBackedFormalV1ReleaseFixture:
     database_path: Path
     artifact_root: Path
     _closed: bool = field(default=False, init=False, compare=False)
+    _engine_disposed: bool = field(
+        default=False,
+        init=False,
+        compare=False,
+    )
 
     @property
     def artifact_hashes(self) -> tuple[str, ...]:
@@ -350,13 +355,19 @@ class FileBackedFormalV1ReleaseFixture:
         }
         return tuple(sorted(values))
 
-    def close(self) -> None:
-        self.engine.dispose()
+    def close(self, *, dispose_engine: bool = True) -> None:
+        if dispose_engine and not self._engine_disposed:
+            self.engine.dispose()
+            object.__setattr__(self, "_engine_disposed", True)
         object.__setattr__(self, "_closed", True)
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def engine_disposed(self) -> bool:
+        return self._engine_disposed
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,14 +406,25 @@ class FileBackedWave2ReleaseInputFixture:
     persisted_diagnostic_task_count: int
     persisted_formal_campaign_count: int
     _closed: bool = field(default=False, init=False, compare=False)
+    _engine_disposed: bool = field(
+        default=False,
+        init=False,
+        compare=False,
+    )
 
-    def close(self) -> None:
-        self.engine.dispose()
+    def close(self, *, dispose_engine: bool = True) -> None:
+        if dispose_engine and not self._engine_disposed:
+            self.engine.dispose()
+            object.__setattr__(self, "_engine_disposed", True)
         object.__setattr__(self, "_closed", True)
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def engine_disposed(self) -> bool:
+        return self._engine_disposed
 
 
 @dataclass(frozen=True, slots=True)

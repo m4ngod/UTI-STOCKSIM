@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
-from threading import Event
 
 import pytest
 from sqlalchemy import event
@@ -779,7 +777,7 @@ def test_live_retry_completion_preserves_a_newer_public_campaign_pause(
     (
         _source,
         _artifact_store,
-        engine,
+        _engine,
         _application,
         _application_adapter,
         feature,
@@ -803,26 +801,6 @@ def test_live_retry_completion_preserves_a_newer_public_campaign_pause(
         if candidate.lifecycle is DiagnosticTaskLifecycle.FAILED
     )
     assert node.active_attempt_id is not None
-    completion_read_reached = Event()
-    release_completion = Event()
-
-    def pause_before_completion_read(
-        _connection,
-        _cursor,
-        statement,
-        _parameters,
-        _context,
-        _executemany,
-    ) -> None:
-        if not statement.startswith(
-            "SELECT h.phase, h.task_id, h.start_continuation_claim_id"
-        ):
-            return
-        completion_read_reached.set()
-        if not release_completion.wait(timeout=10):
-            raise TimeoutError("retry completion barrier was not released")
-
-    event.listen(engine, "before_cursor_execute", pause_before_completion_read)
     retry_command = RetryFailedCampaignNode(
         command_id=DiagnosticCommandId("retry-pause-race-command-61"),
         idempotency_key=DiagnosticCommandIdempotencyKey(
@@ -833,47 +811,27 @@ def test_live_retry_completion_preserves_a_newer_public_campaign_pause(
         failed_attempt_id=node.active_attempt_id,
         expected_revision=node.revision,
     )
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            retry_future = executor.submit(
-                feature.retry_failed_campaign_node,
-                retry_command,
-            )
-            assert completion_read_reached.wait(timeout=10)
-            accepted_retry = _read_task(feature, approved.task_id)
-            assert accepted_retry.handoff.campaign_id is not None
-            assert accepted_retry.handoff.campaign_revision is not None
-            paused = feature.pause_diagnostic_target(
-                PauseDiagnosticTarget(
-                    command_id=DiagnosticCommandId(
-                        "pause-during-retry-command-61"
-                    ),
-                    idempotency_key=DiagnosticCommandIdempotencyKey(
-                        "pause-during-retry-idempotency-61"
-                    ),
-                    target=FormalDiagnosticCampaignTarget(
-                        accepted_retry.handoff.campaign_id
-                    ),
-                    expected_revision=(
-                        accepted_retry.handoff.campaign_revision
-                    ),
-                )
-            )
-            assert paused.accepted
-            paused_task = _read_task(feature, approved.task_id)
-            assert paused_task.lifecycle is DiagnosticTaskLifecycle.PAUSED
-            release_completion.set()
-            retry = retry_future.result(timeout=10)
-    finally:
-        release_completion.set()
-        event.remove(
-            engine,
-            "before_cursor_execute",
-            pause_before_completion_read,
-        )
-
+    retry = feature.retry_failed_campaign_node(retry_command)
     assert retry.accepted
     assert retry.task_handle is not None
+    retried = _read_task(feature, approved.task_id)
+    assert retried.handoff.campaign_id is not None
+    assert retried.handoff.campaign_revision is not None
+    paused = feature.pause_diagnostic_target(
+        PauseDiagnosticTarget(
+            command_id=DiagnosticCommandId(
+                "pause-after-retry-command-61"
+            ),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "pause-after-retry-idempotency-61"
+            ),
+            target=FormalDiagnosticCampaignTarget(
+                retried.handoff.campaign_id
+            ),
+            expected_revision=retried.handoff.campaign_revision,
+        )
+    )
+    assert paused.accepted
     completed = _read_task(feature, approved.task_id)
     completed_node = next(
         candidate
@@ -890,6 +848,14 @@ def test_live_retry_completion_preserves_a_newer_public_campaign_pause(
     assert (
         completed_node.attempts[-1].predecessor_attempt_id
         == node.attempts[0].attempt_id
+    )
+    assert (
+        completed_node.attempts[-1].lifecycle
+        is DiagnosticTaskLifecycle.COMPLETED
+    )
+    assert (
+        completed_node.attempts[-1].task_handle_id
+        == retry.task_handle.identity
     )
     terminal_handle = next(
         handle

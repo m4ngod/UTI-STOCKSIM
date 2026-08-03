@@ -178,6 +178,14 @@ class DiagnosticsApplicationState:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticCampaignCaseInventory:
+    """One authoritative read of existing paths and their valid Campaign Cases."""
+
+    materialized_paths: tuple[MaterializedMarketPath, ...]
+    available_cases: tuple[DiagnosticCampaignCase, ...]
+
+
 class DiagnosticsApplication:
     """Small product interface shared by headless and presentation adapters."""
 
@@ -251,7 +259,7 @@ class DiagnosticsApplication:
         )
         self._diagnostic_evidence = DiagnosticEvidenceBuilder(
             self._diagnostic_campaigns.get,
-            self._load_reference_path,
+            self._load_verified_reference_path,
             self._evidence_artifact_store,
         )
         self._reproduction = ReproductionService(
@@ -259,7 +267,7 @@ class DiagnosticsApplication:
             recipe_hash_loader=lambda version_id: (
                 self._recipe_workbench.get_version(version_id).content_hash
             ),
-            path_loader=self._load_reference_path,
+            path_loader=self._load_verified_reference_path,
             evidence_loader=self._diagnostic_evidence.get,
             source_snapshot_loader=(
                 self._historical_segments.get_source_snapshot
@@ -365,9 +373,29 @@ class DiagnosticsApplication:
         """Enumerate valid existing recipe/path anchors without creating paths."""
 
         self.status()
+        return self._diagnostic_campaign_cases_for_paths(
+            self.list_materialized_market_paths()
+        )
+
+    def read_diagnostic_campaign_case_inventory(
+        self,
+    ) -> DiagnosticCampaignCaseInventory:
+        """Read paths once and derive their valid Campaign Cases coherently."""
+
+        self.status()
+        paths = self.list_materialized_market_paths()
+        return DiagnosticCampaignCaseInventory(
+            materialized_paths=paths,
+            available_cases=self._diagnostic_campaign_cases_for_paths(paths),
+        )
+
+    def _diagnostic_campaign_cases_for_paths(
+        self,
+        paths: Sequence[MaterializedMarketPath],
+    ) -> tuple[DiagnosticCampaignCase, ...]:
         cases: list[DiagnosticCampaignCase] = []
         for approved in self._recipe_workbench.list_approved_versions():
-            for path in self.list_materialized_market_paths():
+            for path in paths:
                 try:
                     cases.append(
                         self._diagnostic_campaign_case_from_existing_path(
@@ -3371,6 +3399,14 @@ class DiagnosticsApplication:
             raise RuntimeError("No Scenario Materializer is configured")
         return self._scenario_materializer.get(artifact_hash)
 
+    def _load_verified_reference_path(
+        self,
+        artifact_hash: str,
+    ) -> MaterializedMarketPath:
+        if self._scenario_materializer is None:
+            raise RuntimeError("No Scenario Materializer is configured")
+        return self._scenario_materializer.get_verified(artifact_hash)
+
 
 def create_diagnostics_application(
     historical_source: HistoricalSource | None = None,
@@ -3400,6 +3436,7 @@ def create_diagnostics_application(
 
 __all__ = [
     "DIAGNOSTIC_SCHEMA_REVISION",
+    "DiagnosticCampaignCaseInventory",
     "DiagnosticsApplication",
     "DiagnosticsApplicationState",
     "create_diagnostics_application",

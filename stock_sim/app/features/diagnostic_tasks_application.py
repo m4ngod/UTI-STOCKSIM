@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
+from ._diagnostics_application_access import (
+    shared_diagnostics_application_access_gate,
+)
 from .evidence_and_findings import DiagnosticEvidencePackageId
 from .run_monitoring import (
     DiagnosticTaskId,
@@ -885,6 +888,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
 
     def __init__(self, application: DiagnosticsApplication) -> None:
         self._application = application
+        self._application_access_gate = (
+            shared_diagnostics_application_access_gate(application)
+        )
 
     @property
     def interface_version(self) -> DiagnosticTasksApplicationVersion:
@@ -893,7 +899,8 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
     def read_inventory(self) -> DiagnosticTasksApplicationInventoryResult:
         observed_at = datetime.now(timezone.utc)
         try:
-            inventory = self._read_inventory()
+            with self._application_access_gate:
+                inventory = self._read_inventory()
         except RuntimeError:
             return DiagnosticTasksApplicationInventoryResult(
                 availability=DiagnosticTasksApplicationAvailability.FAILED,
@@ -943,9 +950,10 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
     ) -> DiagnosticTasksApplicationTaskResult:
         observed_at = datetime.now(timezone.utc)
         try:
-            snapshot = self._application.get_diagnostic_task(
-                None if task_id is None else task_id.value
-            )
+            with self._application_access_gate:
+                snapshot = self._application.get_diagnostic_task(
+                    None if task_id is None else task_id.value
+                )
         except RuntimeError:
             return DiagnosticTasksApplicationTaskResult(
                 availability=DiagnosticTasksApplicationAvailability.FAILED,
@@ -1007,68 +1015,70 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         )
 
         try:
-            result = self._application.create_diagnostic_task(
-                BackendCreateDiagnosticTaskRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    configuration=BackendTaskConfiguration(
-                        content_identity=(
-                            command.configuration.content_identity.value
+            with self._application_access_gate:
+                result = self._application.create_diagnostic_task(
+                    BackendCreateDiagnosticTaskRequest(
+                        command_id=command.command_id.value,
+                        idempotency_key=command.idempotency_key.value,
+                        configuration=BackendTaskConfiguration(
+                            content_identity=(
+                                command.configuration.content_identity.value
+                            ),
+                            strategy_selections=tuple(
+                                BackendStrategySelection(
+                                    strategy_id=item.strategy_id.value,
+                                    strategy_version=item.strategy_version,
+                                    compatibility_manifest_hash=(
+                                        item.compatibility_manifest_hash
+                                    ),
+                                    guardrail_profile_id=(
+                                        item.guardrail_profile_id.value
+                                    ),
+                                    guardrail_profile_version=(
+                                        item.guardrail_profile_version
+                                    ),
+                                )
+                                for item in (
+                                    command.configuration.strategy_selections
+                                )
+                            ),
+                            campaign_case_selections=tuple(
+                                BackendCampaignCaseSelection(
+                                    layer=item.layer.value,
+                                    recipe_version_id=(
+                                        item.recipe_version_id.value
+                                    ),
+                                    recipe_content_hash=item.recipe_content_hash,
+                                    market_scenario_id=(
+                                        item.market_scenario_id.value
+                                    ),
+                                    campaign_case_id=(
+                                        item.campaign_case_id.value
+                                    ),
+                                    comparison_role=item.comparison_role.value,
+                                    baseline_campaign_case_id=(
+                                        None
+                                        if item.baseline_campaign_case_id
+                                        is None
+                                        else item.baseline_campaign_case_id.value
+                                    ),
+                                    execution_policy_values=tuple(
+                                        (
+                                            value.name,
+                                            value.value,
+                                            value.version,
+                                            value.source,
+                                        )
+                                        for value in item.execution_policy_values
+                                    ),
+                                )
+                                for item in (
+                                    command.configuration.campaign_case_selections
+                                )
+                            ),
                         ),
-                        strategy_selections=tuple(
-                            BackendStrategySelection(
-                                strategy_id=item.strategy_id.value,
-                                strategy_version=item.strategy_version,
-                                compatibility_manifest_hash=(
-                                    item.compatibility_manifest_hash
-                                ),
-                                guardrail_profile_id=(
-                                    item.guardrail_profile_id.value
-                                ),
-                                guardrail_profile_version=(
-                                    item.guardrail_profile_version
-                                ),
-                            )
-                            for item in (
-                                command.configuration.strategy_selections
-                            )
-                        ),
-                        campaign_case_selections=tuple(
-                            BackendCampaignCaseSelection(
-                                layer=item.layer.value,
-                                recipe_version_id=(
-                                    item.recipe_version_id.value
-                                ),
-                                recipe_content_hash=item.recipe_content_hash,
-                                market_scenario_id=(
-                                    item.market_scenario_id.value
-                                ),
-                                campaign_case_id=(
-                                    item.campaign_case_id.value
-                                ),
-                                comparison_role=item.comparison_role.value,
-                                baseline_campaign_case_id=(
-                                    None
-                                    if item.baseline_campaign_case_id is None
-                                    else item.baseline_campaign_case_id.value
-                                ),
-                                execution_policy_values=tuple(
-                                    (
-                                        value.name,
-                                        value.value,
-                                        value.version,
-                                        value.source,
-                                    )
-                                    for value in item.execution_policy_values
-                                ),
-                            )
-                            for item in (
-                                command.configuration.campaign_case_selections
-                            )
-                        ),
-                    ),
+                    )
                 )
-            )
         except RuntimeError:
             return DiagnosticTasksApplicationCommandResult(
                 disposition=DiagnosticTasksCommandDisposition.REJECTED,
@@ -1101,17 +1111,18 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         )
 
         try:
-            result = self._application.revise_diagnostic_task_configuration(
-                ReviseDiagnosticTaskConfigurationRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    task_id=command.task_id.value,
-                    expected_revision=command.expected_revision,
-                    configuration=_backend_configuration(
-                        command.configuration
-                    ),
+            with self._application_access_gate:
+                result = self._application.revise_diagnostic_task_configuration(
+                    ReviseDiagnosticTaskConfigurationRequest(
+                        command_id=command.command_id.value,
+                        idempotency_key=command.idempotency_key.value,
+                        task_id=command.task_id.value,
+                        expected_revision=command.expected_revision,
+                        configuration=_backend_configuration(
+                            command.configuration
+                        ),
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1125,14 +1136,17 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         )
 
         try:
-            result = self._application.validate_diagnostic_task_configuration(
-                ValidateDiagnosticTaskConfigurationRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    task_id=command.task_id.value,
-                    expected_revision=command.expected_revision,
+            with self._application_access_gate:
+                result = (
+                    self._application.validate_diagnostic_task_configuration(
+                        ValidateDiagnosticTaskConfigurationRequest(
+                            command_id=command.command_id.value,
+                            idempotency_key=command.idempotency_key.value,
+                            task_id=command.task_id.value,
+                            expected_revision=command.expected_revision,
+                        )
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1146,21 +1160,24 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         )
 
         try:
-            result = self._application.approve_diagnostic_task_configuration(
-                ApproveDiagnosticTaskConfigurationRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    task_id=command.task_id.value,
-                    expected_revision=command.expected_revision,
-                    validation_id=command.validation_id.value,
-                    validation_revision=command.validation_revision,
-                    validated_revision=command.validated_revision,
-                    configuration_content_id=(
-                        command.configuration_content_id.value
-                    ),
-                    actor_id=command.actor_id.value,
+            with self._application_access_gate:
+                result = (
+                    self._application.approve_diagnostic_task_configuration(
+                        ApproveDiagnosticTaskConfigurationRequest(
+                            command_id=command.command_id.value,
+                            idempotency_key=command.idempotency_key.value,
+                            task_id=command.task_id.value,
+                            expected_revision=command.expected_revision,
+                            validation_id=command.validation_id.value,
+                            validation_revision=command.validation_revision,
+                            validated_revision=command.validated_revision,
+                            configuration_content_id=(
+                                command.configuration_content_id.value
+                            ),
+                            actor_id=command.actor_id.value,
+                        )
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1174,15 +1191,18 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         )
 
         try:
-            result = self._application.start_formal_diagnostic_task_campaign(
-                StartFormalDiagnosticCampaignRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    task_id=command.task_id.value,
-                    expected_revision=command.expected_revision,
-                    approved_revision=command.approved_revision,
+            with self._application_access_gate:
+                result = (
+                    self._application.start_formal_diagnostic_task_campaign(
+                        StartFormalDiagnosticCampaignRequest(
+                            command_id=command.command_id.value,
+                            idempotency_key=command.idempotency_key.value,
+                            task_id=command.task_id.value,
+                            expected_revision=command.expected_revision,
+                            approved_revision=command.approved_revision,
+                        )
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1203,16 +1223,19 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
 
         target_kind, target_id = _lifecycle_target_identity(command.target)
         try:
-            result = self._application.pause_diagnostic_target(
-                ChangeDiagnosticLifecycleRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    operation=BackendLifecycleOperation.PAUSE,
-                    target_kind=BackendLifecycleTargetKind(target_kind.value),
-                    target_id=target_id,
-                    expected_revision=command.expected_revision,
+            with self._application_access_gate:
+                result = self._application.pause_diagnostic_target(
+                    ChangeDiagnosticLifecycleRequest(
+                        command_id=command.command_id.value,
+                        idempotency_key=command.idempotency_key.value,
+                        operation=BackendLifecycleOperation.PAUSE,
+                        target_kind=BackendLifecycleTargetKind(
+                            target_kind.value
+                        ),
+                        target_id=target_id,
+                        expected_revision=command.expected_revision,
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1233,16 +1256,19 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
 
         target_kind, target_id = _lifecycle_target_identity(command.target)
         try:
-            result = self._application.resume_diagnostic_target(
-                ChangeDiagnosticLifecycleRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    operation=BackendLifecycleOperation.RESUME,
-                    target_kind=BackendLifecycleTargetKind(target_kind.value),
-                    target_id=target_id,
-                    expected_revision=command.expected_revision,
+            with self._application_access_gate:
+                result = self._application.resume_diagnostic_target(
+                    ChangeDiagnosticLifecycleRequest(
+                        command_id=command.command_id.value,
+                        idempotency_key=command.idempotency_key.value,
+                        operation=BackendLifecycleOperation.RESUME,
+                        target_kind=BackendLifecycleTargetKind(
+                            target_kind.value
+                        ),
+                        target_id=target_id,
+                        expected_revision=command.expected_revision,
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1263,16 +1289,19 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
 
         target_kind, target_id = _lifecycle_target_identity(command.target)
         try:
-            result = self._application.cancel_diagnostic_target(
-                ChangeDiagnosticLifecycleRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    operation=BackendLifecycleOperation.CANCEL,
-                    target_kind=BackendLifecycleTargetKind(target_kind.value),
-                    target_id=target_id,
-                    expected_revision=command.expected_revision,
+            with self._application_access_gate:
+                result = self._application.cancel_diagnostic_target(
+                    ChangeDiagnosticLifecycleRequest(
+                        command_id=command.command_id.value,
+                        idempotency_key=command.idempotency_key.value,
+                        operation=BackendLifecycleOperation.CANCEL,
+                        target_kind=BackendLifecycleTargetKind(
+                            target_kind.value
+                        ),
+                        target_id=target_id,
+                        expected_revision=command.expected_revision,
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1286,16 +1315,19 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         )
 
         try:
-            result = self._application.retry_failed_diagnostic_campaign_node(
-                RetryFailedCampaignNodeRequest(
-                    command_id=command.command_id.value,
-                    idempotency_key=command.idempotency_key.value,
-                    task_id=command.task_id.value,
-                    campaign_node_id=command.campaign_node_id.value,
-                    failed_attempt_id=command.failed_attempt_id.value,
-                    expected_revision=command.expected_revision,
+            with self._application_access_gate:
+                result = (
+                    self._application.retry_failed_diagnostic_campaign_node(
+                        RetryFailedCampaignNodeRequest(
+                            command_id=command.command_id.value,
+                            idempotency_key=command.idempotency_key.value,
+                            task_id=command.task_id.value,
+                            campaign_node_id=command.campaign_node_id.value,
+                            failed_attempt_id=command.failed_attempt_id.value,
+                            expected_revision=command.expected_revision,
+                        )
+                    )
                 )
-            )
         except RuntimeError:
             return self._disconnected(command)
         return _map_creation_result(result)
@@ -1372,7 +1404,10 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
             _map_recipe(item, transformation_catalog_version)
             for item in approved
         )
-        paths = self._application.list_materialized_market_paths()
+        campaign_case_inventory = (
+            self._application.read_diagnostic_campaign_case_inventory()
+        )
+        paths = campaign_case_inventory.materialized_paths
         approved_by_id = {item.version_id: item for item in approved}
         paths_by_hash = {item.artifact_hash: item for item in paths}
         scenarios = tuple(
@@ -1381,7 +1416,7 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                 paths_by_hash[case.materialization_hash],
                 case,
             )
-            for case in self._application.list_available_diagnostic_campaign_cases()
+            for case in campaign_case_inventory.available_cases
         )
         return DiagnosticTasksInventory(
             strategies=tuple(

@@ -2,6 +2,7 @@
 
 from .application import (
     DIAGNOSTIC_SCHEMA_REVISION,
+    DiagnosticCampaignCaseInventory,
     DiagnosticsApplication,
     DiagnosticsApplicationState,
     create_diagnostics_application,
@@ -251,6 +252,7 @@ __all__ = [
     "AIRecipeAuditRecord",
     "AIRecipeDraftOutputV1",
     "DIAGNOSTIC_SCHEMA_REVISION",
+    "DiagnosticCampaignCaseInventory",
     "DiagnosticsApplication",
     "DiagnosticsApplicationState",
     "DeterministicFakeAIRecipeAssistant",

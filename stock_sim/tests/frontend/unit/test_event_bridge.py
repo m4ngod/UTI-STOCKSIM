@@ -1,4 +1,5 @@
 import time
+from threading import Event, Thread
 
 from app.core_dto import SnapshotDTO
 from app.event_bridge import (
@@ -10,6 +11,26 @@ from app.event_bridge import (
     stop_frontend_bridge,
 )
 from infra.event_bus import event_bus
+
+
+def test_event_bridge_stop_waits_for_worker_termination():
+    bridge = EventBridge(subscribe_backend=False)
+    worker_started = Event()
+
+    def slow_worker() -> None:
+        worker_started.set()
+        time.sleep(1.3)
+
+    thread = Thread(target=slow_worker, daemon=True)
+    bridge._running = True
+    bridge._th = thread
+    thread.start()
+    assert worker_started.wait(timeout=1)
+
+    bridge.stop()
+
+    assert bridge._running is False
+    assert thread.is_alive() is False
 
 
 def test_event_bridge_batch_flush():

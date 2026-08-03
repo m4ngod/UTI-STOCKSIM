@@ -257,6 +257,12 @@ Rectangle {
                 Rectangle {
                     id: diagnosticTasksRouteNavigation
                     objectName: "diagnosticTasksRouteNavigation"
+                    property string accessibleName: "Open Diagnostic Tasks"
+                    property string accessibleDescription: (
+                        "Navigate to authoritative Diagnostic Tasks inputs"
+                        + ", inventory "
+                        + workspace.diagnosticTasksInventoryState
+                    )
                     activeFocusOnTab: true
                     visible: workspace.diagnosticTasksAvailable
                     Layout.fillWidth: true
@@ -272,12 +278,8 @@ Rectangle {
                     border.color: workspace.activeRoute === "diagnostic_tasks"
                         ? tokens.accent : tokens.border
                     border.width: activeFocus ? tokens.focusWidth : 1
-                    Accessible.name: "Open Diagnostic Tasks"
-                    Accessible.description: (
-                        "Navigate to authoritative Diagnostic Tasks inputs"
-                        + ", inventory "
-                        + workspace.diagnosticTasksInventoryState
-                    )
+                    Accessible.name: accessibleName
+                    Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
                     Accessible.focusable: true
                     Accessible.focused: activeFocus
@@ -318,6 +320,10 @@ Rectangle {
                 Rectangle {
                     id: runMonitoringRouteNavigation
                     objectName: "runMonitoringRouteNavigation"
+                    property string accessibleName: "Open Run Monitoring"
+                    property string accessibleDescription: (
+                        "Navigate to the read-only Run Monitoring route"
+                    )
                     activeFocusOnTab: true
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
@@ -332,10 +338,8 @@ Rectangle {
                     border.color: workspace.activeRoute === "run_monitoring"
                         ? tokens.accent : tokens.border
                     border.width: activeFocus ? tokens.focusWidth : 1
-                    Accessible.name: "Open Run Monitoring"
-                    Accessible.description: (
-                        "Navigate to the read-only Run Monitoring route"
-                    )
+                    Accessible.name: accessibleName
+                    Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
                     Accessible.focusable: true
                     Accessible.focused: activeFocus
@@ -376,6 +380,12 @@ Rectangle {
                 Rectangle {
                     id: evidenceAndFindingsRouteNavigation
                     objectName: "evidenceAndFindingsRouteNavigation"
+                    property string accessibleName: (
+                        "Open Evidence and Findings"
+                    )
+                    property string accessibleDescription: (
+                        "Navigate to read-only evidence and failure reasons"
+                    )
                     activeFocusOnTab: true
                     visible: workspace.evidenceAvailable
                     Layout.fillWidth: true
@@ -392,10 +402,8 @@ Rectangle {
                     border.color: workspace.activeRoute === "evidence_and_findings"
                         ? tokens.accent : tokens.border
                     border.width: activeFocus ? tokens.focusWidth : 1
-                    Accessible.name: "Open Evidence and Findings"
-                    Accessible.description: (
-                        "Navigate to read-only evidence and failure reasons"
-                    )
+                    Accessible.name: accessibleName
+                    Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
                     Accessible.focusable: true
                     Accessible.focused: activeFocus

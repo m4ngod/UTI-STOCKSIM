@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import re
 import sys
 import tempfile
+import traceback
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
@@ -34,6 +37,43 @@ WAVE2_ACCEPTED_COMMAND_KINDS = (
     "approve_configuration",
     "start_formal_diagnostic_campaign",
 )
+
+# Compiled smoke terminates the process immediately after its report is
+# accepted. Keep deferred PySide/SQLAlchemy owners strongly reachable until
+# that boundary: releasing their final Python wrapper references while main()
+# returns can run native destructors before _run_process_entry() terminates.
+_PROCESS_EXIT_RETAINED_NATIVE_RESOURCES: list[Any] = []
+
+
+def _retain_native_resources_until_process_exit(*resources: Any) -> None:
+    _PROCESS_EXIT_RETAINED_NATIVE_RESOURCES.extend(resources)
+
+
+def _terminate_compiled_smoke_process(exit_code: int) -> None:
+    if os.name != "nt":
+        os._exit(exit_code)
+
+    # os._exit() still crosses the Windows CRT/DLL detach boundary. A
+    # quiesced Nuitka/PySide smoke can otherwise report success and then trip
+    # a latent Qt static-destructor access violation before the parent
+    # observes its exit code. TerminateProcess is intentionally restricted to
+    # the compiled certification path after all typed resources have passed
+    # their logical lifecycle audit; interactive and source paths retain
+    # normal QApplication/Python teardown.
+    import ctypes
+
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_current_process: Any = kernel32.GetCurrentProcess
+    get_current_process.argtypes = ()
+    get_current_process.restype = ctypes.c_void_p
+    terminate_process: Any = kernel32.TerminateProcess
+    terminate_process.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+    terminate_process.restype = ctypes.c_int
+    process = get_current_process()
+    if not terminate_process(process, exit_code):
+        raise ctypes.WinError(ctypes.get_last_error())
+    raise RuntimeError("Windows process termination unexpectedly returned")
+
 
 EXPECTED_JOURNEY = (
     (
@@ -144,6 +184,9 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Focus compound stress evidence|"
     r"Show (?:findings|assumptions|provenance|context) tab"
     r")$"
+)
+_PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
+    {"diagnosticTaskApprovalActorInput"}
 )
 
 
@@ -376,6 +419,36 @@ def _key_click(host: Any, key: Any, modifiers: Any) -> None:
         )
 
 
+def _type_text_with_keyboard(host: Any, text: str) -> None:
+    from PySide6.QtCore import QCoreApplication, QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    for character in text:
+        for event_type in (
+            QEvent.Type.KeyPress,
+            QEvent.Type.KeyRelease,
+        ):
+            QCoreApplication.sendEvent(
+                host,
+                QKeyEvent(
+                    event_type,
+                    Qt.Key.Key_unknown,
+                    Qt.KeyboardModifier.NoModifier,
+                    character,
+                ),
+            )
+
+
+def _serialized_application_access(
+    application: Any,
+) -> Any:
+    from app.features._diagnostics_application_access import (
+        shared_diagnostics_application_access_gate,
+    )
+
+    return shared_diagnostics_application_access_gate(application)
+
+
 def _focus_with_keyboard(
     *,
     app: Any,
@@ -443,9 +516,24 @@ def _navigate_route(
         )
 
 
+def _qml_semantic_values(item: Any) -> tuple[str, ...]:
+    meta = item.metaObject()
+    values: list[str] = []
+    for property_name in (
+        "text",
+        "accessibleName",
+        "accessibleDescription",
+    ):
+        if meta.indexOfProperty(property_name) < 0:
+            continue
+        value = item.property(property_name)
+        if value:
+            values.append(str(value))
+    return tuple(dict.fromkeys(values))
+
+
 def _visible_and_accessible_text(root: Any) -> str:
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QAccessible
 
     rendered: list[str] = []
     for item in (root, *root.findChildren(QObject)):
@@ -455,22 +543,8 @@ def _visible_and_accessible_text(root: Any) -> str:
             if meta.indexOfProperty("visible") >= 0
             else True
         )
-        if (
-            visible
-            and meta.indexOfProperty("text") >= 0
-            and item.property("text")
-        ):
-            rendered.append(str(item.property("text")))
-        interface = QAccessible.queryAccessibleInterface(item)
-        if interface is None or not interface.isValid():
-            continue
-        for kind in (
-            QAccessible.Text.Name,
-            QAccessible.Text.Description,
-        ):
-            value = interface.text(kind)
-            if value:
-                rendered.append(value)
+        if visible:
+            rendered.extend(_qml_semantic_values(item))
     return "\n".join(rendered)
 
 
@@ -480,16 +554,22 @@ def _focus_accessible_name_with_keyboard(
     host: Any,
     accessible_name: str,
 ) -> Any:
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QAccessible
+    from PySide6.QtCore import QObject, Qt
 
     quick_window = host.quickWindow()
     if quick_window is None:
         raise RuntimeError("Journey Workspace Quick Window is unavailable")
+    content_item = quick_window.contentItem()
+    keyboard_search_limit = 120
+    if content_item is not None:
+        keyboard_search_limit = max(
+            keyboard_search_limit,
+            len(content_item.findChildren(QObject)) + 1,
+        )
     if not host.hasFocus():
         host.setFocus(Qt.FocusReason.TabFocusReason)
         app.processEvents()
-    for _ in range(120):
+    for _ in range(keyboard_search_limit):
         item = quick_window.activeFocusItem()
         if item is None:
             _key_click(
@@ -499,12 +579,9 @@ def _focus_accessible_name_with_keyboard(
             )
             app.processEvents()
             continue
-        interface = QAccessible.queryAccessibleInterface(item)
-        if (
-            interface is not None
-            and interface.isValid()
-            and interface.text(QAccessible.Text.Name).casefold()
-            == accessible_name.casefold()
+        if any(
+            value.casefold() == accessible_name.casefold()
+            for value in _qml_semantic_values(item)
         ):
             return item
         _key_click(
@@ -515,7 +592,7 @@ def _focus_accessible_name_with_keyboard(
         app.processEvents()
     raise RuntimeError(
         "Keyboard focus did not reach accessible control "
-        f"{accessible_name!r}"
+        f"{accessible_name!r} after {keyboard_search_limit} steps"
     )
 
 
@@ -526,7 +603,6 @@ def _keyboard_accessible_focus_cycle(
     steps: int = 120,
 ) -> str:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QAccessible
 
     quick_window = host.quickWindow()
     if quick_window is None:
@@ -535,14 +611,7 @@ def _keyboard_accessible_focus_cycle(
     for _ in range(steps):
         item = quick_window.activeFocusItem()
         if item is not None:
-            interface = QAccessible.queryAccessibleInterface(item)
-            if interface is not None and interface.isValid():
-                rendered.extend(
-                    (
-                        interface.text(QAccessible.Text.Name),
-                        interface.text(QAccessible.Text.Description),
-                    )
-                )
+            rendered.extend(_qml_semantic_values(item))
         _key_click(
             host,
             Qt.Key.Key_Tab,
@@ -560,7 +629,12 @@ def _collect_qml_identity_checkpoint(
     expected: tuple[str, ...],
 ) -> tuple[str, ...]:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QAccessible
+
+    original_route = str(root.property("activeRoute"))
+    quick_window = host.quickWindow()
+    if quick_window is None:
+        raise RuntimeError("Journey Workspace Quick Window is unavailable")
+    original_focus = quick_window.activeFocusItem()
 
     _navigate_route(
         app=app,
@@ -593,17 +667,15 @@ def _collect_qml_identity_checkpoint(
     if not candidate_controls:
         raise RuntimeError("No QML Evidence candidate control is available")
     for candidate in candidate_controls:
-        candidate_interface = QAccessible.queryAccessibleInterface(candidate)
-        if candidate_interface is None or not candidate_interface.isValid():
+        candidate_name = str(candidate.property("accessibleName") or "")
+        if not candidate_name:
             raise RuntimeError(
-                "Evidence candidate lacks a valid accessible interface"
+                "Evidence candidate lacks a packaged accessible name"
             )
         candidate = _focus_accessible_name_with_keyboard(
             app=app,
             host=host,
-            accessible_name=candidate_interface.text(
-                QAccessible.Text.Name
-            ),
+            accessible_name=candidate_name,
         )
         _key_click(
             host,
@@ -643,9 +715,19 @@ def _collect_qml_identity_checkpoint(
             )
         )
     qml_text = "\n".join(rendered)
-    return tuple(
+    checkpoint = tuple(
         identity for identity in expected if identity in qml_text
     )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route=original_route,
+    )
+    if original_focus is not None:
+        original_focus.forceActiveFocus()
+        app.processEvents()
+    return checkpoint
 
 
 def _typed_string_values(value: Any) -> tuple[str, ...]:
@@ -718,24 +800,22 @@ def _accessibility_preferences_verified(root: Any) -> bool:
 
 def _accessible_announcement(root: Any, object_name: str) -> str:
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QAccessible
 
     item = root.findChild(QObject, object_name)
     if item is None:
         raise RuntimeError(
             f"Accessible status object is unavailable: {object_name}"
         )
-    interface = QAccessible.queryAccessibleInterface(item)
-    if interface is None or not interface.isValid():
+    values = [
+        value
+        for child in (item, *item.findChildren(QObject))
+        for value in _qml_semantic_values(child)
+    ]
+    if not values:
         raise RuntimeError(
-            f"Accessible status interface is unavailable: {object_name}"
+            f"Accessible status content is unavailable: {object_name}"
         )
-    return " ".join(
-        (
-            interface.text(QAccessible.Text.Name),
-            interface.text(QAccessible.Text.Description),
-        )
-    ).strip()
+    return " ".join(dict.fromkeys(values))
 
 
 def _start_installed_wave2_commands(
@@ -748,7 +828,6 @@ def _start_installed_wave2_commands(
 ) -> tuple[Any, tuple[str, ...]]:
     from PySide6.QtCore import Qt
     from PySide6.QtQuick import QQuickItem
-    from PySide6.QtTest import QTest
 
     from app.features import (
         DiagnosticTaskLifecycle,
@@ -849,7 +928,7 @@ def _start_installed_wave2_commands(
         host=host,
         target=actor,
     )
-    QTest.keyClicks(host, "installed-release-owner")
+    _type_text_with_keyboard(host, "installed-release-owner")
     app.processEvents()
     activate(
         "approveDiagnosticTaskButton",
@@ -871,9 +950,10 @@ def _start_installed_wave2_commands(
             "Installed QML did not start a Formal Diagnostic Campaign"
         )
 
-    started_campaign = application.diagnostic_campaign_status(
-        running.handoff.campaign_id.value
-    )
+    with _serialized_application_access(application):
+        started_campaign = application.diagnostic_campaign_status(
+            running.handoff.campaign_id.value
+        )
     first_incomplete = next(
         (
             case
@@ -904,6 +984,68 @@ def _start_installed_wave2_commands(
             "before terminal completion"
         )
     return running, WAVE2_ACCEPTED_COMMAND_KINDS
+
+
+def _quiesce_installed_wave2_mount(
+    *,
+    close_mount: Callable[[], None],
+    cleanup_errors: list[str],
+    operation: str,
+) -> None:
+    previous_error_count = len(cleanup_errors)
+    close_mount()
+    mount_errors = tuple(cleanup_errors[previous_error_count:])
+    if mount_errors:
+        raise RuntimeError(
+            f"Installed {operation} mount quiescence failed: "
+            + "; ".join(mount_errors)
+        )
+
+
+def _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
+    *,
+    close_mount: Callable[[], None],
+    stop_event_bridge: Callable[[], None],
+    close_fixture: Callable[[], None],
+    reopen_fixture: Callable[[], Any],
+    cleanup_errors: list[str],
+) -> Any:
+    _quiesce_installed_wave2_mount(
+        close_mount=close_mount,
+        cleanup_errors=cleanup_errors,
+        operation="active Application reopen",
+    )
+    stop_event_bridge()
+    close_fixture()
+    return reopen_fixture()
+
+
+def _advance_installed_wave2_campaign_after_mount_quiescence(
+    *,
+    application: Any,
+    campaign_id: str,
+    close_mount: Callable[[], None],
+    stop_event_bridge: Callable[[], None],
+    cleanup_errors: list[str],
+) -> None:
+    _quiesce_installed_wave2_mount(
+        close_mount=close_mount,
+        cleanup_errors=cleanup_errors,
+        operation="terminal continuation",
+    )
+    stop_event_bridge()
+    with _serialized_application_access(application):
+        completed_campaign = application.advance_diagnostic_campaign(
+            campaign_id,
+            max_cases=64,
+            nodes_per_batch=10_000,
+        )
+    if completed_campaign.status != "completed":
+        raise RuntimeError(
+            "Installed Formal Diagnostic Campaign did not reach terminal "
+            f"state: status={completed_campaign.status}; cases="
+            f"{tuple((case.layer, case.status) for case in completed_campaign.cases)}"
+        )
 
 
 def _complete_installed_wave2_campaign(
@@ -937,23 +1079,12 @@ def _complete_installed_wave2_campaign(
         feature.snapshot(workspace)
         return feature.snapshot(workspace).task
 
-    running = current_task()
-    if running is None or running.handoff.campaign_id is None:
+    terminal_task = current_task()
+    if terminal_task is None or terminal_task.handoff.campaign_id is None:
         raise RuntimeError(
-            "Installed nonterminal Diagnostic Task is unavailable after reopen"
+            "Installed terminal Diagnostic Task is unavailable after remount"
         )
 
-    completed_campaign = application.advance_diagnostic_campaign(
-        running.handoff.campaign_id.value,
-        max_cases=64,
-        nodes_per_batch=10_000,
-    )
-    if completed_campaign.status != "completed":
-        raise RuntimeError(
-            "Installed Formal Diagnostic Campaign did not reach terminal "
-            f"state: status={completed_campaign.status}; cases="
-            f"{tuple((case.layer, case.status) for case in completed_campaign.cases)}"
-        )
     projection.refresh()
     _settle_until(
         app,
@@ -1021,7 +1152,9 @@ def _assert_running_wave2_public_state(
     campaign_id: str,
     task_handle_identities: tuple[str, ...],
 ) -> Any:
-    task = application.get_diagnostic_task(diagnostic_task_id)
+    with _serialized_application_access(application):
+        task = application.get_diagnostic_task(diagnostic_task_id)
+        campaign = application.diagnostic_campaign_status(campaign_id)
     if task is None:
         raise RuntimeError(
             "The installed Diagnostic Task is unavailable through public "
@@ -1031,7 +1164,6 @@ def _assert_running_wave2_public_state(
     observed_handles = tuple(
         handle.task_handle_id for handle in task.task_handles
     )
-    campaign = application.diagnostic_campaign_status(campaign_id)
     task_lifecycle = getattr(task.lifecycle, "value", str(task.lifecycle))
     campaign_lifecycle = (
         None
@@ -1085,12 +1217,13 @@ def _completed_wave2_fixture(
             "Completed installed task lacks Campaign/evidence/manifest handoff"
         )
     application = input_fixture.application
-    package = application.diagnostic_evidence_status(
-        evidence_package_id.value
-    )
-    manifests = tuple(
-        application.reproduction_manifests(evidence_package_id.value)
-    )
+    with _serialized_application_access(application):
+        package = application.diagnostic_evidence_status(
+            evidence_package_id.value
+        )
+        manifests = tuple(
+            application.reproduction_manifests(evidence_package_id.value)
+        )
     selected_manifest = next(
         (
             candidate
@@ -1103,15 +1236,17 @@ def _completed_wave2_fixture(
         raise RuntimeError(
             "Installed Reproduction Manifest did not resolve publicly"
         )
-    selected_run = application.strategy_run_status(
-        selected_manifest.run_id
-    )
+    with _serialized_application_access(application):
+        selected_run = application.strategy_run_status(
+            selected_manifest.run_id
+        )
+        campaign = application.diagnostic_campaign_status(
+            campaign_id.value
+        )
     return FileBackedFormalV1ReleaseFixture(
         application=application,
         engine=input_fixture.engine,
-        campaign=application.diagnostic_campaign_status(
-            campaign_id.value
-        ),
+        campaign=campaign,
         selected_run=selected_run,
         evidence_package=package,
         selected_manifest=selected_manifest,
@@ -1121,6 +1256,39 @@ def _completed_wave2_fixture(
     )
 
 
+def _close_release_fixture(
+    fixture: Any,
+    *,
+    defer_native_teardown: bool,
+) -> None:
+    if defer_native_teardown:
+        _retain_native_resources_until_process_exit(fixture)
+        fixture.close(dispose_engine=False)
+        return
+    fixture.close()
+
+
+def _packaged_fixture_persistence_root(
+    *,
+    report_dir: Path,
+    cleanup: ExitStack,
+    lifecycle_checks: list[Callable[[], bool]],
+    defer_native_teardown: bool,
+    temporary_directory_prefix: str,
+) -> Path:
+    if defer_native_teardown:
+        return report_dir / "v1-persistence"
+    runtime_root = Path(
+        cleanup.enter_context(
+            tempfile.TemporaryDirectory(
+                prefix=temporary_directory_prefix,
+            )
+        )
+    )
+    lifecycle_checks.append(_path_absent_check(runtime_root))
+    return runtime_root / "v1-persistence"
+
+
 def run_smoke_journey(
     *,
     report_dir: Path,
@@ -1128,6 +1296,7 @@ def run_smoke_journey(
     source_commit: str = "development-smoke",
     capture_images: bool = True,
     fixture_archive_path: Path | None = None,
+    defer_native_teardown: bool = False,
 ) -> PackageSmokeResult:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
@@ -1150,6 +1319,7 @@ def run_smoke_journey(
                 cleanup=cleanup,
                 cleanup_errors=cleanup_errors,
                 lifecycle_checks=lifecycle_checks,
+                defer_native_teardown=defer_native_teardown,
             )
         else:
             result = _run_smoke_journey(
@@ -1161,6 +1331,7 @@ def run_smoke_journey(
                 cleanup=cleanup,
                 cleanup_errors=cleanup_errors,
                 lifecycle_checks=lifecycle_checks,
+                defer_native_teardown=defer_native_teardown,
             )
     clean_exit = bool(
         not cleanup_errors
@@ -1182,6 +1353,34 @@ def run_smoke_journey(
     return finalized
 
 
+def _shutdown_smoke_application(
+    errors: list[str],
+    *,
+    run_qt_teardown: bool = True,
+) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    if not run_qt_teardown:
+        return
+    app = QApplication.instance()
+    if app is None:
+        return
+    actions: tuple[tuple[str, Callable[[], Any]], ...] = (
+        ("closeAllWindows", app.closeAllWindows),
+        ("shutdown", app.shutdown),
+    )
+    for label, action in actions:
+        try:
+            action()
+        except BaseException as error:
+            errors.append(
+                f"QApplication {label} failed: "
+                f"{type(error).__name__}"
+            )
+    if QApplication.instance() is not None:
+        errors.append("QApplication remained alive after shutdown")
+
+
 def _run_wave2_smoke_journey(
     *,
     report_dir: Path,
@@ -1192,6 +1391,7 @@ def _run_wave2_smoke_journey(
     cleanup: ExitStack,
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
+    defer_native_teardown: bool,
 ) -> PackageSmokeResult:
     return _run_smoke_journey(
         report_dir=report_dir,
@@ -1203,6 +1403,7 @@ def _run_wave2_smoke_journey(
         cleanup_errors=cleanup_errors,
         lifecycle_checks=lifecycle_checks,
         wave2_mode=True,
+        defer_native_teardown=defer_native_teardown,
     )
 
 
@@ -1217,6 +1418,7 @@ def _run_smoke_journey(
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
     wave2_mode: bool = False,
+    defer_native_teardown: bool = False,
 ) -> PackageSmokeResult:
     from PySide6.QtWidgets import QApplication
 
@@ -1248,15 +1450,13 @@ def _run_smoke_journey(
             artifact_root=persistence_root / "artifacts",
         )
     elif wave2_mode:
-        runtime_root = Path(
-            cleanup.enter_context(
-                tempfile.TemporaryDirectory(prefix="uti-wave2-runtime-")
-            )
+        persistence_root = _packaged_fixture_persistence_root(
+            report_dir=report_dir,
+            cleanup=cleanup,
+            lifecycle_checks=lifecycle_checks,
+            defer_native_teardown=defer_native_teardown,
+            temporary_directory_prefix="uti-wave2-runtime-",
         )
-        lifecycle_checks.append(
-            _path_absent_check(runtime_root)
-        )
-        persistence_root = runtime_root / "v1-persistence"
         if fixture_archive_path is None:
             raise RuntimeError("Wave 2 input fixture archive is unavailable")
         extract_sealed_wave2_release_input_fixture_archive(
@@ -1276,15 +1476,13 @@ def _run_smoke_journey(
             artifact_root=persistence_root / "artifacts",
         )
     else:
-        runtime_root = Path(
-            cleanup.enter_context(
-                tempfile.TemporaryDirectory(prefix="uti-v1-runtime-")
-            )
+        persistence_root = _packaged_fixture_persistence_root(
+            report_dir=report_dir,
+            cleanup=cleanup,
+            lifecycle_checks=lifecycle_checks,
+            defer_native_teardown=defer_native_teardown,
+            temporary_directory_prefix="uti-v1-runtime-",
         )
-        lifecycle_checks.append(
-            _path_absent_check(runtime_root)
-        )
-        persistence_root = runtime_root / "v1-persistence"
         extract_sealed_formal_v1_release_fixture_archive(
             archive_path=fixture_archive_path,
             bundle_root=persistence_root,
@@ -1297,7 +1495,11 @@ def _run_smoke_journey(
         _record_cleanup,
         cleanup_errors,
         "Strategy Diagnostics V1 fixture",
-        fixture.close,
+        partial(
+            _close_release_fixture,
+            fixture,
+            defer_native_teardown=defer_native_teardown,
+        ),
     )
     lifecycle_checks.append(_closed_check(fixture))
     if wave2_mode:
@@ -1357,13 +1559,42 @@ def _run_smoke_journey(
             manifest_id=manifest_id,
         )
     )
+    if not defer_native_teardown:
+        cleanup.callback(
+            _record_cleanup,
+            cleanup_errors,
+            "release environment",
+            lambda: _restore_environment(previous_environment),
+        )
+        lifecycle_checks.append(
+            _environment_restored_check(previous_environment)
+        )
+    retired_mounts: list[tuple[Any, dict[str, bool]]] = []
+    mount_closers: list[Callable[[], None]] = []
+
+    def schedule_retired_mount_releases() -> None:
+        for mounted_window, state in tuple(retired_mounts):
+            release_error_count = len(cleanup_errors)
+            _schedule_closed_mount_release(
+                app=app,
+                window=mounted_window,
+                errors=cleanup_errors,
+            )
+            state["release_scheduled"] = (
+                len(cleanup_errors) == release_error_count
+            )
+        retired_mounts.clear()
+
+    # ExitStack callbacks run in reverse registration order. Mount callbacks
+    # are registered below, so an exceptional exit first quiesces each mount,
+    # then stops the shared EventBridge, and only then schedules deferred
+    # native QObject deletion for the owning QApplication.
     cleanup.callback(
         _record_cleanup,
         cleanup_errors,
-        "release environment",
-        lambda: _restore_environment(previous_environment),
+        "retired QML mount release scheduling",
+        schedule_retired_mount_releases,
     )
-    lifecycle_checks.append(_environment_restored_check(previous_environment))
     cleanup.callback(
         _record_cleanup,
         cleanup_errors,
@@ -1398,25 +1629,53 @@ def _run_smoke_journey(
         window: Any,
         host: Any,
     ) -> Callable[[], None]:
-        state = {"closed": False}
+        mount_objects = [context, window, host]
+        state = {
+            "attempted": False,
+            "closed": False,
+            "release_scheduled": False,
+        }
 
         def close_mount() -> None:
-            if state["closed"]:
+            if state["attempted"]:
                 return
-            _close_mount(
-                app=app,
-                context=context,
-                window=window,
-                host=host,
-                errors=cleanup_errors,
-            )
-            state["closed"] = True
+            state["attempted"] = True
+            mounted_context, mounted_window, mounted_host = mount_objects
+            try:
+                _close_mount(
+                    app=app,
+                    context=mounted_context,
+                    window=mounted_window,
+                    host=mounted_host,
+                    errors=cleanup_errors,
+                )
+                state["closed"] = _mount_is_closed(
+                    mounted_context,
+                    mounted_window,
+                    mounted_host,
+                )
+                if not state["closed"]:
+                    cleanup_errors.append(
+                        "QML mount lifecycle audit failed before release"
+                    )
+                retired_mounts.append((mounted_window, state))
+            finally:
+                if defer_native_teardown:
+                    _retain_native_resources_until_process_exit(
+                        mounted_context,
+                        mounted_window,
+                        mounted_host,
+                    )
+                mount_objects.clear()
 
         cleanup.callback(close_mount)
+        mount_closers.append(close_mount)
+
         def mount_closed() -> bool:
             return bool(
                 state["closed"]
-                and _mount_is_closed(context, window, host)
+                and state["release_scheduled"]
+                and not mount_objects
             )
 
         lifecycle_checks.append(mount_closed)
@@ -1570,18 +1829,33 @@ def _run_smoke_journey(
                 "typed Feature state"
             )
 
-        close_initial_mount()
-        input_fixture.close()
-        fixture = reopen_active_wave2_release_input_fixture(
-            bundle_root=persistence_root,
-            diagnostic_task_id=diagnostic_task_identity,
-            campaign_id=campaign_id,
+        fixture = (
+            _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
+                close_mount=close_initial_mount,
+                stop_event_bridge=bridge.stop,
+                close_fixture=partial(
+                    _close_release_fixture,
+                    input_fixture,
+                    defer_native_teardown=defer_native_teardown,
+                ),
+                reopen_fixture=partial(
+                    reopen_active_wave2_release_input_fixture,
+                    bundle_root=persistence_root,
+                    diagnostic_task_id=diagnostic_task_identity,
+                    campaign_id=campaign_id,
+                ),
+                cleanup_errors=cleanup_errors,
+            )
         )
         cleanup.callback(
             _record_cleanup,
             cleanup_errors,
             "reopened active installed Wave 2 fixture",
-            fixture.close,
+            partial(
+                _close_release_fixture,
+                fixture,
+                defer_native_teardown=defer_native_teardown,
+            ),
         )
         lifecycle_checks.append(_closed_check(fixture))
         input_fixture = fixture
@@ -1591,16 +1865,141 @@ def _run_smoke_journey(
             campaign_id=campaign_id,
             task_handle_identities=task_handle_identities,
         )
+        application_reopened = True
+        _advance_installed_wave2_campaign_after_mount_quiescence(
+            application=input_fixture.application,
+            campaign_id=campaign_id,
+            close_mount=close_initial_mount,
+            stop_event_bridge=bridge.stop,
+            cleanup_errors=cleanup_errors,
+        )
+        with _serialized_application_access(input_fixture.application):
+            completed_backend_task = (
+                input_fixture.application.get_diagnostic_task(
+                    diagnostic_task_identity
+                )
+            )
+        completed_backend_handoff = (
+            None
+            if completed_backend_task is None
+            else completed_backend_task.campaign_handoff
+        )
+        completed_backend_handles = (
+            ()
+            if completed_backend_task is None
+            else tuple(
+                handle.task_handle_id
+                for handle in completed_backend_task.task_handles
+            )
+        )
+        if (
+            completed_backend_task is None
+            or completed_backend_handoff is None
+            or completed_backend_handles != task_handle_identities
+            or completed_backend_handoff.campaign_id != campaign_id
+            or completed_backend_handoff.evidence_package_id is None
+            or completed_backend_handoff.reproduction_manifest_id is None
+        ):
+            raise RuntimeError(
+                "Installed background continuation did not preserve the "
+                "Diagnostic Task, TaskHandles, Campaign, evidence, and "
+                "Reproduction Manifest identities"
+            )
+        evidence_package_id = (
+            completed_backend_handoff.evidence_package_id
+        )
+        manifest_id = (
+            completed_backend_handoff.reproduction_manifest_id
+        )
+        background_continuation_verified = True
+
+        _close_release_fixture(
+            input_fixture,
+            defer_native_teardown=defer_native_teardown,
+        )
+        fixture = reopen_completed_wave2_release_fixture(
+            bundle_root=persistence_root,
+            campaign_id=campaign_id,
+            evidence_package_id=evidence_package_id,
+            selected_manifest_id=manifest_id,
+        )
+        cleanup.callback(
+            _record_cleanup,
+            cleanup_errors,
+            "reopened installed Wave 2 fixture",
+            partial(
+                _close_release_fixture,
+                fixture,
+                defer_native_teardown=defer_native_teardown,
+            ),
+        )
+        lifecycle_checks.append(_closed_check(fixture))
+        with _serialized_application_access(fixture.application):
+            reopened_task = fixture.application.get_diagnostic_task(
+                diagnostic_task_identity
+            )
+        reopened_task_identity = (
+            None if reopened_task is None else reopened_task.task_id
+        )
+        reopened_handle_identities = (
+            ()
+            if reopened_task is None
+            else tuple(
+                handle.task_handle_id
+                for handle in reopened_task.task_handles
+            )
+        )
+        reopened_campaign_identity = (
+            None
+            if reopened_task is None
+            or reopened_task.campaign_handoff is None
+            else reopened_task.campaign_handoff.campaign_id
+        )
+        reopened_evidence_identity = (
+            None
+            if reopened_task is None
+            or reopened_task.campaign_handoff is None
+            else reopened_task.campaign_handoff.evidence_package_id
+        )
+        reopened_manifest_identity = (
+            None
+            if reopened_task is None
+            or reopened_task.campaign_handoff is None
+            else reopened_task.campaign_handoff.reproduction_manifest_id
+        )
+        writable_persistence_verified = bool(
+            reopened_task is not None
+            and reopened_task_identity == diagnostic_task_identity
+            and reopened_handle_identities == task_handle_identities
+            and reopened_campaign_identity == campaign_id
+            and reopened_evidence_identity == evidence_package_id
+            and reopened_manifest_identity == manifest_id
+        )
+        if not writable_persistence_verified:
+            raise RuntimeError(
+                "Installed task/Campaign/TaskHandle identities did not "
+                "survive a real Application reopen; "
+                f"task={reopened_task_identity!r}/"
+                f"{diagnostic_task_identity!r}, "
+                f"handles={reopened_handle_identities!r}/"
+                f"{task_handle_identities!r}, "
+                f"campaign={reopened_campaign_identity!r}/"
+                f"{campaign_id!r}, "
+                f"evidence={reopened_evidence_identity!r}/"
+                f"{evidence_package_id!r}, "
+                f"manifest={reopened_manifest_identity!r}/"
+                f"{manifest_id!r}"
+            )
+        bridge.start()
         read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
-            input_fixture.application,
-            input_fixture.engine,
+            fixture.application,
+            fixture.engine,
         )
         diagnostic_tasks_application = (
             LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-                input_fixture.application
+                fixture.application
             )
         )
-        application_reopened = True
         context, window, host = _create_production_window(
             event_bridge=bridge,
             strategy_diagnostics_read_model=read_model,
@@ -1614,42 +2013,18 @@ def _run_smoke_journey(
             window=window,
             host=host,
         )
-        window.setObjectName("frontendV2PackageActiveRemountWindow")
+        window.setObjectName("frontendV2PackageTerminalRemountWindow")
         window.resize(1280, 720)
         window.show()
         app.processEvents()
         root = host.rootObject()
         if root is None:
             raise RuntimeError(
-                "Nonterminal remounted Journey Workspace is unavailable"
+                "Terminal remounted Journey Workspace is unavailable"
             )
         accessibility_preferences.append(
             _accessibility_preferences_verified(root)
         )
-        for route in (
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
-            _navigate_route(
-                app=app,
-                host=host,
-                root=root,
-                route=route,
-            )
-            expected_route = route
-            _settle_until(
-                app,
-                lambda: root.property("activeRoute") == expected_route,
-                f"reopened nonterminal {route} route",
-            )
-            _assert_running_wave2_public_state(
-                application=input_fixture.application,
-                diagnostic_task_id=diagnostic_task_identity,
-                campaign_id=campaign_id,
-                task_handle_identities=task_handle_identities,
-            )
-        background_continuation_verified = True
 
         (
             completed_task,
@@ -1659,7 +2034,7 @@ def _run_smoke_journey(
             app=app,
             host=host,
             context=context,
-            application=input_fixture.application,
+            application=fixture.application,
             diagnostic_task_id=diagnostic_task_identity,
         )
         completed_handle_identities = tuple(
@@ -1671,11 +2046,11 @@ def _run_smoke_journey(
                 "Installed TaskHandle identities changed while the Campaign "
                 "continued to terminal state"
             )
-        fixture = _completed_wave2_fixture(
-            input_fixture=input_fixture,
-            task=completed_task,
-            selected_manifest_id=selected_manifest_id,
-        )
+        if selected_manifest_id != fixture.selected_manifest.manifest_id:
+            raise RuntimeError(
+                "Installed QML projection selected a different "
+                "Reproduction Manifest after Application reopen"
+            )
         specification = fixture.selected_run.specification
         campaign_id = fixture.campaign.campaign_id
         case_id = fixture.selected_manifest.case_id
@@ -1786,7 +2161,7 @@ def _run_smoke_journey(
                 if identity not in checkpoint
             )
             raise RuntimeError(
-                f"{stage}: QML/QAccessible identity graph is missing "
+                f"{stage}: QML semantic identity graph is missing "
                 f"{missing}"
             )
 
@@ -1942,112 +2317,38 @@ def _run_smoke_journey(
         )
     )
 
-    close_initial_mount()
-
-    if wave2_mode:
-        input_fixture.close()
-        fixture = reopen_completed_wave2_release_fixture(
-            bundle_root=persistence_root,
-            campaign_id=campaign_id,
-            evidence_package_id=evidence_package_id,
-            selected_manifest_id=manifest_id,
+    if not wave2_mode:
+        _quiesce_installed_wave2_mount(
+            close_mount=close_initial_mount,
+            cleanup_errors=cleanup_errors,
+            operation="sealed V1 remount",
         )
-        cleanup.callback(
-            _record_cleanup,
-            cleanup_errors,
-            "reopened installed Wave 2 fixture",
-            fixture.close,
+        context, window, host = _create_production_window(
+            event_bridge=bridge,
+            strategy_diagnostics_read_model=read_model,
+            strategy_diagnostics_tasks_application=(
+                diagnostic_tasks_application
+            ),
+            settings_path=report_dir / "frontend-v2-settings.json",
         )
-        lifecycle_checks.append(_closed_check(fixture))
-        reopened_task = fixture.application.get_diagnostic_task(
-            diagnostic_task_identity
+        register_mount(
+            context=context,
+            window=window,
+            host=host,
         )
-        reopened_task_identity = (
-            None if reopened_task is None else reopened_task.task_id
-        )
-        reopened_handle_identities = (
-            ()
-            if reopened_task is None
-            else tuple(
-                handle.task_handle_id
-                for handle in reopened_task.task_handles
-            )
-        )
-        reopened_campaign_identity = (
-            None
-            if reopened_task is None
-            or reopened_task.campaign_handoff is None
-            else reopened_task.campaign_handoff.campaign_id
-        )
-        reopened_evidence_identity = (
-            None
-            if reopened_task is None
-            or reopened_task.campaign_handoff is None
-            else reopened_task.campaign_handoff.evidence_package_id
-        )
-        reopened_manifest_identity = (
-            None
-            if reopened_task is None
-            or reopened_task.campaign_handoff is None
-            else reopened_task.campaign_handoff.reproduction_manifest_id
-        )
-        writable_persistence_verified = bool(
-            reopened_task is not None
-            and reopened_task_identity == diagnostic_task_identity
-            and reopened_handle_identities == task_handle_identities
-            and reopened_campaign_identity == campaign_id
-            and reopened_evidence_identity == evidence_package_id
-            and reopened_manifest_identity == manifest_id
-        )
-        if not writable_persistence_verified:
+        window.setObjectName("frontendV2PackageRemountWindow")
+        window.resize(1280, 720)
+        window.show()
+        app.processEvents()
+        root = host.rootObject()
+        if root is None:
             raise RuntimeError(
-                "Installed task/Campaign/TaskHandle identities did not "
-                "survive a real Application reopen; "
-                f"task={reopened_task_identity!r}/"
-                f"{diagnostic_task_identity!r}, "
-                f"handles={reopened_handle_identities!r}/"
-                f"{task_handle_identities!r}, "
-                f"campaign={reopened_campaign_identity!r}/"
-                f"{campaign_id!r}, "
-                f"evidence={reopened_evidence_identity!r}/"
-                f"{evidence_package_id!r}, "
-                f"manifest={reopened_manifest_identity!r}/"
-                f"{manifest_id!r}"
+                "Remounted Journey Workspace root object is unavailable"
             )
-        read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
-            fixture.application,
-            fixture.engine,
+        accessibility_preferences.append(
+            _accessibility_preferences_verified(root)
         )
-        diagnostic_tasks_application = (
-            LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-                fixture.application
-            )
-        )
-        application_reopened = True
 
-    context, window, host = _create_production_window(
-        event_bridge=bridge,
-        strategy_diagnostics_read_model=read_model,
-        strategy_diagnostics_tasks_application=diagnostic_tasks_application,
-        settings_path=report_dir / "frontend-v2-settings.json",
-    )
-    register_mount(
-        context=context,
-        window=window,
-        host=host,
-    )
-    window.setObjectName("frontendV2PackageRemountWindow")
-    window.resize(1280, 720)
-    window.show()
-    app.processEvents()
-    root = host.rootObject()
-    if root is None:
-        raise RuntimeError(
-            "Remounted Journey Workspace root object is unavailable"
-        )
-    accessibility_preferences.append(
-        _accessibility_preferences_verified(root)
-    )
     observe(*EXPECTED_JOURNEY[8])
     observe(*EXPECTED_JOURNEY[9])
 
@@ -2149,6 +2450,21 @@ def _run_smoke_journey(
             cancel_order_isolation_verified
         ),
     )
+    _record_cleanup(
+        cleanup_errors,
+        "EventBridge pre-fixture quiescence",
+        bridge.stop,
+    )
+    try:
+        app.processEvents()
+    except BaseException as error:
+        cleanup_errors.append(
+            "Qt event drain after EventBridge stop failed: "
+            f"{type(error).__name__}"
+        )
+    for close_mount in reversed(tuple(mount_closers)):
+        close_mount()
+    schedule_retired_mount_releases()
     return result
 
 
@@ -2160,11 +2476,22 @@ def _close_mount(
     host: Any,
     errors: list[str] | None = None,
 ) -> None:
-    from PySide6.QtCore import QEvent
-
     observed_errors = errors if errors is not None else []
+    # Hide and drain first so Qt Quick has stopped rendering. Quiesce every QML
+    # Adapter without synchronously unloading the compiled native object graph,
+    # close the window, and only then close the typed Features. The smoke
+    # journey retains Python references for its final lifecycle audit; native
+    # object reclamation is deferred to the owning process-exit boundary.
     for label, action in (
-        ("QML Adapter", host.close_adapter),
+        ("MainWindow hide", window.hide),
+        ("Qt event drain before QML teardown", app.processEvents),
+        (
+            "QML Adapter",
+            lambda: host.close_adapter(unload_qml=False),
+        ),
+        ("Qt event drain after QML teardown", app.processEvents),
+        ("MainWindow", window.close),
+        ("Qt event drain after MainWindow close", app.processEvents),
         (
             "Diagnostic Tasks Feature",
             context.diagnostic_tasks_feature.close,
@@ -2174,14 +2501,7 @@ def _close_mount(
             "Evidence and Findings Feature",
             context.evidence_and_findings_feature.close,
         ),
-        ("MainWindow", window.close),
-        ("QML Host deferred delete", host.deleteLater),
-        ("MainWindow deferred delete", window.deleteLater),
-        (
-            "Qt deferred-delete delivery",
-            lambda: app.sendPostedEvents(None, QEvent.Type.DeferredDelete),
-        ),
-        ("Qt event drain", app.processEvents),
+        ("Qt event drain after Feature teardown", app.processEvents),
     ):
         try:
             action()
@@ -2189,6 +2509,30 @@ def _close_mount(
             observed_errors.append(
                 f"{label} cleanup failed: {type(error).__name__}"
             )
+    if errors is None and observed_errors:
+        raise RuntimeError("; ".join(observed_errors))
+
+
+def _schedule_closed_mount_release(
+    *,
+    app: Any,
+    window: Any,
+    errors: list[str] | None = None,
+) -> None:
+    observed_errors = errors if errors is not None else []
+    # Queue ownership release, but do not force DeferredDelete delivery here.
+    # Nuitka/PySide6 can corrupt the native heap when a compiled QML graph is
+    # synchronously deleted mid-runtime. Source smoke completes Qt static
+    # teardown through QApplication.shutdown(). Compiled smoke separately
+    # verifies mount, Feature, bridge, and fixture quiescence, then leaves final
+    # native-object reclamation to its immediate OS-level process exit.
+    try:
+        window.deleteLater()
+    except BaseException as error:
+        observed_errors.append(
+            "MainWindow deferred delete cleanup failed: "
+            f"{type(error).__name__}"
+        )
     if errors is None and observed_errors:
         raise RuntimeError("; ".join(observed_errors))
 
@@ -2249,19 +2593,32 @@ def _mount_is_closed(
     window: Any,
     host: Any,
 ) -> bool:
-    from shiboken6 import isValid
-
     return bool(
         getattr(host, "_workspace_closed", False)
         and getattr(context.diagnostic_tasks_feature, "_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
+        and _owned_executor_is_stopped(context.run_monitoring_feature)
         and getattr(
             context.evidence_and_findings_feature,
             "_closed",
             False,
         )
-        and not isValid(host)
-        and not isValid(window)
+        and _owned_executor_is_stopped(
+            context.evidence_and_findings_feature
+        )
+        and not window.isVisible()
+    )
+
+
+def _owned_executor_is_stopped(feature: Any) -> bool:
+    if not getattr(feature, "_owns_executor", False):
+        return True
+    executor = getattr(feature, "_executor", None)
+    if executor is None:
+        return False
+    return all(
+        not thread.is_alive()
+        for thread in tuple(getattr(executor, "_threads", ()))
     )
 
 
@@ -2367,19 +2724,25 @@ def _snapshot_observed_state(
 
 def _unapproved_interactive_action_count(root: Any) -> int:
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QAccessible
 
     count = 0
     for item in (root, *root.findChildren(QObject)):
-        interface = QAccessible.queryAccessibleInterface(item)
-        if interface is None or not interface.isValid():
+        meta = item.metaObject()
+        object_name = str(item.property("objectName") or "")
+        if object_name in _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES:
             continue
-        if interface.role() not in {
-            QAccessible.Role.Button,
-            QAccessible.Role.Slider,
-        }:
+        if meta.indexOfProperty("accessibleName") >= 0:
+            name = str(item.property("accessibleName") or "").strip()
+        else:
+            name = ""
+        keyboard_action = bool(
+            meta.indexOfProperty("activeFocusOnTab") >= 0
+            and item.property("activeFocusOnTab")
+        )
+        if not name:
+            if keyboard_action:
+                count += 1
             continue
-        name = interface.text(QAccessible.Text.Name).strip()
         if not _APPROVED_INTERACTIVE_NAMES.fullmatch(name):
             count += 1
     return count
@@ -2489,7 +2852,7 @@ def _installed_fixture_archive_path() -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "--renderer-lane",
         choices=tuple(lane.value for lane in RendererLane),
@@ -2503,20 +2866,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
     if arguments.smoke_report_dir is not None:
+        from PySide6.QtWidgets import QApplication
+
+        owns_application = QApplication.instance() is None
         fixture_archive_path = arguments.fixture_archive
         if fixture_archive_path is None and "__compiled__" in globals():
             fixture_archive_path = _installed_fixture_archive_path()
-        result = run_smoke_journey(
-            report_dir=arguments.smoke_report_dir,
-            renderer_lane=renderer_lane,
-            source_commit=arguments.source_commit,
-            capture_images=not arguments.no_images,
-            fixture_archive_path=fixture_archive_path,
-        )
+        shutdown_errors: list[str] = []
+        try:
+            result = run_smoke_journey(
+                report_dir=arguments.smoke_report_dir,
+                renderer_lane=renderer_lane,
+                source_commit=arguments.source_commit,
+                capture_images=not arguments.no_images,
+                fixture_archive_path=fixture_archive_path,
+                defer_native_teardown="__compiled__" in globals(),
+            )
+        finally:
+            if owns_application:
+                _shutdown_smoke_application(
+                    shutdown_errors,
+                    run_qt_teardown="__compiled__" not in globals(),
+                )
         return (
             0
             if (
-                not result.errors
+                not shutdown_errors
+                and not result.errors
                 and result.clean_exit
                 and result.manual_trading_action_count == 0
                 and result.read_only_context_visible
@@ -2544,5 +2920,74 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _run_interactive()
 
 
+def _run_process_entry(
+    *,
+    compiled: bool,
+    arguments: Sequence[str],
+    run: Callable[[], int] = main,
+    terminate: Callable[[int], None] = _terminate_compiled_smoke_process,
+    cyclic_gc_enabled: Callable[[], bool] = gc.isenabled,
+    suspend_cyclic_gc: Callable[[], None] = gc.disable,
+    resume_cyclic_gc: Callable[[], None] = gc.enable,
+) -> None:
+    compiled_smoke = bool(
+        compiled
+        and any(
+            argument == "--smoke-report-dir"
+            or argument.startswith("--smoke-report-dir=")
+            for argument in arguments
+        )
+    )
+    if not compiled_smoke:
+        raise SystemExit(run())
+
+    cyclic_gc_was_suspended = cyclic_gc_enabled()
+    if cyclic_gc_was_suspended:
+        suspend_cyclic_gc()
+
+    completed_normally = False
+    try:
+        exit_code = int(run())
+        completed_normally = True
+    except SystemExit as error:
+        if error.code is None:
+            exit_code = 0
+        elif isinstance(error.code, int):
+            exit_code = error.code
+        else:
+            exit_code = 1
+            try:
+                print(error.code, file=sys.stderr)
+            except BaseException:
+                pass
+    except BaseException:
+        exit_code = 1
+        try:
+            traceback.print_exc(file=sys.stderr)
+        except BaseException:
+            pass
+
+    if completed_normally and exit_code == 0:
+        terminate(0)
+        if cyclic_gc_was_suspended:
+            resume_cyclic_gc()
+        raise RuntimeError(
+            "OS-level process termination unexpectedly returned"
+        )
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except BaseException:
+            exit_code = 1
+    terminate(exit_code)
+    if cyclic_gc_was_suspended:
+        resume_cyclic_gc()
+    raise RuntimeError("OS-level process termination unexpectedly returned")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _run_process_entry(
+        compiled="__compiled__" in globals(),
+        arguments=tuple(sys.argv[1:]),
+    )

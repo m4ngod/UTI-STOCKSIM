@@ -817,7 +817,7 @@ def test_concurrent_same_idempotency_claims_one_durable_start_continuation(
         _artifact_store,
         _engine,
         application,
-        _application_adapter,
+        application_adapter,
         feature,
     ) = _formal_live_stack(tmp_path)
     approved_task = _approved_formal_task(feature)
@@ -830,15 +830,15 @@ def test_concurrent_same_idempotency_claims_one_durable_start_continuation(
         expected_revision=approved_task.revision,
         approved_revision=approved_task.revision,
     )
-    both_claiming = Barrier(2)
-    original_claim = application._diagnostic_tasks.claim_start_continuation
+    both_submitting = Barrier(2)
+    original_start = application_adapter.start_formal_diagnostic_campaign
     original_executor = application._diagnostic_campaigns._executor
     executor_invocations = 0
     executor_invocations_lock = Lock()
 
-    def synchronized_claim(task_handle_id, continuation_claim_id):
-        both_claiming.wait(timeout=10)
-        return original_claim(task_handle_id, continuation_claim_id)
+    def synchronized_start(command):
+        both_submitting.wait(timeout=10)
+        return original_start(command)
 
     def counted_executor(*args, **kwargs):
         nonlocal executor_invocations
@@ -847,9 +847,9 @@ def test_concurrent_same_idempotency_claims_one_durable_start_continuation(
         return original_executor(*args, **kwargs)
 
     monkeypatch.setattr(
-        application._diagnostic_tasks,
-        "claim_start_continuation",
-        synchronized_claim,
+        application_adapter,
+        "start_formal_diagnostic_campaign",
+        synchronized_start,
     )
     monkeypatch.setattr(
         application._diagnostic_campaigns,

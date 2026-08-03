@@ -54,6 +54,7 @@ def test_installed_package_starts_in_a_subprocess_outside_the_checkout(
             ".pytest_cache",
             "__pycache__",
             "build",
+            "tmp",
             "*.egg-info",
             "stock_sim_test.db*",
         ),

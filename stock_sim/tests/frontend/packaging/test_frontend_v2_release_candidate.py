@@ -4,13 +4,16 @@ from dataclasses import asdict
 import hashlib
 import json
 import os
-from shutil import copy2
+from pathlib import Path
+from shutil import copy2, rmtree
 import subprocess
 import sys
+from tempfile import mkdtemp
 import xml.etree.ElementTree as ET
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.engine.result import MappingResult
 
 from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
@@ -282,6 +285,7 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
     from sqlalchemy import text
 
     from stock_sim.release import (
+        frontend_v2_package_entry as release_entry,
         strategy_diagnostics_v1_release_fixture as fixture_module,
     )
     from stock_sim.release.frontend_v2_package_entry import (
@@ -319,6 +323,19 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
         "create_file_backed_formal_v1_release_fixture",
         reject_runtime_generation,
     )
+    created_mount_count = 0
+    create_production_window = release_entry._create_production_window
+
+    def observed_create_production_window(**arguments):
+        nonlocal created_mount_count
+        created_mount_count += 1
+        return create_production_window(**arguments)
+
+    monkeypatch.setattr(
+        release_entry,
+        "_create_production_window",
+        observed_create_production_window,
+    )
     report_dir = tmp_path / "installed-smoke"
     result = run_smoke_journey(
         report_dir=report_dir,
@@ -338,6 +355,7 @@ def test_installed_smoke_reopens_a_sealed_real_v1_fixture(
     assert result.persistence_reopened is True
     assert result.errors == ()
     assert result.clean_exit is True
+    assert created_mount_count == 2
     assert hashlib.sha256(fixture_archive.read_bytes()).hexdigest() == (
         original_archive_hash
     )
@@ -354,6 +372,7 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
 ):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    from stock_sim.release import frontend_v2_package_entry as release_entry
     from stock_sim.release.frontend_v2_package_entry import (
         RendererLane,
         run_smoke_journey,
@@ -367,6 +386,7 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
         extract_sealed_wave2_release_input_fixture_archive,
         open_sealed_wave2_release_input_fixture,
     )
+    from strategy_diagnostics.application import DiagnosticsApplication
 
     source_commit = "b" * 40
     qml_plan = create_package_build_plans(
@@ -427,6 +447,70 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
             artifact_root=audited_bundle / "artifacts",
         )
 
+    active_mounts: set[int] = set()
+    created_mount_count = 0
+    terminal_advance_quiesced = False
+    terminal_mapping_iteration_active = False
+    create_production_window = release_entry._create_production_window
+    close_mount = release_entry._close_mount
+    advance_campaign = DiagnosticsApplication.advance_diagnostic_campaign
+    mapping_result_iter = MappingResult.__iter__
+
+    def observed_create_production_window(**arguments):
+        nonlocal created_mount_count
+        created = create_production_window(**arguments)
+        created_mount_count += 1
+        active_mounts.add(id(created[2]))
+        return created
+
+    def observed_close_mount(**arguments):
+        close_mount(**arguments)
+        active_mounts.discard(id(arguments["host"]))
+
+    def observed_advance_campaign(self, *arguments, **keyword_arguments):
+        nonlocal terminal_advance_quiesced
+        nonlocal terminal_mapping_iteration_active
+        if keyword_arguments.get("max_cases") == 64:
+            terminal_advance_quiesced = True
+            assert not active_mounts, (
+                "Installed background completion must not race live QML "
+                "Adapter executor threads"
+            )
+            terminal_mapping_iteration_active = True
+        try:
+            return advance_campaign(self, *arguments, **keyword_arguments)
+        finally:
+            terminal_mapping_iteration_active = False
+
+    def reject_live_terminal_mapping_iteration(self):
+        if terminal_mapping_iteration_active:
+            raise AssertionError(
+                "Installed terminal continuation must materialize SQLAlchemy "
+                "mapping rows before Python-level iteration"
+            )
+        return mapping_result_iter(self)
+
+    monkeypatch.setattr(
+        release_entry,
+        "_create_production_window",
+        observed_create_production_window,
+    )
+    monkeypatch.setattr(
+        release_entry,
+        "_close_mount",
+        observed_close_mount,
+    )
+    monkeypatch.setattr(
+        DiagnosticsApplication,
+        "advance_diagnostic_campaign",
+        observed_advance_campaign,
+    )
+    monkeypatch.setattr(
+        MappingResult,
+        "__iter__",
+        reject_live_terminal_mapping_iteration,
+    )
+
     report_dir = tmp_path / "installed-wave2-smoke"
     result = run_smoke_journey(
         report_dir=report_dir,
@@ -453,6 +537,9 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
     assert result.writable_persistence_verified is True
     assert result.application_reopened is True
     assert result.background_continuation_verified is True
+    assert terminal_advance_quiesced is True
+    assert created_mount_count == 2
+    assert not active_mounts
     assert result.task_cancel_order_isolation_verified is True
     assert result.campaign_status == "completed"
     assert result.evidence_status == "sealed"
@@ -677,7 +764,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     result = run_smoke_journey(
         report_dir=tmp_path,
         renderer_lane=RendererLane.SOFTWARE,
-        capture_images=False,
+        capture_images=True,
     )
 
     assert result.production_path == (
@@ -791,6 +878,28 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.errors == ()
     assert result.clean_exit is True
     assert "STOCKSIM_FRONTEND_V2" not in os.environ
+
+    from PySide6.QtGui import QImage
+
+    terminal_evidence = QImage(
+        str(tmp_path / "terminal_evidence.png")
+    )
+    assert terminal_evidence.isNull() is False
+    viewport_left = int(terminal_evidence.width() * 0.30)
+    viewport_top = int(terminal_evidence.height() * 0.05)
+    viewport_right = int(terminal_evidence.width() * 0.94)
+    viewport_bottom = int(terminal_evidence.height() * 0.94)
+    visible_content_pixels = sum(
+        max(
+            terminal_evidence.pixelColor(x, y).red(),
+            terminal_evidence.pixelColor(x, y).green(),
+            terminal_evidence.pixelColor(x, y).blue(),
+        )
+        > 25
+        for y in range(viewport_top, viewport_bottom)
+        for x in range(viewport_left, viewport_right)
+    )
+    assert visible_content_pixels > 0
 
 
 def test_smoke_observation_snapshots_state_before_frame_capture(
@@ -1712,6 +1821,97 @@ def test_default_installed_entry_uses_the_production_app_context():
     ) < source.index("    bridge.start()")
 
 
+def test_installed_entry_avoids_compiled_qt_test_and_accessibility_introspection():
+    source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    ).read_text(encoding="utf-8")
+
+    assert "QTest" not in source
+    assert "QAccessible" not in source
+    assert "QKeyEvent" in source
+
+
+def test_packaged_accessible_names_have_one_authoritative_qml_source():
+    entry_source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    ).read_text(encoding="utf-8")
+    journey_source = (
+        PROJECT_ROOT / "app" / "ui" / "qml" / "JourneyWorkspace.qml"
+    ).read_text(encoding="utf-8")
+    chart_source = (
+        PROJECT_ROOT / "app" / "ui" / "qml" / "EvidenceChart.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "_PACKAGED_ACCESSIBLE_NAME_BY_OBJECT_NAME" not in entry_source
+    assert journey_source.count(
+        "Accessible.name: accessibleName"
+    ) == 3
+    assert journey_source.count(
+        "Accessible.description: accessibleDescription"
+    ) == 3
+    assert "Accessible.name: accessibleName" in chart_source
+    assert "Accessible.description: accessibleDescription" in chart_source
+
+
+def test_packaged_no_trading_inventory_fails_closed_without_semantics():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _unapproved_interactive_action_count,
+    )
+
+    class MetaObject:
+        def __init__(self, property_names):
+            self.property_names = frozenset(property_names)
+
+        def indexOfProperty(self, property_name):
+            return 0 if property_name in self.property_names else -1
+
+    class Item:
+        def __init__(self, **properties):
+            self.properties = properties
+            self._meta = MetaObject(properties)
+
+        def metaObject(self):
+            return self._meta
+
+        def property(self, property_name):
+            return self.properties.get(property_name)
+
+    class Root(Item):
+        def __init__(self, children):
+            super().__init__(
+                objectName="root",
+                activeFocusOnTab=False,
+            )
+            self.children = children
+
+        def findChildren(self, _object_type):
+            return self.children
+
+    approved_action = Item(
+        objectName="approvedAction",
+        activeFocusOnTab=True,
+        accessibleName="Open Diagnostic Tasks",
+    )
+    missing_semantics = Item(
+        objectName="unknownKeyboardAction",
+        activeFocusOnTab=True,
+    )
+    known_text_input = Item(
+        objectName="diagnosticTaskApprovalActorInput",
+        activeFocusOnTab=True,
+    )
+
+    assert _unapproved_interactive_action_count(
+        Root((approved_action, missing_semantics, known_text_input))
+    ) == 1
+
+
 def test_release_certification_does_not_expand_the_application_command_api():
     import inspect
 
@@ -1794,6 +1994,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     assert observed["fixture_archive_path"] == (
         executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
     )
+    assert observed["defer_native_teardown"] is True
 
     class MissingTaskHandlesSmoke(PassingSmoke):
         task_handle_identities = ()
@@ -1836,11 +2037,427 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     )
 
 
-def test_release_smoke_joins_live_features_before_deleting_qt_mount(
+def test_release_smoke_stops_bridge_before_final_fixture_disposal(
+    tmp_path,
     monkeypatch,
 ):
-    import shiboken6
+    from app.event_bridge import EventBridge
+    from stock_sim.release import frontend_v2_package_entry as release_entry
+    from stock_sim.release.frontend_v2_package_entry import RendererLane
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_formal_v1_release_fixture,
+    )
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+        FileBackedFormalV1ReleaseFixture,
+    )
 
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("QT_QUICK_BACKEND", "software")
+    bridge_stopped = False
+    quiesced_mount_count = 0
+    scheduled_mount_count = 0
+    start_bridge = EventBridge.start
+    stop_bridge = EventBridge.stop
+    close_fixture = FileBackedFormalV1ReleaseFixture.close
+    close_mount = release_entry._close_mount
+    schedule_closed_mount_release = (
+        release_entry._schedule_closed_mount_release
+    )
+    source_commit = "c" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    stage_packaged_formal_v1_release_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+
+    def observed_stop(bridge):
+        nonlocal bridge_stopped
+        stop_bridge(bridge)
+        bridge_stopped = True
+
+    def observed_close(fixture):
+        assert bridge_stopped, (
+            "The EventBridge thread must stop before final fixture disposal"
+        )
+        assert quiesced_mount_count > 0
+        assert scheduled_mount_count == quiesced_mount_count, (
+            "Every retired native QML mount must be scheduled for owned "
+            "application shutdown before final "
+            "fixture disposal; "
+            f"quiesced={quiesced_mount_count}, "
+            f"scheduled={scheduled_mount_count}"
+        )
+        assert observed_bridge._running is False
+        assert (
+            observed_bridge._th is None
+            or not observed_bridge._th.is_alive()
+        )
+        close_fixture(fixture)
+
+    def observed_close_mount(**kwargs):
+        nonlocal quiesced_mount_count
+        close_mount(**kwargs)
+        quiesced_mount_count += 1
+
+    def observed_schedule_closed_mount_release(**kwargs):
+        nonlocal scheduled_mount_count
+        assert bridge_stopped, (
+            "Native QML objects must not be force-released while the "
+            "EventBridge worker is still alive"
+        )
+        assert observed_bridge is not None
+        assert (
+            observed_bridge._th is None
+            or not observed_bridge._th.is_alive()
+        )
+        schedule_closed_mount_release(**kwargs)
+        scheduled_mount_count += 1
+
+    monkeypatch.setattr(EventBridge, "stop", observed_stop)
+    monkeypatch.setattr(
+        release_entry,
+        "_close_mount",
+        observed_close_mount,
+    )
+    monkeypatch.setattr(
+        release_entry,
+        "_schedule_closed_mount_release",
+        observed_schedule_closed_mount_release,
+    )
+    monkeypatch.setattr(
+        FileBackedFormalV1ReleaseFixture,
+        "close",
+        observed_close,
+    )
+    observed_bridge = None
+
+    def capture_bridge_start(bridge):
+        nonlocal observed_bridge
+        observed_bridge = bridge
+        start_bridge(bridge)
+
+    monkeypatch.setattr(EventBridge, "start", capture_bridge_start)
+
+    result = release_entry.run_smoke_journey(
+        report_dir=tmp_path / "bridge-before-fixture",
+        renderer_lane=RendererLane.SOFTWARE,
+        source_commit=source_commit,
+        capture_images=False,
+        fixture_archive_path=fixture_archive,
+    )
+
+    assert result.clean_exit is True
+    assert result.errors == ()
+
+
+def test_release_file_backed_fixture_close_is_idempotent(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_formal_v1_release_fixture,
+        create_file_backed_wave2_release_input_fixture,
+    )
+
+    fixtures = (
+        create_file_backed_formal_v1_release_fixture(
+            database_path=tmp_path / "formal" / "fixture.sqlite3",
+            artifact_root=tmp_path / "formal" / "artifacts",
+        ),
+        create_file_backed_wave2_release_input_fixture(
+            database_path=tmp_path / "wave2" / "fixture.sqlite3",
+            artifact_root=tmp_path / "wave2" / "artifacts",
+        ),
+    )
+    for fixture in fixtures:
+        dispose_calls = 0
+        dispose = fixture.engine.dispose
+
+        def observed_dispose():
+            nonlocal dispose_calls
+            dispose_calls += 1
+            dispose()
+
+        monkeypatch.setattr(fixture.engine, "dispose", observed_dispose)
+        fixture.close()
+        fixture.close()
+
+        assert dispose_calls == 1
+        assert fixture.closed is True
+
+
+def test_compiled_release_fixture_close_defers_native_engine_disposal(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_formal_v1_release_fixture,
+        create_file_backed_wave2_release_input_fixture,
+    )
+
+    fixtures = (
+        create_file_backed_formal_v1_release_fixture(
+            database_path=tmp_path / "formal" / "fixture.sqlite3",
+            artifact_root=tmp_path / "formal" / "artifacts",
+        ),
+        create_file_backed_wave2_release_input_fixture(
+            database_path=tmp_path / "wave2" / "fixture.sqlite3",
+            artifact_root=tmp_path / "wave2" / "artifacts",
+        ),
+    )
+    for fixture in fixtures:
+        dispose_calls = 0
+
+        def observed_dispose():
+            nonlocal dispose_calls
+            dispose_calls += 1
+
+        monkeypatch.setattr(fixture.engine, "dispose", observed_dispose)
+        fixture.close(dispose_engine=False)
+        fixture.close(dispose_engine=False)
+
+        assert dispose_calls == 0
+        assert fixture.closed is True
+        assert fixture.engine_disposed is False
+
+        fixture.close()
+
+        assert dispose_calls == 1
+        assert fixture.engine_disposed is True
+
+
+def test_compiled_smoke_retains_deferred_fixture_until_process_exit():
+    import gc
+    import weakref
+
+    from stock_sim.release import frontend_v2_package_entry as release_entry
+
+    class DeferredFixture:
+        def __init__(self) -> None:
+            self.closed = False
+            self.dispose_engine = None
+
+        def close(self, *, dispose_engine=True) -> None:
+            self.closed = True
+            self.dispose_engine = dispose_engine
+
+    fixture = DeferredFixture()
+    fixture_reference = weakref.ref(fixture)
+    retained_count = len(
+        release_entry._PROCESS_EXIT_RETAINED_NATIVE_RESOURCES
+    )
+
+    try:
+        release_entry._close_release_fixture(
+            fixture,
+            defer_native_teardown=True,
+        )
+        del fixture
+        gc.collect()
+
+        assert fixture_reference() is not None
+        assert fixture_reference().closed is True
+        assert fixture_reference().dispose_engine is False
+    finally:
+        del release_entry._PROCESS_EXIT_RETAINED_NATIVE_RESOURCES[
+            retained_count:
+        ]
+
+
+def test_release_serialization_uses_the_shared_application_gate_directly():
+    from app.features._diagnostics_application_access import (
+        shared_diagnostics_application_access_gate,
+    )
+    from stock_sim.release.frontend_v2_package_entry import (
+        _serialized_application_access,
+    )
+
+    class Application:
+        pass
+
+    application = Application()
+
+    assert _serialized_application_access(application) is (
+        shared_diagnostics_application_access_gate(application)
+    )
+
+
+def test_compiled_smoke_retains_production_mount_owners_until_process_exit(
+    tmp_path,
+):
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_wave2_release_input_fixture,
+    )
+
+    audit_path = tmp_path / "compiled-process-lifetime-audit.json"
+    source_commit = "d" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    stage_packaged_wave2_release_input_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+    short_runtime_root = Path(mkdtemp(prefix="uti-i62-"))
+    script = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["QT_QUICK_BACKEND"] = "software"
+
+from stock_sim.release import frontend_v2_package_entry as release_entry
+
+created_mount_ids = []
+closed_fixture_ids = []
+create_production_window = release_entry._create_production_window
+close_release_fixture = release_entry._close_release_fixture
+
+def observed_create_production_window(**arguments):
+    created = create_production_window(**arguments)
+    created_mount_ids.append(tuple(id(owner) for owner in created))
+    return created
+
+def observed_close_release_fixture(fixture, *, defer_native_teardown):
+    closed_fixture_ids.append(id(fixture))
+    close_release_fixture(
+        fixture,
+        defer_native_teardown=defer_native_teardown,
+    )
+
+release_entry._create_production_window = observed_create_production_window
+release_entry._close_release_fixture = observed_close_release_fixture
+result = release_entry.run_smoke_journey(
+    report_dir=Path(sys.argv[1]),
+    renderer_lane=release_entry.RendererLane.SOFTWARE,
+    source_commit=sys.argv[3],
+    capture_images=False,
+    fixture_archive_path=Path(sys.argv[4]),
+    defer_native_teardown=True,
+)
+retained_ids = {
+    id(resource)
+    for resource in release_entry._PROCESS_EXIT_RETAINED_NATIVE_RESOURCES
+}
+payload = {
+    "clean_exit": result.clean_exit,
+    "errors": list(result.errors),
+    "process_exit_environment_retained": (
+        os.environ.get("STOCKSIM_FRONTEND_V2") == "1"
+        and os.environ.get("STOCKSIM_TEXT_SCALE_PERCENT") == "200"
+        and os.environ.get("STOCKSIM_REDUCED_MOTION") == "1"
+        and os.environ.get("STOCKSIM_HIGH_CONTRAST") == "1"
+    ),
+    "mount_count": len(created_mount_ids),
+    "mount_owners_retained": all(
+        owner_id in retained_ids
+        for mount_ids in created_mount_ids
+        for owner_id in mount_ids
+    ),
+    "fixture_count": len(set(closed_fixture_ids)),
+    "fixtures_retained": all(
+        fixture_id in retained_ids
+        for fixture_id in closed_fixture_ids
+    ),
+}
+Path(sys.argv[2]).write_text(
+    json.dumps(payload, sort_keys=True),
+    encoding="utf-8",
+)
+release_entry._run_process_entry(
+    compiled=True,
+    arguments=("--smoke-report-dir=" + sys.argv[1],),
+    run=lambda: (
+        0
+        if (
+            payload["clean_exit"]
+            and not payload["errors"]
+            and payload["process_exit_environment_retained"]
+            and payload["mount_count"] == 2
+            and payload["mount_owners_retained"]
+            and payload["fixture_count"] >= 3
+            and payload["fixtures_retained"]
+        )
+        else 1
+    ),
+)
+"""
+    try:
+        completed = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                script,
+                str(short_runtime_root / "report"),
+                str(audit_path),
+                source_commit,
+                str(fixture_archive),
+            ),
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=900,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(audit_path.read_text(encoding="utf-8")) == {
+            "clean_exit": True,
+            "errors": [],
+            "fixture_count": 3,
+            "fixtures_retained": True,
+            "mount_count": 2,
+            "mount_owners_retained": True,
+            "process_exit_environment_retained": True,
+        }
+    finally:
+        rmtree(short_runtime_root, ignore_errors=True)
+
+
+def test_compiled_fixture_persistence_is_owned_by_the_report_directory(
+    tmp_path,
+):
+    from contextlib import ExitStack
+
+    from sqlalchemy import create_engine, text
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _packaged_fixture_persistence_root,
+    )
+
+    report_dir = tmp_path / "installed-smoke-report"
+    lifecycle_checks = []
+    with ExitStack() as cleanup:
+        persistence_root = _packaged_fixture_persistence_root(
+            report_dir=report_dir,
+            cleanup=cleanup,
+            lifecycle_checks=lifecycle_checks,
+            defer_native_teardown=True,
+            temporary_directory_prefix="uti-wave2-runtime-",
+        )
+        persistence_root.mkdir(parents=True)
+        database_path = persistence_root / "fixture.sqlite3"
+        engine = create_engine(f"sqlite:///{database_path}")
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE probe (value INTEGER)"))
+
+    assert persistence_root == report_dir / "v1-persistence"
+    assert database_path.exists()
+    assert lifecycle_checks == []
+    engine.dispose()
+
+
+def test_release_smoke_quiesces_qml_before_closing_live_features():
     from stock_sim.release.frontend_v2_package_entry import (
         _close_mount,
         _mount_is_closed,
@@ -1860,34 +2477,37 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
 
     class Host:
         _workspace_closed = False
-        deleted = False
 
-        def close_adapter(self):
-            events.append("adapter")
+        def close_adapter(self, *, unload_qml=True):
+            events.append(f"adapter:unload={unload_qml}")
             self._workspace_closed = True
 
-        def deleteLater(self):
-            events.append("host-delete")
-            self.deleted = True
-
     class Window:
-        deleted = False
+        visible = True
+
+        def hide(self):
+            events.append("window-hide")
+            self.visible = False
 
         def close(self):
             events.append("window")
+            self.visible = False
 
         def deleteLater(self):
-            events.append("window-delete")
-            self.deleted = True
+            raise AssertionError(
+                "A mounted QObject must not be deleted while Python "
+                "references remain live"
+            )
 
         def isVisible(self):
-            if self.deleted:
-                raise RuntimeError("wrapped C++ object is deleted")
-            return False
+            return self.visible
 
     class App:
         def sendPostedEvents(self, *_args):
-            events.append("deferred-delete")
+            raise AssertionError(
+                "The release journey must not force deferred QObject "
+                "deletion"
+            )
 
         def processEvents(self):
             events.append("process-events")
@@ -1903,11 +2523,6 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
     )()
     host = Host()
     window = Window()
-    monkeypatch.setattr(
-        shiboken6,
-        "isValid",
-        lambda item: not item.deleted,
-    )
 
     _close_mount(
         app=App(),
@@ -1917,14 +2532,15 @@ def test_release_smoke_joins_live_features_before_deleting_qt_mount(
     )
 
     assert events == [
-        "adapter",
+        "window-hide",
+        "process-events",
+        "adapter:unload=False",
+        "process-events",
+        "window",
+        "process-events",
         "diagnostic-feature",
         "run-feature",
         "evidence-feature",
-        "window",
-        "host-delete",
-        "window-delete",
-        "deferred-delete",
         "process-events",
     ]
     assert _mount_is_closed(context, window, host) is True
@@ -1983,6 +2599,494 @@ raise SystemExit(
         {"clean_exit": True, "errors": []},
         {"clean_exit": True, "errors": []},
     ]
+
+
+def test_release_smoke_main_shuts_down_its_owned_qapplication(tmp_path):
+    from stock_sim.release.frontend_v2_packaging import (
+        create_package_build_plans,
+        stage_packaged_wave2_release_input_fixture,
+    )
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    )
+
+    source_commit = "d" * 40
+    qml_plan = create_package_build_plans(
+        output_root=tmp_path / "packages",
+        source_commit=source_commit,
+    )[1]
+    stage_packaged_wave2_release_input_fixture(qml_plan)
+    fixture_archive = (
+        qml_plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+    script = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["QT_QUICK_BACKEND"] = "software"
+
+from PySide6.QtWidgets import QApplication
+from stock_sim.release.frontend_v2_package_entry import main
+
+exit_code = main(
+    (
+        "--renderer-lane",
+        "software",
+        "--smoke-report-dir",
+        str(Path(sys.argv[1]) / "main-owned-application"),
+        "--fixture-archive",
+        sys.argv[2],
+        "--source-commit",
+        sys.argv[3],
+        "--no-images",
+    )
+)
+print(
+    json.dumps(
+        {
+            "application_shutdown": QApplication.instance() is None,
+            "exit_code": exit_code,
+        },
+        sort_keys=True,
+    )
+)
+raise SystemExit(
+    0
+    if exit_code == 0 and QApplication.instance() is None
+    else 1
+)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONFAULTHANDLER"] = "1"
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path),
+            str(fixture_archive),
+            source_commit,
+        ),
+        cwd=PROJECT_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=900,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "application_shutdown": True,
+        "exit_code": 0,
+    }
+
+
+def test_smoke_application_shutdown_survives_earlier_cleanup_error(
+    monkeypatch,
+):
+    from PySide6.QtWidgets import QApplication
+    from stock_sim.release.frontend_v2_package_entry import (
+        _shutdown_smoke_application,
+    )
+
+    events: list[str] = []
+
+    class Application:
+        shutdown_complete = False
+
+        def closeAllWindows(self):
+            events.append("close-all-windows")
+            raise RuntimeError("window cleanup failed")
+
+        def processEvents(self):
+            events.append("process-events")
+
+        def shutdown(self):
+            events.append("shutdown")
+            self.shutdown_complete = True
+
+    app = Application()
+    monkeypatch.setattr(
+        QApplication,
+        "instance",
+        lambda: None if app.shutdown_complete else app,
+    )
+    errors: list[str] = []
+
+    _shutdown_smoke_application(errors)
+
+    assert events == [
+        "close-all-windows",
+        "shutdown",
+    ]
+    assert errors == [
+        "QApplication closeAllWindows failed: RuntimeError",
+    ]
+
+
+def test_compiled_smoke_defers_all_qt_shutdown_to_process_exit(
+    monkeypatch,
+):
+    from PySide6.QtWidgets import QApplication
+    from stock_sim.release.frontend_v2_package_entry import (
+        _shutdown_smoke_application,
+    )
+
+    events: list[str] = []
+
+    class Application:
+        def closeAllWindows(self):
+            raise AssertionError(
+                "compiled smoke must terminate before Qt window teardown"
+            )
+
+        def shutdown(self):
+            raise AssertionError(
+                "compiled smoke must terminate before Qt static shutdown"
+            )
+
+    app = Application()
+    monkeypatch.setattr(QApplication, "instance", lambda: app)
+    errors: list[str] = []
+
+    _shutdown_smoke_application(
+        errors,
+        run_qt_teardown=False,
+    )
+
+    assert events == []
+    assert errors == []
+
+
+def test_terminal_campaign_does_not_advance_after_mount_quiescence_failure():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _advance_installed_wave2_campaign_after_mount_quiescence,
+    )
+
+    class Application:
+        advanced = False
+
+        def advance_diagnostic_campaign(self, *_arguments, **_keyword_arguments):
+            self.advanced = True
+            raise AssertionError(
+                "backend continuation must remain blocked after close failure"
+            )
+
+    application = Application()
+    cleanup_errors: list[str] = []
+
+    def failed_mount_close() -> None:
+        cleanup_errors.append(
+            "Run Monitoring Feature cleanup failed: RuntimeError"
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="terminal continuation mount quiescence failed",
+    ):
+        _advance_installed_wave2_campaign_after_mount_quiescence(
+            application=application,
+            campaign_id="diagnostic-campaign-quiescence-probe",
+            close_mount=failed_mount_close,
+            stop_event_bridge=lambda: pytest.fail(
+                "EventBridge must remain running until mount close succeeds"
+            ),
+            cleanup_errors=cleanup_errors,
+        )
+
+    assert application.advanced is False
+
+
+def test_terminal_campaign_stops_event_bridge_before_backend_continuation():
+    from types import SimpleNamespace
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _advance_installed_wave2_campaign_after_mount_quiescence,
+    )
+
+    events: list[str] = []
+
+    class Application:
+        def advance_diagnostic_campaign(self, *_arguments, **_keyword_arguments):
+            events.append("advance-campaign")
+            return SimpleNamespace(status="completed", cases=())
+
+    _advance_installed_wave2_campaign_after_mount_quiescence(
+        application=Application(),
+        campaign_id="diagnostic-campaign-background-probe",
+        close_mount=lambda: events.append("close-mount"),
+        stop_event_bridge=lambda: events.append("stop-event-bridge"),
+        cleanup_errors=[],
+    )
+
+    assert events == [
+        "close-mount",
+        "stop-event-bridge",
+        "advance-campaign",
+    ]
+
+
+def test_application_reopen_stops_event_bridge_before_fixture_transition():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _reopen_active_installed_wave2_fixture_after_frontend_quiescence,
+    )
+
+    events: list[str] = []
+    reopened_fixture = object()
+
+    observed_fixture = (
+        _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
+            close_mount=lambda: events.append("close-mount"),
+            stop_event_bridge=lambda: events.append("stop-event-bridge"),
+            close_fixture=lambda: events.append("close-fixture"),
+            reopen_fixture=lambda: (
+                events.append("reopen-fixture") or reopened_fixture
+            ),
+            cleanup_errors=[],
+        )
+    )
+
+    assert observed_fixture is reopened_fixture
+    assert events == [
+        "close-mount",
+        "stop-event-bridge",
+        "close-fixture",
+        "reopen-fixture",
+    ]
+
+
+def test_mount_quiescence_failure_is_reported_before_application_reopen():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _quiesce_installed_wave2_mount,
+    )
+
+    cleanup_errors: list[str] = []
+
+    def failed_mount_close() -> None:
+        cleanup_errors.append(
+            "Run Monitoring Feature cleanup failed: RuntimeError"
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="active Application reopen mount quiescence failed",
+    ):
+        _quiesce_installed_wave2_mount(
+            close_mount=failed_mount_close,
+            cleanup_errors=cleanup_errors,
+            operation="active Application reopen",
+        )
+
+
+def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir=C:/release-report",),
+            run=lambda: 0,
+            terminate=terminated.append,
+        )
+
+    assert terminated == [0]
+    with pytest.raises(SystemExit) as source_exit:
+        _run_process_entry(
+            compiled=False,
+            arguments=("--smoke-report-dir=C:/release-report",),
+            run=lambda: 1,
+            terminate=terminated.append,
+        )
+    assert source_exit.value.code == 1
+    with pytest.raises(SystemExit) as interactive_exit:
+        _run_process_entry(
+            compiled=True,
+            arguments=(),
+            run=lambda: 2,
+            terminate=terminated.append,
+        )
+    assert interactive_exit.value.code == 2
+    assert terminated == [0]
+
+
+def test_successful_compiled_smoke_exits_before_python_stream_teardown(
+    monkeypatch,
+):
+    import stock_sim.release.frontend_v2_package_entry as package_entry
+
+    events: list[str] = []
+
+    class Stream:
+        def __init__(self, label: str) -> None:
+            self._label = label
+
+        def flush(self) -> None:
+            events.append(f"flush:{self._label}")
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(package_entry.sys, "stdout", Stream("stdout"))
+            patch.setattr(package_entry.sys, "stderr", Stream("stderr"))
+            package_entry._run_process_entry(
+                compiled=True,
+                arguments=("--smoke-report-dir=C:/release-report",),
+                run=lambda: events.append("run") or 0,
+                terminate=lambda code: events.append(f"terminate:{code}"),
+            )
+
+    assert events == ["run", "terminate:0"]
+
+
+def test_compiled_smoke_suspends_cyclic_gc_until_os_termination_returns():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    events: list[str] = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir=C:/release-report",),
+            run=lambda: events.append("run") or 0,
+            terminate=lambda code: events.append(f"terminate:{code}"),
+            cyclic_gc_enabled=lambda: True,
+            suspend_cyclic_gc=lambda: events.append("suspend-gc"),
+            resume_cyclic_gc=lambda: events.append("resume-gc"),
+        )
+
+    assert events == [
+        "suspend-gc",
+        "run",
+        "terminate:0",
+        "resume-gc",
+    ]
+
+
+def test_compiled_smoke_system_exit_zero_flushes_diagnostics(
+    monkeypatch,
+):
+    import stock_sim.release.frontend_v2_package_entry as package_entry
+
+    events: list[str] = []
+
+    class Stream:
+        def __init__(self, label: str) -> None:
+            self._label = label
+
+        def flush(self) -> None:
+            events.append(f"flush:{self._label}")
+
+    def show_help() -> int:
+        events.append("run")
+        raise SystemExit(0)
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(package_entry.sys, "stdout", Stream("stdout"))
+            patch.setattr(package_entry.sys, "stderr", Stream("stderr"))
+            package_entry._run_process_entry(
+                compiled=True,
+                arguments=("--smoke-report-dir=C:/release-report", "--help"),
+                run=show_help,
+                terminate=lambda code: events.append(f"terminate:{code}"),
+            )
+
+    assert events == [
+        "run",
+        "flush:stdout",
+        "flush:stderr",
+        "terminate:0",
+    ]
+
+
+def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+
+    def fail_smoke() -> int:
+        raise RuntimeError("smoke failed before returning")
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir", "C:/release-report"),
+            run=fail_smoke,
+            terminate=terminated.append,
+        )
+
+    assert terminated == [1]
+    assert "RuntimeError: smoke failed before returning" in capsys.readouterr().err
+
+
+def test_compiled_smoke_preserves_argparse_exit_code():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+
+    def reject_arguments() -> int:
+        raise SystemExit(2)
+
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=("--smoke-report-dir",),
+            run=reject_arguments,
+            terminate=terminated.append,
+        )
+
+    assert terminated == [2]
+
+
+def test_smoke_mode_rejects_an_abbreviated_selector(tmp_path, monkeypatch):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: pytest.fail(
+            "an abbreviated selector must not enter smoke mode"
+        ),
+    )
+
+    with pytest.raises(SystemExit) as rejected:
+        package_entry.main(
+            ("--smoke-report", str(tmp_path / "abbreviated-report"))
+        )
+
+    assert rejected.value.code == 2
 
 
 def test_production_window_factory_closes_features_when_window_fails(

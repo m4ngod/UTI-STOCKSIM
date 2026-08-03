@@ -17,6 +17,7 @@ from app.features import (
     EvidenceAndFindingsContext,
     FormalDiagnosticCampaignId,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
+    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     ReproductionManifestId,
     StrategyDiagnosticsV1ApplicationReadModel,
     StrategyRunId,
@@ -30,7 +31,10 @@ from strategy_diagnostics.diagnostic_evidence_storage import (
 from strategy_diagnostics.formal_diagnostic_campaigns import (
     SqlDiagnosticCampaignRepository,
 )
-from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from strategy_diagnostics.market_paths import (
+    InMemoryMarketPathArtifactStore,
+    MaterializedMarketPath,
+)
 from strategy_diagnostics.strategy_runs import (
     SqlStrategyRunRepository,
     _LedgerPosition,
@@ -54,6 +58,18 @@ class _PayloadOverride:
 
     def sealed_payload(self):
         return self._payload
+
+
+class _VerifiedReadRecordingMarketPathStore(
+    InMemoryMarketPathArtifactStore
+):
+    def __init__(self) -> None:
+        super().__init__()
+        self.verified_read_count = 0
+
+    def get_verified(self, artifact_hash: str) -> MaterializedMarketPath:
+        self.verified_read_count += 1
+        return super().get_verified(artifact_hash)
 
 
 def test_live_adapter_serializes_reads_across_feature_consumers(
@@ -99,9 +115,69 @@ def test_live_adapter_serializes_reads_across_feature_consumers(
     assert maximum_active == 1
 
 
+def test_live_application_adapters_serialize_shared_backend_reads(
+    monkeypatch,
+) -> None:
+    application = create_diagnostics_application(
+        artifact_store=InMemoryMarketPathArtifactStore()
+    )
+    application.start()
+    engine = create_engine("sqlite:///:memory:", future=True)
+    read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+    )
+    diagnostic_tasks = (
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            application
+        )
+    )
+    barrier = Barrier(3)
+    active = 0
+    maximum_active = 0
+    counter_lock = Lock()
+    authoritative_status = application.status
+
+    def tracked_public_status():
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        sleep(0.05)
+        result = authoritative_status()
+        with counter_lock:
+            active -= 1
+        return result
+
+    monkeypatch.setattr(application, "status", tracked_public_status)
+    selector = V1JourneySelector(
+        campaign_id=FormalDiagnosticCampaignId("missing-campaign"),
+        run_id=StrategyRunId("missing-run"),
+    )
+
+    def invoke(action):
+        barrier.wait()
+        return action()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (
+            executor.submit(
+                invoke,
+                lambda: read_model.resolve_journey(selector),
+            ),
+            executor.submit(invoke, diagnostic_tasks.read_inventory),
+        )
+        barrier.wait()
+        assert futures[0].result().availability is (
+            ApplicationReadAvailability.FAILED
+        )
+        assert futures[1].result().inventory is not None
+    assert maximum_active == 1
+
+
 def _persist_formal_v1(database_path: Path, artifact_root: Path):
     engine = create_engine(f"sqlite:///{database_path}", future=True)
-    paths = InMemoryMarketPathArtifactStore()
+    paths = _VerifiedReadRecordingMarketPathStore()
     evidence_store = JsonDiagnosticEvidenceArtifactStore(artifact_root)
     application = create_diagnostics_application(
         artifact_store=paths,
@@ -158,6 +234,7 @@ def _persist_formal_v1(database_path: Path, artifact_root: Path):
         campaign.campaign_id,
         guardrail_profiles=_profiles(),
     )
+    assert paths.verified_read_count > 0
     manifests = application.reproduction_manifests(package.evidence_package_id)
     selected_manifest = manifests[0]
     selected_run = snapshots[selected_manifest.run_id]

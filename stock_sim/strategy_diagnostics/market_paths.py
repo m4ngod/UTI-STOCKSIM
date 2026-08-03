@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+import errno
+import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
+from threading import RLock
+from time import sleep
 from typing import Iterable, Mapping, Protocol, cast
 
 from .historical_segments import HistoricalMarketSegment
@@ -403,6 +408,8 @@ class MarketPathArtifactStore(Protocol):
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath: ...
 
+    def get_verified(self, artifact_hash: str) -> MaterializedMarketPath: ...
+
     def list_paths(self) -> tuple[MaterializedMarketPath, ...]: ...
 
 
@@ -423,6 +430,9 @@ class InMemoryMarketPathArtifactStore:
         except KeyError as exc:
             raise KeyError("unknown Materialized Market Path artifact") from exc
 
+    def get_verified(self, artifact_hash: str) -> MaterializedMarketPath:
+        return self.get(artifact_hash)
+
     def list_paths(self) -> tuple[MaterializedMarketPath, ...]:
         return tuple(
             sorted(
@@ -432,11 +442,150 @@ class InMemoryMarketPathArtifactStore:
         )
 
 
+_MarketPathFingerprint = tuple[tuple[int, int, str], ...]
+_VerifiedMarketPathCacheEntry = tuple[
+    MaterializedMarketPath,
+    _MarketPathFingerprint,
+    int,
+]
+_PROCESS_VERIFIED_MARKET_PATHS: OrderedDict[
+    tuple[str, str],
+    _VerifiedMarketPathCacheEntry,
+] = OrderedDict()
+_PROCESS_VERIFIED_OVERSIZED_MARKET_PATH: tuple[
+    tuple[str, str],
+    _VerifiedMarketPathCacheEntry,
+] | None = None
+_PROCESS_VERIFIED_MARKET_PATHS_LOCK = RLock()
+_PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTE_BUDGET = 64 * 1024 * 1024
+_PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES = 0
+_STORE_TRUSTED_MARKET_PATH_FINGERPRINT_LIMIT = 4096
+_VERIFIED_READ_CACHE_FILE_NAME = ".vmp-cache-v1.gz"
+_VERIFIED_READ_CACHE_SCHEMA_VERSION = "verified-market-path-read-cache.v1"
+_ATOMIC_DIRECTORY_PUBLISH_RETRY_DELAYS = (0.05, 0.10, 0.20, 0.40)
+_RETRYABLE_DIRECTORY_PUBLISH_ERRNOS = frozenset((errno.EACCES, errno.EBUSY))
+_RETRYABLE_DIRECTORY_PUBLISH_WINERRORS = frozenset((5, 32, 33))
+
+
+def _estimated_market_path_retained_bytes(
+    path: MaterializedMarketPath,
+) -> int:
+    feature_count = sum(len(node.features) for node in path.nodes)
+    return (
+        4096
+        + len(path.nodes) * 768
+        + feature_count * 192
+        + len(path.instrument_states) * 512
+        + len(path.price_limit_references) * 384
+        + len(path.applied_transformations) * 1024
+    )
+
+
+def _content_seal(
+    fingerprint: _MarketPathFingerprint,
+) -> tuple[tuple[int, str], ...]:
+    return tuple((size, digest) for size, _mtime, digest in fingerprint)
+
+
+def _discard_process_verified_path(cache_key: tuple[str, str]) -> None:
+    global _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES
+    global _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH
+
+    discarded = _PROCESS_VERIFIED_MARKET_PATHS.pop(cache_key, None)
+    if discarded is not None:
+        _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES -= discarded[2]
+    if (
+        _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH is not None
+        and _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH[0] == cache_key
+    ):
+        _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH = None
+
+
+def _get_process_verified_path(
+    cache_key: tuple[str, str],
+) -> _VerifiedMarketPathCacheEntry | None:
+    cached = _PROCESS_VERIFIED_MARKET_PATHS.get(cache_key)
+    if cached is not None:
+        _PROCESS_VERIFIED_MARKET_PATHS.move_to_end(cache_key)
+        return cached
+    if (
+        _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH is not None
+        and _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH[0] == cache_key
+    ):
+        return _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH[1]
+    return None
+
+
+def _remember_process_verified_path(
+    *,
+    cache_key: tuple[str, str],
+    path: MaterializedMarketPath,
+    fingerprint: _MarketPathFingerprint,
+) -> None:
+    global _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES
+    global _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH
+
+    retained_bytes = _estimated_market_path_retained_bytes(path)
+    _discard_process_verified_path(cache_key)
+    if (
+        retained_bytes
+        > _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTE_BUDGET
+    ):
+        # One process-wide oversized slot keeps the active path safe across an
+        # Application composition-root replacement without allowing every
+        # simultaneously live store to retain its own unbounded object graph.
+        _PROCESS_VERIFIED_OVERSIZED_MARKET_PATH = (
+            cache_key,
+            (path, fingerprint, retained_bytes),
+        )
+        return
+    while (
+        _PROCESS_VERIFIED_MARKET_PATHS
+        and _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES + retained_bytes
+        > _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTE_BUDGET
+    ):
+        _, discarded = _PROCESS_VERIFIED_MARKET_PATHS.popitem(last=False)
+        _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES -= discarded[2]
+    _PROCESS_VERIFIED_MARKET_PATHS[cache_key] = (
+        path,
+        fingerprint,
+        retained_bytes,
+    )
+    _PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES += retained_bytes
+
+
+def _publish_staging_directory(staging: Path, destination: Path) -> None:
+    for delay in _ATOMIC_DIRECTORY_PUBLISH_RETRY_DELAYS:
+        try:
+            staging.replace(destination)
+            return
+        except PermissionError as exc:
+            if (
+                exc.errno not in _RETRYABLE_DIRECTORY_PUBLISH_ERRNOS
+                and getattr(exc, "winerror", None)
+                not in _RETRYABLE_DIRECTORY_PUBLISH_WINERRORS
+            ):
+                raise
+            sleep(delay)
+    staging.replace(destination)
+
+
 class ParquetMarketPathArtifactStore:
     """Content-addressed local Parquet adapter hidden behind the store port."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._cache_root = os.path.normcase(
+            str(root.resolve(strict=False))
+        )
+        self._trusted_fingerprints: OrderedDict[
+            str,
+            _MarketPathFingerprint,
+        ] = OrderedDict()
+        # Application reopen creates a new store for the same persistent root.
+        # Share one process-local guard so verified immutable content survives
+        # that composition-root replacement without another native Parquet read.
+        self._lock = _PROCESS_VERIFIED_MARKET_PATHS_LOCK
 
     @classmethod
     def from_environment(cls) -> "ParquetMarketPathArtifactStore":
@@ -451,30 +600,208 @@ class ParquetMarketPathArtifactStore:
         return cls(root)
 
     def put(self, path: MaterializedMarketPath) -> MaterializedMarketPath:
-        if _canonical_hash(_materialized_content(path)) != path.artifact_hash:
-            raise ValueError("Materialized Market Path content hash is invalid")
-        self._root.mkdir(parents=True, exist_ok=True)
-        destination = self._artifact_directory(path.artifact_hash)
-        if destination.is_dir():
-            existing = self.get(path.artifact_hash)
-            if _materialized_content(existing) != _materialized_content(path):
-                raise ValueError("immutable Materialized Market Path identity collision")
-            return existing
-        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=self._root))
-        try:
-            self._write_parquet(path, staging)
-            (staging / "manifest.json").write_text(
-                _json_dumps(_manifest_payload(path)),
-                encoding="utf-8",
-            )
-            staging.replace(destination)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
-        return self.get(path.artifact_hash)
+        with self._lock:
+            if _canonical_hash(_materialized_content(path)) != path.artifact_hash:
+                raise ValueError("Materialized Market Path content hash is invalid")
+            self._root.mkdir(parents=True, exist_ok=True)
+            destination = self._artifact_directory(path.artifact_hash)
+            if destination.is_dir():
+                existing = self.get(path.artifact_hash)
+                if _materialized_content(existing) != _materialized_content(path):
+                    raise ValueError(
+                        "immutable Materialized Market Path identity collision"
+                    )
+                return existing
+            staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=self._root))
+            try:
+                self._write_parquet(path, staging)
+                (staging / "manifest.json").write_text(
+                    _json_dumps(_manifest_payload(path)),
+                    encoding="utf-8",
+                )
+                staging_fingerprint = self._artifact_fingerprint(staging)
+                if not staging_fingerprint:
+                    raise OSError(
+                        "Materialized Market Path files changed while publishing"
+                    )
+                self._write_verified_read_cache(
+                    path,
+                    staging,
+                    staging_fingerprint,
+                    atomically=False,
+                )
+                _publish_staging_directory(staging, destination)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
+            return self.get(path.artifact_hash)
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath:
-        artifact_directory = self._artifact_directory(artifact_hash)
+        return self._get(artifact_hash, verify_persisted=False)
+
+    def get_verified(self, artifact_hash: str) -> MaterializedMarketPath:
+        return self._get(artifact_hash, verify_persisted=True)
+
+    def _get(
+        self,
+        artifact_hash: str,
+        *,
+        verify_persisted: bool,
+    ) -> MaterializedMarketPath:
+        with self._lock:
+            artifact_directory = self._artifact_directory(artifact_hash)
+            cache_key = (self._cache_root, artifact_hash)
+            cached = _get_process_verified_path(cache_key)
+            trusted_fingerprint = self._trusted_fingerprints.get(artifact_hash)
+            if (
+                cached is not None
+                and not verify_persisted
+                and trusted_fingerprint == cached[1]
+            ):
+                self._trusted_fingerprints.move_to_end(artifact_hash)
+                return cached[0]
+            fingerprint = self._artifact_fingerprint(artifact_directory)
+            if cached is not None and fingerprint and cached[1] == fingerprint:
+                self._remember_trusted_fingerprint(
+                    artifact_hash,
+                    fingerprint,
+                )
+                return cached[0]
+            if cached is not None:
+                _discard_process_verified_path(cache_key)
+                self._trusted_fingerprints.pop(artifact_hash, None)
+                if verify_persisted:
+                    raise ValueError(
+                        "persisted Materialized Market Path changed after "
+                        "verification"
+                    )
+            elif (
+                verify_persisted
+                and trusted_fingerprint is not None
+                and trusted_fingerprint != fingerprint
+            ):
+                self._trusted_fingerprints.pop(artifact_hash, None)
+                raise ValueError(
+                    "persisted Materialized Market Path changed after "
+                    "verification"
+                )
+            path = self._load_verified_read_cache(
+                artifact_hash,
+                artifact_directory,
+                fingerprint,
+                require_matching_seal=verify_persisted,
+            )
+            loaded_from_native_parquet = path is None
+            if path is None:
+                path = self._load_verified_path(
+                    artifact_hash,
+                    artifact_directory,
+                )
+            verified_fingerprint = self._artifact_fingerprint(
+                artifact_directory
+            )
+            if fingerprint and verified_fingerprint == fingerprint:
+                if loaded_from_native_parquet:
+                    try:
+                        self._write_verified_read_cache(
+                            path,
+                            artifact_directory,
+                            fingerprint,
+                        )
+                    except OSError:
+                        # The derived cache must never make verified
+                        # authoritative Parquet unavailable. The process cache
+                        # still prevents an immediate native reread.
+                        pass
+                _remember_process_verified_path(
+                    cache_key=cache_key,
+                    path=path,
+                    fingerprint=fingerprint,
+                )
+                self._remember_trusted_fingerprint(
+                    artifact_hash,
+                    fingerprint,
+                )
+            elif verify_persisted:
+                raise ValueError(
+                    "persisted Materialized Market Path changed while it "
+                    "was being verified"
+                )
+            return path
+
+    def _remember_trusted_fingerprint(
+        self,
+        artifact_hash: str,
+        fingerprint: _MarketPathFingerprint,
+    ) -> None:
+        self._trusted_fingerprints.pop(artifact_hash, None)
+        while (
+            len(self._trusted_fingerprints)
+            >= _STORE_TRUSTED_MARKET_PATH_FINGERPRINT_LIMIT
+        ):
+            self._trusted_fingerprints.popitem(last=False)
+        self._trusted_fingerprints[artifact_hash] = fingerprint
+
+    @staticmethod
+    def _load_verified_read_cache(
+        artifact_hash: str,
+        artifact_directory: Path,
+        fingerprint: _MarketPathFingerprint,
+        *,
+        require_matching_seal: bool,
+    ) -> MaterializedMarketPath | None:
+        cache_path = artifact_directory / _VERIFIED_READ_CACHE_FILE_NAME
+        if not cache_path.is_file():
+            return None
+        return _read_verified_market_path_cache(
+            cache_path,
+            artifact_hash,
+            fingerprint,
+            require_matching_seal=require_matching_seal,
+        )
+
+    @staticmethod
+    def _write_verified_read_cache(
+        path: MaterializedMarketPath,
+        artifact_directory: Path,
+        fingerprint: _MarketPathFingerprint,
+        *,
+        atomically: bool = True,
+    ) -> None:
+        if _streaming_materialized_hash(path) != path.artifact_hash:
+            raise ValueError(
+                "Materialized Market Path read cache content is invalid"
+            )
+        cache_path = artifact_directory / _VERIFIED_READ_CACHE_FILE_NAME
+        if not atomically:
+            _write_verified_market_path_cache(
+                cache_path,
+                path,
+                fingerprint,
+            )
+            return
+        cache_descriptor, cache_temporary_name = tempfile.mkstemp(
+            prefix=".verified-read-cache-",
+            suffix=".tmp",
+            dir=artifact_directory,
+        )
+        os.close(cache_descriptor)
+        cache_temporary = Path(cache_temporary_name)
+        try:
+            _write_verified_market_path_cache(
+                cache_temporary,
+                path,
+                fingerprint,
+            )
+            cache_temporary.replace(cache_path)
+        finally:
+            cache_temporary.unlink(missing_ok=True)
+
+    def _load_verified_path(
+        self,
+        artifact_hash: str,
+        artifact_directory: Path,
+    ) -> MaterializedMarketPath:
         try:
             manifest = json.loads(
                 (artifact_directory / "manifest.json").read_text(encoding="utf-8")
@@ -545,21 +872,22 @@ class ParquetMarketPathArtifactStore:
         return path
 
     def list_paths(self) -> tuple[MaterializedMarketPath, ...]:
-        if not self._root.exists():
-            return ()
-        hashes = tuple(
-            sorted(
-                entry.name
-                for entry in self._root.iterdir()
-                if entry.is_dir()
-                and len(entry.name) == 64
-                and all(
-                    character in "0123456789abcdef"
-                    for character in entry.name
+        with self._lock:
+            if not self._root.exists():
+                return ()
+            hashes = tuple(
+                sorted(
+                    entry.name
+                    for entry in self._root.iterdir()
+                    if entry.is_dir()
+                    and len(entry.name) == 64
+                    and all(
+                        character in "0123456789abcdef"
+                        for character in entry.name
+                    )
                 )
             )
-        )
-        return tuple(self.get(artifact_hash) for artifact_hash in hashes)
+            return tuple(self.get(artifact_hash) for artifact_hash in hashes)
 
     def _artifact_directory(self, artifact_hash: str) -> Path:
         if len(artifact_hash) != 64 or any(
@@ -567,6 +895,42 @@ class ParquetMarketPathArtifactStore:
         ):
             raise ValueError("artifact_hash must be lowercase SHA-256")
         return self._root / artifact_hash
+
+    @staticmethod
+    def _artifact_fingerprint(
+        directory: Path,
+    ) -> _MarketPathFingerprint:
+        try:
+            fingerprint: list[tuple[int, int, str]] = []
+            for path in (
+                directory / "manifest.json",
+                directory / "nodes.parquet",
+                directory / "instrument_states.parquet",
+            ):
+                before = path.stat()
+                hasher = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for chunk in iter(
+                        lambda: handle.read(1024 * 1024),
+                        b"",
+                    ):
+                        hasher.update(chunk)
+                after = path.stat()
+                if (
+                    after.st_size != before.st_size
+                    or after.st_mtime_ns != before.st_mtime_ns
+                ):
+                    return ()
+                fingerprint.append(
+                    (
+                        after.st_size,
+                        after.st_mtime_ns,
+                        hasher.hexdigest(),
+                    )
+                )
+            return tuple(fingerprint)
+        except OSError:
+            return ()
 
     @staticmethod
     def _write_parquet(path: MaterializedMarketPath, directory: Path) -> None:
@@ -1194,6 +1558,333 @@ def _materialized_content(path: MaterializedMarketPath) -> Mapping[str, object]:
     return content
 
 
+def _applied_transformation_from_dict(
+    payload: Mapping[str, object],
+) -> AppliedTransformation:
+    return AppliedTransformation(
+        transformation_id=str(payload["transformation_id"]),
+        family=str(payload["family"]),
+        catalog_version=str(payload["catalog_version"]),
+        implementation_version=str(payload["implementation_version"]),
+        parameters=tuple(
+            sorted(
+                (str(name), str(value))
+                for name, value in cast(
+                    Mapping[str, object],
+                    payload["parameters"],
+                ).items()
+            )
+        ),
+        phase_markers=tuple(
+            TransformationPhaseMarker.from_dict(marker)
+            for marker in cast(
+                list[Mapping[str, object]],
+                payload.get("phase_markers", []),
+            )
+        ),
+        statistics=tuple(
+            sorted(
+                (str(name), str(value))
+                for name, value in cast(
+                    Mapping[str, object],
+                    payload.get("statistics", {}),
+                ).items()
+            )
+        ),
+    )
+
+
+def _market_path_node_from_dict(
+    payload: Mapping[str, object],
+) -> MarketPathNode:
+    return MarketPathNode(
+        instrument=str(payload["instrument"]),
+        simulation_time=datetime.fromisoformat(
+            str(payload["simulation_time"])
+        ),
+        open=Decimal(str(payload["open"])),
+        high=Decimal(str(payload["high"])),
+        low=Decimal(str(payload["low"])),
+        close=Decimal(str(payload["close"])),
+        volume=int(str(payload["volume"])),
+        amount=Decimal(str(payload["amount"])),
+        reconstructed=bool(payload["reconstructed"]),
+        features=tuple(
+            sorted(
+                (str(name), Decimal(str(value)))
+                for name, value in cast(
+                    Mapping[str, object],
+                    payload["features"],
+                ).items()
+            )
+        ),
+    )
+
+
+def _instrument_state_from_dict(
+    payload: Mapping[str, object],
+) -> InstrumentState:
+    return InstrumentState(
+        instrument=str(payload["instrument"]),
+        effective_at=datetime.fromisoformat(str(payload["effective_at"])),
+        eligible=bool(payload["eligible"]),
+        trading_status=str(payload["trading_status"]),
+        is_st=bool(payload["is_st"]),
+        industry=str(payload["industry"]),
+        decision_adjustment_factor=(
+            Decimal(str(payload["decision_adjustment_factor"]))
+            if payload["decision_adjustment_factor"] is not None
+            else None
+        ),
+        decision_adjustment_provenance=str(
+            payload["decision_adjustment_provenance"]
+        ),
+    )
+
+
+def _json_array_chunks(
+    payloads: Iterable[Mapping[str, object]],
+) -> Iterable[bytes]:
+    yield b"["
+    first = True
+    for payload in payloads:
+        if not first:
+            yield b","
+        yield _json_dumps(payload).encode("utf-8")
+        first = False
+    yield b"]"
+
+
+def _materialized_content_json_chunks(
+    path: MaterializedMarketPath,
+) -> Iterable[bytes]:
+    yield b'{"applied_transformations":'
+    yield from _json_array_chunks(
+        item.to_dict() for item in path.applied_transformations
+    )
+    yield b',"expander_version":'
+    yield _json_dumps(path.expander_version).encode("utf-8")
+    yield b',"instrument_states":'
+    yield from _json_array_chunks(
+        item.to_dict() for item in path.instrument_states
+    )
+    yield b',"market_rule_profile_version":'
+    yield _json_dumps(path.market_rule_profile_version).encode("utf-8")
+    yield b',"nodes":'
+    yield from _json_array_chunks(item.to_dict() for item in path.nodes)
+    yield b',"normalization_provenance":'
+    yield _json_dumps(path.normalization_provenance).encode("utf-8")
+    yield b',"numeric_tolerance":'
+    yield _json_dumps(path.numeric_tolerance).encode("utf-8")
+    if path.price_limit_references:
+        yield b',"price_limit_references":'
+        yield from _json_array_chunks(
+            item.to_dict() for item in path.price_limit_references
+        )
+    yield b',"reconstructed":'
+    yield _json_dumps(path.reconstructed).encode("utf-8")
+    yield b',"runtime_resolution":'
+    yield _json_dumps(path.runtime_resolution).encode("utf-8")
+    yield b',"seed":'
+    yield _json_dumps(path.seed).encode("utf-8")
+    yield b',"segment_content_hash":'
+    yield _json_dumps(path.segment_content_hash).encode("utf-8")
+    yield b',"segment_id":'
+    yield _json_dumps(path.segment_id).encode("utf-8")
+    yield b',"source_resolution":'
+    yield _json_dumps(path.source_resolution).encode("utf-8")
+    yield b',"source_snapshot_id":'
+    yield _json_dumps(path.source_snapshot_id).encode("utf-8")
+    yield b',"transformation_catalog_version":'
+    yield _json_dumps(path.transformation_catalog_version).encode("utf-8")
+    yield b"}"
+
+
+def _streaming_materialized_hash(path: MaterializedMarketPath) -> str:
+    hasher = hashlib.sha256()
+    for chunk in _materialized_content_json_chunks(path):
+        hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _verified_read_cache_records(
+    path: MaterializedMarketPath,
+    fingerprint: _MarketPathFingerprint,
+) -> Iterable[Mapping[str, object]]:
+    yield {
+        "kind": "header",
+        "schema_version": _VERIFIED_READ_CACHE_SCHEMA_VERSION,
+        "artifact_hash": path.artifact_hash,
+        "authoritative_files": [
+            [size, digest] for size, digest in _content_seal(fingerprint)
+        ],
+        "segment_id": path.segment_id,
+        "segment_content_hash": path.segment_content_hash,
+        "source_snapshot_id": path.source_snapshot_id,
+        "seed": path.seed,
+        "expander_version": path.expander_version,
+        "source_resolution": path.source_resolution,
+        "runtime_resolution": path.runtime_resolution,
+        "reconstructed": path.reconstructed,
+        "numeric_tolerance": path.numeric_tolerance,
+        "normalization_provenance": path.normalization_provenance,
+        "market_rule_profile_version": path.market_rule_profile_version,
+        "transformation_catalog_version": (
+            path.transformation_catalog_version
+        ),
+        "transformation_count": len(path.applied_transformations),
+        "node_count": len(path.nodes),
+        "instrument_state_count": len(path.instrument_states),
+        "price_limit_reference_count": len(path.price_limit_references),
+    }
+    for transformation in path.applied_transformations:
+        yield {
+            "kind": "applied_transformation",
+            "value": transformation.to_dict(),
+        }
+    for node in path.nodes:
+        yield {"kind": "node", "value": node.to_dict()}
+    for state in path.instrument_states:
+        yield {"kind": "instrument_state", "value": state.to_dict()}
+    for reference in path.price_limit_references:
+        yield {"kind": "price_limit_reference", "value": reference.to_dict()}
+
+
+def _write_verified_market_path_cache(
+    cache_path: Path,
+    path: MaterializedMarketPath,
+    fingerprint: _MarketPathFingerprint,
+) -> None:
+    with cache_path.open("wb") as raw_handle:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            fileobj=raw_handle,
+            mtime=0,
+        ) as compressed:
+            for record in _verified_read_cache_records(path, fingerprint):
+                compressed.write(_json_dumps(record).encode("utf-8"))
+                compressed.write(b"\n")
+
+
+def _read_verified_market_path_cache(
+    cache_path: Path,
+    artifact_hash: str,
+    fingerprint: _MarketPathFingerprint,
+    *,
+    require_matching_seal: bool,
+) -> MaterializedMarketPath | None:
+    try:
+        before = cache_path.stat()
+        with gzip.open(
+            cache_path,
+            mode="rt",
+            encoding="utf-8",
+            newline="\n",
+        ) as compressed:
+            first_line = compressed.readline()
+            header = cast(Mapping[str, object], json.loads(first_line))
+            sealed_files = tuple(
+                (int(str(item[0])), str(item[1]))
+                for item in cast(
+                    list[list[object]],
+                    header["authoritative_files"],
+                )
+            )
+            if (
+                header.get("kind") != "header"
+                or header.get("schema_version")
+                != _VERIFIED_READ_CACHE_SCHEMA_VERSION
+                or str(header["artifact_hash"]) != artifact_hash
+                or sealed_files != _content_seal(fingerprint)
+            ):
+                if require_matching_seal:
+                    raise ValueError(
+                        "persisted Materialized Market Path changed after "
+                        "verification"
+                    )
+                return None
+            transformations: list[AppliedTransformation] = []
+            nodes: list[MarketPathNode] = []
+            states: list[InstrumentState] = []
+            references: list[SessionPriceLimitReference] = []
+            for line in compressed:
+                record = cast(Mapping[str, object], json.loads(line))
+                kind = record.get("kind")
+                value = cast(Mapping[str, object], record["value"])
+                if kind == "applied_transformation":
+                    transformations.append(
+                        _applied_transformation_from_dict(value)
+                    )
+                elif kind == "node":
+                    nodes.append(_market_path_node_from_dict(value))
+                elif kind == "instrument_state":
+                    states.append(_instrument_state_from_dict(value))
+                elif kind == "price_limit_reference":
+                    references.append(
+                        SessionPriceLimitReference.from_dict(value)
+                    )
+                else:
+                    raise ValueError(
+                        "verified Materialized Market Path read cache is "
+                        "invalid"
+                    )
+        after = cache_path.stat()
+    except (
+        EOFError,
+        KeyError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise ValueError(
+            "verified Materialized Market Path read cache is invalid"
+        ) from exc
+    if (
+        before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or len(transformations) != int(str(header["transformation_count"]))
+        or len(nodes) != int(str(header["node_count"]))
+        or len(states) != int(str(header["instrument_state_count"]))
+        or len(references)
+        != int(str(header["price_limit_reference_count"]))
+    ):
+        raise ValueError(
+            "verified Materialized Market Path read cache is invalid"
+        )
+    path = MaterializedMarketPath(
+        artifact_hash=artifact_hash,
+        segment_id=str(header["segment_id"]),
+        segment_content_hash=str(header["segment_content_hash"]),
+        source_snapshot_id=str(header["source_snapshot_id"]),
+        seed=int(str(header["seed"])),
+        expander_version=str(header["expander_version"]),
+        source_resolution=str(header["source_resolution"]),
+        runtime_resolution=str(header["runtime_resolution"]),
+        reconstructed=bool(header["reconstructed"]),
+        numeric_tolerance=str(header["numeric_tolerance"]),
+        normalization_provenance=str(
+            header["normalization_provenance"]
+        ),
+        market_rule_profile_version=str(
+            header["market_rule_profile_version"]
+        ),
+        transformation_catalog_version=str(
+            header["transformation_catalog_version"]
+        ),
+        applied_transformations=tuple(transformations),
+        nodes=tuple(nodes),
+        instrument_states=tuple(states),
+        price_limit_references=tuple(references),
+    )
+    if _streaming_materialized_hash(path) != artifact_hash:
+        raise ValueError(
+            "verified Materialized Market Path read cache is invalid"
+        )
+    return path
+
+
 def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
     return {
         "artifact_hash": path.artifact_hash,
@@ -1330,6 +2021,9 @@ class ScenarioMaterializer:
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath:
         return self._artifact_store.get(artifact_hash)
+
+    def get_verified(self, artifact_hash: str) -> MaterializedMarketPath:
+        return self._artifact_store.get_verified(artifact_hash)
 
     def list_materialized_paths(self) -> tuple[MaterializedMarketPath, ...]:
         return self._artifact_store.list_paths()

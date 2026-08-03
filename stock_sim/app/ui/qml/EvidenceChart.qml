@@ -186,13 +186,17 @@ Item {
     MouseArea {
         id: pointSelection
         objectName: "evidenceChartPointSelection"
+        property string accessibleName: (
+            "Select diagnostic evidence point"
+        )
+        property string accessibleDescription: chart.accessibleDescription
         anchors.fill: parent
         cursorShape: Qt.CrossCursor
         activeFocusOnTab: true
-        enabled: chart.interactionEnabled || activeFocus
+        enabled: chart.interactionEnabled
         Accessible.role: Accessible.Slider
-        Accessible.name: "Select diagnostic evidence point"
-        Accessible.description: chart.accessibleDescription
+        Accessible.name: accessibleName
+        Accessible.description: accessibleDescription
         Accessible.focusable: chart.interactionEnabled
         Accessible.focused: activeFocus
         Accessible.onIncreaseAction: chart.pointStepRequested(1)
