@@ -764,7 +764,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     result = run_smoke_journey(
         report_dir=tmp_path,
         renderer_lane=RendererLane.SOFTWARE,
-        capture_images=False,
+        capture_images=True,
     )
 
     assert result.production_path == (
@@ -878,6 +878,28 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.errors == ()
     assert result.clean_exit is True
     assert "STOCKSIM_FRONTEND_V2" not in os.environ
+
+    from PySide6.QtGui import QImage
+
+    terminal_evidence = QImage(
+        str(tmp_path / "terminal_evidence.png")
+    )
+    assert terminal_evidence.isNull() is False
+    viewport_left = int(terminal_evidence.width() * 0.30)
+    viewport_top = int(terminal_evidence.height() * 0.05)
+    viewport_right = int(terminal_evidence.width() * 0.94)
+    viewport_bottom = int(terminal_evidence.height() * 0.94)
+    visible_content_pixels = sum(
+        max(
+            terminal_evidence.pixelColor(x, y).red(),
+            terminal_evidence.pixelColor(x, y).green(),
+            terminal_evidence.pixelColor(x, y).blue(),
+        )
+        > 25
+        for y in range(viewport_top, viewport_bottom)
+        for x in range(viewport_left, viewport_right)
+    )
+    assert visible_content_pixels > 0
 
 
 def test_smoke_observation_snapshots_state_before_frame_capture(

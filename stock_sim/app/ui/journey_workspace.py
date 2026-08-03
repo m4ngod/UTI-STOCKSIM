@@ -1950,7 +1950,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self._pending_chart_presentations: list[
             EvidenceChartPresentation
         ] = []
-        self._chart_interaction_enabled = True
+        self._chart_interaction_enabled = False
         self._chart_timer = QTimer(self)
         self._chart_timer.setSingleShot(True)
         self._chart_timer.timeout.connect(self.flush_chart_frames)
@@ -1966,6 +1966,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
             raise RuntimeError(
                 "Initial Evidence chart presentation was not committed"
             )
+        self._sync_chart_interaction_enabled()
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
@@ -2788,7 +2789,12 @@ class EvidenceAndFindingsQtAdapter(QObject):
         )
 
     def _sync_chart_interaction_enabled(self) -> None:
-        enabled = not self._pending_chart_presentations
+        sample = self._chart_presentation.sample
+        enabled = bool(
+            not self._pending_chart_presentations
+            and sample is not None
+            and sample.points
+        )
         if enabled == self._chart_interaction_enabled:
             return
         self._chart_interaction_enabled = enabled

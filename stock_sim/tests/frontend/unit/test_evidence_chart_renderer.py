@@ -149,6 +149,40 @@ def test_qt_adapter_publishes_semantics_before_capped_chart_frame_deadline():
     feature.close()
 
 
+def test_qt_adapter_disables_point_interaction_without_a_chart_sample():
+    _app()
+    context = _context()
+    source_feature = DeterministicFakeEvidenceAndFindingsAdapter()
+    completed = source_feature.advance_to_completed(context)
+    assert completed.last_reliable_data is not None
+    completed_without_charts = replace(
+        completed.last_reliable_data,
+        candidates=tuple(
+            replace(candidate, chart=None, curves=())
+            for candidate in completed.last_reliable_data.candidates
+        ),
+    )
+    source_feature.close()
+    feature = DeterministicFakeEvidenceAndFindingsAdapter(
+        completed_data=completed_without_charts,
+    )
+    feature.advance_to_completed(context)
+
+    adapter = EvidenceAndFindingsQtAdapter(
+        feature,
+        context=context,
+    )
+
+    assert adapter.chartVisiblePointCount == 0
+    assert adapter.chartInteractionEnabled is False
+    assert "No full-fidelity diagnostic chart source is available" in (
+        adapter.chartAccessibleText
+    )
+
+    adapter.close()
+    feature.close()
+
+
 def test_revision_only_commit_does_not_republish_unchanged_chart_geometry():
     _app()
     now = [0]

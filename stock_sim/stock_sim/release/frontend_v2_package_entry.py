@@ -630,6 +630,12 @@ def _collect_qml_identity_checkpoint(
 ) -> tuple[str, ...]:
     from PySide6.QtCore import Qt
 
+    original_route = str(root.property("activeRoute"))
+    quick_window = host.quickWindow()
+    if quick_window is None:
+        raise RuntimeError("Journey Workspace Quick Window is unavailable")
+    original_focus = quick_window.activeFocusItem()
+
     _navigate_route(
         app=app,
         host=host,
@@ -709,9 +715,19 @@ def _collect_qml_identity_checkpoint(
             )
         )
     qml_text = "\n".join(rendered)
-    return tuple(
+    checkpoint = tuple(
         identity for identity in expected if identity in qml_text
     )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route=original_route,
+    )
+    if original_focus is not None:
+        original_focus.forceActiveFocus()
+        app.processEvents()
+    return checkpoint
 
 
 def _typed_string_values(value: Any) -> tuple[str, ...]:

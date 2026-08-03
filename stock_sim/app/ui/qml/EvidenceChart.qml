@@ -193,7 +193,7 @@ Item {
         anchors.fill: parent
         cursorShape: Qt.CrossCursor
         activeFocusOnTab: true
-        enabled: chart.interactionEnabled || activeFocus
+        enabled: chart.interactionEnabled
         Accessible.role: Accessible.Slider
         Accessible.name: accessibleName
         Accessible.description: accessibleDescription
