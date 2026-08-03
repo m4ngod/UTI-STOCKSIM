@@ -31,7 +31,10 @@ from strategy_diagnostics.diagnostic_evidence_storage import (
 from strategy_diagnostics.formal_diagnostic_campaigns import (
     SqlDiagnosticCampaignRepository,
 )
-from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from strategy_diagnostics.market_paths import (
+    InMemoryMarketPathArtifactStore,
+    MaterializedMarketPath,
+)
 from strategy_diagnostics.strategy_runs import (
     SqlStrategyRunRepository,
     _LedgerPosition,
@@ -55,6 +58,18 @@ class _PayloadOverride:
 
     def sealed_payload(self):
         return self._payload
+
+
+class _VerifiedReadRecordingMarketPathStore(
+    InMemoryMarketPathArtifactStore
+):
+    def __init__(self) -> None:
+        super().__init__()
+        self.verified_read_count = 0
+
+    def get_verified(self, artifact_hash: str) -> MaterializedMarketPath:
+        self.verified_read_count += 1
+        return super().get_verified(artifact_hash)
 
 
 def test_live_adapter_serializes_reads_across_feature_consumers(
@@ -162,7 +177,7 @@ def test_live_application_adapters_serialize_shared_backend_reads(
 
 def _persist_formal_v1(database_path: Path, artifact_root: Path):
     engine = create_engine(f"sqlite:///{database_path}", future=True)
-    paths = InMemoryMarketPathArtifactStore()
+    paths = _VerifiedReadRecordingMarketPathStore()
     evidence_store = JsonDiagnosticEvidenceArtifactStore(artifact_root)
     application = create_diagnostics_application(
         artifact_store=paths,
@@ -219,6 +234,7 @@ def _persist_formal_v1(database_path: Path, artifact_root: Path):
         campaign.campaign_id,
         guardrail_profiles=_profiles(),
     )
+    assert paths.verified_read_count > 0
     manifests = application.reproduction_manifests(package.evidence_package_id)
     selected_manifest = manifests[0]
     selected_run = snapshots[selected_manifest.run_id]

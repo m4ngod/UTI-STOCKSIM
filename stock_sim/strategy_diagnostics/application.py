@@ -259,7 +259,7 @@ class DiagnosticsApplication:
         )
         self._diagnostic_evidence = DiagnosticEvidenceBuilder(
             self._diagnostic_campaigns.get,
-            self._load_reference_path,
+            self._load_verified_reference_path,
             self._evidence_artifact_store,
         )
         self._reproduction = ReproductionService(
@@ -267,7 +267,7 @@ class DiagnosticsApplication:
             recipe_hash_loader=lambda version_id: (
                 self._recipe_workbench.get_version(version_id).content_hash
             ),
-            path_loader=self._load_reference_path,
+            path_loader=self._load_verified_reference_path,
             evidence_loader=self._diagnostic_evidence.get,
             source_snapshot_loader=(
                 self._historical_segments.get_source_snapshot
@@ -3398,6 +3398,14 @@ class DiagnosticsApplication:
         if self._scenario_materializer is None:
             raise RuntimeError("No Scenario Materializer is configured")
         return self._scenario_materializer.get(artifact_hash)
+
+    def _load_verified_reference_path(
+        self,
+        artifact_hash: str,
+    ) -> MaterializedMarketPath:
+        if self._scenario_materializer is None:
+            raise RuntimeError("No Scenario Materializer is configured")
+        return self._scenario_materializer.get_verified(artifact_hash)
 
 
 def create_diagnostics_application(
