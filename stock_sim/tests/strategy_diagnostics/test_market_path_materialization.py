@@ -770,7 +770,7 @@ def test_content_addressed_path_survives_artifact_store_restart(tmp_path: Path) 
     assert reopened_store.list_paths() == (materialized,)
     artifact_directory = root / materialized.artifact_hash
     cache_path = (
-        artifact_directory / ".verified-materialized-path.jsonl.gz"
+        artifact_directory / ".vmp-cache-v1.gz"
     )
     authoritative_size = sum(
         (artifact_directory / name).stat().st_size
@@ -1186,7 +1186,7 @@ def test_legacy_parquet_path_publishes_safe_reread_after_one_native_load(
     root = tmp_path / "legacy-market-paths"
     written_root.rename(root)
     artifact_directory = root / materialized.artifact_hash
-    for name in (".verified-materialized-path.jsonl.gz",):
+    for name in (".vmp-cache-v1.gz",):
         (artifact_directory / name).unlink()
     with market_paths_module._PROCESS_VERIFIED_MARKET_PATHS_LOCK:
         market_paths_module._PROCESS_VERIFIED_MARKET_PATHS.clear()
@@ -1243,7 +1243,7 @@ def test_legacy_cache_publish_failure_does_not_block_authoritative_path(
     written_root.rename(root)
     artifact_directory = root / materialized.artifact_hash
     cache_path = (
-        artifact_directory / ".verified-materialized-path.jsonl.gz"
+        artifact_directory / ".vmp-cache-v1.gz"
     )
     cache_path.unlink()
     with market_paths_module._PROCESS_VERIFIED_MARKET_PATHS_LOCK:
@@ -1284,7 +1284,7 @@ def test_parquet_store_serializes_parallel_first_verification(
     root = tmp_path / "cold-market-paths"
     written_root.rename(root)
     artifact_directory = root / materialized.artifact_hash
-    for name in (".verified-materialized-path.jsonl.gz",):
+    for name in (".vmp-cache-v1.gz",):
         (artifact_directory / name).unlink()
     original_connect = duckdb.connect
     callers_ready = Barrier(3)
@@ -1351,7 +1351,7 @@ def test_parquet_store_does_not_publish_cache_after_mid_read_invalidation(
     root = tmp_path / "cold-market-paths"
     written_root.rename(root)
     artifact_directory = root / materialized.artifact_hash
-    for name in (".verified-materialized-path.jsonl.gz",):
+    for name in (".vmp-cache-v1.gz",):
         (artifact_directory / name).unlink()
     original_connect = duckdb.connect
     first_connect_entered = Event()
