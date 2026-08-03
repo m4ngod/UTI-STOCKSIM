@@ -1536,13 +1536,16 @@ def _run_smoke_journey(
             manifest_id=manifest_id,
         )
     )
-    cleanup.callback(
-        _record_cleanup,
-        cleanup_errors,
-        "release environment",
-        lambda: _restore_environment(previous_environment),
-    )
-    lifecycle_checks.append(_environment_restored_check(previous_environment))
+    if not defer_native_teardown:
+        cleanup.callback(
+            _record_cleanup,
+            cleanup_errors,
+            "release environment",
+            lambda: _restore_environment(previous_environment),
+        )
+        lifecycle_checks.append(
+            _environment_restored_check(previous_environment)
+        )
     retired_mounts: list[tuple[Any, dict[str, bool]]] = []
     mount_closers: list[Callable[[], None]] = []
 

@@ -2308,6 +2308,12 @@ retained_ids = {
 payload = {
     "clean_exit": result.clean_exit,
     "errors": list(result.errors),
+    "process_exit_environment_retained": (
+        os.environ.get("STOCKSIM_FRONTEND_V2") == "1"
+        and os.environ.get("STOCKSIM_TEXT_SCALE_PERCENT") == "200"
+        and os.environ.get("STOCKSIM_REDUCED_MOTION") == "1"
+        and os.environ.get("STOCKSIM_HIGH_CONTRAST") == "1"
+    ),
     "mount_count": len(created_mount_ids),
     "mount_owners_retained": all(
         owner_id in retained_ids
@@ -2332,6 +2338,7 @@ release_entry._run_process_entry(
         if (
             payload["clean_exit"]
             and not payload["errors"]
+            and payload["process_exit_environment_retained"]
             and payload["mount_count"] == 2
             and payload["mount_owners_retained"]
             and payload["fixture_count"] >= 3
@@ -2368,6 +2375,7 @@ release_entry._run_process_entry(
             "fixtures_retained": True,
             "mount_count": 2,
             "mount_owners_retained": True,
+            "process_exit_environment_retained": True,
         }
     finally:
         rmtree(short_runtime_root, ignore_errors=True)
