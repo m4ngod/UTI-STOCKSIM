@@ -656,7 +656,7 @@ def test_ai_audit_survives_restart_and_links_subsequent_approval(
 
     assert (
         migration.current_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     assert audit.attempt.provider == "deterministic-fake"
     assert audit.attempt.model == "deterministic-recipe-fixture.v1"

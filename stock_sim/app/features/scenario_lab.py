@@ -22,6 +22,7 @@ from .scenario_lab_application import (
     ApproveScenarioRecipeResult,
     ComposeFormalScenarioSetCommand,
     ComposeFormalScenarioSetResult,
+    CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftResult,
     HistoricalSegmentEntry,
@@ -30,6 +31,9 @@ from .scenario_lab_application import (
     MarketScenarioEntry,
     ReferenceMarketPathEntry,
     ScenarioLabInventory,
+    ScenarioLabTaskHandle,
+    ScenarioRecipeDraftProjection,
+    ScenarioRecipeValidationProjection,
     ResolveScenarioExecutionAssumptionsCommand,
     ResolveScenarioExecutionAssumptionsResult,
     RetryScenarioMaterializationCommand,
@@ -105,6 +109,7 @@ class ScenarioLabCapabilities:
     can_filter: bool
     can_inspect_bounded_preview: bool
     can_create_recipe_draft: bool
+    can_create_ai_assisted_recipe_draft: bool
     can_revise_recipe_draft: bool
     can_validate_recipe_draft: bool
     can_approve_recipe: bool
@@ -122,6 +127,7 @@ class ScenarioLabCapabilities:
             can_filter=True,
             can_inspect_bounded_preview=True,
             can_create_recipe_draft=False,
+            can_create_ai_assisted_recipe_draft=False,
             can_revise_recipe_draft=False,
             can_validate_recipe_draft=False,
             can_approve_recipe=False,
@@ -177,6 +183,9 @@ class ScenarioLabViewState:
     reference_paths: tuple[ReferenceMarketPathEntry, ...]
     market_scenarios: tuple[MarketScenarioEntry, ...]
     transformation_catalog: TransformationCatalogProjection | None
+    recipe_drafts: tuple[ScenarioRecipeDraftProjection, ...]
+    recipe_validations: tuple[ScenarioRecipeValidationProjection, ...]
+    task_handles: tuple[ScenarioLabTaskHandle, ...]
     last_reliable_inventory: ScenarioLabInventory | None
     capabilities: ScenarioLabCapabilities
     blocking_reasons: tuple[ScenarioLabBlockingReason, ...]
@@ -202,6 +211,10 @@ class ScenarioLabFeature(Protocol):
 
     def create_recipe_draft(
         self, command: CreateScenarioRecipeDraftCommand
+    ) -> CreateScenarioRecipeDraftResult: ...
+
+    def author_recipe_with_ai(
+        self, command: CreateAiAssistedScenarioRecipeDraftCommand
     ) -> CreateScenarioRecipeDraftResult: ...
 
     def revise_recipe_draft(

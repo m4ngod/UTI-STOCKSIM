@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
+import hashlib
 from typing import cast
 from uuid import uuid4
 
@@ -118,6 +119,7 @@ from .recipes import (
     RecipeValidationResult,
     RecipeWorkbench,
     ScenarioRecipeDraft,
+    ScenarioRecipeV1,
 )
 from .reproduction import (
     DIAGNOSTIC_CODE_IDENTITY,
@@ -126,6 +128,16 @@ from .reproduction import (
     ReproductionService,
 )
 from .reproduction_storage import SqlReproductionRepository
+from .scenario_lab_authoring import (
+    ScenarioLabAuthoringMode,
+    ScenarioLabAuthoringResult,
+    ScenarioLabAuthoringService,
+    ScenarioRecipeDraftRevisionRecord,
+    ScenarioRecipeValidationDependencyRecord,
+    ScenarioRecipeValidationRecord,
+    SqlScenarioLabAuthoringRepository,
+    canonical_json,
+)
 from .strategy_campaigns import (
     BASELINE_CAMPAIGN_COMMISSION_BPS,
     BASELINE_CAMPAIGN_SLIPPAGE_BPS,
@@ -315,6 +327,12 @@ class DiagnosticsApplication:
             clock=recipe_clock,
             transformation_catalog=self._transformation_catalog,
         )
+        self._scenario_lab_authoring = ScenarioLabAuthoringService(
+            recipe_workbench=self._recipe_workbench,
+            admitted_segments=self._historical_segments.list_segments,
+            dependency_provider=self._scenario_recipe_validation_dependencies,
+            clock=recipe_clock,
+        )
         self._diagnostic_tasks = DiagnosticTaskService(
             clock=diagnostic_task_clock,
             configuration_validator=(
@@ -378,8 +396,13 @@ class DiagnosticsApplication:
     def initialize_persistence(self, engine: Engine) -> DiagnosticMigrationReport:
         report = initialize_diagnostic_persistence(engine)
         self._historical_segments.replace_catalog(SqlHistoricalSegmentCatalog(engine))
-        self._recipe_workbench.replace_repository(
-            SqlScenarioRecipeRepository(engine)
+        recipe_repository = SqlScenarioRecipeRepository(engine)
+        self._recipe_workbench.replace_repository(recipe_repository)
+        self._scenario_lab_authoring.replace_repository(
+            SqlScenarioLabAuthoringRepository(
+                engine,
+                self._recipe_workbench,
+            )
         )
         self._strategy_runs.replace_repository(SqlStrategyRunRepository(engine))
         self._isolated_sensitivity_sets.replace_repository(
@@ -3028,6 +3051,301 @@ class DiagnosticsApplication:
     ) -> ScenarioRecipeDraft:
         self.status()
         return self._recipe_workbench.create_draft(payload, author=author)
+
+    def create_scenario_recipe_draft_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        payload: Mapping[str, object],
+        author: str,
+        authoring_mode: ScenarioLabAuthoringMode,
+        assistant_attempt_id: str | None,
+    ) -> ScenarioLabAuthoringResult:
+        self.status()
+        audited_draft: ScenarioRecipeDraft | None = None
+        if authoring_mode == "ai_assisted":
+            if assistant_attempt_id is None:
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message="AI-assisted authoring requires an audited attempt.",
+                )
+            try:
+                audit = self._recipe_workbench.get_ai_audit(
+                    assistant_attempt_id
+                )
+            except ValueError:
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message=(
+                        "The AI Recipe Assistant attempt is unavailable from "
+                        "the backend-owned audit history."
+                    ),
+                )
+            if audit.attempt.draft_id is None:
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message=(
+                        "The audited AI Recipe Assistant attempt produced no "
+                        f"typed Draft ({audit.attempt.status})."
+                    ),
+                )
+            audited_draft = self._recipe_workbench.get_draft(
+                audit.attempt.draft_id
+            )
+            payload_hash = hashlib.sha256(
+                canonical_json(payload).encode("utf-8")
+            ).hexdigest()
+            if (
+                audited_draft.payload_hash != payload_hash
+                or audit.attempt.author != author
+            ):
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message=(
+                        "The typed Draft does not match the audited AI result "
+                        "and author identity."
+                    ),
+                )
+        return self._scenario_lab_authoring.create_draft(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            payload=payload,
+            author=author,
+            authoring_mode=authoring_mode,
+            assistant_attempt_id=assistant_attempt_id,
+            existing_draft=audited_draft,
+        )
+
+    def author_scenario_recipe_draft_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        intent: str,
+        author: str,
+    ) -> ScenarioLabAuthoringResult:
+        """Durably claim one typed AI authoring command before provider I/O."""
+
+        self.status()
+        assistant = self._recipe_assistant
+        if assistant is None:
+            raise RuntimeError("No AI Recipe Assistant is configured")
+
+        def author_once(
+            requested_intent: str,
+            requested_author: str,
+            attempt_id: str,
+        ) -> AIRecipeAuthoringResult:
+            return self._recipe_workbench.author_with_ai(
+                requested_intent,
+                author=requested_author,
+                assistant=assistant,
+                admitted_segments=self._historical_segments.list_segments(),
+                attempt_id=attempt_id,
+            )
+
+        return self._scenario_lab_authoring.author_draft_with_ai(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            intent=intent,
+            author=author,
+            author_with_ai=author_once,
+        )
+
+    def revise_scenario_recipe_draft_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        predecessor_draft_id: str,
+        expected_draft_revision: int,
+        payload: Mapping[str, object],
+        author: str,
+        based_on_version_id: str | None,
+    ) -> ScenarioLabAuthoringResult:
+        self.status()
+        return self._scenario_lab_authoring.revise_draft(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            predecessor_draft_id=predecessor_draft_id,
+            expected_draft_revision=expected_draft_revision,
+            payload=payload,
+            author=author,
+            based_on_version_id=based_on_version_id,
+        )
+
+    def validate_scenario_recipe_draft_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        draft_id: str,
+        expected_draft_revision: int,
+        expected_payload_hash: str,
+    ) -> ScenarioLabAuthoringResult:
+        self.status()
+        return self._scenario_lab_authoring.validate_draft(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            draft_id=draft_id,
+            expected_draft_revision=expected_draft_revision,
+            expected_payload_hash=expected_payload_hash,
+        )
+
+    def scenario_recipe_draft_revisions(
+        self,
+    ) -> tuple[ScenarioRecipeDraftRevisionRecord, ...]:
+        self.status()
+        return self._scenario_lab_authoring.list_drafts()
+
+    def scenario_recipe_validation_history(
+        self,
+    ) -> tuple[ScenarioRecipeValidationRecord, ...]:
+        self.status()
+        return self._scenario_lab_authoring.list_validations()
+
+    def replay_scenario_lab_authoring_command(
+        self,
+        *,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+    ) -> ScenarioLabAuthoringResult | None:
+        self.status()
+        return self._scenario_lab_authoring.replay(
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            operation=operation,
+        )
+
+    def _scenario_recipe_validation_dependencies(
+        self,
+        draft: ScenarioRecipeDraft,
+        validation: RecipeValidationResult,
+    ) -> ScenarioRecipeValidationDependencyRecord:
+        segments = {
+            item.segment_id: item
+            for item in self._historical_segments.list_segments()
+        }
+        payload = draft.payload
+        segment_id = str(payload.get("historical_segment_id") or "")
+        try:
+            segment = segments[segment_id]
+        except KeyError as error:
+            raise ValueError(
+                "Validated Scenario Recipe dependency segment is unavailable"
+            ) from error
+        snapshot = self._historical_segments.get_source_snapshot(
+            segment.source_snapshot_id
+        )
+        schema = ScenarioRecipeV1.stable_json_schema()
+        schema_json = canonical_json(schema)
+        catalog_payload = self._transformation_catalog.to_dict()
+        catalog_json = canonical_json(catalog_payload)
+        implementations: list[str] = []
+        causality_rules: set[str] = set()
+        observations: list[tuple[str, str, str]] = [
+            (
+                f"historical-segment:{segment.segment_id}",
+                "compatible",
+                "The exact Historical Market Segment is admitted.",
+            )
+        ]
+        transformations = payload.get("transformations", ())
+        if isinstance(transformations, Sequence) and not isinstance(
+            transformations, (str, bytes)
+        ):
+            for item in transformations:
+                if not isinstance(item, Mapping):
+                    continue
+                transformation_id = str(item.get("transformation_id") or "")
+                try:
+                    entry = self._transformation_catalog.get_entry(
+                        transformation_id
+                    )
+                except ValueError:
+                    observations.append(
+                        (
+                            f"transformation:{transformation_id}",
+                            "incompatible",
+                            "The transformation is not registered.",
+                        )
+                    )
+                    continue
+                implementations.append(
+                    f"{entry.transformation_id}@{entry.implementation_version}"
+                )
+                causality_rules.update(entry.causality_constraints)
+                observations.append(
+                    (
+                        f"transformation:{entry.transformation_id}",
+                        "compatible",
+                        "The registered implementation and policy are bound.",
+                    )
+                )
+        if validation.issues:
+            observations.extend(
+                (
+                    f"validation-rule:{issue.rule}",
+                    "incompatible",
+                    issue.message,
+                )
+                for issue in validation.issues
+            )
+        market_rule_profile = str(
+            payload.get("market_rule_profile") or ""
+        )
+        return ScenarioRecipeValidationDependencyRecord(
+            historical_segment_id=segment.segment_id,
+            historical_segment_content_hash=segment.content_hash,
+            source_snapshot_id=snapshot.snapshot_id,
+            source_snapshot_content_hash=snapshot.content_hash,
+            recipe_schema_identity=str(schema["$id"]),
+            recipe_schema_hash=hashlib.sha256(
+                schema_json.encode("utf-8")
+            ).hexdigest(),
+            transformation_catalog_version=(
+                self._transformation_catalog.catalog_version
+            ),
+            transformation_catalog_hash=hashlib.sha256(
+                catalog_json.encode("utf-8")
+            ).hexdigest(),
+            transformation_implementation_identities=tuple(
+                sorted(implementations)
+            ),
+            data_policy=str(payload.get("data_policy") or ""),
+            causality_rule_identities=tuple(sorted(causality_rules)),
+            market_rule_profile_version=market_rule_profile,
+            market_rule_profile_hash=hashlib.sha256(
+                market_rule_profile.encode("utf-8")
+            ).hexdigest(),
+            compatibility_observations=tuple(observations),
+        )
 
     def author_recipe_with_ai(
         self,

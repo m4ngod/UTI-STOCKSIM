@@ -47,6 +47,7 @@ def test_scenario_lab_1_0_activates_complete_five_feature_registry() -> None:
     }
     assert operations == {
         "approve_recipe",
+        "author_recipe_with_ai",
         "close",
         "compose_scenario_set",
         "create_recipe_draft",
@@ -80,6 +81,9 @@ def test_scenario_lab_1_0_freezes_typed_read_state_and_unavailable_writes() -> N
         "reference_paths",
         "market_scenarios",
         "transformation_catalog",
+        "recipe_drafts",
+        "recipe_validations",
+        "task_handles",
         "last_reliable_inventory",
         "capabilities",
         "blocking_reasons",

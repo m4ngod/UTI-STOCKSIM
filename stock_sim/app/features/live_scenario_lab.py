@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from threading import RLock
 
 from app.event_bridge import (
@@ -46,6 +47,7 @@ from .scenario_lab_application import (
     ApproveScenarioRecipeResult,
     ComposeFormalScenarioSetCommand,
     ComposeFormalScenarioSetResult,
+    CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftResult,
     HistoricalSegmentEntry,
@@ -69,14 +71,29 @@ from .scenario_lab_application import (
     ScenarioLabAdmissionState,
     ScenarioLabCommandMetadata,
     ScenarioLabCommandReceipt,
+    ScenarioLabCommandResult,
     ScenarioLabCommandDisposition,
     ScenarioLabIntegrityState,
     ScenarioLabInventory,
     ScenarioLabQualityState,
+    ScenarioLabTaskHandle,
     ScenarioLabTaskOperation,
     ScenarioLabUnavailabilityCode,
     ScenarioLabUnavailabilityReason,
     ScenarioReproducibilityState,
+    ScenarioRecipeAuthoringMode,
+    ScenarioRecipeDraftProjection,
+    ScenarioRecipeAuthoringCapabilitiesProjection,
+    ScenarioRecipeCompatibilityObservation,
+    ScenarioRecipeCompatibilityState,
+    ScenarioRecipeDataPolicy,
+    ScenarioRecipeDraftId,
+    ScenarioRecipeDraftPayload,
+    ScenarioRecipeValidationDependenciesProjection,
+    ScenarioRecipeValidationFindingProjection,
+    ScenarioRecipeValidationId,
+    ScenarioRecipeValidationProjection,
+    ScenarioRecipeValidationSeverity,
     ResolveScenarioExecutionAssumptionsCommand,
     ResolveScenarioExecutionAssumptionsResult,
     RetryScenarioMaterializationCommand,
@@ -91,6 +108,7 @@ from .scenario_lab_application import (
     TransformationParameterProjection,
     ValidateScenarioRecipeDraftCommand,
     ValidateScenarioRecipeDraftResult,
+    canonical_scenario_lab_command_content_identity,
 )
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
 from .versioning import SCENARIO_LAB_INTERFACE_VERSION, FeatureInterfaceVersion
@@ -313,11 +331,23 @@ class _ScenarioLabAdapter:
         blocked = self._disconnected_receipt(
             command.metadata, ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT
         )
-        return (
-            CreateScenarioRecipeDraftResult(receipt=blocked)
-            if blocked is not None
-            else self._application.create_recipe_draft(command)
+        if blocked is not None:
+            return CreateScenarioRecipeDraftResult(receipt=blocked)
+        result = self._application.create_recipe_draft(command)
+        self._refresh_after_authoring(result.receipt)
+        return result
+
+    def author_recipe_with_ai(
+        self, command: CreateAiAssistedScenarioRecipeDraftCommand
+    ) -> CreateScenarioRecipeDraftResult:
+        blocked = self._disconnected_receipt(
+            command.metadata, ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT
         )
+        if blocked is not None:
+            return CreateScenarioRecipeDraftResult(receipt=blocked)
+        result = self._application.author_recipe_with_ai(command)
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def revise_recipe_draft(
         self, command: ReviseScenarioRecipeDraftCommand
@@ -325,11 +355,11 @@ class _ScenarioLabAdapter:
         blocked = self._disconnected_receipt(
             command.metadata, ScenarioLabTaskOperation.REVISE_RECIPE_DRAFT
         )
-        return (
-            ReviseScenarioRecipeDraftResult(receipt=blocked)
-            if blocked is not None
-            else self._application.revise_recipe_draft(command)
-        )
+        if blocked is not None:
+            return ReviseScenarioRecipeDraftResult(receipt=blocked)
+        result = self._application.revise_recipe_draft(command)
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def validate_recipe_draft(
         self, command: ValidateScenarioRecipeDraftCommand
@@ -337,11 +367,22 @@ class _ScenarioLabAdapter:
         blocked = self._disconnected_receipt(
             command.metadata, ScenarioLabTaskOperation.VALIDATE_RECIPE_DRAFT
         )
-        return (
-            ValidateScenarioRecipeDraftResult(receipt=blocked)
-            if blocked is not None
-            else self._application.validate_recipe_draft(command)
-        )
+        if blocked is not None:
+            return ValidateScenarioRecipeDraftResult(receipt=blocked)
+        result = self._application.validate_recipe_draft(command)
+        self._refresh_after_authoring(result.receipt)
+        return result
+
+    def _refresh_after_authoring(
+        self,
+        receipt: ScenarioLabCommandReceipt,
+    ) -> None:
+        if receipt.disposition is not ScenarioLabCommandDisposition.ACCEPTED:
+            return
+        with self._lock:
+            contexts = self._contexts_to_refresh()
+        for context in contexts:
+            self.snapshot(context, _track_current=False)
 
     def approve_recipe(
         self, command: ApproveScenarioRecipeCommand
@@ -433,6 +474,18 @@ class _ScenarioLabAdapter:
                     authoritative_revision=None,
                     task_handle=None,
                 )
+            if metadata.expected_source_generation != self._generation:
+                return ScenarioLabCommandReceipt(
+                    metadata=metadata,
+                    operation=operation,
+                    disposition=ScenarioLabCommandDisposition.CONFLICT,
+                    message=(
+                        "The expected Scenario Lab source generation is stale; "
+                        "old-generation commands are quarantined."
+                    ),
+                    authoritative_revision=self._source_token,
+                    task_handle=None,
+                )
         return None
 
     def close(self) -> None:
@@ -471,6 +524,9 @@ class _ScenarioLabAdapter:
             reference_paths=(),
             market_scenarios=(),
             transformation_catalog=None,
+            recipe_drafts=(),
+            recipe_validations=(),
+            task_handles=(),
             last_reliable_inventory=None,
             capabilities=ScenarioLabCapabilities.read_only(),
             blocking_reasons=_future_blocking_reasons(),
@@ -488,14 +544,25 @@ class _ScenarioLabAdapter:
         observed_at: datetime | None = None,
     ) -> ScenarioLabViewState:
         now = observed_at or _aware(self._clock())
-        segments, paths, scenarios, catalog = _filtered_inventory(inventory, context)
+        (
+            segments,
+            paths,
+            scenarios,
+            catalog,
+            drafts,
+            validations,
+            task_handles,
+        ) = _filtered_inventory(inventory, context)
         partial = availability is ScenarioLabApplicationAvailability.PARTIAL
-        empty = not segments and not paths and not scenarios
+        empty = not segments and not paths and not scenarios and not drafts
         focus = context.focus_identity if _contains_identity(
             context.focus_identity,
             segments,
             paths,
             scenarios,
+            drafts,
+            validations,
+            task_handles,
         ) else None
         return ScenarioLabViewState(
             interface_version=SCENARIO_LAB_INTERFACE_VERSION,
@@ -527,8 +594,11 @@ class _ScenarioLabAdapter:
             reference_paths=paths,
             market_scenarios=scenarios,
             transformation_catalog=catalog,
+            recipe_drafts=drafts,
+            recipe_validations=validations,
+            task_handles=task_handles,
             last_reliable_inventory=inventory,
-            capabilities=ScenarioLabCapabilities.read_only(),
+            capabilities=_authoring_capabilities(inventory),
             blocking_reasons=(
                 *((
                     ScenarioLabBlockingReason(
@@ -570,11 +640,19 @@ class _ScenarioLabAdapter:
             phase = ViewPhase.FAILED
             freshness = Freshness.AWAITING_FIRST_STATE
             catalog = None
+            drafts: tuple[ScenarioRecipeDraftProjection, ...] = ()
+            validations: tuple[ScenarioRecipeValidationProjection, ...] = ()
+            task_handles: tuple[ScenarioLabTaskHandle, ...] = ()
         else:
-            segments, paths, scenarios, catalog = _filtered_inventory(
-                inventory,
-                context,
-            )
+            (
+                segments,
+                paths,
+                scenarios,
+                catalog,
+                drafts,
+                validations,
+                task_handles,
+            ) = _filtered_inventory(inventory, context)
             presentation = ScenarioLabPresentationState.STALE
             completeness = previous.completeness
             phase = ViewPhase.DEGRADED
@@ -593,6 +671,9 @@ class _ScenarioLabAdapter:
             reference_paths=paths,
             market_scenarios=scenarios,
             transformation_catalog=catalog,
+            recipe_drafts=drafts,
+            recipe_validations=validations,
+            task_handles=task_handles,
             last_reliable_inventory=inventory,
             blocking_reasons=(
                 ScenarioLabBlockingReason(
@@ -640,7 +721,12 @@ class _ScenarioLabAdapter:
                 ScenarioLabBlockingReason(
                     code=code,
                     message=message,
-                    dependent_operations=("create_recipe_draft", "materialize_reference_path"),
+                    dependent_operations=(
+                        "create_recipe_draft",
+                        "revise_recipe_draft",
+                        "validate_recipe_draft",
+                        "materialize_reference_path",
+                    ),
                 ),
                 *_future_blocking_reasons(),
             ),
@@ -793,6 +879,18 @@ class _DeterministicFakeScenarioLabApplication:
             observed_at=_aware(clock()),
             error=None,
         )
+        self._commands: dict[
+            str,
+            tuple[
+                str,
+                ScenarioLabTaskOperation,
+                ScenarioLabCommandResult,
+            ],
+        ] = {}
+        self._ai_audits: dict[
+            str,
+            tuple[ScenarioRecipeDraftPayload, ScenarioLabActorId],
+        ] = {}
 
     @property
     def interface_version(self) -> ScenarioLabApplicationVersion:
@@ -822,22 +920,548 @@ class _DeterministicFakeScenarioLabApplication:
     def create_recipe_draft(
         self, command: CreateScenarioRecipeDraftCommand
     ) -> CreateScenarioRecipeDraftResult:
-        return CreateScenarioRecipeDraftResult(
-            self._receipt(command.metadata, ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT)
+        operation = ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return CreateScenarioRecipeDraftResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return CreateScenarioRecipeDraftResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, CreateScenarioRecipeDraftResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return CreateScenarioRecipeDraftResult(receipt=source_conflict)
+        if command.authoring_mode is ScenarioRecipeAuthoringMode.AI_ASSISTED:
+            audit = self._ai_audits.get(command.assistant_attempt_id or "")
+            if audit != (command.payload, command.author_id):
+                return CreateScenarioRecipeDraftResult(
+                    receipt=self._rejected_receipt(
+                        command.metadata,
+                        operation,
+                        (
+                            "The typed Draft does not match the audited AI "
+                            "result and author identity."
+                        ),
+                    )
+                )
+        digest = hashlib.sha256(
+            command.metadata.command_id.value.encode("utf-8")
+        ).hexdigest()
+        draft = ScenarioRecipeDraftProjection(
+            draft_id=ScenarioRecipeDraftId("recipe_draft_" + digest[:24]),
+            recipe_id="recipe_" + digest[24:48],
+            revision=1,
+            payload=command.payload,
+            payload_hash=_fake_payload_hash(command.payload),
+            author_id=command.author_id,
+            created_at=_aware(self._clock()),
+            predecessor_draft_id=None,
+            based_on_recipe_version_id=None,
+            authoring_mode=command.authoring_mode,
+            assistant_attempt_id=command.assistant_attempt_id,
         )
+        result = CreateScenarioRecipeDraftResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            draft_id=draft.draft_id,
+            draft_revision=draft.revision,
+            payload_hash=draft.payload_hash,
+            draft=draft,
+        )
+        self._remember(command.metadata, operation, result)
+        inventory = self._inventory()
+        self._set_inventory(
+            replace(inventory, recipe_drafts=(*inventory.recipe_drafts, draft))
+        )
+        return result
+
+    def author_recipe_with_ai(
+        self, command: CreateAiAssistedScenarioRecipeDraftCommand
+    ) -> CreateScenarioRecipeDraftResult:
+        operation = ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return CreateScenarioRecipeDraftResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return CreateScenarioRecipeDraftResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, CreateScenarioRecipeDraftResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return CreateScenarioRecipeDraftResult(receipt=source_conflict)
+        inventory = self._inventory()
+        capabilities = inventory.authoring_capabilities
+        if not capabilities.ai_authoring_available:
+            return CreateScenarioRecipeDraftResult(
+                receipt=self._receipt(command.metadata, operation)
+            )
+        segment = next(
+            (
+                item
+                for item in inventory.historical_segments
+                if item.admission_state is ScenarioLabAdmissionState.ADMITTED
+                and item.quality_state is ScenarioLabQualityState.PASSED
+            ),
+            None,
+        )
+        if segment is None:
+            return CreateScenarioRecipeDraftResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "No admitted Historical Market Segment is available.",
+                )
+            )
+        digest = hashlib.sha256(
+            command.metadata.command_id.value.encode("utf-8")
+        ).hexdigest()
+        payload = ScenarioRecipeDraftPayload(
+            name=command.intent[:120],
+            historical_segment_id=segment.segment_id,
+            transformations=(),
+            requested_execution_assumptions=(
+                RequestedExecutionAssumptionsProjection(
+                    commission_bps="3",
+                    slippage_bps="0",
+                    max_fill_fraction="1",
+                    latency_nodes=0,
+                    allow_partial_fills=True,
+                )
+            ),
+            decision_cadence_minutes=30,
+            materialization_seed=80,
+            data_policy=ScenarioRecipeDataPolicy.POINT_IN_TIME,
+            market_rule_profile_version="a-share-cash-equity.v1",
+        )
+        draft = ScenarioRecipeDraftProjection(
+            draft_id=ScenarioRecipeDraftId("recipe_draft_" + digest[:24]),
+            recipe_id="recipe_" + digest[24:48],
+            revision=1,
+            payload=payload,
+            payload_hash=_fake_payload_hash(payload),
+            author_id=command.author_id,
+            created_at=_aware(self._clock()),
+            predecessor_draft_id=None,
+            based_on_recipe_version_id=None,
+            authoring_mode=ScenarioRecipeAuthoringMode.AI_ASSISTED,
+            assistant_attempt_id="fake_ai_recipe_attempt_" + digest[:24],
+        )
+        if draft.assistant_attempt_id is None:  # pragma: no cover - fixed above.
+            raise RuntimeError("Fake AI Draft requires an attempt identity")
+        self._ai_audits[draft.assistant_attempt_id] = (
+            draft.payload,
+            draft.author_id,
+        )
+        result = CreateScenarioRecipeDraftResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            draft_id=draft.draft_id,
+            draft_revision=draft.revision,
+            payload_hash=draft.payload_hash,
+            draft=draft,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(inventory, recipe_drafts=(*inventory.recipe_drafts, draft))
+        )
+        return result
 
     def revise_recipe_draft(
         self, command: ReviseScenarioRecipeDraftCommand
     ) -> ReviseScenarioRecipeDraftResult:
-        return ReviseScenarioRecipeDraftResult(
-            self._receipt(command.metadata, ScenarioLabTaskOperation.REVISE_RECIPE_DRAFT)
+        operation = ScenarioLabTaskOperation.REVISE_RECIPE_DRAFT
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return ReviseScenarioRecipeDraftResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return ReviseScenarioRecipeDraftResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, ReviseScenarioRecipeDraftResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return ReviseScenarioRecipeDraftResult(receipt=source_conflict)
+        inventory = self._inventory()
+        predecessor = next(
+            (
+                item
+                for item in inventory.recipe_drafts
+                if item.draft_id == command.predecessor_draft_id
+            ),
+            None,
         )
+        if predecessor is None:
+            return ReviseScenarioRecipeDraftResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "The predecessor Scenario Recipe Draft is unavailable.",
+                )
+            )
+        current_revision = max(
+            item.revision
+            for item in inventory.recipe_drafts
+            if item.recipe_id == predecessor.recipe_id
+        )
+        if (
+            predecessor.revision != current_revision
+            or command.expected_draft_revision != current_revision
+        ):
+            return ReviseScenarioRecipeDraftResult(
+                receipt=self._conflict_receipt(
+                    command.metadata,
+                    operation,
+                    "The expected Scenario Recipe Draft revision is stale.",
+                ),
+                authoritative_draft_revision=current_revision,
+            )
+        digest = hashlib.sha256(
+            command.metadata.command_id.value.encode("utf-8")
+        ).hexdigest()
+        draft = ScenarioRecipeDraftProjection(
+            draft_id=ScenarioRecipeDraftId("recipe_draft_" + digest[:24]),
+            recipe_id=predecessor.recipe_id,
+            revision=current_revision + 1,
+            payload=command.payload,
+            payload_hash=_fake_payload_hash(command.payload),
+            author_id=command.author_id,
+            created_at=_aware(self._clock()),
+            predecessor_draft_id=predecessor.draft_id,
+            based_on_recipe_version_id=(
+                command.based_on_recipe_version_id
+                or predecessor.based_on_recipe_version_id
+            ),
+            authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            assistant_attempt_id=None,
+        )
+        result = ReviseScenarioRecipeDraftResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            draft_id=draft.draft_id,
+            draft_revision=draft.revision,
+            payload_hash=draft.payload_hash,
+            draft=draft,
+            authoritative_draft_revision=draft.revision,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(inventory, recipe_drafts=(*inventory.recipe_drafts, draft))
+        )
+        return result
 
     def validate_recipe_draft(
         self, command: ValidateScenarioRecipeDraftCommand
     ) -> ValidateScenarioRecipeDraftResult:
-        return ValidateScenarioRecipeDraftResult(
-            self._receipt(command.metadata, ScenarioLabTaskOperation.VALIDATE_RECIPE_DRAFT)
+        operation = ScenarioLabTaskOperation.VALIDATE_RECIPE_DRAFT
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return ValidateScenarioRecipeDraftResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return ValidateScenarioRecipeDraftResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, ValidateScenarioRecipeDraftResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return ValidateScenarioRecipeDraftResult(receipt=source_conflict)
+        inventory = self._inventory()
+        draft = next(
+            (
+                item
+                for item in inventory.recipe_drafts
+                if item.draft_id == command.draft_id
+            ),
+            None,
+        )
+        if draft is None:
+            return ValidateScenarioRecipeDraftResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "The Scenario Recipe Draft is unavailable.",
+                )
+            )
+        current_revision = max(
+            item.revision
+            for item in inventory.recipe_drafts
+            if item.recipe_id == draft.recipe_id
+        )
+        if (
+            draft.revision != current_revision
+            or draft.revision != command.expected_draft_revision
+            or draft.payload_hash != command.expected_payload_hash
+        ):
+            return ValidateScenarioRecipeDraftResult(
+                receipt=self._conflict_receipt(
+                    command.metadata,
+                    operation,
+                    "The expected Scenario Recipe Draft facts are stale.",
+                ),
+                authoritative_draft_revision=current_revision,
+            )
+        segment = next(
+            (
+                item
+                for item in inventory.historical_segments
+                if item.segment_id == draft.payload.historical_segment_id
+            ),
+            None,
+        )
+        if segment is None:
+            return ValidateScenarioRecipeDraftResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "The exact Historical Market Segment dependency is not admitted and cannot be bound for validation.",
+                ),
+                authoritative_draft_revision=current_revision,
+            )
+        findings = _fake_recipe_validation_findings(
+            draft,
+            inventory.transformation_catalog,
+        )
+        catalog_entries = {
+            item.transformation_id: item
+            for item in inventory.transformation_catalog.entries
+        }
+        selected_entries = tuple(
+            catalog_entries[item.transformation_id]
+            for item in draft.payload.transformations
+            if item.transformation_id in catalog_entries
+        )
+        compatibility_observations = (
+            ScenarioRecipeCompatibilityObservation(
+                subject=f"historical-segment:{segment.segment_id.value}",
+                state=ScenarioRecipeCompatibilityState.COMPATIBLE,
+                explanation="The exact Historical Market Segment is admitted.",
+            ),
+            *(
+                ScenarioRecipeCompatibilityObservation(
+                    subject=f"transformation:{item.transformation_id}",
+                    state=ScenarioRecipeCompatibilityState.COMPATIBLE,
+                    explanation="The registered implementation and policy are bound.",
+                )
+                for item in selected_entries
+            ),
+            *(
+                ScenarioRecipeCompatibilityObservation(
+                    subject=f"validation-rule:{finding.rule_code}",
+                    state=ScenarioRecipeCompatibilityState.INCOMPATIBLE,
+                    explanation=finding.explanation,
+                )
+                for finding in findings
+            ),
+        )
+        dependencies = ScenarioRecipeValidationDependenciesProjection(
+            historical_segment_id=draft.payload.historical_segment_id,
+            historical_segment_content_hash=segment.content_hash,
+            source_snapshot_id=segment.source_snapshot_id,
+            source_snapshot_content_hash=(
+                segment.source_snapshot_content_hash
+            ),
+            recipe_schema_identity="scenario_recipe.v1",
+            recipe_schema_hash=hashlib.sha256(b"scenario_recipe.v1").hexdigest(),
+            transformation_catalog_version=(
+                inventory.transformation_catalog.catalog_version
+            ),
+            transformation_catalog_hash=hashlib.sha256(
+                repr(inventory.transformation_catalog).encode("utf-8")
+            ).hexdigest(),
+            transformation_implementation_identities=tuple(
+                f"{item.transformation_id}@{item.implementation_version}"
+                for item in selected_entries
+            ),
+            data_policy=draft.payload.data_policy,
+            causality_rule_identities=tuple(
+                sorted({
+                    rule
+                    for item in selected_entries
+                    for rule in item.causality_constraints
+                })
+            ),
+            market_rule_profile_version=(
+                draft.payload.market_rule_profile_version
+            ),
+            market_rule_profile_hash=hashlib.sha256(
+                draft.payload.market_rule_profile_version.encode("utf-8")
+            ).hexdigest(),
+            compatibility_observations=compatibility_observations,
+        )
+        valid = not findings
+        digest = hashlib.sha256(
+            command.metadata.command_id.value.encode("utf-8")
+        ).hexdigest()
+        validation = ScenarioRecipeValidationProjection(
+            validation_id=ScenarioRecipeValidationId(
+                "recipe_validation_" + digest[:24]
+            ),
+            draft_id=draft.draft_id,
+            draft_revision=draft.revision,
+            payload_hash=draft.payload_hash,
+            is_valid=valid,
+            findings=findings,
+            dependencies=dependencies,
+            recipe_content_hash=(
+                hashlib.sha256(repr(draft.payload).encode("utf-8")).hexdigest()
+                if valid
+                else None
+            ),
+            validated_at=_aware(self._clock()),
+        )
+        result = ValidateScenarioRecipeDraftResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            validation_id=validation.validation_id,
+            draft_id=draft.draft_id,
+            draft_revision=draft.revision,
+            validation=validation,
+            authoritative_draft_revision=draft.revision,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(
+                inventory,
+                recipe_validations=(
+                    *inventory.recipe_validations,
+                    validation,
+                ),
+            )
+        )
+        return result
+
+    def _content_identity_rejection(
+        self,
+        command: (
+            CreateAiAssistedScenarioRecipeDraftCommand
+            | CreateScenarioRecipeDraftCommand
+            | ReviseScenarioRecipeDraftCommand
+            | ValidateScenarioRecipeDraftCommand
+        ),
+        operation: ScenarioLabTaskOperation,
+    ) -> ScenarioLabCommandReceipt | None:
+        if (
+            canonical_scenario_lab_command_content_identity(command)
+            == command.metadata.canonical_content_identity
+        ):
+            return None
+        return self._rejected_receipt(
+            command.metadata,
+            operation,
+            (
+                "The canonical command content identity does not match the "
+                "typed Scenario Lab command body."
+            ),
+        )
+
+    def _inventory(self) -> ScenarioLabInventory:
+        if self._result.inventory is None:
+            raise RuntimeError("Deterministic Scenario Lab inventory is unavailable")
+        return self._result.inventory
+
+    def _set_inventory(self, inventory: ScenarioLabInventory) -> None:
+        self._result = ScenarioLabApplicationInventoryResult(
+            availability=_availability(inventory),
+            inventory=inventory,
+            source_token=SourceRevisionToken(
+                hashlib.sha256(repr(inventory).encode("utf-8")).hexdigest()
+            ),
+            observed_at=_aware(self._clock()),
+            error=None,
+        )
+
+    def _replay(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+    ) -> tuple[ScenarioLabCommandResult | None, ScenarioLabCommandReceipt | None]:
+        existing = self._commands.get(metadata.idempotency_identity.value)
+        if existing is None:
+            return None, None
+        content_identity, existing_operation, result = existing
+        if (
+            content_identity != metadata.canonical_content_identity.value
+            or existing_operation is not operation
+        ):
+            return None, self._conflict_receipt(
+                metadata,
+                operation,
+                "The idempotency identity is already bound to different canonical content.",
+            )
+        return result, None
+
+    def _remember(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+        result: ScenarioLabCommandResult,
+    ) -> None:
+        self._commands[metadata.idempotency_identity.value] = (
+            metadata.canonical_content_identity.value,
+            operation,
+            result,
+        )
+
+    def _source_conflict(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+    ) -> ScenarioLabCommandReceipt | None:
+        if metadata.expected_source_revision == self._result.source_token:
+            return None
+        return self._conflict_receipt(
+            metadata,
+            operation,
+            "The expected Scenario Lab source revision is stale.",
+        )
+
+    def _accepted_receipt(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+    ) -> ScenarioLabCommandReceipt:
+        return ScenarioLabCommandReceipt(
+            metadata=metadata,
+            operation=operation,
+            disposition=ScenarioLabCommandDisposition.ACCEPTED,
+            message="Scenario Lab command completed.",
+            authoritative_revision=metadata.expected_source_revision,
+            task_handle=None,
+        )
+
+    def _conflict_receipt(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+        message: str,
+    ) -> ScenarioLabCommandReceipt:
+        return ScenarioLabCommandReceipt(
+            metadata=metadata,
+            operation=operation,
+            disposition=ScenarioLabCommandDisposition.CONFLICT,
+            message=message,
+            authoritative_revision=self._result.source_token,
+            task_handle=None,
+        )
+
+    def _rejected_receipt(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+        message: str,
+    ) -> ScenarioLabCommandReceipt:
+        return ScenarioLabCommandReceipt(
+            metadata=metadata,
+            operation=operation,
+            disposition=ScenarioLabCommandDisposition.REJECTED,
+            message=message,
+            authoritative_revision=self._result.source_token,
+            task_handle=None,
         )
 
     def approve_recipe(
@@ -899,10 +1523,26 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
         scripted_results: tuple[ScenarioLabApplicationInventoryResult, ...] = (),
+        ai_authoring_available: bool | None = None,
+        ai_provider: str | None = None,
+        ai_model: str | None = None,
     ) -> None:
         resolved_clock = clock or (lambda: datetime.now(timezone.utc))
+        resolved_inventory = inventory or _default_inventory()
+        if ai_authoring_available is not None:
+            resolved_inventory = replace(
+                resolved_inventory,
+                authoring_capabilities=(
+                    ScenarioRecipeAuthoringCapabilitiesProjection(
+                        manual_authoring_available=True,
+                        ai_authoring_available=ai_authoring_available,
+                        ai_provider=ai_provider,
+                        ai_model=ai_model,
+                    )
+                ),
+            )
         application = _DeterministicFakeScenarioLabApplication(
-            inventory or _default_inventory(),
+            resolved_inventory,
             clock=resolved_clock,
             scripted_results=scripted_results,
         )
@@ -937,11 +1577,6 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
 def _future_blocking_reasons() -> tuple[ScenarioLabBlockingReason, ...]:
     return (
         ScenarioLabBlockingReason(
-            ScenarioLabBlockingCode.RECIPE_DRAFT_NOT_YET_AVAILABLE,
-            "Recipe Draft creation and validation are owned by Issue #80.",
-            ("create_recipe_draft", "revise_recipe_draft", "validate_recipe_draft"),
-        ),
-        ScenarioLabBlockingReason(
             ScenarioLabBlockingCode.RECIPE_APPROVAL_NOT_YET_AVAILABLE,
             "Recipe approval is owned by Issue #81.",
             ("approve_recipe",),
@@ -967,6 +1602,9 @@ def _filtered_inventory(
     tuple[ReferenceMarketPathEntry, ...],
     tuple[MarketScenarioEntry, ...],
     TransformationCatalogProjection,
+    tuple[ScenarioRecipeDraftProjection, ...],
+    tuple[ScenarioRecipeValidationProjection, ...],
+    tuple[ScenarioLabTaskHandle, ...],
 ]:
     needle = context.search_text.casefold()
     market_segments = tuple(
@@ -1106,7 +1744,76 @@ def _filtered_inventory(
             )
         ),
     )
-    return segments, paths, scenarios, catalog
+    catalog_families = {
+        item.transformation_id: item.family
+        for item in inventory.transformation_catalog.entries
+    }
+    drafts = tuple(
+        item
+        for item in inventory.recipe_drafts
+        if item.payload.historical_segment_id in market_segment_ids
+        and (
+            not context.recipe_versions
+            or (
+                item.based_on_recipe_version_id is not None
+                and item.based_on_recipe_version_id.value
+                in context.recipe_versions
+            )
+        )
+        and (
+            not context.transformation_families
+            or any(
+                catalog_families.get(transformation.transformation_id)
+                in context.transformation_families
+                for transformation in item.payload.transformations
+            )
+        )
+        and (
+            not needle
+            or needle
+            in " ".join(
+                (
+                    item.draft_id.value,
+                    item.recipe_id,
+                    item.payload.name,
+                    item.payload.historical_segment_id.value,
+                    *(value.transformation_id for value in item.payload.transformations),
+                )
+            ).casefold()
+        )
+    )
+    draft_ids = {item.draft_id for item in drafts}
+    validations = tuple(
+        item
+        for item in inventory.recipe_validations
+        if item.draft_id in draft_ids
+        and (
+            not needle
+            or needle
+            in " ".join(
+                (
+                    item.validation_id.value,
+                    item.draft_id.value,
+                    item.dependencies.historical_segment_id.value,
+                    *(finding.rule_code for finding in item.findings),
+                )
+            ).casefold()
+        )
+    )
+    task_handles = tuple(
+        item
+        for item in inventory.task_handles
+        if not needle
+        or needle
+        in " ".join(
+            (
+                item.identity.value,
+                item.operation.value,
+                item.target_identity.value,
+            )
+        ).casefold()
+    )
+    return segments, paths, scenarios, catalog, drafts, validations, task_handles
 
 
 def _contains_identity(
@@ -1114,6 +1821,9 @@ def _contains_identity(
     segments: tuple[HistoricalSegmentEntry, ...],
     paths: tuple[ReferenceMarketPathEntry, ...],
     scenarios: tuple[MarketScenarioEntry, ...],
+    drafts: tuple[ScenarioRecipeDraftProjection, ...],
+    validations: tuple[ScenarioRecipeValidationProjection, ...],
+    task_handles: tuple[ScenarioLabTaskHandle, ...],
 ) -> bool:
     if identity is None:
         return False
@@ -1121,7 +1831,40 @@ def _contains_identity(
         *(item.segment_id.value for item in segments),
         *(item.path_id.value for item in paths),
         *(item.scenario_id.value for item in scenarios),
+        *(item.draft_id.value for item in drafts),
+        *(item.validation_id.value for item in validations),
+        *(item.identity.value for item in task_handles),
     }
+
+
+def _authoring_capabilities(
+    inventory: ScenarioLabInventory,
+) -> ScenarioLabCapabilities:
+    has_admitted_source = any(
+        item.admission_state is ScenarioLabAdmissionState.ADMITTED
+        and item.quality_state is ScenarioLabQualityState.PASSED
+        for item in inventory.historical_segments
+    )
+    has_draft = bool(inventory.recipe_drafts)
+    return ScenarioLabCapabilities(
+        can_browse=True,
+        can_search=True,
+        can_filter=True,
+        can_inspect_bounded_preview=True,
+        can_create_recipe_draft=has_admitted_source,
+        can_create_ai_assisted_recipe_draft=(
+            has_admitted_source
+            and inventory.authoring_capabilities.ai_authoring_available
+        ),
+        can_revise_recipe_draft=has_draft,
+        can_validate_recipe_draft=has_draft,
+        can_approve_recipe=False,
+        can_materialize_reference_path=False,
+        can_retry_materialization=False,
+        can_compose_scenario_set=False,
+        can_resolve_execution_assumptions=False,
+        can_select_formal_scenario_set=False,
+    )
 
 
 def _availability(
@@ -1135,6 +1878,216 @@ def _availability(
     if inventory.historical_segments or inventory.reference_paths or inventory.market_scenarios:
         return ScenarioLabApplicationAvailability.READY
     return ScenarioLabApplicationAvailability.EMPTY
+
+
+def _fake_recipe_validation_findings(
+    draft: ScenarioRecipeDraftProjection,
+    catalog: TransformationCatalogProjection,
+) -> tuple[ScenarioRecipeValidationFindingProjection, ...]:
+    """Apply the published Recipe/Catalog rules for the deterministic fake."""
+
+    findings: list[ScenarioRecipeValidationFindingProjection] = []
+
+    def add(
+        path: tuple[str, ...],
+        rule: str,
+        explanation: str,
+        correction: str,
+    ) -> None:
+        findings.append(
+            ScenarioRecipeValidationFindingProjection(
+                path=path,
+                rule_code=rule,
+                severity=ScenarioRecipeValidationSeverity.ERROR,
+                explanation=explanation,
+                correction=correction,
+                retryable=False,
+                different_input_required=True,
+            )
+        )
+
+    payload = draft.payload
+    bounds_correction = (
+        "Choose a value within the published ScenarioRecipeV1 bounds."
+    )
+    if payload.decision_cadence_minutes not in (30, 60):
+        add(
+            ("decision_cadence_minutes",),
+            "bounds.invalid",
+            "value is not a permitted decision cadence",
+            bounds_correction,
+        )
+    if not 0 <= payload.materialization_seed <= 2_147_483_647:
+        add(
+            ("materialization_seed",),
+            "bounds.invalid",
+            "materialization seed is outside the published bounds",
+            bounds_correction,
+        )
+    execution = payload.requested_execution_assumptions
+    for field, raw, minimum, maximum, exclusive_minimum in (
+        ("commission_bps", execution.commission_bps, Decimal("0"), Decimal("100"), False),
+        ("slippage_bps", execution.slippage_bps, Decimal("0"), Decimal("1000"), False),
+        ("max_fill_fraction", execution.max_fill_fraction, Decimal("0"), Decimal("1"), True),
+    ):
+        try:
+            value = Decimal(raw)
+            valid = value.is_finite() and value <= maximum and (
+                value > minimum if exclusive_minimum else value >= minimum
+            )
+        except InvalidOperation:
+            valid = False
+        if not valid:
+            add(
+                ("execution_conditions", field),
+                "bounds.invalid",
+                f"{field} is outside the published bounds",
+                bounds_correction,
+            )
+    if not 0 <= execution.latency_nodes <= 120:
+        add(
+            ("execution_conditions", "latency_nodes"),
+            "bounds.invalid",
+            "latency_nodes is outside the published bounds",
+            bounds_correction,
+        )
+    if payload.market_rule_profile_version != "a-share-cash-equity.v1":
+        add(
+            ("market_rule_profile",),
+            "schema.invalid",
+            "unexpected value; permitted: 'a-share-cash-equity.v1'",
+            "Correct the field to match the published ScenarioRecipeV1 schema.",
+        )
+
+    entries = {item.transformation_id: item for item in catalog.entries}
+    seen_families: set[str] = set()
+    for index, request in enumerate(payload.transformations):
+        base_path = ("transformations", str(index))
+        entry = entries.get(request.transformation_id)
+        if entry is None:
+            add(
+                (*base_path, "transformation_id"),
+                "transformation.not-registered",
+                f"Transformation {request.transformation_id!r} is not registered.",
+                "Remove it or choose a registered Transformation Catalog entry.",
+            )
+            continue
+        if (
+            "a-share-cash-equity.v1" in entry.compatibility_rules
+            and payload.market_rule_profile_version != "a-share-cash-equity.v1"
+        ):
+            add(
+                ("market_rule_profile",),
+                "transformation.incompatible-market-profile",
+                "The transformation is incompatible with the market profile.",
+                "Use market_rule_profile='a-share-cash-equity.v1'.",
+            )
+        if (
+            "one-transform-per-family" in entry.compatibility_rules
+            and entry.family in seen_families
+        ):
+            add(
+                (*base_path, "transformation_id"),
+                "transformation.incompatible-combination",
+                f"Transformation family {entry.family!r} is already present.",
+                "Keep only one transformation from this family.",
+            )
+        seen_families.add(entry.family)
+        values = {item.name: item for item in request.parameters}
+        definitions = {item.name: item for item in entry.parameters}
+        for name in sorted(set(values) - set(definitions)):
+            rule, explanation, correction = _fake_unknown_parameter_finding(name)
+            add((*base_path, "parameters", name), rule, explanation, correction)
+        for name, definition in definitions.items():
+            path = (*base_path, "parameters", name)
+            provided = values.get(name)
+            if provided is None:
+                if definition.required:
+                    add(
+                        path,
+                        "transformation.parameter-required",
+                        f"Parameter {name!r} is required.",
+                        "Provide the parameter using the published type and bounds.",
+                    )
+                continue
+            expected_kind = {
+                "decimal": "decimal",
+                "integer": "integer",
+                "boolean": "boolean",
+                "enum": "choice",
+            }.get(definition.value_type, "choice")
+            if provided.kind.value != expected_kind:
+                add(
+                    path,
+                    "transformation.parameter-type",
+                    f"Parameter {name!r} must use the published type.",
+                    "Provide the parameter using the published type and bounds.",
+                )
+                continue
+            if definition.value_type == "enum":
+                if str(provided.value) not in definition.choices:
+                    add(
+                        path,
+                        "transformation.parameter-type",
+                        f"Parameter {name!r} must be one of {definition.choices!r}.",
+                        "Choose one of the published values.",
+                    )
+                continue
+            if definition.value_type not in {"decimal", "integer"}:
+                continue
+            numeric = Decimal(str(provided.value))
+            if (
+                definition.minimum is not None
+                and numeric < Decimal(definition.minimum)
+            ) or (
+                definition.maximum is not None
+                and numeric > Decimal(definition.maximum)
+            ):
+                add(
+                    path,
+                    "transformation.parameter-bounds",
+                    f"Parameter {name!r} is outside the published bounds.",
+                    (
+                        f"Choose a value from {definition.minimum or '0'} "
+                        f"through {definition.maximum or '0'}."
+                    ),
+                )
+    return tuple(findings)
+
+
+def _fake_unknown_parameter_finding(name: str) -> tuple[str, str, str]:
+    normalized = name.lower().replace("-", "_")
+    if any(token in normalized for token in ("python", "code", "script", "executable")):
+        return (
+            "transformation.executable-code-forbidden",
+            "Scenario Recipes cannot contain executable transformation code.",
+            "Choose a reviewed registered transformation and declared parameters.",
+        )
+    if any(token in normalized for token in ("expression", "formula", "expr")):
+        return (
+            "transformation.expression-forbidden",
+            "Scenario Recipes cannot contain arbitrary expressions or formulas.",
+            "Use only parameters declared by the Transformation Catalog.",
+        )
+    if "final" in normalized and any(
+        token in normalized for token in ("price", "close", "ohlc", "market_data")
+    ):
+        return (
+            "transformation.final-price-edit-forbidden",
+            "Scenario Recipes cannot edit final market prices directly.",
+            "Describe the condition through a registered transformation.",
+        )
+    if any(token in normalized for token in ("path", "file", "directory", "folder")):
+        return (
+            "transformation.path-forbidden",
+            "Scenario Recipes cannot contain filesystem paths.",
+            "Select admitted data and catalog capabilities by durable identity.",
+        )
+    return (
+        "transformation.parameter-unknown",
+        f"Parameter {name!r} is not declared by the catalog entry.",
+        "Remove the unsupported parameter.",
+    )
 
 
 def _is_scenario_lab_invalidation(snapshot: dict[str, object]) -> bool:
@@ -1287,11 +2240,18 @@ def _default_inventory() -> ScenarioLabInventory:
         reference_paths=(path,),
         market_scenarios=(scenario,),
         transformation_catalog=catalog,
+        authoring_capabilities=(
+            ScenarioRecipeAuthoringCapabilitiesProjection.manual_only()
+        ),
     )
 
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _fake_payload_hash(payload: object) -> str:
+    return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
 
 __all__ = [

@@ -47,6 +47,7 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
                     "snapshot",
                     "subscribe",
                     "create_recipe_draft",
+                    "author_recipe_with_ai",
                     "revise_recipe_draft",
                     "validate_recipe_draft",
                     "approve_recipe",
@@ -112,7 +113,11 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         "ScenarioLabQtAdapter": frozenset(
             {
+                "createRecipeDraft",
+                "createAiAssistedRecipeDraft",
                 "refresh",
+                "reviseSelectedRecipeDraft",
+                "selectRecipeDraft",
                 "setCompatibilityFilter",
                 "setFocusIdentity",
                 "setLayerFilter",
@@ -123,6 +128,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
                 "setSearchText",
                 "setSourceFilter",
                 "setTransformationFamilyFilter",
+                "validateRecipeDraft",
             }
         ),
         "DiagnosticTasksQtAdapter": frozenset(

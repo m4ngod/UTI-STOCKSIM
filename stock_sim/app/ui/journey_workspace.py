@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from itertools import count
 from math import ceil
 from pathlib import Path
@@ -90,12 +91,34 @@ from app.features.strategy_library import (
 )
 from app.features.strategy_library_application import StrategyLibraryEntry
 from app.features.scenario_lab_application import (
+    CreateAiAssistedScenarioRecipeDraftCommand,
+    CreateScenarioRecipeDraftCommand,
     HistoricalSegmentEntry,
     MarketScenarioEntry,
     ReferenceMarketPathEntry,
+    RequestedExecutionAssumptionsProjection,
+    ReviseScenarioRecipeDraftCommand,
+    ScenarioLabActorId,
+    ScenarioLabCommandContentIdentity,
+    ScenarioLabCommandDisposition,
+    ScenarioLabCommandId,
+    ScenarioLabCommandMetadata,
+    ScenarioLabIdempotencyIdentity,
     ScenarioLabUnavailabilityReason,
+    ScenarioRecipeAuthoringMode,
+    ScenarioRecipeDataPolicy,
+    ScenarioRecipeDraftPayload,
+    ScenarioRecipeDraftProjection,
+    ScenarioRecipeParameterInput,
+    ScenarioRecipeParameterKind,
+    ScenarioRecipeTransformationInput,
+    ScenarioRecipeValidationProjection,
     TransformationCatalogEntryProjection,
+    TransformationParameterProjection,
+    ValidateScenarioRecipeDraftCommand,
+    canonical_scenario_lab_command_content_identity,
 )
+from app.features.run_monitoring import SourceGenerationId
 
 from .accessibility import (
     AccessibilityPreferences,
@@ -589,6 +612,12 @@ class ScenarioLabQtAdapter(QObject):
         self._feature = feature
         self._context = context or ScenarioLabContext()
         self._state = feature.snapshot(self._context)
+        self._selected_draft_id: str | None = None
+        self._command_message = (
+            "Create an exact manual Recipe Draft from an admitted segment. "
+            "Optional AI assistance is unavailable unless a configured provider "
+            "produces an audited typed Draft."
+        )
         self._mount_generation = _next_mount_generation()
         self._closed = False
         self.deliveryRequested.connect(
@@ -611,6 +640,11 @@ class ScenarioLabQtAdapter(QObject):
         if state.context != self._context or state.revision <= self._state.revision:
             return
         self._state = state
+        if self._selected_draft_id is not None and not any(
+            item.draft_id.value == self._selected_draft_id
+            for item in state.recipe_drafts
+        ):
+            self._selected_draft_id = None
         self.stateChanged.emit()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -764,6 +798,49 @@ class ScenarioLabQtAdapter(QObject):
     def marketScenarioCount(self) -> int:  # noqa: N802
         return len(self._state.market_scenarios)
 
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def recipeDraftCount(self) -> int:  # noqa: N802
+        return len(self._state.recipe_drafts)
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def recipeValidationCount(self) -> int:  # noqa: N802
+        return len(self._state.recipe_validations)
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCreateRecipeDraft(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_create_recipe_draft
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCreateAiAssistedRecipeDraft(self) -> bool:  # noqa: N802
+        return (
+            self._state.capabilities.can_create_ai_assisted_recipe_draft
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def aiAuthoringStatus(self) -> str:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return "AI Recipe authoring capability is awaiting authoritative state."
+        capabilities = inventory.authoring_capabilities
+        if not capabilities.ai_authoring_available:
+            return "Audited AI Recipe authoring is unavailable: no provider is configured."
+        return (
+            "Audited AI Recipe authoring is configured through "
+            f"{capabilities.ai_provider} / {capabilities.ai_model}. "
+            "Its typed Draft remains untrusted until exact validation and approval."
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canReviseRecipeDraft(self) -> bool:  # noqa: N802
+        return (
+            self._state.capabilities.can_revise_recipe_draft
+            and self._selected_draft() is not None
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canValidateRecipeDraft(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_validate_recipe_draft
+
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def historicalSegments(self) -> list[dict[str, object]]:  # noqa: N802
         return [_historical_segment_payload(item) for item in self._state.historical_segments]
@@ -775,6 +852,17 @@ class ScenarioLabQtAdapter(QObject):
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def marketScenarios(self) -> list[dict[str, object]]:  # noqa: N802
         return [_market_scenario_payload(item) for item in self._state.market_scenarios]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def recipeDrafts(self) -> list[dict[str, object]]:  # noqa: N802
+        return [_recipe_draft_payload(item) for item in self._state.recipe_drafts]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def recipeValidations(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _recipe_validation_payload(item)
+            for item in self._state.recipe_validations
+        ]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def transformations(self) -> list[dict[str, object]]:
@@ -808,7 +896,238 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def recipeCapabilityMessage(self) -> str:  # noqa: N802
-        return "Recipe Draft creation and validation are not yet available (Issue #80)."
+        return self._command_message
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def selectedRecipeDraftId(self) -> str:  # noqa: N802
+        return self._selected_draft_id or ""
+
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        int,
+        bool,
+        str,
+    )
+    def createRecipeDraft(  # noqa: N802
+        self,
+        name: str,
+        segment_id: str,
+        transformation_id: str,
+        commission_bps: str,
+        slippage_bps: str,
+        max_fill_fraction: str,
+        transformation_parameter_hint: str,
+        latency_nodes: int,
+        decision_cadence_minutes: int,
+        materialization_seed: int,
+        allow_partial_fills: bool,
+        market_rule_profile_version: str,
+    ) -> None:
+        try:
+            payload = self._build_recipe_payload(
+                name=name,
+                segment_id=segment_id,
+                transformation_id=transformation_id,
+                transformation_parameter_hint=transformation_parameter_hint,
+                commission_bps=commission_bps,
+                slippage_bps=slippage_bps,
+                max_fill_fraction=max_fill_fraction,
+                latency_nodes=latency_nodes,
+                decision_cadence_minutes=decision_cadence_minutes,
+                materialization_seed=materialization_seed,
+                allow_partial_fills=allow_partial_fills,
+                market_rule_profile_version=market_rule_profile_version,
+            )
+            metadata = self._authoring_metadata("create-recipe-draft")
+            command = CreateScenarioRecipeDraftCommand(
+                metadata=metadata,
+                payload=payload,
+                author_id=ScenarioLabActorId("journey-workspace-operator"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.create_recipe_draft(command)
+            if result.draft is not None:
+                self._selected_draft_id = result.draft.draft_id.value
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Recipe Draft input rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot(str)
+    def createAiAssistedRecipeDraft(self, intent: str) -> None:  # noqa: N802
+        if not self.canCreateAiAssistedRecipeDraft:
+            self._command_message = (
+                "AI Recipe authoring unavailable: no audited provider is configured."
+            )
+            self.stateChanged.emit()
+            return
+        try:
+            metadata = self._authoring_metadata("create-ai-recipe-draft")
+            command = CreateAiAssistedScenarioRecipeDraftCommand(
+                metadata=metadata,
+                intent=intent,
+                author_id=ScenarioLabActorId("journey-workspace-operator"),
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.author_recipe_with_ai(command)
+            if result.draft is not None:
+                self._selected_draft_id = result.draft.draft_id.value
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"AI Recipe intent rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        int,
+        bool,
+        str,
+    )
+    def reviseSelectedRecipeDraft(  # noqa: N802
+        self,
+        name: str,
+        transformation_id: str,
+        commission_bps: str,
+        slippage_bps: str,
+        max_fill_fraction: str,
+        transformation_parameter_hint: str,
+        latency_nodes: int,
+        decision_cadence_minutes: int,
+        materialization_seed: int,
+        allow_partial_fills: bool,
+        market_rule_profile_version: str,
+    ) -> None:
+        predecessor = self._selected_draft()
+        if predecessor is None:
+            self._command_message = "Select an authoritative Recipe Draft revision first."
+            self.stateChanged.emit()
+            return
+        try:
+            payload = self._build_recipe_payload(
+                name=name,
+                segment_id=predecessor.payload.historical_segment_id.value,
+                transformation_id=transformation_id,
+                transformation_parameter_hint=transformation_parameter_hint,
+                commission_bps=commission_bps,
+                slippage_bps=slippage_bps,
+                max_fill_fraction=max_fill_fraction,
+                latency_nodes=latency_nodes,
+                decision_cadence_minutes=decision_cadence_minutes,
+                materialization_seed=materialization_seed,
+                allow_partial_fills=allow_partial_fills,
+                market_rule_profile_version=market_rule_profile_version,
+            )
+            metadata = self._authoring_metadata("revise-recipe-draft")
+            command = ReviseScenarioRecipeDraftCommand(
+                metadata=metadata,
+                predecessor_draft_id=predecessor.draft_id,
+                expected_draft_revision=predecessor.revision,
+                payload=payload,
+                author_id=ScenarioLabActorId("journey-workspace-operator"),
+                based_on_recipe_version_id=(
+                    predecessor.based_on_recipe_version_id
+                ),
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.revise_recipe_draft(command)
+            if result.draft is not None:
+                self._selected_draft_id = result.draft.draft_id.value
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Recipe Draft revision rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot(str)
+    def selectRecipeDraft(self, draft_id: str) -> None:  # noqa: N802
+        if not any(item.draft_id.value == draft_id for item in self._state.recipe_drafts):
+            return
+        self._selected_draft_id = draft_id
+        self.stateChanged.emit()
+
+    @Slot(str)
+    def validateRecipeDraft(self, draft_id: str) -> None:  # noqa: N802
+        draft = next(
+            (
+                item
+                for item in self._state.recipe_drafts
+                if item.draft_id.value == draft_id
+            ),
+            None,
+        )
+        if draft is None:
+            self._command_message = "The selected Recipe Draft is unavailable."
+            self.stateChanged.emit()
+            return
+        metadata = self._authoring_metadata("validate-recipe-draft")
+        command = ValidateScenarioRecipeDraftCommand(
+            metadata=metadata,
+            draft_id=draft.draft_id,
+            expected_draft_revision=draft.revision,
+            expected_payload_hash=draft.payload_hash,
+        )
+        command = replace(
+            command,
+            metadata=replace(
+                metadata,
+                canonical_content_identity=(
+                    canonical_scenario_lab_command_content_identity(command)
+                ),
+            ),
+        )
+        result = self._feature.validate_recipe_draft(command)
+        self._finish_recipe_command(
+            result.receipt.disposition,
+            result.receipt.message,
+        )
 
     @Slot(str)
     def setSearchText(self, value: str) -> None:  # noqa: N802
@@ -896,6 +1215,159 @@ class ScenarioLabQtAdapter(QObject):
         self._replace_context(
             replace(self._context, focus_target=target, focus_identity=value)
         )
+
+    def _selected_draft(self) -> ScenarioRecipeDraftProjection | None:
+        return next(
+            (
+                item
+                for item in self._state.recipe_drafts
+                if item.draft_id.value == self._selected_draft_id
+            ),
+            None,
+        )
+
+    def _authoring_metadata(self, operation: str) -> ScenarioLabCommandMetadata:
+        if self._state.source_revision is None:
+            raise ValueError("Scenario Lab source revision is unavailable")
+        identity = uuid4().hex
+        return ScenarioLabCommandMetadata(
+            command_id=ScenarioLabCommandId(f"{operation}-{identity}"),
+            idempotency_identity=ScenarioLabIdempotencyIdentity(
+                f"{operation}-idempotency-{identity}"
+            ),
+            canonical_content_identity=ScenarioLabCommandContentIdentity(
+                "pending-canonical-content"
+            ),
+            expected_source_revision=self._state.source_revision,
+            expected_source_generation=SourceGenerationId(
+                self._state.source.generation.value
+            ),
+        )
+
+    def _build_recipe_payload(
+        self,
+        *,
+        name: str,
+        segment_id: str,
+        transformation_id: str,
+        transformation_parameter_hint: str,
+        commission_bps: str,
+        slippage_bps: str,
+        max_fill_fraction: str,
+        latency_nodes: int,
+        decision_cadence_minutes: int,
+        materialization_seed: int,
+        allow_partial_fills: bool,
+        market_rule_profile_version: str,
+    ) -> ScenarioRecipeDraftPayload:
+        segment = next(
+            (
+                item
+                for item in self._state.historical_segments
+                if item.segment_id.value == segment_id
+            ),
+            None,
+        )
+        if segment is None:
+            raise ValueError("Select an admitted Historical Market Segment")
+        Decimal(commission_bps)
+        Decimal(slippage_bps)
+        Decimal(max_fill_fraction)
+        transformations: tuple[ScenarioRecipeTransformationInput, ...] = ()
+        if transformation_id:
+            catalog = self._state.transformation_catalog
+            definition = (
+                None
+                if catalog is None
+                else next(
+                    (
+                        item
+                        for item in catalog.entries
+                        if item.transformation_id == transformation_id
+                    ),
+                    None,
+                )
+            )
+            if definition is None:
+                raise ValueError("Select a registered transformation identity")
+            parameters = tuple(
+                self._recipe_parameter_input(
+                    parameter,
+                    transformation_parameter_hint if index == 0 else "",
+                )
+                for index, parameter in enumerate(definition.parameters)
+            )
+            transformations = (
+                ScenarioRecipeTransformationInput(
+                    transformation_id=definition.transformation_id,
+                    parameters=parameters,
+                ),
+            )
+        return ScenarioRecipeDraftPayload(
+            name=name,
+            historical_segment_id=segment.segment_id,
+            transformations=transformations,
+            requested_execution_assumptions=(
+                RequestedExecutionAssumptionsProjection(
+                    commission_bps=commission_bps,
+                    slippage_bps=slippage_bps,
+                    max_fill_fraction=max_fill_fraction,
+                    latency_nodes=latency_nodes,
+                    allow_partial_fills=allow_partial_fills,
+                )
+            ),
+            decision_cadence_minutes=decision_cadence_minutes,
+            materialization_seed=materialization_seed,
+            data_policy=ScenarioRecipeDataPolicy.POINT_IN_TIME,
+            market_rule_profile_version=market_rule_profile_version,
+        )
+
+    @staticmethod
+    def _recipe_parameter_input(
+        definition: object,
+        hint: str,
+    ) -> ScenarioRecipeParameterInput:
+        parameter = cast(TransformationParameterProjection, definition)
+        raw = hint.strip()
+        if not raw:
+            raw = (
+                parameter.choices[0]
+                if parameter.choices
+                else parameter.minimum
+                if parameter.minimum is not None
+                else "1"
+            )
+        if parameter.value_type == "decimal":
+            kind = ScenarioRecipeParameterKind.DECIMAL
+            value: bool | int | Decimal | str = Decimal(raw)
+        elif parameter.value_type == "integer":
+            kind = ScenarioRecipeParameterKind.INTEGER
+            value = int(raw)
+        elif parameter.value_type == "boolean":
+            kind = ScenarioRecipeParameterKind.BOOLEAN
+            normalized = raw.casefold()
+            if normalized not in {"true", "false"}:
+                raise ValueError(f"{parameter.name} must be true or false")
+            value = normalized == "true"
+        else:
+            kind = ScenarioRecipeParameterKind.CHOICE
+            value = raw
+        return ScenarioRecipeParameterInput(
+            name=parameter.name,
+            kind=kind,
+            value=value,
+        )
+
+    def _finish_recipe_command(
+        self,
+        disposition: ScenarioLabCommandDisposition,
+        message: str,
+    ) -> None:
+        self._command_message = f"{disposition.value}: {message}"
+        state = self._feature.snapshot(self._context)
+        if state.revision > self._state.revision:
+            self._state = state
+        self.stateChanged.emit()
 
     @Slot()
     def refresh(self) -> None:
@@ -1089,6 +1561,7 @@ def _market_scenario_payload(item: MarketScenarioEntry) -> dict[str, object]:
 def _transformation_payload(item: TransformationCatalogEntryProjection) -> dict[str, object]:
     return {
         "transformationId": item.transformation_id,
+        "label": item.transformation_id,
         "family": item.family,
         "implementationVersion": item.implementation_version,
         "parameters": [
@@ -1104,6 +1577,120 @@ def _transformation_payload(item: TransformationCatalogEntryProjection) -> dict[
         ],
         "compatibilityRules": list(item.compatibility_rules),
         "causalityConstraints": list(item.causality_constraints),
+    }
+
+
+def _recipe_draft_payload(item: ScenarioRecipeDraftProjection) -> dict[str, object]:
+    requested = item.payload.requested_execution_assumptions
+    return {
+        "draftId": item.draft_id.value,
+        "recipeId": item.recipe_id,
+        "revision": item.revision,
+        "name": item.payload.name,
+        "historicalSegmentId": item.payload.historical_segment_id.value,
+        "payloadHash": item.payload_hash,
+        "authorId": item.author_id.value,
+        "createdAt": item.created_at.isoformat(),
+        "predecessorDraftId": (
+            ""
+            if item.predecessor_draft_id is None
+            else item.predecessor_draft_id.value
+        ),
+        "basedOnRecipeVersionId": (
+            ""
+            if item.based_on_recipe_version_id is None
+            else item.based_on_recipe_version_id.value
+        ),
+        "authoringMode": item.authoring_mode.value,
+        "assistantAttemptId": item.assistant_attempt_id or "",
+        "decisionCadenceMinutes": item.payload.decision_cadence_minutes,
+        "materializationSeed": item.payload.materialization_seed,
+        "dataPolicy": item.payload.data_policy.value,
+        "marketRuleProfileVersion": item.payload.market_rule_profile_version,
+        "transformations": [
+            {
+                "transformationId": transformation.transformation_id,
+                "implementationVersion": "draft-selection",
+                "parameters": [
+                    {
+                        "name": parameter.name,
+                        "kind": parameter.kind.value,
+                        "value": str(parameter.value),
+                    }
+                    for parameter in transformation.parameters
+                ],
+            }
+            for transformation in item.payload.transformations
+        ],
+        "requestedExecutionAssumptions": {
+            "commissionBps": requested.commission_bps,
+            "slippageBps": requested.slippage_bps,
+            "maxFillFraction": requested.max_fill_fraction,
+            "latencyNodes": requested.latency_nodes,
+            "allowPartialFills": requested.allow_partial_fills,
+        },
+    }
+
+
+def _recipe_validation_payload(
+    item: ScenarioRecipeValidationProjection,
+) -> dict[str, object]:
+    dependencies = item.dependencies
+    return {
+        "validationId": item.validation_id.value,
+        "draftId": item.draft_id.value,
+        "draftRevision": item.draft_revision,
+        "payloadHash": item.payload_hash,
+        "valid": item.is_valid,
+        "recipeContentHash": item.recipe_content_hash or "",
+        "validatedAt": item.validated_at.isoformat(),
+        "findings": [
+            {
+                "path": ".".join(finding.path),
+                "ruleCode": finding.rule_code,
+                "severity": finding.severity.value,
+                "explanation": finding.explanation,
+                "correction": finding.correction,
+                "retryable": finding.retryable,
+                "differentInputRequired": finding.different_input_required,
+            }
+            for finding in item.findings
+        ],
+        "dependencies": {
+            "historicalSegmentId": dependencies.historical_segment_id.value,
+            "historicalSegmentContentHash": (
+                dependencies.historical_segment_content_hash
+            ),
+            "sourceSnapshotId": dependencies.source_snapshot_id.value,
+            "sourceSnapshotContentHash": (
+                dependencies.source_snapshot_content_hash
+            ),
+            "recipeSchemaIdentity": dependencies.recipe_schema_identity,
+            "recipeSchemaHash": dependencies.recipe_schema_hash,
+            "transformationCatalogVersion": (
+                dependencies.transformation_catalog_version
+            ),
+            "transformationCatalogHash": (
+                dependencies.transformation_catalog_hash
+            ),
+            "transformationImplementations": list(
+                dependencies.transformation_implementation_identities
+            ),
+            "dataPolicy": dependencies.data_policy.value,
+            "causalityRules": list(dependencies.causality_rule_identities),
+            "marketRuleProfileVersion": (
+                dependencies.market_rule_profile_version
+            ),
+            "marketRuleProfileHash": dependencies.market_rule_profile_hash,
+            "compatibilityObservations": [
+                {
+                    "subject": observation.subject,
+                    "state": observation.state.value,
+                    "explanation": observation.explanation,
+                }
+                for observation in dependencies.compatibility_observations
+            ],
+        },
     }
 
 
