@@ -36,6 +36,8 @@ class StrategyInventoryReasonCode(str, Enum):
     COMPATIBILITY_SURFACE_OUTDATED = "compatibility_surface_outdated"
     GUARDRAIL_PROFILE_MISSING = "guardrail_profile_missing"
     GUARDRAIL_PROFILE_MISMATCH = "guardrail_profile_mismatch"
+    FORMAL_STRATEGY_SET_INVALID = "formal_strategy_set_invalid"
+    INVENTORY_SOURCE_CONFLICT = "inventory_source_conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +125,31 @@ class StrategyUnderTestInventory:
         return _content_hash(_inventory_content_payload(self))
 
 
+@dataclass(frozen=True, slots=True)
+class FormalStrategySelectionCandidate:
+    strategy_id: str
+    strategy_version: str
+    manifest_content_hash: str
+    guardrail_profile_id: str
+    guardrail_profile_version: str
+    dependencies: tuple[StrategyInventoryDependency, ...]
+
+
+class FormalStrategySetValidationState(str, Enum):
+    VALID = "valid"
+    INVALID = "invalid"
+    SOURCE_CONFLICT = "source_conflict"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class FormalStrategySetValidation:
+    state: FormalStrategySetValidationState
+    entries: tuple[StrategyUnderTestInventoryEntry, ...]
+    inventory_content_hash: str
+    reasons: tuple[StrategyInventoryReason, ...]
+
+
 _FORMAL_STRATEGIES = (
     (
         LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
@@ -164,6 +191,132 @@ def build_strategy_under_test_inventory(
         entries=entries,
         formal_campaign_required_strategy_count=len(_FORMAL_STRATEGIES),
         persistence_migration_revision=persistence_migration_revision,
+    )
+
+
+def validate_formal_strategy_set(
+    *,
+    inventory: StrategyUnderTestInventory,
+    candidates: tuple[FormalStrategySelectionCandidate, ...],
+    expected_inventory_content_hash: str,
+) -> FormalStrategySetValidation:
+    """Validate an exact formal set against current backend-owned facts."""
+
+    current_hash = inventory.content_hash
+    if expected_inventory_content_hash != current_hash:
+        return FormalStrategySetValidation(
+            state=FormalStrategySetValidationState.SOURCE_CONFLICT,
+            entries=(),
+            inventory_content_hash=current_hash,
+            reasons=(
+                StrategyInventoryReason(
+                    code=StrategyInventoryReasonCode.INVENTORY_SOURCE_CONFLICT,
+                    summary="The Strategy inventory revision changed.",
+                    corrective_guidance=(
+                        "Reread the authoritative inventory before selecting."
+                    ),
+                ),
+            ),
+        )
+    required = tuple(
+        entry
+        for entry in inventory.entries
+        if entry.required_for_v1_formal_campaign
+    )
+    candidate_ids = tuple(item.strategy_id for item in candidates)
+    required_ids = tuple(item.strategy_id for item in required)
+    if (
+        len(candidates) != inventory.formal_campaign_required_strategy_count
+        or len(candidate_ids) != len(set(candidate_ids))
+        or set(candidate_ids) != set(required_ids)
+    ):
+        return _invalid_formal_set(
+            inventory,
+            "Select every backend-declared V1 Strategy exactly once.",
+        )
+    indexed = {item.strategy_id: item for item in candidates}
+    for entry in required:
+        candidate = indexed[entry.strategy_id]
+        profile = entry.guardrail_profile
+        if (
+            not entry.formal_campaign_eligible
+            or entry.availability
+            is not StrategyInventoryAvailability.FORMAL_CAMPAIGN_READY
+            or any(
+                not dependency.available or not dependency.compatible
+                for dependency in entry.dependencies
+            )
+        ):
+            return FormalStrategySetValidation(
+                state=FormalStrategySetValidationState.UNAVAILABLE,
+                entries=(),
+                inventory_content_hash=current_hash,
+                reasons=entry.availability_reasons,
+            )
+        if (
+            candidate.strategy_version != entry.strategy_version
+            or candidate.manifest_content_hash
+            != entry.compatibility.content_hash
+        ):
+            return _invalid_formal_set(
+                inventory,
+                "A selected Strategy version or compatibility manifest changed.",
+            )
+        if (
+            profile is None
+            or candidate.guardrail_profile_id != profile.profile_id
+            or candidate.guardrail_profile_version != profile.profile_version
+        ):
+            return FormalStrategySetValidation(
+                state=FormalStrategySetValidationState.INVALID,
+                entries=(),
+                inventory_content_hash=current_hash,
+                reasons=(
+                    StrategyInventoryReason(
+                        code=(
+                            StrategyInventoryReasonCode.GUARDRAIL_PROFILE_MISMATCH
+                        ),
+                        summary=(
+                            "The selected Guardrail profile does not match its "
+                            "Strategy version."
+                        ),
+                        corrective_guidance=(
+                            "Use the versioned Guardrail profile declared by the "
+                            "current authoritative inventory."
+                        ),
+                    ),
+                ),
+            )
+        if candidate.dependencies != entry.dependencies:
+            return _invalid_formal_set(
+                inventory,
+                "A selected Strategy dependency identity changed.",
+            )
+    return FormalStrategySetValidation(
+        state=FormalStrategySetValidationState.VALID,
+        entries=required,
+        inventory_content_hash=current_hash,
+        reasons=(),
+    )
+
+
+def _invalid_formal_set(
+    inventory: StrategyUnderTestInventory,
+    summary: str,
+) -> FormalStrategySetValidation:
+    return FormalStrategySetValidation(
+        state=FormalStrategySetValidationState.INVALID,
+        entries=(),
+        inventory_content_hash=inventory.content_hash,
+        reasons=(
+            StrategyInventoryReason(
+                code=StrategyInventoryReasonCode.FORMAL_STRATEGY_SET_INVALID,
+                summary=summary,
+                corrective_guidance=(
+                    "Reread and select the exact backend-declared formal set."
+                ),
+            ),
+        ),
     )
 
 
@@ -476,6 +629,9 @@ def _content_hash(payload: object) -> str:
 
 
 __all__ = [
+    "FormalStrategySelectionCandidate",
+    "FormalStrategySetValidation",
+    "FormalStrategySetValidationState",
     "StrategyInventoryAvailability",
     "StrategyInventoryCompatibility",
     "StrategyInventoryDependency",
@@ -487,4 +643,5 @@ __all__ = [
     "StrategyUnderTestInventory",
     "StrategyUnderTestInventoryEntry",
     "build_strategy_under_test_inventory",
+    "validate_formal_strategy_set",
 ]

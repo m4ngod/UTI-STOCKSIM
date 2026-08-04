@@ -61,6 +61,8 @@ class StrategyAvailabilityReasonCode(str, Enum):
     FORMAL_SELECTION_NOT_YET_AVAILABLE = (
         "formal_strategy_selection_not_yet_available"
     )
+    FORMAL_STRATEGY_SET_INVALID = "formal_strategy_set_invalid"
+    INVENTORY_SOURCE_CONFLICT = "inventory_source_conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,23 +309,102 @@ class LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter:
         self,
         command: ValidateFormalStrategySet,
     ) -> FormalStrategySetValidation:
+        from strategy_diagnostics import (
+            FormalStrategySelectionCandidate,
+            FormalStrategySetValidationState as BackendValidationState,
+            StrategyInventoryDependency,
+            StrategyInventoryDependencyKind,
+        )
+
+        try:
+            candidates = tuple(
+                FormalStrategySelectionCandidate(
+                    strategy_id=item.strategy_id.value,
+                    strategy_version=item.strategy_version,
+                    manifest_content_hash=item.manifest_content_hash,
+                    guardrail_profile_id=item.guardrail_profile_id.value,
+                    guardrail_profile_version=item.guardrail_profile_version,
+                    dependencies=tuple(
+                        StrategyInventoryDependency(
+                            kind=StrategyInventoryDependencyKind(
+                                dependency.kind.value
+                            ),
+                            identity=dependency.identity,
+                            version=dependency.version,
+                            content_hash=dependency.content_hash,
+                            available=dependency.available,
+                            compatible=dependency.compatible,
+                        )
+                        for dependency in item.dependency_identities
+                    ),
+                )
+                for item in command.selections
+            )
+            with self._application_access_gate:
+                validation = self._application.validate_formal_strategy_set(
+                    candidates=candidates,
+                    expected_inventory_content_hash=(
+                        command.expected_source_revision.value
+                    ),
+                )
+        except RuntimeError:
+            return _unavailable_validation(command.expected_source_revision)
+        except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+            return _unavailable_validation(command.expected_source_revision)
+        state = FormalStrategySetValidationState(validation.state.value)
+        assert isinstance(validation.state, BackendValidationState)
         return FormalStrategySetValidation(
-            state=FormalStrategySetValidationState.UNAVAILABLE,
-            selections=(),
-            source_revision=command.expected_source_revision,
-            reasons=(
+            state=state,
+            selections=tuple(
+                _selection_reference_from_entry(item)
+                for item in validation.entries
+            ),
+            source_revision=SourceRevisionToken(
+                validation.inventory_content_hash
+            ),
+            reasons=tuple(
                 StrategyAvailabilityReason(
-                    code=(
-                        StrategyAvailabilityReasonCode.FORMAL_SELECTION_NOT_YET_AVAILABLE
-                    ),
-                    summary="Formal Strategy selection is not available yet.",
-                    corrective_guidance=(
-                        "Browse the authoritative inventory; selection is enabled "
-                        "by the next compatible Strategy Library slice."
-                    ),
-                ),
+                    code=StrategyAvailabilityReasonCode(reason.code.value),
+                    summary=reason.summary,
+                    corrective_guidance=reason.corrective_guidance,
+                )
+                for reason in validation.reasons
             ),
         )
+
+
+def _unavailable_validation(
+    source_revision: SourceRevisionToken,
+) -> FormalStrategySetValidation:
+    return FormalStrategySetValidation(
+        state=FormalStrategySetValidationState.UNAVAILABLE,
+        selections=(),
+        source_revision=source_revision,
+        reasons=(
+            StrategyAvailabilityReason(
+                code=StrategyAvailabilityReasonCode.APPLICATION_NOT_READY,
+                summary="The authoritative Strategy inventory is unavailable.",
+                corrective_guidance="Reconnect and reread before selecting.",
+            ),
+        ),
+    )
+
+
+def _selection_reference_from_entry(
+    item: StrategyUnderTestInventoryEntry,
+) -> FormalStrategySelectionReference:
+    mapped = _map_entry(item)
+    profile = mapped.guardrail_profile
+    if profile is None:
+        raise ValueError("Validated Strategy is missing a Guardrail profile")
+    return FormalStrategySelectionReference(
+        strategy_id=mapped.strategy_id,
+        strategy_version=mapped.strategy_version,
+        manifest_content_hash=mapped.compatibility.content_hash,
+        guardrail_profile_id=profile.profile_id,
+        guardrail_profile_version=profile.profile_version,
+        dependency_identities=mapped.dependencies,
+    )
 
 
 def _failed_inventory_result(

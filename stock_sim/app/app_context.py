@@ -38,9 +38,12 @@ from app.features import (
     StrategyDiagnosticsV1StrategyLibraryApplication,
     StrategyLibraryContext,
     StrategyLibraryFeature,
+    StrategySelectionBookmark,
     StrategyRunId,
     StrategyUnderTestId,
     V1JourneySelector,
+    decode_strategy_selection_bookmark,
+    encode_strategy_selection_bookmark,
 )
 from app.state.settings_store import SettingsStore
 
@@ -103,6 +106,19 @@ class AppContext:
     run_monitoring_context: RunMonitoringContext
     evidence_and_findings_feature: EvidenceAndFindingsFeature
     evidence_and_findings_context: EvidenceAndFindingsContext
+
+    def persist_strategy_library_bookmark(
+        self,
+        bookmark: StrategySelectionBookmark,
+    ) -> None:
+        """Persist the exact formal set through the sole composition root."""
+
+        self.settings_store.update(
+            strategy_library_bookmark_json=(
+                encode_strategy_selection_bookmark(bookmark)
+            )
+        )
+        self.settings_store.get_state().save()
 
 
 def build_app_context(
@@ -180,7 +196,17 @@ def build_app_context(
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
     diagnostic_tasks_context = DiagnosticTasksContext.workspace()
-    strategy_library_context = StrategyLibraryContext()
+    strategy_library_bookmark = decode_strategy_selection_bookmark(
+        settings_store.get_state().strategy_library_bookmark_json
+    )
+    strategy_library_context = StrategyLibraryContext(
+        focus_strategy_id=(
+            None
+            if strategy_library_bookmark is None
+            else strategy_library_bookmark.focus_strategy_id
+        ),
+        selection_bookmark=strategy_library_bookmark,
+    )
     if resolved_mode == "fake":
         strategy_library_feature: StrategyLibraryFeature = (
             DeterministicFakeStrategyLibraryAdapter()

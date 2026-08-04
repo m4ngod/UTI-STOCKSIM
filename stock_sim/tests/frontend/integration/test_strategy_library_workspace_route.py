@@ -91,7 +91,7 @@ def test_production_workspace_browses_and_searches_strategy_library() -> None:
 
     visible_text = " ".join(
         str(item.property("text"))
-        for item in root.findChildren(QObject)
+        for item in _quick_items(root)
         if item.metaObject().indexOfProperty("text") >= 0
         and item.property("text")
     )
@@ -154,10 +154,12 @@ def test_main_window_starts_frontend_v2_at_strategy_library_when_available() -> 
     app = _app()
     run_feature = DeterministicFakeRunMonitoringAdapter()
     strategy_feature = DeterministicFakeStrategyLibraryAdapter()
+    bookmarks = []
 
     window = MainWindow(
         strategy_library_feature=strategy_feature,
         strategy_library_context=StrategyLibraryContext(),
+        strategy_library_bookmark_sink=bookmarks.append,
         run_monitoring_feature=run_feature,
         frontend_v2_enabled=True,
     )
@@ -166,6 +168,12 @@ def test_main_window_starts_frontend_v2_at_strategy_library_when_available() -> 
 
     assert host.rootObject().property("activeRoute") == "strategy_library"
     assert host._strategy_library is not None
+    host._strategy_library.selectFormalSet()
+    app.processEvents()
+    assert host._strategy_library._state.selection is not None
+    assert bookmarks[-1].selections == (
+        host._strategy_library._state.selection.selections
+    )
     window.close()
     run_feature.close()
     strategy_feature.close()
@@ -299,3 +307,120 @@ def test_strategy_library_route_restores_meaningful_keyboard_focus() -> None:
     host.close_adapter()
     run_feature.close()
     strategy_feature.close()
+
+
+def test_strategy_library_compares_dimensions_and_selects_exact_formal_set() -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    strategy_feature = DeterministicFakeStrategyLibraryAdapter()
+    host = JourneyWorkspaceHost(
+        run_feature,
+        strategy_library_feature=strategy_feature,
+        initial_route="strategy_library",
+    )
+    app.processEvents()
+    root = host.rootObject()
+    assert root is not None
+
+    host._strategy_library.compareFormalSet()
+    host._strategy_library.selectFormalSet()
+    app.processEvents()
+
+    assert host._strategy_library.comparisonCount == 2
+    assert host._strategy_library.selectionStatus == "current"
+    assert len(host._strategy_library.selectionContextId) == 64
+    assert root.findChild(QObject, "strategyLibraryCompareFormalSet") is not None
+    assert root.findChild(QObject, "strategyLibrarySelectFormalSet") is not None
+    visible_text = " ".join(
+        str(item.property("text"))
+        for item in _quick_items(root)
+        if item.metaObject().indexOfProperty("text") >= 0
+        and item.property("text")
+    )
+    for expected in (
+        "Identity and version",
+        "Source identity",
+        "Source lineage",
+        "Compatibility",
+        "Declared capabilities",
+        "Candidate data policy",
+        "Guardrail profile",
+        "Guardrail threshold",
+        "Dependency provenance",
+        "Diagnostic applicability",
+    ):
+        assert expected in visible_text
+    for entry in host._strategy_library.comparisonEntries:
+        assert entry["sourceHash"] in visible_text
+        assert entry["manifestHash"] in visible_text
+        for capability in entry["capabilities"]:
+            assert capability in visible_text
+        for threshold in entry["guardrailThresholds"]:
+            assert threshold["metric"] in visible_text
+            assert threshold["operator"] in visible_text
+            assert threshold["value"] in visible_text
+        for dependency in entry["dependencies"]:
+            assert dependency["identity"] in visible_text
+            assert dependency["contentHash"] in visible_text
+    assert "leaderboard" not in visible_text.casefold()
+    assert "recommended strategy" not in visible_text.casefold()
+    strategy_feature.advance_to_disconnected()
+    app.processEvents()
+    assert host._strategy_library.comparisonCount == 0
+    host.close_adapter()
+    run_feature.close()
+    strategy_feature.close()
+
+
+def test_strategy_selection_survives_qml_host_remount_without_floating() -> None:
+    app = _app()
+    strategy_feature = DeterministicFakeStrategyLibraryAdapter()
+    bookmarks = []
+    first_run = DeterministicFakeRunMonitoringAdapter()
+    first = JourneyWorkspaceHost(
+        first_run,
+        strategy_library_feature=strategy_feature,
+        strategy_library_bookmark_sink=bookmarks.append,
+        initial_route="strategy_library",
+    )
+    app.processEvents()
+    first._strategy_library.selectFormalSet()
+    app.processEvents()
+    assert bookmarks
+    bookmark = bookmarks[-1]
+    assert bookmark.source_generation is not None
+    first.close_adapter()
+    first_run.close()
+    strategy_feature.close()
+
+    second_run = DeterministicFakeRunMonitoringAdapter()
+    reopened_strategy = DeterministicFakeStrategyLibraryAdapter()
+    second = JourneyWorkspaceHost(
+        second_run,
+        strategy_library_feature=reopened_strategy,
+        strategy_library_context=StrategyLibraryContext(
+            focus_strategy_id=bookmark.focus_strategy_id,
+            selection_bookmark=bookmark,
+        ),
+        initial_route="strategy_library",
+    )
+    app.processEvents()
+
+    assert second._strategy_library.selectionStatus == "current"
+    assert second._strategy_library.sourceGeneration > (
+        bookmark.source_generation.value
+    )
+    assert second._strategy_library.focusRestorationTarget == (
+        "select_formal_set"
+    )
+    root = second.rootObject()
+    assert root is not None
+    focus_control = _quick_item(
+        root,
+        "strategyLibrarySelectFormalSet",
+    )
+    assert focus_control is not None
+    assert focus_control.property("activeFocus") is True
+    second.close_adapter()
+    second_run.close()
+    reopened_strategy.close()

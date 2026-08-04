@@ -4,6 +4,9 @@ from dataclasses import replace
 from decimal import Decimal
 
 from strategy_diagnostics import (
+    FormalStrategySelectionCandidate,
+    FormalStrategySetValidation,
+    FormalStrategySetValidationState,
     StrategyInventoryAvailability,
     StrategyInventoryDependencyKind,
     StrategyInventoryReasonCode,
@@ -11,12 +14,23 @@ from strategy_diagnostics import (
 )
 from strategy_diagnostics.strategy_inventory import (
     build_strategy_under_test_inventory,
+    validate_formal_strategy_set,
 )
 from strategy_diagnostics.ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     REFERENCE_PTRADE_STRATEGY_ID,
 )
+
+
+def test_formal_selection_validation_dtos_are_public_package_types() -> None:
+    assert FormalStrategySelectionCandidate.__module__.endswith(
+        "strategy_inventory"
+    )
+    assert FormalStrategySetValidation.__module__.endswith(
+        "strategy_inventory"
+    )
+    assert FormalStrategySetValidationState.VALID.value == "valid"
 
 
 def test_public_application_inventory_exposes_only_formal_v1_strategies() -> None:
@@ -53,6 +67,7 @@ def test_public_application_inventory_exposes_only_formal_v1_strategies() -> Non
 
     surface = application.v1_product_surface_inventory()
     assert "read_strategy_under_test_inventory" in surface.application_commands
+    assert "validate_formal_strategy_set" in surface.application_commands
     assert surface.unclassified_commands == ()
     assert surface.status == "verified"
 
@@ -84,6 +99,35 @@ def test_missing_guardrail_profiles_remain_visible_without_fabricated_identity()
         assert not guardrail_dependency.available
         assert not guardrail_dependency.compatible
         assert guardrail_dependency.identity == ""
+
+
+def test_unavailable_formal_entry_returns_typed_unavailable_validation() -> None:
+    inventory = build_strategy_under_test_inventory(
+        guardrail_profiles=(),
+        persistence_migration_revision=(
+            "0018_diagnostic_campaign_attempt_history"
+        ),
+    )
+    validation = validate_formal_strategy_set(
+        inventory=inventory,
+        candidates=tuple(
+            FormalStrategySelectionCandidate(
+                strategy_id=entry.strategy_id,
+                strategy_version=entry.strategy_version,
+                manifest_content_hash=entry.compatibility.content_hash,
+                guardrail_profile_id="",
+                guardrail_profile_version="",
+                dependencies=entry.dependencies,
+            )
+            for entry in inventory.entries
+        ),
+        expected_inventory_content_hash=inventory.content_hash,
+    )
+
+    assert validation.state is FormalStrategySetValidationState.UNAVAILABLE
+    assert validation.entries == ()
+    assert validation.reasons
+    assert "Guardrail" in validation.reasons[0].summary
 
 
 def test_inventory_content_hash_covers_exposed_authoritative_facts() -> None:

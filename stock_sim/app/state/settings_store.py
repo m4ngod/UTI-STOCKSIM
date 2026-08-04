@@ -42,6 +42,7 @@ class SettingsStore:
             'alert_thresholds': [],
             'playback_speed': [],
             'high_contrast': [],  # Task33
+            'strategy_library_bookmark_json': [],
         }
         # 启动时异步应用已持久化的语言偏好（不阻塞 UI 线程），失败时在 i18n 层回退
         self._apply_language_preference_async()

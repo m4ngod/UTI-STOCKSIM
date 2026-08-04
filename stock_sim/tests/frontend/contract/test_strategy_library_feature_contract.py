@@ -89,6 +89,9 @@ def test_strategy_library_1_0_freezes_complete_typed_state_shapes() -> None:
         "blocking_reasons",
         "focus_restoration_id",
         "error",
+        "selection",
+        "selection_status",
+        "selection_message",
     }
 
     application = create_diagnostics_application()

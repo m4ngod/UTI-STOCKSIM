@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -42,9 +43,14 @@ from .strategy_library import (
     StrategyLibrarySource,
     StrategyLibraryViewState,
     StrategySelectionDisposition,
+    StrategySelectionContext,
     StrategySelectionResult,
+    StrategySelectionStatus,
 )
 from .strategy_library_application import (
+    FormalStrategySelectionReference,
+    FormalStrategySetValidation,
+    FormalStrategySetValidationState,
     StrategyAvailability,
     StrategyAvailabilityReason,
     StrategyAvailabilityReasonCode,
@@ -61,6 +67,7 @@ from .strategy_library_application import (
     StrategyLibraryEntry,
     StrategyLibraryInventory,
     StrategySourceIdentity,
+    ValidateFormalStrategySet,
 )
 from .versioning import (
     STRATEGY_LIBRARY_INTERFACE_VERSION,
@@ -111,6 +118,9 @@ class _StrategyLibraryAdapter:
         self,
         *,
         read_inventory: Callable[[], StrategyLibraryApplicationInventoryResult],
+        validate_formal_strategy_set: Callable[
+            [ValidateFormalStrategySet], FormalStrategySetValidation
+        ],
         source_kind: SourceKind,
         source_identity: str,
         clock: Callable[[], datetime] | None = None,
@@ -118,6 +128,7 @@ class _StrategyLibraryAdapter:
         event_bridge: EventBridge | None = None,
     ) -> None:
         self._read_inventory = read_inventory
+        self._validate_formal_strategy_set = validate_formal_strategy_set
         self._source_kind = source_kind
         self._source_identity = source_identity
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -129,6 +140,7 @@ class _StrategyLibraryAdapter:
         ) = None
         self._source_token: SourceRevisionToken | None = None
         self._last_reliable_at: datetime | None = None
+        self._selection: StrategySelectionContext | None = None
         self._subscriptions: dict[
             int,
             tuple[
@@ -140,8 +152,11 @@ class _StrategyLibraryAdapter:
         self._next_subscription_id = 1
         self._revision = 0
         connection = event_bridge.connection_state if event_bridge else None
-        self._generation = SourceGenerationId(
+        self._bridge_generation = (
             1 if connection is None else connection.generation.value
+        )
+        self._generation = SourceGenerationId(
+            self._bridge_generation
         )
         self._connection_sequence = (
             1 if connection is None else connection.sequence.value
@@ -175,8 +190,22 @@ class _StrategyLibraryAdapter:
         self,
         context: StrategyLibraryContext,
     ) -> StrategyLibraryViewState:
+        cached_state: StrategyLibraryViewState | None = None
         with self._lock:
             self._ensure_open()
+            bookmark_generation = (
+                None
+                if context.selection_bookmark is None
+                else context.selection_bookmark.source_generation
+            )
+            if (
+                not self._states
+                and bookmark_generation is not None
+                and self._generation.value <= bookmark_generation.value
+            ):
+                self._generation = SourceGenerationId(
+                    bookmark_generation.value + 1
+                )
             previous = self._states.get(context)
             generation = self._generation
             sequence = self._connection_sequence
@@ -208,7 +237,9 @@ class _StrategyLibraryAdapter:
                     ),
                 )
                 self._states[context] = state
-                return state
+                cached_state = state
+        if cached_state is not None:
+            return self._restore_bookmark(cached_state)
         assert previous is not None
         result = self._read_inventory()
         now = _aware(self._clock())
@@ -258,7 +289,7 @@ class _StrategyLibraryAdapter:
             self._states[context] = state
             observers = self._observers_for(context)
         self._deliver(observers, state)
-        return state
+        return self._restore_bookmark(state)
 
     def subscribe(
         self,
@@ -288,10 +319,46 @@ class _StrategyLibraryAdapter:
     ) -> StrategyComparisonResult:
         with self._lock:
             self._ensure_open()
+            inventory = self._last_reliable_inventory
+            if (
+                inventory is None
+                or self._source_token != command.expected_source_revision
+                or self._generation != command.expected_source_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return StrategyComparisonResult(
+                    disposition=StrategyComparisonDisposition.SOURCE_CONFLICT,
+                    entries=(),
+                    message=(
+                        "The Strategy inventory revision or generation changed; "
+                        "reread before comparing."
+                    ),
+                )
+            if (
+                len(command.strategy_ids) < 2
+                or len(command.strategy_ids) != len(set(command.strategy_ids))
+            ):
+                return StrategyComparisonResult(
+                    disposition=StrategyComparisonDisposition.INVALID_SELECTION,
+                    entries=(),
+                    message="Choose at least two distinct authoritative Strategies.",
+                )
+            indexed = {item.strategy_id: item for item in inventory.entries}
+            if any(item not in indexed for item in command.strategy_ids):
+                return StrategyComparisonResult(
+                    disposition=StrategyComparisonDisposition.INVALID_SELECTION,
+                    entries=(),
+                    message="One or more Strategy identities are not authoritative.",
+                )
+            entries = tuple(indexed[item] for item in command.strategy_ids)
         return StrategyComparisonResult(
-            disposition=StrategyComparisonDisposition.NOT_YET_AVAILABLE,
-            entries=(),
-            message="Strategy comparison is enabled by the next Wave 3 slice.",
+            disposition=StrategyComparisonDisposition.AVAILABLE,
+            entries=entries,
+            message=(
+                "Compare identity, lineage, compatibility, candidate policy, "
+                "Guardrails, and diagnostic applicability."
+            ),
         )
 
     def select_formal_strategy_set(
@@ -300,10 +367,133 @@ class _StrategyLibraryAdapter:
     ) -> StrategySelectionResult:
         with self._lock:
             self._ensure_open()
+            inventory = self._last_reliable_inventory
+            if (
+                inventory is None
+                or self._source_token != command.expected_source_revision
+                or self._generation != command.expected_source_generation
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _selection_result(
+                    StrategySelectionDisposition.SOURCE_CONFLICT,
+                    "The Strategy source revision or generation changed.",
+                )
+            if self._selection is not None and _command_matches_selection(
+                command, self._selection
+            ):
+                return StrategySelectionResult(
+                    disposition=StrategySelectionDisposition.SELECTED,
+                    selection=self._selection,
+                    message="The same immutable formal Strategy set remains current.",
+                )
+            origin = next(
+                (
+                    state
+                    for state in self._states.values()
+                    if state.revision == command.originating_view_revision
+                ),
+                None,
+            )
+            if (
+                origin is None
+                or origin.source_revision != command.expected_source_revision
+                or origin.source.generation
+                != command.expected_source_generation
+                or origin.freshness is not Freshness.FRESH
+            ):
+                return _selection_result(
+                    StrategySelectionDisposition.SOURCE_CONFLICT,
+                    "The originating Strategy view is no longer current.",
+                )
+            if (
+                len(command.strategy_ids) != len(command.guardrail_profile_ids)
+                or len(command.strategy_ids) != len(set(command.strategy_ids))
+            ):
+                return _selection_result(
+                    StrategySelectionDisposition.INVALID_SELECTION,
+                    "Strategy and Guardrail selections must be unique exact pairs.",
+                )
+            indexed = {item.strategy_id: item for item in inventory.entries}
+            references: list[FormalStrategySelectionReference] = []
+            for strategy_id, guardrail_id in zip(
+                command.strategy_ids,
+                command.guardrail_profile_ids,
+                strict=True,
+            ):
+                entry = indexed.get(strategy_id)
+                profile = None if entry is None else entry.guardrail_profile
+                if (
+                    entry is None
+                    or profile is None
+                    or profile.profile_id != guardrail_id
+                ):
+                    return _selection_result(
+                        StrategySelectionDisposition.INVALID_SELECTION,
+                        "A Strategy or matching versioned Guardrail is invalid.",
+                    )
+                references.append(_selection_reference(entry))
+            validation_command = ValidateFormalStrategySet(
+                selections=tuple(references),
+                expected_source_revision=command.expected_source_revision,
+            )
+            generation = self._generation
+            sequence = self._connection_sequence
+            source_token = self._source_token
+        validation = self._validate_formal_strategy_set(validation_command)
+        with self._lock:
+            self._ensure_open()
+            if (
+                generation != self._generation
+                or sequence != self._connection_sequence
+                or source_token != self._source_token
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return _selection_result(
+                    StrategySelectionDisposition.SOURCE_CONFLICT,
+                    "The Strategy source changed during validation.",
+                )
+            if validation.state is not FormalStrategySetValidationState.VALID:
+                disposition = {
+                    FormalStrategySetValidationState.INVALID: (
+                        StrategySelectionDisposition.INVALID_SELECTION
+                    ),
+                    FormalStrategySetValidationState.SOURCE_CONFLICT: (
+                        StrategySelectionDisposition.SOURCE_CONFLICT
+                    ),
+                    FormalStrategySetValidationState.UNAVAILABLE: (
+                        StrategySelectionDisposition.UNAVAILABLE
+                    ),
+                }[validation.state]
+                return _selection_result(
+                    disposition,
+                    " ".join(reason.summary for reason in validation.reasons)
+                    or "The formal Strategy set could not be validated.",
+                )
+            canonical = tuple(
+                sorted(validation.selections, key=lambda item: item.strategy_id.value)
+            )
+            selection = StrategySelectionContext(
+                context_identity=_selection_identity(
+                    canonical,
+                    validation.source_revision,
+                    command.originating_view_revision,
+                    generation,
+                ),
+                selections=canonical,
+                source_revision=validation.source_revision,
+                originating_view_revision=command.originating_view_revision,
+                source_generation=generation,
+            )
+            self._selection = selection
+            deliveries = self._publish_selection_locked(selection)
+        for observers, state in deliveries:
+            self._deliver(observers, state)
         return StrategySelectionResult(
-            disposition=StrategySelectionDisposition.NOT_YET_AVAILABLE,
-            selection=None,
-            message="Formal Strategy selection is not available yet.",
+            disposition=StrategySelectionDisposition.SELECTED,
+            selection=selection,
+            message="The exact formal Strategy set is selected and current.",
         )
 
     def close(self) -> None:
@@ -334,7 +524,11 @@ class _StrategyLibraryAdapter:
                 or connection.sequence.value <= self._connection_sequence
             ):
                 return
-            self._generation = SourceGenerationId(connection.generation.value)
+            if connection.generation.value != self._bridge_generation:
+                self._generation = SourceGenerationId(
+                    self._generation.value + 1
+                )
+            self._bridge_generation = connection.generation.value
             self._connection_sequence = connection.sequence.value
             self._connection_phase = connection.phase
             contexts = tuple(self._states)
@@ -364,7 +558,7 @@ class _StrategyLibraryAdapter:
         with self._lock:
             if (
                 self._closed
-                or batch.generation.value != self._generation.value
+                or batch.generation.value != self._bridge_generation
                 or self._connection_phase
                 is not EventBridgeConnectionPhase.CONNECTED
             ):
@@ -378,7 +572,7 @@ class _StrategyLibraryAdapter:
         context: StrategyLibraryContext,
     ) -> StrategyLibraryViewState:
         now = _aware(self._clock())
-        return StrategyLibraryViewState(
+        state = StrategyLibraryViewState(
             interface_version=STRATEGY_LIBRARY_INTERFACE_VERSION,
             revision=self._next_revision(),
             observed_at=now,
@@ -394,11 +588,12 @@ class _StrategyLibraryAdapter:
             completeness=Completeness.UNKNOWN,
             entries=(),
             last_reliable_inventory=None,
-            capabilities=_capabilities(False),
+            capabilities=_capabilities(None),
             blocking_reasons=(),
             focus_restoration_id=None,
             error=None,
         )
+        return state
 
     def _state_from_inventory(
         self,
@@ -434,7 +629,15 @@ class _StrategyLibraryAdapter:
             )
             else None
         )
-        return StrategyLibraryViewState(
+        selection_status = (
+            StrategySelectionStatus.NONE
+            if self._selection is None
+            else StrategySelectionStatus.CURRENT
+            if self._selection.source_revision == source_token
+            and self._selection.source_generation == self._generation
+            else StrategySelectionStatus.STALE
+        )
+        state = StrategyLibraryViewState(
             interface_version=STRATEGY_LIBRARY_INTERFACE_VERSION,
             revision=self._next_revision(),
             observed_at=now,
@@ -450,9 +653,9 @@ class _StrategyLibraryAdapter:
             completeness=completeness,
             entries=entries,
             last_reliable_inventory=inventory,
-            capabilities=_capabilities(True),
+            capabilities=_capabilities(inventory),
             blocking_reasons=(
-                (
+                *((
                     StrategyLibraryBlockingReason(
                         code=StrategyLibraryBlockingCode.INVENTORY_PARTIAL,
                         message=(
@@ -461,13 +664,31 @@ class _StrategyLibraryAdapter:
                         ),
                         dependent_operations=("select_formal_strategy_set",),
                     ),
-                )
-                if partial
-                else ()
+                ) if partial else ()),
+                *((
+                    StrategyLibraryBlockingReason(
+                        code=StrategyLibraryBlockingCode.FORMAL_SELECTION_STALE,
+                        message=(
+                            "The prior immutable Strategy selection does not "
+                            "match the current source revision or generation."
+                        ),
+                        dependent_operations=("scenario_lab_handoff",),
+                    ),
+                ) if selection_status is StrategySelectionStatus.STALE else ()),
             ),
             focus_restoration_id=focus,
             error=None,
+            selection=self._selection,
+            selection_status=selection_status,
+            selection_message=(
+                "No formal Strategy set is selected."
+                if self._selection is None
+                else "The formal Strategy set is current."
+                if selection_status is StrategySelectionStatus.CURRENT
+                else "The formal Strategy set is stale; select from a fresh read."
+            ),
         )
+        return state
 
     def _failure_state(
         self,
@@ -521,7 +742,7 @@ class _StrategyLibraryAdapter:
             completeness=completeness,
             entries=entries,
             last_reliable_inventory=inventory,
-            capabilities=_capabilities(inventory is not None),
+            capabilities=_capabilities(inventory, False),
             blocking_reasons=(
                 StrategyLibraryBlockingReason(
                     code=StrategyLibraryBlockingCode.INVENTORY_READ_FAILED,
@@ -533,6 +754,16 @@ class _StrategyLibraryAdapter:
                 ),
             ),
             error=structured,
+            selection_status=(
+                StrategySelectionStatus.NONE
+                if self._selection is None
+                else StrategySelectionStatus.STALE
+            ),
+            selection_message=(
+                "No formal Strategy set is selected."
+                if self._selection is None
+                else "The selected Strategy set is stale while authority is unavailable."
+            ),
         )
 
     def _connection_state(
@@ -572,7 +803,7 @@ class _StrategyLibraryAdapter:
                 if disconnected
                 else StrategyLibraryPresentationState.STALE
             ),
-            capabilities=_capabilities(False),
+            capabilities=_capabilities(None),
             blocking_reasons=(
                 StrategyLibraryBlockingReason(
                     code=code,
@@ -588,7 +819,207 @@ class _StrategyLibraryAdapter:
                 message=message,
                 retryable=True,
             ),
+            selection_status=(
+                StrategySelectionStatus.NONE
+                if self._selection is None
+                else StrategySelectionStatus.STALE
+            ),
+            selection_message=(
+                "No formal Strategy set is selected."
+                if self._selection is None
+                else "The selected Strategy set is stale across reconnect."
+            ),
         )
+
+    def _publish_selection_locked(
+        self,
+        selection: StrategySelectionContext,
+    ) -> tuple[
+        tuple[
+            tuple[
+                tuple[StrategyLibraryObserver, _StrategyLibrarySubscription], ...
+            ],
+            StrategyLibraryViewState,
+        ],
+        ...,
+    ]:
+        deliveries = []
+        for context, previous in tuple(self._states.items()):
+            state = replace(
+                previous,
+                revision=self._next_revision(),
+                selection=selection,
+                selection_status=StrategySelectionStatus.CURRENT,
+                selection_message="The formal Strategy set is current.",
+            )
+            self._states[context] = state
+            deliveries.append((self._observers_for(context), state))
+        return tuple(deliveries)
+
+    def _restore_bookmark(
+        self,
+        state: StrategyLibraryViewState,
+    ) -> StrategyLibraryViewState:
+        """Reread a durable exact selection without holding the Adapter lock."""
+
+        validation_command: ValidateFormalStrategySet | None = None
+        immediate: StrategyLibraryViewState | None = None
+        observers: tuple[
+            tuple[StrategyLibraryObserver, _StrategyLibrarySubscription], ...
+        ] = ()
+        with self._lock:
+            current = self._states.get(state.context)
+            if current is not state:
+                return state if current is None else current
+            bookmark = state.context.selection_bookmark
+            source_token = state.source_revision
+            inventory = state.last_reliable_inventory
+            if bookmark is None or source_token is None or inventory is None:
+                return state
+            if (
+                self._selection is not None
+                and self._selection.source_revision == source_token
+                and self._selection.source_generation == self._generation
+                and self._selection.selections
+                == tuple(
+                    sorted(
+                        bookmark.selections,
+                        key=lambda item: item.strategy_id.value,
+                    )
+                )
+            ):
+                current_selection = replace(
+                    state,
+                    selection=self._selection,
+                    selection_status=StrategySelectionStatus.CURRENT,
+                    selection_message="The formal Strategy set is current.",
+                )
+                self._states[state.context] = current_selection
+                return current_selection
+            indexed = {item.strategy_id: item for item in inventory.entries}
+            current_references: list[FormalStrategySelectionReference] = []
+            missing_identity = False
+            exact_identity_conflict = False
+            for bookmarked in bookmark.selections:
+                entry = indexed.get(bookmarked.strategy_id)
+                if entry is None or entry.guardrail_profile is None:
+                    missing_identity = True
+                    break
+                current_reference = _selection_reference(entry)
+                current_references.append(current_reference)
+                if current_reference != bookmarked:
+                    exact_identity_conflict = True
+            if missing_identity or exact_identity_conflict:
+                immediate = replace(
+                    state,
+                    revision=self._next_revision(),
+                    selection=None,
+                    selection_status=(
+                        StrategySelectionStatus.UNAVAILABLE
+                        if missing_identity
+                        else StrategySelectionStatus.CONFLICT
+                    ),
+                    selection_message=(
+                        "A bookmarked Strategy identity is unavailable; reread "
+                        "and choose the current authoritative formal set."
+                        if missing_identity
+                        else "The bookmarked Strategy version, manifest, Guardrail, "
+                        "or dependency identity changed; explicit reselection is required."
+                    ),
+                    blocking_reasons=(
+                        *state.blocking_reasons,
+                        StrategyLibraryBlockingReason(
+                            code=StrategyLibraryBlockingCode.FORMAL_SELECTION_STALE,
+                            message=(
+                                "The stable bookmark no longer matches the exact "
+                                "authoritative formal Strategy identity."
+                            ),
+                            dependent_operations=("scenario_lab_handoff",),
+                        ),
+                    ),
+                )
+                self._states[state.context] = immediate
+                observers = self._observers_for(state.context)
+            else:
+                validation_command = ValidateFormalStrategySet(
+                    selections=bookmark.selections,
+                    expected_source_revision=source_token,
+                )
+                generation = self._generation
+                sequence = self._connection_sequence
+        if immediate is not None:
+            self._deliver(observers, immediate)
+            return immediate
+        assert validation_command is not None
+        validation = self._validate_formal_strategy_set(validation_command)
+        with self._lock:
+            current = self._states.get(state.context)
+            if (
+                current is not state
+                or generation != self._generation
+                or sequence != self._connection_sequence
+                or source_token != self._source_token
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+            ):
+                return state if current is None else current
+            if validation.state is not FormalStrategySetValidationState.VALID:
+                committed = replace(
+                    state,
+                    revision=self._next_revision(),
+                    selection=None,
+                    selection_status=(
+                        StrategySelectionStatus.CONFLICT
+                        if validation.state
+                        in {
+                            FormalStrategySetValidationState.INVALID,
+                            FormalStrategySetValidationState.SOURCE_CONFLICT,
+                        }
+                        else StrategySelectionStatus.UNAVAILABLE
+                    ),
+                    selection_message=(
+                        "The bookmarked formal set is not current; reread and "
+                        "resolve the exact authoritative identities."
+                    ),
+                )
+            else:
+                canonical = tuple(
+                    sorted(
+                        validation.selections,
+                        key=lambda item: item.strategy_id.value,
+                    )
+                )
+                selection = StrategySelectionContext(
+                    context_identity=_selection_identity(
+                        canonical,
+                        validation.source_revision,
+                        state.revision,
+                        self._generation,
+                    ),
+                    selections=canonical,
+                    source_revision=validation.source_revision,
+                    originating_view_revision=state.revision,
+                    source_generation=self._generation,
+                )
+                self._selection = selection
+                committed = replace(
+                    state,
+                    revision=self._next_revision(),
+                    focus_restoration_id=(
+                        bookmark.focus_strategy_id
+                        if bookmark.focus_strategy_id in bookmark.strategy_ids
+                        else state.focus_restoration_id
+                    ),
+                    selection=selection,
+                    selection_status=StrategySelectionStatus.CURRENT,
+                    selection_message=(
+                        "The bookmarked formal set was reread and is current."
+                    ),
+                )
+            self._states[state.context] = committed
+            observers = self._observers_for(state.context)
+        self._deliver(observers, committed)
+        return committed
 
     def _disconnected_from_cache(
         self,
@@ -668,6 +1099,7 @@ class LiveStrategyLibraryAdapter(_StrategyLibraryAdapter):
     ) -> None:
         super().__init__(
             read_inventory=application.read_inventory,
+            validate_formal_strategy_set=application.validate_formal_strategy_set,
             source_kind=SourceKind.LIVE_RUNTIME,
             source_identity="strategy-diagnostics-v1-strategy-library",
             event_bridge=event_bridge,
@@ -703,6 +1135,7 @@ class DeterministicFakeStrategyLibraryAdapter(_StrategyLibraryAdapter):
         )
         super().__init__(
             read_inventory=self._read_fake_inventory,
+            validate_formal_strategy_set=self._validate_fake_formal_strategy_set,
             source_kind=SourceKind.DETERMINISTIC_FAKE,
             source_identity="deterministic-fake-strategy-library",
             clock=self._fake_clock,
@@ -715,6 +1148,65 @@ class DeterministicFakeStrategyLibraryAdapter(_StrategyLibraryAdapter):
         return replace(
             self._default_result,
             observed_at=_aware(self._fake_clock()),
+        )
+
+    def _validate_fake_formal_strategy_set(
+        self,
+        command: ValidateFormalStrategySet,
+    ) -> FormalStrategySetValidation:
+        result = self._default_result
+        inventory = result.inventory
+        if inventory is None or result.source_token is None:
+            return FormalStrategySetValidation(
+                state=FormalStrategySetValidationState.UNAVAILABLE,
+                selections=(),
+                source_revision=command.expected_source_revision,
+                reasons=(),
+            )
+        if command.expected_source_revision != result.source_token:
+            return FormalStrategySetValidation(
+                state=FormalStrategySetValidationState.SOURCE_CONFLICT,
+                selections=(),
+                source_revision=result.source_token,
+                reasons=(),
+            )
+        required = tuple(
+            item for item in inventory.entries if item.required_for_v1_formal_campaign
+        )
+        expected = tuple(_selection_reference(item) for item in required)
+        if (
+            len(command.selections)
+            != inventory.formal_campaign_required_strategy_count
+            or len({item.strategy_id for item in command.selections})
+            != len(command.selections)
+            or set(command.selections) != set(expected)
+        ):
+            return FormalStrategySetValidation(
+                state=FormalStrategySetValidationState.INVALID,
+                selections=(),
+                source_revision=result.source_token,
+                reasons=(),
+            )
+        if any(
+            item.availability is not StrategyAvailability.FORMAL_CAMPAIGN_READY
+            or not item.formal_campaign_eligible
+            for item in required
+        ):
+            return FormalStrategySetValidation(
+                state=FormalStrategySetValidationState.UNAVAILABLE,
+                selections=(),
+                source_revision=result.source_token,
+                reasons=tuple(
+                    reason
+                    for item in required
+                    for reason in item.availability_reasons
+                ),
+            )
+        return FormalStrategySetValidation(
+            state=FormalStrategySetValidationState.VALID,
+            selections=expected,
+            source_revision=result.source_token,
+            reasons=(),
         )
 
     def advance_to_disconnected(self) -> None:
@@ -793,13 +1285,123 @@ def _filtered_entries(
     )
 
 
-def _capabilities(has_inventory: bool) -> StrategyLibraryCapabilities:
+def _capabilities(
+    inventory: StrategyLibraryInventory | None,
+    allow_commands: bool | None = None,
+) -> StrategyLibraryCapabilities:
+    has_inventory = inventory is not None
+    commands = has_inventory if allow_commands is None else allow_commands
+    entries = () if inventory is None else inventory.entries
+    required = tuple(
+        item for item in entries if item.required_for_v1_formal_campaign
+    )
+    formal_set_ready = (
+        inventory is not None
+        and len(required) == inventory.formal_campaign_required_strategy_count
+        and bool(required)
+        and all(
+            item.formal_campaign_eligible
+            and item.availability is StrategyAvailability.FORMAL_CAMPAIGN_READY
+            and item.guardrail_profile is not None
+            and all(
+                dependency.available and dependency.compatible
+                for dependency in item.dependencies
+            )
+            for item in required
+        )
+    )
     return StrategyLibraryCapabilities(
         can_search=has_inventory,
         can_filter=has_inventory,
         can_inspect_details=has_inventory,
-        can_compare=False,
-        can_select_formal_strategy_set=False,
+        can_compare=commands and len(entries) >= 2,
+        can_select_formal_strategy_set=commands and formal_set_ready,
+    )
+
+
+def _selection_reference(
+    entry: StrategyLibraryEntry,
+) -> FormalStrategySelectionReference:
+    profile = entry.guardrail_profile
+    if profile is None:
+        raise ValueError("Formal Strategy is missing a Guardrail profile")
+    return FormalStrategySelectionReference(
+        strategy_id=entry.strategy_id,
+        strategy_version=entry.strategy_version,
+        manifest_content_hash=entry.compatibility.content_hash,
+        guardrail_profile_id=profile.profile_id,
+        guardrail_profile_version=profile.profile_version,
+        dependency_identities=entry.dependencies,
+    )
+
+
+def _selection_identity(
+    selections: tuple[FormalStrategySelectionReference, ...],
+    source_revision: SourceRevisionToken,
+    originating_view_revision: int,
+    generation: SourceGenerationId,
+) -> str:
+    payload = {
+        "source_revision": source_revision.value,
+        "originating_view_revision": originating_view_revision,
+        "source_generation": generation.value,
+        "selections": [
+            {
+                "strategy_id": item.strategy_id.value,
+                "strategy_version": item.strategy_version,
+                "manifest_content_hash": item.manifest_content_hash,
+                "guardrail_profile_id": item.guardrail_profile_id.value,
+                "guardrail_profile_version": item.guardrail_profile_version,
+                "dependencies": [
+                    {
+                        "kind": dependency.kind.value,
+                        "identity": dependency.identity,
+                        "version": dependency.version,
+                        "content_hash": dependency.content_hash,
+                        "available": dependency.available,
+                        "compatible": dependency.compatible,
+                    }
+                    for dependency in item.dependency_identities
+                ],
+            }
+            for item in selections
+        ],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _command_matches_selection(
+    command: SelectFormalStrategySet,
+    selection: StrategySelectionContext,
+) -> bool:
+    pairs = tuple(
+        sorted(
+            zip(command.strategy_ids, command.guardrail_profile_ids, strict=True),
+            key=lambda item: item[0].value,
+        )
+    ) if len(command.strategy_ids) == len(command.guardrail_profile_ids) else ()
+    selected_pairs = tuple(
+        (item.strategy_id, item.guardrail_profile_id)
+        for item in selection.selections
+    )
+    return (
+        pairs == selected_pairs
+        and command.expected_source_revision == selection.source_revision
+        and command.expected_source_generation == selection.source_generation
+        and command.originating_view_revision
+        == selection.originating_view_revision
+    )
+
+
+def _selection_result(
+    disposition: StrategySelectionDisposition,
+    message: str,
+) -> StrategySelectionResult:
+    return StrategySelectionResult(
+        disposition=disposition,
+        selection=None,
+        message=message,
     )
 
 

@@ -144,8 +144,11 @@ from .strategy_runs import (
     StrategyRunSpecification,
 )
 from .strategy_inventory import (
+    FormalStrategySelectionCandidate,
+    FormalStrategySetValidation,
     StrategyUnderTestInventory,
     build_strategy_under_test_inventory,
+    validate_formal_strategy_set,
 )
 from .transformations import create_initial_transformation_catalog
 from .v1_acceptance import (
@@ -2023,6 +2026,21 @@ class DiagnosticsApplication:
         return build_strategy_under_test_inventory(
             guardrail_profiles=self.strategy_guardrail_profiles(),
             persistence_migration_revision=DIAGNOSTIC_SCHEMA_REVISION,
+        )
+
+    def validate_formal_strategy_set(
+        self,
+        *,
+        candidates: tuple[FormalStrategySelectionCandidate, ...],
+        expected_inventory_content_hash: str,
+    ) -> FormalStrategySetValidation:
+        """Validate an exact Strategy set against a current inventory read."""
+
+        inventory = self.read_strategy_under_test_inventory()
+        return validate_formal_strategy_set(
+            inventory=inventory,
+            candidates=candidates,
+            expected_inventory_content_hash=expected_inventory_content_hash,
         )
 
     def recipe_authoring_capabilities(self) -> dict[str, object]:

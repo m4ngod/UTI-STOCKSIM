@@ -8,6 +8,9 @@ from .application import (
     create_diagnostics_application,
 )
 from .strategy_inventory import (
+    FormalStrategySelectionCandidate,
+    FormalStrategySetValidation,
+    FormalStrategySetValidationState,
     StrategyInventoryAvailability,
     StrategyInventoryCompatibility,
     StrategyInventoryDependency,
@@ -267,6 +270,9 @@ __all__ = [
     "DiagnosticCampaignCaseInventory",
     "DiagnosticsApplication",
     "DiagnosticsApplicationState",
+    "FormalStrategySelectionCandidate",
+    "FormalStrategySetValidation",
+    "FormalStrategySetValidationState",
     "StrategyInventoryAvailability",
     "StrategyInventoryCompatibility",
     "StrategyInventoryDependency",

@@ -143,6 +143,7 @@ V1_ALLOWED_APPLICATION_COMMANDS = (
     "v1_diagnostic_configuration",
     "v1_product_surface_inventory",
     "validate_diagnostic_task_configuration",
+    "validate_formal_strategy_set",
     "validate_recipe_draft",
 )
 

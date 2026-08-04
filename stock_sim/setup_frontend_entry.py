@@ -149,6 +149,9 @@ def _start_frontend(*, headless: bool):
             "strategy_library_context",
             None,
         ),
+        strategy_library_bookmark_sink=(
+            getattr(context, "persist_strategy_library_bookmark", None)
+        ),
         diagnostic_tasks_feature=getattr(
             context,
             "diagnostic_tasks_feature",
