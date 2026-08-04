@@ -57,6 +57,7 @@ V1_PRODUCT_SURFACE_INVENTORY_SCHEMA_VERSION = (
 V1_REQUIRED_APPLICATION_COMMANDS = (
     "admit_historical_segment",
     "approve_recipe_draft",
+    "approve_scenario_recipe_command",
     "author_scenario_recipe_draft_command",
     "author_recipe_with_ai",
     "build_selected_diagnostic_evidence",
@@ -84,6 +85,7 @@ V1_ALLOWED_APPLICATION_COMMANDS = (
     "advance_strategy_run",
     "approve_diagnostic_task_configuration",
     "approve_recipe_draft",
+    "approve_scenario_recipe_command",
     "author_scenario_recipe_draft_command",
     "author_recipe_with_ai",
     "build_diagnostic_evidence",
@@ -146,6 +148,7 @@ V1_ALLOWED_APPLICATION_COMMANDS = (
     "strategy_guardrail_profiles",
     "strategy_run_status",
     "scenario_recipe_draft_revisions",
+    "scenario_recipe_approval_history",
     "scenario_recipe_validation_history",
     "transformation_catalog_view",
     "v1_diagnostic_configuration",

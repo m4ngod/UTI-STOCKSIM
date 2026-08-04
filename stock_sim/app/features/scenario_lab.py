@@ -18,6 +18,7 @@ from .run_monitoring import (
     ViewPhase,
 )
 from .scenario_lab_application import (
+    ApprovedScenarioRecipeVersionProjection,
     ApproveScenarioRecipeCommand,
     ApproveScenarioRecipeResult,
     ComposeFormalScenarioSetCommand,
@@ -185,6 +186,9 @@ class ScenarioLabViewState:
     transformation_catalog: TransformationCatalogProjection | None
     recipe_drafts: tuple[ScenarioRecipeDraftProjection, ...]
     recipe_validations: tuple[ScenarioRecipeValidationProjection, ...]
+    approved_recipe_versions: tuple[
+        ApprovedScenarioRecipeVersionProjection, ...
+    ]
     task_handles: tuple[ScenarioLabTaskHandle, ...]
     last_reliable_inventory: ScenarioLabInventory | None
     capabilities: ScenarioLabCapabilities

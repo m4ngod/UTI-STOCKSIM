@@ -853,8 +853,15 @@ def test_catalog_rejects_non_finite_decimal_parameters(strength: str) -> None:
 
 def test_editing_an_approved_recipe_creates_a_new_immutable_version() -> None:
     application, segment_id = _application_with_admitted_segment()
+    first_payload = _baseline_payload(segment_id)
+    first_payload["transformations"] = [
+        {
+            "transformation_id": "volatility-scaling.v1",
+            "parameters": {"multiplier": "1.2"},
+        }
+    ]
     first_draft = application.create_manual_recipe_draft(
-        _baseline_payload(segment_id),
+        first_payload,
         author="researcher",
     )
     application.validate_recipe_draft(first_draft.draft_id)
@@ -865,6 +872,13 @@ def test_editing_an_approved_recipe_creates_a_new_immutable_version() -> None:
 
     with pytest.raises(TypeError, match="immutable"):
         first_version.recipe.name = "Mutated in place"  # type: ignore[misc]
+    first_hash = first_version.recipe.content_hash
+    with pytest.raises(TypeError):
+        first_version.recipe.transformations[0].parameters["multiplier"] = (
+            "1.8"
+        )
+    assert first_version.recipe.content_hash == first_hash
+    assert first_version.content_hash == first_hash
 
     revised_payload = _baseline_payload(segment_id)
     revised_payload["name"] = "Hourly baseline"

@@ -18,8 +18,11 @@ from app.features.scenario_lab import (
     ScenarioLabViewState,
 )
 from app.features.scenario_lab_application import (
+    ApprovedScenarioRecipeVersionProjection,
     ScenarioLabAdmissionState,
     ScenarioLabQualityState,
+    ScenarioRecipeApprovalAuthorityState,
+    ScenarioRecipeApprovalProjection,
     ScenarioLabTaskHandle,
     ScenarioLabUnavailabilityCode,
     ScenarioLabUnavailabilityReason,
@@ -83,6 +86,7 @@ def test_scenario_lab_1_0_freezes_typed_read_state_and_unavailable_writes() -> N
         "transformation_catalog",
         "recipe_drafts",
         "recipe_validations",
+        "approved_recipe_versions",
         "task_handles",
         "last_reliable_inventory",
         "capabilities",
@@ -138,6 +142,45 @@ def test_scenario_lab_1_0_freezes_typed_read_state_and_unavailable_writes() -> N
 def test_scenario_lab_context_rejects_duplicate_filters() -> None:
     with pytest.raises(ValueError, match="filters"):
         ScenarioLabContext(markets=("cn-a", "cn-a"))
+
+
+def test_scenario_lab_1_0_freezes_exact_approved_recipe_identity_graph() -> None:
+    assert {field.name for field in fields(ScenarioRecipeApprovalProjection)} == {
+        "approval_id",
+        "draft_id",
+        "draft_revision",
+        "payload_hash",
+        "validation_id",
+        "recipe_content_hash",
+        "actor_id",
+        "approved_at",
+        "dependencies",
+    }
+    assert {
+        field.name for field in fields(ApprovedScenarioRecipeVersionProjection)
+    } == {
+        "recipe_version_id",
+        "recipe_id",
+        "version_number",
+        "content_hash",
+        "payload",
+        "author_id",
+        "approval",
+        "based_on_recipe_version_id",
+        "authority_state",
+        "authority_reasons",
+        "can_materialize",
+    }
+    assert {item.value for item in ScenarioRecipeApprovalAuthorityState} == {
+        "current",
+        "outdated",
+        "incompatible",
+        "unavailable",
+    }
+    assert ScenarioRecipeApprovalProjection.__dataclass_params__.frozen
+    assert ApprovedScenarioRecipeVersionProjection.__dataclass_params__.frozen
+    assert hasattr(ScenarioRecipeApprovalProjection, "__slots__")
+    assert hasattr(ApprovedScenarioRecipeVersionProjection, "__slots__")
 
 
 def test_scenario_lab_1_0_freezes_distinct_typed_inventory_unavailability() -> None:

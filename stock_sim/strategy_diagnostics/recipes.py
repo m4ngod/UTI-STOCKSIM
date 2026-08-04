@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
+from types import MappingProxyType
 from typing import Any, Callable, Iterable, Literal, Mapping, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, validator
 
 from .historical_segments import HistoricalMarketSegment
 from .transformations import (
@@ -40,7 +41,7 @@ def _canonical_value(value: object) -> object:
         return _decimal_text(value)
     if isinstance(value, BaseModel):
         return _canonical_value(value.dict())
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {
             str(key): _canonical_value(item)
             for key, item in value.items()
@@ -57,6 +58,21 @@ def _canonical_json(payload: object) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _deep_freeze_parameter_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {
+                str(name): _deep_freeze_parameter_value(item)
+                for name, item in value.items()
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze_parameter_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze_parameter_value(item) for item in value)
+    return value
 
 
 class _ImmutableRecipeModel(BaseModel):
@@ -76,7 +92,16 @@ class ExecutionConditionsV1(_ImmutableRecipeModel):
 
 class ScenarioTransformationRequestV1(_ImmutableRecipeModel):
     transformation_id: str = Field(min_length=1, max_length=128)
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    parameters: Mapping[str, Any] = Field(default_factory=dict)
+
+    @validator("parameters")
+    def _freeze_parameters(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return MappingProxyType(
+            {
+                str(name): _deep_freeze_parameter_value(parameter)
+                for name, parameter in value.items()
+            }
+        )
 
 
 class ScenarioRecipeV1(_ImmutableRecipeModel):
@@ -406,6 +431,9 @@ class ApprovedScenarioRecipeVersion:
     approved_at: datetime
     validation_result: RecipeValidationResult
     based_on_version_id: str | None = None
+    approval_id: str | None = None
+    validation_identity: str | None = None
+    approval_command_identity: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -419,7 +447,44 @@ class ApprovedScenarioRecipeVersion:
             "approved_at": self.approved_at.isoformat(),
             "validation": self.validation_result.to_dict(),
             "based_on_version_id": self.based_on_version_id,
+            "approval_id": self.approval_id,
+            "validation_identity": self.validation_identity,
+            "approval_command_identity": self.approval_command_identity,
         }
+
+
+def scenario_recipe_approval_identity(
+    *,
+    version_id: str,
+    actor: str,
+    approved_at: datetime,
+    validation_identity: str,
+    command_identity: str,
+) -> str:
+    """Bind one immutable approval to its exact validation identity."""
+
+    encoded = _canonical_json(
+        {
+            "version_id": version_id,
+            "actor": actor,
+            "approved_at": approved_at.isoformat(),
+            "validation_identity": validation_identity,
+            "command_identity": command_identity,
+        }
+    )
+    return "recipe_approval_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def legacy_scenario_recipe_approval_identity(
+    *,
+    version_id: str,
+    actor: str,
+    approved_at: datetime,
+) -> str:
+    """Recover the stable identity used before exact command bindings existed."""
+
+    encoded = f"{version_id}|{actor}|{approved_at.isoformat()}"
+    return "recipe_approval_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class ScenarioRecipeRepository(Protocol):
@@ -771,10 +836,30 @@ class RecipeWorkbench:
         draft_id: str,
         *,
         actor: str,
+        validation_identity: str | None = None,
+        command_identity: str | None = None,
     ) -> ApprovedScenarioRecipeVersion:
         normalized_actor = actor.strip()
         if not normalized_actor:
             raise ValueError("Approval actor is required")
+        normalized_validation_identity = (
+            None
+            if validation_identity is None
+            else validation_identity.strip()
+        )
+        if validation_identity is not None and not normalized_validation_identity:
+            raise ValueError("Approval validation identity is required")
+        normalized_command_identity = (
+            None if command_identity is None else command_identity.strip()
+        )
+        if command_identity is not None and not normalized_command_identity:
+            raise ValueError("Approval command identity is required")
+        if (normalized_validation_identity is None) != (
+            normalized_command_identity is None
+        ):
+            raise ValueError(
+                "Approval validation and command identities must be supplied together"
+            )
         draft = self.get_draft(draft_id)
         validation = self._repository.get_validation(draft_id)
         if (
@@ -809,20 +894,36 @@ class RecipeWorkbench:
                 "content_hash": validation.recipe_content_hash,
             }
         )
+        version_id = (
+            "recipe_version_"
+            + hashlib.sha256(version_identity.encode("utf-8")).hexdigest()
+        )
+        approved_at = self._now()
+        approval_id = (
+            None
+            if normalized_validation_identity is None
+            else scenario_recipe_approval_identity(
+                version_id=version_id,
+                actor=normalized_actor,
+                approved_at=approved_at,
+                validation_identity=normalized_validation_identity,
+                command_identity=normalized_command_identity or "",
+            )
+        )
         version = ApprovedScenarioRecipeVersion(
-            version_id=(
-                "recipe_version_"
-                + hashlib.sha256(version_identity.encode("utf-8")).hexdigest()
-            ),
+            version_id=version_id,
             recipe_id=draft.recipe_id,
             version_number=version_number,
             recipe=validation.validated_recipe,
             content_hash=validation.recipe_content_hash,
             author=draft.author,
             approval_actor=normalized_actor,
-            approved_at=self._now(),
+            approved_at=approved_at,
             validation_result=validation,
             based_on_version_id=draft.based_on_version_id,
+            approval_id=approval_id,
+            validation_identity=normalized_validation_identity,
+            approval_command_identity=normalized_command_identity,
         )
         return self._repository.add_version(version)
 
@@ -952,6 +1053,8 @@ __all__ = [
     "ScenarioRecipeDraft",
     "ScenarioRecipeRepository",
     "ScenarioRecipeV1",
+    "legacy_scenario_recipe_approval_identity",
+    "scenario_recipe_approval_identity",
     "ScenarioTransformationRequestV1",
     "TransformationProposalV1",
     "UnapprovedScenarioRecipeError",
