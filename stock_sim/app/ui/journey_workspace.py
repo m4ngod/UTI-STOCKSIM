@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import count
 from math import ceil
 from pathlib import Path
@@ -67,6 +67,10 @@ from app.features import (
     RunMonitoringFeature,
     RunMonitoringSelection,
     RunMonitoringViewState,
+    ScenarioLabContext,
+    ScenarioLabFeature,
+    ScenarioLabFocusTarget,
+    ScenarioLabViewState,
     StartFormalDiagnosticCampaign,
     StrategyLibraryContext,
     StrategyLibraryFeature,
@@ -85,6 +89,13 @@ from app.features.strategy_library import (
     StrategySelectionDisposition,
 )
 from app.features.strategy_library_application import StrategyLibraryEntry
+from app.features.scenario_lab_application import (
+    HistoricalSegmentEntry,
+    MarketScenarioEntry,
+    ReferenceMarketPathEntry,
+    ScenarioLabUnavailabilityReason,
+    TransformationCatalogEntryProjection,
+)
 
 from .accessibility import (
     AccessibilityPreferences,
@@ -558,6 +569,541 @@ def _strategy_library_entry_payload(entry: object) -> dict[str, object]:
             }
             for item in strategy.availability_reasons
         ],
+    }
+
+
+class ScenarioLabQtAdapter(QObject):
+    """Qt-only projection of the typed Scenario Lab Feature Interface."""
+
+    stateChanged = Signal()
+    deliveryRequested = Signal(int, object)
+
+    def __init__(
+        self,
+        feature: ScenarioLabFeature,
+        *,
+        context: ScenarioLabContext | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._feature = feature
+        self._context = context or ScenarioLabContext()
+        self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._closed = False
+        self.deliveryRequested.connect(
+            self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subscription: Subscription | None = feature.subscribe(
+            self._context,
+            self._queue_state,
+        )
+
+    def _queue_state(self, state: ScenarioLabViewState) -> None:
+        if not self._closed:
+            self.deliveryRequested.emit(self._mount_generation.value, state)
+
+    @Slot(int, object)
+    def _accept_state(self, mount_generation: int, state: ScenarioLabViewState) -> None:
+        if self._closed or mount_generation != self._mount_generation.value:
+            return
+        if state.context != self._context or state.revision <= self._state.revision:
+            return
+        self._state = state
+        self.stateChanged.emit()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def presentationState(self) -> str:  # noqa: N802
+        return self._state.presentation.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshness(self) -> str:
+        return self._state.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceRevision(self) -> str:  # noqa: N802
+        return (
+            "Unavailable"
+            if self._state.source_revision is None
+            else self._state.source_revision.value
+        )
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGeneration(self) -> int:  # noqa: N802
+        return self._state.source.generation.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def searchText(self) -> str:  # noqa: N802
+        return self._context.search_text
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableMarkets(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted({item.market for item in inventory.historical_segments})
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableLayers(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted({item.layer.value for item in inventory.market_scenarios})
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableSources(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted(
+            {item.source_snapshot_id.value for item in inventory.historical_segments}
+        )
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableRecipeVersions(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted(
+            {item.recipe_version_id.value for item in inventory.market_scenarios}
+        )
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableTransformationFamilies(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted(
+            {item.family for item in inventory.transformation_catalog.entries}
+        )
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableCompatibilities(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted(
+            {
+                *(item.compatibility.value for item in inventory.reference_paths),
+                *(item.compatibility.value for item in inventory.market_scenarios),
+            }
+        )
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def availableReproducibilities(self) -> list[str]:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return []
+        return sorted(
+            {
+                *(item.reproducibility.value for item in inventory.reference_paths),
+                *(item.reproducibility.value for item in inventory.market_scenarios),
+            }
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def marketFilter(self) -> str:  # noqa: N802
+        return "" if not self._context.markets else self._context.markets[0]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def layerFilter(self) -> str:  # noqa: N802
+        return "" if not self._context.layers else self._context.layers[0]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceFilter(self) -> str:  # noqa: N802
+        return "" if not self._context.sources else self._context.sources[0]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def recipeVersionFilter(self) -> str:  # noqa: N802
+        return (
+            ""
+            if not self._context.recipe_versions
+            else self._context.recipe_versions[0]
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def transformationFamilyFilter(self) -> str:  # noqa: N802
+        return (
+            ""
+            if not self._context.transformation_families
+            else self._context.transformation_families[0]
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def compatibilityFilter(self) -> str:  # noqa: N802
+        return (
+            ""
+            if not self._context.compatibilities
+            else self._context.compatibilities[0]
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def reproducibilityFilter(self) -> str:  # noqa: N802
+        return (
+            ""
+            if not self._context.reproducibilities
+            else self._context.reproducibilities[0]
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def reconstructionFilter(self) -> str:  # noqa: N802
+        if self._context.reconstructed is None:
+            return "all"
+        return "reconstructed" if self._context.reconstructed else "recorded"
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def historicalSegmentCount(self) -> int:  # noqa: N802
+        return len(self._state.historical_segments)
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def referencePathCount(self) -> int:  # noqa: N802
+        return len(self._state.reference_paths)
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def marketScenarioCount(self) -> int:  # noqa: N802
+        return len(self._state.market_scenarios)
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def historicalSegments(self) -> list[dict[str, object]]:  # noqa: N802
+        return [_historical_segment_payload(item) for item in self._state.historical_segments]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def referencePaths(self) -> list[dict[str, object]]:  # noqa: N802
+        return [_reference_path_payload(item) for item in self._state.reference_paths]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def marketScenarios(self) -> list[dict[str, object]]:  # noqa: N802
+        return [_market_scenario_payload(item) for item in self._state.market_scenarios]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def transformations(self) -> list[dict[str, object]]:
+        catalog = self._state.transformation_catalog
+        if catalog is None:
+            return []
+        return [_transformation_payload(item) for item in catalog.entries]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def catalogVersion(self) -> str:  # noqa: N802
+        catalog = self._state.transformation_catalog
+        return "Unavailable" if catalog is None else catalog.catalog_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def focusRestorationIdentity(self) -> str:  # noqa: N802
+        return self._state.focus_restoration_identity or ""
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusMessage(self) -> str:  # noqa: N802
+        if self._state.error is not None:
+            return self._state.error.message
+        return {
+            "loading": "Reading admitted data, Reference Paths, and Market Scenarios.",
+            "empty": "No admitted Scenario Lab inventory is available.",
+            "ready": "Authoritative Scenario Lab inventory is ready.",
+            "partial": "Some immutable Scenario Lab facts failed closed.",
+            "stale": "Retaining the last reliable Scenario Lab inventory.",
+            "disconnected": "Disconnected; retained Scenario Lab data may be stale.",
+            "failed": "The authoritative Scenario Lab inventory could not be read.",
+        }[self._state.presentation.value]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def recipeCapabilityMessage(self) -> str:  # noqa: N802
+        return "Recipe Draft creation and validation are not yet available (Issue #80)."
+
+    @Slot(str)
+    def setSearchText(self, value: str) -> None:  # noqa: N802
+        normalized = " ".join(value.split())
+        if normalized == self._context.search_text:
+            return
+        self._replace_context(replace(self._context, search_text=normalized))
+
+    @Slot(str)
+    def setMarketFilter(self, value: str) -> None:  # noqa: N802
+        markets = () if not value else (value,)
+        if markets != self._context.markets:
+            self._replace_context(replace(self._context, markets=markets))
+
+    @Slot(str)
+    def setLayerFilter(self, value: str) -> None:  # noqa: N802
+        layers = () if not value else (value,)
+        if layers != self._context.layers:
+            self._replace_context(replace(self._context, layers=layers))
+
+    @Slot(str)
+    def setSourceFilter(self, value: str) -> None:  # noqa: N802
+        sources = () if not value else (value,)
+        if sources != self._context.sources:
+            self._replace_context(replace(self._context, sources=sources))
+
+    @Slot(str)
+    def setRecipeVersionFilter(self, value: str) -> None:  # noqa: N802
+        recipe_versions = () if not value else (value,)
+        if recipe_versions != self._context.recipe_versions:
+            self._replace_context(
+                replace(self._context, recipe_versions=recipe_versions)
+            )
+
+    @Slot(str)
+    def setTransformationFamilyFilter(self, value: str) -> None:  # noqa: N802
+        transformation_families = () if not value else (value,)
+        if transformation_families != self._context.transformation_families:
+            self._replace_context(
+                replace(
+                    self._context,
+                    transformation_families=transformation_families,
+                )
+            )
+
+    @Slot(str)
+    def setCompatibilityFilter(self, value: str) -> None:  # noqa: N802
+        compatibilities = () if not value else (value,)
+        if compatibilities != self._context.compatibilities:
+            self._replace_context(
+                replace(self._context, compatibilities=compatibilities)
+            )
+
+    @Slot(str)
+    def setReproducibilityFilter(self, value: str) -> None:  # noqa: N802
+        reproducibilities = () if not value else (value,)
+        if reproducibilities != self._context.reproducibilities:
+            self._replace_context(
+                replace(self._context, reproducibilities=reproducibilities)
+            )
+
+    @Slot(str)
+    def setReconstructionFilter(self, value: str) -> None:  # noqa: N802
+        reconstructed = {
+            "all": None,
+            "reconstructed": True,
+            "recorded": False,
+        }.get(value)
+        if value not in {"all", "reconstructed", "recorded"}:
+            return
+        if reconstructed is not self._context.reconstructed:
+            self._replace_context(
+                replace(self._context, reconstructed=reconstructed)
+            )
+
+    @Slot(str)
+    def setFocusIdentity(self, value: str) -> None:  # noqa: N802
+        if not value:
+            return
+        target = ScenarioLabFocusTarget.HISTORICAL_SEGMENT
+        if any(item.path_id.value == value for item in self._state.reference_paths):
+            target = ScenarioLabFocusTarget.REFERENCE_PATH
+        elif any(item.scenario_id.value == value for item in self._state.market_scenarios):
+            target = ScenarioLabFocusTarget.MARKET_SCENARIO
+        self._replace_context(
+            replace(self._context, focus_target=target, focus_identity=value)
+        )
+
+    @Slot()
+    def refresh(self) -> None:
+        if self._closed:
+            return
+        state = self._feature.snapshot(self._context)
+        self._accept_state(self._mount_generation.value, state)
+
+    def _replace_context(self, context: ScenarioLabContext) -> None:
+        if self._closed:
+            return
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._context = context
+        self._state = self._feature.snapshot(context)
+        self._subscription = self._feature.subscribe(context, self._queue_state)
+        self.stateChanged.emit()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+
+
+def _scenario_lab_reason_payload(
+    item: ScenarioLabUnavailabilityReason,
+) -> dict[str, object]:
+    return {
+        "code": item.code.value,
+        "summary": item.summary,
+        "correctiveGuidance": item.corrective_guidance,
+    }
+
+
+def _historical_segment_payload(item: HistoricalSegmentEntry) -> dict[str, object]:
+    return {
+        "segmentId": item.segment_id.value,
+        "contentHash": item.content_hash,
+        "sourceSnapshotId": item.source_snapshot_id.value,
+        "sourceSnapshotContentHash": item.source_snapshot_content_hash,
+        "label": item.label,
+        "market": item.market,
+        "startDate": item.start_date.isoformat(),
+        "endDate": item.end_date.isoformat(),
+        "provider": item.provenance.provider,
+        "dataset": item.provenance.dataset,
+        "sourceVersion": item.provenance.version,
+        "eligibleInstrumentCount": item.eligible_instrument_count,
+        "tradingDayCount": item.trading_day_count,
+        "barCount": item.bar_count,
+        "admissionState": item.admission_state.value,
+        "qualityState": item.quality_state.value,
+        "recommendationTags": list(item.recommendation_tags),
+        "unavailabilityReasons": [
+            _scenario_lab_reason_payload(reason)
+            for reason in item.unavailability_reasons
+        ],
+    }
+
+
+def _reference_path_payload(item: ReferenceMarketPathEntry) -> dict[str, object]:
+    preview = item.preview
+    return {
+        "pathId": item.path_id.value,
+        "segmentId": item.segment_id.value,
+        "segmentContentHash": item.segment_content_hash,
+        "sourceSnapshotId": item.source_snapshot_id.value,
+        "seed": item.seed,
+        "expanderVersion": item.expander_version,
+        "sourceResolution": item.source_resolution,
+        "runtimeResolution": item.runtime_resolution,
+        "reconstructed": item.reconstructed,
+        "reconstructionNotice": item.reconstruction_notice,
+        "numericTolerance": item.numeric_tolerance,
+        "normalizationProvenance": item.normalization_provenance,
+        "marketRuleProfileVersion": item.market_rule_profile_version,
+        "transformationCatalogVersion": item.transformation_catalog_version,
+        "startTime": item.start_time.isoformat(),
+        "endTime": item.end_time.isoformat(),
+        "integrity": item.integrity.value,
+        "compatibility": item.compatibility.value,
+        "reproducibility": item.reproducibility.value,
+        "appliedTransformations": [
+            {
+                "transformationId": transformation.transformation_id,
+                "family": transformation.family,
+                "catalogVersion": transformation.catalog_version,
+                "implementationVersion": (
+                    transformation.implementation_version
+                ),
+                "parameters": [
+                    {"name": name, "value": value}
+                    for name, value in transformation.parameters
+                ],
+            }
+            for transformation in item.transformations
+        ],
+        "previewNodeCount": 0 if preview is None else len(preview.nodes),
+        "boundedNodeLimit": 0 if preview is None else preview.bounded_node_limit,
+        "previewAtTime": "" if preview is None else preview.at_time.isoformat(),
+        "eligibleUniverse": (
+            [] if preview is None else list(preview.eligible_universe)
+        ),
+        "previewNodes": (
+            []
+            if preview is None
+            else [
+                {
+                    "instrument": node.instrument,
+                    "simulationTime": node.simulation_time.isoformat(),
+                    "open": node.open,
+                    "high": node.high,
+                    "low": node.low,
+                    "close": node.close,
+                    "volume": node.volume,
+                    "amount": node.amount,
+                    "reconstructed": node.reconstructed,
+                }
+                for node in preview.nodes
+            ]
+        ),
+        "unavailabilityReasons": [
+            _scenario_lab_reason_payload(reason)
+            for reason in item.unavailability_reasons
+        ],
+    }
+
+
+def _market_scenario_payload(item: MarketScenarioEntry) -> dict[str, object]:
+    return {
+        "scenarioId": item.scenario_id.value,
+        "layer": item.layer.value,
+        "comparisonRole": item.comparison_role.value,
+        "baselineScenarioId": (
+            "" if item.baseline_scenario_id is None else item.baseline_scenario_id.value
+        ),
+        "recipeVersionId": item.recipe_version_id.value,
+        "recipeContentHash": item.recipe_content_hash,
+        "pathId": item.path_id.value,
+        "segmentId": item.segment_id.value,
+        "segmentContentHash": item.segment_content_hash,
+        "sourceSnapshotId": item.source_snapshot_id.value,
+        "seed": item.seed,
+        "transformationCatalogVersion": item.transformation_catalog_version,
+        "marketRuleProfileVersion": item.market_rule_profile_version,
+        "decisionCadenceMinutes": item.decision_cadence_minutes,
+        "transformations": [
+            {
+                "transformationId": transformation.transformation_id,
+                "family": transformation.family,
+                "implementationVersion": (
+                    transformation.implementation_version
+                ),
+                "parameters": [
+                    {"name": name, "value": value}
+                    for name, value in transformation.parameters
+                ],
+            }
+            for transformation in item.transformations
+        ],
+        "requestedExecutionAssumptions": {
+            "commissionBps": (
+                item.requested_execution_assumptions.commission_bps
+            ),
+            "slippageBps": item.requested_execution_assumptions.slippage_bps,
+            "maxFillFraction": (
+                item.requested_execution_assumptions.max_fill_fraction
+            ),
+            "latencyNodes": item.requested_execution_assumptions.latency_nodes,
+            "allowPartialFills": (
+                item.requested_execution_assumptions.allow_partial_fills
+            ),
+        },
+        "compatibility": item.compatibility.value,
+        "reproducibility": item.reproducibility.value,
+        "executionResolution": item.execution_resolution.value,
+        "unavailabilityReasons": [
+            _scenario_lab_reason_payload(reason)
+            for reason in item.unavailability_reasons
+        ],
+    }
+
+
+def _transformation_payload(item: TransformationCatalogEntryProjection) -> dict[str, object]:
+    return {
+        "transformationId": item.transformation_id,
+        "family": item.family,
+        "implementationVersion": item.implementation_version,
+        "parameters": [
+            {
+                "name": parameter.name,
+                "valueType": parameter.value_type,
+                "required": parameter.required,
+                "minimum": parameter.minimum or "",
+                "maximum": parameter.maximum or "",
+                "choices": list(parameter.choices),
+            }
+            for parameter in item.parameters
+        ],
+        "compatibilityRules": list(item.compatibility_rules),
+        "causalityConstraints": list(item.causality_constraints),
     }
 
 
@@ -3331,6 +3877,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         strategy_library_bookmark_sink: (
             Callable[[StrategySelectionBookmark], None] | None
         ) = None,
+        scenario_lab_feature: ScenarioLabFeature | None = None,
+        scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
@@ -3342,6 +3890,7 @@ class JourneyWorkspaceHost(QQuickWidget):
         super().__init__(parent)
         if initial_route not in {
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -3377,6 +3926,19 @@ class JourneyWorkspaceHost(QQuickWidget):
         self.rootContext().setContextProperty(
             "strategyLibrary",
             self._strategy_library,
+        )
+        self._scenario_lab = (
+            ScenarioLabQtAdapter(
+                scenario_lab_feature,
+                context=scenario_lab_context,
+                parent=self,
+            )
+            if scenario_lab_feature is not None
+            else None
+        )
+        self.rootContext().setContextProperty(
+            "scenarioLab",
+            self._scenario_lab,
         )
         self._diagnostic_tasks = (
             DiagnosticTasksQtAdapter(
@@ -3467,6 +4029,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         self._workspace_closed = True
         if self._strategy_library is not None:
             self._strategy_library.close()
+        if self._scenario_lab is not None:
+            self._scenario_lab.close()
         if self._diagnostic_tasks is not None:
             self._diagnostic_tasks.close()
         self._run_monitoring.close()
@@ -3481,5 +4045,6 @@ __all__ = [
     "EvidenceAndFindingsQtAdapter",
     "JourneyWorkspaceHost",
     "RunMonitoringQtAdapter",
+    "ScenarioLabQtAdapter",
     "StrategyLibraryQtAdapter",
 ]

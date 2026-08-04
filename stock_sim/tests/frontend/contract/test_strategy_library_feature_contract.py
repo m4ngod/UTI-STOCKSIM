@@ -31,6 +31,7 @@ def test_strategy_library_1_0_activates_its_complete_operation_surface() -> None
         for descriptor in ACTIVE_FEATURE_INTERFACES
     ) == (
         (FeatureModuleName.STRATEGY_LIBRARY, "1.0"),
+        (FeatureModuleName.SCENARIO_LAB, "1.0"),
         (FeatureModuleName.DIAGNOSTIC_TASKS, "1.0"),
         (FeatureModuleName.RUN_MONITORING, "1.2"),
         (FeatureModuleName.EVIDENCE_AND_FINDINGS, "1.1"),

@@ -71,6 +71,7 @@ def test_application_read_model_contract_is_exact_typed_and_frozen() -> None:
     assert EVIDENCE_AND_FINDINGS_INTERFACE_VERSION.render() == "1.1"
     assert tuple(item.name.value for item in ACTIVE_FEATURE_INTERFACES) == (
         "StrategyLibraryFeature",
+        "ScenarioLabFeature",
         "DiagnosticTasksFeature",
         "RunMonitoringFeature",
         "EvidenceAndFindingsFeature",

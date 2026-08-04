@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
 from typing import cast
 from uuid import uuid4
 
@@ -189,8 +190,85 @@ class DiagnosticsApplicationState:
 class DiagnosticCampaignCaseInventory:
     """One authoritative read of existing paths and their valid Campaign Cases."""
 
+    admitted_segments: tuple["ScenarioLabAdmittedSegment", ...]
     materialized_paths: tuple[MaterializedMarketPath, ...]
     available_cases: tuple[DiagnosticCampaignCase, ...]
+    path_assessments: tuple["ScenarioLabPathAssessment", ...]
+    case_assessments: tuple["ScenarioLabCampaignCaseAssessment", ...]
+
+
+class ScenarioLabIntegrityAssessment(str, Enum):
+    VERIFIED = "verified"
+    FAILED = "failed"
+
+
+class ScenarioLabCompatibilityAssessment(str, Enum):
+    COMPATIBLE = "compatible"
+    INCOMPATIBLE = "incompatible"
+    NOT_YET_RESOLVED = "not_yet_resolved"
+    UNAVAILABLE = "unavailable"
+
+
+class ScenarioLabReproducibilityAssessment(str, Enum):
+    REPRODUCIBLE = "reproducible"
+    NONREPRODUCIBLE = "nonreproducible"
+    NOT_YET_RESOLVED = "not_yet_resolved"
+    UNAVAILABLE = "unavailable"
+
+
+class ScenarioLabAdmissionAssessment(str, Enum):
+    ADMITTED = "admitted"
+    MISSING = "missing"
+    INCOMPLETE = "incomplete"
+    UNAVAILABLE = "unavailable"
+
+
+class ScenarioLabQualityAssessment(str, Enum):
+    PASSED = "passed"
+    INCOMPLETE = "incomplete"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+
+
+class ScenarioLabInventoryReasonCode(str, Enum):
+    SOURCE_INCOMPLETE = "scenario_lab_source_incomplete"
+    PATH_INTEGRITY_FAILED = "reference_path_integrity_failed"
+    PATH_RECIPE_INCOMPATIBLE = "reference_path_recipe_incompatible"
+    PATH_PROVENANCE_INCOMPLETE = "reference_path_provenance_incomplete"
+    NONBASELINE_WITHOUT_BASELINE = "nonbaseline_without_baseline"
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioLabInventoryReason:
+    code: ScenarioLabInventoryReasonCode
+    summary: str
+    corrective_guidance: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioLabAdmittedSegment:
+    segment: HistoricalMarketSegment
+    source_snapshot_content_hash: str
+    admission_state: ScenarioLabAdmissionAssessment
+    quality_state: ScenarioLabQualityAssessment
+    unavailability_reasons: tuple[ScenarioLabInventoryReason, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioLabPathAssessment:
+    path_identity: str
+    integrity: ScenarioLabIntegrityAssessment
+    compatibility: ScenarioLabCompatibilityAssessment
+    reproducibility: ScenarioLabReproducibilityAssessment
+    reasons: tuple[ScenarioLabInventoryReason, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioLabCampaignCaseAssessment:
+    campaign_case_identity: str
+    compatibility: ScenarioLabCompatibilityAssessment
+    reproducibility: ScenarioLabReproducibilityAssessment
+    reasons: tuple[ScenarioLabInventoryReason, ...]
 
 
 class DiagnosticsApplication:
@@ -390,11 +468,207 @@ class DiagnosticsApplication:
         """Read paths once and derive their valid Campaign Cases coherently."""
 
         self.status()
-        paths = self.list_materialized_market_paths()
-        return DiagnosticCampaignCaseInventory(
-            materialized_paths=paths,
-            available_cases=self._diagnostic_campaign_cases_for_paths(paths),
+        admitted_segments = tuple(
+            ScenarioLabAdmittedSegment(
+                segment=segment,
+                source_snapshot_content_hash=(
+                    self._historical_segments.get_source_snapshot(
+                        segment.source_snapshot_id
+                    ).content_hash
+                ),
+                admission_state=ScenarioLabAdmissionAssessment.ADMITTED,
+                quality_state=ScenarioLabQualityAssessment.PASSED,
+                unavailability_reasons=(),
+            )
+            for segment in self._historical_segments.list_segments()
         )
+        paths = self.list_materialized_market_paths()
+        approved_versions = self._recipe_workbench.list_approved_versions()
+        cases = self._diagnostic_campaign_cases_for_paths(paths)
+        path_assessments = tuple(
+            self._scenario_lab_path_assessment(
+                path,
+                available_cases=cases,
+                has_approved_recipes=bool(approved_versions),
+            )
+            for path in paths
+        )
+        assessment_by_path = {
+            item.path_identity: item for item in path_assessments
+        }
+        return DiagnosticCampaignCaseInventory(
+            admitted_segments=admitted_segments,
+            materialized_paths=paths,
+            available_cases=cases,
+            path_assessments=path_assessments,
+            case_assessments=self._scenario_lab_case_assessments(
+                cases,
+                assessment_by_path=assessment_by_path,
+            ),
+        )
+
+    def _scenario_lab_path_assessment(
+        self,
+        path: MaterializedMarketPath,
+        *,
+        available_cases: tuple[DiagnosticCampaignCase, ...],
+        has_approved_recipes: bool,
+    ) -> ScenarioLabPathAssessment:
+        try:
+            verified = self._load_verified_reference_path(path.artifact_hash)
+        except (IndexError, KeyError, OSError, TypeError, UnicodeError, ValueError):
+            return ScenarioLabPathAssessment(
+                path_identity=path.artifact_hash,
+                integrity=ScenarioLabIntegrityAssessment.FAILED,
+                compatibility=ScenarioLabCompatibilityAssessment.UNAVAILABLE,
+                reproducibility=ScenarioLabReproducibilityAssessment.UNAVAILABLE,
+                reasons=(
+                    ScenarioLabInventoryReason(
+                        code=ScenarioLabInventoryReasonCode.PATH_INTEGRITY_FAILED,
+                        summary=(
+                            "The immutable Reference Market Path failed backend "
+                            "integrity verification."
+                        ),
+                        corrective_guidance=(
+                            "Re-materialize from an Approved Scenario Recipe and "
+                            "verify the persisted artifact hash."
+                        ),
+                    ),
+                ),
+            )
+        path_cases = tuple(
+            case
+            for case in available_cases
+            if case.materialization_hash == path.artifact_hash
+        )
+        compatibility = (
+            ScenarioLabCompatibilityAssessment.COMPATIBLE
+            if path_cases
+            else ScenarioLabCompatibilityAssessment.INCOMPATIBLE
+            if has_approved_recipes
+            else ScenarioLabCompatibilityAssessment.NOT_YET_RESOLVED
+        )
+        required_provenance = (
+            verified.segment_id,
+            verified.segment_content_hash,
+            verified.source_snapshot_id,
+            verified.expander_version,
+            verified.source_resolution,
+            verified.runtime_resolution,
+            verified.numeric_tolerance,
+            verified.normalization_provenance,
+            verified.market_rule_profile_version,
+            verified.transformation_catalog_version,
+        )
+        reproducible = bool(verified.nodes) and all(
+            value.strip() for value in required_provenance
+        )
+        reasons: list[ScenarioLabInventoryReason] = []
+        if compatibility is ScenarioLabCompatibilityAssessment.INCOMPATIBLE:
+            reasons.append(
+                ScenarioLabInventoryReason(
+                    code=ScenarioLabInventoryReasonCode.PATH_RECIPE_INCOMPATIBLE,
+                    summary="No Approved Scenario Recipe is compatible with this path.",
+                    corrective_guidance=(
+                        "Select or approve a Recipe whose exact segment, seed, "
+                        "transformation, and market-rule bindings match this path."
+                    ),
+                )
+            )
+        elif compatibility is ScenarioLabCompatibilityAssessment.NOT_YET_RESOLVED:
+            reasons.append(
+                ScenarioLabInventoryReason(
+                    code=ScenarioLabInventoryReasonCode.PATH_RECIPE_INCOMPATIBLE,
+                    summary=(
+                        "Compatibility is unresolved until an Approved Recipe exists."
+                    ),
+                    corrective_guidance=(
+                        "Approve a Scenario Recipe before using this path in a "
+                        "Formal Scenario Set."
+                    ),
+                )
+            )
+        if not reproducible:
+            reasons.append(
+                ScenarioLabInventoryReason(
+                    code=ScenarioLabInventoryReasonCode.PATH_PROVENANCE_INCOMPLETE,
+                    summary="Required deterministic path provenance is incomplete.",
+                    corrective_guidance=(
+                        "Restore the exact source snapshot, expander, resolution, "
+                        "catalog, and market-rule provenance before reuse."
+                    ),
+                )
+            )
+        return ScenarioLabPathAssessment(
+            path_identity=path.artifact_hash,
+            integrity=ScenarioLabIntegrityAssessment.VERIFIED,
+            compatibility=compatibility,
+            reproducibility=(
+                ScenarioLabReproducibilityAssessment.REPRODUCIBLE
+                if reproducible
+                else ScenarioLabReproducibilityAssessment.NONREPRODUCIBLE
+            ),
+            reasons=tuple(reasons),
+        )
+
+    @staticmethod
+    def _scenario_lab_case_assessments(
+        cases: tuple[DiagnosticCampaignCase, ...],
+        *,
+        assessment_by_path: Mapping[str, ScenarioLabPathAssessment],
+    ) -> tuple[ScenarioLabCampaignCaseAssessment, ...]:
+        baselines = {
+            (
+                case.historical_segment_id,
+                case.historical_segment_content_hash,
+                case.source_snapshot_id,
+                case.materialization_seed,
+            )
+            for case in cases
+            if case.layer == "baseline"
+        }
+        assessments: list[ScenarioLabCampaignCaseAssessment] = []
+        for case in cases:
+            path_assessment = assessment_by_path[case.materialization_hash]
+            comparison_key = (
+                case.historical_segment_id,
+                case.historical_segment_content_hash,
+                case.source_snapshot_id,
+                case.materialization_seed,
+            )
+            comparison_valid = (
+                case.layer == "baseline" or comparison_key in baselines
+            )
+            compatibility = (
+                path_assessment.compatibility
+                if comparison_valid
+                else ScenarioLabCompatibilityAssessment.INCOMPATIBLE
+            )
+            reasons = list(path_assessment.reasons)
+            if not comparison_valid:
+                reasons.append(
+                    ScenarioLabInventoryReason(
+                        code=(
+                            ScenarioLabInventoryReasonCode.NONBASELINE_WITHOUT_BASELINE
+                        ),
+                        summary=(
+                            "The nonbaseline Campaign Case has no compatible baseline."
+                        ),
+                        corrective_guidance=(
+                            "Materialize the exact baseline Recipe for the same "
+                            "segment, source snapshot, and seed."
+                        ),
+                    )
+                )
+            assessments.append(
+                ScenarioLabCampaignCaseAssessment(
+                    campaign_case_identity=case.case_id,
+                    compatibility=compatibility,
+                    reproducibility=path_assessment.reproducibility,
+                    reasons=tuple(reasons),
+                )
+            )
+        return tuple(assessments)
 
     def _diagnostic_campaign_cases_for_paths(
         self,

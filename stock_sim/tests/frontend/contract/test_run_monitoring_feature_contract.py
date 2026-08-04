@@ -19,6 +19,7 @@ from app.features import (
     RunMonitoringPresentationState,
     RunMonitoringSelection,
     RunMonitoringViewState,
+    SCENARIO_LAB_INTERFACE_VERSION,
     SourceKind,
     STRATEGY_LIBRARY_INTERFACE_VERSION,
     StrategyRunId,
@@ -37,6 +38,7 @@ def test_wave_three_entry_activates_strategy_library_before_inherited_interfaces
     )
     assert tuple(descriptor.name for descriptor in ACTIVE_FEATURE_INTERFACES) == (
         FeatureModuleName.STRATEGY_LIBRARY,
+        FeatureModuleName.SCENARIO_LAB,
         FeatureModuleName.DIAGNOSTIC_TASKS,
         FeatureModuleName.RUN_MONITORING,
         FeatureModuleName.EVIDENCE_AND_FINDINGS,
@@ -47,16 +49,20 @@ def test_wave_three_entry_activates_strategy_library_before_inherited_interfaces
     )
     assert (
         ACTIVE_FEATURE_INTERFACES[1].version
-        == DIAGNOSTIC_TASKS_INTERFACE_VERSION
+        == SCENARIO_LAB_INTERFACE_VERSION
     )
     assert (
-        ACTIVE_FEATURE_INTERFACES[2].version == RUN_MONITORING_INTERFACE_VERSION
+        ACTIVE_FEATURE_INTERFACES[2].version == DIAGNOSTIC_TASKS_INTERFACE_VERSION
     )
     assert (
-        ACTIVE_FEATURE_INTERFACES[3].version
+        ACTIVE_FEATURE_INTERFACES[3].version == RUN_MONITORING_INTERFACE_VERSION
+    )
+    assert (
+        ACTIVE_FEATURE_INTERFACES[4].version
         == EVIDENCE_AND_FINDINGS_INTERFACE_VERSION
     )
     assert STRATEGY_LIBRARY_INTERFACE_VERSION.render() == "1.0"
+    assert SCENARIO_LAB_INTERFACE_VERSION.render() == "1.0"
     assert DIAGNOSTIC_TASKS_INTERFACE_VERSION.render() == "1.0"
     assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.2"
     assert EVIDENCE_AND_FINDINGS_INTERFACE_VERSION.render() == "1.1"

@@ -1,6 +1,6 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 contract
 
-Status: incremental source-level integration contract for Issues #77 and #78 plus the
+Status: incremental source-level integration contract for Issues #77, #78, and #79 plus the
 certified Wave 2 delivery in Issues #56–#66. This is not a Wave 3 installed
 release-certification claim. Issue #88 owns Wave 3 installed offline release certification,
 T08/T09/T10 evidence, packages, tag, and release assets.
@@ -13,6 +13,7 @@ provenance, Reproduction Manifest, and terminal truth. `AppContext` is the only
 composition root.
 
 - `StrategyLibraryFeature` version 1.0
+- `ScenarioLabFeature` version 1.0
 - `DiagnosticTasksFeature` version 1.0
 - `RunMonitoringFeature` version 1.2
 - `EvidenceAndFindingsFeature` version 1.1
@@ -22,7 +23,28 @@ The Strategy inventory read boundary is the separate in-process
 Adapter calls only public `DiagnosticsApplication.read_strategy_under_test_inventory`
 and `DiagnosticsApplication.validate_formal_strategy_set` behavior. The
 comparison and exact formal-set selection commands remain on
-`StrategyLibraryFeature` 1.0. The command boundary is the separate in-process
+`StrategyLibraryFeature` 1.0.
+
+The Scenario Lab read boundary is the separate in-process
+`StrategyDiagnosticsV1ScenarioLabApplication` version 1.0. Its production
+Adapter calls only public `DiagnosticsApplication.list_historical_segments`,
+`read_diagnostic_campaign_case_inventory`, `transformation_catalog_view`, and
+`preview_reference_market_path` behavior. It translates admitted Historical
+Market Segments, content-addressed Reference Market Paths, the registered
+Transformation Catalog, and Campaign Case projections into immutable typed
+values. `CampaignCaseId` is the only Market Scenario identity; the Reference
+Market Path content hash remains a distinct provenance identity. Bounded path
+previews are integrity checked, and reconstructed 30-second paths are labeled
+as reconstructed rather than recorded tick or order-book microstructure.
+
+`ScenarioLabFeature` 1.0 freezes the complete snapshot, subscription, close,
+Recipe Draft, validation, approval, materialization, retry, composition,
+assumption-resolution, and formal-selection operation allowlist. Issue #79
+activates only read capabilities. Recipe and scenario mutations return typed
+unavailable results until Issues #80–#83 implement their owning slices; the
+deterministic fake is never a production fallback.
+
+The Diagnostic Tasks command boundary is the separate in-process
 `StrategyDiagnosticsV1DiagnosticTasksApplication` version 1.0. The existing
 read boundary remains `StrategyDiagnosticsV1ApplicationReadModel` version 1.0.
 QML receives only internal Qt projections of the Feature Interfaces.
@@ -52,6 +74,18 @@ revalidates authority before publishing `CURRENT`. Missing identities publish
 `UNAVAILABLE`; changed versions, manifests, Guardrails, or dependencies publish
 `CONFLICT` and require explicit reselection. No score, ranking, or recommendation
 is computed.
+
+Issue #79 activates Scenario Lab read tracing. Search and filters operate only
+over immutable typed `ScenarioLabViewState`. Historical Segment entries retain
+exact segment, content, source snapshot, provenance, coverage, admission,
+quality, and recommendation-tag facts. Reference Path entries retain content
+identity, segment/source binding, seed, expander, source/runtime resolution,
+reconstruction notice, tolerance, normalization, Market Rule Profile,
+Transformation versions, time range, integrity, reproducibility, and bounded
+preview. Market Scenario entries retain backend-created Campaign Case identity,
+layer, comparison role, baseline relationship, Recipe/path/source/seed and
+Transformation identities. Effective execution assumptions remain explicitly
+`not_yet_resolved` until Issue #83; QML neither guesses nor synthesizes them.
 
 ## Identity, commands, and recovery
 
@@ -93,6 +127,13 @@ quarantine, disposal, and no-late-callback behavior. The source gate binds
 these targets by file and test name so the suite cannot silently lose a
 required edge.
 
+The Issue #79 source slice uses real public Historical Segment admission,
+Scenario Recipe approval, Reference Path materialization, and Campaign Case
+derivation, then traces those exact identities through the production Scenario
+Lab Application Adapter, live Feature Adapter, and production QML route. The
+path hash and Campaign Case identity are independently reasserted and never
+substituted for one another.
+
 It never substitutes a fake, dictionary producer, Repository read, mocked
 Application, direct final-result database insert, or QML property injection for
 the production path.
@@ -111,6 +152,12 @@ lower revision quarantine, connection generation, old-generation invalidation,
 Subscription disposal, idempotent close, comparison, exact formal selection,
 selection idempotency, invalid selection, stale/conflict/unavailable bookmark
 recovery, and terminal selection identity immutability.
+Scenario Lab uses unchanged test bodies for loading/ready search state,
+immutable segment/path/scenario/catalog values, bounded preview and
+reconstruction honesty, source revision/generation, subscription disposal,
+idempotent close, exact Campaign Case versus path identity, and typed
+unavailable Recipe/materialization/composition capabilities. Structured
+failure retains the last reliable immutable inventory as stale.
 
 ### Seam 3: installed offline black-box release
 
@@ -123,7 +170,7 @@ by Issue #66.
 
 ## Accessibility, safety, and performance
 
-The current four-route journey preserves keyboard navigation, Narrator names and
+The current five-route journey preserves keyboard navigation, Narrator names and
 descriptions, focus restoration, 200% text scale, reduced motion, high
 contrast, background-task continuity, remount behavior, and clean subscription
 disposal. The source gate also exercises the fixed hardware/software
@@ -136,6 +183,7 @@ Wave 3 does not add manual trading, HTTP, REST, OpenAPI, IPC, a second process,
 WebEngine, or a general-purpose frontend façade. It does not remove legacy
 Widgets. Issues #77 and #78 activate Strategy Library browse, explicit
 comparison, exact formal selection, and authoritative bookmark recovery.
-Scenario Lab remains owned by Issue #79 and later dependencies; System Health
-and Wave 4 remain unimplemented. This contract does not claim Wave 3
+Issue #79 activates Scenario Lab read tracing; Recipe writes, approval,
+materialization, scenario-set composition, and handoff remain owned by Issues
+#80–#84. System Health and Wave 4 remain unimplemented. This contract does not claim Wave 3
 T08/T09/T10 or release certification.

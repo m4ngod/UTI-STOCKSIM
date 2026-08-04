@@ -7,6 +7,7 @@ Rectangle {
     color: tokens.background
 
     property bool strategyLibraryAvailable: strategyLibrary !== null
+    property bool scenarioLabAvailable: scenarioLab !== null
     property bool diagnosticTasksAvailable: diagnosticTasks !== null
     property string activeRoute: "diagnostic_tasks"
     property bool diagnosticTasksPageActivated: (
@@ -33,6 +34,11 @@ Rectangle {
         strategyLibraryPageLoader.item === null
             ? null
             : strategyLibraryPageLoader.item.firstActionControl
+    )
+    readonly property var scenarioLabInitialFocusItem: (
+        scenarioLabPageLoader.item === null
+            ? null
+            : scenarioLabPageLoader.item.firstActionControl
     )
     readonly property var evidenceSecondCandidateFocusItem: (
         evidencePageLoader.item === null
@@ -155,6 +161,11 @@ Rectangle {
                     || !strategyLibraryPageLoader.item.restoreFocus())
                 strategyLibraryRouteNavigation.forceActiveFocus()
         }
+        else if (activeRoute === "scenario_lab") {
+            if (scenarioLabPageLoader.item === null
+                    || !scenarioLabPageLoader.item.restoreFocus())
+                scenarioLabRouteNavigation.forceActiveFocus()
+        }
         else if (activeRoute === "evidence_and_findings"
                 && evidencePageLoader.item !== null)
             evidencePageLoader.item.restoreFocus()
@@ -180,6 +191,11 @@ Rectangle {
     Component.onCompleted: {
         activeRoute = initialJourneyRoute
         if (activeRoute === "strategy_library" && !strategyLibraryAvailable)
+            activeRoute = scenarioLabAvailable
+                ? "scenario_lab"
+                : diagnosticTasksAvailable
+                    ? "diagnostic_tasks" : "run_monitoring"
+        else if (activeRoute === "scenario_lab" && !scenarioLabAvailable)
             activeRoute = diagnosticTasksAvailable
                 ? "diagnostic_tasks" : "run_monitoring"
         else if (!diagnosticTasksAvailable && activeRoute === "diagnostic_tasks")
@@ -206,6 +222,16 @@ Rectangle {
             if (workspace.activeRoute === "strategy_library"
                     && strategyLibraryPageLoader.item !== null)
                 Qt.callLater(strategyLibraryPageLoader.item.restoreFocus)
+        }
+    }
+
+    Connections {
+        target: scenarioLab
+        enabled: workspace.scenarioLabAvailable
+        function onStateChanged() {
+            if (workspace.activeRoute === "scenario_lab"
+                    && scenarioLabPageLoader.item !== null)
+                Qt.callLater(scenarioLabPageLoader.item.restoreFocus)
         }
     }
 
@@ -331,6 +357,63 @@ Rectangle {
                     }
                     Keys.onSpacePressed: function(event) {
                         workspace.openRoute("strategy_library")
+                        event.accepted = true
+                    }
+                }
+
+                Rectangle {
+                    id: scenarioLabRouteNavigation
+                    objectName: "scenarioLabRouteNavigation"
+                    property string accessibleName: "Open Scenario Lab"
+                    property string accessibleDescription: (
+                        "Inspect admitted data, immutable Reference Market Paths, and Market Scenarios"
+                    )
+                    activeFocusOnTab: true
+                    visible: workspace.scenarioLabAvailable
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: Math.max(
+                        44,
+                        tokens.bodySize + tokens.spaceSm * 2
+                    )
+                    radius: tokens.radiusSm
+                    color: workspace.activeRoute === "scenario_lab"
+                        ? tokens.surfaceRaised : "transparent"
+                    border.color: workspace.activeRoute === "scenario_lab"
+                        ? tokens.accent : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.name: accessibleName
+                    Accessible.description: accessibleDescription
+                    Accessible.role: Accessible.Button
+                    Accessible.focusable: true
+                    Accessible.focused: activeFocus
+                    Accessible.selectable: true
+                    Accessible.selected: workspace.activeRoute === "scenario_lab"
+                    Accessible.onPressAction: workspace.openRoute("scenario_lab")
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: tokens.spaceMd
+                        anchors.rightMargin: tokens.spaceSm
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Scenario Lab"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: workspace.openRoute("scenario_lab")
+                    }
+                    Keys.onReturnPressed: function(event) {
+                        workspace.openRoute("scenario_lab")
+                        event.accepted = true
+                    }
+                    Keys.onSpacePressed: function(event) {
+                        workspace.openRoute("scenario_lab")
                         event.accepted = true
                     }
                 }
@@ -604,6 +687,27 @@ Rectangle {
                             Qt.resolvedUrl("StrategyLibraryPage.qml"),
                             {
                                 "adapter": strategyLibrary,
+                                "tokens": workspace.designSystem
+                            }
+                        )
+                    }
+                }
+                onActiveChanged: ensureLoaded()
+                Component.onCompleted: ensureLoaded()
+            }
+
+            Loader {
+                id: scenarioLabPageLoader
+                objectName: "scenarioLabPageLoader"
+                anchors.fill: parent
+                active: workspace.scenarioLabAvailable
+                visible: workspace.activeRoute === "scenario_lab"
+                function ensureLoaded() {
+                    if (active && status === Loader.Null) {
+                        setSource(
+                            Qt.resolvedUrl("ScenarioLabPage.qml"),
+                            {
+                                "adapter": scenarioLab,
                                 "tokens": workspace.designSystem
                             }
                         )

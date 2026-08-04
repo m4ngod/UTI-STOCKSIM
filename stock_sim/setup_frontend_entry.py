@@ -128,6 +128,9 @@ def _start_frontend(*, headless: bool):
             app.aboutToQuit.connect(  # type: ignore[attr-defined]
                 diagnostic_tasks_feature.close
             )
+        scenario_lab_feature = getattr(context, "scenario_lab_feature", None)
+        if scenario_lab_feature is not None:
+            app.aboutToQuit.connect(scenario_lab_feature.close)  # type: ignore[attr-defined]
         app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
         evidence_feature = getattr(
             context,
@@ -151,6 +154,16 @@ def _start_frontend(*, headless: bool):
         ),
         strategy_library_bookmark_sink=(
             getattr(context, "persist_strategy_library_bookmark", None)
+        ),
+        scenario_lab_feature=getattr(
+            context,
+            "scenario_lab_feature",
+            None,
+        ),
+        scenario_lab_context=getattr(
+            context,
+            "scenario_lab_context",
+            None,
         ),
         diagnostic_tasks_feature=getattr(
             context,

@@ -24,6 +24,8 @@ PRODUCTION_PATH = (
     "FileBackedV1Persistence",
     "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
     "LiveStrategyLibraryAdapter",
+    "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+    "LiveScenarioLabAdapter",
     "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
     "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -162,6 +164,7 @@ EXPECTED_JOURNEY = (
 _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
     r"Open Strategy Library|"
+    r"Open Scenario Lab|"
     r"Compare formal set|"
     r"Select exact formal set|"
     r"Open Diagnostic Tasks|"
@@ -194,10 +197,31 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r")$"
 )
 _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
-    {"diagnosticTaskApprovalActorInput"}
+    {
+        "diagnosticTaskApprovalActorInput",
+        "scenarioLabSearchInput",
+        "scenarioLabMarketFilter",
+        "scenarioLabSourceFilter",
+        "scenarioLabRecipeVersionFilter",
+        "scenarioLabLayerFilter",
+        "scenarioLabTransformationFamilyFilter",
+        "scenarioLabCompatibilityFilter",
+        "scenarioLabReproducibilityFilter",
+        "scenarioLabReconstructionFilter",
+    }
 )
 _PACKAGED_NON_ACTION_FOCUS_PARENT_OBJECT_NAMES = frozenset(
-    {"strategyLibraryAvailabilityFilter"}
+    {
+        "strategyLibraryAvailabilityFilter",
+        "scenarioLabMarketFilter",
+        "scenarioLabSourceFilter",
+        "scenarioLabRecipeVersionFilter",
+        "scenarioLabLayerFilter",
+        "scenarioLabTransformationFamilyFilter",
+        "scenarioLabCompatibilityFilter",
+        "scenarioLabReproducibilityFilter",
+        "scenarioLabReconstructionFilter",
+    }
 )
 
 
@@ -356,6 +380,7 @@ def _create_production_window(
     strategy_diagnostics_read_model: Any | None = None,
     strategy_diagnostics_tasks_application: Any | None = None,
     strategy_diagnostics_library_application: Any | None = None,
+    strategy_diagnostics_scenario_lab_application: Any | None = None,
 ) -> tuple[Any, Any, Any]:
     from app.app_context import build_app_context
     from app.ui.main_window import MainWindow
@@ -372,12 +397,17 @@ def _create_production_window(
         strategy_diagnostics_library_application=(
             strategy_diagnostics_library_application
         ),
+        strategy_diagnostics_scenario_lab_application=(
+            strategy_diagnostics_scenario_lab_application
+        ),
     )
     window = None
     try:
         window = MainWindow(
             strategy_library_feature=context.strategy_library_feature,
             strategy_library_context=context.strategy_library_context,
+            scenario_lab_feature=context.scenario_lab_feature,
+            scenario_lab_context=context.scenario_lab_context,
             diagnostic_tasks_feature=context.diagnostic_tasks_feature,
             diagnostic_tasks_context=context.diagnostic_tasks_context,
             run_monitoring_feature=context.run_monitoring_feature,
@@ -410,6 +440,11 @@ def _create_production_window(
             (
                 context.strategy_library_feature.close
                 if hasattr(context, "strategy_library_feature")
+                else None
+            ),
+            (
+                context.scenario_lab_feature.close
+                if hasattr(context, "scenario_lab_feature")
                 else None
             ),
             context.diagnostic_tasks_feature.close,
@@ -511,6 +546,7 @@ def _navigate_route(
 
     object_name = {
         "strategy_library": "strategyLibraryRouteNavigation",
+        "scenario_lab": "scenarioLabRouteNavigation",
         "diagnostic_tasks": "diagnosticTasksRouteNavigation",
         "run_monitoring": "runMonitoringRouteNavigation",
         "evidence_and_findings": (
@@ -1450,6 +1486,7 @@ def _run_smoke_journey(
         ACTIVE_FEATURE_INTERFACES,
         LiveStrategyDiagnosticsV1ApplicationAdapter,
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
     )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
@@ -1560,6 +1597,11 @@ def _run_smoke_journey(
     )
     strategy_library_application = (
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+            fixture.application
+        )
+    )
+    scenario_lab_application = (
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
             fixture.application
         )
     )
@@ -1715,6 +1757,7 @@ def _run_smoke_journey(
         strategy_diagnostics_read_model=read_model,
         strategy_diagnostics_tasks_application=diagnostic_tasks_application,
         strategy_diagnostics_library_application=strategy_library_application,
+        strategy_diagnostics_scenario_lab_application=scenario_lab_application,
         settings_path=report_dir / "frontend-v2-settings.json",
     )
     close_initial_mount = register_mount(
@@ -1750,6 +1793,24 @@ def _run_smoke_journey(
             and strategy_library_adapter.property("entryCount") == 2
         ),
         "authoritative Strategy Library route",
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="scenario_lab",
+    )
+    keyboard_routes.add("scenario_lab")
+    scenario_lab_adapter = host._scenario_lab
+    if scenario_lab_adapter is None:
+        raise RuntimeError("Scenario Lab Adapter is unavailable")
+    _settle_until(
+        app,
+        lambda: (
+            scenario_lab_adapter.property("presentationState")
+            in {"empty", "ready", "partial"}
+        ),
+        "authoritative Scenario Lab route",
     )
 
     diagnostic_task_identity = ""
@@ -1791,6 +1852,7 @@ def _run_smoke_journey(
 
         for route in (
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -1819,6 +1881,7 @@ def _run_smoke_journey(
         bridge.mark_disconnected()
         for route in (
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2056,6 +2119,11 @@ def _run_smoke_journey(
                 fixture.application
             )
         )
+        scenario_lab_application = (
+            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+                fixture.application
+            )
+        )
         context, window, host = _create_production_window(
             event_bridge=bridge,
             strategy_diagnostics_read_model=read_model,
@@ -2064,6 +2132,9 @@ def _run_smoke_journey(
             ),
             strategy_diagnostics_library_application=(
                 strategy_library_application
+            ),
+            strategy_diagnostics_scenario_lab_application=(
+                scenario_lab_application
             ),
             settings_path=report_dir / "frontend-v2-settings.json",
         )
@@ -2391,6 +2462,9 @@ def _run_smoke_journey(
             strategy_diagnostics_library_application=(
                 strategy_library_application
             ),
+            strategy_diagnostics_scenario_lab_application=(
+                scenario_lab_application
+            ),
             settings_path=report_dir / "frontend-v2-settings.json",
         )
         register_mount(
@@ -2462,6 +2536,7 @@ def _run_smoke_journey(
         raw_artifact_hashes=fixture.raw_artifact_hashes,
         keyboard_navigation_verified=keyboard_routes == {
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2479,6 +2554,7 @@ def _run_smoke_journey(
         ),
         routes_rendered=(
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2551,6 +2627,11 @@ def _close_mount(
         "strategy_library_feature",
         None,
     )
+    scenario_lab_feature = getattr(
+        context,
+        "scenario_lab_feature",
+        None,
+    )
     close_actions = [
         ("MainWindow hide", window.hide),
         ("Qt event drain before QML teardown", app.processEvents),
@@ -2567,6 +2648,13 @@ def _close_mount(
             (
                 "Strategy Library Feature",
                 strategy_library_feature.close,
+            )
+        )
+    if scenario_lab_feature is not None:
+        close_actions.append(
+            (
+                "Scenario Lab Feature",
+                scenario_lab_feature.close,
             )
         )
     close_actions.extend(
@@ -2676,6 +2764,16 @@ def _mount_is_closed(
 ) -> bool:
     return bool(
         getattr(host, "_workspace_closed", False)
+        and getattr(
+            getattr(context, "strategy_library_feature", None),
+            "_closed",
+            False,
+        )
+        and getattr(
+            getattr(context, "scenario_lab_feature", None),
+            "_closed",
+            False,
+        )
         and getattr(context.diagnostic_tasks_feature, "_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
         and _owned_executor_is_stopped(context.run_monitoring_feature)
@@ -2963,6 +3061,7 @@ def _run_interactive() -> int:
     )
     window.resize(1024, 640)
     app.aboutToQuit.connect(context.strategy_library_feature.close)
+    app.aboutToQuit.connect(context.scenario_lab_feature.close)
     app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
     app.aboutToQuit.connect(context.run_monitoring_feature.close)
     app.aboutToQuit.connect(context.evidence_and_findings_feature.close)

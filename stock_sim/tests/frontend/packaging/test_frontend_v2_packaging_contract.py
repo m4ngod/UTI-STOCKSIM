@@ -168,8 +168,10 @@ _CLEAN_ROOM_IDENTITY_GRAPH = sorted(
 _REQUIRED_QML_DEPENDENCY_MODULES = (
     "_duckdb",
     "app.features.live_strategy_library",
+    "app.features.live_scenario_lab",
     "app.features.live_strategy_diagnostics_v1_application",
     "app.features.strategy_library_application",
+    "app.features.scenario_lab_application",
     "duckdb",
     "persistence.models_training",
     "sqlalchemy.dialects.sqlite.pysqlite",
@@ -255,6 +257,8 @@ def _clean_room_lane(root, lane, graphics_api):
             "FileBackedV1Persistence",
             "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
             "LiveStrategyLibraryAdapter",
+            "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+            "LiveScenarioLabAdapter",
             "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
             "LiveDiagnosticTasksAdapter",
             "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -298,6 +302,7 @@ def _clean_room_lane(root, lane, graphics_api):
         ),
         "active_feature_interfaces": [
             "StrategyLibraryFeature/1.0",
+            "ScenarioLabFeature/1.0",
             "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
@@ -329,6 +334,7 @@ def _clean_room_lane(root, lane, graphics_api):
         "authoritative_reconnect_verified": True,
         "routes_rendered": [
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -1437,6 +1443,8 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "FileBackedV1Persistence",
                         "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
                         "LiveStrategyLibraryAdapter",
+                        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+                        "LiveScenarioLabAdapter",
                         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
                         "LiveDiagnosticTasksAdapter",
                         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1480,6 +1488,7 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     ),
                     "active_feature_interfaces": [
                         "StrategyLibraryFeature/1.0",
+                        "ScenarioLabFeature/1.0",
                         "DiagnosticTasksFeature/1.0",
                         "RunMonitoringFeature/1.2",
                         "EvidenceAndFindingsFeature/1.1",
@@ -1521,6 +1530,7 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     "authoritative_reconnect_verified": True,
                     "routes_rendered": [
                         "strategy_library",
+                        "scenario_lab",
                         "diagnostic_tasks",
                         "run_monitoring",
                         "evidence_and_findings",
@@ -1663,7 +1673,9 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="_duckdb" />
           <module name="app.features.live_strategy_diagnostics_v1_application" />
           <module name="app.features.live_strategy_library" />
+          <module name="app.features.live_scenario_lab" />
           <module name="app.features.strategy_library_application" />
+          <module name="app.features.scenario_lab_application" />
           <module name="duckdb" />
           <module name="persistence.models_training" />
           <module name="sqlalchemy.dialects.sqlite.pysqlite" />
@@ -1765,7 +1777,9 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="_duckdb" />
           <module name="app.features.live_strategy_diagnostics_v1_application" />
           <module name="app.features.live_strategy_library" />
+          <module name="app.features.live_scenario_lab" />
           <module name="app.features.strategy_library_application" />
+          <module name="app.features.scenario_lab_application" />
           <module name="duckdb" />
           <module name="persistence.models_training" />
           <module name="sqlalchemy.dialects.sqlite.pysqlite" />
