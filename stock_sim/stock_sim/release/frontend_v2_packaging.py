@@ -76,8 +76,10 @@ _REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
     {
         "_duckdb",
         "app.features.live_strategy_library",
+        "app.features.live_scenario_lab",
         "app.features.live_strategy_diagnostics_v1_application",
         "app.features.strategy_library_application",
+        "app.features.scenario_lab_application",
         "duckdb",
         "persistence.models_training",
         "sqlalchemy.dialects.sqlite.pysqlite",
@@ -153,6 +155,8 @@ _PRODUCTION_JOURNEY_PATH = (
     "FileBackedV1Persistence",
     "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
     "LiveStrategyLibraryAdapter",
+    "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+    "LiveScenarioLabAdapter",
     "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
     "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -263,6 +267,7 @@ _EXPECTED_APPLICATION_READ_MODEL_INTERFACE = (
 )
 _EXPECTED_ACTIVE_FEATURE_INTERFACES = (
     "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
     "DiagnosticTasksFeature/1.0",
     "RunMonitoringFeature/1.2",
     "EvidenceAndFindingsFeature/1.1",
@@ -917,7 +922,9 @@ def create_package_build_plans(
             ),
             "--include-module=app.features.live_strategy_diagnostics_v1_application",
             "--include-module=app.features.live_strategy_library",
+            "--include-module=app.features.live_scenario_lab",
             "--include-module=app.features.strategy_library_application",
+            "--include-module=app.features.scenario_lab_application",
             "--include-module=strategy_diagnostics.application",
             "--include-module=strategy_diagnostics.persistence",
             "--include-module=strategy_diagnostics.market_paths",
@@ -1684,12 +1691,13 @@ def verify_clean_room_report(
             )
         if tuple(lane.get("routes_rendered", ())) != (
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
         ):
             failures.append(
-                f"{lane_name} renderer did not render all four active routes"
+                f"{lane_name} renderer did not render all five active routes"
             )
         observations = lane.get("observations")
         observed_journey = (
@@ -2060,6 +2068,7 @@ def _load_renderer_lane(
         routes_rendered
         != (
             "strategy_library",
+            "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",

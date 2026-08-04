@@ -41,6 +41,23 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
                     "close",
                 }
             ),
+            "ScenarioLabFeature": frozenset(
+                {
+                    "interface_version",
+                    "snapshot",
+                    "subscribe",
+                    "create_recipe_draft",
+                    "revise_recipe_draft",
+                    "validate_recipe_draft",
+                    "approve_recipe",
+                    "materialize_reference_path",
+                    "retry_materialization",
+                    "compose_scenario_set",
+                    "resolve_execution_assumptions",
+                    "select_formal_scenario_set",
+                    "close",
+                }
+            ),
             "DiagnosticTasksFeature": frozenset(
                 {
                     "interface_version",
@@ -93,6 +110,21 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
                 "setSearchText",
             }
         ),
+        "ScenarioLabQtAdapter": frozenset(
+            {
+                "refresh",
+                "setCompatibilityFilter",
+                "setFocusIdentity",
+                "setLayerFilter",
+                "setMarketFilter",
+                "setRecipeVersionFilter",
+                "setReconstructionFilter",
+                "setReproducibilityFilter",
+                "setSearchText",
+                "setSourceFilter",
+                "setTransformationFamilyFilter",
+            }
+        ),
         "DiagnosticTasksQtAdapter": frozenset(
             {
                 "approveTask",
@@ -141,6 +173,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
 JOURNEY_ROUTE_ALLOWLIST = frozenset(
     {
         "strategy_library",
+        "scenario_lab",
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
@@ -169,6 +202,7 @@ RUNTIME_GATEWAY_CALL_ALLOWLIST: Mapping[str, frozenset[str]] = (
             # Strategy Library consumes only its versioned typed Application
             # Interface. RuntimeGateway is never an approved authority.
             "LiveStrategyLibraryAdapter": frozenset(),
+            "LiveScenarioLabAdapter": frozenset(),
             # Diagnostic Tasks consumes only its typed in-process Application
             # Interface; RuntimeGateway is never an approved authority.
             "LiveDiagnosticTasksAdapter": frozenset(),
@@ -1006,6 +1040,9 @@ def audit_no_manual_trading_gate(
         "LiveStrategyLibraryAdapter": (
             project_root / "app" / "features" / "live_strategy_library.py"
         ),
+        "LiveScenarioLabAdapter": (
+            project_root / "app" / "features" / "live_scenario_lab.py"
+        ),
         "LiveDiagnosticTasksAdapter": (
             project_root / "app" / "features" / "live_diagnostic_tasks.py"
         ),
@@ -1029,6 +1066,7 @@ def audit_no_manual_trading_gate(
         DeterministicFakeDiagnosticTasksAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,
         DeterministicFakeRunMonitoringAdapter,
+        DeterministicFakeScenarioLabAdapter,
         DeterministicFakeStrategyLibraryAdapter,
         DiagnosticTasksFeature,
         EvidenceAndFindingsFeature,
@@ -1036,11 +1074,17 @@ def audit_no_manual_trading_gate(
         LiveDiagnosticTasksAdapter,
         LiveEvidenceAndFindingsAdapter,
         LiveRunMonitoringAdapter,
+        LiveScenarioLabAdapter,
         LiveStrategyLibraryAdapter,
         OrderEvidenceTrace,
         ReadOnlyDiagnosticContext,
         ReadOnlyEvidenceContext,
         RunMonitoringFeature,
+        ScenarioLabFeature,
+        ScenarioLabViewState,
+        HistoricalSegmentEntry,
+        ReferenceMarketPathEntry,
+        MarketScenarioEntry,
         StrategyLibraryEntry,
         StrategyLibraryFeature,
         StrategyLibraryViewState,
@@ -1049,6 +1093,7 @@ def audit_no_manual_trading_gate(
 
     interfaces: Mapping[str, type[Any]] = {
         "StrategyLibraryFeature": StrategyLibraryFeature,
+        "ScenarioLabFeature": ScenarioLabFeature,
         "DiagnosticTasksFeature": DiagnosticTasksFeature,
         "RunMonitoringFeature": RunMonitoringFeature,
         "EvidenceAndFindingsFeature": EvidenceAndFindingsFeature,
@@ -1167,6 +1212,8 @@ def audit_no_manual_trading_gate(
     adapter_types = (
         DeterministicFakeStrategyLibraryAdapter,
         LiveStrategyLibraryAdapter,
+        DeterministicFakeScenarioLabAdapter,
+        LiveScenarioLabAdapter,
         DeterministicFakeDiagnosticTasksAdapter,
         LiveDiagnosticTasksAdapter,
         DeterministicFakeRunMonitoringAdapter,
@@ -1205,6 +1252,10 @@ def audit_no_manual_trading_gate(
     read_only_types = (
         StrategyLibraryViewState,
         StrategyLibraryEntry,
+        ScenarioLabViewState,
+        HistoricalSegmentEntry,
+        ReferenceMarketPathEntry,
+        MarketScenarioEntry,
         ReadOnlyDiagnosticContext,
         ReadOnlyEvidenceContext,
         OrderEvidenceTrace,

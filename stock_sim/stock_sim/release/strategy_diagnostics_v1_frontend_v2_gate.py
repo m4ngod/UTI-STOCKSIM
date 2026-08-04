@@ -22,6 +22,7 @@ from tempfile import TemporaryDirectory
 from app.features import (
     ACTIVE_FEATURE_INTERFACES,
     DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
+    SCENARIO_LAB_APPLICATION_INTERFACE_VERSION,
     STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION,
 )
 
@@ -334,6 +335,18 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
             ),
             (
                 "tests/frontend/contract/"
+                "test_scenario_lab_feature_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_scenario_lab_application_live_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_scenario_lab_live_fake_conformance.py"
+            ),
+            (
+                "tests/frontend/contract/"
                 "test_diagnostic_tasks_application_live_contract.py"
             ),
             (
@@ -395,6 +408,18 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
             (
                 "--ignore=tests/frontend/contract/"
                 "test_strategy_library_live_fake_conformance.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_scenario_lab_feature_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_scenario_lab_application_live_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_scenario_lab_live_fake_conformance.py"
             ),
             (
                 "--ignore=tests/frontend/contract/"
@@ -460,12 +485,14 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
     REQUIRED_CONTRACT_DOCUMENTS[0]: (
         "# Strategy Diagnostics V1 + Frontend V2 Wave 3 contract",
         "`StrategyLibraryFeature` version 1.0",
+        "`ScenarioLabFeature` version 1.0",
         "`DiagnosticTasksFeature` version 1.0",
         "`RunMonitoringFeature` version 1.2",
         "`EvidenceAndFindingsFeature` version 1.1",
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` version 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` version 1.0",
-        "Issues #77 and #78 activate Strategy Library browse",
+        "`StrategyDiagnosticsV1ScenarioLabApplication` version 1.0",
+        "Issue #79 activates Scenario Lab read tracing",
         "durable bookmark contains those immutable references",
         "Seam 1",
         "Seam 2",
@@ -476,16 +503,19 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
     REQUIRED_CONTRACT_DOCUMENTS[1]: (
         "# Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook",
         "`StrategyLibraryFeature` 1.0",
+        "`ScenarioLabFeature` 1.0",
         "`DiagnosticTasksFeature` 1.0",
         "`RunMonitoringFeature` 1.2",
         "`EvidenceAndFindingsFeature` 1.1",
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0",
-        "including Issues #77 and #78",
+        "`StrategyDiagnosticsV1ScenarioLabApplication` 1.0",
+        "including Issues #77, #78, and #79",
         "durable bookmark reread",
         PERSISTED_PRODUCT_TRACER.function_name,
         "test_diagnostic_tasks_live_fake_conformance.py",
         "test_strategy_library_live_fake_conformance.py",
+        "test_scenario_lab_live_fake_conformance.py",
         "Seam 3",
         "Issue #88",
         "does not claim T08, T09, or T10",
@@ -515,6 +545,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
     errors: list[str] = []
     expected_interfaces = (
         "StrategyLibraryFeature",
+        "ScenarioLabFeature",
         "DiagnosticTasksFeature",
         "RunMonitoringFeature",
         "EvidenceAndFindingsFeature",
@@ -534,6 +565,10 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
     if STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION.render() != "1.0":
         errors.append(
             "StrategyDiagnosticsV1StrategyLibraryApplication drifted from 1.0"
+        )
+    if SCENARIO_LAB_APPLICATION_INTERFACE_VERSION.render() != "1.0":
+        errors.append(
+            "StrategyDiagnosticsV1ScenarioLabApplication drifted from 1.0"
         )
     expected_tracer_requirements = (
         "authoritative-strategy-library-slice",

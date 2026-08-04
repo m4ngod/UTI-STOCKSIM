@@ -20,6 +20,7 @@ from app.features import (
     CancelDiagnosticTask,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DeterministicFakeScenarioLabAdapter,
     DeterministicFakeStrategyLibraryAdapter,
     DiagnosticTaskId,
     EvidenceAndFindingsContext,
@@ -27,7 +28,9 @@ from app.features import (
     FormalDiagnosticCampaignId,
     LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
+    LiveScenarioLabAdapter,
     LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+    LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
     LiveStrategyLibraryAdapter,
     MarketScenarioId,
     ReproductionManifestId,
@@ -60,6 +63,7 @@ FORBIDDEN_RUNTIME_MEMBERS = (
 APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
     r"Open Strategy Library|"
+    r"Open Scenario Lab|"
     r"Compare formal set|"
     r"Select exact formal set|"
     r"Open Diagnostic Tasks|"
@@ -323,6 +327,7 @@ def mounted_v2_mode(request):
     bridge = None
     if request.param == "deterministic_fake":
         strategy_feature = DeterministicFakeStrategyLibraryAdapter()
+        scenario_feature = DeterministicFakeScenarioLabAdapter()
         run_feature = DeterministicFakeRunMonitoringAdapter()
         evidence_feature = DeterministicFakeEvidenceAndFindingsAdapter()
         run_feature.advance_to_running(_run_context())
@@ -336,6 +341,15 @@ def mounted_v2_mode(request):
         strategy_feature = LiveStrategyLibraryAdapter(
             application=(
                 LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+                    strategy_application
+                )
+            ),
+            event_bridge=bridge,
+            clock=lambda: NOW,
+        )
+        scenario_feature = LiveScenarioLabAdapter(
+            application=(
+                LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
                     strategy_application
                 )
             ),
@@ -364,6 +378,7 @@ def mounted_v2_mode(request):
     window = MainWindow(
         strategy_library_feature=strategy_feature,
         strategy_library_context=StrategyLibraryContext(),
+        scenario_lab_feature=scenario_feature,
         run_monitoring_feature=run_feature,
         run_monitoring_context=_run_context(),
         evidence_and_findings_feature=evidence_feature,
@@ -377,6 +392,7 @@ def mounted_v2_mode(request):
     yield request.param, window, run_feature, evidence_feature, controller
     window.close()
     strategy_feature.close()
+    scenario_feature.close()
     run_feature.close()
     evidence_feature.close()
     if bridge is not None:
@@ -472,6 +488,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
     }
     assert route_objects == {
         "strategyLibraryRouteNavigation",
+        "scenarioLabRouteNavigation",
         "diagnosticTasksRouteNavigation",
         "runMonitoringRouteNavigation",
         "evidenceAndFindingsRouteNavigation",

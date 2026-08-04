@@ -19,11 +19,15 @@ from app.features import (
     DiagnosticTasksFeature,
     EvidenceAndFindingsFeature,
     RunMonitoringFeature,
+    ScenarioLabFeature,
     StrategyLibraryFeature,
     StrategyDiagnosticsV1DiagnosticTasksApplication,
 )
 from app.features.strategy_library_application import (
     StrategyDiagnosticsV1StrategyLibraryApplication,
+)
+from app.features.scenario_lab_application import (
+    StrategyDiagnosticsV1ScenarioLabApplication,
 )
 from stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate import (
     INTEGRATION_GATE_GROUPS,
@@ -140,14 +144,16 @@ def _public_type_graph_violations(
     return tuple(violations)
 
 
-def test_all_four_active_features_and_application_interfaces_have_clean_public_type_graphs():
+def test_all_five_active_features_and_application_interfaces_have_clean_public_type_graphs():
     public_graph = _transitive_interface_graph(
         DiagnosticTasksFeature,
         RunMonitoringFeature,
         EvidenceAndFindingsFeature,
         StrategyLibraryFeature,
+        ScenarioLabFeature,
         StrategyDiagnosticsV1DiagnosticTasksApplication,
         StrategyDiagnosticsV1StrategyLibraryApplication,
+        StrategyDiagnosticsV1ScenarioLabApplication,
     )
 
     assert _public_type_graph_violations(public_graph) == ()

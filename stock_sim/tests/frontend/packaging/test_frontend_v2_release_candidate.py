@@ -114,7 +114,7 @@ EXPECTED_JOURNEY = (
 )
 
 
-def test_clean_room_route_failure_names_all_four_active_routes() -> None:
+def test_clean_room_route_failure_names_all_five_active_routes() -> None:
     source = (
         PROJECT_ROOT
         / "stock_sim"
@@ -122,7 +122,8 @@ def test_clean_room_route_failure_names_all_four_active_routes() -> None:
         / "frontend_v2_packaging.py"
     ).read_text(encoding="utf-8")
 
-    assert "did not render all four active routes" in source
+    assert "did not render all five active routes" in source
+    assert "did not render all four active routes" not in source
     assert "did not render all three active routes" not in source
 _IDENTITY_SETS = {
     "candidates": ["candidate-1"],
@@ -784,6 +785,8 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "FileBackedV1Persistence",
         "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
         "LiveStrategyLibraryAdapter",
+        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+        "LiveScenarioLabAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -819,6 +822,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     )
     assert result.active_feature_interfaces == (
         "StrategyLibraryFeature/1.0",
+        "ScenarioLabFeature/1.0",
         "DiagnosticTasksFeature/1.0",
         "RunMonitoringFeature/1.2",
         "EvidenceAndFindingsFeature/1.1",
@@ -878,6 +882,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.authoritative_reconnect_verified is True
     assert result.routes_rendered == (
         "strategy_library",
+        "scenario_lab",
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
@@ -1043,6 +1048,8 @@ assert result.production_path == (
     "FileBackedV1Persistence",
     "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
     "LiveStrategyLibraryAdapter",
+    "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+    "LiveScenarioLabAdapter",
     "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
     "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1161,6 +1168,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "FileBackedV1Persistence",
                 "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
                 "LiveStrategyLibraryAdapter",
+                "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+                "LiveScenarioLabAdapter",
                 "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
                 "LiveDiagnosticTasksAdapter",
                 "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1204,6 +1213,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
             ),
             "active_feature_interfaces": [
                 "StrategyLibraryFeature/1.0",
+                "ScenarioLabFeature/1.0",
                 "DiagnosticTasksFeature/1.0",
                 "RunMonitoringFeature/1.2",
                 "EvidenceAndFindingsFeature/1.1",
@@ -1235,6 +1245,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "authoritative_reconnect_verified": True,
             "routes_rendered": [
                 "strategy_library",
+                "scenario_lab",
                 "diagnostic_tasks",
                 "run_monitoring",
                 "evidence_and_findings",
@@ -1393,6 +1404,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
         "FileBackedV1Persistence",
         "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
         "LiveStrategyLibraryAdapter",
+        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+        "LiveScenarioLabAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1875,10 +1888,10 @@ def test_packaged_accessible_names_have_one_authoritative_qml_source():
     assert "_PACKAGED_ACCESSIBLE_NAME_BY_OBJECT_NAME" not in entry_source
     assert journey_source.count(
         "Accessible.name: accessibleName"
-    ) == 4
+    ) == 5
     assert journey_source.count(
         "Accessible.description: accessibleDescription"
-    ) == 4
+    ) == 5
     assert "Accessible.name: accessibleName" in chart_source
     assert "Accessible.description: accessibleDescription" in chart_source
 
@@ -2540,6 +2553,8 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
         "Context",
         (),
         {
+            "strategy_library_feature": Feature("strategy-feature"),
+            "scenario_lab_feature": Feature("scenario-feature"),
             "diagnostic_tasks_feature": Feature("diagnostic-feature"),
             "run_monitoring_feature": Feature("run-feature"),
             "evidence_and_findings_feature": Feature("evidence-feature"),
@@ -2562,6 +2577,8 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
         "process-events",
         "window",
         "process-events",
+        "strategy-feature",
+        "scenario-feature",
         "diagnostic-feature",
         "run-feature",
         "evidence-feature",
@@ -3131,6 +3148,7 @@ def test_production_window_factory_closes_features_when_window_fails(
             self.closed = True
 
     strategy_feature = Resource()
+    scenario_feature = Resource()
     diagnostic_feature = Resource()
     run_feature = Resource()
     evidence_feature = Resource()
@@ -3138,6 +3156,8 @@ def test_production_window_factory_closes_features_when_window_fails(
     class Context:
         strategy_library_feature = strategy_feature
         strategy_library_context = object()
+        scenario_lab_feature = scenario_feature
+        scenario_lab_context = object()
         diagnostic_tasks_feature = diagnostic_feature
         diagnostic_tasks_context = object()
         run_monitoring_feature = run_feature
@@ -3163,6 +3183,7 @@ def test_production_window_factory_closes_features_when_window_fails(
         )
 
     assert strategy_feature.closed is True
+    assert scenario_feature.closed is True
     assert diagnostic_feature.closed is True
     assert run_feature.closed is True
     assert evidence_feature.closed is True

@@ -27,6 +27,8 @@ if TYPE_CHECKING:
         EvidenceAndFindingsFeature,
         RunMonitoringContext,
         RunMonitoringFeature,
+        ScenarioLabContext,
+        ScenarioLabFeature,
         StrategyLibraryContext,
         StrategyLibraryFeature,
         StrategySelectionBookmark,
@@ -86,6 +88,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         strategy_library_bookmark_sink: (
             Callable[[StrategySelectionBookmark], None] | None
         ) = None,
+        scenario_lab_feature: ScenarioLabFeature | None = None,
+        scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         run_monitoring_feature: RunMonitoringFeature | None = None,
@@ -138,6 +142,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._strategy_library_feature = strategy_library_feature
         self._strategy_library_context = strategy_library_context
         self._strategy_library_bookmark_sink = strategy_library_bookmark_sink
+        self._scenario_lab_feature = scenario_lab_feature
+        self._scenario_lab_context = scenario_lab_context
         self._diagnostic_tasks_feature = diagnostic_tasks_feature
         self._diagnostic_tasks_context = diagnostic_tasks_context
         self._run_monitoring_feature = run_monitoring_feature
@@ -209,6 +215,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             strategy_library_bookmark_sink=(
                 self._strategy_library_bookmark_sink
             ),
+            scenario_lab_feature=self._scenario_lab_feature,
+            scenario_lab_context=self._scenario_lab_context,
             diagnostic_tasks_feature=self._diagnostic_tasks_feature,
             diagnostic_tasks_context=self._diagnostic_tasks_context,
             evidence_feature=self._evidence_and_findings_feature,

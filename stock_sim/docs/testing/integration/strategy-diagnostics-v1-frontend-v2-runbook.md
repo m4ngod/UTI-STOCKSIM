@@ -1,7 +1,7 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
 
 This runbook reproduces the incremental Wave 3 source-level integration gate,
-including Issues #77 and #78 and the inherited Wave 2 union. It does not claim T08, T09, or T10
+including Issues #77, #78, and #79 and the inherited Wave 2 union. It does not claim T08, T09, or T10
 and is not the Issue #88 installed offline release-certification
 procedure.
 
@@ -24,14 +24,19 @@ python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
 This validates the checked-in union manifest, both contract documents, the
 `StrategyDiagnosticsV1ApplicationReadModel` 1.0 boundary,
 `StrategyDiagnosticsV1StrategyLibraryApplication` 1.0,
+`StrategyDiagnosticsV1ScenarioLabApplication` 1.0,
 `StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0,
-`StrategyLibraryFeature` 1.0, `DiagnosticTasksFeature` 1.0,
+`StrategyLibraryFeature` 1.0, `ScenarioLabFeature` 1.0,
+`DiagnosticTasksFeature` 1.0,
 `RunMonitoringFeature` 1.2, and
 `EvidenceAndFindingsFeature` 1.1. It also rejects forbidden types and
 substitutes across the exact persisted product tracer.
 For Issue #78 it also binds public formal-set validation, explicit comparison
 dimensions, exact immutable selection references, durable bookmark reread,
 typed stale/conflict/unavailable recovery, and focus restoration.
+For Issue #79 it binds admitted Historical Segment, immutable Reference Path,
+Campaign Case, Transformation Catalog, bounded preview, reconstruction honesty,
+typed unavailable write capability, and the exact five-Feature registry.
 
 ## Gate execution
 
@@ -63,7 +68,8 @@ python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
 The gate deliberately uses separate pytest processes for:
 
 1. Seam 2, including unchanged-body Strategy Library conformance in
-   `test_strategy_library_live_fake_conformance.py`, inherited Diagnostic Tasks
+   `test_strategy_library_live_fake_conformance.py`, unchanged-body Scenario
+   Lab conformance in `test_scenario_lab_live_fake_conformance.py`, inherited Diagnostic Tasks
    conformance in `test_diagnostic_tasks_live_fake_conformance.py`, and static
    architecture. The Strategy Library body includes exact comparison/selection,
    idempotency, source conflict, bookmark reopen, and capability truth;
@@ -72,6 +78,9 @@ The gate deliberately uses separate pytest processes for:
    `test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence`, plus
    `test_live_strategy_library_traces_public_inventory_into_qml` for the real
    public inventory-to-production-QML slice, and
+   `test_real_backend_inventory_traces_through_live_feature_into_qml` for real
+   admission → approved Recipe → Reference Path → Campaign Case → production
+   Scenario Lab QML tracing, and
    exact live targets for input/revision, command/idempotency, lifecycle/retry,
    connection-generation, disposal, and no-late-callback edges;
 3. Strategy Diagnostics V1 regression under the pinned interpreter;
@@ -115,6 +124,12 @@ flake.
   ranks, or recommendations. Select it, restart through a fresh `AppContext`,
   and verify the persisted exact references and focused Strategy are restored
   only after authoritative validation.
+- Verify Scenario Lab shows exact admitted segment/content/source identities,
+  provenance and coverage; a verified content-addressed Reference Path with
+  bounded preview and explicit reconstruction notice; and a separate backend
+  `CampaignCaseId` Market Scenario identity. Confirm effective execution is
+  `not_yet_resolved` and all Recipe/materialization/composition actions are
+  typed unavailable in Issue #79.
 
 Wave 3 Seam 3 remains owned by Issue #88. It must independently produce T08/T09/T10,
 same-source QML and Widgets packages, clean-room reports, checksums, dependency
