@@ -1,8 +1,9 @@
-# Strategy Diagnostics V1 + Frontend V2 Wave 2 integration runbook
+# Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
 
-This runbook reproduces the Issue #65 source-level integration gate.
-It does not claim T08, T09, or T10 and is not the Issue #66 installed offline
-release-certification procedure.
+This runbook reproduces the incremental Wave 3 source-level integration gate,
+including Issue #77 and the inherited Wave 2 union. It does not claim T08, T09, or T10
+and is not the Issue #88 installed offline release-certification
+procedure.
 
 ## Preconditions
 
@@ -22,8 +23,10 @@ python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
 
 This validates the checked-in union manifest, both contract documents, the
 `StrategyDiagnosticsV1ApplicationReadModel` 1.0 boundary,
+`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0,
 `StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0,
-`DiagnosticTasksFeature` 1.0, `RunMonitoringFeature` 1.2, and
+`StrategyLibraryFeature` 1.0, `DiagnosticTasksFeature` 1.0,
+`RunMonitoringFeature` 1.2, and
 `EvidenceAndFindingsFeature` 1.1. It also rejects forbidden types and
 substitutes across the exact persisted product tracer.
 
@@ -56,11 +59,15 @@ python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
 
 The gate deliberately uses separate pytest processes for:
 
-1. Seam 2, including unchanged-body live/fake conformance and static
-   architecture in `test_diagnostic_tasks_live_fake_conformance.py`;
+1. Seam 2, including unchanged-body Strategy Library conformance in
+   `test_strategy_library_live_fake_conformance.py`, inherited Diagnostic Tasks
+   conformance in `test_diagnostic_tasks_live_fake_conformance.py`, and static
+   architecture;
 2. Seam 1, the source-bound file-backed tracer suite whose primary
    Application-to-QML path is
    `test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence`, plus
+   `test_live_strategy_library_traces_public_inventory_into_qml` for the real
+   public inventory-to-production-QML slice, and
    exact live targets for input/revision, command/idempotency, lifecycle/retry,
    connection-generation, disposal, and no-late-callback edges;
 3. Strategy Diagnostics V1 regression under the pinned interpreter;
@@ -95,8 +102,13 @@ flake.
 - Search the changed source for manual-trading commands, direct QML data
   injection, dictionary-based live certification fixtures, HTTP/IPC, and new
   Feature Interfaces.
+- Verify the Strategy Library route exposes only the two backend-declared
+  formal entries and preserves exact source, manifest, Guardrail, dependency,
+  status, revision, freshness, and generation facts across search, filtering,
+  disconnect, reconnect, and remount.
 
-Seam 3 remains owned by Issue #66. It must independently produce T08/T09/T10,
+Wave 3 Seam 3 remains owned by Issue #88. It must independently produce T08/T09/T10,
 same-source QML and Widgets packages, clean-room reports, checksums, dependency
 manifests, screenshots, logs, tag, assets, and remote verification before any
-Wave 2 release certification is claimed.
+Wave 3 release certification is claimed. Issue #66 remains the immutable Wave 2
+certification baseline.

@@ -31,6 +31,16 @@ POLICY_VERSION = "frontend-v2-no-manual-trading-v1"
 ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
+            "StrategyLibraryFeature": frozenset(
+                {
+                    "interface_version",
+                    "snapshot",
+                    "subscribe",
+                    "compare_strategies",
+                    "select_formal_strategy_set",
+                    "close",
+                }
+            ),
             "DiagnosticTasksFeature": frozenset(
                 {
                     "interface_version",
@@ -73,6 +83,13 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
 
 QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
     {
+        "StrategyLibraryQtAdapter": frozenset(
+            {
+                "refresh",
+                "setAvailabilityFilter",
+                "setSearchText",
+            }
+        ),
         "DiagnosticTasksQtAdapter": frozenset(
             {
                 "approveTask",
@@ -120,6 +137,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
 
 JOURNEY_ROUTE_ALLOWLIST = frozenset(
     {
+        "strategy_library",
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
@@ -145,6 +163,9 @@ TELEMETRY_EVENT_ALLOWLIST: frozenset[str] = frozenset()
 RUNTIME_GATEWAY_CALL_ALLOWLIST: Mapping[str, frozenset[str]] = (
     MappingProxyType(
         {
+            # Strategy Library consumes only its versioned typed Application
+            # Interface. RuntimeGateway is never an approved authority.
+            "LiveStrategyLibraryAdapter": frozenset(),
             # Diagnostic Tasks consumes only its typed in-process Application
             # Interface; RuntimeGateway is never an approved authority.
             "LiveDiagnosticTasksAdapter": frozenset(),
@@ -979,6 +1000,9 @@ def audit_no_manual_trading_gate(
         / "test_no_manual_trading_runtime_gate.py"
     )
     live_sources = {
+        "LiveStrategyLibraryAdapter": (
+            project_root / "app" / "features" / "live_strategy_library.py"
+        ),
         "LiveDiagnosticTasksAdapter": (
             project_root / "app" / "features" / "live_diagnostic_tasks.py"
         ),
@@ -1002,20 +1026,26 @@ def audit_no_manual_trading_gate(
         DeterministicFakeDiagnosticTasksAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,
         DeterministicFakeRunMonitoringAdapter,
+        DeterministicFakeStrategyLibraryAdapter,
         DiagnosticTasksFeature,
         EvidenceAndFindingsFeature,
         FillEvidenceTrace,
         LiveDiagnosticTasksAdapter,
         LiveEvidenceAndFindingsAdapter,
         LiveRunMonitoringAdapter,
+        LiveStrategyLibraryAdapter,
         OrderEvidenceTrace,
         ReadOnlyDiagnosticContext,
         ReadOnlyEvidenceContext,
         RunMonitoringFeature,
+        StrategyLibraryEntry,
+        StrategyLibraryFeature,
+        StrategyLibraryViewState,
     )
     from app.features.run_monitoring import _diagnostic_task_transition
 
     interfaces: Mapping[str, type[Any]] = {
+        "StrategyLibraryFeature": StrategyLibraryFeature,
         "DiagnosticTasksFeature": DiagnosticTasksFeature,
         "RunMonitoringFeature": RunMonitoringFeature,
         "EvidenceAndFindingsFeature": EvidenceAndFindingsFeature,
@@ -1132,6 +1162,8 @@ def audit_no_manual_trading_gate(
         )
 
     adapter_types = (
+        DeterministicFakeStrategyLibraryAdapter,
+        LiveStrategyLibraryAdapter,
         DeterministicFakeDiagnosticTasksAdapter,
         LiveDiagnosticTasksAdapter,
         DeterministicFakeRunMonitoringAdapter,
@@ -1168,6 +1200,8 @@ def audit_no_manual_trading_gate(
             )
 
     read_only_types = (
+        StrategyLibraryViewState,
+        StrategyLibraryEntry,
         ReadOnlyDiagnosticContext,
         ReadOnlyEvidenceContext,
         OrderEvidenceTrace,

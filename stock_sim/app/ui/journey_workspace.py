@@ -68,9 +68,16 @@ from app.features import (
     RunMonitoringSelection,
     RunMonitoringViewState,
     StartFormalDiagnosticCampaign,
+    StrategyLibraryContext,
+    StrategyLibraryFeature,
     Subscription,
     ValidateDiagnosticTaskConfiguration,
 )
+from app.features.strategy_library import (
+    StrategyLibraryAvailabilityFilter,
+    StrategyLibraryViewState,
+)
+from app.features.strategy_library_application import StrategyLibraryEntry
 
 from .accessibility import (
     AccessibilityPreferences,
@@ -105,6 +112,248 @@ class ViewMountGenerationId:
 def _next_mount_generation() -> ViewMountGenerationId:
     with _MOUNT_GENERATION_LOCK:
         return ViewMountGenerationId(next(_MOUNT_GENERATIONS))
+
+
+class StrategyLibraryQtAdapter(QObject):
+    """Qt-only projection of the typed Strategy Library Feature Interface."""
+
+    stateChanged = Signal()
+    deliveryRequested = Signal(int, object)
+
+    def __init__(
+        self,
+        feature: StrategyLibraryFeature,
+        *,
+        context: StrategyLibraryContext | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._feature = feature
+        self._context = context or StrategyLibraryContext()
+        self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._closed = False
+        self.deliveryRequested.connect(
+            self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subscription: Subscription | None = feature.subscribe(
+            self._context,
+            self._queue_state,
+        )
+
+    def _queue_state(self, state: StrategyLibraryViewState) -> None:
+        if not self._closed:
+            self.deliveryRequested.emit(self._mount_generation.value, state)
+
+    @Slot(int, object)
+    def _accept_state(
+        self,
+        mount_generation: int,
+        state: StrategyLibraryViewState,
+    ) -> None:
+        if self._closed or mount_generation != self._mount_generation.value:
+            return
+        if state.context != self._context or state.revision <= self._state.revision:
+            return
+        self._state = state
+        self.stateChanged.emit()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def presentationState(self) -> str:  # noqa: N802
+        return self._state.presentation.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshness(self) -> str:
+        return self._state.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceRevision(self) -> str:  # noqa: N802
+        return (
+            "Unavailable"
+            if self._state.source_revision is None
+            else self._state.source_revision.value
+        )
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGeneration(self) -> int:  # noqa: N802
+        return self._state.source.generation.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def searchText(self) -> str:  # noqa: N802
+        return self._context.search_text
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def availabilityFilter(self) -> str:  # noqa: N802
+        return self._context.availability_filter.value
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def entryCount(self) -> int:  # noqa: N802
+        return len(self._state.entries)
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def entries(self) -> list[dict[str, object]]:
+        return [
+            _strategy_library_entry_payload(item) for item in self._state.entries
+        ]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusMessage(self) -> str:  # noqa: N802
+        if self._state.error is not None:
+            return self._state.error.message
+        messages = {
+            "loading": "Reading the authoritative Strategy inventory.",
+            "empty": "No formal Strategies Under Test are available.",
+            "ready": "Authoritative formal Strategy inventory is ready.",
+            "partial": (
+                "Some formal Strategies remain visible with blocking reasons."
+            ),
+            "stale": "Retaining the last reliable Strategy inventory.",
+            "disconnected": (
+                "Disconnected; retained Strategy data may be stale."
+            ),
+            "failed": "The authoritative Strategy inventory could not be read.",
+        }
+        return messages[self._state.presentation.value]
+
+    @Slot()
+    def refresh(self) -> None:
+        if self._closed:
+            return
+        state = self._feature.snapshot(self._context)
+        if state.revision > self._state.revision:
+            self._state = state
+            self.stateChanged.emit()
+
+    @Slot(str)
+    def setSearchText(self, value: str) -> None:  # noqa: N802
+        normalized = " ".join(value.split())
+        if normalized == self._context.search_text:
+            return
+        self._replace_context(
+            StrategyLibraryContext(
+                search_text=normalized,
+                availability_filter=self._context.availability_filter,
+                required_capabilities=self._context.required_capabilities,
+                focus_strategy_id=self._context.focus_strategy_id,
+            )
+        )
+
+    @Slot(str)
+    def setAvailabilityFilter(self, value: str) -> None:  # noqa: N802
+        try:
+            availability = StrategyLibraryAvailabilityFilter(value)
+        except ValueError:
+            return
+        if availability is self._context.availability_filter:
+            return
+        self._replace_context(
+            StrategyLibraryContext(
+                search_text=self._context.search_text,
+                availability_filter=availability,
+                required_capabilities=self._context.required_capabilities,
+                focus_strategy_id=self._context.focus_strategy_id,
+            )
+        )
+
+    def _replace_context(self, context: StrategyLibraryContext) -> None:
+        if self._closed:
+            return
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._context = context
+        self._state = self._feature.snapshot(context)
+        self._subscription = self._feature.subscribe(context, self._queue_state)
+        self.stateChanged.emit()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+
+
+def _strategy_library_entry_payload(entry: object) -> dict[str, object]:
+    strategy = cast(StrategyLibraryEntry, entry)
+    guardrail_profile = strategy.guardrail_profile
+    return {
+        "strategyId": strategy.strategy_id.value,
+        "strategyVersion": strategy.strategy_version,
+        "displayName": strategy.display.display_name,
+        "summary": strategy.display.summary,
+        "availability": strategy.availability.value,
+        "availabilityLabel": strategy.availability.value.replace("_", " ").title(),
+        "formalCampaignEligible": strategy.formal_campaign_eligible,
+        "sourceModule": strategy.source.module,
+        "sourcePath": strategy.source.source_relative_path,
+        "sourceHash": strategy.source.content_sha256,
+        "lineage": list(strategy.source.lineage),
+        "surfaceVersion": strategy.compatibility.surface_version,
+        "manifestHash": strategy.compatibility.content_hash,
+        "capabilities": list(strategy.compatibility.declared_capabilities),
+        "lifecycleCallbacks": list(
+            strategy.compatibility.lifecycle_callbacks
+        ),
+        "scheduledCallbacks": list(
+            strategy.compatibility.scheduled_callbacks
+        ),
+        "schedulingCalls": list(strategy.compatibility.scheduling_calls),
+        "contextFields": list(strategy.compatibility.context_fields),
+        "portfolioFields": list(strategy.compatibility.portfolio_fields),
+        "marketDataCalls": list(strategy.compatibility.market_data_calls),
+        "historyUnits": list(strategy.compatibility.history_units),
+        "configurationCalls": list(
+            strategy.compatibility.configuration_calls
+        ),
+        "tradingCalls": list(strategy.compatibility.trading_calls),
+        "loggingCalls": list(strategy.compatibility.logging_calls),
+        "candidateDataPolicy": strategy.candidate_data_policy,
+        "guardrailProfileId": (
+            "" if guardrail_profile is None else guardrail_profile.profile_id.value
+        ),
+        "guardrailProfileVersion": (
+            ""
+            if guardrail_profile is None
+            else guardrail_profile.profile_version
+        ),
+        "guardrailThresholds": [
+            {
+                "metric": item.metric_name,
+                "operator": item.operator,
+                "value": item.value,
+            }
+            for item in (
+                ()
+                if guardrail_profile is None
+                else guardrail_profile.thresholds
+            )
+        ],
+        "dependencies": [
+            {
+                "kind": item.kind.value,
+                "identity": item.identity,
+                "version": item.version,
+                "contentHash": item.content_hash,
+                "available": item.available,
+                "compatible": item.compatible,
+            }
+            for item in strategy.dependencies
+        ],
+        "reasons": [
+            {
+                "code": item.code.value,
+                "summary": item.summary,
+                "guidance": item.corrective_guidance,
+            }
+            for item in strategy.availability_reasons
+        ],
+    }
 
 
 class DiagnosticTasksQtAdapter(QObject):
@@ -2872,6 +3121,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         feature: RunMonitoringFeature,
         *,
         context: RunMonitoringContext | None = None,
+        strategy_library_feature: StrategyLibraryFeature | None = None,
+        strategy_library_context: StrategyLibraryContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
@@ -2882,6 +3133,7 @@ class JourneyWorkspaceHost(QQuickWidget):
     ) -> None:
         super().__init__(parent)
         if initial_route not in {
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2903,6 +3155,19 @@ class JourneyWorkspaceHost(QQuickWidget):
         self.rootContext().setContextProperty(
             "initialJourneyRoute",
             initial_route,
+        )
+        self._strategy_library = (
+            StrategyLibraryQtAdapter(
+                strategy_library_feature,
+                context=strategy_library_context,
+                parent=self,
+            )
+            if strategy_library_feature is not None
+            else None
+        )
+        self.rootContext().setContextProperty(
+            "strategyLibrary",
+            self._strategy_library,
         )
         self._diagnostic_tasks = (
             DiagnosticTasksQtAdapter(
@@ -2991,6 +3256,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         if self._workspace_closed:
             return
         self._workspace_closed = True
+        if self._strategy_library is not None:
+            self._strategy_library.close()
         if self._diagnostic_tasks is not None:
             self._diagnostic_tasks.close()
         self._run_monitoring.close()
@@ -3005,4 +3272,5 @@ __all__ = [
     "EvidenceAndFindingsQtAdapter",
     "JourneyWorkspaceHost",
     "RunMonitoringQtAdapter",
+    "StrategyLibraryQtAdapter",
 ]

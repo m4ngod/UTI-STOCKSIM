@@ -22,6 +22,8 @@ from typing import Any
 PRODUCTION_PATH = (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+    "LiveStrategyLibraryAdapter",
     "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
     "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -159,6 +161,7 @@ EXPECTED_JOURNEY = (
 )
 _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
+    r"Open Strategy Library|"
     r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
@@ -174,6 +177,9 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Pause diagnostic task|"
     r"Resume diagnostic task|"
     r"Cancel diagnostic task|"
+    r"Search authoritative Strategy inventory|"
+    r"Filter Strategy availability|"
+    r"Inspect details for .+|"
     r"Select candidate .+|"
     r"Select finding .+|"
     r"Select chart overlay .+|"
@@ -187,6 +193,9 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
 )
 _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
     {"diagnosticTaskApprovalActorInput"}
+)
+_PACKAGED_NON_ACTION_FOCUS_PARENT_OBJECT_NAMES = frozenset(
+    {"strategyLibraryAvailabilityFilter"}
 )
 
 
@@ -344,6 +353,7 @@ def _create_production_window(
     runtime_gateway: Any | None = None,
     strategy_diagnostics_read_model: Any | None = None,
     strategy_diagnostics_tasks_application: Any | None = None,
+    strategy_diagnostics_library_application: Any | None = None,
 ) -> tuple[Any, Any, Any]:
     from app.app_context import build_app_context
     from app.ui.main_window import MainWindow
@@ -357,10 +367,15 @@ def _create_production_window(
         strategy_diagnostics_tasks_application=(
             strategy_diagnostics_tasks_application
         ),
+        strategy_diagnostics_library_application=(
+            strategy_diagnostics_library_application
+        ),
     )
     window = None
     try:
         window = MainWindow(
+            strategy_library_feature=context.strategy_library_feature,
+            strategy_library_context=context.strategy_library_context,
             diagnostic_tasks_feature=context.diagnostic_tasks_feature,
             diagnostic_tasks_context=context.diagnostic_tasks_context,
             run_monitoring_feature=context.run_monitoring_feature,
@@ -390,6 +405,11 @@ def _create_production_window(
                 else None
             ),
             window.close if window is not None else None,
+            (
+                context.strategy_library_feature.close
+                if hasattr(context, "strategy_library_feature")
+                else None
+            ),
             context.diagnostic_tasks_feature.close,
             context.run_monitoring_feature.close,
             context.evidence_and_findings_feature.close,
@@ -488,6 +508,7 @@ def _navigate_route(
     from PySide6.QtQuick import QQuickItem
 
     object_name = {
+        "strategy_library": "strategyLibraryRouteNavigation",
         "diagnostic_tasks": "diagnosticTasksRouteNavigation",
         "run_monitoring": "runMonitoringRouteNavigation",
         "evidence_and_findings": (
@@ -1427,6 +1448,7 @@ def _run_smoke_journey(
         ACTIVE_FEATURE_INTERFACES,
         LiveStrategyDiagnosticsV1ApplicationAdapter,
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+        LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
     )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         create_file_backed_formal_v1_release_fixture,
@@ -1531,6 +1553,11 @@ def _run_smoke_journey(
     )
     diagnostic_tasks_application = (
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            fixture.application
+        )
+    )
+    strategy_library_application = (
+        LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
             fixture.application
         )
     )
@@ -1685,6 +1712,7 @@ def _run_smoke_journey(
         event_bridge=bridge,
         strategy_diagnostics_read_model=read_model,
         strategy_diagnostics_tasks_application=diagnostic_tasks_application,
+        strategy_diagnostics_library_application=strategy_library_application,
         settings_path=report_dir / "frontend-v2-settings.json",
     )
     close_initial_mount = register_mount(
@@ -1701,6 +1729,25 @@ def _run_smoke_journey(
         raise RuntimeError("Journey Workspace root object is unavailable")
     accessibility_preferences.append(
         _accessibility_preferences_verified(root)
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="strategy_library",
+    )
+    keyboard_routes.add("strategy_library")
+    strategy_library_adapter = host._strategy_library
+    if strategy_library_adapter is None:
+        raise RuntimeError("Strategy Library Adapter is unavailable")
+    _settle_until(
+        app,
+        lambda: (
+            strategy_library_adapter.property("presentationState")
+            in {"ready", "partial"}
+            and strategy_library_adapter.property("entryCount") == 2
+        ),
+        "authoritative Strategy Library route",
     )
 
     diagnostic_task_identity = ""
@@ -1741,6 +1788,7 @@ def _run_smoke_journey(
         )
 
         for route in (
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -1768,6 +1816,7 @@ def _run_smoke_journey(
         preterminal_generation = bridge.connection_generation
         bridge.mark_disconnected()
         for route in (
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2000,11 +2049,19 @@ def _run_smoke_journey(
                 fixture.application
             )
         )
+        strategy_library_application = (
+            LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+                fixture.application
+            )
+        )
         context, window, host = _create_production_window(
             event_bridge=bridge,
             strategy_diagnostics_read_model=read_model,
             strategy_diagnostics_tasks_application=(
                 diagnostic_tasks_application
+            ),
+            strategy_diagnostics_library_application=(
+                strategy_library_application
             ),
             settings_path=report_dir / "frontend-v2-settings.json",
         )
@@ -2329,6 +2386,9 @@ def _run_smoke_journey(
             strategy_diagnostics_tasks_application=(
                 diagnostic_tasks_application
             ),
+            strategy_diagnostics_library_application=(
+                strategy_library_application
+            ),
             settings_path=report_dir / "frontend-v2-settings.json",
         )
         register_mount(
@@ -2399,6 +2459,7 @@ def _run_smoke_journey(
         ),
         raw_artifact_hashes=fixture.raw_artifact_hashes,
         keyboard_navigation_verified=keyboard_routes == {
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2415,6 +2476,7 @@ def _run_smoke_journey(
             authoritative_reconnect_verified
         ),
         routes_rendered=(
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -2482,7 +2544,12 @@ def _close_mount(
     # close the window, and only then close the typed Features. The smoke
     # journey retains Python references for its final lifecycle audit; native
     # object reclamation is deferred to the owning process-exit boundary.
-    for label, action in (
+    strategy_library_feature = getattr(
+        context,
+        "strategy_library_feature",
+        None,
+    )
+    close_actions = [
         ("MainWindow hide", window.hide),
         ("Qt event drain before QML teardown", app.processEvents),
         (
@@ -2492,17 +2559,29 @@ def _close_mount(
         ("Qt event drain after QML teardown", app.processEvents),
         ("MainWindow", window.close),
         ("Qt event drain after MainWindow close", app.processEvents),
-        (
-            "Diagnostic Tasks Feature",
-            context.diagnostic_tasks_feature.close,
-        ),
-        ("Run Monitoring Feature", context.run_monitoring_feature.close),
-        (
-            "Evidence and Findings Feature",
-            context.evidence_and_findings_feature.close,
-        ),
-        ("Qt event drain after Feature teardown", app.processEvents),
-    ):
+    ]
+    if strategy_library_feature is not None:
+        close_actions.append(
+            (
+                "Strategy Library Feature",
+                strategy_library_feature.close,
+            )
+        )
+    close_actions.extend(
+        [
+            (
+                "Diagnostic Tasks Feature",
+                context.diagnostic_tasks_feature.close,
+            ),
+            ("Run Monitoring Feature", context.run_monitoring_feature.close),
+            (
+                "Evidence and Findings Feature",
+                context.evidence_and_findings_feature.close,
+            ),
+            ("Qt event drain after Feature teardown", app.processEvents),
+        ]
+    )
+    for label, action in close_actions:
         try:
             action()
         except BaseException as error:
@@ -2723,13 +2802,34 @@ def _snapshot_observed_state(
 
 
 def _unapproved_interactive_action_count(root: Any) -> int:
+    return len(_unapproved_interactive_actions(root))
+
+
+def _unapproved_interactive_actions(
+    root: Any,
+) -> tuple[tuple[str, str, str], ...]:
     from PySide6.QtCore import QObject
 
-    count = 0
+    findings: list[tuple[str, str, str]] = []
     for item in (root, *root.findChildren(QObject)):
         meta = item.metaObject()
+        class_name_getter = getattr(meta, "className", None)
+        class_name = (
+            str(class_name_getter())
+            if callable(class_name_getter)
+            else type(item).__name__
+        )
         object_name = str(item.property("objectName") or "")
         if object_name in _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES:
+            continue
+        if (
+            not object_name
+            and class_name.startswith("QQuickTextField")
+            and _has_qml_parent_object_name(
+                item,
+                _PACKAGED_NON_ACTION_FOCUS_PARENT_OBJECT_NAMES,
+            )
+        ):
             continue
         if meta.indexOfProperty("accessibleName") >= 0:
             name = str(item.property("accessibleName") or "").strip()
@@ -2741,11 +2841,40 @@ def _unapproved_interactive_action_count(root: Any) -> int:
         )
         if not name:
             if keyboard_action:
-                count += 1
+                findings.append(
+                    (
+                        class_name,
+                        object_name or _qml_parent_object_path(item),
+                        "missing accessible name",
+                    )
+                )
             continue
         if not _APPROVED_INTERACTIVE_NAMES.fullmatch(name):
-            count += 1
-    return count
+            findings.append((class_name, object_name, name))
+    return tuple(findings)
+
+
+def _qml_parent_object_path(item: Any) -> str:
+    names: list[str] = []
+    parent = item.parent()
+    while parent is not None:
+        name = str(parent.property("objectName") or "")
+        if name:
+            names.append(name)
+        parent = parent.parent()
+    return "/".join(names)
+
+
+def _has_qml_parent_object_name(
+    item: Any,
+    approved_names: frozenset[str],
+) -> bool:
+    parent = item.parent()
+    while parent is not None:
+        if str(parent.property("objectName") or "") in approved_names:
+            return True
+        parent = parent.parent()
+    return False
 
 
 def _read_only_context_visible(host: Any) -> bool:
@@ -2831,6 +2960,7 @@ def _run_interactive() -> int:
         settings_path=Path("frontend-v2-settings.json"),
     )
     window.resize(1024, 640)
+    app.aboutToQuit.connect(context.strategy_library_feature.close)
     app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
     app.aboutToQuit.connect(context.run_monitoring_feature.close)
     app.aboutToQuit.connect(context.evidence_and_findings_feature.close)

@@ -167,7 +167,9 @@ _CLEAN_ROOM_IDENTITY_GRAPH = sorted(
 )
 _REQUIRED_QML_DEPENDENCY_MODULES = (
     "_duckdb",
+    "app.features.live_strategy_library",
     "app.features.live_strategy_diagnostics_v1_application",
+    "app.features.strategy_library_application",
     "duckdb",
     "persistence.models_training",
     "sqlalchemy.dialects.sqlite.pysqlite",
@@ -178,6 +180,7 @@ _REQUIRED_QML_DEPENDENCY_MODULES = (
     "strategy_diagnostics.market_paths",
     "strategy_diagnostics.persistence",
     "strategy_diagnostics.quentx_scenario_native_strategy",
+    "strategy_diagnostics.strategy_inventory",
 )
 _REQUIRED_QML_FORMAL_STRATEGY_SOURCE_FILES = (
     (
@@ -250,6 +253,8 @@ def _clean_room_lane(root, lane, graphics_api):
         "production_path": [
             "DiagnosticsApplication",
             "FileBackedV1Persistence",
+            "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+            "LiveStrategyLibraryAdapter",
             "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
             "LiveDiagnosticTasksAdapter",
             "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -292,6 +297,7 @@ def _clean_room_lane(root, lane, graphics_api):
             "StrategyDiagnosticsV1ApplicationReadModel/1.0"
         ),
         "active_feature_interfaces": [
+            "StrategyLibraryFeature/1.0",
             "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
@@ -322,6 +328,7 @@ def _clean_room_lane(root, lane, graphics_api):
         "old_generation_rejected": True,
         "authoritative_reconnect_verified": True,
         "routes_rendered": [
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
@@ -1428,6 +1435,8 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     "production_path": [
                         "DiagnosticsApplication",
                         "FileBackedV1Persistence",
+                        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+                        "LiveStrategyLibraryAdapter",
                         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
                         "LiveDiagnosticTasksAdapter",
                         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1470,6 +1479,7 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "StrategyDiagnosticsV1ApplicationReadModel/1.0"
                     ),
                     "active_feature_interfaces": [
+                        "StrategyLibraryFeature/1.0",
                         "DiagnosticTasksFeature/1.0",
                         "RunMonitoringFeature/1.2",
                         "EvidenceAndFindingsFeature/1.1",
@@ -1510,6 +1520,7 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     "old_generation_rejected": True,
                     "authoritative_reconnect_verified": True,
                     "routes_rendered": [
+                        "strategy_library",
                         "diagnostic_tasks",
                         "run_monitoring",
                         "evidence_and_findings",
@@ -1651,6 +1662,8 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="observability.metrics" />
           <module name="_duckdb" />
           <module name="app.features.live_strategy_diagnostics_v1_application" />
+          <module name="app.features.live_strategy_library" />
+          <module name="app.features.strategy_library_application" />
           <module name="duckdb" />
           <module name="persistence.models_training" />
           <module name="sqlalchemy.dialects.sqlite.pysqlite" />
@@ -1661,6 +1674,7 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
           <module name="strategy_diagnostics.market_paths" />
           <module name="strategy_diagnostics.persistence" />
           <module name="strategy_diagnostics.quentx_scenario_native_strategy" />
+          <module name="strategy_diagnostics.strategy_inventory" />
           <data_file name="app/ui/qml/JourneyWorkspace.qml" />
           <data_file name="strategy_diagnostics/formal_sources/live_minute_scenario_native_strategy.py.txt" />
           <data_file name="strategy_diagnostics/formal_sources/quentx_scenario_native_strategy.py.txt" />
@@ -1750,6 +1764,8 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="app.ui.journey_workspace" />
           <module name="_duckdb" />
           <module name="app.features.live_strategy_diagnostics_v1_application" />
+          <module name="app.features.live_strategy_library" />
+          <module name="app.features.strategy_library_application" />
           <module name="duckdb" />
           <module name="persistence.models_training" />
           <module name="sqlalchemy.dialects.sqlite.pysqlite" />
@@ -1760,6 +1776,7 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
           <module name="strategy_diagnostics.market_paths" />
           <module name="strategy_diagnostics.persistence" />
           <module name="strategy_diagnostics.quentx_scenario_native_strategy" />
+          <module name="strategy_diagnostics.strategy_inventory" />
           <data_file name="strategy_diagnostics/formal_sources/live_minute_scenario_native_strategy.py.txt" />
           <data_file name="strategy_diagnostics/formal_sources/quentx_scenario_native_strategy.py.txt" />
         </nuitka-compilation-report>

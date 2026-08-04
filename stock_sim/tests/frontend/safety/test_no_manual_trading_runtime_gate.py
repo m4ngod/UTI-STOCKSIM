@@ -20,17 +20,21 @@ from app.features import (
     CancelDiagnosticTask,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DeterministicFakeStrategyLibraryAdapter,
     DiagnosticTaskId,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
     LiveEvidenceAndFindingsAdapter,
     LiveRunMonitoringAdapter,
+    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+    LiveStrategyLibraryAdapter,
     MarketScenarioId,
     ReproductionManifestId,
     RunMonitoringContext,
     RunMonitoringSelection,
     StrategyRunId,
+    StrategyLibraryContext,
     StrategyUnderTestId,
 )
 from app.runtime_gateway import RuntimeGateway
@@ -39,6 +43,7 @@ from stock_sim.release.no_manual_trading_gate import audit_qml_text
 from tests.frontend.strategy_diagnostics_v1_test_support import (
     DictionaryFixtureApplicationReadModel,
 )
+from strategy_diagnostics import create_diagnostics_application
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 3, 9, 30, tzinfo=UTC)
@@ -54,6 +59,7 @@ FORBIDDEN_RUNTIME_MEMBERS = (
 )
 APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
+    r"Open Strategy Library|"
     r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
@@ -64,6 +70,7 @@ APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Pause diagnostic task|"
     r"Resume diagnostic task|"
     r"Cancel diagnostic task|"
+    r"Inspect details for .+|"
     r"Select candidate .+|"
     r"Select finding .+|"
     r"Select chart overlay .+|"
@@ -313,6 +320,7 @@ def mounted_v2_mode(request):
     controller = _DiagnosticTasks()
     bridge = None
     if request.param == "deterministic_fake":
+        strategy_feature = DeterministicFakeStrategyLibraryAdapter()
         run_feature = DeterministicFakeRunMonitoringAdapter()
         evidence_feature = DeterministicFakeEvidenceAndFindingsAdapter()
         run_feature.advance_to_running(_run_context())
@@ -321,6 +329,17 @@ def mounted_v2_mode(request):
         gateway = RuntimeGateway()
         gateway._queries = _LiveQueries()
         bridge = EventBridge(subscribe_backend=False)
+        strategy_application = create_diagnostics_application()
+        strategy_application.start()
+        strategy_feature = LiveStrategyLibraryAdapter(
+            application=(
+                LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+                    strategy_application
+                )
+            ),
+            event_bridge=bridge,
+            clock=lambda: NOW,
+        )
         run_feature = LiveRunMonitoringAdapter(
             application_read_model=DictionaryFixtureApplicationReadModel(
                 gateway._queries
@@ -341,6 +360,8 @@ def mounted_v2_mode(request):
         run_feature.snapshot(_run_context())
         evidence_feature.snapshot(_evidence_context())
     window = MainWindow(
+        strategy_library_feature=strategy_feature,
+        strategy_library_context=StrategyLibraryContext(),
         run_monitoring_feature=run_feature,
         run_monitoring_context=_run_context(),
         evidence_and_findings_feature=evidence_feature,
@@ -353,6 +374,7 @@ def mounted_v2_mode(request):
     app.processEvents()
     yield request.param, window, run_feature, evidence_feature, controller
     window.close()
+    strategy_feature.close()
     run_feature.close()
     evidence_feature.close()
     if bridge is not None:
@@ -403,11 +425,23 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
     host = window.centralWidget()
     root = host.rootObject()
 
+    root.setProperty("activeRoute", "strategy_library")
+    app.processEvents()
+    app.processEvents()
+    strategy_names = _interactive_accessible_names(root)
+    assert "Open Strategy Library" in strategy_names
+    strategy_repeater = root.findChild(
+        QObject,
+        "strategyLibraryEntryRepeater",
+    )
+    assert strategy_repeater is not None
+    assert strategy_repeater.property("count") == 2
+
     root.setProperty("activeRoute", "evidence_and_findings")
     app.processEvents()
     app.processEvents()
 
-    names = _interactive_accessible_names(root)
+    names = tuple(strategy_names) + tuple(_interactive_accessible_names(root))
     assert names
     assert all(APPROVED_INTERACTIVE_NAMES.fullmatch(name) for name in names)
     assert any(name == "Cancel diagnostic task" for name in names)
@@ -435,6 +469,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
         if item.objectName().endswith("RouteNavigation")
     }
     assert route_objects == {
+        "strategyLibraryRouteNavigation",
         "diagnosticTasksRouteNavigation",
         "runMonitoringRouteNavigation",
         "evidenceAndFindingsRouteNavigation",

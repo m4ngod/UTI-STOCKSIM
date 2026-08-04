@@ -1,9 +1,9 @@
-"""Wave 2 Strategy Diagnostics V1 + Frontend V2 source integration gate.
+"""Wave 3 Strategy Diagnostics V1 + Frontend V2 source integration gate.
 
 This gate is deliberately not a release-certification claim.  It keeps the
 shared conformance, persisted tracer, backend regression, and existing
-Frontend V2 gates executable from one fail-closed manifest.  Issue #66 owns
-the installed-offline release certification, evidence, and artifacts.
+Frontend V2 gates executable from one fail-closed manifest.  Issue #88 owns
+the Wave 3 installed-offline release certification, evidence, and artifacts.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from tempfile import TemporaryDirectory
 from app.features import (
     ACTIVE_FEATURE_INTERFACES,
     DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
+    STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION,
 )
 
 
@@ -115,6 +116,16 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
         "session.execute",
     ),
     coverage=(
+        PersistedTracerCoverage(
+            requirement="authoritative-strategy-library-slice",
+            pytest_targets=(
+                (
+                    "tests/frontend/integration/"
+                    "test_strategy_library_workspace_route.py::"
+                    "test_live_strategy_library_traces_public_inventory_into_qml"
+                ),
+            ),
+        ),
         PersistedTracerCoverage(
             requirement="authoritative-input-and-exact-revision",
             pytest_targets=(
@@ -311,6 +322,18 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
             ),
             (
                 "tests/frontend/contract/"
+                "test_strategy_library_feature_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_strategy_library_application_live_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_strategy_library_live_fake_conformance.py"
+            ),
+            (
+                "tests/frontend/contract/"
                 "test_diagnostic_tasks_application_live_contract.py"
             ),
             (
@@ -360,6 +383,18 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
             (
                 "--ignore=tests/frontend/contract/"
                 "test_diagnostic_tasks_feature_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_strategy_library_feature_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_strategy_library_application_live_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_strategy_library_live_fake_conformance.py"
             ),
             (
                 "--ignore=tests/frontend/contract/"
@@ -423,27 +458,32 @@ REQUIRED_CONTRACT_DOCUMENTS: tuple[Path, ...] = (
 )
 REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
     REQUIRED_CONTRACT_DOCUMENTS[0]: (
-        "# Strategy Diagnostics V1 + Frontend V2 Wave 2 contract",
+        "# Strategy Diagnostics V1 + Frontend V2 Wave 3 contract",
+        "`StrategyLibraryFeature` version 1.0",
         "`DiagnosticTasksFeature` version 1.0",
         "`RunMonitoringFeature` version 1.2",
         "`EvidenceAndFindingsFeature` version 1.1",
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` version 1.0",
+        "`StrategyDiagnosticsV1StrategyLibraryApplication` version 1.0",
         "Seam 1",
         "Seam 2",
         "Seam 3",
-        "Waves 3–4",
-        "Issue #66 owns installed offline release certification",
+        "Wave 4 remain unimplemented",
+        "Issue #88 owns Wave 3 installed offline release certification",
     ),
     REQUIRED_CONTRACT_DOCUMENTS[1]: (
-        "# Strategy Diagnostics V1 + Frontend V2 Wave 2 integration runbook",
+        "# Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook",
+        "`StrategyLibraryFeature` 1.0",
         "`DiagnosticTasksFeature` 1.0",
         "`RunMonitoringFeature` 1.2",
         "`EvidenceAndFindingsFeature` 1.1",
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0",
+        "`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0",
         PERSISTED_PRODUCT_TRACER.function_name,
         "test_diagnostic_tasks_live_fake_conformance.py",
+        "test_strategy_library_live_fake_conformance.py",
         "Seam 3",
-        "Issue #66",
+        "Issue #88",
         "does not claim T08, T09, or T10",
     ),
 }
@@ -470,6 +510,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
     root = project_root.resolve()
     errors: list[str] = []
     expected_interfaces = (
+        "StrategyLibraryFeature",
         "DiagnosticTasksFeature",
         "RunMonitoringFeature",
         "EvidenceAndFindingsFeature",
@@ -486,7 +527,12 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         errors.append(
             "StrategyDiagnosticsV1DiagnosticTasksApplication drifted from 1.0"
         )
+    if STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION.render() != "1.0":
+        errors.append(
+            "StrategyDiagnosticsV1StrategyLibraryApplication drifted from 1.0"
+        )
     expected_tracer_requirements = (
+        "authoritative-strategy-library-slice",
         "authoritative-input-and-exact-revision",
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",
@@ -535,7 +581,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         for marker in REQUIRED_CONTRACT_MARKERS[document]:
             if marker not in document_source:
                 errors.append(
-                    f"{document}: missing Wave 2 contract marker {marker!r}"
+                    f"{document}: missing Wave 3 contract marker {marker!r}"
                 )
 
     tracer_path = root / PERSISTED_PRODUCT_TRACER.source_path
@@ -728,7 +774,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Validate or run the Strategy Diagnostics V1 + Frontend V2 "
-            "Wave 2 source integration quality gate."
+            "Wave 3 source integration quality gate."
         )
     )
     parser.add_argument(
@@ -761,7 +807,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"ERROR: {error}")
         return 2
     if arguments.validate_only:
-        print("Wave 2 source integration gate manifest: valid")
+        print("Wave 3 source integration gate manifest: valid")
         return 0
     executions = run_integration_gate(
         arguments.project_root,

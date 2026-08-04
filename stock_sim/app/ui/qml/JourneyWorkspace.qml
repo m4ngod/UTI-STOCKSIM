@@ -6,6 +6,7 @@ Rectangle {
     objectName: "journeyWorkspace"
     color: tokens.background
 
+    property bool strategyLibraryAvailable: strategyLibrary !== null
     property bool diagnosticTasksAvailable: diagnosticTasks !== null
     property string activeRoute: "diagnostic_tasks"
     property bool diagnosticTasksPageActivated: (
@@ -27,6 +28,11 @@ Rectangle {
         diagnosticTasksPageLoader.item === null
             ? null
             : diagnosticTasksPageLoader.item.firstActionControl
+    )
+    readonly property var strategyLibraryInitialFocusItem: (
+        strategyLibraryPageLoader.item === null
+            ? null
+            : strategyLibraryPageLoader.item.firstActionControl
     )
     readonly property var evidenceSecondCandidateFocusItem: (
         evidencePageLoader.item === null
@@ -144,7 +150,12 @@ Rectangle {
     }
 
     function restoreActiveRouteFocus() {
-        if (activeRoute === "evidence_and_findings"
+        if (activeRoute === "strategy_library") {
+            if (strategyLibraryPageLoader.item === null
+                    || !strategyLibraryPageLoader.item.restoreFocus())
+                strategyLibraryRouteNavigation.forceActiveFocus()
+        }
+        else if (activeRoute === "evidence_and_findings"
                 && evidencePageLoader.item !== null)
             evidencePageLoader.item.restoreFocus()
         else if (activeRoute === "diagnostic_tasks") {
@@ -168,7 +179,10 @@ Rectangle {
     }
     Component.onCompleted: {
         activeRoute = initialJourneyRoute
-        if (!diagnosticTasksAvailable)
+        if (activeRoute === "strategy_library" && !strategyLibraryAvailable)
+            activeRoute = diagnosticTasksAvailable
+                ? "diagnostic_tasks" : "run_monitoring"
+        else if (!diagnosticTasksAvailable && activeRoute === "diagnostic_tasks")
             activeRoute = "run_monitoring"
         Qt.callLater(restoreActiveRouteFocus)
     }
@@ -183,6 +197,16 @@ Rectangle {
         repeat: true
         running: workspace.screenState === "active"
         onTriggered: runMonitoring.refresh()
+    }
+
+    Connections {
+        target: strategyLibrary
+        enabled: workspace.strategyLibraryAvailable
+        function onStateChanged() {
+            if (workspace.activeRoute === "strategy_library"
+                    && strategyLibraryPageLoader.item !== null)
+                Qt.callLater(strategyLibraryPageLoader.item.restoreFocus)
+        }
     }
 
     Connections {
@@ -251,6 +275,63 @@ Rectangle {
                         text: "Research workspace"
                         color: tokens.textQuiet
                         font.pixelSize: tokens.labelSize
+                    }
+                }
+
+                Rectangle {
+                    id: strategyLibraryRouteNavigation
+                    objectName: "strategyLibraryRouteNavigation"
+                    property string accessibleName: "Open Strategy Library"
+                    property string accessibleDescription: (
+                        "Browse the backend-owned formal Strategy Under Test inventory"
+                    )
+                    activeFocusOnTab: true
+                    visible: workspace.strategyLibraryAvailable
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: Math.max(
+                        44,
+                        tokens.bodySize + tokens.spaceSm * 2
+                    )
+                    radius: tokens.radiusSm
+                    color: workspace.activeRoute === "strategy_library"
+                        ? tokens.surfaceRaised : "transparent"
+                    border.color: workspace.activeRoute === "strategy_library"
+                        ? tokens.accent : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.name: accessibleName
+                    Accessible.description: accessibleDescription
+                    Accessible.role: Accessible.Button
+                    Accessible.focusable: true
+                    Accessible.focused: activeFocus
+                    Accessible.selectable: true
+                    Accessible.selected: workspace.activeRoute === "strategy_library"
+                    Accessible.onPressAction: workspace.openRoute("strategy_library")
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: tokens.spaceMd
+                        anchors.rightMargin: tokens.spaceSm
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Strategy Library"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: workspace.openRoute("strategy_library")
+                    }
+                    Keys.onReturnPressed: function(event) {
+                        workspace.openRoute("strategy_library")
+                        event.accepted = true
+                    }
+                    Keys.onSpacePressed: function(event) {
+                        workspace.openRoute("strategy_library")
+                        event.accepted = true
                     }
                 }
 
@@ -510,6 +591,27 @@ Rectangle {
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+            Loader {
+                id: strategyLibraryPageLoader
+                objectName: "strategyLibraryPageLoader"
+                anchors.fill: parent
+                active: workspace.strategyLibraryAvailable
+                visible: workspace.activeRoute === "strategy_library"
+                function ensureLoaded() {
+                    if (active && status === Loader.Null) {
+                        setSource(
+                            Qt.resolvedUrl("StrategyLibraryPage.qml"),
+                            {
+                                "adapter": strategyLibrary,
+                                "tokens": workspace.designSystem
+                            }
+                        )
+                    }
+                }
+                onActiveChanged: ensureLoaded()
+                Component.onCompleted: ensureLoaded()
+            }
 
             Loader {
                 id: diagnosticTasksPageLoader

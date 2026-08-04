@@ -112,6 +112,18 @@ EXPECTED_JOURNEY = (
         "fresh",
     ),
 )
+
+
+def test_clean_room_route_failure_names_all_four_active_routes() -> None:
+    source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_packaging.py"
+    ).read_text(encoding="utf-8")
+
+    assert "did not render all four active routes" in source
+    assert "did not render all three active routes" not in source
 _IDENTITY_SETS = {
     "candidates": ["candidate-1"],
     "metrics": ["metric-1"],
@@ -770,6 +782,8 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.production_path == (
         "DiagnosticsApplication",
         "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+        "LiveStrategyLibraryAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -804,6 +818,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         == "StrategyDiagnosticsV1ApplicationReadModel/1.0"
     )
     assert result.active_feature_interfaces == (
+        "StrategyLibraryFeature/1.0",
         "DiagnosticTasksFeature/1.0",
         "RunMonitoringFeature/1.2",
         "EvidenceAndFindingsFeature/1.1",
@@ -862,6 +877,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
     assert result.old_generation_rejected is True
     assert result.authoritative_reconnect_verified is True
     assert result.routes_rendered == (
+        "strategy_library",
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
@@ -1025,6 +1041,8 @@ result = run_smoke_journey(
 assert result.production_path == (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+    "LiveStrategyLibraryAdapter",
     "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
     "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1141,6 +1159,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "production_path": [
                 "DiagnosticsApplication",
                 "FileBackedV1Persistence",
+                "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+                "LiveStrategyLibraryAdapter",
                 "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
                 "LiveDiagnosticTasksAdapter",
                 "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1183,6 +1203,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "StrategyDiagnosticsV1ApplicationReadModel/1.0"
             ),
             "active_feature_interfaces": [
+                "StrategyLibraryFeature/1.0",
                 "DiagnosticTasksFeature/1.0",
                 "RunMonitoringFeature/1.2",
                 "EvidenceAndFindingsFeature/1.1",
@@ -1213,6 +1234,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "old_generation_rejected": True,
             "authoritative_reconnect_verified": True,
             "routes_rendered": [
+                "strategy_library",
                 "diagnostic_tasks",
                 "run_monitoring",
                 "evidence_and_findings",
@@ -1369,6 +1391,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
     compromised["renderer_lanes"]["software"]["production_path"] = [
         "DiagnosticsApplication",
         "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+        "LiveStrategyLibraryAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -1851,10 +1875,10 @@ def test_packaged_accessible_names_have_one_authoritative_qml_source():
     assert "_PACKAGED_ACCESSIBLE_NAME_BY_OBJECT_NAME" not in entry_source
     assert journey_source.count(
         "Accessible.name: accessibleName"
-    ) == 3
+    ) == 4
     assert journey_source.count(
         "Accessible.description: accessibleDescription"
-    ) == 3
+    ) == 4
     assert "Accessible.name: accessibleName" in chart_source
     assert "Accessible.description: accessibleDescription" in chart_source
 
@@ -3106,11 +3130,14 @@ def test_production_window_factory_closes_features_when_window_fails(
         def close(self):
             self.closed = True
 
+    strategy_feature = Resource()
     diagnostic_feature = Resource()
     run_feature = Resource()
     evidence_feature = Resource()
 
     class Context:
+        strategy_library_feature = strategy_feature
+        strategy_library_context = object()
         diagnostic_tasks_feature = diagnostic_feature
         diagnostic_tasks_context = object()
         run_monitoring_feature = run_feature
@@ -3135,6 +3162,7 @@ def test_production_window_factory_closes_features_when_window_fails(
             settings_path=tmp_path / "settings.json",
         )
 
+    assert strategy_feature.closed is True
     assert diagnostic_feature.closed is True
     assert run_feature.closed is True
     assert evidence_feature.closed is True

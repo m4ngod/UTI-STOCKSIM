@@ -75,7 +75,9 @@ _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
     {
         "_duckdb",
+        "app.features.live_strategy_library",
         "app.features.live_strategy_diagnostics_v1_application",
+        "app.features.strategy_library_application",
         "duckdb",
         "persistence.models_training",
         "sqlalchemy.dialects.sqlite.pysqlite",
@@ -86,6 +88,7 @@ _REQUIRED_PROJECT_DEPENDENCY_MODULES = frozenset(
         "strategy_diagnostics.market_paths",
         "strategy_diagnostics.persistence",
         "strategy_diagnostics.quentx_scenario_native_strategy",
+        "strategy_diagnostics.strategy_inventory",
     }
 )
 _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
@@ -148,6 +151,8 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
 _PRODUCTION_JOURNEY_PATH = (
     "DiagnosticsApplication",
     "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+    "LiveStrategyLibraryAdapter",
     "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
     "LiveDiagnosticTasksAdapter",
     "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -257,6 +262,7 @@ _EXPECTED_APPLICATION_READ_MODEL_INTERFACE = (
     "StrategyDiagnosticsV1ApplicationReadModel/1.0"
 )
 _EXPECTED_ACTIVE_FEATURE_INTERFACES = (
+    "StrategyLibraryFeature/1.0",
     "DiagnosticTasksFeature/1.0",
     "RunMonitoringFeature/1.2",
     "EvidenceAndFindingsFeature/1.1",
@@ -910,12 +916,15 @@ def create_package_build_plans(
                 "strategy_diagnostics_v1_release_fixture"
             ),
             "--include-module=app.features.live_strategy_diagnostics_v1_application",
+            "--include-module=app.features.live_strategy_library",
+            "--include-module=app.features.strategy_library_application",
             "--include-module=strategy_diagnostics.application",
             "--include-module=strategy_diagnostics.persistence",
             "--include-module=strategy_diagnostics.market_paths",
             "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
             "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
             "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
+            "--include-module=strategy_diagnostics.strategy_inventory",
             *(
                 f"--include-data-files={source}={destination}"
                 for source, destination
@@ -1674,12 +1683,13 @@ def verify_clean_room_report(
                 "remount, and close journey"
             )
         if tuple(lane.get("routes_rendered", ())) != (
+            "strategy_library",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
         ):
             failures.append(
-                f"{lane_name} renderer did not render all three active routes"
+                f"{lane_name} renderer did not render all four active routes"
             )
         observations = lane.get("observations")
         observed_journey = (
@@ -2048,7 +2058,12 @@ def _load_renderer_lane(
     installed_wave2_failures = _installed_wave2_smoke_failures(payload)
     if (
         routes_rendered
-        != ("diagnostic_tasks", "run_monitoring", "evidence_and_findings")
+        != (
+            "strategy_library",
+            "diagnostic_tasks",
+            "run_monitoring",
+            "evidence_and_findings",
+        )
         or production_path != _PRODUCTION_JOURNEY_PATH
         or connection_transitions
         != _EXPECTED_CONNECTION_TRANSITIONS

@@ -143,6 +143,10 @@ from .strategy_runs import (
     StrategyRunSnapshot,
     StrategyRunSpecification,
 )
+from .strategy_inventory import (
+    StrategyUnderTestInventory,
+    build_strategy_under_test_inventory,
+)
 from .transformations import create_initial_transformation_catalog
 from .v1_acceptance import (
     V1AcceptanceFacts,
@@ -2010,6 +2014,15 @@ class DiagnosticsApplication:
                     ),
                 ),
             ),
+        )
+
+    def read_strategy_under_test_inventory(self) -> StrategyUnderTestInventory:
+        """Return the audited backend-owned formal V1 Strategy inventory."""
+
+        self.status()
+        return build_strategy_under_test_inventory(
+            guardrail_profiles=self.strategy_guardrail_profiles(),
+            persistence_migration_revision=DIAGNOSTIC_SCHEMA_REVISION,
         )
 
     def recipe_authoring_capabilities(self) -> dict[str, object]:
