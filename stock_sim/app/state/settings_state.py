@@ -25,6 +25,7 @@ class SettingsState:
     alert_thresholds: Dict[str, Any] = field(default_factory=lambda: dict(_DEFAULT_ALERT_THRESHOLDS))
     # Task33 可访问性: 高对比模式 (后续可驱动主题变量调整)
     high_contrast: bool = False
+    strategy_library_bookmark_json: str = ""
     persist_path: Optional[str] = None
 
     def __post_init__(self):
@@ -84,6 +85,7 @@ class SettingsState:
             # 合并默认告警 (新增字段向前兼容)
             alert = dict(_DEFAULT_ALERT_THRESHOLDS)
             alert.update(raw.get("alert_thresholds", {}))
+            bookmark_json = raw.get("strategy_library_bookmark_json", "")
             inst = cls(
                 language=raw.get("language", "zh_CN"),
                 theme=raw.get("theme", "light"),
@@ -91,6 +93,9 @@ class SettingsState:
                 playback_speed=raw.get("playback_speed", 1.0),
                 alert_thresholds=alert,
                 high_contrast=raw.get("high_contrast", False),  # Task33 新增
+                strategy_library_bookmark_json=(
+                    bookmark_json if isinstance(bookmark_json, str) else ""
+                ),
                 persist_path=path,
             )
             return inst
@@ -112,6 +117,9 @@ class SettingsState:
             "playback_speed": self.playback_speed,
             "alert_thresholds": self.alert_thresholds,
             "high_contrast": self.high_contrast,  # Task33
+            "strategy_library_bookmark_json": (
+                self.strategy_library_bookmark_json
+            ),
         }
 
     def _publish(self, changed: Dict[str, Any]):

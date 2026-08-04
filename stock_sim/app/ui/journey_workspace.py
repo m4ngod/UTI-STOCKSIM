@@ -70,12 +70,19 @@ from app.features import (
     StartFormalDiagnosticCampaign,
     StrategyLibraryContext,
     StrategyLibraryFeature,
+    StrategyLibraryFocusTarget,
+    StrategySelectionBookmark,
+    StrategyUnderTestId,
     Subscription,
     ValidateDiagnosticTaskConfiguration,
 )
 from app.features.strategy_library import (
+    CompareStrategies,
+    SelectFormalStrategySet,
+    StrategyComparisonDisposition,
     StrategyLibraryAvailabilityFilter,
     StrategyLibraryViewState,
+    StrategySelectionDisposition,
 )
 from app.features.strategy_library_application import StrategyLibraryEntry
 
@@ -125,12 +132,19 @@ class StrategyLibraryQtAdapter(QObject):
         feature: StrategyLibraryFeature,
         *,
         context: StrategyLibraryContext | None = None,
+        bookmark_sink: Callable[[StrategySelectionBookmark], None] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._feature = feature
         self._context = context or StrategyLibraryContext()
         self._state = feature.snapshot(self._context)
+        self._comparison_entries: tuple[StrategyLibraryEntry, ...] = ()
+        self._comparison_source: tuple[str, int] | None = None
+        self._bookmark_sink = bookmark_sink
+        self._command_message = (
+            "Compare the backend-declared formal set before selecting it."
+        )
         self._mount_generation = _next_mount_generation()
         self._closed = False
         self.deliveryRequested.connect(
@@ -156,6 +170,19 @@ class StrategyLibraryQtAdapter(QObject):
             return
         if state.context != self._context or state.revision <= self._state.revision:
             return
+        incoming_source = (
+            "" if state.source_revision is None else state.source_revision.value,
+            state.source.generation.value,
+        )
+        if (
+            self._comparison_source is not None
+            and (
+                self._comparison_source != incoming_source
+                or state.freshness.value != "fresh"
+            )
+        ):
+            self._comparison_entries = ()
+            self._comparison_source = None
         self._state = state
         self.stateChanged.emit()
 
@@ -180,6 +207,20 @@ class StrategyLibraryQtAdapter(QObject):
         return self._state.source.generation.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def focusRestorationId(self) -> str:  # noqa: N802
+        focus = self._state.focus_restoration_id
+        return "" if focus is None else focus.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def focusRestorationTarget(self) -> str:  # noqa: N802
+        bookmark = self._context.selection_bookmark
+        return (
+            StrategyLibraryFocusTarget.SEARCH.value
+            if bookmark is None
+            else bookmark.focus_target.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def searchText(self) -> str:  # noqa: N802
         return self._context.search_text
 
@@ -196,6 +237,42 @@ class StrategyLibraryQtAdapter(QObject):
         return [
             _strategy_library_entry_payload(item) for item in self._state.entries
         ]
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def comparisonCount(self) -> int:  # noqa: N802
+        return len(self._comparison_entries)
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def comparisonEntries(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _strategy_library_entry_payload(item)
+            for item in self._comparison_entries
+        ]
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canCompare(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_compare
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canSelectFormalSet(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_select_formal_strategy_set
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def selectionStatus(self) -> str:  # noqa: N802
+        return self._state.selection_status.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def selectionMessage(self) -> str:  # noqa: N802
+        return self._state.selection_message
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def selectionContextId(self) -> str:  # noqa: N802
+        selection = self._state.selection
+        return "" if selection is None else selection.context_identity
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def commandMessage(self) -> str:  # noqa: N802
+        return self._command_message
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def statusMessage(self) -> str:  # noqa: N802
@@ -221,9 +298,90 @@ class StrategyLibraryQtAdapter(QObject):
         if self._closed:
             return
         state = self._feature.snapshot(self._context)
-        if state.revision > self._state.revision:
-            self._state = state
-            self.stateChanged.emit()
+        self._accept_state(self._mount_generation.value, state)
+
+    @Slot()
+    def compareFormalSet(self) -> None:  # noqa: N802
+        if self._closed or not self.canCompare:
+            return
+        entries = self._formal_entries()
+        source_revision = self._state.source_revision
+        if source_revision is None:
+            return
+        result = self._feature.compare_strategies(
+            CompareStrategies(
+                strategy_ids=tuple(item.strategy_id for item in entries),
+                expected_source_revision=source_revision,
+                expected_source_generation=self._state.source.generation,
+            )
+        )
+        self._comparison_entries = (
+            result.entries
+            if result.disposition is StrategyComparisonDisposition.AVAILABLE
+            else ()
+        )
+        self._comparison_source = (
+            self._state.source_revision.value,
+            self._state.source.generation.value,
+        )
+        self._command_message = result.message
+        self.stateChanged.emit()
+
+    @Slot()
+    def selectFormalSet(self) -> None:  # noqa: N802
+        if self._closed or not self.canSelectFormalSet:
+            return
+        entries = self._formal_entries()
+        source_revision = self._state.source_revision
+        if source_revision is None or any(
+            item.guardrail_profile is None for item in entries
+        ):
+            return
+        result = self._feature.select_formal_strategy_set(
+            SelectFormalStrategySet(
+                strategy_ids=tuple(item.strategy_id for item in entries),
+                guardrail_profile_ids=tuple(
+                    item.guardrail_profile.profile_id for item in entries
+                    if item.guardrail_profile is not None
+                ),
+                expected_source_revision=source_revision,
+                expected_source_generation=self._state.source.generation,
+                originating_view_revision=self._state.revision,
+            )
+        )
+        self._command_message = result.message
+        if (
+            result.disposition is StrategySelectionDisposition.SELECTED
+            and result.selection is not None
+        ):
+            bookmark = StrategySelectionBookmark(
+                selections=result.selection.selections,
+                source_generation=result.selection.source_generation,
+                focus_target=StrategyLibraryFocusTarget.SELECT_FORMAL_SET,
+                focus_strategy_id=self._context.focus_strategy_id,
+            )
+            next_context = StrategyLibraryContext(
+                search_text=self._context.search_text,
+                availability_filter=self._context.availability_filter,
+                required_capabilities=self._context.required_capabilities,
+                focus_strategy_id=self._context.focus_strategy_id,
+                selection_bookmark=bookmark,
+            )
+            if self._bookmark_sink is not None:
+                self._bookmark_sink(bookmark)
+            self._replace_context(next_context)
+            return
+        self.stateChanged.emit()
+
+    def _formal_entries(self) -> tuple[StrategyLibraryEntry, ...]:
+        inventory = self._state.last_reliable_inventory
+        if inventory is None:
+            return ()
+        return tuple(
+            item
+            for item in inventory.entries
+            if item.required_for_v1_formal_campaign
+        )
 
     @Slot(str)
     def setSearchText(self, value: str) -> None:  # noqa: N802
@@ -236,6 +394,7 @@ class StrategyLibraryQtAdapter(QObject):
                 availability_filter=self._context.availability_filter,
                 required_capabilities=self._context.required_capabilities,
                 focus_strategy_id=self._context.focus_strategy_id,
+                selection_bookmark=self._context.selection_bookmark,
             )
         )
 
@@ -253,6 +412,37 @@ class StrategyLibraryQtAdapter(QObject):
                 availability_filter=availability,
                 required_capabilities=self._context.required_capabilities,
                 focus_strategy_id=self._context.focus_strategy_id,
+                selection_bookmark=self._context.selection_bookmark,
+            )
+        )
+
+    @Slot(str)
+    def setFocusStrategy(self, value: str) -> None:  # noqa: N802
+        if self._closed:
+            return
+        strategy_id = StrategyUnderTestId(value)
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or all(
+            item.strategy_id != strategy_id for item in inventory.entries
+        ):
+            return
+        bookmark = self._context.selection_bookmark
+        if self._state.selection is not None:
+            bookmark = StrategySelectionBookmark(
+                selections=self._state.selection.selections,
+                source_generation=self._state.selection.source_generation,
+                focus_target=StrategyLibraryFocusTarget.STRATEGY_DETAILS,
+                focus_strategy_id=strategy_id,
+            )
+            if self._bookmark_sink is not None:
+                self._bookmark_sink(bookmark)
+        self._replace_context(
+            StrategyLibraryContext(
+                search_text=self._context.search_text,
+                availability_filter=self._context.availability_filter,
+                required_capabilities=self._context.required_capabilities,
+                focus_strategy_id=strategy_id,
+                selection_bookmark=bookmark,
             )
         )
 
@@ -265,6 +455,21 @@ class StrategyLibraryQtAdapter(QObject):
             subscription.dispose()
         self._context = context
         self._state = self._feature.snapshot(context)
+        current_source = (
+            ""
+            if self._state.source_revision is None
+            else self._state.source_revision.value,
+            self._state.source.generation.value,
+        )
+        if (
+            self._comparison_source is not None
+            and (
+                self._comparison_source != current_source
+                or self._state.freshness.value != "fresh"
+            )
+        ):
+            self._comparison_entries = ()
+            self._comparison_source = None
         self._subscription = self._feature.subscribe(context, self._queue_state)
         self.stateChanged.emit()
 
@@ -3123,6 +3328,9 @@ class JourneyWorkspaceHost(QQuickWidget):
         context: RunMonitoringContext | None = None,
         strategy_library_feature: StrategyLibraryFeature | None = None,
         strategy_library_context: StrategyLibraryContext | None = None,
+        strategy_library_bookmark_sink: (
+            Callable[[StrategySelectionBookmark], None] | None
+        ) = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
@@ -3160,6 +3368,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             StrategyLibraryQtAdapter(
                 strategy_library_feature,
                 context=strategy_library_context,
+                bookmark_sink=strategy_library_bookmark_sink,
                 parent=self,
             )
             if strategy_library_feature is not None

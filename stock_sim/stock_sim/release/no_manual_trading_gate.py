@@ -85,8 +85,11 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "StrategyLibraryQtAdapter": frozenset(
             {
+                "compareFormalSet",
                 "refresh",
+                "selectFormalSet",
                 "setAvailabilityFilter",
+                "setFocusStrategy",
                 "setSearchText",
             }
         ),

@@ -1,7 +1,7 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
 
 This runbook reproduces the incremental Wave 3 source-level integration gate,
-including Issue #77 and the inherited Wave 2 union. It does not claim T08, T09, or T10
+including Issues #77 and #78 and the inherited Wave 2 union. It does not claim T08, T09, or T10
 and is not the Issue #88 installed offline release-certification
 procedure.
 
@@ -29,6 +29,9 @@ This validates the checked-in union manifest, both contract documents, the
 `RunMonitoringFeature` 1.2, and
 `EvidenceAndFindingsFeature` 1.1. It also rejects forbidden types and
 substitutes across the exact persisted product tracer.
+For Issue #78 it also binds public formal-set validation, explicit comparison
+dimensions, exact immutable selection references, durable bookmark reread,
+typed stale/conflict/unavailable recovery, and focus restoration.
 
 ## Gate execution
 
@@ -62,7 +65,8 @@ The gate deliberately uses separate pytest processes for:
 1. Seam 2, including unchanged-body Strategy Library conformance in
    `test_strategy_library_live_fake_conformance.py`, inherited Diagnostic Tasks
    conformance in `test_diagnostic_tasks_live_fake_conformance.py`, and static
-   architecture;
+   architecture. The Strategy Library body includes exact comparison/selection,
+   idempotency, source conflict, bookmark reopen, and capability truth;
 2. Seam 1, the source-bound file-backed tracer suite whose primary
    Application-to-QML path is
    `test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence`, plus
@@ -106,6 +110,11 @@ flake.
   formal entries and preserves exact source, manifest, Guardrail, dependency,
   status, revision, freshness, and generation facts across search, filtering,
   disconnect, reconnect, and remount.
+- Compare the formal set and verify source identity/hash, capabilities,
+  Guardrail thresholds, and dependency provenance are visible without scores,
+  ranks, or recommendations. Select it, restart through a fresh `AppContext`,
+  and verify the persisted exact references and focused Strategy are restored
+  only after authoritative validation.
 
 Wave 3 Seam 3 remains owned by Issue #88. It must independently produce T08/T09/T10,
 same-source QML and Widgets packages, clean-room reports, checksums, dependency

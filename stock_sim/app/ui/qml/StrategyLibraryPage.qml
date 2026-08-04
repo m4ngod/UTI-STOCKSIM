@@ -42,6 +42,24 @@ Item {
 
     function restoreFocus() {
         var target = lastFocusedItem
+        if (target === null || !target.visible || !target.enabled) {
+            if (adapter.focusRestorationTarget === "select_formal_set")
+                target = selectFormalSetButton
+            else if (adapter.focusRestorationTarget === "compare_formal_set")
+                target = compareFormalSetButton
+        }
+        if ((target === null || !target.visible || !target.enabled)
+                && adapter.focusRestorationTarget === "strategy_details"
+                && adapter.focusRestorationId.length > 0) {
+            for (var index = 0; index < strategyEntryRepeater.count; ++index) {
+                var card = strategyEntryRepeater.itemAt(index)
+                if (card !== null
+                        && card.modelData.strategyId === adapter.focusRestorationId) {
+                    target = card.primaryFocusControl
+                    break
+                }
+            }
+        }
         if (target === null || !target.visible || !target.enabled)
             target = searchInput
         target.forceActiveFocus()
@@ -198,7 +216,216 @@ Item {
                 wrapMode: Text.WordWrap
             }
 
+            Rectangle {
+                objectName: "strategyLibraryFormalSetPanel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: formalSetColumn.implicitHeight
+                    + tokens.spaceLg * 2
+                radius: tokens.radiusMd
+                color: tokens.surfaceRaised
+                border.color: adapter.selectionStatus === "current"
+                    ? tokens.accent : tokens.focus
+
+                ColumnLayout {
+                    id: formalSetColumn
+                    anchors.fill: parent
+                    anchors.margins: tokens.spaceLg
+                    spacing: tokens.spaceSm
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "FORMAL STRATEGY SET"
+                        color: tokens.accent
+                        font.pixelSize: tokens.labelSize
+                        font.bold: true
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Compare exact backend-declared dimensions; every fact stays explicit and no opaque ranking or recommendation is produced."
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: tokens.spaceMd
+                        Button {
+                            id: compareFormalSetButton
+                            objectName: "strategyLibraryCompareFormalSet"
+                            property string accessibleName: text
+                            text: "Compare formal set"
+                            enabled: adapter.canCompare
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onClicked: adapter.compareFormalSet()
+                            onActiveFocusChanged: {
+                                if (activeFocus)
+                                    page.rememberFocus(this)
+                            }
+                        }
+                        Button {
+                            id: selectFormalSetButton
+                            objectName: "strategyLibrarySelectFormalSet"
+                            property string accessibleName: text
+                            text: "Select exact formal set"
+                            enabled: adapter.canSelectFormalSet
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onClicked: adapter.selectFormalSet()
+                            onActiveFocusChanged: {
+                                if (activeFocus)
+                                    page.rememberFocus(this)
+                            }
+                        }
+                    }
+                    Text {
+                        objectName: "strategyLibrarySelectionStatus"
+                        Layout.fillWidth: true
+                        text: "Selection " + adapter.selectionStatus
+                            + " · " + adapter.selectionMessage
+                        color: adapter.selectionStatus === "current"
+                            ? tokens.accent : tokens.textMuted
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: text
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: adapter.commandMessage
+                        color: tokens.textQuiet
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WordWrap
+                    }
+                    Repeater {
+                        objectName: "strategyLibraryComparisonRepeater"
+                        model: adapter.comparisonEntries
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: comparisonColumn.implicitHeight
+                                + tokens.spaceMd * 2
+                            radius: tokens.radiusSm
+                            color: tokens.surface
+                            ColumnLayout {
+                                id: comparisonColumn
+                                anchors.fill: parent
+                                anchors.margins: tokens.spaceMd
+                                spacing: tokens.spaceXs
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Identity and version · "
+                                        + modelData.strategyId + " @ "
+                                        + modelData.strategyVersion
+                                    color: tokens.textPrimary
+                                    font.pixelSize: tokens.bodySize
+                                    font.bold: true
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Source lineage · "
+                                        + modelData.lineage.join(" → ")
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WordWrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Source identity · "
+                                        + modelData.sourceModule + " · "
+                                        + modelData.sourcePath + " · SHA-256 "
+                                        + modelData.sourceHash
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Compatibility · "
+                                        + modelData.surfaceVersion + " · manifest "
+                                        + modelData.manifestHash
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Declared capabilities · "
+                                        + (modelData.capabilities.length > 0
+                                            ? modelData.capabilities.join(", ")
+                                            : "none")
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WordWrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Candidate data policy · "
+                                        + modelData.candidateDataPolicy
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WordWrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Guardrail profile · "
+                                        + modelData.guardrailProfileId + " @ "
+                                        + modelData.guardrailProfileVersion
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                                Repeater {
+                                    model: modelData.guardrailThresholds
+                                    delegate: Text {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        text: "Guardrail threshold · "
+                                            + modelData.metric + " "
+                                            + modelData.operator + " "
+                                            + modelData.value
+                                        color: tokens.textMuted
+                                        font.pixelSize: tokens.labelSize
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                Repeater {
+                                    model: modelData.dependencies
+                                    delegate: Text {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        text: "Dependency provenance · "
+                                            + modelData.kind + " · "
+                                            + modelData.identity + " @ "
+                                            + modelData.version + " · SHA-256 "
+                                            + modelData.contentHash
+                                            + (modelData.available
+                                                && modelData.compatible
+                                                ? " · ready" : " · blocked")
+                                        color: tokens.textMuted
+                                        font.pixelSize: tokens.labelSize
+                                        wrapMode: Text.WrapAnywhere
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Diagnostic applicability · "
+                                        + (modelData.formalCampaignEligible
+                                            ? "Formal Campaign ready"
+                                            : "Unavailable")
+                                    color: tokens.textMuted
+                                    font.pixelSize: tokens.labelSize
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Repeater {
+                id: strategyEntryRepeater
                 objectName: "strategyLibraryEntryRepeater"
                 model: adapter.entries
 
@@ -206,6 +433,7 @@ Item {
                     id: strategyCard
                     required property var modelData
                     property bool expanded: false
+                    property var primaryFocusControl: inspectDetailsButton
                     objectName: "strategyLibraryEntry-" + modelData.strategyId
                     Layout.fillWidth: true
                     Layout.preferredHeight: cardColumn.implicitHeight + tokens.spaceLg * 2
@@ -293,6 +521,7 @@ Item {
                         }
 
                         Button {
+                            id: inspectDetailsButton
                             objectName: "inspectStrategyDetails-" + modelData.strategyId
                             property string accessibleName: (
                                 text + " for " + modelData.displayName
@@ -302,8 +531,12 @@ Item {
                             Accessible.name: accessibleName
                             onClicked: strategyCard.expanded = !strategyCard.expanded
                             onActiveFocusChanged: {
-                                if (activeFocus)
+                                if (activeFocus) {
+                                    adapter.setFocusStrategy(
+                                        strategyCard.modelData.strategyId
+                                    )
                                     page.rememberFocus(this)
+                                }
                             }
                         }
 
@@ -408,6 +641,15 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    Connections {
+        target: adapter
+        function onStateChanged() {
+            if (!page.hasMeaningfulFocus
+                    && adapter.focusRestorationTarget !== "search")
+                Qt.callLater(page.restoreFocus)
         }
     }
 }

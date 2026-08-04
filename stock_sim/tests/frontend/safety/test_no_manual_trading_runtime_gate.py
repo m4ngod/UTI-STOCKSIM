@@ -60,6 +60,8 @@ FORBIDDEN_RUNTIME_MEMBERS = (
 APPROVED_INTERACTIVE_NAMES = re.compile(
     r"^(?:"
     r"Open Strategy Library|"
+    r"Compare formal set|"
+    r"Select exact formal set|"
     r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
