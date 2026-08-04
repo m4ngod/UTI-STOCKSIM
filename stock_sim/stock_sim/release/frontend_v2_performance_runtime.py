@@ -27,6 +27,7 @@ from typing import Any, cast
 from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
+    QMetaObject,
     QObject,
     Qt,
     QTimer,
@@ -1090,6 +1091,9 @@ class _QtPerformanceProbe(QObject):
         if self._root is None or self._adapter is None:
             raise RuntimeError("Evidence & Findings QML Adapter is unavailable")
         self._renderer = self._required_item("productionEvidenceChart")
+        self._series_canvas = self._required_object(
+            "evidenceChartSeriesShape"
+        )
         self._candidate_repeater = self._required_object("evidenceCandidateRepeater")
         self._context_panel = self._required_item("evidenceContextPanel")
         loader = self._required_item("evidenceAndFindingsPageLoader")
@@ -1134,6 +1138,7 @@ class _QtPerformanceProbe(QObject):
         self._watchdog.setInterval(1)
         self._watchdog.timeout.connect(self._watch)
         self._watchdog.start()
+        QTimer.singleShot(0, self._request_initial_chart_paint)
 
         self._source_timer = QTimer(self)
         self._source_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -1288,6 +1293,18 @@ class _QtPerformanceProbe(QObject):
             max(1, ceil(self._duration_seconds * 1_000)),
             self._publish_terminal,
         )
+
+    @Slot()
+    def _request_initial_chart_paint(self) -> None:
+        """Cross the threaded Canvas acknowledgement barrier before timing."""
+
+        if not QMetaObject.invokeMethod(
+            self._series_canvas,
+            "requestPaint",
+        ):
+            self.errors.append(
+                "Initial Evidence Chart paint request was rejected"
+            )
 
     @Slot()
     def _run_measurement_active_load(self) -> None:

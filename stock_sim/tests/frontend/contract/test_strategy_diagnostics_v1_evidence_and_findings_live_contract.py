@@ -247,7 +247,7 @@ def _persist_real_formal_v1_through_application(
     migration = reopened.initialize_persistence(reopened_engine)
     assert (
         migration.current_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     return (
         reopened,

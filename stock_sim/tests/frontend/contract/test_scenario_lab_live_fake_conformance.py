@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Callable
 
 import pytest
@@ -32,6 +33,7 @@ from app.features.scenario_lab_application import (
     ApproveScenarioRecipeResult,
     ComposeFormalScenarioSetCommand,
     ComposeFormalScenarioSetResult,
+    CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftResult,
     MaterializeApprovedScenarioRecipeCommand,
@@ -67,11 +69,24 @@ from app.features.scenario_lab_application import (
     ScenarioRecipeDataPolicy,
     ScenarioRecipeDraftId,
     ScenarioRecipeDraftPayload,
+    ScenarioRecipeParameterInput,
+    ScenarioRecipeParameterKind,
+    ScenarioRecipeTransformationInput,
     ScenarioRecipeValidationId,
     ValidateScenarioRecipeDraftCommand,
     ValidateScenarioRecipeDraftResult,
+    LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    canonical_scenario_lab_command_content_identity,
 )
 from app.features.strategy_diagnostics_v1_read_model import SourceRevisionToken
+from strategy_diagnostics import (
+    AIRecipeDraftOutputV1,
+    DeterministicFakeAIRecipeAssistant,
+    ScenarioRecipeV1,
+)
+from strategy_diagnostics.application import create_diagnostics_application
+from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from tests.strategy_diagnostics.test_recipe_lifecycle import _RecipeFixtureSource
 
 
 def _inventory() -> ScenarioLabInventory:
@@ -193,6 +208,477 @@ def _fake_feature() -> ScenarioLabFeature:
     return DeterministicFakeScenarioLabAdapter(inventory=_inventory())
 
 
+def _live_authoring_feature() -> ScenarioLabFeature:
+    source = _RecipeFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc),
+    )
+    application.start()
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    return LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+
+
+def _fake_authoring_feature() -> ScenarioLabFeature:
+    return DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+
+
+def _live_ai_authoring_feature() -> ScenarioLabFeature:
+    source = _RecipeFixtureSource()
+    probe = create_diagnostics_application(historical_source=source)
+    probe.start()
+    admission = probe.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_assistant=DeterministicFakeAIRecipeAssistant(
+            output=AIRecipeDraftOutputV1(
+                recipe=ScenarioRecipeV1(
+                    name="AI conformance Draft",
+                    historical_segment_id=admission.segment.segment_id,
+                    transformations=(),
+                    decision_cadence_minutes=30,
+                    materialization_seed=80,
+                )
+            )
+        ),
+        recipe_clock=lambda: datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc),
+    )
+    application.start()
+    assert application.admit_historical_segment(source.selection).segment is not None
+    return LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+
+
+def _fake_ai_authoring_feature() -> ScenarioLabFeature:
+    return DeterministicFakeScenarioLabAdapter(
+        inventory=_inventory(),
+        ai_authoring_available=True,
+        ai_provider="deterministic-fake",
+        ai_model="deterministic-recipe-fixture.v1",
+    )
+
+
+def _canonicalize_authoring(command):
+    return replace(
+        command,
+        metadata=replace(
+            command.metadata,
+            canonical_content_identity=(
+                canonical_scenario_lab_command_content_identity(command)
+            ),
+        ),
+    )
+
+
+def _authoring_payload(
+    ready,
+    *,
+    transformations: tuple[ScenarioRecipeTransformationInput, ...] = (),
+) -> ScenarioRecipeDraftPayload:
+    return ScenarioRecipeDraftPayload(
+        name="Wave 3 conformance Draft",
+        historical_segment_id=ready.historical_segments[0].segment_id,
+        transformations=transformations,
+        requested_execution_assumptions=RequestedExecutionAssumptionsProjection(
+            commission_bps="3",
+            slippage_bps="0",
+            max_fill_fraction="1",
+            latency_nodes=0,
+            allow_partial_fills=True,
+        ),
+        decision_cadence_minutes=30,
+        materialization_seed=80,
+        data_policy=ScenarioRecipeDataPolicy.POINT_IN_TIME,
+        market_rule_profile_version="a-share-cash-equity.v1",
+    )
+
+
+def _authoring_metadata(
+    ready,
+    *,
+    suffix: str,
+    canonical_content_identity: str = "pending-canonical-content",
+) -> ScenarioLabCommandMetadata:
+    assert ready.source_revision is not None
+    return ScenarioLabCommandMetadata(
+        command_id=ScenarioLabCommandId(f"command-80-{suffix}"),
+        idempotency_identity=ScenarioLabIdempotencyIdentity(
+            f"idempotency-80-{suffix}"
+        ),
+        canonical_content_identity=ScenarioLabCommandContentIdentity(
+            canonical_content_identity
+        ),
+        expected_source_revision=ready.source_revision,
+        expected_source_generation=ready.source.generation,
+    )
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_authoring_rejects_a_canonical_identity_that_does_not_match_the_body(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    command = CreateScenarioRecipeDraftCommand(
+        metadata=_authoring_metadata(
+            ready,
+            suffix="canonical-mismatch",
+            canonical_content_identity="0" * 64,
+        ),
+        payload=_authoring_payload(ready),
+        author_id=ScenarioLabActorId("actor-80"),
+        authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+    )
+
+    result = feature.create_recipe_draft(command)
+
+    assert result.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert "canonical" in result.receipt.message.casefold()
+    assert feature.snapshot(context).recipe_drafts == ()
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_authoring_keeps_same_body_distinct_across_different_commands(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    first_command = _canonicalize_authoring(
+        CreateScenarioRecipeDraftCommand(
+            metadata=_authoring_metadata(ready, suffix="same-body-first"),
+            payload=_authoring_payload(ready),
+            author_id=ScenarioLabActorId("actor-80"),
+            authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+        )
+    )
+    first = feature.create_recipe_draft(first_command)
+    assert first.draft is not None
+    after_first = feature.snapshot(context)
+    second_command = _canonicalize_authoring(
+        replace(
+            first_command,
+            metadata=_authoring_metadata(
+                after_first,
+                suffix="same-body-second",
+            ),
+        )
+    )
+    assert (
+        first_command.metadata.canonical_content_identity
+        == second_command.metadata.canonical_content_identity
+    )
+
+    second = feature.create_recipe_draft(second_command)
+
+    assert first.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert second.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert second.draft is not None
+    assert first.draft.draft_id != second.draft.draft_id
+    assert first.draft.recipe_id != second.draft.recipe_id
+    assert first.draft.payload_hash == second.draft.payload_hash
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_validation_keeps_same_body_distinct_across_different_commands(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    created = feature.create_recipe_draft(
+        _canonicalize_authoring(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(ready, suffix="validation-source"),
+                payload=_authoring_payload(ready),
+                author_id=ScenarioLabActorId("actor-80"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert created.draft is not None
+    after_create = feature.snapshot(context)
+    first_command = _canonicalize_authoring(
+        ValidateScenarioRecipeDraftCommand(
+            metadata=_authoring_metadata(
+                after_create,
+                suffix="same-validation-first",
+            ),
+            draft_id=created.draft.draft_id,
+            expected_draft_revision=created.draft.revision,
+            expected_payload_hash=created.draft.payload_hash,
+        )
+    )
+    first = feature.validate_recipe_draft(first_command)
+    assert first.validation is not None
+    after_first = feature.snapshot(context)
+    second_command = _canonicalize_authoring(
+        replace(
+            first_command,
+            metadata=_authoring_metadata(
+                after_first,
+                suffix="same-validation-second",
+            ),
+        )
+    )
+    assert (
+        first_command.metadata.canonical_content_identity
+        == second_command.metadata.canonical_content_identity
+    )
+
+    second = feature.validate_recipe_draft(second_command)
+
+    assert second.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert second.validation is not None
+    assert first.validation.validation_id != second.validation.validation_id
+    assert first.validation.draft_id == second.validation.draft_id
+    assert first.validation.payload_hash == second.validation.payload_hash
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_authoring_rejects_registered_transformation_parameter_bounds(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    assert ready.transformation_catalog is not None
+    transformation_id = next(
+        item.transformation_id
+        for item in ready.transformation_catalog.entries
+        if item.transformation_id == "volatility-scaling.v1"
+    )
+    command = CreateScenarioRecipeDraftCommand(
+        metadata=_authoring_metadata(ready, suffix="parameter-bounds-create"),
+        payload=_authoring_payload(
+            ready,
+            transformations=(
+                ScenarioRecipeTransformationInput(
+                    transformation_id=transformation_id,
+                    parameters=(
+                        ScenarioRecipeParameterInput(
+                            name="multiplier",
+                            kind=ScenarioRecipeParameterKind.DECIMAL,
+                            value=Decimal("3"),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        author_id=ScenarioLabActorId("actor-80"),
+        authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+    )
+    created = feature.create_recipe_draft(_canonicalize_authoring(command))
+    assert created.draft is not None
+    after_create = feature.snapshot(context)
+    validation_command = ValidateScenarioRecipeDraftCommand(
+        metadata=_authoring_metadata(
+            after_create,
+            suffix="parameter-bounds-validate",
+        ),
+        draft_id=created.draft.draft_id,
+        expected_draft_revision=created.draft.revision,
+        expected_payload_hash=created.draft.payload_hash,
+    )
+
+    result = feature.validate_recipe_draft(
+        _canonicalize_authoring(validation_command)
+    )
+
+    assert result.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert result.validation is not None
+    assert result.validation.is_valid is False
+    assert "transformation.parameter-bounds" in {
+        finding.rule_code for finding in result.validation.findings
+    }
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_ai_authoring_feature, _fake_ai_authoring_feature),
+)
+def test_shared_ai_authoring_body_exposes_configured_capability_and_audited_draft(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    assert ready.capabilities.can_create_ai_assisted_recipe_draft
+    assert ready.last_reliable_inventory is not None
+    authoring = ready.last_reliable_inventory.authoring_capabilities
+    assert authoring.ai_authoring_available
+    assert authoring.ai_provider
+    assert authoring.ai_model
+    command = CreateAiAssistedScenarioRecipeDraftCommand(
+        metadata=_authoring_metadata(ready, suffix="ai-create"),
+        intent="Draft the exact admitted baseline for diagnostic review.",
+        author_id=ScenarioLabActorId("scenario-ai-author-80"),
+    )
+    command = _canonicalize_authoring(command)
+
+    accepted = feature.author_recipe_with_ai(command)
+    replayed = feature.author_recipe_with_ai(
+        replace(
+            command,
+            metadata=replace(
+                command.metadata,
+                command_id=ScenarioLabCommandId("command-80-ai-create-replay"),
+            ),
+        )
+    )
+
+    assert accepted.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert accepted.draft is not None
+    assert accepted.draft.authoring_mode is ScenarioRecipeAuthoringMode.AI_ASSISTED
+    assert accepted.draft.assistant_attempt_id
+    assert replayed == accepted
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_ai_authoring_body_fails_closed_without_a_configured_provider(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    assert not ready.capabilities.can_create_ai_assisted_recipe_draft
+    command = CreateAiAssistedScenarioRecipeDraftCommand(
+        metadata=_authoring_metadata(ready, suffix="ai-unconfigured"),
+        intent="Draft the exact admitted baseline.",
+        author_id=ScenarioLabActorId("scenario-ai-author-80"),
+    )
+
+    result = feature.author_recipe_with_ai(_canonicalize_authoring(command))
+
+    assert result.receipt.disposition is ScenarioLabCommandDisposition.UNAVAILABLE
+    assert result.draft is None
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_ai_authoring_feature, _fake_ai_authoring_feature),
+)
+def test_shared_ai_authoring_rejects_a_tampered_payload_for_an_audited_attempt(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    ai_command = _canonicalize_authoring(
+        CreateAiAssistedScenarioRecipeDraftCommand(
+            metadata=_authoring_metadata(ready, suffix="ai-audit-source"),
+            intent="Draft the exact admitted baseline.",
+            author_id=ScenarioLabActorId("scenario-ai-author-80"),
+        )
+    )
+    authored = feature.author_recipe_with_ai(ai_command)
+    assert authored.draft is not None
+    assert authored.draft.assistant_attempt_id is not None
+    after_ai = feature.snapshot(context)
+    tampered = _canonicalize_authoring(
+        CreateScenarioRecipeDraftCommand(
+            metadata=_authoring_metadata(after_ai, suffix="ai-audit-tamper"),
+            payload=replace(authored.draft.payload, name="Tampered AI payload"),
+            author_id=authored.draft.author_id,
+            authoring_mode=ScenarioRecipeAuthoringMode.AI_ASSISTED,
+            assistant_attempt_id=authored.draft.assistant_attempt_id,
+        )
+    )
+
+    result = feature.create_recipe_draft(tampered)
+
+    assert result.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert result.draft is None
+    assert "audited AI result" in result.receipt.message
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_ai_authoring_feature, _fake_ai_authoring_feature),
+)
+def test_shared_ai_draft_revision_is_a_manual_successor_with_no_attempt_identity(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    authored = feature.author_recipe_with_ai(
+        _canonicalize_authoring(
+            CreateAiAssistedScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(ready, suffix="ai-revise-source"),
+                intent="Draft the exact admitted baseline.",
+                author_id=ScenarioLabActorId("scenario-ai-author-80"),
+            )
+        )
+    )
+    assert authored.draft is not None
+    after_ai = feature.snapshot(context)
+    revised = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(after_ai, suffix="ai-revise"),
+                predecessor_draft_id=authored.draft.draft_id,
+                expected_draft_revision=authored.draft.revision,
+                payload=replace(
+                    authored.draft.payload,
+                    name="Human-reviewed AI successor",
+                ),
+                author_id=ScenarioLabActorId("scenario-human-reviewer-80"),
+            )
+        )
+    )
+
+    assert revised.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert revised.draft is not None
+    assert revised.draft.authoring_mode is ScenarioRecipeAuthoringMode.MANUAL
+    assert revised.draft.assistant_attempt_id is None
+    feature.close()
+
+
 @pytest.mark.parametrize("feature_factory", (_live_feature, _fake_feature))
 def test_shared_read_body_covers_loading_ready_identity_and_immutability(
     feature_factory: Callable[[], ScenarioLabFeature],
@@ -218,7 +704,9 @@ def test_shared_read_body_covers_loading_ready_identity_and_immutability(
     assert "not recorded microstructure" in ready.reference_paths[0].reconstruction_notice
     assert ready.reference_paths[0].preview is not None
     assert len(ready.reference_paths[0].preview.nodes) <= ready.reference_paths[0].preview.bounded_node_limit
-    assert not ready.capabilities.can_create_recipe_draft
+    assert ready.capabilities.can_create_recipe_draft
+    assert not ready.capabilities.can_revise_recipe_draft
+    assert not ready.capabilities.can_validate_recipe_draft
     assert not ready.capabilities.can_materialize_reference_path
     assert ready.historical_segments[0].admission_state.value == "admitted"
     assert ready.historical_segments[0].quality_state.value == "passed"
@@ -326,8 +814,11 @@ def test_shared_read_body_filters_only_typed_view_state(
     feature.close()
 
 
-@pytest.mark.parametrize("feature_factory", (_live_feature, _fake_feature))
-def test_shared_read_body_keeps_recipe_mutations_typed_unavailable(
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unavailable(
     feature_factory: Callable[[], ScenarioLabFeature],
 ) -> None:
     feature = feature_factory()
@@ -335,22 +826,25 @@ def test_shared_read_body_keeps_recipe_mutations_typed_unavailable(
     feature.snapshot(context)
     ready = feature.snapshot(context)
     assert ready.source_revision is not None
-    def metadata(operation: str) -> ScenarioLabCommandMetadata:
+    def metadata(
+        operation: str,
+        source_revision: SourceRevisionToken,
+    ) -> ScenarioLabCommandMetadata:
         return ScenarioLabCommandMetadata(
-            command_id=ScenarioLabCommandId(f"command-79-{operation}"),
+            command_id=ScenarioLabCommandId(f"command-80-{operation}"),
             idempotency_identity=ScenarioLabIdempotencyIdentity(
-                f"idempotency-79-{operation}"
+                f"idempotency-80-{operation}"
             ),
             canonical_content_identity=ScenarioLabCommandContentIdentity(
-                f"content-79-{operation}"
+                f"content-80-{operation}"
             ),
-            expected_source_revision=ready.source_revision,
+            expected_source_revision=source_revision,
             expected_source_generation=SourceGenerationId(1),
         )
 
     payload = ScenarioRecipeDraftPayload(
         name="Wave 3 fixture",
-        historical_segment_id=HistoricalMarketSegmentId("segment-79"),
+        historical_segment_id=ready.historical_segments[0].segment_id,
         transformations=(),
         requested_execution_assumptions=RequestedExecutionAssumptionsProjection(
             commission_bps="1.0",
@@ -359,99 +853,118 @@ def test_shared_read_body_keeps_recipe_mutations_typed_unavailable(
             latency_nodes=1,
             allow_partial_fills=True,
         ),
-        decision_cadence_minutes=5,
-        materialization_seed=79,
+        decision_cadence_minutes=30,
+        materialization_seed=80,
         data_policy=ScenarioRecipeDataPolicy.POINT_IN_TIME,
-        market_rule_profile_version="cn-a-v1",
+        market_rule_profile_version="a-share-cash-equity.v1",
     )
 
-    results = (
-        feature.create_recipe_draft(
-            CreateScenarioRecipeDraftCommand(
-                metadata("create"),
-                payload,
-                ScenarioLabActorId("actor-79"),
-                ScenarioRecipeAuthoringMode.MANUAL,
-            )
-        ),
-        feature.revise_recipe_draft(
-            ReviseScenarioRecipeDraftCommand(
-                metadata("revise"),
-                ScenarioRecipeDraftId("draft-79"),
-                1,
-                payload,
-                ScenarioLabActorId("actor-79"),
-            )
-        ),
-        feature.validate_recipe_draft(
-            ValidateScenarioRecipeDraftCommand(
-                metadata("validate"),
-                ScenarioRecipeDraftId("draft-79"),
-                1,
-                "payload-hash-79",
-            )
-        ),
+    created = feature.create_recipe_draft(
+        _canonicalize_authoring(CreateScenarioRecipeDraftCommand(
+            metadata("create", ready.source_revision),
+            payload,
+            ScenarioLabActorId("actor-80"),
+            ScenarioRecipeAuthoringMode.MANUAL,
+        ))
+    )
+    assert created.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert created.draft is not None
+    after_create = feature.snapshot(context)
+    assert after_create.source_revision is not None
+    assert after_create.recipe_drafts == (created.draft,)
+    assert after_create.capabilities.can_revise_recipe_draft
+    assert after_create.capabilities.can_validate_recipe_draft
+
+    revised = feature.revise_recipe_draft(
+        _canonicalize_authoring(ReviseScenarioRecipeDraftCommand(
+            metadata("revise", after_create.source_revision),
+            created.draft.draft_id,
+            created.draft.revision,
+            replace(payload, name="Wave 3 successor fixture"),
+            ScenarioLabActorId("actor-80"),
+        ))
+    )
+    assert revised.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert revised.draft is not None
+    after_revise = feature.snapshot(context)
+    assert after_revise.source_revision is not None
+
+    validated = feature.validate_recipe_draft(
+        _canonicalize_authoring(ValidateScenarioRecipeDraftCommand(
+            metadata("validate", after_revise.source_revision),
+            revised.draft.draft_id,
+            revised.draft.revision,
+            revised.draft.payload_hash,
+        ))
+    )
+    assert validated.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert validated.validation is not None
+    after_validate = feature.snapshot(context)
+    assert after_validate.recipe_validations == (validated.validation,)
+    assert after_validate.source_revision is not None
+
+    future_results = (
         feature.approve_recipe(
             ApproveScenarioRecipeCommand(
-                metadata("approve"),
-                ScenarioRecipeDraftId("draft-79"),
-                1,
-                "payload-hash-79",
-                ScenarioRecipeValidationId("validation-79"),
-                ScenarioLabActorId("actor-79"),
+                metadata("approve", after_validate.source_revision),
+                revised.draft.draft_id,
+                revised.draft.revision,
+                revised.draft.payload_hash,
+                validated.validation.validation_id,
+                ScenarioLabActorId("actor-80"),
             )
         ),
         feature.materialize_reference_path(
             MaterializeApprovedScenarioRecipeCommand(
-                metadata("materialize"),
-                ApprovedScenarioRecipeVersionId("recipe-79"),
-                "recipe-content-79",
+                metadata("materialize", after_validate.source_revision),
+                ApprovedScenarioRecipeVersionId("recipe-80"),
+                "recipe-content-80",
             )
         ),
         feature.retry_materialization(
             RetryScenarioMaterializationCommand(
-                metadata("retry"),
-                ScenarioMaterializationAttemptId("attempt-79"),
-                TaskHandleId("task-79"),
+                metadata("retry", after_validate.source_revision),
+                ScenarioMaterializationAttemptId("attempt-80"),
+                TaskHandleId("task-80"),
             )
         ),
         feature.compose_scenario_set(
             ComposeFormalScenarioSetCommand(
-                metadata("compose"),
-                CampaignCaseId("baseline-79"),
-                (CampaignCaseId("isolated-79"),),
-                (CampaignCaseId("compound-79"),),
+                metadata("compose", after_validate.source_revision),
+                CampaignCaseId("baseline-80"),
+                (CampaignCaseId("isolated-80"),),
+                (CampaignCaseId("compound-80"),),
             )
         ),
         feature.resolve_execution_assumptions(
             ResolveScenarioExecutionAssumptionsCommand(
-                metadata("resolve"),
+                metadata("resolve", after_validate.source_revision),
                 (
                     ScenarioExecutionAssumptionTarget(
-                        StrategyUnderTestId("strategy-79"),
-                        CampaignCaseId("baseline-79"),
+                        StrategyUnderTestId("strategy-80"),
+                        CampaignCaseId("baseline-80"),
                     ),
                 ),
             )
         ),
         feature.select_formal_scenario_set(
             SelectFormalScenarioSetCommand(
-                metadata("select"),
-                ScenarioSetId("set-79"),
-                (CampaignCaseId("baseline-79"),),
-                ready.revision,
+                metadata("select", after_validate.source_revision),
+                ScenarioSetId("set-80"),
+                (CampaignCaseId("baseline-80"),),
+                after_validate.revision,
             )
         ),
     )
 
     assert all(
         result.receipt.disposition is ScenarioLabCommandDisposition.UNAVAILABLE
-        for result in results
+        for result in future_results
     )
-    assert tuple(result.receipt.operation for result in results) == tuple(
+    assert tuple(result.receipt.operation for result in future_results) == tuple(
         ScenarioLabTaskOperation
-    )
-    assert all(result.receipt.task_handle is None for result in results)
+    )[3:]
+    assert all(result.receipt.task_handle is None for result in future_results)
     feature.close()
 
 
@@ -877,5 +1390,44 @@ def test_shared_connection_body_retains_data_rereads_and_quarantines_old_generat
     quarantined = harness.feature.snapshot(context)
     assert quarantined.revision == revision
     assert quarantined.source.generation == reconnected.source.generation
+    assert reconnected.source_revision is not None
+    stale_generation_command = _canonicalize_authoring(
+        CreateScenarioRecipeDraftCommand(
+            ScenarioLabCommandMetadata(
+                command_id=ScenarioLabCommandId("command-80-old-generation"),
+                idempotency_identity=ScenarioLabIdempotencyIdentity(
+                    "idempotency-80-old-generation"
+                ),
+                canonical_content_identity=ScenarioLabCommandContentIdentity(
+                    "pending-old-generation"
+                ),
+                expected_source_revision=reconnected.source_revision,
+                expected_source_generation=ready.source.generation,
+            ),
+            ScenarioRecipeDraftPayload(
+                name="Old generation Draft",
+                historical_segment_id=reconnected.historical_segments[0].segment_id,
+                transformations=(),
+                requested_execution_assumptions=(
+                    RequestedExecutionAssumptionsProjection(
+                        commission_bps="3",
+                        slippage_bps="0",
+                        max_fill_fraction="1",
+                        latency_nodes=0,
+                        allow_partial_fills=True,
+                    )
+                ),
+                decision_cadence_minutes=30,
+                materialization_seed=80,
+                data_policy=ScenarioRecipeDataPolicy.POINT_IN_TIME,
+                market_rule_profile_version="a-share-cash-equity.v1",
+            ),
+            ScenarioLabActorId("actor-80"),
+            ScenarioRecipeAuthoringMode.MANUAL,
+        )
+    )
+    stale_result = harness.feature.create_recipe_draft(stale_generation_command)
+    assert stale_result.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+    assert "old-generation" in stale_result.receipt.message
     harness.feature.close()
     harness.cleanup()

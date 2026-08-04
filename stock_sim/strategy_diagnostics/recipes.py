@@ -437,6 +437,8 @@ class ScenarioRecipeRepository(Protocol):
 
     def get_draft(self, draft_id: str) -> ScenarioRecipeDraft | None: ...
 
+    def list_drafts(self) -> tuple[ScenarioRecipeDraft, ...]: ...
+
     def add_validation(
         self,
         validation: RecipeValidationResult,
@@ -491,6 +493,14 @@ class InMemoryScenarioRecipeRepository:
 
     def get_draft(self, draft_id: str) -> ScenarioRecipeDraft | None:
         return self._drafts.get(draft_id)
+
+    def list_drafts(self) -> tuple[ScenarioRecipeDraft, ...]:
+        return tuple(
+            sorted(
+                self._drafts.values(),
+                key=lambda item: (item.created_at, item.draft_id),
+            )
+        )
 
     def add_validation(
         self,
@@ -583,6 +593,7 @@ class RecipeWorkbench:
         author: str,
         assistant: AIRecipeAssistant,
         admitted_segments: Iterable[HistoricalMarketSegment],
+        attempt_id: str | None = None,
     ) -> AIRecipeAuthoringResult:
         normalized_intent = intent.strip()
         if not normalized_intent:
@@ -590,6 +601,13 @@ class RecipeWorkbench:
         normalized_author = author.strip()
         if not normalized_author:
             raise ValueError("Scenario Recipe Draft author is required")
+        resolved_attempt_id = (
+            f"ai_recipe_attempt_{uuid4().hex}"
+            if attempt_id is None
+            else attempt_id.strip()
+        )
+        if not resolved_attempt_id:
+            raise ValueError("AI Recipe Assistant attempt identity is required")
         segments = tuple(admitted_segments)
         request = AIRecipeAssistantRequest(
             intent=normalized_intent,
@@ -606,7 +624,7 @@ class RecipeWorkbench:
                 else None
             )
             failed_attempt = AIRecipeAssistantAttempt(
-                attempt_id=f"ai_recipe_attempt_{uuid4().hex}",
+                attempt_id=resolved_attempt_id,
                 intent=normalized_intent,
                 author=normalized_author,
                 provider=assistant.provider,
@@ -638,7 +656,7 @@ class RecipeWorkbench:
             response.response_json.encode("utf-8")
         ).hexdigest()
         attempt = AIRecipeAssistantAttempt(
-            attempt_id=f"ai_recipe_attempt_{uuid4().hex}",
+            attempt_id=resolved_attempt_id,
             intent=normalized_intent,
             author=draft.author,
             provider=assistant.provider,
@@ -667,16 +685,23 @@ class RecipeWorkbench:
         author: str,
         recipe_id: str | None = None,
         based_on_version_id: str | None = None,
+        draft_id: str | None = None,
+        created_at: datetime | None = None,
     ) -> ScenarioRecipeDraft:
         normalized_author = author.strip()
         if not normalized_author:
             raise ValueError("Scenario Recipe Draft author is required")
-        created_at = self._now()
+        resolved_created_at = created_at or self._now()
+        if (
+            resolved_created_at.tzinfo is None
+            or resolved_created_at.utcoffset() is None
+        ):
+            raise ValueError("Scenario Recipe Draft time must be timezone-aware")
         draft = ScenarioRecipeDraft(
-            draft_id=f"recipe_draft_{uuid4().hex}",
+            draft_id=draft_id or f"recipe_draft_{uuid4().hex}",
             recipe_id=recipe_id or f"recipe_{uuid4().hex}",
             author=normalized_author,
-            created_at=created_at,
+            created_at=resolved_created_at,
             payload_json=_canonical_json(dict(payload)),
             based_on_version_id=based_on_version_id,
         )
@@ -687,6 +712,7 @@ class RecipeWorkbench:
         draft_id: str,
         *,
         admitted_segments: Iterable[HistoricalMarketSegment],
+        validated_at: datetime | None = None,
     ) -> RecipeValidationResult:
         draft = self.get_draft(draft_id)
         if any(
@@ -735,7 +761,7 @@ class RecipeWorkbench:
             is_valid=is_valid,
             issues=tuple(issues),
             recipe_content_hash=recipe.content_hash if is_valid and recipe else None,
-            validated_at=self._now(),
+            validated_at=validated_at or self._now(),
             validated_recipe=recipe if is_valid else None,
         )
         return self._repository.add_validation(result)
@@ -820,6 +846,9 @@ class RecipeWorkbench:
         if draft is None:
             raise ValueError(f"Unknown Scenario Recipe Draft: {draft_id}")
         return draft
+
+    def list_drafts(self) -> tuple[ScenarioRecipeDraft, ...]:
+        return self._repository.list_drafts()
 
     def get_ai_audit(self, attempt_id: str) -> AIRecipeAuditRecord:
         attempt = self._repository.get_ai_attempt(attempt_id)

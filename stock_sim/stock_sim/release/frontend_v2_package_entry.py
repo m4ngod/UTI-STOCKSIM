@@ -167,6 +167,24 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Open Scenario Lab|"
     r"Compare formal set|"
     r"Select exact formal set|"
+    r"Scenario Recipe Draft name|"
+    r"Select admitted Historical Market Segment|"
+    r"Select registered Scenario transformation|"
+    r"Closed transformation first parameter value|"
+    r"Requested commission basis points|"
+    r"Requested slippage basis points|"
+    r"Requested maximum fill fraction|"
+    r"Requested execution latency nodes|"
+    r"Scenario decision cadence minutes|"
+    r"Scenario materialization seed|"
+    r"Market Rule Profile version identity|"
+    r"Allow requested partial fills|"
+    r"Create exact immutable Scenario Recipe Draft|"
+    r"Audited AI Scenario Recipe intent|"
+    r"Create audited AI-assisted Scenario Recipe Draft|"
+    r"Create immutable successor Recipe Draft revision|"
+    r"Select Recipe Draft .+ for successor revision|"
+    r"Validate exact Recipe Draft revision \d+|"
     r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
@@ -200,6 +218,7 @@ _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
     {
         "diagnosticTaskApprovalActorInput",
         "scenarioLabSearchInput",
+        "scenarioLabAiRecipeIntentInput",
         "scenarioLabMarketFilter",
         "scenarioLabSourceFilter",
         "scenarioLabRecipeVersionFilter",
@@ -219,6 +238,11 @@ _PACKAGED_NON_ACTION_FOCUS_PARENT_OBJECT_NAMES = frozenset(
         "scenarioLabLayerFilter",
         "scenarioLabTransformationFamilyFilter",
         "scenarioLabCompatibilityFilter",
+        "scenarioLabRecipeCadenceInput",
+        "scenarioLabRecipeLatencyInput",
+        "scenarioLabRecipeSeedInput",
+        "scenarioLabRecipeSegmentInput",
+        "scenarioLabRecipeTransformationInput",
         "scenarioLabReproducibilityFilter",
         "scenarioLabReconstructionFilter",
     }
@@ -2924,7 +2948,10 @@ def _unapproved_interactive_actions(
             continue
         if (
             not object_name
-            and class_name.startswith("QQuickTextField")
+            and (
+                class_name.startswith("QQuickTextField")
+                or class_name.startswith("TextField_QMLTYPE")
+            )
             and _has_qml_parent_object_name(
                 item,
                 _PACKAGED_NON_ACTION_FOCUS_PARENT_OBJECT_NAMES,

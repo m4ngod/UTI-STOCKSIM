@@ -26,6 +26,7 @@ def test_scenario_lab_application_1_0_is_a_separate_exact_surface() -> None:
     }
     assert operations == {
         "approve_recipe",
+        "author_recipe_with_ai",
         "compose_scenario_set",
         "create_recipe_draft",
         "materialize_reference_path",

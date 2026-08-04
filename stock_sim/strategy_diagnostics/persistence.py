@@ -55,8 +55,14 @@ _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION: Final = (
 _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION: Final = (
     "0017_diagnostic_lifecycle_targets"
 )
-DIAGNOSTIC_SCHEMA_REVISION: Final = (
+_DIAGNOSTIC_CAMPAIGN_ATTEMPT_HISTORY_REVISION: Final = (
     "0018_diagnostic_campaign_attempt_history"
+)
+_SCENARIO_RECIPE_DEPENDENCY_BINDINGS_REVISION: Final = (
+    "0019_scenario_recipe_dependency_bindings"
+)
+DIAGNOSTIC_SCHEMA_REVISION: Final = (
+    "0020_scenario_lab_commands_and_materialization_handles"
 )
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
@@ -77,6 +83,8 @@ _MIGRATION_REVISIONS: Final = (
     _DIAGNOSTIC_TASK_CAMPAIGN_HANDOFF_REVISION,
     _DIAGNOSTIC_TASK_START_CONTINUATION_REVISION,
     _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION,
+    _DIAGNOSTIC_CAMPAIGN_ATTEMPT_HISTORY_REVISION,
+    _SCENARIO_RECIPE_DEPENDENCY_BINDINGS_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -92,6 +100,11 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
 
     applied_revisions: list[str] = []
     with engine.begin() as connection:
+        if connection.dialect.name == "sqlite":
+            # sqlite3 does not start a real transaction for DDL through the
+            # DB-API facade.  Explicitly begin before the first CREATE so a
+            # failed migration cannot leave half-created tables behind.
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
         connection.exec_driver_sql(
             f"CREATE TABLE IF NOT EXISTS {_MIGRATION_TABLE} ("
             "revision VARCHAR(128) PRIMARY KEY NOT NULL, "
@@ -144,8 +157,14 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _add_diagnostic_task_start_continuation_claim(connection)
             elif revision == _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION:
                 _create_diagnostic_lifecycle_targets(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == _DIAGNOSTIC_CAMPAIGN_ATTEMPT_HISTORY_REVISION:
                 _extend_diagnostic_campaign_attempt_history(connection)
+            elif revision == _SCENARIO_RECIPE_DEPENDENCY_BINDINGS_REVISION:
+                _create_scenario_recipe_dependency_bindings(connection)
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_scenario_lab_commands_and_materialization_handles(
+                    connection
+                )
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -822,6 +841,166 @@ def _extend_diagnostic_campaign_attempt_history(
         )
 
 
+def _create_scenario_recipe_dependency_bindings(
+    connection: Connection,
+) -> None:
+    """Add immutable Draft lineage and exact validation dependency history."""
+
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_recipe_draft_revisions ("
+        "draft_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "recipe_id VARCHAR(96) NOT NULL, "
+        "revision INTEGER NOT NULL, "
+        "predecessor_draft_id VARCHAR(96) NULL, "
+        "based_on_version_id VARCHAR(96) NULL, "
+        "authoring_mode VARCHAR(32) NOT NULL, "
+        "assistant_attempt_id VARCHAR(96) NULL, "
+        "accepted_command_id VARCHAR(96) NULL UNIQUE, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "UNIQUE(recipe_id, revision), "
+        "FOREIGN KEY(draft_id) REFERENCES diagnostic_recipe_drafts(draft_id), "
+        "FOREIGN KEY(predecessor_draft_id) "
+        "REFERENCES diagnostic_recipe_drafts(draft_id), "
+        "FOREIGN KEY(assistant_attempt_id) "
+        "REFERENCES diagnostic_ai_recipe_attempts(attempt_id)"
+        ")"
+    )
+    if inspect(connection).has_table("diagnostic_recipe_drafts"):
+        connection.exec_driver_sql(
+            "INSERT INTO diagnostic_recipe_draft_revisions ("
+            "draft_id, recipe_id, revision, predecessor_draft_id, "
+            "based_on_version_id, authoring_mode, assistant_attempt_id, "
+            "accepted_command_id, created_at_utc) "
+            "SELECT d.draft_id, d.recipe_id, "
+            "(SELECT COUNT(*) FROM diagnostic_recipe_drafts previous "
+            "WHERE previous.recipe_id = d.recipe_id AND ("
+            "previous.created_at_utc < d.created_at_utc OR ("
+            "previous.created_at_utc = d.created_at_utc AND "
+            "previous.draft_id <= d.draft_id))), "
+            "NULL, d.based_on_version_id, 'legacy', NULL, NULL, "
+            "d.created_at_utc FROM diagnostic_recipe_drafts d "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM diagnostic_recipe_draft_revisions r "
+            "WHERE r.draft_id = d.draft_id)"
+        )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_recipe_validation_history ("
+        "validation_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "draft_id VARCHAR(96) NOT NULL, "
+        "draft_revision INTEGER NOT NULL, "
+        "payload_hash VARCHAR(64) NOT NULL, "
+        "is_valid INTEGER NOT NULL, "
+        "findings_json TEXT NOT NULL, "
+        "recipe_content_hash VARCHAR(64) NULL, "
+        "validated_recipe_json TEXT NULL, "
+        "validated_at_utc VARCHAR(64) NOT NULL, "
+        "accepted_command_id VARCHAR(96) NULL UNIQUE, "
+        "FOREIGN KEY(draft_id) REFERENCES diagnostic_recipe_drafts(draft_id)"
+        ")"
+    )
+    if inspect(connection).has_table("diagnostic_recipe_validations"):
+        connection.exec_driver_sql(
+            "INSERT INTO diagnostic_recipe_validation_history ("
+            "validation_id, draft_id, draft_revision, payload_hash, is_valid, "
+            "findings_json, recipe_content_hash, validated_recipe_json, "
+            "validated_at_utc, accepted_command_id) "
+            "SELECT 'legacy_validation_' || v.draft_id, v.draft_id, r.revision, "
+            "v.payload_hash, v.is_valid, v.issues_json, v.recipe_content_hash, "
+            "v.validated_recipe_json, v.validated_at_utc, NULL "
+            "FROM diagnostic_recipe_validations v "
+            "JOIN diagnostic_recipe_draft_revisions r "
+            "ON r.draft_id = v.draft_id WHERE NOT EXISTS ("
+            "SELECT 1 FROM diagnostic_recipe_validation_history h "
+            "WHERE h.validation_id = 'legacy_validation_' || v.draft_id)"
+        )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_recipe_validation_dependencies ("
+        "validation_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "historical_segment_id VARCHAR(128) NOT NULL, "
+        "historical_segment_content_hash VARCHAR(64) NOT NULL, "
+        "source_snapshot_id VARCHAR(64) NOT NULL, "
+        "source_snapshot_content_hash VARCHAR(64) NOT NULL, "
+        "recipe_schema_identity VARCHAR(256) NOT NULL, "
+        "recipe_schema_hash VARCHAR(64) NOT NULL, "
+        "transformation_catalog_version VARCHAR(128) NOT NULL, "
+        "transformation_catalog_hash VARCHAR(64) NOT NULL, "
+        "transformation_implementations_json TEXT NOT NULL, "
+        "data_policy VARCHAR(64) NOT NULL, "
+        "causality_rules_json TEXT NOT NULL, "
+        "market_rule_profile_version VARCHAR(128) NOT NULL, "
+        "market_rule_profile_hash VARCHAR(64) NOT NULL, "
+        "compatibility_observations_json TEXT NOT NULL, "
+        "FOREIGN KEY(validation_id) "
+        "REFERENCES diagnostic_recipe_validation_history(validation_id)"
+        ")"
+    )
+
+
+def _create_scenario_lab_commands_and_materialization_handles(
+    connection: Connection,
+) -> None:
+    """Create the durable command/idempotency and future TaskHandle schema."""
+
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_scenario_lab_commands ("
+        "command_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "idempotency_identity VARCHAR(128) UNIQUE NOT NULL, "
+        "canonical_content_identity VARCHAR(128) NOT NULL, "
+        "operation VARCHAR(64) NOT NULL, "
+        "disposition VARCHAR(32) NOT NULL, "
+        "message TEXT NOT NULL, "
+        "expected_source_revision VARCHAR(128) NOT NULL, "
+        "expected_source_generation BIGINT NOT NULL, "
+        "result_kind VARCHAR(64) NULL, "
+        "result_identity VARCHAR(128) NULL, "
+        "result_json TEXT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "completed_at_utc VARCHAR(64) NULL"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_scenario_lab_task_handles ("
+        "task_handle_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "attempt_id VARCHAR(96) UNIQUE NOT NULL, "
+        "command_id VARCHAR(96) NOT NULL, "
+        "operation VARCHAR(64) NOT NULL, "
+        "target_kind VARCHAR(64) NOT NULL, "
+        "target_identity VARCHAR(128) NOT NULL, "
+        "phase VARCHAR(32) NOT NULL, "
+        "progress_value REAL NOT NULL, "
+        "result_kind VARCHAR(64) NULL, "
+        "result_identity VARCHAR(128) NULL, "
+        "error_json TEXT NULL, "
+        "cancelable INTEGER NOT NULL, "
+        "retryable INTEGER NOT NULL, "
+        "predecessor_task_handle_id VARCHAR(96) NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "updated_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(command_id) "
+        "REFERENCES diagnostic_scenario_lab_commands(command_id), "
+        "FOREIGN KEY(predecessor_task_handle_id) "
+        "REFERENCES diagnostic_scenario_lab_task_handles(task_handle_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS diagnostic_scenario_materialization_attempts ("
+        "attempt_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "task_handle_id VARCHAR(96) UNIQUE NOT NULL, "
+        "approved_recipe_version_id VARCHAR(96) NOT NULL, "
+        "predecessor_attempt_id VARCHAR(96) NULL, "
+        "reference_path_identity VARCHAR(128) NULL, "
+        "attempt_number INTEGER NOT NULL, "
+        "status VARCHAR(32) NOT NULL, "
+        "created_at_utc VARCHAR(64) NOT NULL, "
+        "completed_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(task_handle_id) "
+        "REFERENCES diagnostic_scenario_lab_task_handles(task_handle_id), "
+        "FOREIGN KEY(predecessor_attempt_id) "
+        "REFERENCES diagnostic_scenario_materialization_attempts(attempt_id)"
+        ")"
+    )
+
+
 def _add_a_share_execution_audit(connection: Connection) -> None:
     for statement in (
         "ALTER TABLE diagnostic_run_orders ADD COLUMN accepted_shares INTEGER "
@@ -1306,6 +1485,21 @@ class SqlScenarioRecipeRepository:
         if draft.payload_hash != str(row.payload_hash):
             raise ValueError("stored Scenario Recipe Draft hash mismatch")
         return draft
+
+    def list_drafts(self) -> tuple[ScenarioRecipeDraft, ...]:
+        with self._engine.connect() as connection:
+            identities = tuple(
+                connection.execute(
+                    text(
+                        "SELECT draft_id FROM diagnostic_recipe_drafts "
+                        "ORDER BY created_at_utc, draft_id"
+                    )
+                ).scalars()
+            )
+        drafts = tuple(self.get_draft(str(identity)) for identity in identities)
+        if any(item is None for item in drafts):
+            raise ValueError("Stored Scenario Recipe Draft disappeared during read")
+        return cast(tuple[ScenarioRecipeDraft, ...], drafts)
 
     def add_validation(
         self,

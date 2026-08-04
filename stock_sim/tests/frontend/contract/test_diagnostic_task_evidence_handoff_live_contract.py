@@ -643,7 +643,7 @@ def test_complete_evidence_handoff_survives_application_reopen(tmp_path) -> None
     )
     restarted_application.start()
     migration = restarted_application.initialize_persistence(engine)
-    assert migration.current_revision == "0018_diagnostic_campaign_attempt_history"
+    assert migration.current_revision == "0020_scenario_lab_commands_and_materialization_handles"
     restarted = LiveDiagnosticTasksAdapter(
         application=(
             LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(

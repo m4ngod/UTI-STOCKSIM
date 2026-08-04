@@ -579,23 +579,416 @@ Item {
             }
 
             Rectangle {
-                objectName: "scenarioLabRecipeUnavailableStatus"
+                objectName: "scenarioLabRecipeAuthoringPanel"
                 Layout.fillWidth: true
-                Layout.preferredHeight: unavailableText.implicitHeight + tokens.spaceMd * 2
+                Layout.preferredHeight: recipeAuthoringColumn.implicitHeight + tokens.spaceMd * 2
                 radius: tokens.radiusMd
                 color: tokens.surfaceRaised
                 border.color: tokens.border
-                Accessible.role: Accessible.StatusBar
-                Accessible.name: adapter.recipeCapabilityMessage
+                Accessible.role: Accessible.Pane
+                Accessible.name: "Exact Scenario Recipe Draft authoring"
 
-                Text {
-                    id: unavailableText
+                ColumnLayout {
+                    id: recipeAuthoringColumn
                     anchors.fill: parent
                     anchors.margins: tokens.spaceMd
-                    text: adapter.recipeCapabilityMessage
-                    color: tokens.textMuted
-                    font.pixelSize: tokens.bodySize
-                    wrapMode: Text.WordWrap
+                    spacing: tokens.spaceSm
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "EXACT SCENARIO RECIPE DRAFT AUTHORING"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                        Accessible.role: Accessible.Heading
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Manual authoring is always available for admitted data. A selected registered transformation uses its closed catalog schema; the optional hint overrides the first parameter and remaining parameters use visible catalog defaults. " + adapter.aiAuthoringStatus
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: tokens.spaceSm
+
+                        TextField {
+                            id: aiRecipeIntentInput
+                            property string accessibleName: "Audited AI Scenario Recipe intent"
+                            objectName: "scenarioLabAiRecipeIntentInput"
+                            Layout.fillWidth: true
+                            placeholderText: "Describe the diagnostic condition; output remains an untrusted Draft"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: adapter.aiAuthoringStatus
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Button {
+                            id: createAiRecipeDraftButton
+                            property string accessibleName: "Create audited AI-assisted Scenario Recipe Draft"
+                            objectName: "scenarioLabCreateAiRecipeDraftButton"
+                            text: "Create audited AI Draft"
+                            enabled: adapter.canCreateAiAssistedRecipeDraft
+                                && aiRecipeIntentInput.text.trim().length > 0
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: adapter.aiAuthoringStatus
+                            onClicked: adapter.createAiAssistedRecipeDraft(
+                                aiRecipeIntentInput.text
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+                    }
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: tokens.spaceSm
+                        rowSpacing: tokens.spaceSm
+
+                        Label { text: "Draft name" }
+                        TextField {
+                            id: recipeNameInput
+                            property string accessibleName: "Scenario Recipe Draft name"
+                            objectName: "scenarioLabRecipeNameInput"
+                            Layout.fillWidth: true
+                            text: "Baseline diagnostic recipe"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Label { text: "Admitted segment" }
+                        ComboBox {
+                            id: recipeSegmentInput
+                            property string accessibleName: "Select admitted Historical Market Segment"
+                            objectName: "scenarioLabRecipeSegmentInput"
+                            Layout.fillWidth: true
+                            model: adapter.historicalSegments
+                            textRole: "label"
+                            valueRole: "segmentId"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Label { text: "Registered transformation" }
+                        ComboBox {
+                            id: recipeTransformationInput
+                            property string accessibleName: "Select registered Scenario transformation"
+                            objectName: "scenarioLabRecipeTransformationInput"
+                            Layout.fillWidth: true
+                            model: [{"label": "No transformation", "transformationId": ""}].concat(adapter.transformations)
+                            textRole: "label"
+                            valueRole: "transformationId"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "No arbitrary transformation or strategy code can be entered"
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Label { text: "First parameter hint" }
+                        TextField {
+                            id: recipeTransformationParameterInput
+                            property string accessibleName: "Closed transformation first parameter value"
+                            objectName: "scenarioLabRecipeTransformationParameterInput"
+                            Layout.fillWidth: true
+                            placeholderText: "Blank uses the catalog minimum or first choice"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Label { text: "Commission bps" }
+                        TextField {
+                            id: recipeCommissionInput
+                            property string accessibleName: "Requested commission basis points"
+                            objectName: "scenarioLabRecipeCommissionInput"
+                            Layout.fillWidth: true
+                            text: "3"
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Slippage bps" }
+                        TextField {
+                            id: recipeSlippageInput
+                            property string accessibleName: "Requested slippage basis points"
+                            objectName: "scenarioLabRecipeSlippageInput"
+                            Layout.fillWidth: true
+                            text: "0"
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Maximum fill fraction" }
+                        TextField {
+                            id: recipeMaxFillInput
+                            property string accessibleName: "Requested maximum fill fraction"
+                            objectName: "scenarioLabRecipeMaxFillInput"
+                            Layout.fillWidth: true
+                            text: "1"
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Latency nodes" }
+                        SpinBox {
+                            id: recipeLatencyInput
+                            property string accessibleName: "Requested execution latency nodes"
+                            objectName: "scenarioLabRecipeLatencyInput"
+                            from: 0
+                            to: 1000
+                            value: 0
+                            editable: true
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Decision cadence minutes" }
+                        SpinBox {
+                            id: recipeCadenceInput
+                            property string accessibleName: "Scenario decision cadence minutes"
+                            objectName: "scenarioLabRecipeCadenceInput"
+                            from: 1
+                            to: 1440
+                            value: 30
+                            editable: true
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Materialization seed" }
+                        SpinBox {
+                            id: recipeSeedInput
+                            property string accessibleName: "Scenario materialization seed"
+                            objectName: "scenarioLabRecipeSeedInput"
+                            from: 0
+                            to: 2147483647
+                            value: 17
+                            editable: true
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Market Rule Profile" }
+                        TextField {
+                            id: recipeMarketRuleInput
+                            property string accessibleName: "Market Rule Profile version identity"
+                            objectName: "scenarioLabRecipeMarketRuleInput"
+                            Layout.fillWidth: true
+                            text: "a-share-cash-equity.v1"
+                            Accessible.name: accessibleName
+                        }
+
+                        Label { text: "Partial fills" }
+                        CheckBox {
+                            id: recipePartialFillsInput
+                            property string accessibleName: "Allow requested partial fills"
+                            objectName: "scenarioLabRecipePartialFillsInput"
+                            checked: true
+                            text: "Allow partial fills"
+                            Accessible.name: accessibleName
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: tokens.spaceSm
+
+                        Button {
+                            id: createRecipeDraftButton
+                            property string accessibleName: "Create exact immutable Scenario Recipe Draft"
+                            objectName: "scenarioLabCreateRecipeDraftButton"
+                            text: "Create immutable Draft"
+                            enabled: adapter.canCreateRecipeDraft
+                                && recipeSegmentInput.currentIndex >= 0
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onClicked: adapter.createRecipeDraft(
+                                recipeNameInput.text,
+                                recipeSegmentInput.currentValue || "",
+                                recipeTransformationInput.currentValue || "",
+                                recipeCommissionInput.text,
+                                recipeSlippageInput.text,
+                                recipeMaxFillInput.text,
+                                recipeTransformationParameterInput.text,
+                                recipeLatencyInput.value,
+                                recipeCadenceInput.value,
+                                recipeSeedInput.value,
+                                recipePartialFillsInput.checked,
+                                recipeMarketRuleInput.text
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Button {
+                            id: reviseRecipeDraftButton
+                            property string accessibleName: "Create immutable successor Recipe Draft revision"
+                            objectName: "scenarioLabReviseRecipeDraftButton"
+                            text: "Create successor revision"
+                            enabled: adapter.canReviseRecipeDraft
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onClicked: adapter.reviseSelectedRecipeDraft(
+                                recipeNameInput.text,
+                                recipeTransformationInput.currentValue || "",
+                                recipeCommissionInput.text,
+                                recipeSlippageInput.text,
+                                recipeMaxFillInput.text,
+                                recipeTransformationParameterInput.text,
+                                recipeLatencyInput.value,
+                                recipeCadenceInput.value,
+                                recipeSeedInput.value,
+                                recipePartialFillsInput.checked,
+                                recipeMarketRuleInput.text
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+                    }
+
+                    Text {
+                        objectName: "scenarioLabRecipeCommandStatus"
+                        Layout.fillWidth: true
+                        text: adapter.recipeCapabilityMessage
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: text
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "IMMUTABLE RECIPE DRAFT REVISIONS (" + adapter.recipeDraftCount + ")"
+                color: tokens.textPrimary
+                font.pixelSize: tokens.bodySize
+                font.bold: true
+                Accessible.role: Accessible.Heading
+            }
+
+            Repeater {
+                id: scenarioLabRecipeDraftRepeater
+                objectName: "scenarioLabRecipeDraftRepeater"
+                model: adapter.recipeDrafts
+
+                Rectangle {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: draftColumn.implicitHeight + tokens.spaceMd * 2
+                    radius: tokens.radiusMd
+                    color: tokens.surface
+                    border.color: adapter.selectedRecipeDraftId === modelData.draftId
+                        ? tokens.accent : tokens.border
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: modelData.name + ", Recipe Draft revision " + modelData.revision
+
+                    ColumnLayout {
+                        id: draftColumn
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceMd
+                        spacing: tokens.spaceXs
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.name + " · revision " + modelData.revision
+                                + " · " + modelData.draftId
+                                + "\nRecipe " + modelData.recipeId
+                                + " · predecessor "
+                                + (modelData.predecessorDraftId === "" ? "none" : modelData.predecessorDraftId)
+                                + " · payload " + modelData.payloadHash
+                                + "\nSegment " + modelData.historicalSegmentId
+                                + " · data policy " + modelData.dataPolicy
+                                + " · Market Rule Profile " + modelData.marketRuleProfileVersion
+                                + " · cadence " + modelData.decisionCadenceMinutes
+                                + " · seed " + modelData.materializationSeed
+                                + "\nTransformations " + page.renderTransformations(modelData.transformations)
+                                + " · author " + modelData.authorId
+                                + " · mode " + modelData.authoringMode
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.bodySize
+                            wrapMode: Text.WrapAnywhere
+                        }
+
+                        RowLayout {
+                            Button {
+                                property string accessibleName: "Select Recipe Draft " + modelData.draftId + " for successor revision"
+                                objectName: "scenarioLabSelectRecipeDraft-" + modelData.draftId
+                                text: "Select for successor"
+                                activeFocusOnTab: true
+                                Accessible.name: accessibleName
+                                onClicked: adapter.selectRecipeDraft(modelData.draftId)
+                                onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                            }
+                            Button {
+                                property string accessibleName: "Validate exact Recipe Draft revision " + modelData.revision
+                                objectName: "scenarioLabValidateRecipeDraft-" + modelData.draftId
+                                text: "Validate exact revision"
+                                enabled: adapter.canValidateRecipeDraft
+                                activeFocusOnTab: true
+                                Accessible.name: accessibleName
+                                onClicked: adapter.validateRecipeDraft(modelData.draftId)
+                                onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "RECIPE VALIDATION HISTORY (" + adapter.recipeValidationCount + ")"
+                color: tokens.textPrimary
+                font.pixelSize: tokens.bodySize
+                font.bold: true
+                Accessible.role: Accessible.Heading
+            }
+
+            Repeater {
+                id: scenarioLabRecipeValidationRepeater
+                objectName: "scenarioLabRecipeValidationRepeater"
+                model: adapter.recipeValidations
+
+                Rectangle {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: validationText.implicitHeight + tokens.spaceMd * 2
+                    radius: tokens.radiusMd
+                    color: tokens.surface
+                    border.color: modelData.valid ? tokens.accent : tokens.focus
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: "Recipe validation " + modelData.validationId
+                        + ", valid " + modelData.valid
+
+                    Text {
+                        id: validationText
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceMd
+                        text: modelData.validationId
+                            + " · Draft " + modelData.draftId
+                            + " revision " + modelData.draftRevision
+                            + " · valid " + modelData.valid
+                            + "\nPayload " + modelData.payloadHash
+                            + " · Recipe content "
+                            + (modelData.recipeContentHash === "" ? "not issued" : modelData.recipeContentHash)
+                            + "\nDependency segment " + modelData.dependencies.historicalSegmentId
+                            + " / " + modelData.dependencies.historicalSegmentContentHash
+                            + " · source " + modelData.dependencies.sourceSnapshotId
+                            + " / " + modelData.dependencies.sourceSnapshotContentHash
+                            + "\nSchema " + modelData.dependencies.recipeSchemaIdentity
+                            + " / " + modelData.dependencies.recipeSchemaHash
+                            + " · catalog " + modelData.dependencies.transformationCatalogVersion
+                            + " / " + modelData.dependencies.transformationCatalogHash
+                            + " · Market Rule " + modelData.dependencies.marketRuleProfileVersion
+                            + " / " + modelData.dependencies.marketRuleProfileHash
+                            + "\nFindings " + JSON.stringify(modelData.findings)
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WrapAnywhere
+                    }
                 }
             }
         }

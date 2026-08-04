@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, inspect, text
 
+import strategy_diagnostics.persistence as diagnostic_persistence
 from strategy_diagnostics import (
     AdmissionCheck,
     HistoricalSegmentSelection,
@@ -16,7 +18,10 @@ from strategy_diagnostics import (
     SourceProvenance,
     create_diagnostics_application,
 )
-from strategy_diagnostics.persistence import SqlHistoricalSegmentCatalog
+from strategy_diagnostics.persistence import (
+    SqlHistoricalSegmentCatalog,
+    initialize_diagnostic_persistence,
+)
 
 REQUIRED_CHECKS = (
     "bar_continuity",
@@ -72,7 +77,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
 
     assert (
         first.current_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
@@ -93,16 +98,18 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0016_diagnostic_task_start_continuation_claim",
         "0017_diagnostic_lifecycle_targets",
         "0018_diagnostic_campaign_attempt_history",
+        "0019_scenario_recipe_dependency_bindings",
+        "0020_scenario_lab_commands_and_materialization_handles",
     )
     assert (
         second.current_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -135,6 +142,8 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0016_diagnostic_task_start_continuation_claim",
         "0017_diagnostic_lifecycle_targets",
         "0018_diagnostic_campaign_attempt_history",
+        "0019_scenario_recipe_dependency_bindings",
+        "0020_scenario_lab_commands_and_materialization_handles",
     ]
     strategy_run_columns = {
         column["name"]
@@ -223,7 +232,7 @@ def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
 
     assert (
         report.current_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     assert report.applied_revisions == ("0014_diagnostic_task_approval",)
     with engine.connect() as connection:
@@ -285,7 +294,7 @@ def test_issue_59_migration_adds_durable_campaign_handoff_without_rewriting_0014
 
     assert (
         report.current_revision
-        == "0018_diagnostic_campaign_attempt_history"
+        == "0020_scenario_lab_commands_and_materialization_handles"
     )
     assert report.applied_revisions == (
         "0015_diagnostic_task_campaign_handoff",
@@ -679,3 +688,212 @@ def test_diagnostic_migration_rejects_an_unknown_future_revision(
     with pytest.raises(ValueError, match="incompatible diagnostic schema"):
         application.initialize_persistence(engine)
     assert "diagnostic_tasks" not in inspect(engine).get_table_names()
+
+
+def test_issue_80_migrations_create_exact_recipe_dependency_and_command_schema(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'issue-80-fresh.sqlite'}")
+
+    report = initialize_diagnostic_persistence(engine)
+
+    assert report.current_revision == (
+        "0020_scenario_lab_commands_and_materialization_handles"
+    )
+    assert report.applied_revisions[-2:] == (
+        "0019_scenario_recipe_dependency_bindings",
+        "0020_scenario_lab_commands_and_materialization_handles",
+    )
+    schema = inspect(engine)
+    assert {
+        "diagnostic_recipe_draft_revisions",
+        "diagnostic_recipe_validation_history",
+        "diagnostic_recipe_validation_dependencies",
+        "diagnostic_scenario_lab_commands",
+        "diagnostic_scenario_lab_task_handles",
+        "diagnostic_scenario_materialization_attempts",
+    }.issubset(schema.get_table_names())
+    assert {
+        item["name"]
+        for item in schema.get_columns("diagnostic_recipe_validation_dependencies")
+    } == {
+        "validation_id",
+        "historical_segment_id",
+        "historical_segment_content_hash",
+        "source_snapshot_id",
+        "source_snapshot_content_hash",
+        "recipe_schema_identity",
+        "recipe_schema_hash",
+        "transformation_catalog_version",
+        "transformation_catalog_hash",
+        "transformation_implementations_json",
+        "data_policy",
+        "causality_rules_json",
+        "market_rule_profile_version",
+        "market_rule_profile_hash",
+        "compatibility_observations_json",
+    }
+
+
+def test_issue_80_upgrade_from_0018_backfills_immutable_legacy_history(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'issue-80-upgrade.sqlite'}")
+    initialize_diagnostic_persistence(engine)
+    payload_hash = hashlib.sha256(b"{}").hexdigest()
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "DROP TABLE diagnostic_scenario_materialization_attempts"
+        )
+        connection.exec_driver_sql("DROP TABLE diagnostic_scenario_lab_task_handles")
+        connection.exec_driver_sql("DROP TABLE diagnostic_scenario_lab_commands")
+        connection.exec_driver_sql(
+            "DROP TABLE diagnostic_recipe_validation_dependencies"
+        )
+        connection.exec_driver_sql("DROP TABLE diagnostic_recipe_validation_history")
+        connection.exec_driver_sql("DROP TABLE diagnostic_recipe_draft_revisions")
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations WHERE revision IN ("
+                "'0019_scenario_recipe_dependency_bindings', "
+                "'0020_scenario_lab_commands_and_materialization_handles')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_recipe_drafts ("
+                "draft_id, recipe_id, author, created_at_utc, payload_json, "
+                "payload_hash, based_on_version_id) VALUES ("
+                "'legacy-draft', 'legacy-recipe', 'legacy-author', "
+                "'2026-08-04T00:00:00+00:00', '{}', :payload_hash, NULL)"
+            ),
+            {"payload_hash": payload_hash},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO diagnostic_recipe_validations ("
+                "draft_id, payload_hash, is_valid, issues_json, "
+                "recipe_content_hash, validated_at_utc, validated_recipe_json) "
+                "VALUES ('legacy-draft', :payload_hash, 0, '[]', NULL, "
+                "'2026-08-04T00:01:00+00:00', NULL)"
+            ),
+            {"payload_hash": payload_hash},
+        )
+
+    report = initialize_diagnostic_persistence(engine)
+
+    assert report.applied_revisions == (
+        "0019_scenario_recipe_dependency_bindings",
+        "0020_scenario_lab_commands_and_materialization_handles",
+    )
+    with engine.connect() as connection:
+        lineage = connection.execute(
+            text(
+                "SELECT recipe_id, revision, authoring_mode, accepted_command_id "
+                "FROM diagnostic_recipe_draft_revisions "
+                "WHERE draft_id = 'legacy-draft'"
+            )
+        ).one()
+        history = connection.execute(
+            text(
+                "SELECT validation_id, draft_revision, payload_hash "
+                "FROM diagnostic_recipe_validation_history "
+                "WHERE draft_id = 'legacy-draft'"
+            )
+        ).one()
+    assert tuple(lineage) == ("legacy-recipe", 1, "legacy", None)
+    assert tuple(history) == (
+        "legacy_validation_legacy-draft",
+        1,
+        payload_hash,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target_revision", "migration_name", "tables_to_drop", "expected_revision"),
+    (
+        (
+            "0019_scenario_recipe_dependency_bindings",
+            "_create_scenario_recipe_dependency_bindings",
+            (
+                "diagnostic_scenario_materialization_attempts",
+                "diagnostic_scenario_lab_task_handles",
+                "diagnostic_scenario_lab_commands",
+                "diagnostic_recipe_validation_dependencies",
+                "diagnostic_recipe_validation_history",
+                "diagnostic_recipe_draft_revisions",
+            ),
+            "0018_diagnostic_campaign_attempt_history",
+        ),
+        (
+            "0020_scenario_lab_commands_and_materialization_handles",
+            "_create_scenario_lab_commands_and_materialization_handles",
+            (
+                "diagnostic_scenario_materialization_attempts",
+                "diagnostic_scenario_lab_task_handles",
+                "diagnostic_scenario_lab_commands",
+            ),
+            "0019_scenario_recipe_dependency_bindings",
+        ),
+    ),
+)
+def test_issue_80_migration_failure_rolls_back_partial_schema_and_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_revision: str,
+    migration_name: str,
+    tables_to_drop: tuple[str, ...],
+    expected_revision: str,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / (target_revision + '-rollback.sqlite')}"
+    )
+    initialize_diagnostic_persistence(engine)
+    with engine.begin() as connection:
+        for table_name in tables_to_drop:
+            connection.exec_driver_sql(f"DROP TABLE {table_name}")
+        if target_revision.startswith("0019"):
+            connection.execute(
+                text(
+                    "DELETE FROM diagnostic_schema_migrations WHERE revision IN ("
+                    "'0019_scenario_recipe_dependency_bindings', "
+                    "'0020_scenario_lab_commands_and_materialization_handles')"
+                )
+            )
+        else:
+            connection.execute(
+                text(
+                    "DELETE FROM diagnostic_schema_migrations "
+                    "WHERE revision = "
+                    "'0020_scenario_lab_commands_and_materialization_handles'"
+                )
+            )
+
+    def fail_after_partial_ddl(connection) -> None:
+        connection.exec_driver_sql(
+            "CREATE TABLE issue_80_partial_migration_sentinel (id INTEGER)"
+        )
+        raise RuntimeError(f"injected {target_revision} migration failure")
+
+    monkeypatch.setattr(
+        diagnostic_persistence,
+        migration_name,
+        fail_after_partial_ddl,
+    )
+
+    with pytest.raises(RuntimeError, match="injected"):
+        initialize_diagnostic_persistence(engine)
+
+    schema = inspect(engine)
+    assert "issue_80_partial_migration_sentinel" not in schema.get_table_names()
+    with engine.connect() as connection:
+        revisions = tuple(
+            connection.execute(
+                text(
+                    "SELECT revision FROM diagnostic_schema_migrations "
+                    "ORDER BY revision"
+                )
+            ).scalars()
+        )
+    assert revisions[-1] == expected_revision
+    assert target_revision not in revisions

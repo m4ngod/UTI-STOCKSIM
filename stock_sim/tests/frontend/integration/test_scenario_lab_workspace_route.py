@@ -266,6 +266,9 @@ def test_production_workspace_browses_scenario_lab_read_tracer() -> None:
         "scenarioLabCompatibilityFilter",
         "scenarioLabReproducibilityFilter",
         "scenarioLabReconstructionFilter",
+        "scenarioLabRecipeAuthoringPanel",
+        "scenarioLabCreateRecipeDraftButton",
+        "scenarioLabReviseRecipeDraftButton",
     ):
         assert root.findChild(QObject, object_name) is not None
     visible_text = " ".join(
@@ -279,7 +282,8 @@ def test_production_workspace_browses_scenario_lab_read_tracer() -> None:
         "immutable reference market paths",
         "market scenario projections",
         "not recorded microstructure",
-        "not yet available",
+        "exact scenario recipe draft authoring",
+        "manual authoring is always available",
         segment["contentHash"],
         segment["sourceSnapshotId"],
         segment["sourceSnapshotContentHash"],
@@ -346,6 +350,130 @@ def test_production_workspace_browses_scenario_lab_read_tracer() -> None:
     app.processEvents()
     assert host._scenario_lab.referencePathCount == 0
     assert host._scenario_lab.marketScenarioCount == 0
+    host.close_adapter()
+    scenario_feature.close()
+    run_feature.close()
+
+
+def test_production_workspace_creates_revises_and_validates_exact_recipe_drafts() -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    scenario_feature = DeterministicFakeScenarioLabAdapter()
+    host = JourneyWorkspaceHost(
+        run_feature,
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
+        initial_route="scenario_lab",
+    )
+    app.processEvents()
+    root = host.rootObject()
+    assert root is not None
+    segment_id = host._scenario_lab.historicalSegments[0]["segmentId"]
+
+    host._scenario_lab.createRecipeDraft(
+        "QML exact baseline",
+        segment_id,
+        "",
+        "3",
+        "0",
+        "1",
+        "",
+        0,
+        30,
+        80,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    app.processEvents()
+    assert host._scenario_lab.recipeDraftCount == 1
+    created = host._scenario_lab.recipeDrafts[0]
+    assert created["revision"] == 1
+    assert created["historicalSegmentId"] == segment_id
+    assert created["dataPolicy"] == "point_in_time"
+    assert root.findChild(QObject, "scenarioLabRecipeDraftRepeater") is not None
+
+    host._scenario_lab.selectRecipeDraft(created["draftId"])
+    host._scenario_lab.reviseSelectedRecipeDraft(
+        "QML exact successor",
+        "volatility-scaling.v1",
+        "4",
+        "1",
+        "0.5",
+        "1.2",
+        1,
+        30,
+        81,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    app.processEvents()
+    assert host._scenario_lab.recipeDraftCount == 2
+    revised = host._scenario_lab.recipeDrafts[-1]
+    assert revised["revision"] == 2
+    assert revised["predecessorDraftId"] == created["draftId"]
+    assert revised["transformations"] == [
+        {
+            "transformationId": "volatility-scaling.v1",
+            "implementationVersion": "draft-selection",
+            "parameters": [
+                {"name": "multiplier", "kind": "decimal", "value": "1.2"}
+            ],
+        }
+    ]
+
+    host._scenario_lab.validateRecipeDraft(revised["draftId"])
+    app.processEvents()
+    assert host._scenario_lab.recipeValidationCount == 1
+    validation = host._scenario_lab.recipeValidations[0]
+    assert validation["draftId"] == revised["draftId"]
+    assert validation["valid"] is True
+    assert validation["dependencies"]["historicalSegmentId"] == segment_id
+    assert validation["dependencies"]["recipeSchemaHash"]
+    assert root.findChild(QObject, "scenarioLabRecipeValidationRepeater") is not None
+    assert "accepted" in host._scenario_lab.recipeCapabilityMessage
+
+    host.close_adapter()
+    scenario_feature.close()
+    run_feature.close()
+
+
+@pytest.mark.parametrize("configured", (False, True))
+def test_production_workspace_exposes_only_configured_audited_ai_authoring(
+    configured: bool,
+) -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    scenario_feature = DeterministicFakeScenarioLabAdapter(
+        ai_authoring_available=configured,
+        ai_provider="deterministic-fake" if configured else None,
+        ai_model="deterministic-recipe-fixture.v1" if configured else None,
+    )
+    host = JourneyWorkspaceHost(
+        run_feature,
+        scenario_lab_feature=scenario_feature,
+        initial_route="scenario_lab",
+    )
+    app.processEvents()
+    root = host.rootObject()
+    assert root is not None
+    button = root.findChild(QObject, "scenarioLabCreateAiRecipeDraftButton")
+    intent = root.findChild(QObject, "scenarioLabAiRecipeIntentInput")
+    assert button is not None
+    assert intent is not None
+    assert host._scenario_lab.canCreateAiAssistedRecipeDraft is configured
+    assert ("deterministic-fake" in host._scenario_lab.aiAuthoringStatus) is configured
+
+    host._scenario_lab.createAiAssistedRecipeDraft(
+        "Draft the exact admitted baseline for diagnostic review."
+    )
+    app.processEvents()
+
+    assert host._scenario_lab.recipeDraftCount == (1 if configured else 0)
+    if configured:
+        assert host._scenario_lab.recipeDrafts[0]["authoringMode"] == "ai_assisted"
+        assert host._scenario_lab.recipeDrafts[0]["assistantAttemptId"]
+    else:
+        assert "unavailable" in host._scenario_lab.recipeCapabilityMessage.casefold()
     host.close_adapter()
     scenario_feature.close()
     run_feature.close()
@@ -490,6 +618,15 @@ class _AssessmentOverrideApplication:
 
     def transformation_catalog_view(self):
         return self._delegate.transformation_catalog_view()
+
+    def scenario_recipe_draft_revisions(self):
+        return self._delegate.scenario_recipe_draft_revisions()
+
+    def scenario_recipe_validation_history(self):
+        return self._delegate.scenario_recipe_validation_history()
+
+    def recipe_authoring_capabilities(self):
+        return self._delegate.recipe_authoring_capabilities()
 
     def preview_reference_market_path(self, path_id, *, at_time=None):
         return self._delegate.preview_reference_market_path(
