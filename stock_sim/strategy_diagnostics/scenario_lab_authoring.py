@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,7 +12,7 @@ from threading import RLock
 from typing import Literal, Protocol, cast
 
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, RowMapping
 
 from .historical_segments import HistoricalMarketSegment
 from .recipes import (
@@ -28,12 +29,34 @@ from .recipes import (
 
 ScenarioLabAuthoringMode = Literal["manual", "ai_assisted"]
 ScenarioLabCommandDisposition = Literal["accepted", "conflict", "rejected"]
+ScenarioMaterializationPhase = Literal[
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "canceled",
+]
 ScenarioRecipeApprovalAuthorityState = Literal[
     "current",
     "outdated",
     "incompatible",
     "unavailable",
 ]
+
+
+ScenarioMaterializationScheduler = Callable[[Callable[[], None]], None]
+
+
+_MATERIALIZATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="scenario-materialization",
+)
+
+
+def _schedule_materialization(callback: Callable[[], None]) -> None:
+    """Submit backend-owned work without exposing concurrency primitives."""
+
+    _MATERIALIZATION_EXECUTOR.submit(callback)
 
 
 def _canonical_value(value: object) -> object:
@@ -135,6 +158,153 @@ class ScenarioLabAuthoringResult:
     authoritative_draft_revision: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ScenarioMaterializationTaskRecord:
+    task_handle_id: str
+    attempt_id: str
+    command_id: str
+    operation: str
+    target_kind: str
+    target_identity: str
+    phase: ScenarioMaterializationPhase
+    progress: float
+    result_kind: str | None
+    result_identity: str | None
+    error_code: str | None
+    error_message: str | None
+    error_retryable: bool
+    cancelable: bool
+    retryable: bool
+    predecessor_task_handle_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.progress <= 1.0:
+            raise ValueError("Scenario materialization progress is invalid")
+        terminal = self.phase in {"completed", "failed", "canceled"}
+        if terminal and self.progress != 1.0:
+            raise ValueError("Terminal materialization progress must be complete")
+        if (self.result_kind is None) != (self.result_identity is None):
+            raise ValueError("Materialization result kind and identity are atomic")
+        if self.phase == "completed" and self.result_identity is None:
+            raise ValueError("Completed materialization requires a result identity")
+        if self.result_identity is not None and self.phase != "completed":
+            raise ValueError("Only completed materialization exposes a result")
+        if self.phase == "failed" and not self.error_code:
+            raise ValueError("Failed materialization requires a typed error")
+        if self.phase != "failed" and self.error_code is not None:
+            raise ValueError("Only failed materialization exposes an error")
+        if (self.error_code is None) != (self.error_message is None):
+            raise ValueError("Materialization error code and message are atomic")
+        if self.phase == "failed" and self.error_retryable != self.retryable:
+            raise ValueError("Failed materialization retryability is inconsistent")
+        if not terminal and self.retryable:
+            raise ValueError("Only terminal materialization can be retryable")
+
+    @property
+    def terminal(self) -> bool:
+        return self.phase in {"completed", "failed", "canceled"}
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioMaterializationAttemptRecord:
+    attempt_id: str
+    task_handle_id: str
+    approved_recipe_version_id: str
+    predecessor_attempt_id: str | None
+    reference_path_identity: str | None
+    attempt_number: int
+    status: ScenarioMaterializationPhase
+    created_at: datetime
+    completed_at: datetime | None
+
+    def __post_init__(self) -> None:
+        terminal = self.status in {"completed", "failed", "canceled"}
+        if self.attempt_number < 1:
+            raise ValueError("Scenario materialization attempt number must be positive")
+        if self.status == "completed" and self.reference_path_identity is None:
+            raise ValueError("Completed attempt requires a Reference Market Path")
+        if self.status != "completed" and self.reference_path_identity is not None:
+            raise ValueError("Only completed attempts expose a Reference Market Path")
+        if terminal != (self.completed_at is not None):
+            raise ValueError("Attempt terminal status and completion time disagree")
+
+
+def _validate_materialization_transition(
+    current_task: ScenarioMaterializationTaskRecord,
+    current_attempt: ScenarioMaterializationAttemptRecord,
+    task: ScenarioMaterializationTaskRecord,
+    attempt: ScenarioMaterializationAttemptRecord,
+) -> None:
+    if current_task.terminal and (
+        current_task != task or current_attempt != attempt
+    ):
+        raise ValueError(
+            "Terminal Scenario Lab TaskHandle and attempt cannot change"
+        )
+    immutable_task_binding = (
+        "task_handle_id",
+        "attempt_id",
+        "command_id",
+        "operation",
+        "target_kind",
+        "target_identity",
+        "cancelable",
+        "predecessor_task_handle_id",
+        "created_at",
+    )
+    immutable_attempt_binding = (
+        "attempt_id",
+        "task_handle_id",
+        "approved_recipe_version_id",
+        "predecessor_attempt_id",
+        "attempt_number",
+        "created_at",
+    )
+    if any(
+        getattr(current_task, name) != getattr(task, name)
+        for name in immutable_task_binding
+    ) or any(
+        getattr(current_attempt, name) != getattr(attempt, name)
+        for name in immutable_attempt_binding
+    ):
+        raise ValueError("Scenario materialization identity binding cannot change")
+    allowed_transitions: dict[
+        ScenarioMaterializationPhase,
+        frozenset[ScenarioMaterializationPhase],
+    ] = {
+        "queued": frozenset({"queued", "running", "failed"}),
+        "running": frozenset({"running", "completed", "failed"}),
+        "completed": frozenset({"completed"}),
+        "failed": frozenset({"failed"}),
+        "canceled": frozenset({"canceled"}),
+    }
+    if task.phase not in allowed_transitions[current_task.phase]:
+        raise ValueError("Scenario materialization phase cannot regress")
+    if attempt.status not in allowed_transitions[current_attempt.status]:
+        raise ValueError("Scenario materialization attempt status cannot regress")
+    if task.phase != attempt.status:
+        raise ValueError("TaskHandle and materialization attempt phases disagree")
+    if task.progress < current_task.progress:
+        raise ValueError("Scenario materialization progress cannot regress")
+    if task.updated_at < current_task.updated_at:
+        raise ValueError("Scenario materialization update time cannot regress")
+    if task.phase == "completed" and (
+        task.result_identity != attempt.reference_path_identity
+    ):
+        raise ValueError("Completed materialization result identities disagree")
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioMaterializationResult:
+    disposition: ScenarioLabCommandDisposition
+    message: str
+    command: ScenarioLabAuthoringCommandRecord | None = None
+    task_handle: ScenarioMaterializationTaskRecord | None = None
+    attempt: ScenarioMaterializationAttemptRecord | None = None
+
+
 class ScenarioLabAuthoringRepository(Protocol):
     def claim_command(
         self, record: ScenarioLabAuthoringCommandRecord
@@ -199,6 +369,37 @@ class ScenarioLabAuthoringRepository(Protocol):
 
     def list_validations(self) -> tuple[ScenarioRecipeValidationRecord, ...]: ...
 
+    def claim_materialization(
+        self,
+        command: ScenarioLabAuthoringCommandRecord,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+        *,
+        binding_json: str,
+    ) -> None: ...
+
+    def update_materialization(
+        self,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+    ) -> None: ...
+
+    def get_materialization_task_by_command(
+        self, command_id: str
+    ) -> ScenarioMaterializationTaskRecord | None: ...
+
+    def get_materialization_task(
+        self, task_handle_id: str
+    ) -> ScenarioMaterializationTaskRecord | None: ...
+
+    def get_materialization_attempt(
+        self, attempt_id: str
+    ) -> ScenarioMaterializationAttemptRecord | None: ...
+
+    def list_materialization_tasks(
+        self,
+    ) -> tuple[ScenarioMaterializationTaskRecord, ...]: ...
+
 
 class InMemoryScenarioLabAuthoringRepository:
     def __init__(self) -> None:
@@ -206,6 +407,12 @@ class InMemoryScenarioLabAuthoringRepository:
         self._command_by_idempotency: dict[str, str] = {}
         self._drafts: dict[str, ScenarioRecipeDraftRevisionRecord] = {}
         self._validations: dict[str, ScenarioRecipeValidationRecord] = {}
+        self._materialization_tasks: dict[
+            str, ScenarioMaterializationTaskRecord
+        ] = {}
+        self._materialization_attempts: dict[
+            str, ScenarioMaterializationAttemptRecord
+        ] = {}
 
     def claim_command(
         self, record: ScenarioLabAuthoringCommandRecord
@@ -355,6 +562,78 @@ class InMemoryScenarioLabAuthoringRepository:
             sorted(
                 self._validations.values(),
                 key=lambda item: (item.result.validated_at, item.validation_id),
+            )
+        )
+
+    def claim_materialization(
+        self,
+        command: ScenarioLabAuthoringCommandRecord,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+        *,
+        binding_json: str,
+    ) -> None:
+        del binding_json
+        if self.get_command_by_idempotency(command.idempotency_identity) is not None:
+            return
+        if command.command_id in self._commands:
+            raise ValueError("immutable Scenario Lab command identity collision")
+        if task.task_handle_id in self._materialization_tasks:
+            raise ValueError("immutable Scenario Lab TaskHandle collision")
+        if attempt.attempt_id in self._materialization_attempts:
+            raise ValueError("immutable Scenario materialization attempt collision")
+        self._commands[command.command_id] = command
+        self._command_by_idempotency[
+            command.idempotency_identity
+        ] = command.command_id
+        self._materialization_tasks[task.task_handle_id] = task
+        self._materialization_attempts[attempt.attempt_id] = attempt
+
+    def update_materialization(
+        self,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+    ) -> None:
+        current = self._materialization_tasks[task.task_handle_id]
+        current_attempt = self._materialization_attempts[attempt.attempt_id]
+        _validate_materialization_transition(
+            current,
+            current_attempt,
+            task,
+            attempt,
+        )
+        self._materialization_tasks[task.task_handle_id] = task
+        self._materialization_attempts[attempt.attempt_id] = attempt
+
+    def get_materialization_task_by_command(
+        self, command_id: str
+    ) -> ScenarioMaterializationTaskRecord | None:
+        return next(
+            (
+                item
+                for item in self._materialization_tasks.values()
+                if item.command_id == command_id
+            ),
+            None,
+        )
+
+    def get_materialization_task(
+        self, task_handle_id: str
+    ) -> ScenarioMaterializationTaskRecord | None:
+        return self._materialization_tasks.get(task_handle_id)
+
+    def get_materialization_attempt(
+        self, attempt_id: str
+    ) -> ScenarioMaterializationAttemptRecord | None:
+        return self._materialization_attempts.get(attempt_id)
+
+    def list_materialization_tasks(
+        self,
+    ) -> tuple[ScenarioMaterializationTaskRecord, ...]:
+        return tuple(
+            sorted(
+                self._materialization_tasks.values(),
+                key=lambda item: (item.created_at, item.task_handle_id),
             )
         )
 
@@ -834,6 +1113,201 @@ class SqlScenarioLabAuthoringRepository:
             raise ValueError("Recipe validation history disappeared during read")
         return cast(tuple[ScenarioRecipeValidationRecord, ...], records)
 
+    def claim_materialization(
+        self,
+        command: ScenarioLabAuthoringCommandRecord,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+        *,
+        binding_json: str,
+    ) -> None:
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                text(
+                    "SELECT command_id FROM diagnostic_scenario_lab_commands "
+                    "WHERE idempotency_identity = :identity"
+                ),
+                {"identity": command.idempotency_identity},
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_scenario_lab_commands ("
+                    "command_id, idempotency_identity, "
+                    "canonical_content_identity, operation, disposition, "
+                    "message, expected_source_revision, "
+                    "expected_source_generation, result_kind, result_identity, "
+                    "result_json, created_at_utc, completed_at_utc) VALUES ("
+                    ":command_id, :idempotency_identity, :content_identity, "
+                    ":operation, 'accepted', :message, :source_revision, "
+                    ":source_generation, 'materialization_attempt', :attempt_id, "
+                    ":binding_json, :created_at, :created_at)"
+                ),
+                {
+                    "command_id": command.command_id,
+                    "idempotency_identity": command.idempotency_identity,
+                    "content_identity": command.canonical_content_identity,
+                    "operation": command.operation,
+                    "message": command.message,
+                    "source_revision": command.expected_source_revision,
+                    "source_generation": command.expected_source_generation,
+                    "attempt_id": attempt.attempt_id,
+                    "binding_json": binding_json,
+                    "created_at": command.created_at.isoformat(),
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_scenario_lab_task_handles ("
+                    "task_handle_id, attempt_id, command_id, operation, "
+                    "target_kind, target_identity, phase, progress_value, "
+                    "result_kind, result_identity, error_json, cancelable, "
+                    "retryable, predecessor_task_handle_id, created_at_utc, "
+                    "updated_at_utc) VALUES ("
+                    ":task_handle_id, :attempt_id, :command_id, :operation, "
+                    ":target_kind, :target_identity, :phase, :progress, NULL, "
+                    "NULL, NULL, :cancelable, :retryable, :predecessor, "
+                    ":created_at, :updated_at)"
+                ),
+                _materialization_task_values(task),
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_scenario_materialization_attempts ("
+                    "attempt_id, task_handle_id, approved_recipe_version_id, "
+                    "predecessor_attempt_id, reference_path_identity, "
+                    "attempt_number, status, created_at_utc, completed_at_utc) "
+                    "VALUES (:attempt_id, :task_handle_id, :version_id, "
+                    ":predecessor_attempt_id, NULL, :attempt_number, :status, "
+                    ":created_at, NULL)"
+                ),
+                _materialization_attempt_values(attempt),
+            )
+
+    def update_materialization(
+        self,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+    ) -> None:
+        with self._engine.begin() as connection:
+            current_task_row = connection.execute(
+                text(
+                    "SELECT * FROM diagnostic_scenario_lab_task_handles "
+                    "WHERE task_handle_id = :task_handle_id"
+                ),
+                {"task_handle_id": task.task_handle_id},
+            ).mappings().one_or_none()
+            current_attempt_row = connection.execute(
+                text(
+                    "SELECT * FROM diagnostic_scenario_materialization_attempts "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": attempt.attempt_id},
+            ).mappings().one_or_none()
+            if current_task_row is None or current_attempt_row is None:
+                raise ValueError("Scenario Lab TaskHandle disappeared")
+            current = _materialization_task_from_row(current_task_row)
+            current_attempt = _materialization_attempt_from_row(
+                current_attempt_row
+            )
+            _validate_materialization_transition(
+                current,
+                current_attempt,
+                task,
+                attempt,
+            )
+            if current.terminal:
+                return
+            values = _materialization_task_values(task)
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_scenario_lab_task_handles SET "
+                    "phase = :phase, progress_value = :progress, "
+                    "result_kind = :result_kind, "
+                    "result_identity = :result_identity, "
+                    "error_json = :error_json, cancelable = :cancelable, "
+                    "retryable = :retryable, updated_at_utc = :updated_at "
+                    "WHERE task_handle_id = :task_handle_id"
+                ),
+                values,
+            )
+            attempt_values = _materialization_attempt_values(attempt)
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_scenario_materialization_attempts SET "
+                    "reference_path_identity = :path_id, status = :status, "
+                    "completed_at_utc = :completed_at "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                attempt_values,
+            )
+
+    def get_materialization_task_by_command(
+        self, command_id: str
+    ) -> ScenarioMaterializationTaskRecord | None:
+        with self._engine.connect() as connection:
+            task_handle_id = connection.execute(
+                text(
+                    "SELECT task_handle_id "
+                    "FROM diagnostic_scenario_lab_task_handles "
+                    "WHERE command_id = :command_id"
+                ),
+                {"command_id": command_id},
+            ).scalar_one_or_none()
+        return (
+            None
+            if task_handle_id is None
+            else self.get_materialization_task(str(task_handle_id))
+        )
+
+    def get_materialization_task(
+        self, task_handle_id: str
+    ) -> ScenarioMaterializationTaskRecord | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT * FROM diagnostic_scenario_lab_task_handles "
+                    "WHERE task_handle_id = :task_handle_id"
+                ),
+                {"task_handle_id": task_handle_id},
+            ).mappings().one_or_none()
+        return None if row is None else _materialization_task_from_row(row)
+
+    def get_materialization_attempt(
+        self, attempt_id: str
+    ) -> ScenarioMaterializationAttemptRecord | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT * FROM diagnostic_scenario_materialization_attempts "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": attempt_id},
+            ).mappings().one_or_none()
+        return None if row is None else _materialization_attempt_from_row(row)
+
+    def list_materialization_tasks(
+        self,
+    ) -> tuple[ScenarioMaterializationTaskRecord, ...]:
+        with self._engine.connect() as connection:
+            identities = tuple(
+                connection.execute(
+                    text(
+                        "SELECT task_handle_id "
+                        "FROM diagnostic_scenario_lab_task_handles "
+                        "ORDER BY created_at_utc, task_handle_id"
+                    )
+                ).scalars()
+            )
+        records = tuple(
+            self.get_materialization_task(str(identity))
+            for identity in identities
+        )
+        if any(record is None for record in records):
+            raise ValueError("Scenario Lab TaskHandle history disappeared")
+        return cast(tuple[ScenarioMaterializationTaskRecord, ...], records)
+
 
 class ScenarioLabAuthoringService:
     def __init__(
@@ -845,12 +1319,18 @@ class ScenarioLabAuthoringService:
             [ScenarioRecipeDraft, RecipeValidationResult],
             ScenarioRecipeValidationDependencyRecord,
         ],
+        materialize_reference_path: Callable[[str], str] | None = None,
+        materialization_scheduler: ScenarioMaterializationScheduler | None = None,
         repository: ScenarioLabAuthoringRepository | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._recipe_workbench = recipe_workbench
         self._admitted_segments = admitted_segments
         self._dependency_provider = dependency_provider
+        self._materialize_reference_path = materialize_reference_path
+        self._materialization_scheduler = (
+            materialization_scheduler or _schedule_materialization
+        )
         self._repository = repository or InMemoryScenarioLabAuthoringRepository()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = RLock()
@@ -858,6 +1338,30 @@ class ScenarioLabAuthoringService:
     def replace_repository(self, repository: ScenarioLabAuthoringRepository) -> None:
         with self._lock:
             self._repository = repository
+            recoverable = tuple(
+                task
+                for task in repository.list_materialization_tasks()
+                if task.phase in {"queued", "running"}
+            )
+            for task in recoverable:
+                attempt = repository.get_materialization_attempt(task.attempt_id)
+                if attempt is None:
+                    raise RuntimeError(
+                        "Persisted Scenario materialization attempt disappeared"
+                    )
+                try:
+                    self._schedule_materialization_attempt(
+                        task.task_handle_id,
+                        attempt.attempt_id,
+                    )
+                except (OSError, RuntimeError) as exc:
+                    self._fail_materialization(
+                        task,
+                        attempt,
+                        code="scenario_materialization_unavailable",
+                        message=str(exc),
+                        retryable=True,
+                    )
 
     def author_draft_with_ai(
         self,
@@ -1417,6 +1921,508 @@ class ScenarioLabAuthoringService:
                 authoritative_draft_revision=draft.revision,
             )
 
+    def materialize_recipe(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        recipe_version_id: str,
+        expected_recipe_content_hash: str,
+    ) -> ScenarioMaterializationResult:
+        with self._lock:
+            replay = self._materialization_replay_or_conflict(
+                command_id=command_id,
+                idempotency_identity=idempotency_identity,
+                canonical_content_identity=canonical_content_identity,
+                operation="materialize_reference_path",
+            )
+            if replay is not None:
+                return replay
+            try:
+                version = self._recipe_workbench.get_version(recipe_version_id)
+            except ValueError:
+                return ScenarioMaterializationResult(
+                    disposition="rejected",
+                    message="The Approved Scenario Recipe Version is unavailable.",
+                )
+            approval = self._approval_record(version)
+            if (
+                approval.validation is None
+                or not approval.can_materialize
+                or approval.authority_state != "current"
+            ):
+                return ScenarioMaterializationResult(
+                    disposition="rejected",
+                    message=(
+                        "Materialization requires an exact current compatible "
+                        "Approved Scenario Recipe dependency binding."
+                    ),
+                )
+            if version.content_hash != expected_recipe_content_hash:
+                return ScenarioMaterializationResult(
+                    disposition="conflict",
+                    message=(
+                        "The expected Approved Scenario Recipe content hash is stale."
+                    ),
+                )
+            return self._claim_and_schedule_materialization(
+                command_id=command_id,
+                idempotency_identity=idempotency_identity,
+                canonical_content_identity=canonical_content_identity,
+                expected_source_revision=expected_source_revision,
+                expected_source_generation=expected_source_generation,
+                approval=approval,
+                predecessor_task=None,
+                predecessor_attempt=None,
+            )
+
+    def retry_materialization(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        predecessor_attempt_id: str,
+        predecessor_task_handle_id: str,
+    ) -> ScenarioMaterializationResult:
+        with self._lock:
+            replay = self._materialization_replay_or_conflict(
+                command_id=command_id,
+                idempotency_identity=idempotency_identity,
+                canonical_content_identity=canonical_content_identity,
+                operation="retry_materialization",
+            )
+            if replay is not None:
+                return replay
+            predecessor_task = self._repository.get_materialization_task(
+                predecessor_task_handle_id
+            )
+            predecessor_attempt = self._repository.get_materialization_attempt(
+                predecessor_attempt_id
+            )
+            if (
+                predecessor_task is None
+                or predecessor_attempt is None
+                or predecessor_task.attempt_id != predecessor_attempt.attempt_id
+                or predecessor_attempt.task_handle_id
+                != predecessor_task.task_handle_id
+                or predecessor_task.phase != "failed"
+                or not predecessor_task.retryable
+            ):
+                return ScenarioMaterializationResult(
+                    disposition="rejected",
+                    message=(
+                        "Retry requires one exact retryable failed materialization "
+                        "attempt and TaskHandle."
+                    ),
+                )
+            version = self._recipe_workbench.get_version(
+                predecessor_attempt.approved_recipe_version_id
+            )
+            approval = self._approval_record(version)
+            if not approval.can_materialize:
+                return ScenarioMaterializationResult(
+                    disposition="rejected",
+                    message=(
+                        "The Approved Scenario Recipe dependencies are no longer "
+                        "eligible for retry."
+                    ),
+                )
+            return self._claim_and_schedule_materialization(
+                command_id=command_id,
+                idempotency_identity=idempotency_identity,
+                canonical_content_identity=canonical_content_identity,
+                expected_source_revision=expected_source_revision,
+                expected_source_generation=expected_source_generation,
+                approval=approval,
+                predecessor_task=predecessor_task,
+                predecessor_attempt=predecessor_attempt,
+            )
+
+    def list_materialization_tasks(
+        self,
+    ) -> tuple[ScenarioMaterializationTaskRecord, ...]:
+        with self._lock:
+            return self._repository.list_materialization_tasks()
+
+    def replay_materialization(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+    ) -> ScenarioMaterializationResult | None:
+        with self._lock:
+            return self._materialization_replay_or_conflict(
+                command_id=command_id,
+                idempotency_identity=idempotency_identity,
+                canonical_content_identity=canonical_content_identity,
+                operation=operation,
+            )
+
+    def _claim_and_schedule_materialization(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        approval: ScenarioRecipeApprovalRecord,
+        predecessor_task: ScenarioMaterializationTaskRecord | None,
+        predecessor_attempt: ScenarioMaterializationAttemptRecord | None,
+    ) -> ScenarioMaterializationResult:
+        now = self._now()
+        attempt_id = _identity("scenario_materialization_attempt_", command_id)
+        task_handle_id = _identity("scenario_task_handle_", command_id)
+        operation = (
+            "materialize_reference_path"
+            if predecessor_task is None
+            else "retry_materialization"
+        )
+        command = replace(
+            _pending_command(
+                command_id=command_id,
+                idempotency_identity=idempotency_identity,
+                canonical_content_identity=canonical_content_identity,
+                operation=operation,
+                expected_source_revision=expected_source_revision,
+                expected_source_generation=expected_source_generation,
+                created_at=now,
+            ),
+            disposition="accepted",
+            message=(
+                "Scenario materialization was durably accepted before execution."
+            ),
+            result_kind="materialization_attempt",
+            result_identity=attempt_id,
+            completed_at=now,
+        )
+        task = ScenarioMaterializationTaskRecord(
+            task_handle_id=task_handle_id,
+            attempt_id=attempt_id,
+            command_id=command_id,
+            operation=operation,
+            target_kind="approved_recipe_version",
+            target_identity=approval.version.version_id,
+            phase="queued",
+            progress=0.0,
+            result_kind=None,
+            result_identity=None,
+            error_code=None,
+            error_message=None,
+            error_retryable=False,
+            cancelable=False,
+            retryable=False,
+            predecessor_task_handle_id=(
+                None
+                if predecessor_task is None
+                else predecessor_task.task_handle_id
+            ),
+            created_at=now,
+            updated_at=now,
+        )
+        attempt = ScenarioMaterializationAttemptRecord(
+            attempt_id=attempt_id,
+            task_handle_id=task_handle_id,
+            approved_recipe_version_id=approval.version.version_id,
+            predecessor_attempt_id=(
+                None
+                if predecessor_attempt is None
+                else predecessor_attempt.attempt_id
+            ),
+            reference_path_identity=None,
+            attempt_number=(
+                1
+                if predecessor_attempt is None
+                else predecessor_attempt.attempt_number + 1
+            ),
+            status="queued",
+            created_at=now,
+            completed_at=None,
+        )
+        validation = approval.validation
+        if validation is None:
+            raise RuntimeError("Exact materialization binding disappeared")
+        self._repository.claim_materialization(
+            command,
+            task,
+            attempt,
+            binding_json=canonical_json(
+                {
+                    "approved_recipe_version_id": approval.version.version_id,
+                    "recipe_content_hash": approval.version.content_hash,
+                    "approval_id": approval.approval_id,
+                    "validation_id": validation.validation_id,
+                    "validation_dependencies": asdict(validation.dependencies),
+                    "attempt_id": attempt_id,
+                    "task_handle_id": task_handle_id,
+                }
+            ),
+        )
+        try:
+            self._schedule_materialization_attempt(
+                task.task_handle_id,
+                attempt.attempt_id,
+            )
+        except (OSError, RuntimeError) as exc:
+            return replace(
+                self._fail_materialization(
+                    task,
+                    attempt,
+                    code="scenario_materialization_unavailable",
+                    message=str(exc),
+                    retryable=True,
+                ),
+                command=command,
+            )
+        return ScenarioMaterializationResult(
+            disposition="accepted",
+            message="Scenario materialization was durably accepted and queued.",
+            command=command,
+            task_handle=task,
+            attempt=attempt,
+        )
+
+    def _schedule_materialization_attempt(
+        self,
+        task_handle_id: str,
+        attempt_id: str,
+    ) -> None:
+        self._materialization_scheduler(
+            lambda: self._execute_materialization_attempt(
+                task_handle_id,
+                attempt_id,
+            )
+        )
+
+    def _execute_materialization_attempt(
+        self,
+        task_handle_id: str,
+        attempt_id: str,
+    ) -> None:
+        with self._lock:
+            task = self._repository.get_materialization_task(task_handle_id)
+            attempt = self._repository.get_materialization_attempt(attempt_id)
+            if task is None or attempt is None:
+                raise RuntimeError(
+                    "Scheduled Scenario materialization identity disappeared"
+                )
+            if (
+                task.attempt_id != attempt.attempt_id
+                or attempt.task_handle_id != task.task_handle_id
+            ):
+                raise RuntimeError(
+                    "Scheduled Scenario materialization identity binding changed"
+                )
+            if task.phase in {"completed", "failed", "canceled"}:
+                return
+        self._execute_materialization(task, attempt)
+
+    def _execute_materialization(
+        self,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+    ) -> ScenarioMaterializationResult:
+        materialize = self._materialize_reference_path
+        if materialize is None:
+            return self._fail_materialization(
+                task,
+                attempt,
+                code="scenario_materialization_unavailable",
+                message="Reference Market Path materialization is unavailable.",
+                retryable=True,
+            )
+        with self._lock:
+            running_at = self._now()
+            running_task = replace(
+                task,
+                phase="running",
+                progress=0.25,
+                updated_at=running_at,
+            )
+            running_attempt = replace(attempt, status="running")
+            self._repository.update_materialization(
+                running_task,
+                running_attempt,
+            )
+        try:
+            path_identity = materialize(attempt.approved_recipe_version_id)
+        except ValueError as exc:
+            with self._lock:
+                return self._fail_materialization(
+                    running_task,
+                    running_attempt,
+                    code="reference_market_path_integrity_failed",
+                    message=str(exc),
+                    retryable=False,
+                )
+        except (OSError, RuntimeError) as exc:
+            with self._lock:
+                return self._fail_materialization(
+                    running_task,
+                    running_attempt,
+                    code="scenario_materialization_failed",
+                    message=str(exc),
+                    retryable=True,
+                )
+        except Exception as exc:  # noqa: BLE001 - persist typed terminal truth
+            with self._lock:
+                return self._fail_materialization(
+                    running_task,
+                    running_attempt,
+                    code="scenario_materialization_failed",
+                    message=str(exc),
+                    retryable=True,
+                )
+        with self._lock:
+            completed_at = self._now()
+            completed_task = replace(
+                running_task,
+                phase="completed",
+                progress=1.0,
+                result_kind="reference_market_path",
+                result_identity=path_identity,
+                updated_at=completed_at,
+            )
+            completed_attempt = replace(
+                running_attempt,
+                reference_path_identity=path_identity,
+                status="completed",
+                completed_at=completed_at,
+            )
+            self._repository.update_materialization(
+                completed_task,
+                completed_attempt,
+            )
+        return ScenarioMaterializationResult(
+            disposition="accepted",
+            message="Reference Market Path materialization completed.",
+            task_handle=completed_task,
+            attempt=completed_attempt,
+        )
+
+    def _fail_materialization(
+        self,
+        task: ScenarioMaterializationTaskRecord,
+        attempt: ScenarioMaterializationAttemptRecord,
+        *,
+        code: str,
+        message: str,
+        retryable: bool,
+    ) -> ScenarioMaterializationResult:
+        failed_at = self._now()
+        failed_task = replace(
+            task,
+            phase="failed",
+            progress=1.0,
+            error_code=code,
+            error_message=message,
+            error_retryable=retryable,
+            retryable=retryable,
+            updated_at=failed_at,
+        )
+        failed_attempt = replace(
+            attempt,
+            status="failed",
+            completed_at=failed_at,
+        )
+        self._repository.update_materialization(failed_task, failed_attempt)
+        return ScenarioMaterializationResult(
+            disposition="accepted",
+            message="Reference Market Path materialization failed.",
+            task_handle=failed_task,
+            attempt=failed_attempt,
+        )
+
+    def _materialization_replay_or_conflict(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+    ) -> ScenarioMaterializationResult | None:
+        existing = self._repository.get_command_by_idempotency(
+            idempotency_identity
+        )
+        if existing is None:
+            collision = self._repository.get_command(command_id)
+            if collision is None:
+                return None
+            return ScenarioMaterializationResult(
+                disposition="conflict",
+                message=(
+                    "The command identity is already bound to a different "
+                    "idempotency identity."
+                ),
+            )
+        if (
+            existing.canonical_content_identity != canonical_content_identity
+            or existing.operation != operation
+        ):
+            return ScenarioMaterializationResult(
+                disposition="conflict",
+                message=(
+                    "The idempotency identity is already bound to different "
+                    "canonical content."
+                ),
+            )
+        task = self._repository.get_materialization_task_by_command(
+            existing.command_id
+        )
+        if task is None:
+            raise RuntimeError("Accepted materialization TaskHandle is unavailable")
+        attempt = self._repository.get_materialization_attempt(task.attempt_id)
+        if attempt is None:
+            raise RuntimeError("Accepted materialization attempt is unavailable")
+        if task.phase in {"queued", "running"}:
+            try:
+                self._schedule_materialization_attempt(
+                    task.task_handle_id,
+                    attempt.attempt_id,
+                )
+            except (OSError, RuntimeError) as exc:
+                return replace(
+                    self._fail_materialization(
+                        task,
+                        attempt,
+                        code="scenario_materialization_unavailable",
+                        message=str(exc),
+                        retryable=True,
+                    ),
+                    command=existing,
+                )
+            return ScenarioMaterializationResult(
+                disposition="accepted",
+                message=(
+                    "Scenario materialization remains durably accepted and "
+                    f"{task.phase}."
+                ),
+                command=existing,
+                task_handle=task,
+                attempt=attempt,
+            )
+        return ScenarioMaterializationResult(
+            disposition="accepted",
+            message=(
+                "Reference Market Path materialization completed."
+                if task.phase == "completed"
+                else "Reference Market Path materialization failed."
+                if task.phase == "failed"
+                else "Scenario materialization was durably accepted before execution."
+            ),
+            command=existing,
+            task_handle=task,
+            attempt=attempt,
+        )
+
     def list_drafts(self) -> tuple[ScenarioRecipeDraftRevisionRecord, ...]:
         with self._lock:
             return self._repository.list_draft_revisions()
@@ -1771,7 +2777,7 @@ def _pending_command(
 
 
 def _command_from_row(
-    row: Mapping[str, object],
+    row: Mapping[str, object] | RowMapping,
 ) -> ScenarioLabAuthoringCommandRecord:
     return ScenarioLabAuthoringCommandRecord(
         command_id=str(row["command_id"]),
@@ -1803,8 +2809,135 @@ def _command_from_row(
     )
 
 
+def _materialization_task_values(
+    task: ScenarioMaterializationTaskRecord,
+) -> dict[str, object]:
+    error_json = (
+        None
+        if task.error_code is None
+        else canonical_json(
+            {
+                "code": task.error_code,
+                "message": task.error_message or "",
+                "retryable": task.error_retryable,
+            }
+        )
+    )
+    return {
+        "task_handle_id": task.task_handle_id,
+        "attempt_id": task.attempt_id,
+        "command_id": task.command_id,
+        "operation": task.operation,
+        "target_kind": task.target_kind,
+        "target_identity": task.target_identity,
+        "phase": task.phase,
+        "progress": task.progress,
+        "result_kind": task.result_kind,
+        "result_identity": task.result_identity,
+        "error_json": error_json,
+        "cancelable": int(task.cancelable),
+        "retryable": int(task.retryable),
+        "predecessor": task.predecessor_task_handle_id,
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+    }
+
+
+def _materialization_attempt_values(
+    attempt: ScenarioMaterializationAttemptRecord,
+) -> dict[str, object]:
+    return {
+        "attempt_id": attempt.attempt_id,
+        "task_handle_id": attempt.task_handle_id,
+        "version_id": attempt.approved_recipe_version_id,
+        "predecessor_attempt_id": attempt.predecessor_attempt_id,
+        "path_id": attempt.reference_path_identity,
+        "attempt_number": attempt.attempt_number,
+        "status": attempt.status,
+        "created_at": attempt.created_at.isoformat(),
+        "completed_at": (
+            None
+            if attempt.completed_at is None
+            else attempt.completed_at.isoformat()
+        ),
+    }
+
+
+def _materialization_task_from_row(
+    row: Mapping[str, object] | RowMapping,
+) -> ScenarioMaterializationTaskRecord:
+    error_code: str | None = None
+    error_message: str | None = None
+    error_retryable = False
+    if row["error_json"] is not None:
+        raw_error = json.loads(str(row["error_json"]))
+        if not isinstance(raw_error, dict):
+            raise ValueError("Scenario Lab TaskHandle error is invalid")
+        error_code = str(raw_error.get("code") or "")
+        error_message = str(raw_error.get("message") or "")
+        error_retryable = bool(raw_error.get("retryable"))
+    return ScenarioMaterializationTaskRecord(
+        task_handle_id=str(row["task_handle_id"]),
+        attempt_id=str(row["attempt_id"]),
+        command_id=str(row["command_id"]),
+        operation=str(row["operation"]),
+        target_kind=str(row["target_kind"]),
+        target_identity=str(row["target_identity"]),
+        phase=cast(ScenarioMaterializationPhase, str(row["phase"])),
+        progress=float(str(row["progress_value"])),
+        result_kind=(
+            None if row["result_kind"] is None else str(row["result_kind"])
+        ),
+        result_identity=(
+            None
+            if row["result_identity"] is None
+            else str(row["result_identity"])
+        ),
+        error_code=error_code,
+        error_message=error_message,
+        error_retryable=error_retryable,
+        cancelable=bool(row["cancelable"]),
+        retryable=bool(row["retryable"]),
+        predecessor_task_handle_id=(
+            None
+            if row["predecessor_task_handle_id"] is None
+            else str(row["predecessor_task_handle_id"])
+        ),
+        created_at=datetime.fromisoformat(str(row["created_at_utc"])),
+        updated_at=datetime.fromisoformat(str(row["updated_at_utc"])),
+    )
+
+
+def _materialization_attempt_from_row(
+    row: Mapping[str, object] | RowMapping,
+) -> ScenarioMaterializationAttemptRecord:
+    return ScenarioMaterializationAttemptRecord(
+        attempt_id=str(row["attempt_id"]),
+        task_handle_id=str(row["task_handle_id"]),
+        approved_recipe_version_id=str(row["approved_recipe_version_id"]),
+        predecessor_attempt_id=(
+            None
+            if row["predecessor_attempt_id"] is None
+            else str(row["predecessor_attempt_id"])
+        ),
+        reference_path_identity=(
+            None
+            if row["reference_path_identity"] is None
+            else str(row["reference_path_identity"])
+        ),
+        attempt_number=int(str(row["attempt_number"])),
+        status=cast(ScenarioMaterializationPhase, str(row["status"])),
+        created_at=datetime.fromisoformat(str(row["created_at_utc"])),
+        completed_at=(
+            None
+            if row["completed_at_utc"] is None
+            else datetime.fromisoformat(str(row["completed_at_utc"]))
+        ),
+    )
+
+
 def _dependencies_from_row(
-    row: Mapping[str, object],
+    row: Mapping[str, object] | RowMapping,
 ) -> ScenarioRecipeValidationDependencyRecord:
     implementations = json.loads(
         str(row["transformation_implementations_json"])
@@ -1848,6 +2981,11 @@ __all__ = [
     "InMemoryScenarioLabAuthoringRepository",
     "ScenarioLabAuthoringResult",
     "ScenarioLabAuthoringService",
+    "ScenarioMaterializationAttemptRecord",
+    "ScenarioMaterializationPhase",
+    "ScenarioMaterializationResult",
+    "ScenarioMaterializationScheduler",
+    "ScenarioMaterializationTaskRecord",
     "ScenarioRecipeApprovalAuthorityState",
     "ScenarioRecipeApprovalRecord",
     "ScenarioRecipeDraftRevisionRecord",

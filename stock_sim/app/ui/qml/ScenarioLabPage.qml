@@ -1117,6 +1117,103 @@ Item {
                             )
                             onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
                         }
+
+                        Button {
+                            property string accessibleName: "Materialize exact Approved Recipe " + modelData.recipeVersionId
+                            objectName: "scenarioLabMaterializeApprovedRecipe-" + modelData.recipeVersionId
+                            text: "Materialize Reference Market Path"
+                            enabled: adapter.canMaterializeApprovedRecipe
+                                && modelData.canMaterialize
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "Durably accept the exact immutable Recipe version and dependency binding before materialization"
+                            onClicked: adapter.materializeApprovedRecipeVersion(
+                                modelData.recipeVersionId
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "PERSISTENT MATERIALIZATION TASK HISTORY (" + adapter.taskHandleCount + ")"
+                color: tokens.textPrimary
+                font.pixelSize: tokens.bodySize
+                font.bold: true
+                Accessible.role: Accessible.Heading
+            }
+
+            Repeater {
+                id: scenarioLabTaskHandleRepeater
+                objectName: "scenarioLabTaskHandleRepeater"
+                model: adapter.taskHandles
+
+                Rectangle {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: taskHandleColumn.implicitHeight + tokens.spaceMd * 2
+                    radius: tokens.radiusMd
+                    color: tokens.surface
+                    border.color: modelData.phase === "completed"
+                        ? tokens.accent : tokens.focus
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: "Scenario materialization TaskHandle "
+                        + modelData.taskHandleId + ", " + modelData.phase
+                    Accessible.description: "Immutable attempt "
+                        + modelData.attemptId + ", progress "
+                        + modelData.progressPercent + " percent"
+
+                    ColumnLayout {
+                        id: taskHandleColumn
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceMd
+                        spacing: tokens.spaceXs
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "TaskHandle " + modelData.taskHandleId
+                                + "\nAttempt " + modelData.attemptId
+                                + " · operation " + modelData.operation
+                                + " · target " + modelData.targetKind
+                                + " / " + modelData.targetIdentity
+                                + "\nPhase " + modelData.phase
+                                + " · progress " + modelData.progressPercent + "%"
+                                + " · terminal " + modelData.terminal
+                                + " · retryable " + modelData.retryable
+                                + "\nResult "
+                                + (modelData.resultIdentity === ""
+                                    ? "none" : modelData.resultKind + " / "
+                                        + modelData.resultIdentity)
+                                + "\nError "
+                                + (modelData.errorCode === ""
+                                    ? "none" : modelData.errorCode + ": "
+                                        + modelData.errorMessage)
+                                + "\nPredecessor TaskHandle "
+                                + (modelData.predecessorTaskHandleId === ""
+                                    ? "none" : modelData.predecessorTaskHandleId)
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.bodySize
+                            wrapMode: Text.WrapAnywhere
+                        }
+
+                        Button {
+                            property string accessibleName: "Retry failed materialization attempt " + modelData.attemptId
+                            objectName: "scenarioLabRetryMaterialization-" + modelData.attemptId
+                            text: "Retry failed materialization"
+                            visible: modelData.phase === "failed"
+                            enabled: visible && modelData.retryable
+                                && adapter.canRetryMaterialization
+                            activeFocusOnTab: visible
+                            Accessible.name: accessibleName
+                            Accessible.description: "Create a new linked attempt and persistent TaskHandle without mutating this failed attempt"
+                            onClicked: adapter.retryMaterialization(
+                                modelData.attemptId,
+                                modelData.taskHandleId
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
                     }
                 }
             }

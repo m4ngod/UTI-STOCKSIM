@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from strategy_diagnostics.market_paths import MaterializedMarketPath
     from strategy_diagnostics.scenario_lab_authoring import (
         ScenarioLabAuthoringResult,
+        ScenarioMaterializationResult,
+        ScenarioMaterializationTaskRecord,
         ScenarioRecipeApprovalRecord,
         ScenarioRecipeDraftRevisionRecord,
         ScenarioRecipeValidationDependencyRecord,
@@ -335,6 +337,8 @@ class ScenarioLabApplicationErrorCode(str, Enum):
     INVENTORY_READ_FAILED = "scenario_lab_inventory_read_failed"
     APPLICATION_NOT_READY = "scenario_lab_application_not_ready"
     PATH_INTEGRITY_FAILED = "reference_market_path_integrity_failed"
+    MATERIALIZATION_UNAVAILABLE = "scenario_materialization_unavailable"
+    MATERIALIZATION_FAILED = "scenario_materialization_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1048,6 +1052,8 @@ def canonical_scenario_lab_command_content_identity(
         | ReviseScenarioRecipeDraftCommand
         | ValidateScenarioRecipeDraftCommand
         | ApproveScenarioRecipeCommand
+        | MaterializeApprovedScenarioRecipeCommand
+        | RetryScenarioMaterializationCommand
     ),
 ) -> ScenarioLabCommandContentIdentity:
     """Calculate one durable Scenario Lab authoring/approval body identity."""
@@ -1087,7 +1093,7 @@ def canonical_scenario_lab_command_content_identity(
             "expected_draft_revision": command.expected_draft_revision,
             "expected_payload_hash": command.expected_payload_hash,
         }
-    else:
+    elif isinstance(command, ApproveScenarioRecipeCommand):
         value = {
             "operation": ScenarioLabTaskOperation.APPROVE_RECIPE.value,
             "draft_id": command.draft_id.value,
@@ -1095,6 +1101,22 @@ def canonical_scenario_lab_command_content_identity(
             "expected_payload_hash": command.expected_payload_hash,
             "validation_id": command.validation_id.value,
             "actor_id": command.actor_id.value,
+        }
+    elif isinstance(command, MaterializeApprovedScenarioRecipeCommand):
+        value = {
+            "operation": ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH.value,
+            "recipe_version_id": command.recipe_version_id.value,
+            "expected_recipe_content_hash": (
+                command.expected_recipe_content_hash
+            ),
+        }
+    else:
+        value = {
+            "operation": ScenarioLabTaskOperation.RETRY_MATERIALIZATION.value,
+            "predecessor_attempt_id": command.predecessor_attempt_id.value,
+            "predecessor_task_handle_id": (
+                command.predecessor_task_handle_id.value
+            ),
         }
     encoded = json.dumps(
         value,
@@ -1185,6 +1207,9 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
                 recipe_approvals = (
                     self._application.scenario_recipe_approval_history()
                 )
+                materialization_tasks = (
+                    self._application.scenario_materialization_task_handles()
+                )
                 authoring_capabilities = (
                     self._application.recipe_authoring_capabilities()
                 )
@@ -1224,6 +1249,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
                 approved_recipe_versions=tuple(
                     _map_recipe_approval(item, catalog)
                     for item in recipe_approvals
+                ),
+                task_handles=tuple(
+                    _map_materialization_task(item)
+                    for item in materialization_tasks
                 ),
             )
             partial = any(
@@ -1580,18 +1609,15 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         operation: ScenarioLabTaskOperation,
     ) -> ScenarioLabAuthoringResult | None:
         with self._application_access_gate:
-            return cast(
-                "ScenarioLabAuthoringResult | None",
-                self._application.replay_scenario_lab_authoring_command(
-                    command_id=metadata.command_id.value,
-                    idempotency_identity=(
-                        metadata.idempotency_identity.value
-                    ),
-                    canonical_content_identity=(
-                        metadata.canonical_content_identity.value
-                    ),
-                    operation=operation.value,
+            return self._application.replay_scenario_lab_authoring_command(
+                command_id=metadata.command_id.value,
+                idempotency_identity=(
+                    metadata.idempotency_identity.value
                 ),
+                canonical_content_identity=(
+                    metadata.canonical_content_identity.value
+                ),
+                operation=operation.value,
             )
 
     def _content_identity_rejection(
@@ -1602,6 +1628,8 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
             | ReviseScenarioRecipeDraftCommand
             | ValidateScenarioRecipeDraftCommand
             | ApproveScenarioRecipeCommand
+            | MaterializeApprovedScenarioRecipeCommand
+            | RetryScenarioMaterializationCommand
         ),
         operation: ScenarioLabTaskOperation,
     ) -> ScenarioLabCommandReceipt | None:
@@ -1697,24 +1725,92 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
     def materialize_reference_path(
         self, command: MaterializeApprovedScenarioRecipeCommand
     ) -> MaterializeApprovedScenarioRecipeResult:
-        return MaterializeApprovedScenarioRecipeResult(
-            receipt=_unavailable_receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH,
-                "Reference Path materialization is owned by Issue #82.",
-            )
-        )
+        operation = ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return MaterializeApprovedScenarioRecipeResult(receipt=rejection)
+        result = self._materialization_replay(command.metadata, operation)
+        if result is None:
+            conflict = self._source_conflict(command.metadata, operation)
+            if conflict is not None:
+                return MaterializeApprovedScenarioRecipeResult(receipt=conflict)
+            with self._application_access_gate:
+                result = self._application.materialize_scenario_recipe_command(
+                    command_id=command.metadata.command_id.value,
+                    idempotency_identity=(
+                        command.metadata.idempotency_identity.value
+                    ),
+                    canonical_content_identity=(
+                        command.metadata.canonical_content_identity.value
+                    ),
+                    expected_source_revision=(
+                        command.metadata.expected_source_revision.value
+                    ),
+                    expected_source_generation=(
+                        command.metadata.expected_source_generation.value
+                    ),
+                    recipe_version_id=command.recipe_version_id.value,
+                    expected_recipe_content_hash=(
+                        command.expected_recipe_content_hash
+                    ),
+                )
+        return _map_materialization_result(result, command.metadata, operation)
 
     def retry_materialization(
         self, command: RetryScenarioMaterializationCommand
     ) -> RetryScenarioMaterializationResult:
+        operation = ScenarioLabTaskOperation.RETRY_MATERIALIZATION
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return RetryScenarioMaterializationResult(receipt=rejection)
+        result = self._materialization_replay(command.metadata, operation)
+        if result is None:
+            conflict = self._source_conflict(command.metadata, operation)
+            if conflict is not None:
+                return RetryScenarioMaterializationResult(receipt=conflict)
+            with self._application_access_gate:
+                result = self._application.retry_scenario_materialization_command(
+                    command_id=command.metadata.command_id.value,
+                    idempotency_identity=(
+                        command.metadata.idempotency_identity.value
+                    ),
+                    canonical_content_identity=(
+                        command.metadata.canonical_content_identity.value
+                    ),
+                    expected_source_revision=(
+                        command.metadata.expected_source_revision.value
+                    ),
+                    expected_source_generation=(
+                        command.metadata.expected_source_generation.value
+                    ),
+                    predecessor_attempt_id=(
+                        command.predecessor_attempt_id.value
+                    ),
+                    predecessor_task_handle_id=(
+                        command.predecessor_task_handle_id.value
+                    ),
+                )
+        mapped = _map_materialization_result(result, command.metadata, operation)
         return RetryScenarioMaterializationResult(
-            receipt=_unavailable_receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.RETRY_MATERIALIZATION,
-                "Materialization retry is owned by Issue #82.",
-            )
+            receipt=mapped.receipt,
+            path_id=mapped.path_id,
+            attempt_id=mapped.attempt_id,
         )
+
+    def _materialization_replay(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+    ) -> ScenarioMaterializationResult | None:
+        with self._application_access_gate:
+            return self._application.replay_scenario_materialization_command(
+                command_id=metadata.command_id.value,
+                idempotency_identity=metadata.idempotency_identity.value,
+                canonical_content_identity=(
+                    metadata.canonical_content_identity.value
+                ),
+                operation=operation.value,
+            )
 
     def compose_scenario_set(
         self, command: ComposeFormalScenarioSetCommand
@@ -2391,6 +2487,110 @@ def _map_authoring_receipt(
             else SourceRevisionToken(command.expected_source_revision)
         ),
         task_handle=None,
+    )
+
+
+def _map_materialization_task(
+    record: ScenarioMaterializationTaskRecord,
+) -> ScenarioLabTaskHandle:
+    error = (
+        None
+        if record.error_code is None
+        else ScenarioLabApplicationError(
+            code=ScenarioLabApplicationErrorCode(record.error_code),
+            message=record.error_message or "Materialization failed.",
+            retryable=record.error_retryable,
+        )
+    )
+    result_identity = None
+    if record.result_identity is not None:
+        if record.result_kind is None:
+            raise ValueError("Materialization result kind is unavailable")
+        result_identity = ScenarioLabTaskIdentity(
+            kind=ScenarioLabTaskIdentityKind(record.result_kind),
+            value=record.result_identity,
+        )
+    return ScenarioLabTaskHandle(
+        identity=TaskHandleId(record.task_handle_id),
+        attempt_identity=ScenarioMaterializationAttemptId(record.attempt_id),
+        operation=ScenarioLabTaskOperation(record.operation),
+        target_identity=ScenarioLabTaskIdentity(
+            kind=ScenarioLabTaskIdentityKind(record.target_kind),
+            value=record.target_identity,
+        ),
+        phase=TaskPhase(record.phase),
+        progress=record.progress,
+        result_identity=result_identity,
+        error=error,
+        cancelable=record.cancelable,
+        retryable=record.retryable,
+        terminal=record.terminal,
+        predecessor_task_handle_id=(
+            None
+            if record.predecessor_task_handle_id is None
+            else TaskHandleId(record.predecessor_task_handle_id)
+        ),
+    )
+
+
+def _map_materialization_result(
+    result: ScenarioMaterializationResult,
+    fallback_metadata: ScenarioLabCommandMetadata,
+    operation: ScenarioLabTaskOperation,
+) -> MaterializeApprovedScenarioRecipeResult:
+    command = result.command
+    metadata = (
+        fallback_metadata
+        if command is None
+        else ScenarioLabCommandMetadata(
+            command_id=ScenarioLabCommandId(command.command_id),
+            idempotency_identity=ScenarioLabIdempotencyIdentity(
+                command.idempotency_identity
+            ),
+            canonical_content_identity=ScenarioLabCommandContentIdentity(
+                command.canonical_content_identity
+            ),
+            expected_source_revision=SourceRevisionToken(
+                command.expected_source_revision
+            ),
+            expected_source_generation=SourceGenerationId(
+                command.expected_source_generation
+            ),
+        )
+    )
+    task_handle = (
+        None
+        if result.task_handle is None
+        else _map_materialization_task(result.task_handle)
+    )
+    path_identity = (
+        None
+        if result.attempt is None
+        else result.attempt.reference_path_identity
+    )
+    return MaterializeApprovedScenarioRecipeResult(
+        receipt=ScenarioLabCommandReceipt(
+            metadata=metadata,
+            operation=operation,
+            disposition=ScenarioLabCommandDisposition(result.disposition),
+            message=result.message,
+            authoritative_revision=(
+                None
+                if command is None
+                else SourceRevisionToken(command.expected_source_revision)
+            ),
+            task_handle=task_handle,
+        ),
+        path_id=(
+            None
+            if path_identity is None
+            else ReferenceMarketPathId(path_identity)
+        ),
+        attempt_id=(
+            None
+            if result.attempt is None
+            else ScenarioMaterializationAttemptId(result.attempt.attempt_id)
+        ),
     )
 
 

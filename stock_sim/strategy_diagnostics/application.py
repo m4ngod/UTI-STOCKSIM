@@ -132,6 +132,9 @@ from .scenario_lab_authoring import (
     ScenarioLabAuthoringMode,
     ScenarioLabAuthoringResult,
     ScenarioLabAuthoringService,
+    ScenarioMaterializationResult,
+    ScenarioMaterializationScheduler,
+    ScenarioMaterializationTaskRecord,
     ScenarioRecipeApprovalRecord,
     ScenarioRecipeDraftRevisionRecord,
     ScenarioRecipeValidationDependencyRecord,
@@ -294,6 +297,7 @@ class DiagnosticsApplication:
         artifact_store: MarketPathArtifactStore | None = None,
         recipe_assistant: AIRecipeAssistant | None = None,
         recipe_clock: Callable[[], datetime] | None = None,
+        materialization_scheduler: ScenarioMaterializationScheduler | None = None,
         diagnostic_task_clock: Callable[[], datetime] | None = None,
         ptrade_host: PTradeStrategyHost | None = None,
         evidence_artifact_store: DiagnosticEvidenceArtifactStore | None = None,
@@ -332,6 +336,10 @@ class DiagnosticsApplication:
             recipe_workbench=self._recipe_workbench,
             admitted_segments=self._historical_segments.list_segments,
             dependency_provider=self._scenario_recipe_validation_dependencies,
+            materialize_reference_path=lambda version_id: (
+                self.materialize_reference_path(version_id).artifact_hash
+            ),
+            materialization_scheduler=materialization_scheduler,
             clock=recipe_clock,
         )
         self._diagnostic_tasks = DiagnosticTaskService(
@@ -3266,6 +3274,72 @@ class DiagnosticsApplication:
         self.status()
         return self._scenario_lab_authoring.list_approvals()
 
+    def materialize_scenario_recipe_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        recipe_version_id: str,
+        expected_recipe_content_hash: str,
+    ) -> ScenarioMaterializationResult:
+        self.status()
+        return self._scenario_lab_authoring.materialize_recipe(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            recipe_version_id=recipe_version_id,
+            expected_recipe_content_hash=expected_recipe_content_hash,
+        )
+
+    def retry_scenario_materialization_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        predecessor_attempt_id: str,
+        predecessor_task_handle_id: str,
+    ) -> ScenarioMaterializationResult:
+        self.status()
+        return self._scenario_lab_authoring.retry_materialization(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            predecessor_attempt_id=predecessor_attempt_id,
+            predecessor_task_handle_id=predecessor_task_handle_id,
+        )
+
+    def scenario_materialization_task_handles(
+        self,
+    ) -> tuple[ScenarioMaterializationTaskRecord, ...]:
+        self.status()
+        return self._scenario_lab_authoring.list_materialization_tasks()
+
+    def replay_scenario_materialization_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+    ) -> ScenarioMaterializationResult | None:
+        self.status()
+        return self._scenario_lab_authoring.replay_materialization(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            operation=operation,
+        )
+
     def replay_scenario_lab_authoring_command(
         self,
         *,
@@ -4076,6 +4150,7 @@ def create_diagnostics_application(
     artifact_store: MarketPathArtifactStore | None = None,
     recipe_assistant: AIRecipeAssistant | None = None,
     recipe_clock: Callable[[], datetime] | None = None,
+    materialization_scheduler: ScenarioMaterializationScheduler | None = None,
     diagnostic_task_clock: Callable[[], datetime] | None = None,
     ptrade_host: PTradeStrategyHost | None = None,
     evidence_artifact_store: DiagnosticEvidenceArtifactStore | None = None,
@@ -4089,6 +4164,7 @@ def create_diagnostics_application(
         artifact_store=artifact_store,
         recipe_assistant=recipe_assistant,
         recipe_clock=recipe_clock,
+        materialization_scheduler=materialization_scheduler,
         diagnostic_task_clock=diagnostic_task_clock,
         ptrade_host=ptrade_host,
         evidence_artifact_store=evidence_artifact_store,

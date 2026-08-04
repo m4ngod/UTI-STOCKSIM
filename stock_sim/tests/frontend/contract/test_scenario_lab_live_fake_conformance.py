@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
+from time import monotonic, sleep
 from typing import Callable
 
 import pytest
@@ -15,6 +16,7 @@ from app.features import (
     ScenarioLabContext,
     ScenarioLabFeature,
     ScenarioLabFocusTarget,
+    ScenarioLabViewState,
 )
 from app.features.diagnostic_tasks_application import (
     ApprovedScenarioRecipeVersionId,
@@ -26,6 +28,7 @@ from app.features.run_monitoring import (
     SourceGenerationId,
     StrategyUnderTestId,
     TaskHandleId,
+    TaskPhase,
 )
 from app.features.scenario_lab_application import (
     SCENARIO_LAB_APPLICATION_INTERFACE_VERSION,
@@ -61,6 +64,7 @@ from app.features.scenario_lab_application import (
     ScenarioLabInventory,
     ScenarioLabIntegrityState,
     ScenarioLabTaskOperation,
+    ScenarioLabTaskHandle,
     ScenarioLabUnavailabilityCode,
     ScenarioLabUnavailabilityReason,
     ScenarioExecutionAssumptionTarget,
@@ -87,6 +91,32 @@ from strategy_diagnostics import (
 from strategy_diagnostics.application import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.strategy_diagnostics.test_recipe_lifecycle import _RecipeFixtureSource
+
+
+def _await_materialization_task(
+    feature: ScenarioLabFeature,
+    context: ScenarioLabContext,
+    task_handle_id: TaskHandleId,
+    *,
+    timeout_seconds: float = 3.0,
+) -> tuple[ScenarioLabViewState, ScenarioLabTaskHandle]:
+    deadline = monotonic() + timeout_seconds
+    while monotonic() < deadline:
+        state = feature.snapshot(context)
+        handle = next(
+            (
+                item
+                for item in state.task_handles
+                if item.identity == task_handle_id
+            ),
+            None,
+        )
+        if handle is not None and handle.terminal:
+            return state, handle
+        sleep(0.01)
+    raise AssertionError(
+        f"Scenario materialization {task_handle_id.value} did not terminate"
+    )
 
 
 def _inventory() -> ScenarioLabInventory:
@@ -228,6 +258,81 @@ def _live_authoring_feature() -> ScenarioLabFeature:
 
 def _fake_authoring_feature() -> ScenarioLabFeature:
     return DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+
+
+class _FailOnceMarketPathArtifactStore(InMemoryMarketPathArtifactStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self._failures_remaining = 1
+
+    def put(self, path):
+        if self._failures_remaining:
+            self._failures_remaining -= 1
+            raise OSError("retryable materializer failure fixture")
+        return super().put(path)
+
+
+class _IntegrityFailingMarketPathArtifactStore(InMemoryMarketPathArtifactStore):
+    def put(self, path):
+        raise ValueError("immutable Materialized Market Path identity collision")
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializationRetryHarness:
+    feature: ScenarioLabFeature
+    arm_failure: Callable[[], None]
+
+
+def _live_materialization_retry_harness() -> _MaterializationRetryHarness:
+    source = _RecipeFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=_FailOnceMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc),
+    )
+    application.start()
+    assert application.admit_historical_segment(source.selection).segment is not None
+    feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+    return _MaterializationRetryHarness(feature=feature, arm_failure=lambda: None)
+
+
+def _fake_materialization_retry_harness() -> _MaterializationRetryHarness:
+    feature = DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+    return _MaterializationRetryHarness(
+        feature=feature,
+        arm_failure=feature.fail_next_materialization,
+    )
+
+
+def _live_materialization_integrity_harness() -> _MaterializationRetryHarness:
+    source = _RecipeFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=_IntegrityFailingMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc),
+    )
+    application.start()
+    assert application.admit_historical_segment(source.selection).segment is not None
+    feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+    return _MaterializationRetryHarness(feature=feature, arm_failure=lambda: None)
+
+
+def _fake_materialization_integrity_harness() -> _MaterializationRetryHarness:
+    feature = DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+    return _MaterializationRetryHarness(
+        feature=feature,
+        arm_failure=feature.fail_next_materialization_integrity,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -978,7 +1083,7 @@ def test_shared_exact_approval_replay_and_immutable_successor_version_history(
     after_first_approval = feature.snapshot(context)
     assert after_first_approval.approved_recipe_versions == (version_one,)
     assert after_first_approval.capabilities.can_approve_recipe is False
-    assert after_first_approval.capabilities.can_materialize_reference_path is False
+    assert after_first_approval.capabilities.can_materialize_reference_path is True
 
     revised = feature.revise_recipe_draft(
         _canonicalize_authoring(
@@ -1045,6 +1150,490 @@ def test_shared_exact_approval_replay_and_immutable_successor_version_history(
         version_one,
         version_two,
     )
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_materializes_exact_approved_recipe_with_persistent_task_handle(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="materialization",
+    )
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="materialization-approve",
+                ),
+                draft_id=draft.draft_id,
+                expected_draft_revision=draft.revision,
+                expected_payload_hash=draft.payload_hash,
+                validation_id=validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-82"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    version = approved.approved_version
+    before_materialize = feature.snapshot(context)
+    assert before_materialize.capabilities.can_materialize_reference_path is True
+    command = _canonicalize_authoring(
+        MaterializeApprovedScenarioRecipeCommand(
+            metadata=_authoring_metadata(
+                before_materialize,
+                suffix="materialization-accept",
+            ),
+            recipe_version_id=version.recipe_version_id,
+            expected_recipe_content_hash=version.content_hash,
+        )
+    )
+
+    accepted = feature.materialize_reference_path(command)
+    conflicted = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            replace(
+                command,
+                metadata=replace(
+                    command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "command-82-materialization-conflict"
+                    ),
+                ),
+                expected_recipe_content_hash="f" * 64,
+            )
+        )
+    )
+
+    assert accepted.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert accepted.attempt_id is not None
+    assert accepted.path_id is None
+    assert accepted.receipt.task_handle is not None
+    assert accepted.receipt.task_handle.phase is TaskPhase.QUEUED
+    assert accepted.receipt.task_handle.terminal is False
+    assert accepted.receipt.task_handle.result_identity is None
+    assert conflicted.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+    assert conflicted.receipt.task_handle is None
+    after, terminal_handle = _await_materialization_task(
+        feature,
+        context,
+        accepted.receipt.task_handle.identity,
+    )
+    assert terminal_handle.phase is TaskPhase.COMPLETED
+    assert terminal_handle.result_identity is not None
+    replayed = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            replace(
+                command,
+                metadata=replace(
+                    command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "command-82-materialization-replay"
+                    ),
+                ),
+            )
+        )
+    )
+    assert replayed.path_id is not None
+    assert replayed.attempt_id == accepted.attempt_id
+    assert replayed.receipt.task_handle == terminal_handle
+    assert after.task_handles == (terminal_handle,)
+    assert replayed.path_id in tuple(item.path_id for item in after.reference_paths)
+    assert replayed.path_id in tuple(
+        item.path_id for item in after.market_scenarios
+    )
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    (_live_materialization_retry_harness, _fake_materialization_retry_harness),
+)
+def test_shared_retry_preserves_failed_attempt_and_creates_a_linked_task_handle(
+    harness_factory: Callable[[], _MaterializationRetryHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="materialization-retry",
+    )
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="materialization-retry-approve",
+                ),
+                draft_id=draft.draft_id,
+                expected_draft_revision=draft.revision,
+                expected_payload_hash=draft.payload_hash,
+                validation_id=validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-82"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    version = approved.approved_version
+    harness.arm_failure()
+    failed = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="materialization-retry-failure",
+                ),
+                recipe_version_id=version.recipe_version_id,
+                expected_recipe_content_hash=version.content_hash,
+            )
+        )
+    )
+    failed_handle = failed.receipt.task_handle
+    assert failed.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert failed.path_id is None
+    assert failed.attempt_id is not None
+    assert failed_handle is not None
+    assert failed_handle.phase is TaskPhase.QUEUED
+    assert failed_handle.terminal is False
+    after_failure, failed_handle = _await_materialization_task(
+        feature,
+        context,
+        failed_handle.identity,
+    )
+    assert failed_handle.phase is TaskPhase.FAILED
+    assert failed_handle.retryable is True
+    assert failed_handle.error is not None
+    assert failed_handle.error.retryable is True
+    assert after_failure.capabilities.can_retry_materialization is True
+
+    command = _canonicalize_authoring(
+        RetryScenarioMaterializationCommand(
+            metadata=_authoring_metadata(
+                after_failure,
+                suffix="materialization-retry-success",
+            ),
+            predecessor_attempt_id=failed.attempt_id,
+            predecessor_task_handle_id=failed_handle.identity,
+        )
+    )
+    retried = feature.retry_materialization(command)
+
+    retried_handle = retried.receipt.task_handle
+    assert retried.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert retried.path_id is None
+    assert retried.attempt_id is not None
+    assert retried.attempt_id != failed.attempt_id
+    assert retried_handle is not None
+    assert retried_handle.identity != failed_handle.identity
+    assert retried_handle.predecessor_task_handle_id == failed_handle.identity
+    assert retried_handle.phase is TaskPhase.QUEUED
+    assert retried_handle.terminal is False
+    after_retry, retried_handle = _await_materialization_task(
+        feature,
+        context,
+        retried_handle.identity,
+    )
+    assert retried_handle.phase is TaskPhase.COMPLETED
+    replayed = feature.retry_materialization(
+        _canonicalize_authoring(
+            replace(
+                command,
+                metadata=replace(
+                    command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "command-82-materialization-retry-replay"
+                    ),
+                ),
+            )
+        )
+    )
+    assert replayed.path_id is not None
+    assert replayed.attempt_id == retried.attempt_id
+    assert replayed.receipt.task_handle == retried_handle
+    assert len(after_retry.task_handles) == 2
+    assert next(
+        item
+        for item in after_retry.task_handles
+        if item.identity == failed_handle.identity
+    ) == failed_handle
+    assert next(
+        item
+        for item in after_retry.task_handles
+        if item.identity == retried_handle.identity
+    ) == retried_handle
+    assert replayed.path_id in tuple(
+        item.path_id for item in after_retry.reference_paths
+    )
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    (
+        _live_materialization_integrity_harness,
+        _fake_materialization_integrity_harness,
+    ),
+)
+def test_shared_artifact_integrity_conflict_is_terminal_and_fail_closed(
+    harness_factory: Callable[[], _MaterializationRetryHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="materialization-integrity",
+    )
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="materialization-integrity-approve",
+                ),
+                draft_id=draft.draft_id,
+                expected_draft_revision=draft.revision,
+                expected_payload_hash=draft.payload_hash,
+                validation_id=validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-82"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    version = approved.approved_version
+    before = feature.snapshot(context)
+    harness.arm_failure()
+    command = _canonicalize_authoring(
+        MaterializeApprovedScenarioRecipeCommand(
+            metadata=_authoring_metadata(
+                before,
+                suffix="materialization-integrity-failure",
+            ),
+            recipe_version_id=version.recipe_version_id,
+            expected_recipe_content_hash=version.content_hash,
+        )
+    )
+
+    failed = feature.materialize_reference_path(command)
+    handle = failed.receipt.task_handle
+    assert failed.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert failed.path_id is None
+    assert handle is not None
+    assert handle.phase is TaskPhase.QUEUED
+    after, handle = _await_materialization_task(
+        feature,
+        context,
+        handle.identity,
+    )
+    assert handle.phase is TaskPhase.FAILED
+    assert handle.retryable is False
+    assert handle.error is not None
+    assert (
+        handle.error.code
+        is ScenarioLabApplicationErrorCode.PATH_INTEGRITY_FAILED
+    )
+    assert handle.error.retryable is False
+    replayed = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            replace(
+                command,
+                metadata=replace(
+                    command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "command-82-materialization-integrity-replay"
+                    ),
+                ),
+            )
+        )
+    )
+    assert replayed.attempt_id == failed.attempt_id
+    assert replayed.receipt.task_handle == handle
+    assert after.reference_paths == before.reference_paths
+    assert after.task_handles == (handle,)
+    assert after.capabilities.can_retry_materialization is False
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    (_live_approval_invalidation_harness, _fake_approval_invalidation_harness),
+)
+def test_shared_materialization_fails_closed_without_exact_current_authority(
+    harness_factory: Callable[[], _ApprovalInvalidationHarness],
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="materialization-authority",
+    )
+    before_approval = feature.snapshot(context)
+    original_paths = before_approval.reference_paths
+    unapproved = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    before_approval,
+                    suffix="materialization-unapproved",
+                ),
+                recipe_version_id=ApprovedScenarioRecipeVersionId(
+                    "recipe-version-not-approved-82"
+                ),
+                expected_recipe_content_hash="a" * 64,
+            )
+        )
+    )
+    assert unapproved.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert unapproved.receipt.task_handle is None
+    assert unapproved.path_id is None
+
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="materialization-authority-approve",
+                ),
+                draft_id=draft.draft_id,
+                expected_draft_revision=draft.revision,
+                expected_payload_hash=draft.payload_hash,
+                validation_id=validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-82"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    version = approved.approved_version
+    stale = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="materialization-stale-content",
+                ),
+                recipe_version_id=version.recipe_version_id,
+                expected_recipe_content_hash="f" * 64,
+            )
+        )
+    )
+    assert stale.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+    assert stale.receipt.task_handle is None
+    assert stale.path_id is None
+
+    harness.invalidate_dependencies()
+    invalidated_state = feature.snapshot(context)
+    assert invalidated_state.approved_recipe_versions[0].can_materialize is False
+    invalidated = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    invalidated_state,
+                    suffix="materialization-invalidated",
+                ),
+                recipe_version_id=version.recipe_version_id,
+                expected_recipe_content_hash=version.content_hash,
+            )
+        )
+    )
+    assert invalidated.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert invalidated.receipt.task_handle is None
+    assert invalidated.path_id is None
+    after_rejections = feature.snapshot(context)
+    assert after_rejections.reference_paths == original_paths
+    assert after_rejections.task_handles == ()
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_identical_approved_inputs_reuse_one_reference_path_identity(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+
+    def approve_exact(suffix: str):
+        context, draft, validation = _create_and_validate_exact_recipe(
+            feature,
+            suffix=suffix,
+        )
+        approved = feature.approve_recipe(
+            _canonicalize_authoring(
+                ApproveScenarioRecipeCommand(
+                    metadata=_authoring_metadata(
+                        feature.snapshot(context),
+                        suffix=f"{suffix}-approve",
+                    ),
+                    draft_id=draft.draft_id,
+                    expected_draft_revision=draft.revision,
+                    expected_payload_hash=draft.payload_hash,
+                    validation_id=validation.validation_id,
+                    actor_id=ScenarioLabActorId("approver-82"),
+                )
+            )
+        )
+        assert approved.approved_version is not None
+        return context, approved.approved_version
+
+    context, first_version = approve_exact("determinism-first")
+    _, second_version = approve_exact("determinism-second")
+    assert first_version.recipe_version_id != second_version.recipe_version_id
+    assert first_version.content_hash == second_version.content_hash
+
+    first = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="determinism-first-materialize",
+                ),
+                recipe_version_id=first_version.recipe_version_id,
+                expected_recipe_content_hash=first_version.content_hash,
+            )
+        )
+    )
+    second = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="determinism-second-materialize",
+                ),
+                recipe_version_id=second_version.recipe_version_id,
+                expected_recipe_content_hash=second_version.content_hash,
+            )
+        )
+    )
+
+    assert first.path_id is None
+    assert second.path_id is None
+    assert first.receipt.task_handle is not None
+    assert second.receipt.task_handle is not None
+    assert first.receipt.task_handle.identity != second.receipt.task_handle.identity
+    assert first.attempt_id != second.attempt_id
+    _, first_terminal = _await_materialization_task(
+        feature,
+        context,
+        first.receipt.task_handle.identity,
+    )
+    after, second_terminal = _await_materialization_task(
+        feature,
+        context,
+        second.receipt.task_handle.identity,
+    )
+    assert first_terminal.result_identity is not None
+    assert second_terminal.result_identity == first_terminal.result_identity
+    assert sum(
+        item.path_id.value == first_terminal.result_identity.value
+        for item in after.reference_paths
+    ) == 1
+    assert len(after.task_handles) == 2
     feature.close()
 
 
@@ -1540,7 +2129,7 @@ def test_shared_read_body_filters_only_typed_view_state(
     "feature_factory",
     (_live_authoring_feature, _fake_authoring_feature),
 )
-def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unavailable(
+def test_shared_authoring_body_keeps_post_materialization_mutations_unavailable(
     feature_factory: Callable[[], ScenarioLabFeature],
 ) -> None:
     feature = feature_factory()
@@ -1642,20 +2231,6 @@ def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unava
     )
     assert approval_result.approved_version is not None
     future_results = (
-        feature.materialize_reference_path(
-            MaterializeApprovedScenarioRecipeCommand(
-                metadata("materialize", after_validate.source_revision),
-                ApprovedScenarioRecipeVersionId("recipe-80"),
-                "recipe-content-80",
-            )
-        ),
-        feature.retry_materialization(
-            RetryScenarioMaterializationCommand(
-                metadata("retry", after_validate.source_revision),
-                ScenarioMaterializationAttemptId("attempt-80"),
-                TaskHandleId("task-80"),
-            )
-        ),
         feature.compose_scenario_set(
             ComposeFormalScenarioSetCommand(
                 metadata("compose", after_validate.source_revision),
@@ -1689,9 +2264,11 @@ def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unava
         result.receipt.disposition is ScenarioLabCommandDisposition.UNAVAILABLE
         for result in future_results
     )
-    assert tuple(result.receipt.operation for result in future_results) == tuple(
-        ScenarioLabTaskOperation
-    )[4:]
+    assert tuple(result.receipt.operation for result in future_results) == (
+        ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET,
+        ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS,
+        ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET,
+    )
     assert all(result.receipt.task_handle is None for result in future_results)
     feature.close()
 
@@ -2060,10 +2637,59 @@ class _ConnectionHarness:
         self.cleanup = cleanup
 
 
+def _materialized_connection_inventory() -> ScenarioLabInventory:
+    feature = DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="connection-materialization",
+    )
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="connection-materialization-approve",
+                ),
+                draft_id=draft.draft_id,
+                expected_draft_revision=draft.revision,
+                expected_payload_hash=draft.payload_hash,
+                validation_id=validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-82"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    version = approved.approved_version
+    materialized = feature.materialize_reference_path(
+        _canonicalize_authoring(
+            MaterializeApprovedScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="connection-materialization-accept",
+                ),
+                recipe_version_id=version.recipe_version_id,
+                expected_recipe_content_hash=version.content_hash,
+            )
+        )
+    )
+    assert materialized.receipt.task_handle is not None
+    state, _ = _await_materialization_task(
+        feature,
+        context,
+        materialized.receipt.task_handle.identity,
+    )
+    assert state.last_reliable_inventory is not None
+    inventory = state.last_reliable_inventory
+    feature.close()
+    return inventory
+
+
 def _live_connection_harness() -> _ConnectionHarness:
     bridge = EventBridge(subscribe_backend=False)
     feature = LiveScenarioLabAdapter(
-        application=_TypedScenarioLabApplication(_inventory()),
+        application=_TypedScenarioLabApplication(
+            _materialized_connection_inventory()
+        ),
         event_bridge=bridge,
     )
     return _ConnectionHarness(
@@ -2079,7 +2705,9 @@ def _live_connection_harness() -> _ConnectionHarness:
 
 
 def _fake_connection_harness() -> _ConnectionHarness:
-    feature = DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+    feature = DeterministicFakeScenarioLabAdapter(
+        inventory=_materialized_connection_inventory()
+    )
     return _ConnectionHarness(
         feature,
         feature.advance_to_disconnected,
@@ -2105,6 +2733,8 @@ def test_shared_connection_body_retains_data_rereads_and_quarantines_old_generat
     disconnected = harness.feature.snapshot(context)
     assert disconnected.presentation.value == "disconnected"
     assert disconnected.historical_segments == ready.historical_segments
+    assert disconnected.task_handles == ready.task_handles
+    assert len(disconnected.task_handles) == 1
     assert disconnected.freshness.value == "disconnected"
 
     harness.reconnect()
@@ -2112,6 +2742,7 @@ def test_shared_connection_body_retains_data_rereads_and_quarantines_old_generat
     assert reconnected.presentation.value == "ready"
     assert reconnected.source.generation.value > ready.source.generation.value
     assert reconnected.source_revision == ready.source_revision
+    assert reconnected.task_handles == ready.task_handles
 
     revision = reconnected.revision
     harness.old_generation_invalidation()

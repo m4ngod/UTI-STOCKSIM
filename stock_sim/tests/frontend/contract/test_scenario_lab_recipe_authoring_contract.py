@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
+from threading import Event
+from time import monotonic, sleep
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from app.features.run_monitoring import SourceGenerationId
+from app.features.live_scenario_lab import LiveScenarioLabAdapter
 from app.features.scenario_lab_application import (
+    ApprovedScenarioRecipeVersionProjection,
     ApproveScenarioRecipeCommand,
     CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    MaterializeApprovedScenarioRecipeCommand,
     RequestedExecutionAssumptionsProjection,
+    RetryScenarioMaterializationCommand,
     ReviseScenarioRecipeDraftCommand,
     ScenarioLabActorId,
     ScenarioLabCommandContentIdentity,
@@ -29,6 +37,8 @@ from app.features.scenario_lab_application import (
     ValidateScenarioRecipeDraftCommand,
     canonical_scenario_lab_command_content_identity,
 )
+from app.features.scenario_lab import ScenarioLabContext
+from app.event_bridge import EventBridge
 from app.features.diagnostic_tasks_application import HistoricalMarketSegmentId
 from strategy_diagnostics import (
     AIRecipeAssistantProviderError,
@@ -82,6 +92,68 @@ class _ClaimObservingAssistant:
         return self._delegate.draft(request)
 
 
+class _ClaimObservingMarketPathArtifactStore(InMemoryMarketPathArtifactStore):
+    def __init__(self, engine, command_id: str) -> None:
+        super().__init__()
+        self._engine = engine
+        self._command_id = command_id
+        self.observed_claim: tuple[str, str, str] | None = None
+
+    def put(self, path):
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT command.disposition, task.phase, attempt.status "
+                    "FROM diagnostic_scenario_lab_commands AS command "
+                    "JOIN diagnostic_scenario_lab_task_handles AS task "
+                    "ON task.command_id = command.command_id "
+                    "JOIN diagnostic_scenario_materialization_attempts AS attempt "
+                    "ON attempt.task_handle_id = task.task_handle_id "
+                    "WHERE command.command_id = :command_id"
+                ),
+                {"command_id": self._command_id},
+            ).one()
+        self.observed_claim = tuple(row)
+        return super().put(path)
+
+
+class _BlockingMarketPathArtifactStore(InMemoryMarketPathArtifactStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+
+    def put(self, path):
+        self.started.set()
+        if not self.release.wait(timeout=3.0):
+            raise OSError("blocking materializer fixture timed out")
+        return super().put(path)
+
+
+class _FailOnceMarketPathArtifactStore(InMemoryMarketPathArtifactStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self._failures_remaining = 1
+
+    def put(self, path):
+        if self._failures_remaining:
+            self._failures_remaining -= 1
+            raise OSError("retryable file-backed materializer fixture")
+        return super().put(path)
+
+
+class _ManualMaterializationScheduler:
+    def __init__(self) -> None:
+        self._callbacks: list[Callable[[], None]] = []
+
+    def __call__(self, callback: Callable[[], None]) -> None:
+        self._callbacks.append(callback)
+
+    def run_all(self) -> None:
+        while self._callbacks:
+            self._callbacks.pop(0)()
+
+
 def _metadata(
     *,
     command_id: str,
@@ -127,6 +199,72 @@ def _canonicalize(command):
             ),
         ),
     )
+
+
+def _approve_exact_recipe(
+    adapter: LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    segment_id: object,
+    *,
+    suffix: str,
+) -> ApprovedScenarioRecipeVersionProjection:
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    created = adapter.create_recipe_draft(
+        _canonicalize(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_metadata(
+                    command_id=f"scenario-command-{suffix}-create",
+                    idempotency=f"scenario-idempotency-{suffix}-create",
+                    content=f"pending-{suffix}-create",
+                    source_revision=source_revision,
+                ),
+                payload=_payload(segment_id, name=f"{suffix} Recipe"),
+                author_id=ScenarioLabActorId(f"scenario-author-{suffix}"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert created.draft is not None
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    validated = adapter.validate_recipe_draft(
+        _canonicalize(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_metadata(
+                    command_id=f"scenario-command-{suffix}-validate",
+                    idempotency=f"scenario-idempotency-{suffix}-validate",
+                    content=f"pending-{suffix}-validate",
+                    source_revision=source_revision,
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+            )
+        )
+    )
+    assert validated.validation is not None
+    assert validated.validation.is_valid
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    approved = adapter.approve_recipe(
+        _canonicalize(
+            ApproveScenarioRecipeCommand(
+                metadata=_metadata(
+                    command_id=f"scenario-command-{suffix}-approve",
+                    idempotency=f"scenario-idempotency-{suffix}-approve",
+                    content=f"pending-{suffix}-approve",
+                    source_revision=source_revision,
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+                validation_id=validated.validation.validation_id,
+                actor_id=ScenarioLabActorId(f"scenario-approver-{suffix}"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    return approved.approved_version
 
 
 def _live_file_backed_adapter(tmp_path):
@@ -1337,4 +1475,534 @@ def test_pending_durable_command_recovers_the_immutable_result_after_reopen(
         "accepted",
         "recipe_draft",
         accepted.draft.draft_id.value,
+    )
+
+
+def test_materialization_is_claimed_atomically_and_replays_after_reopen(
+    tmp_path,
+) -> None:
+    source = _RecipeFixtureSource()
+    engine = create_engine(f"sqlite:///{tmp_path / 'materialization-82.sqlite'}")
+    materialize_command_id = "scenario-command-materialize-82"
+    scheduler = _ManualMaterializationScheduler()
+    store = _ClaimObservingMarketPathArtifactStore(
+        engine,
+        materialize_command_id,
+    )
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=lambda: datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc),
+        materialization_scheduler=scheduler,
+    )
+    application.start()
+    application.initialize_persistence(engine)
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    adapter = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application)
+
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    created = adapter.create_recipe_draft(
+        _canonicalize(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_metadata(
+                    command_id="scenario-command-materialize-create-82",
+                    idempotency="scenario-idempotency-materialize-create-82",
+                    content="pending-materialize-create-content-82",
+                    source_revision=source_revision,
+                ),
+                payload=_payload(admission.segment.segment_id),
+                author_id=ScenarioLabActorId("scenario-author-82"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert created.draft is not None
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    validated = adapter.validate_recipe_draft(
+        _canonicalize(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_metadata(
+                    command_id="scenario-command-materialize-validate-82",
+                    idempotency="scenario-idempotency-materialize-validate-82",
+                    content="pending-materialize-validate-content-82",
+                    source_revision=source_revision,
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+            )
+        )
+    )
+    assert validated.validation is not None
+    assert validated.validation.is_valid
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    approved = adapter.approve_recipe(
+        _canonicalize(
+            ApproveScenarioRecipeCommand(
+                metadata=_metadata(
+                    command_id="scenario-command-materialize-approve-82",
+                    idempotency="scenario-idempotency-materialize-approve-82",
+                    content="pending-materialize-approve-content-82",
+                    source_revision=source_revision,
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+                validation_id=validated.validation.validation_id,
+                actor_id=ScenarioLabActorId("scenario-approver-82"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    command = _canonicalize(
+        MaterializeApprovedScenarioRecipeCommand(
+            metadata=_metadata(
+                command_id=materialize_command_id,
+                idempotency="scenario-idempotency-materialize-82",
+                content="pending-materialize-content-82",
+                source_revision=source_revision,
+            ),
+            recipe_version_id=approved.approved_version.recipe_version_id,
+            expected_recipe_content_hash=approved.approved_version.content_hash,
+        )
+    )
+
+    accepted = adapter.materialize_reference_path(command)
+
+    assert accepted.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert accepted.receipt.task_handle is not None
+    assert accepted.path_id is None
+    assert accepted.attempt_id is not None
+    with engine.connect() as connection:
+        queued_claim = connection.execute(
+            text(
+                "SELECT command.disposition, task.phase, attempt.status "
+                "FROM diagnostic_scenario_lab_commands AS command "
+                "JOIN diagnostic_scenario_lab_task_handles AS task "
+                "ON task.command_id = command.command_id "
+                "JOIN diagnostic_scenario_materialization_attempts AS attempt "
+                "ON attempt.task_handle_id = task.task_handle_id "
+                "WHERE command.command_id = :command_id"
+            ),
+            {"command_id": materialize_command_id},
+        ).one()
+    assert tuple(queued_claim) == ("accepted", "queued", "queued")
+    assert store.observed_claim is None
+    scheduler.run_all()
+    assert store.observed_claim == ("accepted", "running", "running")
+    completed = adapter.materialize_reference_path(command)
+    assert completed.path_id is not None
+    assert completed.receipt.task_handle is not None
+    with engine.connect() as connection:
+        command_row = connection.execute(
+            text(
+                "SELECT disposition, result_kind, result_identity, result_json "
+                "FROM diagnostic_scenario_lab_commands "
+                "WHERE command_id = :command_id"
+            ),
+            {"command_id": materialize_command_id},
+        ).one()
+        task_row = connection.execute(
+            text(
+                "SELECT phase, progress_value, result_kind, result_identity "
+                "FROM diagnostic_scenario_lab_task_handles "
+                "WHERE command_id = :command_id"
+            ),
+            {"command_id": materialize_command_id},
+        ).one()
+        attempt_row = connection.execute(
+            text(
+                "SELECT status, reference_path_identity, attempt_number "
+                "FROM diagnostic_scenario_materialization_attempts "
+                "WHERE attempt_id = :attempt_id"
+            ),
+            {"attempt_id": accepted.attempt_id.value},
+        ).one()
+    assert tuple(command_row[:3]) == (
+        "accepted",
+        "materialization_attempt",
+        accepted.attempt_id.value,
+    )
+    approval = approved.approved_version.approval
+    dependencies = approval.dependencies
+    assert approval.validation_id is not None
+    assert dependencies is not None
+    binding = json.loads(str(command_row[3]))
+    assert binding == {
+        "approved_recipe_version_id": (
+            approved.approved_version.recipe_version_id.value
+        ),
+        "approval_id": approval.approval_id.value,
+        "attempt_id": accepted.attempt_id.value,
+        "recipe_content_hash": approved.approved_version.content_hash,
+        "task_handle_id": accepted.receipt.task_handle.identity.value,
+        "validation_dependencies": {
+            "causality_rule_identities": list(
+                dependencies.causality_rule_identities
+            ),
+            "compatibility_observations": [
+                [
+                    observation.subject,
+                    observation.state.value,
+                    observation.explanation,
+                ]
+                for observation in dependencies.compatibility_observations
+            ],
+            "data_policy": dependencies.data_policy.value.replace("_", "-"),
+            "historical_segment_content_hash": (
+                dependencies.historical_segment_content_hash
+            ),
+            "historical_segment_id": dependencies.historical_segment_id.value,
+            "market_rule_profile_hash": dependencies.market_rule_profile_hash,
+            "market_rule_profile_version": (
+                dependencies.market_rule_profile_version
+            ),
+            "recipe_schema_hash": dependencies.recipe_schema_hash,
+            "recipe_schema_identity": dependencies.recipe_schema_identity,
+            "source_snapshot_content_hash": (
+                dependencies.source_snapshot_content_hash
+            ),
+            "source_snapshot_id": dependencies.source_snapshot_id.value,
+            "transformation_catalog_hash": (
+                dependencies.transformation_catalog_hash
+            ),
+            "transformation_catalog_version": (
+                dependencies.transformation_catalog_version
+            ),
+            "transformation_implementation_identities": list(
+                dependencies.transformation_implementation_identities
+            ),
+        },
+        "validation_id": approval.validation_id.value,
+    }
+    assert tuple(task_row) == (
+        "completed",
+        1.0,
+        "reference_market_path",
+        completed.path_id.value,
+    )
+    assert tuple(attempt_row) == ("completed", completed.path_id.value, 1)
+
+    reopened_scheduler = _ManualMaterializationScheduler()
+    reopened = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=lambda: datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc),
+        materialization_scheduler=reopened_scheduler,
+    )
+    reopened.start()
+    reopened.initialize_persistence(engine)
+    reopened_adapter = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+        reopened
+    )
+    reopened_inventory = reopened_adapter.read_inventory().inventory
+    assert reopened_inventory is not None
+    assert reopened_inventory.task_handles == (completed.receipt.task_handle,)
+    assert completed.path_id in tuple(
+        item.path_id for item in reopened_inventory.reference_paths
+    )
+    replayed = reopened_adapter.materialize_reference_path(
+        _canonicalize(
+            replace(
+                command,
+                metadata=replace(
+                    command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "scenario-command-materialize-replay-after-reopen-82"
+                    ),
+                ),
+            )
+        )
+    )
+    assert replayed == completed
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) FROM diagnostic_scenario_lab_task_handles"
+            )
+        ).scalar_one() == 1
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) FROM "
+                "diagnostic_scenario_materialization_attempts"
+            )
+        ).scalar_one() == 1
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE diagnostic_scenario_lab_task_handles SET "
+                "phase = 'running', progress_value = 0.25, "
+                "result_kind = NULL, result_identity = NULL, "
+                "updated_at_utc = created_at_utc "
+                "WHERE command_id = :command_id"
+            ),
+            {"command_id": materialize_command_id},
+        )
+        connection.execute(
+            text(
+                "UPDATE diagnostic_scenario_materialization_attempts SET "
+                "status = 'running', reference_path_identity = NULL, "
+                "completed_at_utc = NULL WHERE attempt_id = :attempt_id"
+            ),
+            {"attempt_id": accepted.attempt_id.value},
+        )
+    recovered_scheduler = _ManualMaterializationScheduler()
+    recovered_application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=lambda: datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc),
+        materialization_scheduler=recovered_scheduler,
+    )
+    recovered_application.start()
+    recovered_application.initialize_persistence(engine)
+    recovered_adapter = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+        recovered_application
+    )
+    recovered_scheduler.run_all()
+    recovered = recovered_adapter.materialize_reference_path(command)
+    assert recovered == completed
+    with engine.connect() as connection:
+        recovered_task = connection.execute(
+            text(
+                "SELECT phase, result_identity FROM "
+                "diagnostic_scenario_lab_task_handles "
+                "WHERE command_id = :command_id"
+            ),
+            {"command_id": materialize_command_id},
+        ).one()
+    assert tuple(recovered_task) == ("completed", completed.path_id.value)
+
+
+def test_backend_materialization_continues_after_feature_disconnect_and_close(
+    tmp_path,
+) -> None:
+    source = _RecipeFixtureSource()
+    engine = create_engine(f"sqlite:///{tmp_path / 'materialization-live-82.sqlite'}")
+    store = _BlockingMarketPathArtifactStore()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=lambda: datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc),
+    )
+    application.start()
+    application.initialize_persistence(engine)
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    application_adapter = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+        application
+    )
+    version = _approve_exact_recipe(
+        application_adapter,
+        admission.segment.segment_id,
+        suffix="background-82",
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveScenarioLabAdapter(
+        application=application_adapter,
+        event_bridge=bridge,
+    )
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    assert ready.source_revision is not None
+    command = _canonicalize(
+        MaterializeApprovedScenarioRecipeCommand(
+            metadata=_metadata(
+                command_id="scenario-command-background-materialize-82",
+                idempotency="scenario-idempotency-background-materialize-82",
+                content="pending-background-materialize-82",
+                source_revision=ready.source_revision,
+            ),
+            recipe_version_id=version.recipe_version_id,
+            expected_recipe_content_hash=version.content_hash,
+        )
+    )
+
+    try:
+        accepted = feature.materialize_reference_path(command)
+        handle = accepted.receipt.task_handle
+        assert accepted.path_id is None
+        assert handle is not None
+        assert not handle.terminal
+        assert store.started.wait(timeout=1.0)
+        with engine.connect() as connection:
+            assert tuple(
+                connection.execute(
+                    text(
+                        "SELECT phase, progress_value FROM "
+                        "diagnostic_scenario_lab_task_handles "
+                        "WHERE task_handle_id = :task_handle_id"
+                    ),
+                    {"task_handle_id": handle.identity.value},
+                ).one()
+            ) == ("running", 0.25)
+        bridge.mark_disconnected()
+        feature.close()
+        store.release.set()
+        deadline = monotonic() + 3.0
+        terminal_row = None
+        while monotonic() < deadline:
+            with engine.connect() as connection:
+                terminal_row = connection.execute(
+                    text(
+                        "SELECT phase, result_identity FROM "
+                        "diagnostic_scenario_lab_task_handles "
+                        "WHERE task_handle_id = :task_handle_id"
+                    ),
+                    {"task_handle_id": handle.identity.value},
+                ).one()
+            if terminal_row[0] == "completed":
+                break
+            sleep(0.01)
+        assert terminal_row is not None
+        assert terminal_row[0] == "completed"
+
+        reopened = create_diagnostics_application(
+            historical_source=source,
+            market_data_source=source,
+            artifact_store=store,
+            recipe_clock=lambda: datetime(
+                2026, 8, 4, 9, 0, tzinfo=timezone.utc
+            ),
+        )
+        reopened.start()
+        reopened.initialize_persistence(engine)
+        inventory = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            reopened
+        ).read_inventory().inventory
+        assert inventory is not None
+        reopened_handle = next(
+            item
+            for item in inventory.task_handles
+            if item.identity == handle.identity
+        )
+        assert reopened_handle.terminal
+        assert reopened_handle.result_identity is not None
+        assert reopened_handle.result_identity.value == terminal_row[1]
+    finally:
+        store.release.set()
+        feature.close()
+        bridge.stop()
+
+
+def test_file_backed_retry_lineage_survives_reopen(tmp_path) -> None:
+    source = _RecipeFixtureSource()
+    engine = create_engine(f"sqlite:///{tmp_path / 'materialization-retry-82.sqlite'}")
+    store = _FailOnceMarketPathArtifactStore()
+    scheduler = _ManualMaterializationScheduler()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=lambda: datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc),
+        materialization_scheduler=scheduler,
+    )
+    application.start()
+    application.initialize_persistence(engine)
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    adapter = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application)
+    version = _approve_exact_recipe(
+        adapter,
+        admission.segment.segment_id,
+        suffix="retry-reopen-82",
+    )
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    materialize = _canonicalize(
+        MaterializeApprovedScenarioRecipeCommand(
+            metadata=_metadata(
+                command_id="scenario-command-retry-reopen-materialize-82",
+                idempotency="scenario-idempotency-retry-reopen-materialize-82",
+                content="pending-retry-reopen-materialize-82",
+                source_revision=source_revision,
+            ),
+            recipe_version_id=version.recipe_version_id,
+            expected_recipe_content_hash=version.content_hash,
+        )
+    )
+    queued_failure = adapter.materialize_reference_path(materialize)
+    assert queued_failure.receipt.task_handle is not None
+    scheduler.run_all()
+    failed = adapter.materialize_reference_path(materialize)
+    assert failed.receipt.task_handle is not None
+    assert failed.receipt.task_handle.terminal
+    assert failed.receipt.task_handle.retryable
+    assert failed.attempt_id is not None
+    source_revision = adapter.read_inventory().source_token
+    assert source_revision is not None
+    retry = _canonicalize(
+        RetryScenarioMaterializationCommand(
+            metadata=_metadata(
+                command_id="scenario-command-retry-reopen-retry-82",
+                idempotency="scenario-idempotency-retry-reopen-retry-82",
+                content="pending-retry-reopen-retry-82",
+                source_revision=source_revision,
+            ),
+            predecessor_attempt_id=failed.attempt_id,
+            predecessor_task_handle_id=failed.receipt.task_handle.identity,
+        )
+    )
+    queued_retry = adapter.retry_materialization(retry)
+    assert queued_retry.receipt.task_handle is not None
+    scheduler.run_all()
+    completed_retry = adapter.retry_materialization(retry)
+    assert completed_retry.path_id is not None
+    assert completed_retry.receipt.task_handle is not None
+    assert completed_retry.receipt.task_handle.terminal
+    assert (
+        completed_retry.receipt.task_handle.predecessor_task_handle_id
+        == failed.receipt.task_handle.identity
+    )
+
+    reopened = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=lambda: datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc),
+        materialization_scheduler=_ManualMaterializationScheduler(),
+    )
+    reopened.start()
+    reopened.initialize_persistence(engine)
+    inventory = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+        reopened
+    ).read_inventory().inventory
+    assert inventory is not None
+    assert inventory.task_handles == (
+        failed.receipt.task_handle,
+        completed_retry.receipt.task_handle,
+    )
+    assert completed_retry.path_id in tuple(
+        item.path_id for item in inventory.reference_paths
+    )
+    with engine.connect() as connection:
+        lineage = tuple(
+            tuple(row)
+            for row in connection.execute(
+                text(
+                    "SELECT attempt_id, predecessor_attempt_id, attempt_number, "
+                    "status FROM diagnostic_scenario_materialization_attempts "
+                    "ORDER BY attempt_number"
+                )
+            )
+        )
+    assert lineage == (
+        (failed.attempt_id.value, None, 1, "failed"),
+        (
+            completed_retry.attempt_id.value,
+            failed.attempt_id.value,
+            2,
+            "completed",
+        ),
     )
