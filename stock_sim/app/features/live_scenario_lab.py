@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from threading import RLock
+from time import sleep
 
 from app.event_bridge import (
     EventBridge,
@@ -29,6 +31,8 @@ from .run_monitoring import (
     SourceKind,
     StructuredFeatureError,
     Subscription,
+    TaskHandleId,
+    TaskPhase,
     ViewPhase,
 )
 from .scenario_lab import (
@@ -59,6 +63,7 @@ from .scenario_lab_application import (
     MarketScenarioComparisonRole,
     MarketScenarioEntry,
     MarketScenarioLayer,
+    MarketScenarioTransformationProjection,
     ReferenceMarketPathEntry,
     ReferenceMarketPathId,
     ReferencePathPreview,
@@ -67,6 +72,8 @@ from .scenario_lab_application import (
     ScenarioCompatibilityState,
     ScenarioExecutionResolutionState,
     ScenarioLabApplicationAvailability,
+    ScenarioLabApplicationError,
+    ScenarioLabApplicationErrorCode,
     ScenarioLabApplicationInventoryResult,
     ScenarioLabApplicationVersion,
     ScenarioLabAdmissionState,
@@ -79,10 +86,13 @@ from .scenario_lab_application import (
     ScenarioLabInventory,
     ScenarioLabQualityState,
     ScenarioLabTaskHandle,
+    ScenarioLabTaskIdentity,
+    ScenarioLabTaskIdentityKind,
     ScenarioLabTaskOperation,
     ScenarioLabUnavailabilityCode,
     ScenarioLabUnavailabilityReason,
     ScenarioReproducibilityState,
+    ScenarioMaterializationAttemptId,
     ScenarioRecipeAuthoringMode,
     ScenarioRecipeApprovalAuthorityState,
     ScenarioRecipeApprovalId,
@@ -116,6 +126,16 @@ from .scenario_lab_application import (
     canonical_scenario_lab_command_content_identity,
 )
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
+
+
+_FAKE_MATERIALIZATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="fake-scenario-materialization",
+)
+
+
+def _schedule_fake_materialization(callback: Callable[[], None]) -> None:
+    _FAKE_MATERIALIZATION_EXECUTOR.submit(callback)
 from .versioning import SCENARIO_LAB_INTERFACE_VERSION, FeatureInterfaceVersion
 
 
@@ -167,12 +187,24 @@ class _ScenarioLabAdapter:
         event_bridge: EventBridge | None = None,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
+        executor: Executor | None = None,
     ) -> None:
         self._application = application
         self._source_kind = source_kind
         self._source_identity = source_identity
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._freshness_threshold = freshness_threshold
+        self._owns_executor = executor is None
+        self._executor_thread_prefix = (
+            f"scenario-lab-{id(self):x}" if self._owns_executor else None
+        )
+        self._executor = executor or ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=(
+                self._executor_thread_prefix or "scenario-lab-external"
+            ),
+        )
+        self._materialization_refresh_scheduled = False
         self._states: dict[ScenarioLabContext, ScenarioLabViewState] = {}
         self._current_context: ScenarioLabContext | None = None
         self._last_reliable_inventory: ScenarioLabInventory | None = None
@@ -388,6 +420,46 @@ class _ScenarioLabAdapter:
             contexts = self._contexts_to_refresh()
         for context in contexts:
             self.snapshot(context, _track_current=False)
+        handle = receipt.task_handle
+        if handle is not None and not handle.terminal:
+            self._schedule_materialization_refresh()
+
+    def _schedule_materialization_refresh(self) -> None:
+        with self._lock:
+            if self._closed or self._materialization_refresh_scheduled:
+                return
+            self._materialization_refresh_scheduled = True
+        try:
+            self._executor.submit(self._drain_materialization_refreshes)
+        except RuntimeError:
+            with self._lock:
+                self._materialization_refresh_scheduled = False
+
+    def _drain_materialization_refreshes(self) -> None:
+        while True:
+            with self._lock:
+                if self._closed:
+                    self._materialization_refresh_scheduled = False
+                    return
+                if (
+                    self._connection_phase
+                    is not EventBridgeConnectionPhase.CONNECTED
+                ):
+                    self._materialization_refresh_scheduled = False
+                    return
+                contexts = self._contexts_to_refresh()
+            for context in contexts:
+                self.snapshot(context, _track_current=False)
+            with self._lock:
+                active = any(
+                    not handle.terminal
+                    for state in self._states.values()
+                    for handle in state.task_handles
+                )
+                if not active:
+                    self._materialization_refresh_scheduled = False
+                    return
+            sleep(0.02)
 
     def approve_recipe(
         self, command: ApproveScenarioRecipeCommand
@@ -406,26 +478,42 @@ class _ScenarioLabAdapter:
     def materialize_reference_path(
         self, command: MaterializeApprovedScenarioRecipeCommand
     ) -> MaterializeApprovedScenarioRecipeResult:
+        with self._lock:
+            return self._materialize_reference_path(command)
+
+    def _materialize_reference_path(
+        self, command: MaterializeApprovedScenarioRecipeCommand
+    ) -> MaterializeApprovedScenarioRecipeResult:
         blocked = self._disconnected_receipt(
             command.metadata, ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
         )
-        return (
+        result = (
             MaterializeApprovedScenarioRecipeResult(receipt=blocked)
             if blocked is not None
             else self._application.materialize_reference_path(command)
         )
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def retry_materialization(
+        self, command: RetryScenarioMaterializationCommand
+    ) -> RetryScenarioMaterializationResult:
+        with self._lock:
+            return self._retry_materialization(command)
+
+    def _retry_materialization(
         self, command: RetryScenarioMaterializationCommand
     ) -> RetryScenarioMaterializationResult:
         blocked = self._disconnected_receipt(
             command.metadata, ScenarioLabTaskOperation.RETRY_MATERIALIZATION
         )
-        return (
+        result = (
             RetryScenarioMaterializationResult(receipt=blocked)
             if blocked is not None
             else self._application.retry_materialization(command)
         )
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def compose_scenario_set(
         self, command: ComposeFormalScenarioSetCommand
@@ -506,10 +594,16 @@ class _ScenarioLabAdapter:
             dispose_batch = self._dispose_batch_subscription
             self._dispose_connection_subscription = lambda: None
             self._dispose_batch_subscription = lambda: None
+            self._materialization_refresh_scheduled = False
         dispose_connection()
         dispose_batch()
         for subscription in subscriptions:
             subscription.mark_disposed()
+        if self._owns_executor:
+            self._executor.shutdown(
+                wait=False,
+                cancel_futures=True,
+            )
 
     def _loading_state(self, context: ScenarioLabContext) -> ScenarioLabViewState:
         now = _aware(self._clock())
@@ -774,6 +868,14 @@ class _ScenarioLabAdapter:
         if connection.phase is EventBridgeConnectionPhase.CONNECTED:
             for context in contexts:
                 self.snapshot(context, _track_current=False)
+            with self._lock:
+                has_active_materialization = any(
+                    not handle.terminal
+                    for state in self._states.values()
+                    for handle in state.task_handles
+                )
+            if has_active_materialization:
+                self._schedule_materialization_refresh()
 
     def _publish_connection_state(
         self,
@@ -871,6 +973,7 @@ class LiveScenarioLabAdapter(_ScenarioLabAdapter):
         event_bridge: EventBridge | None = None,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
+        executor: Executor | None = None,
     ) -> None:
         super().__init__(
             application=application,
@@ -879,6 +982,7 @@ class LiveScenarioLabAdapter(_ScenarioLabAdapter):
             event_bridge=event_bridge,
             clock=clock,
             freshness_threshold=freshness_threshold,
+            executor=executor,
         )
 
 
@@ -889,8 +993,11 @@ class _DeterministicFakeScenarioLabApplication:
         *,
         clock: Callable[[], datetime],
         scripted_results: tuple[ScenarioLabApplicationInventoryResult, ...],
+        materialization_scheduler: Callable[[Callable[[], None]], None],
     ) -> None:
         self._clock = clock
+        self._materialization_scheduler = materialization_scheduler
+        self._lock = RLock()
         self._scripted_results = list(scripted_results)
         self._result = ScenarioLabApplicationInventoryResult(
             availability=_availability(inventory),
@@ -914,6 +1021,20 @@ class _DeterministicFakeScenarioLabApplication:
             str,
             tuple[ScenarioRecipeDraftPayload, ScenarioLabActorId],
         ] = {}
+        self._materialization_failures_remaining = 0
+        self._materialization_integrity_failures_remaining = 0
+
+    def fail_next_materialization(self) -> None:
+        """Inject one deterministic retryable materialization failure."""
+
+        with self._lock:
+            self._materialization_failures_remaining += 1
+
+    def fail_next_materialization_integrity(self) -> None:
+        """Inject one deterministic terminal artifact integrity failure."""
+
+        with self._lock:
+            self._materialization_integrity_failures_remaining += 1
 
     @property
     def interface_version(self) -> ScenarioLabApplicationVersion:
@@ -922,9 +1043,10 @@ class _DeterministicFakeScenarioLabApplication:
         return SCENARIO_LAB_APPLICATION_INTERFACE_VERSION
 
     def read_inventory(self) -> ScenarioLabApplicationInventoryResult:
-        if self._scripted_results:
-            self._result = self._scripted_results.pop(0)
-        return replace(self._result, observed_at=_aware(self._clock()))
+        with self._lock:
+            if self._scripted_results:
+                self._result = self._scripted_results.pop(0)
+            return replace(self._result, observed_at=_aware(self._clock()))
 
     @staticmethod
     def _receipt(
@@ -1339,6 +1461,8 @@ class _DeterministicFakeScenarioLabApplication:
             | ReviseScenarioRecipeDraftCommand
             | ValidateScenarioRecipeDraftCommand
             | ApproveScenarioRecipeCommand
+            | MaterializeApprovedScenarioRecipeCommand
+            | RetryScenarioMaterializationCommand
         ),
         operation: ScenarioLabTaskOperation,
     ) -> ScenarioLabCommandReceipt | None:
@@ -1669,18 +1793,578 @@ class _DeterministicFakeScenarioLabApplication:
     def materialize_reference_path(
         self, command: MaterializeApprovedScenarioRecipeCommand
     ) -> MaterializeApprovedScenarioRecipeResult:
-        return MaterializeApprovedScenarioRecipeResult(
-            self._receipt(
-                command.metadata, ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
+        with self._lock:
+            return self._materialize_reference_path_locked(command)
+
+    def _materialize_reference_path_locked(
+        self, command: MaterializeApprovedScenarioRecipeCommand
+    ) -> MaterializeApprovedScenarioRecipeResult:
+        operation = ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return MaterializeApprovedScenarioRecipeResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return MaterializeApprovedScenarioRecipeResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, MaterializeApprovedScenarioRecipeResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return MaterializeApprovedScenarioRecipeResult(
+                receipt=source_conflict
+            )
+        inventory = self._inventory()
+        version = next(
+            (
+                item
+                for item in inventory.approved_recipe_versions
+                if item.recipe_version_id == command.recipe_version_id
+            ),
+            None,
+        )
+        if version is None or not version.can_materialize:
+            return MaterializeApprovedScenarioRecipeResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    (
+                        "Materialization requires an exact current compatible "
+                        "Approved Scenario Recipe dependency binding."
+                    ),
+                )
+            )
+        if version.content_hash != command.expected_recipe_content_hash:
+            return MaterializeApprovedScenarioRecipeResult(
+                receipt=self._conflict_receipt(
+                    command.metadata,
+                    operation,
+                    "The expected Approved Scenario Recipe content hash is stale.",
+                )
+            )
+        dependencies = version.approval.dependencies
+        if dependencies is None:
+            return MaterializeApprovedScenarioRecipeResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "The exact approval dependency binding is unavailable.",
+                )
+            )
+        command_digest = hashlib.sha256(
+            command.metadata.command_id.value.encode("utf-8")
+        ).hexdigest()
+        attempt_id = ScenarioMaterializationAttemptId(
+            "scenario_materialization_attempt_" + command_digest
+        )
+        task_handle_id = TaskHandleId("scenario_task_handle_" + command_digest)
+        outcome = self._claim_fake_materialization_outcome()
+        handle = self._queued_materialization_handle(
+            version=version,
+            operation=operation,
+            attempt_id=attempt_id,
+            task_handle_id=task_handle_id,
+            predecessor_task_handle_id=None,
+        )
+        result = MaterializeApprovedScenarioRecipeResult(
+            receipt=replace(
+                self._accepted_receipt(command.metadata, operation),
+                message="Scenario materialization was durably accepted and queued.",
+                task_handle=handle,
+            ),
+            attempt_id=attempt_id,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(
+                inventory,
+                task_handles=(*inventory.task_handles, handle),
             )
         )
+        self._schedule_fake_materialization(
+            metadata=command.metadata,
+            operation=operation,
+            version_id=version.recipe_version_id,
+            attempt_id=attempt_id,
+            task_handle_id=task_handle_id,
+            predecessor_task_handle_id=None,
+            outcome=outcome,
+        )
+        return result
+
+    def _claim_fake_materialization_outcome(self) -> str:
+        if self._materialization_integrity_failures_remaining:
+            self._materialization_integrity_failures_remaining -= 1
+            return "integrity_failure"
+        if self._materialization_failures_remaining:
+            self._materialization_failures_remaining -= 1
+            return "retryable_failure"
+        return "completed"
+
+    def _queued_materialization_handle(
+        self,
+        *,
+        version: ApprovedScenarioRecipeVersionProjection,
+        operation: ScenarioLabTaskOperation,
+        attempt_id: ScenarioMaterializationAttemptId,
+        task_handle_id: TaskHandleId,
+        predecessor_task_handle_id: TaskHandleId | None,
+    ) -> ScenarioLabTaskHandle:
+        return ScenarioLabTaskHandle(
+            identity=task_handle_id,
+            attempt_identity=attempt_id,
+            operation=operation,
+            target_identity=ScenarioLabTaskIdentity(
+                kind=ScenarioLabTaskIdentityKind.APPROVED_RECIPE_VERSION,
+                value=version.recipe_version_id.value,
+            ),
+            phase=TaskPhase.QUEUED,
+            progress=0.0,
+            result_identity=None,
+            error=None,
+            cancelable=False,
+            retryable=False,
+            terminal=False,
+            predecessor_task_handle_id=predecessor_task_handle_id,
+        )
+
+    def _schedule_fake_materialization(
+        self,
+        *,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+        version_id: ApprovedScenarioRecipeVersionId,
+        attempt_id: ScenarioMaterializationAttemptId,
+        task_handle_id: TaskHandleId,
+        predecessor_task_handle_id: TaskHandleId | None,
+        outcome: str,
+    ) -> None:
+        self._materialization_scheduler(
+            lambda: self._complete_fake_materialization(
+                metadata=metadata,
+                operation=operation,
+                version_id=version_id,
+                attempt_id=attempt_id,
+                task_handle_id=task_handle_id,
+                predecessor_task_handle_id=predecessor_task_handle_id,
+                outcome=outcome,
+            )
+        )
+
+    def _complete_fake_materialization(
+        self,
+        *,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+        version_id: ApprovedScenarioRecipeVersionId,
+        attempt_id: ScenarioMaterializationAttemptId,
+        task_handle_id: TaskHandleId,
+        predecessor_task_handle_id: TaskHandleId | None,
+        outcome: str,
+    ) -> None:
+        with self._lock:
+            inventory = self._inventory()
+            version = next(
+                item
+                for item in inventory.approved_recipe_versions
+                if item.recipe_version_id == version_id
+            )
+            current = next(
+                item
+                for item in inventory.task_handles
+                if item.identity == task_handle_id
+            )
+            running = replace(
+                current,
+                phase=TaskPhase.RUNNING,
+                progress=0.25,
+            )
+            self._set_inventory(
+                replace(
+                    inventory,
+                    task_handles=tuple(
+                        running if item.identity == task_handle_id else item
+                        for item in inventory.task_handles
+                    ),
+                )
+            )
+            if outcome != "completed":
+                integrity_failure = outcome == "integrity_failure"
+                terminal = self._failed_materialization_handle(
+                    version=version,
+                    operation=operation,
+                    attempt_id=attempt_id,
+                    task_handle_id=task_handle_id,
+                    predecessor_task_handle_id=predecessor_task_handle_id,
+                    error_code=(
+                        ScenarioLabApplicationErrorCode.PATH_INTEGRITY_FAILED
+                        if integrity_failure
+                        else ScenarioLabApplicationErrorCode.MATERIALIZATION_FAILED
+                    ),
+                    error_message=(
+                        "Deterministic artifact identity collision fixture."
+                        if integrity_failure
+                        else "Deterministic materializer failure fixture."
+                    ),
+                    retryable=not integrity_failure,
+                )
+                terminal_result: ScenarioLabCommandResult = (
+                    MaterializeApprovedScenarioRecipeResult(
+                        receipt=replace(
+                            self._accepted_receipt(metadata, operation),
+                            message="Reference Market Path materialization failed.",
+                            task_handle=terminal,
+                        ),
+                        attempt_id=attempt_id,
+                    )
+                    if operation
+                    is ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
+                    else RetryScenarioMaterializationResult(
+                        receipt=replace(
+                            self._accepted_receipt(metadata, operation),
+                            message="Reference Market Path materialization failed.",
+                            task_handle=terminal,
+                        ),
+                        attempt_id=attempt_id,
+                    )
+                )
+                current_inventory = self._inventory()
+                self._set_inventory(
+                    replace(
+                        current_inventory,
+                        task_handles=tuple(
+                            terminal if item.identity == task_handle_id else item
+                            for item in current_inventory.task_handles
+                        ),
+                    )
+                )
+                self._remember(metadata, operation, terminal_result)
+                return
+            current_inventory = self._inventory()
+            path, scenario, terminal = self._completed_materialization(
+                inventory=current_inventory,
+                version=version,
+                operation=operation,
+                attempt_id=attempt_id,
+                task_handle_id=task_handle_id,
+                predecessor_task_handle_id=predecessor_task_handle_id,
+            )
+            terminal_result = (
+                MaterializeApprovedScenarioRecipeResult(
+                    receipt=replace(
+                        self._accepted_receipt(metadata, operation),
+                        message="Reference Market Path materialization completed.",
+                        task_handle=terminal,
+                    ),
+                    path_id=path.path_id,
+                    attempt_id=attempt_id,
+                )
+                if operation
+                is ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
+                else RetryScenarioMaterializationResult(
+                    receipt=replace(
+                        self._accepted_receipt(metadata, operation),
+                        message="Reference Market Path materialization completed.",
+                        task_handle=terminal,
+                    ),
+                    path_id=path.path_id,
+                    attempt_id=attempt_id,
+                )
+            )
+            self._set_inventory(
+                replace(
+                    current_inventory,
+                    reference_paths=(
+                        current_inventory.reference_paths
+                        if path.path_id
+                        in {item.path_id for item in current_inventory.reference_paths}
+                        else (*current_inventory.reference_paths, path)
+                    ),
+                    market_scenarios=(
+                        current_inventory.market_scenarios
+                        if path.path_id
+                        in {item.path_id for item in current_inventory.market_scenarios}
+                        else (*current_inventory.market_scenarios, scenario)
+                    ),
+                    task_handles=tuple(
+                        terminal if item.identity == task_handle_id else item
+                        for item in current_inventory.task_handles
+                    ),
+                )
+            )
+            self._remember(metadata, operation, terminal_result)
+
+    def _failed_materialization_handle(
+        self,
+        *,
+        version: ApprovedScenarioRecipeVersionProjection,
+        operation: ScenarioLabTaskOperation,
+        attempt_id: ScenarioMaterializationAttemptId,
+        task_handle_id: TaskHandleId,
+        predecessor_task_handle_id: TaskHandleId | None,
+        error_code: ScenarioLabApplicationErrorCode,
+        error_message: str,
+        retryable: bool,
+    ) -> ScenarioLabTaskHandle:
+        return ScenarioLabTaskHandle(
+            identity=task_handle_id,
+            attempt_identity=attempt_id,
+            operation=operation,
+            target_identity=ScenarioLabTaskIdentity(
+                kind=ScenarioLabTaskIdentityKind.APPROVED_RECIPE_VERSION,
+                value=version.recipe_version_id.value,
+            ),
+            phase=TaskPhase.FAILED,
+            progress=1.0,
+            result_identity=None,
+            error=ScenarioLabApplicationError(
+                code=error_code,
+                message=error_message,
+                retryable=retryable,
+            ),
+            cancelable=False,
+            retryable=retryable,
+            terminal=True,
+            predecessor_task_handle_id=predecessor_task_handle_id,
+        )
+
+    def _completed_materialization(
+        self,
+        *,
+        inventory: ScenarioLabInventory,
+        version: ApprovedScenarioRecipeVersionProjection,
+        operation: ScenarioLabTaskOperation,
+        attempt_id: ScenarioMaterializationAttemptId,
+        task_handle_id: TaskHandleId,
+        predecessor_task_handle_id: TaskHandleId | None,
+    ) -> tuple[
+        ReferenceMarketPathEntry,
+        MarketScenarioEntry,
+        ScenarioLabTaskHandle,
+    ]:
+        dependencies = version.approval.dependencies
+        if dependencies is None:
+            raise RuntimeError("Exact approved Recipe dependency binding disappeared")
+        digest = hashlib.sha256(
+            ("reference-path|" + version.content_hash).encode("utf-8")
+        ).hexdigest()
+        path_id = ReferenceMarketPathId(digest)
+        handle = ScenarioLabTaskHandle(
+            identity=task_handle_id,
+            attempt_identity=attempt_id,
+            operation=operation,
+            target_identity=ScenarioLabTaskIdentity(
+                kind=ScenarioLabTaskIdentityKind.APPROVED_RECIPE_VERSION,
+                value=version.recipe_version_id.value,
+            ),
+            phase=TaskPhase.COMPLETED,
+            progress=1.0,
+            result_identity=ScenarioLabTaskIdentity(
+                kind=ScenarioLabTaskIdentityKind.REFERENCE_MARKET_PATH,
+                value=path_id.value,
+            ),
+            error=None,
+            cancelable=False,
+            retryable=False,
+            terminal=True,
+            predecessor_task_handle_id=predecessor_task_handle_id,
+        )
+        catalog = {
+            item.transformation_id: item
+            for item in inventory.transformation_catalog.entries
+        }
+        applied = tuple(
+            AppliedTransformationProjection(
+                transformation_id=item.transformation_id,
+                family=catalog[item.transformation_id].family,
+                catalog_version=inventory.transformation_catalog.catalog_version,
+                implementation_version=(
+                    catalog[item.transformation_id].implementation_version
+                ),
+                parameters=tuple(
+                    (parameter.name, str(parameter.value))
+                    for parameter in item.parameters
+                ),
+            )
+            for item in version.payload.transformations
+        )
+        path = replace(
+            inventory.reference_paths[0],
+            path_id=path_id,
+            segment_id=dependencies.historical_segment_id,
+            segment_content_hash=dependencies.historical_segment_content_hash,
+            source_snapshot_id=dependencies.source_snapshot_id,
+            seed=version.payload.materialization_seed,
+            market_rule_profile_version=(
+                dependencies.market_rule_profile_version
+            ),
+            transformation_catalog_version=(
+                dependencies.transformation_catalog_version
+            ),
+            transformations=applied,
+        )
+        scenario_transformations = tuple(
+            MarketScenarioTransformationProjection(
+                transformation_id=item.transformation_id,
+                family=item.family,
+                implementation_version=item.implementation_version,
+                parameters=item.parameters,
+            )
+            for item in applied
+        )
+        transformation_count = len(scenario_transformations)
+        scenario = replace(
+            inventory.market_scenarios[0],
+            scenario_id=CampaignCaseId("campaign-case-" + digest[:24]),
+            layer=(
+                MarketScenarioLayer.BASELINE
+                if transformation_count == 0
+                else MarketScenarioLayer.ISOLATED_SENSITIVITY
+                if transformation_count == 1
+                else MarketScenarioLayer.COMPOUND
+            ),
+            comparison_role=(
+                MarketScenarioComparisonRole.CONTROL
+                if transformation_count == 0
+                else MarketScenarioComparisonRole.COMPARE_TO_BASELINE
+            ),
+            baseline_scenario_id=(
+                None
+                if transformation_count == 0
+                else inventory.market_scenarios[0].scenario_id
+            ),
+            recipe_version_id=version.recipe_version_id,
+            recipe_content_hash=version.content_hash,
+            path_id=path_id,
+            segment_id=dependencies.historical_segment_id,
+            segment_content_hash=dependencies.historical_segment_content_hash,
+            source_snapshot_id=dependencies.source_snapshot_id,
+            seed=version.payload.materialization_seed,
+            transformation_catalog_version=(
+                dependencies.transformation_catalog_version
+            ),
+            transformations=scenario_transformations,
+            market_rule_profile_version=(
+                dependencies.market_rule_profile_version
+            ),
+            decision_cadence_minutes=version.payload.decision_cadence_minutes,
+            requested_execution_assumptions=(
+                version.payload.requested_execution_assumptions
+            ),
+        )
+        return path, scenario, handle
 
     def retry_materialization(
         self, command: RetryScenarioMaterializationCommand
     ) -> RetryScenarioMaterializationResult:
-        return RetryScenarioMaterializationResult(
-            self._receipt(command.metadata, ScenarioLabTaskOperation.RETRY_MATERIALIZATION)
+        with self._lock:
+            return self._retry_materialization_locked(command)
+
+    def _retry_materialization_locked(
+        self, command: RetryScenarioMaterializationCommand
+    ) -> RetryScenarioMaterializationResult:
+        operation = ScenarioLabTaskOperation.RETRY_MATERIALIZATION
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return RetryScenarioMaterializationResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return RetryScenarioMaterializationResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, RetryScenarioMaterializationResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return RetryScenarioMaterializationResult(receipt=source_conflict)
+        inventory = self._inventory()
+        predecessor = next(
+            (
+                item
+                for item in inventory.task_handles
+                if item.identity == command.predecessor_task_handle_id
+                and item.attempt_identity == command.predecessor_attempt_id
+            ),
+            None,
         )
+        if (
+            predecessor is None
+            or predecessor.phase is not TaskPhase.FAILED
+            or not predecessor.retryable
+            or predecessor.target_identity.kind
+            is not ScenarioLabTaskIdentityKind.APPROVED_RECIPE_VERSION
+        ):
+            return RetryScenarioMaterializationResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    (
+                        "Retry requires one exact retryable failed materialization "
+                        "attempt and TaskHandle."
+                    ),
+                )
+            )
+        version = next(
+            (
+                item
+                for item in inventory.approved_recipe_versions
+                if item.recipe_version_id.value
+                == predecessor.target_identity.value
+            ),
+            None,
+        )
+        if version is None or not version.can_materialize:
+            return RetryScenarioMaterializationResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    (
+                        "The Approved Scenario Recipe dependencies are no longer "
+                        "eligible for retry."
+                    ),
+                )
+            )
+        command_digest = hashlib.sha256(
+            command.metadata.command_id.value.encode("utf-8")
+        ).hexdigest()
+        attempt_id = ScenarioMaterializationAttemptId(
+            "scenario_materialization_attempt_" + command_digest
+        )
+        task_handle_id = TaskHandleId("scenario_task_handle_" + command_digest)
+        outcome = self._claim_fake_materialization_outcome()
+        handle = self._queued_materialization_handle(
+            version=version,
+            operation=operation,
+            attempt_id=attempt_id,
+            task_handle_id=task_handle_id,
+            predecessor_task_handle_id=predecessor.identity,
+        )
+        result = RetryScenarioMaterializationResult(
+            receipt=replace(
+                self._accepted_receipt(command.metadata, operation),
+                message="Scenario materialization retry was accepted and queued.",
+                task_handle=handle,
+            ),
+            attempt_id=attempt_id,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(
+                inventory,
+                task_handles=(*inventory.task_handles, handle),
+            )
+        )
+        self._schedule_fake_materialization(
+            metadata=command.metadata,
+            operation=operation,
+            version_id=version.recipe_version_id,
+            attempt_id=attempt_id,
+            task_handle_id=task_handle_id,
+            predecessor_task_handle_id=predecessor.identity,
+            outcome=outcome,
+        )
+        return result
 
     def compose_scenario_set(
         self, command: ComposeFormalScenarioSetCommand
@@ -1721,6 +2405,9 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
         ai_authoring_available: bool | None = None,
         ai_provider: str | None = None,
         ai_model: str | None = None,
+        materialization_scheduler: (
+            Callable[[Callable[[], None]], None] | None
+        ) = None,
     ) -> None:
         resolved_clock = clock or (lambda: datetime.now(timezone.utc))
         resolved_inventory = inventory or _default_inventory()
@@ -1740,6 +2427,9 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
             resolved_inventory,
             clock=resolved_clock,
             scripted_results=scripted_results,
+            materialization_scheduler=(
+                materialization_scheduler or _schedule_fake_materialization
+            ),
         )
         self._deterministic_application = application
         self._fake_bridge = EventBridge(subscribe_backend=False)
@@ -1757,6 +2447,16 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
 
     def advance_to_reconnected(self) -> None:
         self._fake_bridge.mark_reconnected()
+
+    def fail_next_materialization(self) -> None:
+        """Inject one retryable failure without changing the shared contract body."""
+
+        self._deterministic_application.fail_next_materialization()
+
+    def fail_next_materialization_integrity(self) -> None:
+        """Inject one terminal artifact integrity conflict for conformance."""
+
+        self._deterministic_application.fail_next_materialization_integrity()
 
     def advance_to_dependency_change(self) -> None:
         """Expose one deterministic authority-invalidation conformance step."""
@@ -1795,11 +2495,6 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
 
 def _future_blocking_reasons() -> tuple[ScenarioLabBlockingReason, ...]:
     return (
-        ScenarioLabBlockingReason(
-            ScenarioLabBlockingCode.MATERIALIZATION_NOT_YET_AVAILABLE,
-            "Reference Path materialization is owned by Issue #82.",
-            ("materialize_reference_path", "retry_materialization"),
-        ),
         ScenarioLabBlockingReason(
             ScenarioLabBlockingCode.SCENARIO_COMPOSITION_NOT_YET_AVAILABLE,
             "Formal Scenario composition is owned by Issue #83.",
@@ -2136,8 +2831,14 @@ def _authoring_capabilities(
         can_revise_recipe_draft=has_draft,
         can_validate_recipe_draft=has_draft,
         can_approve_recipe=can_approve,
-        can_materialize_reference_path=False,
-        can_retry_materialization=False,
+        can_materialize_reference_path=any(
+            item.can_materialize
+            for item in inventory.approved_recipe_versions
+        ),
+        can_retry_materialization=any(
+            item.phase is TaskPhase.FAILED and item.retryable
+            for item in inventory.task_handles
+        ),
         can_compose_scenario_set=False,
         can_resolve_execution_assumptions=False,
         can_select_formal_scenario_set=False,

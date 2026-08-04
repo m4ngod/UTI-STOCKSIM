@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import gc
 import os
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -63,7 +65,22 @@ def _quick_items(root: QQuickItem) -> tuple[QQuickItem, ...]:
     return tuple(found)
 
 
-def test_scenario_lab_qml_approval_controls_bind_only_typed_exact_identities() -> None:
+def _process_until(
+    app: QApplication,
+    predicate: Callable[[], bool],
+    *,
+    timeout_seconds: float = 3.0,
+) -> None:
+    deadline = monotonic() + timeout_seconds
+    while monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Qt event-loop condition did not become true")
+
+
+def test_scenario_lab_qml_authoring_controls_bind_only_typed_exact_identities() -> None:
     source = (
         Path(__file__).parents[3] / "app" / "ui" / "qml" / "ScenarioLabPage.qml"
     ).read_text(encoding="utf-8")
@@ -78,7 +95,11 @@ def test_scenario_lab_qml_approval_controls_bind_only_typed_exact_identities() -
     assert "Select for successor Draft" in source
     assert "adapter.selectApprovedRecipeVersion(" in source
     assert "Creates no mutation until the explicit successor Draft action" in source
-    assert "adapter.materialize" not in source
+    assert "adapter.materializeApprovedRecipeVersion(" in source
+    assert "modelData.recipeVersionId" in source
+    assert "adapter.retryMaterialization(" in source
+    assert "modelData.attemptId" in source
+    assert "modelData.taskHandleId" in source
 
 
 _REQUIRED_ADMISSION_CHECKS = (
@@ -374,7 +395,7 @@ def test_production_workspace_browses_scenario_lab_read_tracer() -> None:
     run_feature.close()
 
 
-def test_production_workspace_creates_validates_approves_and_versions_exact_recipes() -> None:
+def test_production_workspace_authors_materializes_and_remounts_exact_recipes() -> None:
     app = _app()
     run_feature = DeterministicFakeRunMonitoringAdapter()
     scenario_feature = DeterministicFakeScenarioLabAdapter()
@@ -541,6 +562,73 @@ def test_production_workspace_creates_validates_approves_and_versions_exact_reci
         assert observation["subject"] in approved_text
         assert observation["explanation"] in approved_text
 
+    path_count_before = host._scenario_lab.referencePathCount
+    host._scenario_lab.materializeApprovedRecipeVersion(
+        approved["recipeVersionId"]
+    )
+    _process_until(
+        app,
+        lambda: host._scenario_lab.taskHandleCount == 1
+        and host._scenario_lab.taskHandles[0]["terminal"],
+    )
+    assert host._scenario_lab.referencePathCount == path_count_before + 1
+    assert host._scenario_lab.taskHandleCount == 1
+    task_handle = host._scenario_lab.taskHandles[0]
+    assert task_handle["operation"] == "materialize_reference_path"
+    assert task_handle["targetIdentity"] == approved["recipeVersionId"]
+    assert task_handle["phase"] == "completed"
+    assert task_handle["progressPercent"] == 100
+    assert task_handle["terminal"] is True
+    assert task_handle["resultKind"] == "reference_market_path"
+    assert task_handle["resultIdentity"]
+    assert root.findChild(QObject, "scenarioLabTaskHandleRepeater") is not None
+    task_text = " ".join(
+        str(item.property("text"))
+        for item in _quick_items(root)
+        if item.metaObject().indexOfProperty("text") >= 0
+        and item.property("text")
+    )
+    for exact_identity in (
+        task_handle["taskHandleId"],
+        task_handle["attemptId"],
+        task_handle["targetIdentity"],
+        task_handle["resultIdentity"],
+    ):
+        assert exact_identity in task_text
+
+    scenario_feature.fail_next_materialization()
+    host._scenario_lab.materializeApprovedRecipeVersion(
+        approved["recipeVersionId"]
+    )
+    _process_until(
+        app,
+        lambda: host._scenario_lab.taskHandleCount == 2
+        and host._scenario_lab.taskHandles[-1]["terminal"],
+    )
+    assert host._scenario_lab.taskHandleCount == 2
+    failed_handle = host._scenario_lab.taskHandles[-1]
+    assert failed_handle["phase"] == "failed"
+    assert failed_handle["retryable"] is True
+    assert failed_handle["errorCode"] == "scenario_materialization_failed"
+    assert host._scenario_lab.canRetryMaterialization is True
+    host._scenario_lab.retryMaterialization(
+        failed_handle["attemptId"],
+        failed_handle["taskHandleId"],
+    )
+    _process_until(
+        app,
+        lambda: host._scenario_lab.taskHandleCount == 3
+        and host._scenario_lab.taskHandles[-1]["terminal"],
+    )
+    assert host._scenario_lab.taskHandleCount == 3
+    retried_handle = host._scenario_lab.taskHandles[-1]
+    assert retried_handle["phase"] == "completed"
+    assert retried_handle["predecessorTaskHandleId"] == (
+        failed_handle["taskHandleId"]
+    )
+    assert retried_handle["attemptId"] != failed_handle["attemptId"]
+    task_history = host._scenario_lab.taskHandles
+
     host._scenario_lab.selectApprovedRecipeVersion(approved["recipeVersionId"])
     assert host._scenario_lab.selectedRecipeVersionId == approved["recipeVersionId"]
     host._scenario_lab.reviseSelectedRecipeDraft(
@@ -574,6 +662,11 @@ def test_production_workspace_creates_validates_approves_and_versions_exact_reci
     assert remounted._scenario_lab.approvedRecipeVersionCount == 1
     assert remounted._scenario_lab.approvedRecipeVersions[0] == approved
     assert remounted._scenario_lab.recipeDrafts[-1] == successor
+    assert remounted._scenario_lab.taskHandleCount == 3
+    assert remounted._scenario_lab.taskHandles == task_history
+    assert task_handle["resultIdentity"] in {
+        item["pathId"] for item in remounted._scenario_lab.referencePaths
+    }
     remounted.close_adapter()
     scenario_feature.close()
     run_feature.close()
@@ -769,6 +862,9 @@ class _AssessmentOverrideApplication:
 
     def scenario_recipe_approval_history(self):
         return self._delegate.scenario_recipe_approval_history()
+
+    def scenario_materialization_task_handles(self):
+        return self._delegate.scenario_materialization_task_handles()
 
     def recipe_authoring_capabilities(self):
         return self._delegate.recipe_authoring_capabilities()

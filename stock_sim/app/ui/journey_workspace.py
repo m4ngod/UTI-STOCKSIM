@@ -97,6 +97,7 @@ from app.features.scenario_lab_application import (
     CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     HistoricalSegmentEntry,
+    MaterializeApprovedScenarioRecipeCommand,
     MarketScenarioEntry,
     ReferenceMarketPathEntry,
     RequestedExecutionAssumptionsProjection,
@@ -107,7 +108,9 @@ from app.features.scenario_lab_application import (
     ScenarioLabCommandId,
     ScenarioLabCommandMetadata,
     ScenarioLabIdempotencyIdentity,
+    ScenarioLabTaskHandle,
     ScenarioLabUnavailabilityReason,
+    ScenarioMaterializationAttemptId,
     ScenarioRecipeAuthoringMode,
     ScenarioRecipeDataPolicy,
     ScenarioRecipeDraftPayload,
@@ -119,9 +122,10 @@ from app.features.scenario_lab_application import (
     TransformationCatalogEntryProjection,
     TransformationParameterProjection,
     ValidateScenarioRecipeDraftCommand,
+    RetryScenarioMaterializationCommand,
     canonical_scenario_lab_command_content_identity,
 )
-from app.features.run_monitoring import SourceGenerationId
+from app.features.run_monitoring import SourceGenerationId, TaskHandleId, TaskPhase
 
 from .accessibility import (
     AccessibilityPreferences,
@@ -819,6 +823,10 @@ class ScenarioLabQtAdapter(QObject):
     def approvedRecipeVersionCount(self) -> int:  # noqa: N802
         return len(self._state.approved_recipe_versions)
 
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def taskHandleCount(self) -> int:  # noqa: N802
+        return len(self._state.task_handles)
+
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreateRecipeDraft(self) -> bool:  # noqa: N802
         return self._state.capabilities.can_create_recipe_draft
@@ -858,6 +866,14 @@ class ScenarioLabQtAdapter(QObject):
     def canApproveRecipe(self) -> bool:  # noqa: N802
         return self._state.capabilities.can_approve_recipe
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canMaterializeApprovedRecipe(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_materialize_reference_path
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canRetryMaterialization(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_retry_materialization
+
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def historicalSegments(self) -> list[dict[str, object]]:  # noqa: N802
         return [_historical_segment_payload(item) for item in self._state.historical_segments]
@@ -886,6 +902,13 @@ class ScenarioLabQtAdapter(QObject):
         return [
             _approved_recipe_version_payload(item)
             for item in self._state.approved_recipe_versions
+        ]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def taskHandles(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _scenario_lab_task_handle_payload(item)
+            for item in self._state.task_handles
         ]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
@@ -1243,6 +1266,101 @@ class ScenarioLabQtAdapter(QObject):
             result.receipt.disposition,
             result.receipt.message,
         )
+
+    @Slot(str)
+    def materializeApprovedRecipeVersion(self, version_id: str) -> None:  # noqa: N802
+        version = next(
+            (
+                item
+                for item in self._state.approved_recipe_versions
+                if item.recipe_version_id.value == version_id
+            ),
+            None,
+        )
+        if version is None or not version.can_materialize:
+            self._command_message = (
+                "Materialization requires one exact current compatible "
+                "Approved Scenario Recipe Version."
+            )
+            self.stateChanged.emit()
+            return
+        try:
+            metadata = self._authoring_metadata("materialize-reference-path")
+            command = MaterializeApprovedScenarioRecipeCommand(
+                metadata=metadata,
+                recipe_version_id=version.recipe_version_id,
+                expected_recipe_content_hash=version.content_hash,
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.materialize_reference_path(command)
+            self._selected_recipe_version_id = version.recipe_version_id.value
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Materialization rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot(str, str)
+    def retryMaterialization(  # noqa: N802
+        self,
+        attempt_id: str,
+        task_handle_id: str,
+    ) -> None:
+        predecessor = next(
+            (
+                item
+                for item in self._state.task_handles
+                if item.attempt_identity.value == attempt_id
+                and item.identity.value == task_handle_id
+            ),
+            None,
+        )
+        if (
+            predecessor is None
+            or predecessor.phase is not TaskPhase.FAILED
+            or not predecessor.retryable
+        ):
+            self._command_message = (
+                "Retry requires one exact retryable failed materialization attempt."
+            )
+            self.stateChanged.emit()
+            return
+        try:
+            metadata = self._authoring_metadata("retry-materialization")
+            command = RetryScenarioMaterializationCommand(
+                metadata=metadata,
+                predecessor_attempt_id=ScenarioMaterializationAttemptId(
+                    attempt_id
+                ),
+                predecessor_task_handle_id=TaskHandleId(task_handle_id),
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.retry_materialization(command)
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Materialization retry rejected: {exc}"
+            self.stateChanged.emit()
 
     @Slot(str)
     def setSearchText(self, value: str) -> None:  # noqa: N802
@@ -1915,6 +2033,38 @@ def _approved_recipe_version_payload(
             }
             for transformation in item.payload.transformations
         ],
+    }
+
+
+def _scenario_lab_task_handle_payload(
+    item: ScenarioLabTaskHandle,
+) -> dict[str, object]:
+    return {
+        "taskHandleId": item.identity.value,
+        "attemptId": item.attempt_identity.value,
+        "operation": item.operation.value,
+        "targetKind": item.target_identity.kind.value,
+        "targetIdentity": item.target_identity.value,
+        "phase": item.phase.value,
+        "progress": item.progress,
+        "progressPercent": round(item.progress * 100),
+        "resultKind": (
+            "" if item.result_identity is None else item.result_identity.kind.value
+        ),
+        "resultIdentity": (
+            "" if item.result_identity is None else item.result_identity.value
+        ),
+        "errorCode": "" if item.error is None else item.error.code.value,
+        "errorMessage": "" if item.error is None else item.error.message,
+        "errorRetryable": False if item.error is None else item.error.retryable,
+        "cancelable": item.cancelable,
+        "retryable": item.retryable,
+        "terminal": item.terminal,
+        "predecessorTaskHandleId": (
+            ""
+            if item.predecessor_task_handle_id is None
+            else item.predecessor_task_handle_id.value
+        ),
     }
 
 
