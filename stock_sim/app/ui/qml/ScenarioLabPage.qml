@@ -955,7 +955,7 @@ Item {
                 Rectangle {
                     required property var modelData
                     Layout.fillWidth: true
-                    Layout.preferredHeight: validationText.implicitHeight + tokens.spaceMd * 2
+                    Layout.preferredHeight: validationColumn.implicitHeight + tokens.spaceMd * 2
                     radius: tokens.radiusMd
                     color: tokens.surface
                     border.color: modelData.valid ? tokens.accent : tokens.focus
@@ -963,31 +963,160 @@ Item {
                     Accessible.name: "Recipe validation " + modelData.validationId
                         + ", valid " + modelData.valid
 
-                    Text {
-                        id: validationText
+                    ColumnLayout {
+                        id: validationColumn
                         anchors.fill: parent
                         anchors.margins: tokens.spaceMd
-                        text: modelData.validationId
-                            + " · Draft " + modelData.draftId
-                            + " revision " + modelData.draftRevision
-                            + " · valid " + modelData.valid
-                            + "\nPayload " + modelData.payloadHash
-                            + " · Recipe content "
-                            + (modelData.recipeContentHash === "" ? "not issued" : modelData.recipeContentHash)
-                            + "\nDependency segment " + modelData.dependencies.historicalSegmentId
-                            + " / " + modelData.dependencies.historicalSegmentContentHash
-                            + " · source " + modelData.dependencies.sourceSnapshotId
-                            + " / " + modelData.dependencies.sourceSnapshotContentHash
-                            + "\nSchema " + modelData.dependencies.recipeSchemaIdentity
-                            + " / " + modelData.dependencies.recipeSchemaHash
-                            + " · catalog " + modelData.dependencies.transformationCatalogVersion
-                            + " / " + modelData.dependencies.transformationCatalogHash
-                            + " · Market Rule " + modelData.dependencies.marketRuleProfileVersion
-                            + " / " + modelData.dependencies.marketRuleProfileHash
-                            + "\nFindings " + JSON.stringify(modelData.findings)
-                        color: tokens.textPrimary
-                        font.pixelSize: tokens.bodySize
-                        wrapMode: Text.WrapAnywhere
+                        spacing: tokens.spaceXs
+
+                        Text {
+                            id: validationText
+                            Layout.fillWidth: true
+                            text: modelData.validationId
+                                + " · Draft " + modelData.draftId
+                                + " revision " + modelData.draftRevision
+                                + " · valid " + modelData.valid
+                                + "\nPayload " + modelData.payloadHash
+                                + " · Recipe content "
+                                + (modelData.recipeContentHash === "" ? "not issued" : modelData.recipeContentHash)
+                                + "\nDependency segment " + modelData.dependencies.historicalSegmentId
+                                + " / " + modelData.dependencies.historicalSegmentContentHash
+                                + " · source " + modelData.dependencies.sourceSnapshotId
+                                + " / " + modelData.dependencies.sourceSnapshotContentHash
+                                + "\nSchema " + modelData.dependencies.recipeSchemaIdentity
+                                + " / " + modelData.dependencies.recipeSchemaHash
+                                + " · catalog " + modelData.dependencies.transformationCatalogVersion
+                                + " / " + modelData.dependencies.transformationCatalogHash
+                                + " · Market Rule " + modelData.dependencies.marketRuleProfileVersion
+                                + " / " + modelData.dependencies.marketRuleProfileHash
+                                + "\nTransformation implementations "
+                                + JSON.stringify(modelData.dependencies.transformationImplementations)
+                                + " · data policy " + modelData.dependencies.dataPolicy
+                                + "\nCausality rules "
+                                + JSON.stringify(modelData.dependencies.causalityRules)
+                                + " · compatibility "
+                                + JSON.stringify(modelData.dependencies.compatibilityObservations)
+                                + "\nFindings " + JSON.stringify(modelData.findings)
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.bodySize
+                            wrapMode: Text.WrapAnywhere
+                        }
+
+                        Button {
+                            property string accessibleName: "Approve exact Recipe validation " + modelData.validationId
+                            objectName: "scenarioLabApproveRecipe-" + modelData.validationId
+                            text: "Approve exact validated revision"
+                            enabled: adapter.canApproveRecipe && modelData.valid
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "Approval binds this exact Draft revision, payload hash, validation, and dependency identities"
+                            onClicked: adapter.approveRecipeValidation(
+                                modelData.validationId
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "IMMUTABLE APPROVED RECIPE VERSION HISTORY (" + adapter.approvedRecipeVersionCount + ")"
+                color: tokens.textPrimary
+                font.pixelSize: tokens.bodySize
+                font.bold: true
+                Accessible.role: Accessible.Heading
+            }
+
+            Repeater {
+                id: scenarioLabApprovedRecipeRepeater
+                objectName: "scenarioLabApprovedRecipeRepeater"
+                model: adapter.approvedRecipeVersions
+
+                Rectangle {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: approvedVersionColumn.implicitHeight + tokens.spaceMd * 2
+                    radius: tokens.radiusMd
+                    color: tokens.surface
+                    border.color: modelData.authorityState === "current"
+                        ? tokens.accent : tokens.focus
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: "Approved Scenario Recipe "
+                        + modelData.recipeVersionId + ", authority "
+                        + modelData.authorityState
+                    Accessible.description: "Immutable approval "
+                        + modelData.approvalId + " bound to validation "
+                        + modelData.validationId
+
+                    ColumnLayout {
+                        id: approvedVersionColumn
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceMd
+                        spacing: tokens.spaceXs
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.name + " · Recipe " + modelData.recipeId
+                                + " version " + modelData.versionNumber
+                                + " · " + modelData.recipeVersionId
+                                + "\nContent " + modelData.contentHash
+                                + " · based on "
+                                + (modelData.basedOnRecipeVersionId === ""
+                                    ? "none" : modelData.basedOnRecipeVersionId)
+                                + " · author " + modelData.authorId
+                                + "\nApproval " + modelData.approvalId
+                                + " · actor " + modelData.actorId
+                                + " · at " + modelData.approvedAt
+                                + "\nDraft " + modelData.draftId
+                                + " revision " + modelData.draftRevision
+                                + " · payload " + modelData.payloadHash
+                                + " · validation " + modelData.validationId
+                                + "\nExact dependency binding "
+                                + (modelData.dependencyBindingAvailable
+                                    ? "available" : "legacy unavailable")
+                                + "\nSegment " + modelData.historicalSegmentId
+                                + " / " + modelData.historicalSegmentContentHash
+                                + " · source " + modelData.sourceSnapshotId
+                                + " / " + modelData.sourceSnapshotContentHash
+                                + "\nSchema " + modelData.recipeSchemaIdentity
+                                + " / " + modelData.recipeSchemaHash
+                                + " · catalog " + modelData.transformationCatalogVersion
+                                + " / " + modelData.transformationCatalogHash
+                                + " · Market Rule " + modelData.marketRuleProfileVersion
+                                + " / " + modelData.marketRuleProfileHash
+                                + "\nTransformations "
+                                + page.renderTransformations(modelData.transformations)
+                                + " · implementations "
+                                + JSON.stringify(modelData.transformationImplementations)
+                                + " · materialization seed " + modelData.materializationSeed
+                                + "\nData policy " + modelData.dataPolicy
+                                + " · causality rules "
+                                + JSON.stringify(modelData.causalityRules)
+                                + " · compatibility "
+                                + JSON.stringify(modelData.compatibilityObservations)
+                                + "\nAuthority " + modelData.authorityState
+                                + " · eligible for later materialization "
+                                + modelData.canMaterialize
+                                + " · reasons "
+                                + page.renderReasons(modelData.authorityReasons)
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.bodySize
+                            wrapMode: Text.WrapAnywhere
+                        }
+
+                        Button {
+                            property string accessibleName: "Select Approved Recipe " + modelData.recipeVersionId + " for immutable successor Draft"
+                            objectName: "scenarioLabSelectApprovedRecipe-" + modelData.recipeVersionId
+                            text: "Select for successor Draft"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "Creates no mutation until the explicit successor Draft action"
+                            onClicked: adapter.selectApprovedRecipeVersion(
+                                modelData.recipeVersionId
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
                     }
                 }
             }

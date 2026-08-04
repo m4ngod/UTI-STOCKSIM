@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable
@@ -230,6 +230,62 @@ def _fake_authoring_feature() -> ScenarioLabFeature:
     return DeterministicFakeScenarioLabAdapter(inventory=_inventory())
 
 
+@dataclass(frozen=True, slots=True)
+class _ApprovalInvalidationHarness:
+    feature: ScenarioLabFeature
+    invalidate_dependencies: Callable[[], None]
+    make_dependencies_unavailable: Callable[[], None]
+
+
+def _live_approval_invalidation_harness() -> _ApprovalInvalidationHarness:
+    source = _RecipeFixtureSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+        recipe_clock=lambda: datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc),
+    )
+    application.start()
+    assert application.admit_historical_segment(source.selection).segment is not None
+    feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+    service = application._scenario_lab_authoring
+    dependency_provider = service._dependency_provider
+
+    def invalidate_dependencies() -> None:
+        def changed_dependencies(draft, validation):
+            return replace(
+                dependency_provider(draft, validation),
+                transformation_catalog_hash="f" * 64,
+            )
+
+        service._dependency_provider = changed_dependencies
+
+    def make_dependencies_unavailable() -> None:
+        def unavailable_dependencies(draft, validation):
+            raise ValueError("exact dependency unavailable for conformance")
+
+        service._dependency_provider = unavailable_dependencies
+
+    return _ApprovalInvalidationHarness(
+        feature,
+        invalidate_dependencies,
+        make_dependencies_unavailable,
+    )
+
+
+def _fake_approval_invalidation_harness() -> _ApprovalInvalidationHarness:
+    feature = DeterministicFakeScenarioLabAdapter(inventory=_inventory())
+    return _ApprovalInvalidationHarness(
+        feature,
+        feature.advance_to_dependency_change,
+        feature.advance_to_dependency_unavailable,
+    )
+
+
 def _live_ai_authoring_feature() -> ScenarioLabFeature:
     source = _RecipeFixtureSource()
     probe = create_diagnostics_application(historical_source=source)
@@ -324,6 +380,672 @@ def _authoring_metadata(
         expected_source_revision=ready.source_revision,
         expected_source_generation=ready.source.generation,
     )
+
+
+def _create_and_validate_exact_recipe(
+    feature: ScenarioLabFeature,
+    *,
+    suffix: str,
+):
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    created = feature.create_recipe_draft(
+        _canonicalize_authoring(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    ready,
+                    suffix=f"{suffix}-create",
+                ),
+                payload=_authoring_payload(ready),
+                author_id=ScenarioLabActorId("actor-81"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert created.draft is not None
+    after_create = feature.snapshot(context)
+    validated = feature.validate_recipe_draft(
+        _canonicalize_authoring(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    after_create,
+                    suffix=f"{suffix}-validate",
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+            )
+        )
+    )
+    assert validated.validation is not None
+    assert validated.validation.is_valid
+    return context, created.draft, validated.validation
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    (_live_approval_invalidation_harness, _fake_approval_invalidation_harness),
+)
+@pytest.mark.parametrize(
+    "transition",
+    ("invalidate_dependencies", "make_dependencies_unavailable"),
+)
+def test_shared_dependency_change_rejects_approval_without_side_effects(
+    harness_factory: Callable[[], _ApprovalInvalidationHarness],
+    transition: str,
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="approval-dependency-reject",
+    )
+    getattr(harness, transition)()
+    changed = feature.snapshot(context)
+    command = _canonicalize_authoring(
+        ApproveScenarioRecipeCommand(
+            metadata=_authoring_metadata(
+                changed,
+                suffix="approval-dependency-reject-approve",
+            ),
+            draft_id=draft.draft_id,
+            expected_draft_revision=draft.revision,
+            expected_payload_hash=draft.payload_hash,
+            validation_id=validation.validation_id,
+            actor_id=ScenarioLabActorId("approver-81"),
+        )
+    )
+
+    rejected = feature.approve_recipe(command)
+
+    assert rejected.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert rejected.approved_version is None
+    assert feature.snapshot(context).approved_recipe_versions == ()
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "harness_factory",
+    (_live_approval_invalidation_harness, _fake_approval_invalidation_harness),
+)
+@pytest.mark.parametrize(
+    ("transition", "expected_authority"),
+    (
+        ("invalidate_dependencies", "outdated"),
+        ("make_dependencies_unavailable", "unavailable"),
+    ),
+)
+def test_shared_approved_history_survives_dependency_invalidation_and_replay(
+    harness_factory: Callable[[], _ApprovalInvalidationHarness],
+    transition: str,
+    expected_authority: str,
+) -> None:
+    harness = harness_factory()
+    feature = harness.feature
+    context, draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="approval-history-invalidation",
+    )
+    before_approval = feature.snapshot(context)
+    command = _canonicalize_authoring(
+        ApproveScenarioRecipeCommand(
+            metadata=_authoring_metadata(
+                before_approval,
+                suffix="approval-history-invalidation-approve",
+            ),
+            draft_id=draft.draft_id,
+            expected_draft_revision=draft.revision,
+            expected_payload_hash=draft.payload_hash,
+            validation_id=validation.validation_id,
+            actor_id=ScenarioLabActorId("approver-81"),
+        )
+    )
+    accepted = feature.approve_recipe(command)
+    assert accepted.approved_version is not None
+    original = accepted.approved_version
+
+    getattr(harness, transition)()
+    invalidated = feature.snapshot(context).approved_recipe_versions
+    replay = feature.approve_recipe(command)
+
+    assert len(invalidated) == 1
+    historical = invalidated[0]
+    assert historical.recipe_version_id == original.recipe_version_id
+    assert historical.approval == original.approval
+    assert historical.content_hash == original.content_hash
+    assert historical.authority_state.value == expected_authority
+    assert historical.can_materialize is False
+    assert historical.authority_reasons
+    assert historical.authority_reasons[0].corrective_guidance
+    assert replay.recipe_version_id == original.recipe_version_id
+    assert replay.recipe_content_hash == original.content_hash
+    assert replay.approved_version == historical
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_approval_rejects_unvalidated_invalid_hash_and_stale_drafts(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    created = feature.create_recipe_draft(
+        _canonicalize_authoring(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    ready,
+                    suffix="approval-rejection-create",
+                ),
+                payload=_authoring_payload(ready),
+                author_id=ScenarioLabActorId("actor-81"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert created.draft is not None
+    after_create = feature.snapshot(context)
+    unvalidated = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    after_create,
+                    suffix="approval-rejection-unvalidated",
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+                validation_id=ScenarioRecipeValidationId(
+                    "missing-validation-81"
+                ),
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert unvalidated.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+
+    validated = feature.validate_recipe_draft(
+        _canonicalize_authoring(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="approval-rejection-validate",
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+            )
+        )
+    )
+    assert validated.validation is not None
+    hash_mismatch = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="approval-rejection-hash",
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash="f" * 64,
+                validation_id=validated.validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert hash_mismatch.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+
+    revised = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="approval-rejection-revise",
+                ),
+                predecessor_draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                payload=replace(
+                    _authoring_payload(feature.snapshot(context)),
+                    name="Stale-validation successor",
+                ),
+                author_id=ScenarioLabActorId("actor-81"),
+            )
+        )
+    )
+    assert revised.draft is not None
+    stale = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="approval-rejection-stale",
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+                validation_id=validated.validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert stale.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+    assert stale.authoritative_draft_revision == revised.draft.revision
+
+    before_invalid = feature.snapshot(context)
+    invalid_draft = feature.create_recipe_draft(
+        _canonicalize_authoring(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    before_invalid,
+                    suffix="approval-rejection-invalid-create",
+                ),
+                payload=replace(
+                    _authoring_payload(before_invalid),
+                    name="Invalid approval Draft",
+                    decision_cadence_minutes=45,
+                ),
+                author_id=ScenarioLabActorId("actor-81"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert invalid_draft.draft is not None
+    invalid_validation = feature.validate_recipe_draft(
+        _canonicalize_authoring(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="approval-rejection-invalid-validate",
+                ),
+                draft_id=invalid_draft.draft.draft_id,
+                expected_draft_revision=invalid_draft.draft.revision,
+                expected_payload_hash=invalid_draft.draft.payload_hash,
+            )
+        )
+    )
+    assert invalid_validation.validation is not None
+    assert invalid_validation.validation.is_valid is False
+    invalid = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="approval-rejection-invalid-approve",
+                ),
+                draft_id=invalid_draft.draft.draft_id,
+                expected_draft_revision=invalid_draft.draft.revision,
+                expected_payload_hash=invalid_draft.draft.payload_hash,
+                validation_id=invalid_validation.validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert invalid.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert feature.snapshot(context).approved_recipe_versions == ()
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_revise_rejects_cross_recipe_and_unknown_approved_lineage(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context, first_draft, first_validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="lineage-source",
+    )
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="lineage-source-approve",
+                ),
+                draft_id=first_draft.draft_id,
+                expected_draft_revision=first_draft.revision,
+                expected_payload_hash=first_draft.payload_hash,
+                validation_id=first_validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+
+    before_second = feature.snapshot(context)
+    second = feature.create_recipe_draft(
+        _canonicalize_authoring(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    before_second,
+                    suffix="lineage-target-create",
+                ),
+                payload=replace(
+                    _authoring_payload(before_second),
+                    name="Independent lineage target",
+                ),
+                author_id=ScenarioLabActorId("actor-81"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert second.draft is not None
+    draft_count = len(feature.snapshot(context).recipe_drafts)
+
+    cross_recipe = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="lineage-cross-recipe",
+                ),
+                predecessor_draft_id=second.draft.draft_id,
+                expected_draft_revision=second.draft.revision,
+                payload=replace(second.draft.payload, name="False cross lineage"),
+                author_id=ScenarioLabActorId("actor-81"),
+                based_on_recipe_version_id=(
+                    approved.approved_version.recipe_version_id
+                ),
+            )
+        )
+    )
+    unknown = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="lineage-unknown-version",
+                ),
+                predecessor_draft_id=second.draft.draft_id,
+                expected_draft_revision=second.draft.revision,
+                payload=replace(second.draft.payload, name="Unknown lineage"),
+                author_id=ScenarioLabActorId("actor-81"),
+                based_on_recipe_version_id=ApprovedScenarioRecipeVersionId(
+                    "recipe_version_unknown_81"
+                ),
+            )
+        )
+    )
+
+    assert cross_recipe.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert cross_recipe.draft is None
+    assert unknown.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert unknown.draft is None
+    assert len(feature.snapshot(context).recipe_drafts) == draft_count
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_revise_preserves_approved_lineage_across_iterative_successors(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context, initial_draft, validation = _create_and_validate_exact_recipe(
+        feature,
+        suffix="iterative-lineage",
+    )
+    approved = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="iterative-lineage-approve",
+                ),
+                draft_id=initial_draft.draft_id,
+                expected_draft_revision=initial_draft.revision,
+                expected_payload_hash=initial_draft.payload_hash,
+                validation_id=validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert approved.approved_version is not None
+    version_id = approved.approved_version.recipe_version_id
+
+    revision_two = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="iterative-lineage-r2",
+                ),
+                predecessor_draft_id=initial_draft.draft_id,
+                expected_draft_revision=initial_draft.revision,
+                payload=replace(initial_draft.payload, name="Lineage revision two"),
+                author_id=ScenarioLabActorId("actor-81"),
+                based_on_recipe_version_id=version_id,
+            )
+        )
+    )
+    assert revision_two.draft is not None
+    revision_three = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    feature.snapshot(context),
+                    suffix="iterative-lineage-r3",
+                ),
+                predecessor_draft_id=revision_two.draft.draft_id,
+                expected_draft_revision=revision_two.draft.revision,
+                payload=replace(revision_two.draft.payload, name="Lineage revision three"),
+                author_id=ScenarioLabActorId("actor-81"),
+                based_on_recipe_version_id=version_id,
+            )
+        )
+    )
+
+    assert revision_three.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert revision_three.draft is not None
+    assert revision_three.draft.revision == revision_two.draft.revision + 1
+    assert revision_three.draft.based_on_recipe_version_id == version_id
+    feature.close()
+
+
+@pytest.mark.parametrize(
+    "feature_factory",
+    (_live_authoring_feature, _fake_authoring_feature),
+)
+def test_shared_exact_approval_replay_and_immutable_successor_version_history(
+    feature_factory: Callable[[], ScenarioLabFeature],
+) -> None:
+    feature = feature_factory()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    created = feature.create_recipe_draft(
+        _canonicalize_authoring(
+            CreateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    ready,
+                    suffix="approval-create",
+                ),
+                payload=_authoring_payload(ready),
+                author_id=ScenarioLabActorId("actor-81"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+    )
+    assert created.draft is not None
+
+    after_create = feature.snapshot(context)
+    validated = feature.validate_recipe_draft(
+        _canonicalize_authoring(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    after_create,
+                    suffix="approval-validate",
+                ),
+                draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                expected_payload_hash=created.draft.payload_hash,
+            )
+        )
+    )
+    assert validated.validation is not None
+    assert validated.validation.is_valid is True
+
+    after_validate = feature.snapshot(context)
+    approval_command = _canonicalize_authoring(
+        ApproveScenarioRecipeCommand(
+            metadata=_authoring_metadata(
+                after_validate,
+                suffix="approval-accept",
+            ),
+            draft_id=created.draft.draft_id,
+            expected_draft_revision=created.draft.revision,
+            expected_payload_hash=created.draft.payload_hash,
+            validation_id=validated.validation.validation_id,
+            actor_id=ScenarioLabActorId("approver-81"),
+        )
+    )
+    first = feature.approve_recipe(approval_command)
+    replay = feature.approve_recipe(
+        _canonicalize_authoring(
+            replace(
+                approval_command,
+                metadata=replace(
+                    approval_command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "command-81-approval-replay"
+                    ),
+                ),
+            )
+        )
+    )
+    conflicted = feature.approve_recipe(
+        _canonicalize_authoring(
+            replace(
+                approval_command,
+                metadata=replace(
+                    approval_command.metadata,
+                    command_id=ScenarioLabCommandId(
+                        "command-81-approval-conflict"
+                    ),
+                ),
+                actor_id=ScenarioLabActorId("different-approver-81"),
+            )
+        )
+    )
+    command_identity_conflicted = feature.approve_recipe(
+        _canonicalize_authoring(
+            replace(
+                approval_command,
+                metadata=replace(
+                    _authoring_metadata(
+                        feature.snapshot(context),
+                        suffix="approval-command-identity-collision",
+                    ),
+                    command_id=approval_command.metadata.command_id,
+                ),
+                actor_id=ScenarioLabActorId("command-collision-approver-81"),
+            )
+        )
+    )
+
+    assert first.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert replay == first
+    assert conflicted.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+    assert conflicted.approved_version is None
+    assert (
+        command_identity_conflicted.receipt.disposition
+        is ScenarioLabCommandDisposition.CONFLICT
+    )
+    assert "command identity" in command_identity_conflicted.receipt.message.casefold()
+    assert command_identity_conflicted.approved_version is None
+    assert first.approved_version is not None
+    version_one = first.approved_version
+    assert version_one.version_number == 1
+    assert version_one.recipe_id == created.draft.recipe_id
+    assert version_one.approval.validation_id == (
+        validated.validation.validation_id
+    )
+    assert version_one.approval.dependencies == (
+        validated.validation.dependencies
+    )
+    assert version_one.authority_state.value == "current"
+    assert version_one.can_materialize is True
+
+    after_first_approval = feature.snapshot(context)
+    assert after_first_approval.approved_recipe_versions == (version_one,)
+    assert after_first_approval.capabilities.can_approve_recipe is False
+    assert after_first_approval.capabilities.can_materialize_reference_path is False
+
+    revised = feature.revise_recipe_draft(
+        _canonicalize_authoring(
+            ReviseScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    after_first_approval,
+                    suffix="approval-successor",
+                ),
+                predecessor_draft_id=created.draft.draft_id,
+                expected_draft_revision=created.draft.revision,
+                payload=replace(
+                    _authoring_payload(after_first_approval),
+                    name="Wave 3 successor conformance Draft",
+                ),
+                author_id=ScenarioLabActorId("actor-81"),
+                based_on_recipe_version_id=version_one.recipe_version_id,
+            )
+        )
+    )
+    assert revised.draft is not None
+    assert revised.draft.based_on_recipe_version_id == (
+        version_one.recipe_version_id
+    )
+
+    after_revise = feature.snapshot(context)
+    successor_validation = feature.validate_recipe_draft(
+        _canonicalize_authoring(
+            ValidateScenarioRecipeDraftCommand(
+                metadata=_authoring_metadata(
+                    after_revise,
+                    suffix="approval-successor-validation",
+                ),
+                draft_id=revised.draft.draft_id,
+                expected_draft_revision=revised.draft.revision,
+                expected_payload_hash=revised.draft.payload_hash,
+            )
+        )
+    )
+    assert successor_validation.validation is not None
+    after_successor_validation = feature.snapshot(context)
+    successor_approval = feature.approve_recipe(
+        _canonicalize_authoring(
+            ApproveScenarioRecipeCommand(
+                metadata=_authoring_metadata(
+                    after_successor_validation,
+                    suffix="approval-successor-accept",
+                ),
+                draft_id=revised.draft.draft_id,
+                expected_draft_revision=revised.draft.revision,
+                expected_payload_hash=revised.draft.payload_hash,
+                validation_id=successor_validation.validation.validation_id,
+                actor_id=ScenarioLabActorId("approver-81"),
+            )
+        )
+    )
+    assert successor_approval.approved_version is not None
+    version_two = successor_approval.approved_version
+    assert version_two.version_number == 2
+    assert version_two.recipe_id == version_one.recipe_id
+    assert version_two.recipe_version_id != version_one.recipe_version_id
+    assert version_two.content_hash != version_one.content_hash
+    assert version_two.based_on_recipe_version_id == version_one.recipe_version_id
+    assert feature.snapshot(context).approved_recipe_versions == (
+        version_one,
+        version_two,
+    )
+    feature.close()
 
 
 @pytest.mark.parametrize(
@@ -903,8 +1625,8 @@ def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unava
     assert after_validate.recipe_validations == (validated.validation,)
     assert after_validate.source_revision is not None
 
-    future_results = (
-        feature.approve_recipe(
+    approval_result = feature.approve_recipe(
+        _canonicalize_authoring(
             ApproveScenarioRecipeCommand(
                 metadata("approve", after_validate.source_revision),
                 revised.draft.draft_id,
@@ -913,7 +1635,13 @@ def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unava
                 validated.validation.validation_id,
                 ScenarioLabActorId("actor-80"),
             )
-        ),
+        )
+    )
+    assert approval_result.receipt.disposition is (
+        ScenarioLabCommandDisposition.ACCEPTED
+    )
+    assert approval_result.approved_version is not None
+    future_results = (
         feature.materialize_reference_path(
             MaterializeApprovedScenarioRecipeCommand(
                 metadata("materialize", after_validate.source_revision),
@@ -963,7 +1691,7 @@ def test_shared_authoring_body_activates_drafts_and_keeps_future_mutations_unava
     )
     assert tuple(result.receipt.operation for result in future_results) == tuple(
         ScenarioLabTaskOperation
-    )[3:]
+    )[4:]
     assert all(result.receipt.task_handle is None for result in future_results)
     feature.close()
 

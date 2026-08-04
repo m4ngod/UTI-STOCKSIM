@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QWidget
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
     ApprovedScenarioRecipeId,
+    ApprovedScenarioRecipeVersionId,
     CampaignNodeTarget,
     CancelDiagnosticTarget,
     CancelDiagnosticTask,
@@ -91,6 +92,8 @@ from app.features.strategy_library import (
 )
 from app.features.strategy_library_application import StrategyLibraryEntry
 from app.features.scenario_lab_application import (
+    ApprovedScenarioRecipeVersionProjection,
+    ApproveScenarioRecipeCommand,
     CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     HistoricalSegmentEntry,
@@ -613,6 +616,7 @@ class ScenarioLabQtAdapter(QObject):
         self._context = context or ScenarioLabContext()
         self._state = feature.snapshot(self._context)
         self._selected_draft_id: str | None = None
+        self._selected_recipe_version_id: str | None = None
         self._command_message = (
             "Create an exact manual Recipe Draft from an admitted segment. "
             "Optional AI assistance is unavailable unless a configured provider "
@@ -645,6 +649,11 @@ class ScenarioLabQtAdapter(QObject):
             for item in state.recipe_drafts
         ):
             self._selected_draft_id = None
+        if self._selected_recipe_version_id is not None and not any(
+            item.recipe_version_id.value == self._selected_recipe_version_id
+            for item in state.approved_recipe_versions
+        ):
+            self._selected_recipe_version_id = None
         self.stateChanged.emit()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -806,6 +815,10 @@ class ScenarioLabQtAdapter(QObject):
     def recipeValidationCount(self) -> int:  # noqa: N802
         return len(self._state.recipe_validations)
 
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def approvedRecipeVersionCount(self) -> int:  # noqa: N802
+        return len(self._state.approved_recipe_versions)
+
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreateRecipeDraft(self) -> bool:  # noqa: N802
         return self._state.capabilities.can_create_recipe_draft
@@ -841,6 +854,10 @@ class ScenarioLabQtAdapter(QObject):
     def canValidateRecipeDraft(self) -> bool:  # noqa: N802
         return self._state.capabilities.can_validate_recipe_draft
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canApproveRecipe(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_approve_recipe
+
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def historicalSegments(self) -> list[dict[str, object]]:  # noqa: N802
         return [_historical_segment_payload(item) for item in self._state.historical_segments]
@@ -862,6 +879,13 @@ class ScenarioLabQtAdapter(QObject):
         return [
             _recipe_validation_payload(item)
             for item in self._state.recipe_validations
+        ]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def approvedRecipeVersions(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _approved_recipe_version_payload(item)
+            for item in self._state.approved_recipe_versions
         ]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
@@ -901,6 +925,10 @@ class ScenarioLabQtAdapter(QObject):
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def selectedRecipeDraftId(self) -> str:  # noqa: N802
         return self._selected_draft_id or ""
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def selectedRecipeVersionId(self) -> str:  # noqa: N802
+        return self._selected_recipe_version_id or ""
 
     @Slot(
         str,
@@ -965,6 +993,7 @@ class ScenarioLabQtAdapter(QObject):
             result = self._feature.create_recipe_draft(command)
             if result.draft is not None:
                 self._selected_draft_id = result.draft.draft_id.value
+                self._selected_recipe_version_id = None
             self._finish_recipe_command(
                 result.receipt.disposition,
                 result.receipt.message,
@@ -1000,6 +1029,7 @@ class ScenarioLabQtAdapter(QObject):
             result = self._feature.author_recipe_with_ai(command)
             if result.draft is not None:
                 self._selected_draft_id = result.draft.draft_id.value
+                self._selected_recipe_version_id = None
             self._finish_recipe_command(
                 result.receipt.disposition,
                 result.receipt.message,
@@ -1064,6 +1094,10 @@ class ScenarioLabQtAdapter(QObject):
                 author_id=ScenarioLabActorId("journey-workspace-operator"),
                 based_on_recipe_version_id=(
                     predecessor.based_on_recipe_version_id
+                    if self._selected_recipe_version_id is None
+                    else ApprovedScenarioRecipeVersionId(
+                        self._selected_recipe_version_id
+                    )
                 ),
             )
             command = replace(
@@ -1078,6 +1112,7 @@ class ScenarioLabQtAdapter(QObject):
             result = self._feature.revise_recipe_draft(command)
             if result.draft is not None:
                 self._selected_draft_id = result.draft.draft_id.value
+                self._selected_recipe_version_id = None
             self._finish_recipe_command(
                 result.receipt.disposition,
                 result.receipt.message,
@@ -1091,6 +1126,23 @@ class ScenarioLabQtAdapter(QObject):
         if not any(item.draft_id.value == draft_id for item in self._state.recipe_drafts):
             return
         self._selected_draft_id = draft_id
+        self._selected_recipe_version_id = None
+        self.stateChanged.emit()
+
+    @Slot(str)
+    def selectApprovedRecipeVersion(self, version_id: str) -> None:  # noqa: N802
+        version = next(
+            (
+                item
+                for item in self._state.approved_recipe_versions
+                if item.recipe_version_id.value == version_id
+            ),
+            None,
+        )
+        if version is None:
+            return
+        self._selected_recipe_version_id = version_id
+        self._selected_draft_id = version.approval.draft_id.value
         self.stateChanged.emit()
 
     @Slot(str)
@@ -1124,6 +1176,69 @@ class ScenarioLabQtAdapter(QObject):
             ),
         )
         result = self._feature.validate_recipe_draft(command)
+        self._finish_recipe_command(
+            result.receipt.disposition,
+            result.receipt.message,
+        )
+
+    @Slot(str)
+    def approveRecipeValidation(self, validation_id: str) -> None:  # noqa: N802
+        validation = next(
+            (
+                item
+                for item in self._state.recipe_validations
+                if item.validation_id.value == validation_id
+            ),
+            None,
+        )
+        if validation is None or not validation.is_valid:
+            self._command_message = (
+                "Approval requires one exact successful Recipe validation."
+            )
+            self.stateChanged.emit()
+            return
+        draft = next(
+            (
+                item
+                for item in self._state.recipe_drafts
+                if item.draft_id == validation.draft_id
+                and item.revision == validation.draft_revision
+                and item.payload_hash == validation.payload_hash
+            ),
+            None,
+        )
+        if draft is None:
+            self._command_message = (
+                "The exact validated Recipe Draft revision is unavailable."
+            )
+            self.stateChanged.emit()
+            return
+        metadata = self._authoring_metadata("approve-recipe")
+        command = ApproveScenarioRecipeCommand(
+            metadata=metadata,
+            draft_id=draft.draft_id,
+            expected_draft_revision=draft.revision,
+            expected_payload_hash=draft.payload_hash,
+            validation_id=validation.validation_id,
+            actor_id=ScenarioLabActorId("journey-workspace-operator"),
+        )
+        command = replace(
+            command,
+            metadata=replace(
+                metadata,
+                canonical_content_identity=(
+                    canonical_scenario_lab_command_content_identity(command)
+                ),
+            ),
+        )
+        result = self._feature.approve_recipe(command)
+        if result.approved_version is not None:
+            self._selected_recipe_version_id = (
+                result.approved_version.recipe_version_id.value
+            )
+            self._selected_draft_id = (
+                result.approved_version.approval.draft_id.value
+            )
         self._finish_recipe_command(
             result.receipt.disposition,
             result.receipt.message,
@@ -1691,6 +1806,115 @@ def _recipe_validation_payload(
                 for observation in dependencies.compatibility_observations
             ],
         },
+    }
+
+
+def _approved_recipe_version_payload(
+    item: ApprovedScenarioRecipeVersionProjection,
+) -> dict[str, object]:
+    approval = item.approval
+    dependencies = approval.dependencies
+    return {
+        "recipeVersionId": item.recipe_version_id.value,
+        "recipeId": item.recipe_id,
+        "versionNumber": item.version_number,
+        "contentHash": item.content_hash,
+        "name": item.payload.name,
+        "authorId": item.author_id.value,
+        "basedOnRecipeVersionId": (
+            ""
+            if item.based_on_recipe_version_id is None
+            else item.based_on_recipe_version_id.value
+        ),
+        "authorityState": item.authority_state.value,
+        "authorityReasons": [
+            _scenario_lab_reason_payload(reason)
+            for reason in item.authority_reasons
+        ],
+        "canMaterialize": item.can_materialize,
+        "approvalId": approval.approval_id.value,
+        "draftId": approval.draft_id.value,
+        "draftRevision": approval.draft_revision or "",
+        "payloadHash": approval.payload_hash,
+        "validationId": (
+            "" if approval.validation_id is None else approval.validation_id.value
+        ),
+        "dependencyBindingAvailable": dependencies is not None,
+        "recipeContentHash": approval.recipe_content_hash,
+        "actorId": approval.actor_id.value,
+        "approvedAt": approval.approved_at.isoformat(),
+        "historicalSegmentId": (
+            ""
+            if dependencies is None
+            else dependencies.historical_segment_id.value
+        ),
+        "historicalSegmentContentHash": (
+            ""
+            if dependencies is None
+            else dependencies.historical_segment_content_hash
+        ),
+        "sourceSnapshotId": (
+            "" if dependencies is None else dependencies.source_snapshot_id.value
+        ),
+        "sourceSnapshotContentHash": (
+            "" if dependencies is None else dependencies.source_snapshot_content_hash
+        ),
+        "recipeSchemaIdentity": (
+            "" if dependencies is None else dependencies.recipe_schema_identity
+        ),
+        "recipeSchemaHash": (
+            "" if dependencies is None else dependencies.recipe_schema_hash
+        ),
+        "transformationCatalogVersion": (
+            "" if dependencies is None else dependencies.transformation_catalog_version
+        ),
+        "transformationCatalogHash": (
+            "" if dependencies is None else dependencies.transformation_catalog_hash
+        ),
+        "transformationImplementations": list(
+            ()
+            if dependencies is None
+            else dependencies.transformation_implementation_identities
+        ),
+        "dataPolicy": (
+            "" if dependencies is None else dependencies.data_policy.value
+        ),
+        "causalityRules": list(
+            () if dependencies is None else dependencies.causality_rule_identities
+        ),
+        "marketRuleProfileVersion": (
+            "" if dependencies is None else dependencies.market_rule_profile_version
+        ),
+        "marketRuleProfileHash": (
+            "" if dependencies is None else dependencies.market_rule_profile_hash
+        ),
+        "compatibilityObservations": [
+            {
+                "subject": observation.subject,
+                "state": observation.state.value,
+                "explanation": observation.explanation,
+            }
+            for observation in (
+                ()
+                if dependencies is None
+                else dependencies.compatibility_observations
+            )
+        ],
+        "materializationSeed": item.payload.materialization_seed,
+        "transformations": [
+            {
+                "transformationId": transformation.transformation_id,
+                "parameters": [
+                    {
+                        "name": parameter.name,
+                        "kind": parameter.kind.value,
+                        "value": str(parameter.value),
+                    }
+                    for parameter in transformation.parameters
+                ],
+            }
+            for transformation in item.payload.transformations
+        ],
     }
 
 

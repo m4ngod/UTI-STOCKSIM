@@ -113,10 +113,12 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         "ScenarioLabQtAdapter": frozenset(
             {
+                "approveRecipeValidation",
                 "createRecipeDraft",
                 "createAiAssistedRecipeDraft",
                 "refresh",
                 "reviseSelectedRecipeDraft",
+                "selectApprovedRecipeVersion",
                 "selectRecipeDraft",
                 "setCompatibilityFilter",
                 "setFocusIdentity",

@@ -29,6 +29,8 @@ from .recipes import (
     ScenarioRecipeDraft,
     ScenarioRecipeV1,
     TransformationProposalV1,
+    legacy_scenario_recipe_approval_identity,
+    scenario_recipe_approval_identity,
 )
 
 _HISTORICAL_SEGMENT_REVISION: Final = "0002_historical_segment_catalog"
@@ -1613,13 +1615,31 @@ class SqlScenarioRecipeRepository:
         self,
         version: ApprovedScenarioRecipeVersion,
     ) -> ApprovedScenarioRecipeVersion:
-        approval_identity = (
-            f"{version.version_id}|{version.approval_actor}|"
-            f"{version.approved_at.isoformat()}"
+        legacy_approval_id = legacy_scenario_recipe_approval_identity(
+            version_id=version.version_id,
+            actor=version.approval_actor,
+            approved_at=version.approved_at,
         )
-        approval_id = "recipe_approval_" + hashlib.sha256(
-            approval_identity.encode("utf-8")
-        ).hexdigest()
+        approval_id = version.approval_id or legacy_approval_id
+        if (version.validation_identity is None) != (
+            version.approval_command_identity is None
+        ):
+            raise ValueError(
+                "Scenario Recipe approval validation and command binding mismatch"
+            )
+        if version.validation_identity is None:
+            if approval_id != legacy_approval_id:
+                raise ValueError(
+                    "Scenario Recipe approval identity lacks validation binding"
+                )
+        elif approval_id != scenario_recipe_approval_identity(
+            version_id=version.version_id,
+            actor=version.approval_actor,
+            approved_at=version.approved_at,
+            validation_identity=version.validation_identity,
+            command_identity=version.approval_command_identity or "",
+        ):
+            raise ValueError("Scenario Recipe approval identity mismatch")
         try:
             with self._engine.begin() as connection:
                 approved = connection.execute(
@@ -1692,7 +1712,8 @@ class SqlScenarioRecipeRepository:
                     "SELECT v.version_id, v.recipe_id, v.version_number, "
                     "v.recipe_json, v.content_hash, v.author, "
                     "v.validation_draft_id, v.validation_json, "
-                    "v.based_on_version_id, a.actor, a.approved_at_utc, "
+                    "v.based_on_version_id, a.approval_id, a.actor, "
+                    "a.approved_at_utc, "
                     "a.recipe_content_hash AS approval_content_hash "
                     "FROM diagnostic_recipe_versions AS v "
                     "JOIN diagnostic_recipe_approvals AS a "
@@ -1715,6 +1736,56 @@ class SqlScenarioRecipeRepository:
             or str(row.approval_content_hash) != str(row.content_hash)
         ):
             raise ValueError("stored Scenario Recipe approval evidence mismatch")
+        approval_id = str(row.approval_id)
+        approved_at = _parse_aware_datetime(str(row.approved_at_utc))
+        with self._engine.connect() as connection:
+            validation_identities = tuple(
+                str(item)
+                for item in connection.execute(
+                    text(
+                        "SELECT validation_id "
+                        "FROM diagnostic_recipe_validation_history "
+                        "WHERE draft_id = :draft_id ORDER BY validation_id"
+                    ),
+                    {"draft_id": str(row.validation_draft_id)},
+                ).scalars()
+            )
+            command_identities = tuple(
+                str(item)
+                for item in connection.execute(
+                    text(
+                        "SELECT command_id FROM diagnostic_scenario_lab_commands "
+                        "WHERE operation = 'approve_recipe' ORDER BY command_id"
+                    )
+                ).scalars()
+            )
+        matching_bindings = tuple(
+            (validation_identity, command_identity)
+            for validation_identity in validation_identities
+            for command_identity in command_identities
+            if scenario_recipe_approval_identity(
+                version_id=str(row.version_id),
+                actor=str(row.actor),
+                approved_at=approved_at,
+                validation_identity=validation_identity,
+                command_identity=command_identity,
+            )
+            == approval_id
+        )
+        if len(matching_bindings) > 1:
+            raise ValueError(
+                "stored Scenario Recipe approval validation identity is ambiguous"
+            )
+        legacy_approval_id = legacy_scenario_recipe_approval_identity(
+            version_id=str(row.version_id),
+            actor=str(row.actor),
+            approved_at=approved_at,
+        )
+        if not matching_bindings and approval_id != legacy_approval_id:
+            raise ValueError(
+                "stored Scenario Recipe approval validation identity is unavailable"
+            )
+        typed_approval_id = approval_id if matching_bindings else None
         return ApprovedScenarioRecipeVersion(
             version_id=str(row.version_id),
             recipe_id=str(row.recipe_id),
@@ -1723,11 +1794,22 @@ class SqlScenarioRecipeRepository:
             content_hash=str(row.content_hash),
             author=str(row.author),
             approval_actor=str(row.actor),
-            approved_at=_parse_aware_datetime(str(row.approved_at_utc)),
+            approved_at=approved_at,
             validation_result=validation,
             based_on_version_id=(
                 str(row.based_on_version_id)
                 if row.based_on_version_id is not None
+                else None
+            ),
+            approval_id=typed_approval_id,
+            validation_identity=(
+                matching_bindings[0][0]
+                if matching_bindings
+                else None
+            ),
+            approval_command_identity=(
+                matching_bindings[0][1]
+                if matching_bindings
                 else None
             ),
         )

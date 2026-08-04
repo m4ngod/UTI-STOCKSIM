@@ -132,6 +132,7 @@ from .scenario_lab_authoring import (
     ScenarioLabAuthoringMode,
     ScenarioLabAuthoringResult,
     ScenarioLabAuthoringService,
+    ScenarioRecipeApprovalRecord,
     ScenarioRecipeDraftRevisionRecord,
     ScenarioRecipeValidationDependencyRecord,
     ScenarioRecipeValidationRecord,
@@ -3217,6 +3218,36 @@ class DiagnosticsApplication:
             expected_payload_hash=expected_payload_hash,
         )
 
+    def approve_scenario_recipe_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        draft_id: str,
+        expected_draft_revision: int,
+        expected_payload_hash: str,
+        validation_id: str,
+        actor: str,
+    ) -> ScenarioLabAuthoringResult:
+        """Approve one exact typed Draft validation through durable authority."""
+
+        self.status()
+        return self._scenario_lab_authoring.approve_recipe(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            draft_id=draft_id,
+            expected_draft_revision=expected_draft_revision,
+            expected_payload_hash=expected_payload_hash,
+            validation_id=validation_id,
+            actor=actor,
+        )
+
     def scenario_recipe_draft_revisions(
         self,
     ) -> tuple[ScenarioRecipeDraftRevisionRecord, ...]:
@@ -3229,15 +3260,23 @@ class DiagnosticsApplication:
         self.status()
         return self._scenario_lab_authoring.list_validations()
 
+    def scenario_recipe_approval_history(
+        self,
+    ) -> tuple[ScenarioRecipeApprovalRecord, ...]:
+        self.status()
+        return self._scenario_lab_authoring.list_approvals()
+
     def replay_scenario_lab_authoring_command(
         self,
         *,
+        command_id: str,
         idempotency_identity: str,
         canonical_content_identity: str,
         operation: str,
     ) -> ScenarioLabAuthoringResult | None:
         self.status()
         return self._scenario_lab_authoring.replay(
+            command_id=command_id,
             idempotency_identity=idempotency_identity,
             canonical_content_identity=canonical_content_identity,
             operation=operation,

@@ -5,6 +5,7 @@ import os
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -60,6 +61,24 @@ def _quick_items(root: QQuickItem) -> tuple[QQuickItem, ...]:
         found.append(item)
         pending.extend(item.childItems())
     return tuple(found)
+
+
+def test_scenario_lab_qml_approval_controls_bind_only_typed_exact_identities() -> None:
+    source = (
+        Path(__file__).parents[3] / "app" / "ui" / "qml" / "ScenarioLabPage.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "Approve exact validated revision" in source
+    assert "adapter.approveRecipeValidation(" in source
+    assert "modelData.validationId" in source
+    assert (
+        "Approval binds this exact Draft revision, payload hash, validation, "
+        "and dependency identities"
+    ) in source
+    assert "Select for successor Draft" in source
+    assert "adapter.selectApprovedRecipeVersion(" in source
+    assert "Creates no mutation until the explicit successor Draft action" in source
+    assert "adapter.materialize" not in source
 
 
 _REQUIRED_ADMISSION_CHECKS = (
@@ -355,7 +374,7 @@ def test_production_workspace_browses_scenario_lab_read_tracer() -> None:
     run_feature.close()
 
 
-def test_production_workspace_creates_revises_and_validates_exact_recipe_drafts() -> None:
+def test_production_workspace_creates_validates_approves_and_versions_exact_recipes() -> None:
     app = _app()
     run_feature = DeterministicFakeRunMonitoringAdapter()
     scenario_feature = DeterministicFakeScenarioLabAdapter()
@@ -368,6 +387,9 @@ def test_production_workspace_creates_revises_and_validates_exact_recipe_drafts(
     app.processEvents()
     root = host.rootObject()
     assert root is not None
+    root.setWidth(1440)
+    root.setHeight(1200)
+    app.processEvents()
     segment_id = host._scenario_lab.historicalSegments[0]["segmentId"]
 
     host._scenario_lab.createRecipeDraft(
@@ -429,10 +451,130 @@ def test_production_workspace_creates_revises_and_validates_exact_recipe_drafts(
     assert validation["valid"] is True
     assert validation["dependencies"]["historicalSegmentId"] == segment_id
     assert validation["dependencies"]["recipeSchemaHash"]
+    assert validation["dependencies"]["transformationImplementations"]
+    assert validation["dependencies"]["dataPolicy"] == "point_in_time"
     assert root.findChild(QObject, "scenarioLabRecipeValidationRepeater") is not None
+    validation_text = " ".join(
+        str(item.property("text"))
+        for item in _quick_items(root)
+        if item.metaObject().indexOfProperty("text") >= 0
+        and item.property("text")
+    )
+    for exact_identity in (
+        validation["validationId"],
+        revised["payloadHash"],
+        validation["dependencies"]["historicalSegmentId"],
+        validation["dependencies"]["sourceSnapshotId"],
+        validation["dependencies"]["recipeSchemaHash"],
+        validation["dependencies"]["transformationCatalogHash"],
+        validation["dependencies"]["marketRuleProfileHash"],
+        validation["dependencies"]["dataPolicy"],
+    ):
+        assert exact_identity in validation_text
+    for exact_identity in (
+        *validation["dependencies"]["transformationImplementations"],
+        *validation["dependencies"]["causalityRules"],
+    ):
+        assert exact_identity in validation_text
+    for observation in validation["dependencies"]["compatibilityObservations"]:
+        assert observation["subject"] in validation_text
+        assert observation["explanation"] in validation_text
     assert "accepted" in host._scenario_lab.recipeCapabilityMessage
 
+    host._scenario_lab.approveRecipeValidation(validation["validationId"])
+    app.processEvents()
+    assert host._scenario_lab.approvedRecipeVersionCount == 1
+    approved = host._scenario_lab.approvedRecipeVersions[0]
+    assert approved["recipeId"]
+    assert approved["recipeVersionId"]
+    assert approved["versionNumber"] == 1
+    assert approved["contentHash"] == revised["payloadHash"]
+    assert approved["approvalId"]
+    assert approved["draftId"] == revised["draftId"]
+    assert approved["validationId"] == validation["validationId"]
+    assert approved["dependencyBindingAvailable"] is True
+    assert approved["authorityState"] == "current"
+    assert approved["canMaterialize"] is True
+    assert approved["historicalSegmentId"] == segment_id
+    assert approved["recipeSchemaHash"]
+    assert approved["materializationSeed"] == revised["materializationSeed"]
+    assert approved["transformations"][0]["transformationId"] == (
+        "volatility-scaling.v1"
+    )
+    assert approved["transformationImplementations"] == (
+        validation["dependencies"]["transformationImplementations"]
+    )
+    assert approved["dataPolicy"] == validation["dependencies"]["dataPolicy"]
+    assert approved["causalityRules"] == validation["dependencies"]["causalityRules"]
+    assert approved["compatibilityObservations"] == (
+        validation["dependencies"]["compatibilityObservations"]
+    )
+    assert root.findChild(QObject, "scenarioLabApprovedRecipeRepeater") is not None
+    approved_text = " ".join(
+        str(item.property("text"))
+        for item in _quick_items(root)
+        if item.metaObject().indexOfProperty("text") >= 0
+        and item.property("text")
+    )
+    for exact_identity in (
+        approved["recipeId"],
+        approved["recipeVersionId"],
+        approved["contentHash"],
+        approved["approvalId"],
+        approved["draftId"],
+        approved["validationId"],
+        approved["historicalSegmentContentHash"],
+        approved["sourceSnapshotContentHash"],
+        approved["transformationCatalogHash"],
+        approved["marketRuleProfileHash"],
+        approved["dataPolicy"],
+        str(approved["materializationSeed"]),
+        approved["transformations"][0]["transformationId"],
+    ):
+        assert exact_identity in approved_text
+    for exact_identity in (
+        *approved["transformationImplementations"],
+        *approved["causalityRules"],
+    ):
+        assert exact_identity in approved_text
+    for observation in approved["compatibilityObservations"]:
+        assert observation["subject"] in approved_text
+        assert observation["explanation"] in approved_text
+
+    host._scenario_lab.selectApprovedRecipeVersion(approved["recipeVersionId"])
+    assert host._scenario_lab.selectedRecipeVersionId == approved["recipeVersionId"]
+    host._scenario_lab.reviseSelectedRecipeDraft(
+        "QML immutable successor",
+        "volatility-scaling.v1",
+        "4",
+        "1",
+        "0.5",
+        "1.3",
+        1,
+        30,
+        82,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    app.processEvents()
+    successor = host._scenario_lab.recipeDrafts[-1]
+    assert successor["revision"] == 3
+    assert successor["predecessorDraftId"] == revised["draftId"]
+    assert successor["basedOnRecipeVersionId"] == approved["recipeVersionId"]
+    assert host._scenario_lab.approvedRecipeVersions[0] == approved
+
     host.close_adapter()
+    remounted = JourneyWorkspaceHost(
+        run_feature,
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
+        initial_route="scenario_lab",
+    )
+    app.processEvents()
+    assert remounted._scenario_lab.approvedRecipeVersionCount == 1
+    assert remounted._scenario_lab.approvedRecipeVersions[0] == approved
+    assert remounted._scenario_lab.recipeDrafts[-1] == successor
+    remounted.close_adapter()
     scenario_feature.close()
     run_feature.close()
 
@@ -624,6 +766,9 @@ class _AssessmentOverrideApplication:
 
     def scenario_recipe_validation_history(self):
         return self._delegate.scenario_recipe_validation_history()
+
+    def scenario_recipe_approval_history(self):
+        return self._delegate.scenario_recipe_approval_history()
 
     def recipe_authoring_capabilities(self):
         return self._delegate.recipe_authoring_capabilities()

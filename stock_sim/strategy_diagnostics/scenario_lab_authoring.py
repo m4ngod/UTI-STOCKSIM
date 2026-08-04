@@ -16,16 +16,24 @@ from sqlalchemy.engine import Engine
 from .historical_segments import HistoricalMarketSegment
 from .recipes import (
     AIRecipeAuthoringResult,
+    ApprovedScenarioRecipeVersion,
     RecipeValidationIssue,
     RecipeValidationResult,
     RecipeWorkbench,
     ScenarioRecipeDraft,
     ScenarioRecipeV1,
+    legacy_scenario_recipe_approval_identity,
 )
 
 
 ScenarioLabAuthoringMode = Literal["manual", "ai_assisted"]
 ScenarioLabCommandDisposition = Literal["accepted", "conflict", "rejected"]
+ScenarioRecipeApprovalAuthorityState = Literal[
+    "current",
+    "outdated",
+    "incompatible",
+    "unavailable",
+]
 
 
 def _canonical_value(value: object) -> object:
@@ -90,6 +98,17 @@ class ScenarioRecipeValidationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioRecipeApprovalRecord:
+    approval_id: str
+    version: ApprovedScenarioRecipeVersion
+    draft: ScenarioRecipeDraftRevisionRecord
+    validation: ScenarioRecipeValidationRecord | None
+    authority_state: ScenarioRecipeApprovalAuthorityState
+    authority_message: str
+    can_materialize: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ScenarioLabAuthoringCommandRecord:
     command_id: str
     idempotency_identity: str
@@ -112,6 +131,7 @@ class ScenarioLabAuthoringResult:
     command: ScenarioLabAuthoringCommandRecord | None = None
     draft: ScenarioRecipeDraftRevisionRecord | None = None
     validation: ScenarioRecipeValidationRecord | None = None
+    approval: ScenarioRecipeApprovalRecord | None = None
     authoritative_draft_revision: int | None = None
 
 
@@ -141,6 +161,10 @@ class ScenarioLabAuthoringRepository(Protocol):
 
     def get_command_by_idempotency(
         self, identity: str
+    ) -> ScenarioLabAuthoringCommandRecord | None: ...
+
+    def get_command(
+        self, command_id: str
     ) -> ScenarioLabAuthoringCommandRecord | None: ...
 
     def get_draft_by_accepted_command(
@@ -242,6 +266,11 @@ class InMemoryScenarioLabAuthoringRepository:
     ) -> ScenarioLabAuthoringCommandRecord | None:
         command_id = self._command_by_idempotency.get(identity)
         return None if command_id is None else self._commands[command_id]
+
+    def get_command(
+        self, command_id: str
+    ) -> ScenarioLabAuthoringCommandRecord | None:
+        return self._commands.get(command_id)
 
     def add_draft_revision(
         self, record: ScenarioRecipeDraftRevisionRecord
@@ -403,7 +432,7 @@ class SqlScenarioLabAuthoringRepository:
                     "command_id": command_id,
                 },
             )
-        loaded = self._get_command(command_id)
+        loaded = self.get_command(command_id)
         if loaded is None:
             raise ValueError("Scenario Lab command completion disappeared")
         return loaded
@@ -435,12 +464,12 @@ class SqlScenarioLabAuthoringRepository:
                     "command_id": command_id,
                 },
             )
-        loaded = self._get_command(command_id)
+        loaded = self.get_command(command_id)
         if loaded is None:
             raise ValueError("Scenario Lab command rejection disappeared")
         return loaded
 
-    def _get_command(
+    def get_command(
         self, command_id: str
     ) -> ScenarioLabAuthoringCommandRecord | None:
         with self._engine.connect() as connection:
@@ -846,6 +875,7 @@ class ScenarioLabAuthoringService:
 
         with self._lock:
             replay = self._replay_or_conflict(
+                command_id,
                 idempotency_identity,
                 canonical_content_identity,
                 "create_recipe_draft",
@@ -948,6 +978,7 @@ class ScenarioLabAuthoringService:
     ) -> ScenarioLabAuthoringResult:
         with self._lock:
             replay = self._replay_or_conflict(
+                command_id,
                 idempotency_identity,
                 canonical_content_identity,
                 "create_recipe_draft",
@@ -1031,6 +1062,7 @@ class ScenarioLabAuthoringService:
     ) -> ScenarioLabAuthoringResult:
         with self._lock:
             replay = self._replay_or_conflict(
+                command_id,
                 idempotency_identity,
                 canonical_content_identity,
                 "revise_recipe_draft",
@@ -1057,6 +1089,33 @@ class ScenarioLabAuthoringService:
                     message="The expected Scenario Recipe Draft revision is stale.",
                     authoritative_draft_revision=current_revision,
                 )
+            if based_on_version_id is not None:
+                based_on_version = next(
+                    (
+                        item
+                        for item in self._recipe_workbench.list_approved_versions()
+                        if item.version_id == based_on_version_id
+                    ),
+                    None,
+                )
+                if (
+                    based_on_version is None
+                    or based_on_version.recipe_id != predecessor.draft.recipe_id
+                    or (
+                        based_on_version.validation_result.draft_id
+                        != predecessor.draft.draft_id
+                        and predecessor.draft.based_on_version_id
+                        != based_on_version.version_id
+                    )
+                ):
+                    return ScenarioLabAuthoringResult(
+                        disposition="rejected",
+                        message=(
+                            "The based-on Approved Recipe Version must exist and "
+                            "belong to the exact predecessor Recipe Draft."
+                        ),
+                        authoritative_draft_revision=current_revision,
+                    )
             now = self._now()
             command = self._repository.claim_command(
                 _pending_command(
@@ -1119,6 +1178,7 @@ class ScenarioLabAuthoringService:
     ) -> ScenarioLabAuthoringResult:
         with self._lock:
             replay = self._replay_or_conflict(
+                command_id,
                 idempotency_identity,
                 canonical_content_identity,
                 "validate_recipe_draft",
@@ -1202,6 +1262,161 @@ class ScenarioLabAuthoringService:
                 authoritative_draft_revision=draft.revision,
             )
 
+    def approve_recipe(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        draft_id: str,
+        expected_draft_revision: int,
+        expected_payload_hash: str,
+        validation_id: str,
+        actor: str,
+    ) -> ScenarioLabAuthoringResult:
+        """Approve only one exact current validation and preserve replay truth."""
+
+        with self._lock:
+            replay = self._replay_or_conflict(
+                command_id,
+                idempotency_identity,
+                canonical_content_identity,
+                "approve_recipe",
+            )
+            if replay is not None:
+                return replay
+            draft = self._repository.get_draft_revision(draft_id)
+            if draft is None:
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message="The Scenario Recipe Draft is unavailable.",
+                )
+            current_revision = self._repository.current_recipe_revision(
+                draft.draft.recipe_id
+            )
+            if (
+                draft.revision != expected_draft_revision
+                or current_revision != expected_draft_revision
+                or draft.draft.payload_hash != expected_payload_hash
+            ):
+                return ScenarioLabAuthoringResult(
+                    disposition="conflict",
+                    message="The expected Scenario Recipe Draft facts are stale.",
+                    authoritative_draft_revision=current_revision,
+                )
+            validation = self._repository.get_validation(validation_id)
+            if (
+                validation is None
+                or validation.result.draft_id != draft_id
+                or validation.draft_revision != expected_draft_revision
+                or validation.result.payload_hash != expected_payload_hash
+                or not validation.result.is_valid
+                or validation.result.validated_recipe is None
+                or validation.result.recipe_content_hash is None
+            ):
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message=(
+                        "Approval requires the exact successful validation for "
+                        "the current immutable Draft revision and payload hash."
+                    ),
+                    authoritative_draft_revision=current_revision,
+                )
+            try:
+                current_dependencies = self._dependency_provider(
+                    draft.draft,
+                    validation.result,
+                )
+            except ValueError:
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message=(
+                        "The exact validation dependencies are unavailable; "
+                        "historical validation remains readable but cannot approve."
+                    ),
+                    authoritative_draft_revision=current_revision,
+                )
+            if current_dependencies != validation.dependencies:
+                return ScenarioLabAuthoringResult(
+                    disposition="rejected",
+                    message=(
+                        "The exact validation dependencies changed; reread and "
+                        "revalidate before approval."
+                    ),
+                    authoritative_draft_revision=current_revision,
+                )
+            command = self._repository.claim_command(
+                _pending_command(
+                    command_id=command_id,
+                    idempotency_identity=idempotency_identity,
+                    canonical_content_identity=canonical_content_identity,
+                    operation="approve_recipe",
+                    expected_source_revision=expected_source_revision,
+                    expected_source_generation=expected_source_generation,
+                    created_at=self._now(),
+                )
+            )
+            existing_versions = tuple(
+                item
+                for item in self._recipe_workbench.list_approved_versions()
+                if item.validation_result.draft_id == draft_id
+            )
+            if len(existing_versions) > 1:
+                raise RuntimeError(
+                    "Scenario Recipe Draft has multiple immutable approvals"
+                )
+            if existing_versions:
+                version = existing_versions[0]
+                if (
+                    version.approval_actor != actor
+                    or version.validation_identity != validation_id
+                    or version.approval_command_identity != command.command_id
+                ):
+                    message = (
+                        "The Scenario Recipe Draft already belongs to a "
+                        "different immutable approval."
+                    )
+                    rejected = self._repository.reject_command(
+                        command.command_id,
+                        message=message,
+                        result_kind="approval_rejection",
+                        result_identity=draft_id,
+                        completed_at=self._now(),
+                    )
+                    return ScenarioLabAuthoringResult(
+                        disposition="rejected",
+                        message=rejected.message,
+                        command=rejected,
+                        authoritative_draft_revision=current_revision,
+                    )
+            else:
+                version = self._recipe_workbench.approve_draft(
+                    draft_id,
+                    actor=actor,
+                    validation_identity=validation_id,
+                    command_identity=command.command_id,
+                )
+            approval = self._approval_record(version)
+            if approval is None:
+                raise RuntimeError(
+                    "Typed Scenario Recipe approval evidence is unavailable"
+                )
+            completed = self._repository.complete_command(
+                command.command_id,
+                result_kind="approved_recipe_version",
+                result_identity=version.version_id,
+                completed_at=self._now(),
+            )
+            return ScenarioLabAuthoringResult(
+                disposition="accepted",
+                message=completed.message,
+                command=completed,
+                approval=approval,
+                authoritative_draft_revision=draft.revision,
+            )
+
     def list_drafts(self) -> tuple[ScenarioRecipeDraftRevisionRecord, ...]:
         with self._lock:
             return self._repository.list_draft_revisions()
@@ -1210,9 +1425,17 @@ class ScenarioLabAuthoringService:
         with self._lock:
             return self._repository.list_validations()
 
+    def list_approvals(self) -> tuple[ScenarioRecipeApprovalRecord, ...]:
+        with self._lock:
+            return tuple(
+                self._approval_record(version)
+                for version in self._recipe_workbench.list_approved_versions()
+            )
+
     def replay(
         self,
         *,
+        command_id: str,
         idempotency_identity: str,
         canonical_content_identity: str,
         operation: str,
@@ -1221,6 +1444,7 @@ class ScenarioLabAuthoringService:
 
         with self._lock:
             return self._replay_or_conflict(
+                command_id,
                 idempotency_identity,
                 canonical_content_identity,
                 operation,
@@ -1228,6 +1452,7 @@ class ScenarioLabAuthoringService:
 
     def _replay_or_conflict(
         self,
+        command_id: str,
         idempotency_identity: str,
         canonical_content_identity: str,
         operation: str,
@@ -1236,7 +1461,16 @@ class ScenarioLabAuthoringService:
             idempotency_identity
         )
         if existing is None:
-            return None
+            command_collision = self._repository.get_command(command_id)
+            if command_collision is None:
+                return None
+            return ScenarioLabAuthoringResult(
+                disposition="conflict",
+                message=(
+                    "The command identity is already bound to a different "
+                    "idempotency identity."
+                ),
+            )
         if (
             existing.canonical_content_identity != canonical_content_identity
             or existing.operation != operation
@@ -1291,6 +1525,39 @@ class ScenarioLabAuthoringService:
                             recovered_validation.draft_revision
                         ),
                     )
+            elif operation == "approve_recipe":
+                recovered_versions = tuple(
+                    item
+                    for item in self._recipe_workbench.list_approved_versions()
+                    if item.approval_command_identity == existing.command_id
+                )
+                if len(recovered_versions) > 1:
+                    raise RuntimeError(
+                        "Scenario Lab approval command has multiple results"
+                    )
+                if recovered_versions:
+                    recovered_approval = self._approval_record(
+                        recovered_versions[0]
+                    )
+                    if recovered_approval.validation is None:
+                        raise RuntimeError(
+                            "Recovered Scenario Recipe approval is incomplete"
+                        )
+                    completed = self._repository.complete_command(
+                        existing.command_id,
+                        result_kind="approved_recipe_version",
+                        result_identity=recovered_versions[0].version_id,
+                        completed_at=self._now(),
+                    )
+                    return ScenarioLabAuthoringResult(
+                        disposition="accepted",
+                        message=completed.message,
+                        command=completed,
+                        approval=recovered_approval,
+                        authoritative_draft_revision=(
+                            recovered_approval.validation.draft_revision
+                        ),
+                    )
             return None
         if existing.result_kind == "recipe_draft":
             draft = self._repository.get_draft_revision(
@@ -1320,6 +1587,38 @@ class ScenarioLabAuthoringService:
                     else validation.draft_revision
                 ),
             )
+        if existing.result_kind == "approved_recipe_version":
+            version = self._recipe_workbench.get_version(
+                str(existing.result_identity)
+            )
+            approval = self._approval_record(version)
+            if approval.validation is None:
+                raise RuntimeError(
+                    "Stored Scenario Recipe approval result is incomplete"
+                )
+            return ScenarioLabAuthoringResult(
+                disposition="accepted",
+                message=existing.message,
+                command=existing,
+                approval=approval,
+                authoritative_draft_revision=approval.validation.draft_revision,
+            )
+        if existing.result_kind == "approval_rejection":
+            if existing.disposition != "rejected":
+                raise RuntimeError(
+                    "Stored Scenario Recipe approval rejection is not terminal"
+                )
+            rejected_draft = self._repository.get_draft_revision(
+                str(existing.result_identity)
+            )
+            return ScenarioLabAuthoringResult(
+                disposition="rejected",
+                message=existing.message,
+                command=existing,
+                authoritative_draft_revision=(
+                    None if rejected_draft is None else rejected_draft.revision
+                ),
+            )
         if existing.result_kind == "ai_authoring_attempt":
             if existing.disposition != "rejected":
                 raise RuntimeError(
@@ -1331,6 +1630,112 @@ class ScenarioLabAuthoringService:
                 command=existing,
             )
         raise RuntimeError("Stored Scenario Lab command result kind is invalid")
+
+    def _approval_record(
+        self,
+        version: ApprovedScenarioRecipeVersion,
+    ) -> ScenarioRecipeApprovalRecord:
+        approval_id = version.approval_id
+        validation_identity = version.validation_identity
+        command_identity = version.approval_command_identity
+        exact_bindings = (
+            approval_id is not None,
+            validation_identity is not None,
+            command_identity is not None,
+        )
+        if any(exact_bindings) and not all(exact_bindings):
+            raise ValueError(
+                "Approved Scenario Recipe exact binding is incomplete"
+            )
+        if not any(exact_bindings):
+            legacy_draft = self._recipe_workbench.get_draft(
+                version.validation_result.draft_id
+            )
+            return ScenarioRecipeApprovalRecord(
+                approval_id=legacy_scenario_recipe_approval_identity(
+                    version_id=version.version_id,
+                    actor=version.approval_actor,
+                    approved_at=version.approved_at,
+                ),
+                version=version,
+                draft=ScenarioRecipeDraftRevisionRecord(
+                    draft=legacy_draft,
+                    revision=version.version_number,
+                    predecessor_draft_id=None,
+                    authoring_mode="manual",
+                    assistant_attempt_id=None,
+                    accepted_command_id=(
+                        "legacy-unbound-approval:" + version.version_id
+                    ),
+                ),
+                validation=None,
+                authority_state="unavailable",
+                authority_message=(
+                    "Historical approval predates exact Scenario Lab command and "
+                    "dependency bindings; immutable truth remains readable but "
+                    "cannot gain materialization authority."
+                ),
+                can_materialize=False,
+            )
+        if approval_id is None or validation_identity is None:
+            raise RuntimeError("Exact Scenario Recipe approval binding disappeared")
+        validation = self._repository.get_validation(validation_identity)
+        if validation is None:
+            raise ValueError(
+                "Approved Scenario Recipe exact validation history is unavailable"
+            )
+        if validation.result != version.validation_result:
+            raise ValueError(
+                "Approved Scenario Recipe validation snapshot mismatch"
+            )
+        draft = self._repository.get_draft_revision(
+            version.validation_result.draft_id
+        )
+        if draft is None:
+            raise ValueError(
+                "Approved Scenario Recipe Draft lineage is unavailable"
+            )
+        try:
+            current_dependencies = self._dependency_provider(
+                draft.draft,
+                validation.result,
+            )
+        except ValueError:
+            authority_state: ScenarioRecipeApprovalAuthorityState = "unavailable"
+            authority_message = (
+                "One or more exact approval dependencies are unavailable."
+            )
+        else:
+            incompatible = any(
+                state == "incompatible"
+                for _subject, state, _explanation in (
+                    current_dependencies.compatibility_observations
+                )
+            )
+            if incompatible:
+                authority_state = "incompatible"
+                authority_message = (
+                    "Current dependency compatibility is incompatible with approval."
+                )
+            elif current_dependencies != validation.dependencies:
+                authority_state = "outdated"
+                authority_message = (
+                    "Approval dependencies changed; historical truth is retained."
+                )
+            else:
+                authority_state = "current"
+                authority_message = (
+                    "Approval is bound to the current exact dependency identities."
+                )
+        return ScenarioRecipeApprovalRecord(
+            approval_id=approval_id,
+            version=version,
+            draft=draft,
+            validation=validation,
+            authority_state=authority_state,
+            authority_message=authority_message,
+            can_materialize=authority_state == "current",
+        )
 
     def _now(self) -> datetime:
         value = self._clock()
@@ -1376,7 +1781,9 @@ def _command_from_row(
         disposition=str(row["disposition"]),
         message=str(row["message"]),
         expected_source_revision=str(row["expected_source_revision"]),
-        expected_source_generation=int(row["expected_source_generation"]),
+        expected_source_generation=int(
+            str(row["expected_source_generation"])
+        ),
         result_kind=(
             str(row["result_kind"])
             if row["result_kind"] is not None
@@ -1441,6 +1848,8 @@ __all__ = [
     "InMemoryScenarioLabAuthoringRepository",
     "ScenarioLabAuthoringResult",
     "ScenarioLabAuthoringService",
+    "ScenarioRecipeApprovalAuthorityState",
+    "ScenarioRecipeApprovalRecord",
     "ScenarioRecipeDraftRevisionRecord",
     "ScenarioRecipeValidationDependencyRecord",
     "ScenarioRecipeValidationRecord",
