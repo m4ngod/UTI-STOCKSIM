@@ -61,6 +61,23 @@ function ConvertTo-ReleaseErrorList {
     }
 }
 
+function Test-ExactStringArray {
+    param(
+        [AllowNull()]
+        [object]$Actual,
+        [AllowNull()]
+        [object]$Expected
+    )
+
+    $actualValues = @($Actual | ForEach-Object { [string]$_ })
+    $expectedValues = @($Expected | ForEach-Object { [string]$_ })
+    return (
+        $actualValues.Count -eq $expectedValues.Count -and
+        ($actualValues -join [char]0) -ceq
+            ($expectedValues -join [char]0)
+    )
+}
+
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -291,11 +308,11 @@ if ($installSucceeded) {
     $expectedJourneySignatures = @(
         "launched_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
         "terminal_evidence|evidence_and_findings|terminal|ready|fresh|fresh",
-        "disconnected_run|run_monitoring|terminal|ready|disconnected|disconnected",
+        "disconnected_run|run_monitoring|terminal|ready|disconnected|fresh",
         "disconnected_evidence|evidence_and_findings|terminal|ready|disconnected|disconnected",
         "reconnected_pending_run|run_monitoring|terminal|ready|stale|stale",
         "reconnected_pending_evidence|evidence_and_findings|terminal|ready|stale|stale",
-        "reconnected_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
+        "reconnected_terminal_run|run_monitoring|terminal|ready|fresh|stale",
         "reconnected_evidence|evidence_and_findings|terminal|ready|fresh|fresh",
         "remounted_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
         "remounted_terminal_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
@@ -303,6 +320,10 @@ if ($installSucceeded) {
     $expectedProductionPath = @(
         "DiagnosticsApplication",
         "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+        "LiveStrategyLibraryAdapter",
+        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+        "LiveScenarioLabAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveStrategyDiagnosticsV1ApplicationAdapter",
@@ -312,6 +333,8 @@ if ($installSucceeded) {
         "JourneyWorkspaceHost"
     )
     $expectedRoutes = @(
+        "strategy_library",
+        "scenario_lab",
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings"
@@ -322,6 +345,17 @@ if ($installSucceeded) {
         "validate_configuration",
         "approve_configuration",
         "start_formal_diagnostic_campaign"
+    )
+    $expectedSetupCommandKinds = @(
+        "compare_formal_strategy_set",
+        "select_formal_strategy_set",
+        "create_recipe_draft",
+        "validate_recipe_draft",
+        "approve_recipe",
+        "materialize_reference_path",
+        "compose_formal_scenario_set",
+        "resolve_execution_assumptions",
+        "select_formal_scenario_set"
     )
     $expectedTransitions = @(
         "connected",
@@ -451,6 +485,187 @@ if ($installSucceeded) {
                     ($expectedTransitions -join "|")
             )
             $acceptedCommandKinds = @($smoke.accepted_command_kinds)
+            $installedSetupCommandKinds = @(
+                $smoke.installed_setup_command_kinds
+            )
+            $installedRecipeDraftIdentities = @(
+                $smoke.installed_recipe_draft_identities
+            )
+            $installedRecipeValidationIdentities = @(
+                $smoke.installed_recipe_validation_identities
+            )
+            $installedApprovedRecipeIdentities = @(
+                $smoke.installed_approved_recipe_identities
+            )
+            $installedMaterializationTaskHandleIdentities = @(
+                $smoke.installed_materialization_task_handle_identities
+            )
+            $installedMaterializedPathIdentities = @(
+                $smoke.installed_materialized_path_identities
+            )
+            $installedMaterializedScenarioIdentities = @(
+                $smoke.installed_materialized_scenario_identities
+            )
+            $installedRecipeFamilyValid = $true
+            foreach ($identityFamily in @(
+                $installedRecipeDraftIdentities,
+                $installedRecipeValidationIdentities,
+                $installedApprovedRecipeIdentities,
+                $installedMaterializationTaskHandleIdentities,
+                $installedMaterializedPathIdentities,
+                $installedMaterializedScenarioIdentities
+            )) {
+                if (
+                    @($identityFamily).Count -ne 14 -or
+                    @(
+                        $identityFamily |
+                            Where-Object {
+                                [string]::IsNullOrWhiteSpace([string]$_)
+                            }
+                    ).Count -ne 0 -or
+                    @($identityFamily | Sort-Object -Unique).Count -ne 14
+                ) {
+                    $installedRecipeFamilyValid = $false
+                }
+            }
+            $selectedRecipeIndex = [Array]::IndexOf(
+                [Array]$installedApprovedRecipeIdentities,
+                [string]$smoke.approved_recipe_identity
+            )
+            $installedRecipeBindingValid = (
+                $selectedRecipeIndex -ge 0 -and
+                [string]$smoke.recipe_draft_identity -eq
+                    [string]$installedRecipeDraftIdentities[$selectedRecipeIndex] -and
+                [string]$smoke.recipe_validation_identity -eq
+                    [string]$installedRecipeValidationIdentities[$selectedRecipeIndex] -and
+                [string]$smoke.materialization_task_handle_identity -eq
+                    [string]$installedMaterializationTaskHandleIdentities[$selectedRecipeIndex] -and
+                [string]$smoke.materialized_path_identity -eq
+                    [string]$installedMaterializedPathIdentities[$selectedRecipeIndex] -and
+                [string]$smoke.materialized_scenario_identity -eq
+                    [string]$installedMaterializedScenarioIdentities[$selectedRecipeIndex]
+            )
+            $terminalCaseBindingValid = (
+                $smoke.terminal_case_manifest_binding_verified -is [bool] -and
+                $smoke.terminal_case_manifest_binding_verified -eq $true -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$smoke.terminal_campaign_case_identity
+                ) -and
+                [string]$smoke.terminal_campaign_case_identity -eq
+                    [string]$smoke.case_identity -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$smoke.terminal_selected_campaign_case_identity
+                ) -and
+                [string]$smoke.terminal_selected_campaign_case_identity -eq
+                    [string]$smoke.materialized_scenario_identity -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$smoke.terminal_node_market_scenario_identity
+                ) -and
+                [string]$smoke.terminal_node_market_scenario_identity -eq
+                    [string]$smoke.materialized_path_identity -and
+                [string]$smoke.terminal_campaign_node_lifecycle -eq
+                    "completed"
+            )
+            $expectedSetupLedger = [ordered]@{}
+            if ($installedRecipeFamilyValid) {
+                $draftValidationApprovalBindings = @(
+                    for ($index = 0; $index -lt 14; $index++) {
+                        "$($installedRecipeDraftIdentities[$index])|" +
+                            "$($installedRecipeValidationIdentities[$index])|" +
+                            "$($installedApprovedRecipeIdentities[$index])"
+                    }
+                ) | Sort-Object
+                $materializationBindings = @(
+                    for ($index = 0; $index -lt 14; $index++) {
+                        "$($installedApprovedRecipeIdentities[$index])|" +
+                            "$($installedMaterializationTaskHandleIdentities[$index])|" +
+                            "$($installedMaterializedPathIdentities[$index])"
+                    }
+                ) | Sort-Object
+                $campaignCaseBindings = @(
+                    for ($index = 0; $index -lt 14; $index++) {
+                        "$($installedApprovedRecipeIdentities[$index])|" +
+                            "$($installedMaterializedPathIdentities[$index])|" +
+                            "$($installedMaterializedScenarioIdentities[$index])"
+                    }
+                ) | Sort-Object
+                $expectedSetupLedger = [ordered]@{
+                    recipe_drafts = @(
+                        $installedRecipeDraftIdentities | Sort-Object
+                    )
+                    recipe_validations = @(
+                        $installedRecipeValidationIdentities | Sort-Object
+                    )
+                    approved_recipes = @(
+                        $installedApprovedRecipeIdentities | Sort-Object
+                    )
+                    materialization_task_handles = @(
+                        $installedMaterializationTaskHandleIdentities |
+                            Sort-Object
+                    )
+                    materialized_paths = @(
+                        $installedMaterializedPathIdentities | Sort-Object
+                    )
+                    materialized_scenarios = @(
+                        $installedMaterializedScenarioIdentities | Sort-Object
+                    )
+                    draft_validation_approval_bindings = (
+                        $draftValidationApprovalBindings
+                    )
+                    materialization_bindings = $materializationBindings
+                    campaign_case_bindings = $campaignCaseBindings
+                    formal_scenario_sets = @(
+                        [string]$smoke.formal_scenario_set_identity
+                    )
+                    scenario_selection_contexts = @(
+                        [string]$smoke.scenario_selection_context_identity
+                    )
+                    scenario_selection_set_bindings = @(
+                        "$([string]$smoke.scenario_selection_context_identity)|" +
+                            "$([string]$smoke.formal_scenario_set_identity)"
+                    )
+                    strategy_selection_contexts = @(
+                        [string]$smoke.strategy_selection_context_identity
+                    )
+                    setup_selection_contexts = @(
+                        [string]$smoke.setup_selection_context_identity
+                    )
+                    task_scenario_selection_contexts = @(
+                        [string]$smoke.scenario_selection_context_identity
+                    )
+                }
+            }
+            $actualSetupLedger = $smoke.reopened_installed_setup_ledger
+            $installedSetupLedgerReopenedValid = (
+                $smoke.installed_setup_ledger_reopened -is [bool] -and
+                $smoke.installed_setup_ledger_reopened -eq $true -and
+                $null -ne $actualSetupLedger -and
+                $expectedSetupLedger.Count -eq 15
+            )
+            if ($installedSetupLedgerReopenedValid) {
+                $actualLedgerKeys = @(
+                    $actualSetupLedger.PSObject.Properties.Name |
+                        Sort-Object
+                )
+                $expectedLedgerKeys = @(
+                    $expectedSetupLedger.Keys | Sort-Object
+                )
+                $installedSetupLedgerReopenedValid = (Test-ExactStringArray -Actual $actualLedgerKeys -Expected $expectedLedgerKeys)
+            }
+            if ($installedSetupLedgerReopenedValid) {
+                foreach ($ledgerKey in $expectedSetupLedger.Keys) {
+                    $actualLedgerProperty = (
+                        $actualSetupLedger.PSObject.Properties[$ledgerKey]
+                    )
+                    if (
+                        $null -eq $actualLedgerProperty -or
+                        -not (Test-ExactStringArray -Actual $actualLedgerProperty.Value -Expected $expectedSetupLedger[$ledgerKey])
+                    ) {
+                        $installedSetupLedgerReopenedValid = $false
+                        break
+                    }
+                }
+            }
             $taskHandleIdentities = @($smoke.task_handle_identities)
             $taskHandleIdentitiesValid = (
                 $taskHandleIdentities.Count -ge 3 -and
@@ -463,9 +678,46 @@ if ($installSucceeded) {
                 @($taskHandleIdentities | Sort-Object -Unique).Count -eq
                     $taskHandleIdentities.Count
             )
-            $installedWave2JourneyValid = (
+            $installedWave3JourneyValid = (
                 [string]$smoke.fixture_kind -eq
-                    "authoritative_writable_wave2_inputs" -and
+                    "authoritative_writable_wave3_inputs" -and
+                $smoke.strategy_selection_created_after_install -is [bool] -and
+                $smoke.strategy_selection_created_after_install -eq $true -and
+                $smoke.recipe_draft_created_after_install -is [bool] -and
+                $smoke.recipe_draft_created_after_install -eq $true -and
+                $smoke.recipe_validation_created_after_install -is [bool] -and
+                $smoke.recipe_validation_created_after_install -eq $true -and
+                $smoke.recipe_approval_created_after_install -is [bool] -and
+                $smoke.recipe_approval_created_after_install -eq $true -and
+                $smoke.reference_path_materialized_after_install -is [bool] -and
+                $smoke.reference_path_materialized_after_install -eq $true -and
+                $smoke.scenario_set_created_after_install -is [bool] -and
+                $smoke.scenario_set_created_after_install -eq $true -and
+                $smoke.scenario_selection_created_after_install -is [bool] -and
+                $smoke.scenario_selection_created_after_install -eq $true -and
+                ($installedSetupCommandKinds -join "|") -eq
+                    ($expectedSetupCommandKinds -join "|") -and
+                $installedRecipeFamilyValid -and
+                $installedRecipeBindingValid -and
+                $terminalCaseBindingValid -and
+                $installedSetupLedgerReopenedValid -and
+                @(
+                    @(
+                        [string]$smoke.strategy_selection_context_identity,
+                        [string]$smoke.recipe_draft_identity,
+                        [string]$smoke.recipe_validation_identity,
+                        [string]$smoke.approved_recipe_identity,
+                        [string]$smoke.materialization_task_handle_identity,
+                        [string]$smoke.materialized_path_identity,
+                        [string]$smoke.materialized_scenario_identity,
+                        [string]$smoke.formal_scenario_set_identity,
+                        [string]$smoke.scenario_selection_context_identity,
+                        [string]$smoke.setup_selection_context_identity
+                    ) |
+                        Where-Object {
+                            [string]::IsNullOrWhiteSpace([string]$_)
+                        }
+                ).Count -eq 0 -and
                 $smoke.task_created_after_install -is [bool] -and
                 $smoke.task_created_after_install -eq $true -and
                 $smoke.campaign_created_after_install -is [bool] -and
@@ -528,6 +780,16 @@ if ($installSucceeded) {
                 $smoke.persisted_run_identities
             )
             $rawArtifactHashes = @($smoke.raw_artifact_hashes)
+            $installedMaterializedPathsPersisted = (
+                @(
+                    $installedMaterializedPathIdentities |
+                        Where-Object { $_ -notin $rawArtifactHashes }
+                ).Count -eq 0
+            )
+            $installedWave3JourneyValid = (
+                $installedWave3JourneyValid -and
+                $installedMaterializedPathsPersisted
+            )
             $persistedIdentitySetsValid = (
                 $persistedManifestIdentities.Count -gt 0 -and
                 $persistedRunIdentities.Count -gt 0 -and
@@ -642,7 +904,7 @@ if ($installSucceeded) {
                 [string]$smoke.application_read_model_interface -eq
                     "StrategyDiagnosticsV1ApplicationReadModel/1.0" -and
                 ($activeFeatureInterfaces -join "|") -eq
-                    "DiagnosticTasksFeature/1.0|RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1" -and
+                    "StrategyLibraryFeature/1.0|ScenarioLabFeature/1.0|DiagnosticTasksFeature/1.0|RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1" -and
                 [string]$smoke.campaign_status -eq "completed" -and
                 [string]$smoke.run_status -eq "completed" -and
                 [string]$smoke.evidence_status -eq "sealed" -and
@@ -650,7 +912,7 @@ if ($installSucceeded) {
                 $identitySetsValid -and
                 $identityCheckpointsValid -and
                 $releaseBehaviorValid -and
-                $installedWave2JourneyValid
+                $installedWave3JourneyValid
             )
             $rendererLanes[$lane] = [ordered]@{
                 exit_code = $exitCode
@@ -662,6 +924,97 @@ if ($installSucceeded) {
                 production_path = $productionPath
                 production_path_matches = $productionPathMatches
                 fixture_kind = [string]$smoke.fixture_kind
+                strategy_selection_created_after_install = (
+                    $smoke.strategy_selection_created_after_install -is [bool] -and
+                    $smoke.strategy_selection_created_after_install -eq $true
+                )
+                recipe_draft_created_after_install = (
+                    $smoke.recipe_draft_created_after_install -is [bool] -and
+                    $smoke.recipe_draft_created_after_install -eq $true
+                )
+                recipe_validation_created_after_install = (
+                    $smoke.recipe_validation_created_after_install -is [bool] -and
+                    $smoke.recipe_validation_created_after_install -eq $true
+                )
+                recipe_approval_created_after_install = (
+                    $smoke.recipe_approval_created_after_install -is [bool] -and
+                    $smoke.recipe_approval_created_after_install -eq $true
+                )
+                reference_path_materialized_after_install = (
+                    $smoke.reference_path_materialized_after_install -is [bool] -and
+                    $smoke.reference_path_materialized_after_install -eq $true
+                )
+                scenario_set_created_after_install = (
+                    $smoke.scenario_set_created_after_install -is [bool] -and
+                    $smoke.scenario_set_created_after_install -eq $true
+                )
+                scenario_selection_created_after_install = (
+                    $smoke.scenario_selection_created_after_install -is [bool] -and
+                    $smoke.scenario_selection_created_after_install -eq $true
+                )
+                strategy_selection_context_identity = (
+                    [string]$smoke.strategy_selection_context_identity
+                )
+                recipe_draft_identity = [string]$smoke.recipe_draft_identity
+                recipe_validation_identity = (
+                    [string]$smoke.recipe_validation_identity
+                )
+                materialization_task_handle_identity = (
+                    [string]$smoke.materialization_task_handle_identity
+                )
+                materialized_path_identity = (
+                    [string]$smoke.materialized_path_identity
+                )
+                materialized_scenario_identity = (
+                    [string]$smoke.materialized_scenario_identity
+                )
+                terminal_campaign_case_identity = (
+                    [string]$smoke.terminal_campaign_case_identity
+                )
+                terminal_selected_campaign_case_identity = (
+                    [string]$smoke.terminal_selected_campaign_case_identity
+                )
+                terminal_node_market_scenario_identity = (
+                    [string]$smoke.terminal_node_market_scenario_identity
+                )
+                terminal_campaign_node_lifecycle = (
+                    [string]$smoke.terminal_campaign_node_lifecycle
+                )
+                terminal_case_manifest_binding_verified = (
+                    $terminalCaseBindingValid
+                )
+                installed_setup_ledger_reopened = (
+                    $installedSetupLedgerReopenedValid
+                )
+                reopened_installed_setup_ledger = $actualSetupLedger
+                formal_scenario_set_identity = (
+                    [string]$smoke.formal_scenario_set_identity
+                )
+                scenario_selection_context_identity = (
+                    [string]$smoke.scenario_selection_context_identity
+                )
+                setup_selection_context_identity = (
+                    [string]$smoke.setup_selection_context_identity
+                )
+                installed_setup_command_kinds = $installedSetupCommandKinds
+                installed_recipe_draft_identities = (
+                    $installedRecipeDraftIdentities
+                )
+                installed_recipe_validation_identities = (
+                    $installedRecipeValidationIdentities
+                )
+                installed_approved_recipe_identities = (
+                    $installedApprovedRecipeIdentities
+                )
+                installed_materialization_task_handle_identities = (
+                    $installedMaterializationTaskHandleIdentities
+                )
+                installed_materialized_path_identities = (
+                    $installedMaterializedPathIdentities
+                )
+                installed_materialized_scenario_identities = (
+                    $installedMaterializedScenarioIdentities
+                )
                 task_created_after_install = (
                     $smoke.task_created_after_install -is [bool] -and
                     $smoke.task_created_after_install -eq $true
@@ -691,8 +1044,8 @@ if ($installSucceeded) {
                     $smoke.task_cancel_order_isolation_verified -is [bool] -and
                     $smoke.task_cancel_order_isolation_verified -eq $true
                 )
-                installed_wave2_journey_valid = (
-                    $installedWave2JourneyValid
+                installed_wave3_journey_valid = (
+                    $installedWave3JourneyValid
                 )
                 campaign_identity = [string]$smoke.campaign_identity
                 case_identity = [string]$smoke.case_identity
@@ -804,6 +1157,36 @@ if ($installSucceeded) {
                 production_path = @()
                 production_path_matches = $false
                 fixture_kind = ""
+                strategy_selection_created_after_install = $false
+                recipe_draft_created_after_install = $false
+                recipe_validation_created_after_install = $false
+                recipe_approval_created_after_install = $false
+                reference_path_materialized_after_install = $false
+                scenario_set_created_after_install = $false
+                scenario_selection_created_after_install = $false
+                strategy_selection_context_identity = ""
+                recipe_draft_identity = ""
+                recipe_validation_identity = ""
+                materialization_task_handle_identity = ""
+                materialized_path_identity = ""
+                materialized_scenario_identity = ""
+                terminal_campaign_case_identity = ""
+                terminal_selected_campaign_case_identity = ""
+                terminal_node_market_scenario_identity = ""
+                terminal_campaign_node_lifecycle = ""
+                terminal_case_manifest_binding_verified = $false
+                installed_setup_ledger_reopened = $false
+                reopened_installed_setup_ledger = [ordered]@{}
+                formal_scenario_set_identity = ""
+                scenario_selection_context_identity = ""
+                setup_selection_context_identity = ""
+                installed_setup_command_kinds = @()
+                installed_recipe_draft_identities = @()
+                installed_recipe_validation_identities = @()
+                installed_approved_recipe_identities = @()
+                installed_materialization_task_handle_identities = @()
+                installed_materialized_path_identities = @()
+                installed_materialized_scenario_identities = @()
                 task_created_after_install = $false
                 campaign_created_after_install = $false
                 diagnostic_task_identity = ""
@@ -813,7 +1196,7 @@ if ($installSucceeded) {
                 application_reopened = $false
                 background_continuation_verified = $false
                 task_cancel_order_isolation_verified = $false
-                installed_wave2_journey_valid = $false
+                installed_wave3_journey_valid = $false
                 campaign_identity = ""
                 case_identity = ""
                 run_identity = ""
@@ -921,7 +1304,7 @@ $gatePassed = (
     $rendererLanes.hardware.source_commit_matches -and
     $rendererLanes.hardware.production_path_matches -and
     $rendererLanes.hardware.real_v1_identity_valid -and
-    $rendererLanes.hardware.installed_wave2_journey_valid -and
+    $rendererLanes.hardware.installed_wave3_journey_valid -and
     $rendererLanes.hardware.routes_match -and
     $rendererLanes.hardware.connection_transitions_match -and
     $rendererLanes.hardware.states_match -and
@@ -935,7 +1318,7 @@ $gatePassed = (
     $rendererLanes.software.source_commit_matches -and
     $rendererLanes.software.production_path_matches -and
     $rendererLanes.software.real_v1_identity_valid -and
-    $rendererLanes.software.installed_wave2_journey_valid -and
+    $rendererLanes.software.installed_wave3_journey_valid -and
     $rendererLanes.software.routes_match -and
     $rendererLanes.software.connection_transitions_match -and
     $rendererLanes.software.states_match -and

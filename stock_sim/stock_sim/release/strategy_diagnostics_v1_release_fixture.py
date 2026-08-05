@@ -59,13 +59,20 @@ RELEASE_FIXTURE_CLOCK = datetime(2026, 7, 28, 8, 0, tzinfo=UTC)
 FORMAL_V1_RELEASE_FIXTURE_DIRNAME = "strategy-diagnostics-v1-fixture"
 FORMAL_V1_RELEASE_FIXTURE_ARCHIVE = "strategy-diagnostics-v1-fixture.zip"
 FORMAL_V1_RELEASE_FIXTURE_MANIFEST = "fixture-manifest.json"
-WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME = (
-    "strategy-diagnostics-v1-wave2-input-fixture"
+WAVE3_RELEASE_INPUT_FIXTURE_DIRNAME = (
+    "strategy-diagnostics-v1-wave3-authoritative-inputs"
 )
-WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE = (
-    "strategy-diagnostics-v1-wave2-input-fixture.zip"
+WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE = (
+    "strategy-diagnostics-v1-wave3-authoritative-inputs.zip"
 )
-WAVE2_RELEASE_INPUT_FIXTURE_MANIFEST = "wave2-input-fixture-manifest.json"
+WAVE3_RELEASE_INPUT_FIXTURE_MANIFEST = (
+    "wave3-authoritative-inputs-manifest.json"
+)
+# Retain the Wave 2 symbol surface for source-compatible packaging tests and
+# callers while the artifact itself now truthfully identifies Wave 3 inputs.
+WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME = WAVE3_RELEASE_INPUT_FIXTURE_DIRNAME
+WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE = WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE
+WAVE2_RELEASE_INPUT_FIXTURE_MANIFEST = WAVE3_RELEASE_INPUT_FIXTURE_MANIFEST
 _FORMAL_V1_RELEASE_FIXTURE_DATABASE = "strategy-diagnostics-v1.sqlite3"
 _FORMAL_V1_RELEASE_FIXTURE_ARTIFACTS = "artifacts"
 _SOURCE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -403,6 +410,10 @@ class FileBackedWave2ReleaseInputFixture:
     database_path: Path
     artifact_root: Path
     authoritative_input_identities: tuple[str, ...]
+    persisted_recipe_draft_count: int
+    persisted_approved_recipe_count: int
+    persisted_materialized_path_count: int
+    persisted_campaign_case_count: int
     persisted_diagnostic_task_count: int
     persisted_formal_campaign_count: int
     _closed: bool = field(default=False, init=False, compare=False)
@@ -429,10 +440,14 @@ class FileBackedWave2ReleaseInputFixture:
 
 @dataclass(frozen=True, slots=True)
 class SealedWave2ReleaseInputFixtureManifest:
-    """Build-time seal for writable installed Wave 2 input state."""
+    """Build-time seal for writable installed Wave 3 input state."""
 
     schema_version: int
     source_commit: str
+    initial_recipe_draft_count: int
+    initial_approved_recipe_count: int
+    initial_materialized_path_count: int
+    initial_campaign_case_count: int
     initial_diagnostic_task_count: int
     initial_formal_campaign_count: int
     authoritative_input_identities: tuple[str, ...]
@@ -536,13 +551,13 @@ def create_file_backed_wave2_release_input_fixture(
         migration = application.initialize_persistence(engine)
         _require(
             migration.current_revision == DIAGNOSTIC_SCHEMA_REVISION,
-            "The Wave 2 input persistence revision is incompatible.",
+            "The Wave 3 input persistence revision is incompatible.",
         )
         _prepare_wave2_authoritative_inputs(application)
         identities = _wave2_authoritative_input_identities(application)
         _require(
             application.get_diagnostic_task() is None,
-            "The Wave 2 input fixture contains a Diagnostic Task.",
+            "The Wave 3 input fixture contains a Diagnostic Task.",
         )
     except BaseException:
         engine.dispose()
@@ -583,8 +598,20 @@ def create_sealed_wave2_release_input_fixture(
     )
     try:
         manifest = SealedWave2ReleaseInputFixtureManifest(
-            schema_version=1,
+            schema_version=2,
             source_commit=source_commit,
+            initial_recipe_draft_count=(
+                fixture.persisted_recipe_draft_count
+            ),
+            initial_approved_recipe_count=(
+                fixture.persisted_approved_recipe_count
+            ),
+            initial_materialized_path_count=(
+                fixture.persisted_materialized_path_count
+            ),
+            initial_campaign_case_count=(
+                fixture.persisted_campaign_case_count
+            ),
             initial_diagnostic_task_count=(
                 fixture.persisted_diagnostic_task_count
             ),
@@ -732,25 +759,25 @@ def load_sealed_formal_v1_release_fixture_manifest(
 def load_sealed_wave2_release_input_fixture_manifest(
     bundle_root: Path,
 ) -> SealedWave2ReleaseInputFixtureManifest:
-    """Load and validate a source-bound Wave 2 input fixture seal."""
+    """Load and validate a source-bound Wave 3 input fixture seal."""
 
     manifest_path = bundle_root / WAVE2_RELEASE_INPUT_FIXTURE_MANIFEST
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
         raise RuntimeError(
-            "Cannot read sealed Wave 2 input fixture manifest: "
+            "Cannot read sealed Wave 3 input fixture manifest: "
             f"{manifest_path}"
         ) from error
     if not isinstance(payload, dict):
-        raise RuntimeError("Wave 2 input fixture manifest is not an object")
+        raise RuntimeError("Wave 3 input fixture manifest is not an object")
     raw_files = payload.get("files")
     raw_identities = payload.get("authoritative_input_identities")
     if not isinstance(raw_files, list) or not isinstance(
         raw_identities,
         list,
     ):
-        raise RuntimeError("Wave 2 input fixture identity evidence is invalid")
+        raise RuntimeError("Wave 3 input fixture identity evidence is invalid")
     files: list[SealedFormalV1ReleaseFixtureFile] = []
     try:
         for raw_file in raw_files:
@@ -766,6 +793,18 @@ def load_sealed_wave2_release_input_fixture_manifest(
         manifest = SealedWave2ReleaseInputFixtureManifest(
             schema_version=int(payload.get("schema_version", -1)),
             source_commit=str(payload.get("source_commit", "")),
+            initial_recipe_draft_count=int(
+                payload.get("initial_recipe_draft_count", -1)
+            ),
+            initial_approved_recipe_count=int(
+                payload.get("initial_approved_recipe_count", -1)
+            ),
+            initial_materialized_path_count=int(
+                payload.get("initial_materialized_path_count", -1)
+            ),
+            initial_campaign_case_count=int(
+                payload.get("initial_campaign_case_count", -1)
+            ),
             initial_diagnostic_task_count=int(
                 payload.get("initial_diagnostic_task_count", -1)
             ),
@@ -779,7 +818,7 @@ def load_sealed_wave2_release_input_fixture_manifest(
         )
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError(
-            "Wave 2 input fixture manifest fields are invalid"
+            "Wave 3 input fixture manifest fields are invalid"
         ) from error
     _validate_wave2_input_manifest(manifest)
     _verify_fixture_file_inventory(
@@ -842,7 +881,7 @@ def open_sealed_wave2_release_input_fixture(
     manifest = load_sealed_wave2_release_input_fixture_manifest(bundle_root)
     _require(
         manifest.source_commit == expected_source_commit,
-        "Wave 2 input fixture source commit does not match the package.",
+        "Wave 3 input fixture source commit does not match the package.",
     )
     fixture = _open_file_backed_wave2_release_input_fixture(
         database_path=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_DATABASE,
@@ -856,7 +895,27 @@ def open_sealed_wave2_release_input_fixture(
         )
         _require(
             fixture.application.get_diagnostic_task() is None,
-            "Installed Wave 2 input persistence already contains a task.",
+            "Installed Wave 3 input persistence already contains a task.",
+        )
+        _require(
+            fixture.persisted_recipe_draft_count
+            == manifest.initial_recipe_draft_count,
+            "Installed Wave 3 Recipe Draft count changed after extraction.",
+        )
+        _require(
+            fixture.persisted_approved_recipe_count
+            == manifest.initial_approved_recipe_count,
+            "Installed Wave 3 approved Recipe count changed after extraction.",
+        )
+        _require(
+            fixture.persisted_materialized_path_count
+            == manifest.initial_materialized_path_count,
+            "Installed Wave 3 materialized path count changed after extraction.",
+        )
+        _require(
+            fixture.persisted_campaign_case_count
+            == manifest.initial_campaign_case_count,
+            "Installed Wave 3 Campaign Case count changed after extraction.",
         )
         _require(
             fixture.persisted_diagnostic_task_count
@@ -1037,7 +1096,7 @@ def extract_sealed_wave2_release_input_fixture_archive(
     archive_path: Path,
     bundle_root: Path,
 ) -> SealedWave2ReleaseInputFixtureManifest:
-    """Safely extract and verify a packaged Wave 2 input fixture."""
+    """Safely extract and verify a packaged Wave 3 input fixture."""
 
     _extract_fixture_archive(
         archive_path=archive_path,
@@ -1144,7 +1203,7 @@ def _open_file_backed_wave2_release_input_fixture(
         migration = reopened.initialize_persistence(reopened_engine)
         _require(
             migration.current_revision == DIAGNOSTIC_SCHEMA_REVISION,
-            "The reopened Wave 2 input persistence revision is incompatible.",
+            "The reopened Wave 3 input persistence revision is incompatible.",
         )
         task_count, campaign_count = _persisted_wave2_entity_counts(
             reopened_engine
@@ -1152,17 +1211,38 @@ def _open_file_backed_wave2_release_input_fixture(
         if require_empty:
             _require(
                 reopened.get_diagnostic_task() is None,
-                "The reopened Wave 2 input fixture contains a Diagnostic Task.",
+                "The reopened Wave 3 input fixture contains a Diagnostic Task.",
             )
             _require(
                 task_count == 0,
-                "The reopened Wave 2 input fixture contains a pre-created "
+                "The reopened Wave 3 input fixture contains a pre-created "
                 "Diagnostic Task.",
             )
             _require(
                 campaign_count == 0,
-                "The reopened Wave 2 input fixture contains a pre-created "
+                "The reopened Wave 3 input fixture contains a pre-created "
                 "Formal Campaign.",
+            )
+        recipe_draft_count = len(
+            reopened.scenario_recipe_draft_revisions()
+        )
+        approved_recipe_count = len(
+            reopened.list_approved_scenario_recipes()
+        )
+        materialized_path_count = len(
+            reopened.list_materialized_market_paths()
+        )
+        campaign_case_count = len(
+            reopened.list_available_diagnostic_campaign_cases()
+        )
+        if require_empty:
+            _require(
+                recipe_draft_count == 0
+                and approved_recipe_count == 0
+                and materialized_path_count == 0
+                and campaign_case_count == 0,
+                "The reopened Wave 3 input fixture contains pre-created "
+                "Recipe or path state.",
             )
         identities = _wave2_authoritative_input_identities(reopened)
     except BaseException:
@@ -1174,6 +1254,10 @@ def _open_file_backed_wave2_release_input_fixture(
         database_path=database_path,
         artifact_root=artifact_root,
         authoritative_input_identities=identities,
+        persisted_recipe_draft_count=recipe_draft_count,
+        persisted_approved_recipe_count=approved_recipe_count,
+        persisted_materialized_path_count=materialized_path_count,
+        persisted_campaign_case_count=campaign_case_count,
         persisted_diagnostic_task_count=task_count,
         persisted_formal_campaign_count=campaign_count,
     )
@@ -1370,17 +1454,33 @@ def _validate_wave2_input_manifest(
     manifest: SealedWave2ReleaseInputFixtureManifest,
 ) -> None:
     _require(
-        manifest.schema_version == 1,
-        "Unsupported Wave 2 input fixture manifest version.",
+        manifest.schema_version == 2,
+        "Unsupported Wave 3 input fixture manifest version.",
     )
     _validate_source_commit(manifest.source_commit)
     _require(
+        manifest.initial_recipe_draft_count == 0,
+        "Wave 3 input fixture contains a pre-created Recipe Draft.",
+    )
+    _require(
+        manifest.initial_approved_recipe_count == 0,
+        "Wave 3 input fixture contains a pre-created approved Recipe.",
+    )
+    _require(
+        manifest.initial_materialized_path_count == 0,
+        "Wave 3 input fixture contains a pre-created materialized path.",
+    )
+    _require(
+        manifest.initial_campaign_case_count == 0,
+        "Wave 3 input fixture contains a pre-created Campaign Case.",
+    )
+    _require(
         manifest.initial_diagnostic_task_count == 0,
-        "Wave 2 input fixture contains a pre-created Diagnostic Task.",
+        "Wave 3 input fixture contains a pre-created Diagnostic Task.",
     )
     _require(
         manifest.initial_formal_campaign_count == 0,
-        "Wave 2 input fixture contains a pre-created Formal Campaign.",
+        "Wave 3 input fixture contains a pre-created Formal Campaign.",
     )
     _require(
         bool(manifest.authoritative_input_identities)
@@ -1392,7 +1492,7 @@ def _validate_wave2_input_manifest(
         bool(manifest.files)
         and manifest.files
         == tuple(sorted(manifest.files, key=lambda item: item.relative_path)),
-        "Wave 2 input fixture file inventory is invalid.",
+        "Wave 3 input fixture file inventory is invalid.",
     )
     for item in manifest.files:
         relative_path = Path(item.relative_path)
@@ -1400,12 +1500,12 @@ def _validate_wave2_input_manifest(
             bool(item.relative_path)
             and not relative_path.is_absolute()
             and ".." not in relative_path.parts,
-            "Wave 2 input fixture contains an unsafe file path.",
+            "Wave 3 input fixture contains an unsafe file path.",
         )
         _require(
             item.size_bytes >= 0
             and _SHA256_PATTERN.fullmatch(item.sha256) is not None,
-            "Wave 2 input fixture contains invalid file evidence.",
+            "Wave 3 input fixture contains invalid file evidence.",
         )
 
 
@@ -1452,48 +1552,23 @@ def _new_application(
 def _prepare_wave2_authoritative_inputs(
     application: DiagnosticsApplication,
 ) -> None:
-    admitted = application.admit_historical_segment(
+    application.admit_historical_segment(
         HistoricalSegmentSelection(
             market="mainland-a-share",
             start_date=date(2024, 1, 2),
             end_date=date(2024, 1, 2),
         )
     )
-    segment_id = admitted.segment.segment_id
-    _approve_and_materialize(
-        application,
-        segment_id=segment_id,
-        name="Installed Wave 2 baseline",
-        transformations=(),
-    )
-    for name, transformations in _sensitivity_recipe_inputs():
-        _approve_and_materialize(
-            application,
-            segment_id=segment_id,
-            name=f"Installed Wave 2 {name}",
-            transformations=transformations,
-        )
-    _approve_and_materialize(
-        application,
-        segment_id=segment_id,
-        name="Installed Wave 2 compound",
-        transformations=(
-            {
-                "transformation_id": "trend-regime.v1",
-                "parameters": {
-                    "direction": "bearish",
-                    "strength": "0.20",
-                },
-            },
-            {
-                "transformation_id": "volatility-scaling.v1",
-                "parameters": {"multiplier": "1.25"},
-            },
-        ),
+    _require(
+        len(application.list_historical_segments()) == 1,
+        "Wave 3 release inputs did not retain one admitted segment.",
     )
     _require(
-        bool(application.list_available_diagnostic_campaign_cases()),
-        "Wave 2 release inputs produced no available Campaign Cases.",
+        not application.scenario_recipe_draft_revisions()
+        and not application.list_approved_scenario_recipes()
+        and not application.list_materialized_market_paths()
+        and not application.list_available_diagnostic_campaign_cases(),
+        "Wave 3 release inputs contain pre-created Recipe or path state.",
     )
 
 
@@ -1823,6 +1898,9 @@ __all__ = [
     "WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE",
     "WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME",
     "WAVE2_RELEASE_INPUT_FIXTURE_MANIFEST",
+    "WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE",
+    "WAVE3_RELEASE_INPUT_FIXTURE_DIRNAME",
+    "WAVE3_RELEASE_INPUT_FIXTURE_MANIFEST",
     "DeterministicReleaseMarketSource",
     "FileBackedFormalV1ReleaseFixture",
     "FileBackedWave2ReleaseInputFixture",
