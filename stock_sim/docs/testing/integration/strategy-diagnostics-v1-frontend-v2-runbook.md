@@ -1,7 +1,7 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
 
-This runbook reproduces the incremental Wave 3 source-level integration gate,
-including Issues #77–#86 and the inherited Wave 2 union. It includes Issue
+This runbook reproduces the complete Wave 3 source-level integration gate,
+including Issues #77–#87 and the inherited Wave 2 union. It includes Issue
 #86 source-level T08/T09/T10 preflight, but is not the Issue #88 installed
 offline black-box release-certification procedure.
 
@@ -108,6 +108,45 @@ The gate deliberately uses separate pytest processes for:
     and Scenario Set composition with accepted revisions, cross-renderer setup
     identity binding, plus the inherited typed Diagnostic Tasks command and
     persistent `TaskHandle` observation load.
+
+## Issue #87 immutable source candidate
+
+First run the complete Gate normally and complete both the Standards and Spec
+reviews. Commit the resulting product source and record its full lowercase Git
+SHA. Do not create candidate evidence from a dirty tree or from a subset of
+Gate groups.
+
+From that exact clean candidate commit, create an absent or empty evidence
+directory and rerun the complete Gate in source-binding mode:
+
+```powershell
+python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
+  --temporary-parent C:\Temp `
+  --evidence-root docs/testing/frontend/evidence/issue-87/<candidate-sha> `
+  --source-commit <candidate-sha>
+```
+
+The runner rejects a short or different SHA, a dirty candidate, a non-empty
+evidence directory, and any `--group` subset. Each of the ten groups emits
+JUnit XML plus raw stdout and stderr. The persisted tracer additionally writes
+`identity-ledger.json`, bound to the candidate SHA, with the five Feature
+Interfaces and exact Strategy, Recipe, path, Scenario Set, selection, task,
+campaign, run, Evidence, Finding, non-empty Finding-to-Breakpoint provenance,
+Manifest and recovery identities. It proves file-backed path recovery with a
+new `ParquetMarketPathArtifactStore` instance over the original files. The
+runner verifies the source and tracked tree again after every group is green,
+allowing only the configured untracked evidence directory, then validates the
+complete ledger and writes `source-candidate-summary.json`,
+`evidence-summary.md`, and `SHA256SUMS.txt` over the complete retained set.
+
+Commit only those generated evidence files in a separate evidence commit. The
+immutable candidate source SHA remains the product source consumed by Issue
+#88; the evidence commit is its auditable descendant. Do not amend or silently
+patch the candidate. If any product defect is found, return to the normal
+Issue/commit/PR flow, freeze a new source candidate, and rerun all affected
+source and installed certification gates. These artifacts close only Seam 1
+and Seam 2. They make no installed-package or Release claim, do not complete
+Seam 3, and do not start Wave 4.
 
 ## Issue #86 source-level T08/T09/T10 preflight
 

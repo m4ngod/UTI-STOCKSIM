@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import inspect
 import subprocess
 from array import array
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
 import pytest
+
+import stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate as gate_module
 
 from app.features import (
     DiagnosticTasksFeature,
@@ -34,6 +37,7 @@ from stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate import (
     PERSISTED_PRODUCT_TRACER,
     REQUIRED_CONTRACT_DOCUMENTS,
     REQUIRED_CONTRACT_MARKERS,
+    IntegrationGateExecution,
     run_integration_gate,
     validate_integration_gate,
 )
@@ -224,8 +228,12 @@ def test_integration_gate_is_complete_and_repository_valid():
         for category in PERSISTED_PRODUCT_TRACER.coverage
     ) == (
         "authoritative-strategy-library-slice",
+        "authoritative-scenario-recipe-materialization-and-formal-set",
         "typed-diagnostic-setup-selection-handoff",
+        "bounded-dependency-change-revalidation-and-reapproval",
+        "quick-experiment-and-execution-assumption-run-facts",
         "authoritative-input-and-exact-revision",
+        "terminal-evidence-finding-breakpoint-manifest-identities",
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",
         "connection-generation-disposal-and-no-late-callback",
@@ -247,18 +255,33 @@ def test_wave2_gate_freezes_the_complete_product_tracer_and_contract_language():
         "test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence"
     )
     assert {
+        "LiveStrategyLibraryAdapter",
+        "LiveScenarioLabAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
+        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
         "JourneyWorkspaceHost",
+        "createRecipeDraft",
+        "validateRecipeDraft",
+        "approveRecipeValidation",
+        "materializeApprovedRecipeVersion",
+        "strategy_run_status",
+        "resolved_execution_conditions",
+        "STOCKSIM_WAVE3_IDENTITY_LEDGER",
         "create_diagnostics_application",
         "create_engine",
         "engine.dispose()",
         "restarted_engine",
     } <= set(PERSISTED_PRODUCT_TRACER.required_markers)
     assert {
+        "DeterministicFakeStrategyLibraryAdapter",
+        "DeterministicFakeScenarioLabAdapter",
         "DeterministicFakeDiagnosticTasksAdapter",
+        "DeterministicFakeRunMonitoringAdapter",
+        "DeterministicFakeEvidenceAndFindingsAdapter",
         "DictionaryFixtureApplicationReadModel",
         "_LiveJourneyQueries",
         "Repository",
@@ -317,6 +340,11 @@ def test_gate_neutralizes_external_pytest_configuration(
 
     monkeypatch.setenv("PYTEST_ADDOPTS", "--maxfail=1 -k hostile-selection")
     monkeypatch.setenv("PYTEST_PLUGINS", "hostile_external_plugin")
+    monkeypatch.setenv(
+        "STOCKSIM_WAVE3_IDENTITY_LEDGER",
+        "hostile-external-ledger.json",
+    )
+    monkeypatch.setenv("STOCKSIM_WAVE3_CANDIDATE_SOURCE", "0" * 40)
     monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
     monkeypatch.setattr(subprocess, "run", _completed)
 
@@ -345,6 +373,8 @@ def test_gate_neutralizes_external_pytest_configuration(
     assert isinstance(environment, dict)
     assert "PYTEST_ADDOPTS" not in environment
     assert "PYTEST_PLUGINS" not in environment
+    assert "STOCKSIM_WAVE3_IDENTITY_LEDGER" not in environment
+    assert "STOCKSIM_WAVE3_CANDIDATE_SOURCE" not in environment
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 
 
@@ -389,3 +419,485 @@ def test_gate_rejects_missing_explicit_temporary_parent(tmp_path: Path) -> None:
             group_names=("frontend-v2-event-bridge",),
             temporary_parent=missing_parent,
         )
+
+
+def _complete_identity_ledger(source_commit: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "candidate_source": source_commit,
+        "feature_interfaces": [
+            "StrategyLibraryFeature/1.0",
+            "ScenarioLabFeature/1.0",
+            "DiagnosticTasksFeature/1.0",
+            "RunMonitoringFeature/1.2",
+            "EvidenceAndFindingsFeature/1.1",
+        ],
+        "strategy_library": {
+            "selection_context_id": "strategy-selection-1",
+            "entries": [
+                ["strategy-1", "1", "manifest-1", "guardrail-1", "1"],
+                ["strategy-2", "1", "manifest-2", "guardrail-2", "1"],
+            ],
+        },
+        "scenario_lab": {
+            "historical_segment": {
+                "segmentId": "segment-1",
+                "contentHash": "segment-hash-1",
+                "sourceSnapshotId": "snapshot-1",
+            },
+            "recipe_draft": {
+                "draftId": "draft-1",
+                "payloadHash": "draft-hash-1",
+            },
+            "recipe_validation": {
+                "validationId": "validation-1",
+                "draftId": "draft-1",
+                "recipeContentHash": "recipe-hash-1",
+            },
+            "approved_recipe": {
+                "recipeVersionId": "recipe-version-1",
+                "approvalId": "recipe-approval-1",
+                "contentHash": "recipe-hash-1",
+            },
+            "materialization_task_handle": {
+                "taskHandleId": "materialization-handle-1",
+                "attemptId": "materialization-attempt-1",
+                "resultIdentity": "market-path-1",
+            },
+            "materialized_case": {
+                "scenarioId": "case-1",
+                "pathId": "market-path-1",
+                "recipeVersionId": "recipe-version-1",
+            },
+            "formal_scenario_set": {
+                "scenarioSetId": "scenario-set-1",
+                "caseIds": ["case-1"],
+            },
+            "execution_resolution": {
+                "resolutionId": "resolution-1",
+                "targets": ["target-1"],
+            },
+            "selection_context": {
+                "selectionContextId": "scenario-selection-1",
+                "executionResolutionId": "resolution-1",
+            },
+        },
+        "diagnostic_tasks": {
+            "setup_context_id": "setup-1",
+            "task_id": "task-1",
+            "configuration_content_id": "configuration-1",
+            "validation_id": "task-validation-1",
+            "approval_id": "task-approval-1",
+            "task_handle_ids": ["task-handle-1"],
+        },
+        "campaign": {
+            "campaign_id": "campaign-1",
+            "node_ids": ["node-1"],
+            "attempt_ids": ["attempt-1"],
+            "run_ids": ["run-1"],
+            "requested_effective_override": {
+                "requested": {"slippage_bps": "100"},
+                "effective": {"slippage_bps": "20"},
+                "resolutions": [{"override_reason": "strategy-cap"}],
+            },
+        },
+        "evidence_and_findings": {
+            "evidence_package_id": "evidence-package-1",
+            "evidence_record_ids": ["evidence-record-1"],
+            "finding_ids": ["finding-1"],
+            "breakpoint_ids": ["breakpoint-1"],
+            "breakpoint_finding_edges": [
+                ["finding-1", "breakpoint-1"]
+            ],
+            "reproduction_manifest_id": "reproduction-manifest-1",
+        },
+        "recovery": {
+            "remount_preserved_exact_identities": True,
+            "application_reopen_preserved_exact_identities": True,
+            "market_path_store_reopened_from_files": True,
+            "old_generation_quarantined": True,
+            "durable_identity_graph": ["strategy-1", "run-1"],
+        },
+    }
+
+
+def test_full_green_gate_writes_one_source_bound_candidate_evidence_set(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "candidate-evidence"
+    evidence_root.mkdir()
+    source_commit = "a" * 40
+    identity_ledger_path = evidence_root / "identity-ledger.json"
+    identity_ledger_path.write_text(
+        json.dumps({"candidate_source": source_commit}),
+        encoding="utf-8",
+    )
+    executions = []
+    for group in INTEGRATION_GATE_GROUPS:
+        group_root = evidence_root / "groups" / group.name
+        group_root.mkdir(parents=True)
+        junit_path = group_root / "junit.xml"
+        stdout_path = group_root / "stdout.log"
+        stderr_path = group_root / "stderr.log"
+        junit_path.write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0" />',
+            encoding="utf-8",
+        )
+        stdout_path.write_text("one passing test\n", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        executions.append(
+            IntegrationGateExecution(
+                group=group.name,
+                command=("python", "-m", "pytest", group.name),
+                returncode=0,
+                junit_path=junit_path,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+            )
+        )
+
+    with pytest.raises(ValueError, match="schema_version"):
+        gate_module.write_source_candidate_evidence(
+            PROJECT_ROOT,
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            executions=executions,
+        )
+
+    incomplete_ledger = _complete_identity_ledger(source_commit)
+    del incomplete_ledger["evidence_and_findings"][
+        "breakpoint_finding_edges"
+    ]
+    identity_ledger_path.write_text(
+        json.dumps(incomplete_ledger),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="breakpoint_finding_edges"):
+        gate_module.write_source_candidate_evidence(
+            PROJECT_ROOT,
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            executions=executions,
+        )
+
+    identity_ledger_path.write_text(
+        json.dumps(_complete_identity_ledger(source_commit)),
+        encoding="utf-8",
+    )
+    summary_path = gate_module.write_source_candidate_evidence(
+        PROJECT_ROOT,
+        evidence_root=evidence_root,
+        source_commit=source_commit,
+        executions=executions,
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["schema_version"] == 1
+    assert summary["candidate_source"] == source_commit
+    assert summary["candidate_kind"] == "immutable-wave3-source"
+    assert summary["release_claim"] is False
+    assert summary["all_groups_passed"] is True
+    assert [item["name"] for item in summary["groups"]] == [
+        item.name for item in INTEGRATION_GATE_GROUPS
+    ]
+    assert summary["active_feature_registry"] == [
+        "StrategyLibraryFeature/1.0",
+        "ScenarioLabFeature/1.0",
+        "DiagnosticTasksFeature/1.0",
+        "RunMonitoringFeature/1.2",
+        "EvidenceAndFindingsFeature/1.1",
+    ]
+    assert summary["application_interfaces"] == [
+        "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",
+        "StrategyDiagnosticsV1ScenarioLabApplication/1.0",
+        "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0",
+    ]
+    assert summary["migrations"][-3:] == [
+        "0019_scenario_recipe_dependency_bindings",
+        "0020_scenario_lab_commands_and_materialization_handles",
+        "0021_diagnostic_selection_dependency_invalidation",
+    ]
+    assert summary["seams"] == {
+        "seam_1_persisted_five_feature_tracer": "passed",
+        "seam_2_shared_live_fake_conformance": "passed",
+        "seam_3_installed_offline_certification": "pending-issue-88",
+    }
+    assert summary["wave4_started"] is False
+    assert (evidence_root / "evidence-summary.md").is_file()
+    checksums = (evidence_root / "SHA256SUMS.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "source-candidate-summary.json" in checksums
+    assert "identity-ledger.json" in checksums
+
+
+def test_evidence_mode_captures_junit_raw_logs_and_tracer_ledger(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_commit = "b" * 40
+    evidence_root = tmp_path / "evidence"
+    group = gate_module.IntegrationGateGroup(
+        "persisted-application-qml-tracer",
+        ("tests/example.py",),
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(gate_module, "INTEGRATION_GATE_GROUPS", (group,))
+    monkeypatch.setattr(
+        gate_module,
+        "validate_integration_gate",
+        lambda _root: gate_module.IntegrationGateValidation(True, ()),
+    )
+    candidate_verifications: list[tuple[str, Path | None]] = []
+
+    def _verify(_root, candidate, *, allowed_untracked_root=None):
+        candidate_verifications.append((candidate, allowed_untracked_root))
+
+    monkeypatch.setattr(gate_module, "_verify_candidate_source", _verify)
+
+    def _completed(
+        command,
+        *,
+        cwd,
+        env,
+        check,
+        stdout,
+        stderr,
+        text,
+    ):
+        junit_argument = next(
+            item for item in command if item.startswith("--junitxml=")
+        )
+        Path(junit_argument.split("=", maxsplit=1)[1]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0" />',
+            encoding="utf-8",
+        )
+        stdout.write("passed\n")
+        stderr.write("")
+        ledger_path = Path(env["STOCKSIM_WAVE3_IDENTITY_LEDGER"])
+        ledger_path.write_text(
+            json.dumps({"candidate_source": source_commit}),
+            encoding="utf-8",
+        )
+        captured.update(command=command, env=env, text=text)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", _completed)
+
+    def _write(_root, *, evidence_root, source_commit, executions):
+        captured.update(
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            executions=executions,
+        )
+        return evidence_root / "source-candidate-summary.json"
+
+    monkeypatch.setattr(gate_module, "write_source_candidate_evidence", _write)
+
+    executions = run_integration_gate(
+        PROJECT_ROOT,
+        temporary_parent=tmp_path,
+        evidence_root=evidence_root,
+        source_commit=source_commit,
+    )
+
+    assert candidate_verifications == [
+        (source_commit, None),
+        (source_commit, evidence_root.resolve()),
+    ]
+    assert captured["source_commit"] == source_commit
+    assert captured["evidence_root"] == evidence_root.resolve()
+    assert captured["text"] is True
+    command = captured["command"]
+    assert any(item.startswith("--junitxml=") for item in command)
+    environment = captured["env"]
+    assert environment["STOCKSIM_WAVE3_CANDIDATE_SOURCE"] == source_commit
+    assert environment["STOCKSIM_WAVE3_IDENTITY_LEDGER"] == str(
+        evidence_root.resolve() / "identity-ledger.json"
+    )
+    assert executions[0].junit_path is not None
+    assert executions[0].stdout_path is not None
+    assert executions[0].stderr_path is not None
+
+
+def test_evidence_mode_rejects_source_drift_before_sealing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_commit = "e" * 40
+    evidence_root = tmp_path / "evidence"
+    group = gate_module.IntegrationGateGroup(
+        "persisted-application-qml-tracer",
+        ("tests/example.py",),
+    )
+    verification_count = 0
+    sealed = False
+
+    monkeypatch.setattr(gate_module, "INTEGRATION_GATE_GROUPS", (group,))
+    monkeypatch.setattr(
+        gate_module,
+        "validate_integration_gate",
+        lambda _root: gate_module.IntegrationGateValidation(True, ()),
+    )
+
+    def _verify(_root, _candidate, *, allowed_untracked_root=None):
+        nonlocal verification_count
+        verification_count += 1
+        if allowed_untracked_root is not None:
+            raise ValueError("candidate source changed while Gate was running")
+
+    def _completed(
+        command,
+        *,
+        cwd,
+        env,
+        check,
+        stdout,
+        stderr,
+        text,
+    ):
+        junit_argument = next(
+            item for item in command if item.startswith("--junitxml=")
+        )
+        Path(junit_argument.split("=", maxsplit=1)[1]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0" />',
+            encoding="utf-8",
+        )
+        stdout.write("passed\n")
+        stderr.write("")
+        return subprocess.CompletedProcess(command, 0)
+
+    def _write(*args, **kwargs):
+        nonlocal sealed
+        sealed = True
+        raise AssertionError("drifted source must not be sealed")
+
+    monkeypatch.setattr(gate_module, "_verify_candidate_source", _verify)
+    monkeypatch.setattr(subprocess, "run", _completed)
+    monkeypatch.setattr(gate_module, "write_source_candidate_evidence", _write)
+
+    with pytest.raises(ValueError, match="changed while Gate was running"):
+        run_integration_gate(
+            PROJECT_ROOT,
+            temporary_parent=tmp_path,
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+        )
+
+    assert verification_count == 2
+    assert sealed is False
+
+
+def test_candidate_source_verification_scans_the_git_toplevel(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    project_root = repository_root / "stock_sim"
+    project_root.mkdir(parents=True)
+    (project_root / "tracked.txt").write_text(
+        "candidate source\n",
+        encoding="utf-8",
+    )
+    for command in (
+        ("git", "init", "--initial-branch=master"),
+        ("git", "config", "user.email", "wave3@example.invalid"),
+        ("git", "config", "user.name", "Wave 3 Gate"),
+        ("git", "add", "."),
+        ("git", "commit", "-m", "candidate"),
+    ):
+        subprocess.run(
+            command,
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        )
+    source_commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    evidence_root = project_root / "docs" / "evidence" / source_commit
+    evidence_root.mkdir(parents=True)
+    (evidence_root / "junit.xml").write_text(
+        "<testsuite />\n",
+        encoding="utf-8",
+    )
+
+    gate_module._verify_candidate_source(
+        project_root,
+        source_commit,
+        allowed_untracked_root=evidence_root,
+    )
+
+    sibling_untracked = repository_root / "Quent" / "untracked.txt"
+    sibling_untracked.parent.mkdir()
+    sibling_untracked.write_text("must be rejected\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unexpected untracked files"):
+        gate_module._verify_candidate_source(
+            project_root,
+            source_commit,
+            allowed_untracked_root=evidence_root,
+        )
+
+
+def test_evidence_mode_requires_a_full_source_sha_and_complete_gate(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        run_integration_gate(
+            PROJECT_ROOT,
+            temporary_parent=tmp_path,
+            evidence_root=tmp_path / "evidence",
+        )
+    with pytest.raises(ValueError, match="complete Gate"):
+        run_integration_gate(
+            PROJECT_ROOT,
+            temporary_parent=tmp_path,
+            group_names=("frontend-v2-event-bridge",),
+            evidence_root=tmp_path / "evidence",
+            source_commit="c" * 40,
+        )
+
+
+def test_cli_routes_candidate_source_and_evidence_root_to_the_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    source_commit = "d" * 40
+    evidence_root = tmp_path / "evidence"
+    monkeypatch.setattr(
+        gate_module,
+        "validate_integration_gate",
+        lambda _root: gate_module.IntegrationGateValidation(True, ()),
+    )
+
+    def _run(project_root, **kwargs):
+        captured.update(project_root=project_root, **kwargs)
+        return (
+            gate_module.IntegrationGateExecution(
+                group="complete",
+                command=("pytest",),
+                returncode=0,
+            ),
+        )
+
+    monkeypatch.setattr(gate_module, "run_integration_gate", _run)
+
+    assert gate_module.main(
+        (
+            "--project-root",
+            str(PROJECT_ROOT),
+            "--temporary-parent",
+            str(tmp_path),
+            "--evidence-root",
+            str(evidence_root),
+            "--source-commit",
+            source_commit,
+        )
+    ) == 0
+    assert captured["evidence_root"] == evidence_root
+    assert captured["source_commit"] == source_commit

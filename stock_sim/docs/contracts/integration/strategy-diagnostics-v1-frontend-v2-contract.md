@@ -1,8 +1,9 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 contract
 
-Status: incremental source-level integration contract for Issues #77–#86 plus the
+Status: source-level integration contract for Issues #77–#87 plus the
 certified Wave 2 delivery in Issues #56–#66. This is not a Wave 3 installed
 release-certification claim. Issue #86 owns source-level T08/T09/T10 preflight;
+Issue #87 owns the immutable source candidate and retained Seam 1/Seam 2 evidence;
 Issue #88 owns the installed offline black-box certification, packages, tag,
 release assets, and retained final T08/T09/T10 evidence.
 
@@ -171,15 +172,30 @@ history is monotonic. No state permits manual trading.
 The source-bound tracer suite begins with a real public backend Strategy
 inventory, the production Strategy Library Application Adapter, the live
 Feature Adapter, and the production QML browse, comparison, exact selection,
-durable-bookmark reopen, and focus-restoration route. Its inherited Wave 2
-path then creates, validates, approves, and starts a
-Diagnostic Task through public `DiagnosticsApplication` behavior and the live
-`StrategyDiagnosticsV1DiagnosticTasksApplication` adapter. It mounts the
-production QML route through the inherited three live Feature adapters, observes the
-persistent `TaskHandle`, follows Run Monitoring into Evidence & Findings,
-disconnects and reconnects, disposes the database engine, creates a fresh
-Application and engine against the same files, and verifies exact durable
-identities and terminal history.
+durable-bookmark reopen, and focus-restoration route. It then drives the
+production Scenario Lab QML operations over admitted historical data: create
+and validate an exact Recipe Draft, approve an immutable Recipe version,
+materialize its content-addressed Reference Market Path through a persistent
+`TaskHandle`, compose a Formal Campaign Scenario Set, resolve exact execution
+assumptions, and select the formal context. The typed setup handoff creates,
+validates, approves, and starts a Diagnostic Task through public
+`DiagnosticsApplication` behavior and the live
+`StrategyDiagnosticsV1DiagnosticTasksApplication` adapter.
+
+The primary tracer mounts production QML with all five live Feature adapters
+and the three versioned Application adapters. It observes the persistent task,
+campaign, node, attempt and run identities, compares requested, effective and
+override execution facts with the resulting Strategy Run, follows Run
+Monitoring into Evidence & Findings, and preserves exact Evidence Package,
+Evidence record, Finding, Breakpoint and Reproduction Manifest identities.
+The Breakpoint proof records each exact Finding-to-Breakpoint provenance edge
+and must be non-empty. Reference Market Path durability is proved by disposing
+the first artifact store, constructing a new `ParquetMarketPathArtifactStore`
+over the same files, and resolving the exact content-addressed path identity.
+It exercises disconnect, reconnect, old-generation quarantine and remount;
+then disposes the database engine, creates a fresh Application and engine
+against the same files, and verifies the exact durable identity graph and
+terminal history before clean close.
 
 The primary production-QML path is joined by exact real live/file-backed
 targets for authoritative input rejection and correction, exact-revision
@@ -239,6 +255,23 @@ execution resolution and override reasons, `not_yet_resolved` exclusion,
 formal selection, idempotency, source conflict, and stale successor contexts.
 Structured failure retains the last reliable immutable inventory as stale.
 
+Issue #87 freezes one immutable source candidate only after the complete
+ten-group source Gate, Seam 1 tracer, Seam 2 unchanged-body conformance,
+migrations 0019–0021, type/architecture/safety gates, QML import checks,
+source-level T08/T09/T10 preflight, and Wave 2 regression are green. The
+candidate evidence contains per-group JUnit XML and raw stdout/stderr, a
+source-bound `identity-ledger.json`, the exact active five-Feature registry,
+three Application Interface versions, contract and toolchain digests, and a
+complete SHA-256 manifest. This evidence is committed separately after the
+candidate source commit; the evidence commit may descend from the candidate,
+but no product-source edit may be introduced between candidate freeze and
+Issue #88 certification. The Gate re-verifies the exact source and tracked tree
+both before and after all ten groups, permitting only its configured untracked
+evidence root during the post-Gate check. The sealer validates the complete
+identity-ledger schema, exact registry, non-empty identity/provenance graph and
+recovery proofs before it writes the summaries. A defect requires a normal
+fix, a new candidate, and rerunning every affected gate.
+
 ### Seam 3: installed offline black-box release
 
 Issue #88 owns the Wave 3 installed offline black-box journey, hardware and
@@ -287,6 +320,8 @@ Issues #79–#83 activate Scenario Lab read tracing, Recipe writes, approval,
 materialization, scenario-set composition, and formal selection. Issue #84
 activates the exact typed handoff into unchanged Diagnostic Tasks 1.0. Issue
 #85 preserves five-Feature recovery truth and Issue #86 completes the
-accessible no-trading source preflight. System Health and Wave 4 remain unimplemented.
+accessible no-trading source preflight. Issue #87 closes the persisted
+five-Feature tracer and shared conformance seams and freezes their immutable
+source candidate. System Health and Wave 4 remain unimplemented.
 This contract does not claim Wave 3 installed T08/T09/T10 or
 release certification.

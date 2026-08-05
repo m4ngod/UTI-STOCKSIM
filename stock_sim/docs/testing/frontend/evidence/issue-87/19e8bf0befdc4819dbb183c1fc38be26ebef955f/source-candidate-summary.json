@@ -1,0 +1,501 @@
+{
+  "active_feature_registry": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1"
+  ],
+  "all_groups_passed": true,
+  "application_interfaces": [
+    "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",
+    "StrategyDiagnosticsV1ScenarioLabApplication/1.0",
+    "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
+  ],
+  "candidate_kind": "immutable-wave3-source",
+  "candidate_source": "19e8bf0befdc4819dbb183c1fc38be26ebef955f",
+  "contract_documents": [
+    {
+      "path": "docs/contracts/integration/strategy-diagnostics-v1-frontend-v2-contract.md",
+      "sha256": "sha256:677084abd57d1566ef494ce9c34cb8448e5ed16db2163d4a774a3c5cf45fd98e"
+    },
+    {
+      "path": "docs/testing/integration/strategy-diagnostics-v1-frontend-v2-runbook.md",
+      "sha256": "sha256:e3017e27cfcf4769093b84c6b87d9e36637851289387500f41fc58482e5b56e3"
+    }
+  ],
+  "groups": [
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/contract/test_diagnostic_tasks_feature_contract.py",
+        "tests/frontend/contract/test_strategy_library_feature_contract.py",
+        "tests/frontend/contract/test_strategy_library_application_live_contract.py",
+        "tests/frontend/contract/test_strategy_library_live_fake_conformance.py",
+        "tests/frontend/contract/test_scenario_lab_feature_contract.py",
+        "tests/frontend/contract/test_scenario_lab_application_live_contract.py",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py",
+        "tests/frontend/contract/test_diagnostic_tasks_application_live_contract.py",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py",
+        "tests/frontend/contract/test_strategy_diagnostics_v1_feature_pair_conformance.py",
+        "tests/frontend/contract/test_strategy_diagnostics_v1_frontend_v2_integration_gate.py",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_lost_response_requires_lookup_and_same_key_recovers_acceptance",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_and_fake_reject_before_acceptance_while_disconnected[_live_recovery_harness]",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_diagnostic_tasks_reconnects_with_a_new_generation_only_after_reread",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_quarantines_an_authoritative_read_from_old_generation",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_close_drops_an_inflight_read_without_late_callback",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_ignores_old_generation_batches_but_rereads_current",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_disconnect_after_durable_acceptance_preserves_the_original_handle",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_old_generation_accepted_response_requires_authoritative_recovery",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\shared-feature-conformance\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g01-9o7vvhfu\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/shared-feature-conformance/junit.xml",
+        "sha256": "sha256:033b65f9df660036c68122fcdd60bb2c93d995fbc0a2598144ee2d50c2d46e1f",
+        "skipped": 0,
+        "tests": 213
+      },
+      "name": "shared-feature-conformance",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/shared-feature-conformance/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/shared-feature-conformance/stdout.log",
+        "sha256": "sha256:a97ae50b36e01bf93732784ffc1fa392ee9886a1db25e52f34ca85754286a39b"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/integration/test_diagnostic_tasks_workspace_route.py::test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence",
+        "tests/frontend/integration/test_strategy_library_workspace_route.py::test_live_strategy_library_traces_public_inventory_into_qml",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_materializes_exact_approved_recipe_with_persistent_task_handle",
+        "tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_exact_setup_selection_is_bound_through_approval",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_dependency_change_rejects_approval_without_side_effects",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_approved_history_survives_dependency_invalidation_and_replay",
+        "tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_and_fake_share_exact_setup_invalidation_contract",
+        "tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_composition_classifies_complete_formal_and_selective_quick_sets",
+        "tests/frontend/contract/test_diagnostic_setup_selection_context.py::test_setup_composition_fails_closed_for_stale_quick_or_unresolved_scenario",
+        "tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_resolution_and_selection_bind_exact_assumptions_and_activation",
+        "tests/strategy_diagnostics/test_strategy_runs.py::test_ptrade_configuration_requests_and_effective_conditions_are_run_evidence",
+        "tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_invalid_create_and_atomic_acceptance_failure_have_no_side_effect",
+        "tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_revision_validation_approval_persist_and_invalidate",
+        "tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_stale_revision_and_invalid_validation_reject_without_campaign",
+        "tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_validation_emits_typed_findings_for_each_authority_mismatch",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_incomplete_formal_input_is_rejected_before_start_side_effects",
+        "tests/frontend/contract/test_strategy_diagnostics_v1_evidence_and_findings_live_contract.py::test_real_sealed_v1_evidence_is_visible_in_production_qml",
+        "tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_live_create_is_durable_idempotent_and_reopens_without_a_campaign",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_start_exact_approved_revision_persists_one_formal_campaign_and_handoff",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_retry_after_handoff_persistence_failure_does_not_advance_another_case",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_concurrent_same_idempotency_claims_one_durable_start_continuation",
+        "tests/frontend/contract/test_diagnostic_tasks_recovery_live_contract.py::test_pre_campaign_commands_replay_after_application_restart",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_lost_response_requires_lookup_and_same_key_recovers_acceptance",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_lifecycle_survives_reopen_and_gates_real_campaign_execution",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_application_reopen_completes_durably_accepted_lifecycle_command",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_later_terminal_command_supersedes_older_queued_lifecycle_handle",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_paused_node_blocks_ordered_runner_until_resume",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_canceled_node_never_reaches_ordered_runner",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_completed_campaign_syncs_terminal_diagnostic_lifecycle",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_final_batch_pause_then_resume_reconciles_completed_campaign",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_cancel_target_cannot_reach_order_cancellation",
+        "tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_failed_node_retry_failure_creates_a_new_failed_attempt",
+        "tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_campaign_progress_after_retry_preserves_task_handle_binding",
+        "tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_retry_completion_preserves_a_newer_public_campaign_pause",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_and_fake_reject_before_acceptance_while_disconnected[_live_recovery_harness]",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_diagnostic_tasks_reconnects_with_a_new_generation_only_after_reread",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_quarantines_an_authoritative_read_from_old_generation",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_close_drops_an_inflight_read_without_late_callback",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_ignores_old_generation_batches_but_rereads_current",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_disconnect_after_durable_acceptance_preserves_the_original_handle",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_old_generation_accepted_response_requires_authoritative_recovery",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\persisted-application-qml-tracer\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g02-ug80lwrh\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/persisted-application-qml-tracer/junit.xml",
+        "sha256": "sha256:5f588a3cba6aec85749891f7453befe9518651fd3b43cc706597e7bf7f7f01ab",
+        "skipped": 0,
+        "tests": 51
+      },
+      "name": "persisted-application-qml-tracer",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/persisted-application-qml-tracer/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/persisted-application-qml-tracer/stdout.log",
+        "sha256": "sha256:468dbebbdca5ff6eaa344c5fd8d8531af78a92b65c0cfbe7f939851465e7212b"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/strategy_diagnostics",
+        "-k",
+        "not importing_root_package_keeps_persistence_lazy",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\strategy-diagnostics-v1-regression\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g03-3o67z3pj\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/strategy-diagnostics-v1-regression/junit.xml",
+        "sha256": "sha256:f39d5db9e0e3dafbc9d847d0ac198c1ef15b2cdbcf4f982c23381a1b98b066e2",
+        "skipped": 0,
+        "tests": 386
+      },
+      "name": "strategy-diagnostics-v1-regression",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/strategy-diagnostics-v1-regression/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/strategy-diagnostics-v1-regression/stdout.log",
+        "sha256": "sha256:5f760c5e29273e993bf5e93857c8693ff7df048d6591ba5b82fa73b4da7e81df"
+      }
+    },
+    {
+      "command": [
+        "C:\\WINDOWS\\py.EXE",
+        "-3.11",
+        "-m",
+        "pytest",
+        "tests/strategy_diagnostics/test_installation.py::test_importing_root_package_keeps_persistence_lazy",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\strategy-diagnostics-v1-lazy-import-isolation\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g04-tdvn8fl2\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/strategy-diagnostics-v1-lazy-import-isolation/junit.xml",
+        "sha256": "sha256:7e8ba33daee0a8907bcda1d301bd611b9ec95d7940a1af03783ca70ed268c927",
+        "skipped": 0,
+        "tests": 1
+      },
+      "name": "strategy-diagnostics-v1-lazy-import-isolation",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/strategy-diagnostics-v1-lazy-import-isolation/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/strategy-diagnostics-v1-lazy-import-isolation/stdout.log",
+        "sha256": "sha256:a67c7bea61b4638120fb0c3cddbd393cae6a21d40cc5c1f1b53a7c8129d38ddf"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/contract",
+        "--ignore=tests/frontend/contract/test_diagnostic_tasks_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_library_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_library_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_library_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_scenario_lab_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_scenario_lab_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_diagnostic_tasks_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_strategy_diagnostics_v1_feature_pair_conformance.py",
+        "--ignore=tests/frontend/contract/test_strategy_diagnostics_v1_frontend_v2_integration_gate.py",
+        "--deselect=tests/frontend/integration/test_strategy_library_workspace_route.py::test_live_strategy_library_traces_public_inventory_into_qml",
+        "--deselect=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_materializes_exact_approved_recipe_with_persistent_task_handle",
+        "--deselect=tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_exact_setup_selection_is_bound_through_approval",
+        "--deselect=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_dependency_change_rejects_approval_without_side_effects",
+        "--deselect=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_approved_history_survives_dependency_invalidation_and_replay",
+        "--deselect=tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_and_fake_share_exact_setup_invalidation_contract",
+        "--deselect=tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_composition_classifies_complete_formal_and_selective_quick_sets",
+        "--deselect=tests/frontend/contract/test_diagnostic_setup_selection_context.py::test_setup_composition_fails_closed_for_stale_quick_or_unresolved_scenario",
+        "--deselect=tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_resolution_and_selection_bind_exact_assumptions_and_activation",
+        "--deselect=tests/strategy_diagnostics/test_strategy_runs.py::test_ptrade_configuration_requests_and_effective_conditions_are_run_evidence",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_invalid_create_and_atomic_acceptance_failure_have_no_side_effect",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_revision_validation_approval_persist_and_invalidate",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_stale_revision_and_invalid_validation_reject_without_campaign",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_validation_emits_typed_findings_for_each_authority_mismatch",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_incomplete_formal_input_is_rejected_before_start_side_effects",
+        "--deselect=tests/frontend/contract/test_strategy_diagnostics_v1_evidence_and_findings_live_contract.py::test_real_sealed_v1_evidence_is_visible_in_production_qml",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_live_create_is_durable_idempotent_and_reopens_without_a_campaign",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_start_exact_approved_revision_persists_one_formal_campaign_and_handoff",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_retry_after_handoff_persistence_failure_does_not_advance_another_case",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_concurrent_same_idempotency_claims_one_durable_start_continuation",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_recovery_live_contract.py::test_pre_campaign_commands_replay_after_application_restart",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_lifecycle_survives_reopen_and_gates_real_campaign_execution",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_application_reopen_completes_durably_accepted_lifecycle_command",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_later_terminal_command_supersedes_older_queued_lifecycle_handle",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_paused_node_blocks_ordered_runner_until_resume",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_canceled_node_never_reaches_ordered_runner",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_completed_campaign_syncs_terminal_diagnostic_lifecycle",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_final_batch_pause_then_resume_reconciles_completed_campaign",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_cancel_target_cannot_reach_order_cancellation",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_failed_node_retry_failure_creates_a_new_failed_attempt",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_campaign_progress_after_retry_preserves_task_handle_binding",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_retry_completion_preserves_a_newer_public_campaign_pause",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\frontend-v2-contract\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g05-f5evpowf\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-contract/junit.xml",
+        "sha256": "sha256:5d426eba26a2527b483b4a701c33d7d9f4c9e2f3e0a2cb27518eb58214270158",
+        "skipped": 0,
+        "tests": 219
+      },
+      "name": "frontend-v2-contract",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-contract/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-contract/stdout.log",
+        "sha256": "sha256:692e1469d667926c2a64b45df2ad194e5f5eae3b344f0530cc74126fc702d734"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/integration",
+        "tests/frontend/e2e",
+        "--deselect=tests/frontend/integration/test_diagnostic_tasks_workspace_route.py::test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\frontend-v2-integration-e2e-accessibility\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g06-tm3k7wsh\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-integration-e2e-accessibility/junit.xml",
+        "sha256": "sha256:7bcf78be3d72f4dee91d1d75aac9307578c7a60ab916b6987847bbd691c2d526",
+        "skipped": 0,
+        "tests": 103
+      },
+      "name": "frontend-v2-integration-e2e-accessibility",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-integration-e2e-accessibility/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-integration-e2e-accessibility/stdout.log",
+        "sha256": "sha256:04baf05017d165c3bdfd24567aea271885c7c0c4e813b52fa26c029993e5d3ef"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/unit",
+        "--ignore=tests/frontend/unit/test_event_bridge.py",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\frontend-v2-unit\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g07-fw88wijr\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-unit/junit.xml",
+        "sha256": "sha256:3859ff504107b6057dc829a17a1d2796298349f2f01b3162d2ff131d009d5e15",
+        "skipped": 1,
+        "tests": 300
+      },
+      "name": "frontend-v2-unit",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-unit/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-unit/stdout.log",
+        "sha256": "sha256:43e0078be1f1b527e4219820629bf0984712c7111c07b40cb2d7f3b5edeb23b3"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/unit/test_event_bridge.py",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\frontend-v2-event-bridge\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g08-99dlkizg\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-event-bridge/junit.xml",
+        "sha256": "sha256:42712ed787634e2e92e13779801ab289477438aef698ec747a588faab9e927e5",
+        "skipped": 0,
+        "tests": 4
+      },
+      "name": "frontend-v2-event-bridge",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-event-bridge/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-event-bridge/stdout.log",
+        "sha256": "sha256:b75489548c1624facbb51d07cbe281d9d00abc7f0dd0f1037c6f85cf530bbdbf"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/safety",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\frontend-v2-safety\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g09-qhu9yxvl\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-safety/junit.xml",
+        "sha256": "sha256:fb1e4d54b9f555286d2a3780d05a1eda162d41895cc71c9db908d2fd72460c8d",
+        "skipped": 0,
+        "tests": 30
+      },
+      "name": "frontend-v2-safety",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-safety/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-safety/stdout.log",
+        "sha256": "sha256:cbee731520b0f97eebdf7163e84abc24e19bd0cccba7e924c69456bf76bacf81"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/performance",
+        "tests/frontend/packaging",
+        "--junitxml=F:\\CodexWorktrees\\UTI-STOCKSIM-wave3\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-87\\19e8bf0befdc4819dbb183c1fc38be26ebef955f\\groups\\frontend-v2-performance-packaging-contract\\junit.xml",
+        "--basetemp=F:\\CodexWorktrees\\uti-g10-vu38yzfw\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-performance-packaging-contract/junit.xml",
+        "sha256": "sha256:75924d3e84fa004d466cc61072f5621df5f483696d7997cd7f128c29a51f55ed",
+        "skipped": 0,
+        "tests": 158
+      },
+      "name": "frontend-v2-performance-packaging-contract",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-performance-packaging-contract/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-performance-packaging-contract/stdout.log",
+        "sha256": "sha256:79b3b7f56a8d498c6a5ea429d19864420546bc1739c2036012bba678cf6f7301"
+      }
+    }
+  ],
+  "identity_ledger": {
+    "path": "identity-ledger.json",
+    "sha256": "sha256:4587114db1b22cd7ae04799afb4fb74a798fe43faedc862b06824c9edf6d015a"
+  },
+  "migration_chain": "0001-through-0021",
+  "migrations": [
+    "0019_scenario_recipe_dependency_bindings",
+    "0020_scenario_lab_commands_and_materialization_handles",
+    "0021_diagnostic_selection_dependency_invalidation"
+  ],
+  "persisted_tracer_coverage": [
+    "authoritative-strategy-library-slice",
+    "authoritative-scenario-recipe-materialization-and-formal-set",
+    "typed-diagnostic-setup-selection-handoff",
+    "bounded-dependency-change-revalidation-and-reapproval",
+    "quick-experiment-and-execution-assumption-run-facts",
+    "authoritative-input-and-exact-revision",
+    "terminal-evidence-finding-breakpoint-manifest-identities",
+    "command-identity-idempotency-and-recovery",
+    "lifecycle-retry-terminal-and-order-isolation",
+    "connection-generation-disposal-and-no-late-callback"
+  ],
+  "release_claim": false,
+  "schema_version": 1,
+  "seams": {
+    "seam_1_persisted_five_feature_tracer": "passed",
+    "seam_2_shared_live_fake_conformance": "passed",
+    "seam_3_installed_offline_certification": "pending-issue-88"
+  },
+  "toolchain_lock": {
+    "path": "stock_sim/release/frontend_v2_toolchain.lock.json",
+    "sha256": "sha256:f53b1b7245e48a33420ee7a2657c7d7bedc35a61cefbe0fc86ce0a1232bfaf1f"
+  },
+  "wave4_started": false
+}

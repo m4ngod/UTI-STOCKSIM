@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+import xml.etree.ElementTree as ET
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -53,6 +57,9 @@ class IntegrationGateExecution:
     group: str
     command: tuple[str, ...]
     returncode: int
+    junit_path: Path | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,11 +104,23 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
         "test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence"
     ),
     required_markers=(
+        "LiveStrategyLibraryAdapter",
+        "LiveScenarioLabAdapter",
         "LiveDiagnosticTasksAdapter",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
+        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "ParquetMarketPathArtifactStore",
         "JourneyWorkspaceHost",
+        "createRecipeDraft",
+        "validateRecipeDraft",
+        "approveRecipeValidation",
+        "materializeApprovedRecipeVersion",
+        "strategy_run_status",
+        "resolved_execution_conditions",
+        "STOCKSIM_WAVE3_IDENTITY_LEDGER",
         "create_diagnostics_application",
         "create_engine",
         "engine.dispose()",
@@ -110,7 +129,11 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
         "expected_durable_identity_graph",
     ),
     forbidden_markers=(
+        "DeterministicFakeStrategyLibraryAdapter",
+        "DeterministicFakeScenarioLabAdapter",
         "DeterministicFakeDiagnosticTasksAdapter",
+        "DeterministicFakeRunMonitoringAdapter",
+        "DeterministicFakeEvidenceAndFindingsAdapter",
         "DictionaryFixtureApplicationReadModel",
         "_LiveJourneyQueries",
         "Repository",
@@ -128,12 +151,72 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
             ),
         ),
         PersistedTracerCoverage(
+            requirement=(
+                "authoritative-scenario-recipe-materialization-and-formal-set"
+            ),
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_scenario_lab_live_fake_conformance.py::"
+                    "test_shared_materializes_exact_approved_recipe_with_persistent_task_handle"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
             requirement="typed-diagnostic-setup-selection-handoff",
             pytest_targets=(
                 (
                     "tests/frontend/contract/"
                     "test_diagnostic_setup_handoff_live_contract.py::"
                     "test_live_exact_setup_selection_is_bound_through_approval"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
+            requirement=(
+                "bounded-dependency-change-revalidation-and-reapproval"
+            ),
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_scenario_lab_live_fake_conformance.py::"
+                    "test_shared_dependency_change_rejects_approval_without_side_effects"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_scenario_lab_live_fake_conformance.py::"
+                    "test_shared_approved_history_survives_dependency_invalidation_and_replay"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_diagnostic_setup_handoff_live_contract.py::"
+                    "test_live_and_fake_share_exact_setup_invalidation_contract"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
+            requirement=(
+                "quick-experiment-and-execution-assumption-run-facts"
+            ),
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_scenario_lab_formal_scenario_sets_live_contract.py::"
+                    "test_live_composition_classifies_complete_formal_and_selective_quick_sets"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_diagnostic_setup_selection_context.py::"
+                    "test_setup_composition_fails_closed_for_stale_quick_or_unresolved_scenario"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_scenario_lab_formal_scenario_sets_live_contract.py::"
+                    "test_live_resolution_and_selection_bind_exact_assumptions_and_activation"
+                ),
+                (
+                    "tests/strategy_diagnostics/test_strategy_runs.py::"
+                    "test_ptrade_configuration_requests_and_effective_conditions_are_run_evidence"
                 ),
             ),
         ),
@@ -164,6 +247,18 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
                     "tests/frontend/contract/"
                     "test_diagnostic_task_campaign_start_live_contract.py::"
                     "test_incomplete_formal_input_is_rejected_before_start_side_effects"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
+            requirement=(
+                "terminal-evidence-finding-breakpoint-manifest-identities"
+            ),
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_strategy_diagnostics_v1_evidence_and_findings_live_contract.py::"
+                    "test_real_sealed_v1_evidence_is_visible_in_production_qml"
                 ),
             ),
         ),
@@ -505,6 +600,8 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "Issue #79 activates Scenario Lab read tracing",
         "Issue #84 activates `DiagnosticSetupSelectionContext`",
         "Issue #86 completes source-level T08/T09/T10 preflight",
+        "Issue #87 freezes one immutable source candidate",
+        "`identity-ledger.json`",
         "durable bookmark contains those immutable references",
         "Seam 1",
         "Seam 2",
@@ -522,7 +619,9 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0",
         "`StrategyDiagnosticsV1ScenarioLabApplication` 1.0",
-        "including Issues #77–#86",
+        "including Issues #77–#87",
+        "--evidence-root",
+        "identity-ledger.json",
         "durable bookmark reread",
         PERSISTED_PRODUCT_TRACER.function_name,
         "test_diagnostic_tasks_live_fake_conformance.py",
@@ -585,8 +684,12 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         )
     expected_tracer_requirements = (
         "authoritative-strategy-library-slice",
+        "authoritative-scenario-recipe-materialization-and-formal-set",
         "typed-diagnostic-setup-selection-handoff",
+        "bounded-dependency-change-revalidation-and-reapproval",
+        "quick-experiment-and-execution-assumption-run-facts",
         "authoritative-input-and-exact-revision",
+        "terminal-evidence-finding-breakpoint-manifest-identities",
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",
         "connection-generation-disposal-and-no-late-callback",
@@ -704,12 +807,510 @@ def _function_source(path: Path, function_name: str) -> str:
     return segment
 
 
+_SOURCE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+_WAVE3_MIGRATIONS = (
+    "0019_scenario_recipe_dependency_bindings",
+    "0020_scenario_lab_commands_and_materialization_handles",
+    "0021_diagnostic_selection_dependency_invalidation",
+)
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _evidence_relative_path(path: Path, evidence_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(evidence_root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"Source candidate evidence escapes its root: {resolved}"
+        ) from exc
+    return relative.as_posix()
+
+
+def _junit_counts(path: Path) -> dict[str, int]:
+    root = ET.parse(path).getroot()
+    suites = (
+        (root,)
+        if root.tag == "testsuite"
+        else tuple(root.findall("testsuite"))
+    )
+    counts = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    for suite in suites:
+        for name in counts:
+            counts[name] += int(suite.attrib.get(name, "0"))
+    if counts["tests"] <= 0:
+        raise ValueError(f"JUnit report executed no tests: {path}")
+    if counts["failures"] or counts["errors"]:
+        raise ValueError(f"JUnit report is not green: {path}")
+    return counts
+
+
+def _required_ledger_mapping(
+    parent: Mapping[str, object],
+    name: str,
+) -> Mapping[str, object]:
+    value = parent.get(name)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"identity ledger section {name!r} is unavailable")
+    return value
+
+
+def _require_ledger_values(
+    section_name: str,
+    section: Mapping[str, object],
+    names: Sequence[str],
+) -> None:
+    missing = tuple(
+        name
+        for name in names
+        if name not in section
+        or section[name] is None
+        or section[name] == ""
+        or section[name] == []
+    )
+    if missing:
+        raise ValueError(
+            f"identity ledger section {section_name!r} is incomplete: "
+            f"{missing!r}"
+        )
+
+
+def _validate_identity_ledger(
+    ledger: object,
+    *,
+    source_commit: str,
+) -> Mapping[str, object]:
+    if not isinstance(ledger, Mapping):
+        raise ValueError("identity ledger must be a JSON object")
+    if ledger.get("schema_version") != 1:
+        raise ValueError("identity ledger schema_version must be 1")
+    if ledger.get("candidate_source") != source_commit:
+        raise ValueError("identity ledger is bound to a different candidate source")
+    expected_registry = [
+        "StrategyLibraryFeature/1.0",
+        "ScenarioLabFeature/1.0",
+        "DiagnosticTasksFeature/1.0",
+        "RunMonitoringFeature/1.2",
+        "EvidenceAndFindingsFeature/1.1",
+    ]
+    if ledger.get("feature_interfaces") != expected_registry:
+        raise ValueError(
+            "identity ledger does not contain the exact five-Feature registry"
+        )
+
+    required_sections = {
+        "strategy_library": (
+            "selection_context_id",
+            "entries",
+        ),
+        "scenario_lab": (
+            "historical_segment",
+            "recipe_draft",
+            "recipe_validation",
+            "approved_recipe",
+            "materialization_task_handle",
+            "materialized_case",
+            "formal_scenario_set",
+            "execution_resolution",
+            "selection_context",
+        ),
+        "diagnostic_tasks": (
+            "setup_context_id",
+            "task_id",
+            "configuration_content_id",
+            "validation_id",
+            "approval_id",
+            "task_handle_ids",
+        ),
+        "campaign": (
+            "campaign_id",
+            "node_ids",
+            "attempt_ids",
+            "run_ids",
+            "requested_effective_override",
+        ),
+        "evidence_and_findings": (
+            "evidence_package_id",
+            "evidence_record_ids",
+            "finding_ids",
+            "breakpoint_ids",
+            "breakpoint_finding_edges",
+            "reproduction_manifest_id",
+        ),
+        "recovery": (
+            "durable_identity_graph",
+        ),
+    }
+    sections: dict[str, Mapping[str, object]] = {}
+    for section_name, names in required_sections.items():
+        section = _required_ledger_mapping(ledger, section_name)
+        _require_ledger_values(section_name, section, names)
+        sections[section_name] = section
+
+    strategy_entries = sections["strategy_library"]["entries"]
+    if (
+        not isinstance(strategy_entries, list)
+        or len(strategy_entries) != 2
+        or any(
+            not isinstance(entry, list)
+            or len(entry) != 5
+            or any(not isinstance(value, str) or not value for value in entry)
+            for entry in strategy_entries
+        )
+    ):
+        raise ValueError(
+            "identity ledger Strategy Library entries are not the exact "
+            "two identity/version/manifest/Guardrail tuples"
+        )
+
+    scenario = sections["scenario_lab"]
+    scenario_identity_fields = {
+        "historical_segment": (
+            "segmentId",
+            "contentHash",
+            "sourceSnapshotId",
+        ),
+        "recipe_draft": ("draftId", "payloadHash"),
+        "recipe_validation": (
+            "validationId",
+            "draftId",
+            "recipeContentHash",
+        ),
+        "approved_recipe": (
+            "recipeVersionId",
+            "approvalId",
+            "contentHash",
+        ),
+        "materialization_task_handle": (
+            "taskHandleId",
+            "attemptId",
+            "resultIdentity",
+        ),
+        "materialized_case": (
+            "scenarioId",
+            "pathId",
+            "recipeVersionId",
+        ),
+        "formal_scenario_set": ("scenarioSetId", "caseIds"),
+        "execution_resolution": ("resolutionId", "targets"),
+        "selection_context": (
+            "selectionContextId",
+            "executionResolutionId",
+        ),
+    }
+    for name, fields in scenario_identity_fields.items():
+        projection = _required_ledger_mapping(scenario, name)
+        _require_ledger_values(f"scenario_lab.{name}", projection, fields)
+
+    run_facts = _required_ledger_mapping(
+        sections["campaign"],
+        "requested_effective_override",
+    )
+    _require_ledger_values(
+        "campaign.requested_effective_override",
+        run_facts,
+        ("requested", "effective", "resolutions"),
+    )
+    evidence = sections["evidence_and_findings"]
+    finding_ids = evidence["finding_ids"]
+    breakpoint_ids = evidence["breakpoint_ids"]
+    breakpoint_edges = evidence["breakpoint_finding_edges"]
+    if (
+        not isinstance(finding_ids, list)
+        or not all(isinstance(value, str) and value for value in finding_ids)
+        or not isinstance(breakpoint_ids, list)
+        or not all(
+            isinstance(value, str) and value for value in breakpoint_ids
+        )
+        or not isinstance(breakpoint_edges, list)
+        or not breakpoint_edges
+        or any(
+            not isinstance(edge, list)
+            or len(edge) != 2
+            or edge[0] not in finding_ids
+            or edge[1] not in breakpoint_ids
+            for edge in breakpoint_edges
+        )
+    ):
+        raise ValueError(
+            "identity ledger does not contain exact Finding-to-Breakpoint "
+            "provenance edges"
+        )
+    recovery = sections["recovery"]
+    for name in (
+        "remount_preserved_exact_identities",
+        "application_reopen_preserved_exact_identities",
+        "market_path_store_reopened_from_files",
+        "old_generation_quarantined",
+    ):
+        if recovery.get(name) is not True:
+            raise ValueError(
+                f"identity ledger recovery proof {name!r} did not pass"
+            )
+    return ledger
+
+
+def write_source_candidate_evidence(
+    project_root: Path,
+    *,
+    evidence_root: Path,
+    source_commit: str,
+    executions: Sequence[IntegrationGateExecution],
+) -> Path:
+    """Seal the complete source-level Gate reports to one candidate SHA."""
+
+    if _SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
+        raise ValueError("candidate source must be one full lowercase Git SHA")
+    root = project_root.resolve()
+    candidate_root = evidence_root.resolve()
+    candidate_root.mkdir(parents=True, exist_ok=True)
+    expected_groups = tuple(group.name for group in INTEGRATION_GATE_GROUPS)
+    actual_groups = tuple(item.group for item in executions)
+    if actual_groups != expected_groups:
+        raise ValueError(
+            "candidate evidence requires the complete ordered Gate: "
+            f"expected {expected_groups!r}, got {actual_groups!r}"
+        )
+    if any(item.returncode != 0 for item in executions):
+        raise ValueError("candidate evidence requires every Gate group to pass")
+
+    identity_ledger_path = candidate_root / "identity-ledger.json"
+    if not identity_ledger_path.is_file():
+        raise ValueError("persisted five-Feature identity ledger is unavailable")
+    identity_ledger = _validate_identity_ledger(json.loads(
+        identity_ledger_path.read_text(encoding="utf-8")
+    ), source_commit=source_commit)
+
+    group_evidence: list[dict[str, object]] = []
+    for execution in executions:
+        paths = (
+            execution.junit_path,
+            execution.stdout_path,
+            execution.stderr_path,
+        )
+        if any(path is None for path in paths):
+            raise ValueError(
+                f"{execution.group}: JUnit and raw logs are required"
+            )
+        junit_path, stdout_path, stderr_path = paths
+        assert junit_path is not None
+        assert stdout_path is not None
+        assert stderr_path is not None
+        for path in (junit_path, stdout_path, stderr_path):
+            _evidence_relative_path(path, candidate_root)
+            if not path.is_file():
+                raise ValueError(
+                    f"{execution.group}: missing source Gate report {path}"
+                )
+        group_evidence.append(
+            {
+                "name": execution.group,
+                "command": list(execution.command),
+                "returncode": execution.returncode,
+                "junit": {
+                    "path": _evidence_relative_path(junit_path, candidate_root),
+                    "sha256": _sha256_path(junit_path),
+                    **_junit_counts(junit_path),
+                },
+                "stdout": {
+                    "path": _evidence_relative_path(stdout_path, candidate_root),
+                    "sha256": _sha256_path(stdout_path),
+                },
+                "stderr": {
+                    "path": _evidence_relative_path(stderr_path, candidate_root),
+                    "sha256": _sha256_path(stderr_path),
+                },
+            }
+        )
+
+    active_registry = [
+        f"{item.name.value}/{item.version.render()}"
+        for item in ACTIVE_FEATURE_INTERFACES
+    ]
+    summary = {
+        "schema_version": 1,
+        "candidate_source": source_commit,
+        "candidate_kind": "immutable-wave3-source",
+        "release_claim": False,
+        "all_groups_passed": True,
+        "groups": group_evidence,
+        "persisted_tracer_coverage": [
+            item.requirement for item in PERSISTED_PRODUCT_TRACER.coverage
+        ],
+        "identity_ledger": {
+            "path": "identity-ledger.json",
+            "sha256": _sha256_path(identity_ledger_path),
+        },
+        "active_feature_registry": active_registry,
+        "application_interfaces": [
+            "StrategyDiagnosticsV1StrategyLibraryApplication/"
+            + STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION.render(),
+            "StrategyDiagnosticsV1ScenarioLabApplication/"
+            + SCENARIO_LAB_APPLICATION_INTERFACE_VERSION.render(),
+            "StrategyDiagnosticsV1DiagnosticTasksApplication/"
+            + DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION.render(),
+        ],
+        "migration_chain": "0001-through-0021",
+        "migrations": list(_WAVE3_MIGRATIONS),
+        "toolchain_lock": {
+            "path": "stock_sim/release/frontend_v2_toolchain.lock.json",
+            "sha256": _sha256_path(
+                root
+                / "stock_sim"
+                / "release"
+                / "frontend_v2_toolchain.lock.json"
+            ),
+        },
+        "contract_documents": [
+            {
+                "path": path.as_posix(),
+                "sha256": _sha256_path(root / path),
+            }
+            for path in REQUIRED_CONTRACT_DOCUMENTS
+        ],
+        "seams": {
+            "seam_1_persisted_five_feature_tracer": "passed",
+            "seam_2_shared_live_fake_conformance": "passed",
+            "seam_3_installed_offline_certification": "pending-issue-88",
+        },
+        "wave4_started": False,
+    }
+    summary_path = candidate_root / "source-candidate-summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (candidate_root / "evidence-summary.md").write_text(
+        "\n".join(
+            (
+                "# Wave 3 immutable source candidate evidence",
+                "",
+                f"Candidate source: `{source_commit}`",
+                "",
+                "All ten source integration Gate groups passed and are bound",
+                "to the JUnit/raw reports and persisted five-Feature identity",
+                "ledger in this directory.",
+                "",
+                "This is source-level evidence only. Issue #88 owns installed",
+                "offline Windows certification and the GitHub Release. Wave 4",
+                "has not started.",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    checksum_entries = []
+    for path in sorted(
+        (
+            item
+            for item in candidate_root.rglob("*")
+            if item.is_file() and item.name != "SHA256SUMS.txt"
+        ),
+        key=lambda item: item.relative_to(candidate_root).as_posix(),
+    ):
+        checksum_entries.append(
+            _sha256_path(path).removeprefix("sha256:")
+            + "  "
+            + path.relative_to(candidate_root).as_posix()
+        )
+    (candidate_root / "SHA256SUMS.txt").write_text(
+        "\n".join(checksum_entries) + "\n",
+        encoding="utf-8",
+    )
+    return summary_path
+
+
+def _verify_candidate_source(
+    project_root: Path,
+    source_commit: str,
+    *,
+    allowed_untracked_root: Path | None = None,
+) -> None:
+    if _SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
+        raise ValueError("candidate source must be one full lowercase Git SHA")
+    repository_root = Path(
+        subprocess.run(
+            ("git", "rev-parse", "--show-toplevel"),
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    ).resolve()
+    if not project_root.resolve().is_relative_to(repository_root):
+        raise ValueError("project root is outside the candidate Git worktree")
+    head = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if head != source_commit:
+        raise ValueError(
+            "candidate source does not match HEAD: "
+            f"expected {source_commit}, observed {head}"
+        )
+    tracked_status = subprocess.run(
+        ("git", "status", "--porcelain", "--untracked-files=no"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if tracked_status:
+        raise ValueError(
+            "candidate source evidence requires a clean worktree before capture"
+        )
+    untracked = subprocess.run(
+        ("git", "ls-files", "--others", "--exclude-standard", "-z"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    untracked_paths = tuple(
+        (repository_root / os.fsdecode(item)).resolve()
+        for item in untracked.split(b"\0")
+        if item
+    )
+    allowed_root = (
+        None
+        if allowed_untracked_root is None
+        else allowed_untracked_root.resolve()
+    )
+    if allowed_root is not None and not allowed_root.is_relative_to(
+        repository_root
+    ):
+        raise ValueError(
+            "candidate evidence root is outside the candidate Git worktree"
+        )
+    unexpected = tuple(
+        path
+        for path in untracked_paths
+        if allowed_root is None or not path.is_relative_to(allowed_root)
+    )
+    if unexpected:
+        raise ValueError(
+            "candidate source evidence found unexpected untracked files: "
+            + ", ".join(str(path) for path in unexpected)
+        )
+
+
 def run_integration_gate(
     project_root: Path,
     *,
     python_executable: str = sys.executable,
     group_names: Sequence[str] = (),
     temporary_parent: Path | None = None,
+    evidence_root: Path | None = None,
+    source_commit: str | None = None,
 ) -> tuple[IntegrationGateExecution, ...]:
     """Run the checked-in groups in isolation and stop on the first failure."""
 
@@ -721,10 +1322,31 @@ def run_integration_gate(
     unknown = selected.difference(group.name for group in INTEGRATION_GATE_GROUPS)
     if unknown:
         raise ValueError(f"unknown integration gate groups: {sorted(unknown)!r}")
+    if (evidence_root is None) != (source_commit is None):
+        raise ValueError(
+            "evidence_root and source_commit must be provided together"
+        )
+    if evidence_root is not None and selected:
+        raise ValueError("candidate evidence requires the complete Gate")
+
+    candidate_evidence_root: Path | None = None
+    if evidence_root is not None:
+        assert source_commit is not None
+        _verify_candidate_source(root, source_commit)
+        candidate_evidence_root = evidence_root.resolve()
+        if candidate_evidence_root.exists() and any(
+            candidate_evidence_root.iterdir()
+        ):
+            raise ValueError(
+                "candidate evidence root must be absent or empty before capture"
+            )
+        candidate_evidence_root.mkdir(parents=True, exist_ok=True)
 
     environment = os.environ.copy()
     environment.pop("PYTEST_ADDOPTS", None)
     environment.pop("PYTEST_PLUGINS", None)
+    environment.pop("STOCKSIM_WAVE3_IDENTITY_LEDGER", None)
+    environment.pop("STOCKSIM_WAVE3_CANDIDATE_SOURCE", None)
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     environment.setdefault("QT_QUICK_BACKEND", "software")
@@ -754,6 +1376,19 @@ def run_integration_gate(
                 "pytest",
                 *group.pytest_targets,
                 *group.pytest_args,
+                *(
+                    ()
+                    if candidate_evidence_root is None
+                    else (
+                        "--junitxml="
+                        + str(
+                            candidate_evidence_root
+                            / "groups"
+                            / group.name
+                            / "junit.xml"
+                        ),
+                    )
+                ),
                 f"--basetemp={group_root / 'pytest'}",
                 "-o",
                 "addopts=",
@@ -767,20 +1402,75 @@ def run_integration_gate(
                 group_environment["STOCKSIM_DB_URL"] = (
                     f"sqlite:///{database_path.as_posix()}"
                 )
-            completed = subprocess.run(
-                command,
-                cwd=root,
-                env=group_environment,
-                check=False,
+            junit_path: Path | None = None
+            stdout_path: Path | None = None
+            stderr_path: Path | None = None
+            completed: (
+                subprocess.CompletedProcess[bytes]
+                | subprocess.CompletedProcess[str]
             )
+            if candidate_evidence_root is None:
+                completed = subprocess.run(
+                    command,
+                    cwd=root,
+                    env=group_environment,
+                    check=False,
+                )
+            else:
+                assert source_commit is not None
+                group_evidence_root = (
+                    candidate_evidence_root / "groups" / group.name
+                )
+                group_evidence_root.mkdir(parents=True, exist_ok=True)
+                junit_path = group_evidence_root / "junit.xml"
+                stdout_path = group_evidence_root / "stdout.log"
+                stderr_path = group_evidence_root / "stderr.log"
+                if group.name == "persisted-application-qml-tracer":
+                    group_environment["STOCKSIM_WAVE3_IDENTITY_LEDGER"] = str(
+                        candidate_evidence_root / "identity-ledger.json"
+                    )
+                    group_environment["STOCKSIM_WAVE3_CANDIDATE_SOURCE"] = (
+                        source_commit
+                    )
+                with (
+                    stdout_path.open("w", encoding="utf-8") as stdout_stream,
+                    stderr_path.open("w", encoding="utf-8") as stderr_stream,
+                ):
+                    completed = subprocess.run(
+                        command,
+                        cwd=root,
+                        env=group_environment,
+                        check=False,
+                        stdout=stdout_stream,
+                        stderr=stderr_stream,
+                        text=True,
+                    )
         execution = IntegrationGateExecution(
             group=group.name,
             command=command,
             returncode=completed.returncode,
+            junit_path=junit_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
         )
         executions.append(execution)
         if completed.returncode:
             break
+    if candidate_evidence_root is not None and all(
+        item.returncode == 0 for item in executions
+    ):
+        assert source_commit is not None
+        _verify_candidate_source(
+            root,
+            source_commit,
+            allowed_untracked_root=candidate_evidence_root,
+        )
+        write_source_candidate_evidence(
+            root,
+            evidence_root=candidate_evidence_root,
+            source_commit=source_commit,
+            executions=executions,
+        )
     return tuple(executions)
 
 
@@ -853,6 +1543,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             "created; defaults to the worktree parent."
         ),
     )
+    parser.add_argument(
+        "--evidence-root",
+        type=Path,
+        help=(
+            "Empty output directory for source-bound JUnit, raw logs, "
+            "identity ledger, summary, and checksums. Requires "
+            "--source-commit and the complete Gate."
+        ),
+    )
+    parser.add_argument(
+        "--source-commit",
+        help="Full immutable candidate Git SHA bound to --evidence-root.",
+    )
     arguments = parser.parse_args(argv)
     validation = validate_integration_gate(arguments.project_root)
     if not validation.ok:
@@ -866,6 +1569,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments.project_root,
         group_names=arguments.groups,
         temporary_parent=arguments.temporary_parent,
+        evidence_root=arguments.evidence_root,
+        source_commit=arguments.source_commit,
     )
     for execution in executions:
         print(f"{execution.group}: exit {execution.returncode}")
@@ -888,4 +1593,5 @@ __all__ = [
     "main",
     "run_integration_gate",
     "validate_integration_gate",
+    "write_source_candidate_evidence",
 ]
