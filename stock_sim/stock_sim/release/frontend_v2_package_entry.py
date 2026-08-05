@@ -12,7 +12,7 @@ import tempfile
 import traceback
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -40,6 +40,17 @@ WAVE2_ACCEPTED_COMMAND_KINDS = (
     "validate_configuration",
     "approve_configuration",
     "start_formal_diagnostic_campaign",
+)
+WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
+    "compare_formal_strategy_set",
+    "select_formal_strategy_set",
+    "create_recipe_draft",
+    "validate_recipe_draft",
+    "approve_recipe",
+    "materialize_reference_path",
+    "compose_formal_scenario_set",
+    "resolve_execution_assumptions",
+    "select_formal_scenario_set",
 )
 
 # Compiled smoke terminates the process immediately after its report is
@@ -171,6 +182,8 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Select admitted Historical Market Segment|"
     r"Select registered Scenario transformation|"
     r"Closed transformation first parameter value|"
+    r"Select optional second registered Scenario transformation|"
+    r"Closed second transformation first parameter value|"
     r"Requested commission basis points|"
     r"Requested slippage basis points|"
     r"Requested maximum fill fraction|"
@@ -180,11 +193,14 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Market Rule Profile version identity|"
     r"Allow requested partial fills|"
     r"Create exact immutable Scenario Recipe Draft|"
+    r"Create exact immutable Compound Scenario Recipe Draft|"
     r"Audited AI Scenario Recipe intent|"
     r"Create audited AI-assisted Scenario Recipe Draft|"
     r"Create immutable successor Recipe Draft revision|"
     r"Select Recipe Draft .+ for successor revision|"
     r"Validate exact Recipe Draft revision \d+|"
+    r"Approve exact Recipe validation .+|"
+    r"Materialize exact Approved Recipe .+|"
     r"Compose visible Campaign Cases into a Scenario Set|"
     r"Resolve requested and effective execution assumptions|"
     r"Select immutable Formal Scenario Set context|"
@@ -276,6 +292,27 @@ class SmokeStateObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class InstalledWave3SetupEvidence:
+    strategy_selection_context_identity: str
+    recipe_draft_identity: str
+    recipe_validation_identity: str
+    approved_recipe_identity: str
+    materialization_task_handle_identity: str
+    materialized_path_identity: str
+    materialized_scenario_identity: str
+    formal_scenario_set_identity: str
+    scenario_selection_context_identity: str
+    setup_selection_context_identity: str
+    installed_setup_command_kinds: tuple[str, ...]
+    recipe_draft_identities: tuple[str, ...]
+    recipe_validation_identities: tuple[str, ...]
+    approved_recipe_identities: tuple[str, ...]
+    materialization_task_handle_identities: tuple[str, ...]
+    materialized_path_identities: tuple[str, ...]
+    materialized_scenario_identities: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PackageSmokeResult:
     schema_version: int
     source_commit: str
@@ -317,11 +354,44 @@ class PackageSmokeResult:
     errors: tuple[str, ...]
     clean_exit: bool
     fixture_kind: str = "sealed_completed_v1"
+    strategy_selection_created_after_install: bool = False
+    recipe_draft_created_after_install: bool = False
+    recipe_validation_created_after_install: bool = False
+    recipe_approval_created_after_install: bool = False
+    reference_path_materialized_after_install: bool = False
+    scenario_set_created_after_install: bool = False
+    scenario_selection_created_after_install: bool = False
+    strategy_selection_context_identity: str = ""
+    recipe_draft_identity: str = ""
+    recipe_validation_identity: str = ""
+    materialization_task_handle_identity: str = ""
+    materialized_path_identity: str = ""
+    materialized_scenario_identity: str = ""
+    terminal_campaign_case_identity: str = ""
+    terminal_selected_campaign_case_identity: str = ""
+    terminal_node_market_scenario_identity: str = ""
+    terminal_campaign_node_lifecycle: str = ""
+    terminal_case_manifest_binding_verified: bool = False
+    installed_setup_ledger_reopened: bool = False
+    reopened_installed_setup_ledger: dict[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
+    formal_scenario_set_identity: str = ""
+    scenario_selection_context_identity: str = ""
+    setup_selection_context_identity: str = ""
+    installed_setup_command_kinds: tuple[str, ...] = ()
+    installed_recipe_draft_identities: tuple[str, ...] = ()
+    installed_recipe_validation_identities: tuple[str, ...] = ()
+    installed_approved_recipe_identities: tuple[str, ...] = ()
+    installed_materialization_task_handle_identities: tuple[str, ...] = ()
+    installed_materialized_path_identities: tuple[str, ...] = ()
+    installed_materialized_scenario_identities: tuple[str, ...] = ()
     task_created_after_install: bool = False
     campaign_created_after_install: bool = False
     diagnostic_task_identity: str = ""
     accepted_command_kinds: tuple[str, ...] = ()
     task_handle_identities: tuple[str, ...] = ()
+    installed_setup: InstalledWave3SetupEvidence | None = None
     writable_persistence_verified: bool = False
     application_reopened: bool = False
     background_continuation_verified: bool = False
@@ -570,7 +640,7 @@ def _focus_with_keyboard(
 ) -> None:
     from PySide6.QtCore import Qt
 
-    for _ in range(80):
+    for _ in range(512):
         if target.property("activeFocus"):
             return
         _key_click(
@@ -589,6 +659,21 @@ def _focus_with_keyboard(
     )
 
 
+def _find_quick_item(root: Any, object_name: str) -> Any | None:
+    from PySide6.QtQuick import QQuickItem
+
+    direct = root.findChild(QQuickItem, object_name)
+    if direct is not None:
+        return direct
+    pending = list(root.childItems())
+    while pending:
+        item = pending.pop()
+        if item.objectName() == object_name:
+            return item
+        pending.extend(item.childItems())
+    return None
+
+
 def _navigate_route(
     *,
     app: Any,
@@ -597,8 +682,6 @@ def _navigate_route(
     route: str,
 ) -> None:
     from PySide6.QtCore import Qt
-    from PySide6.QtQuick import QQuickItem
-
     object_name = {
         "strategy_library": "strategyLibraryRouteNavigation",
         "scenario_lab": "scenarioLabRouteNavigation",
@@ -608,7 +691,7 @@ def _navigate_route(
             "evidenceAndFindingsRouteNavigation"
         ),
     }[route]
-    target = root.findChild(QQuickItem, object_name)
+    target = _find_quick_item(root, object_name)
     if target is None:
         raise RuntimeError(f"Route control is unavailable: {object_name}")
     if root.property("activeRoute") != route:
@@ -940,7 +1023,7 @@ def _start_installed_wave2_commands(
     root: Any,
     context: Any,
     application: Any,
-) -> tuple[Any, tuple[str, ...]]:
+) -> tuple[Any, tuple[str, ...], InstalledWave3SetupEvidence]:
     from PySide6.QtCore import Qt
     from PySide6.QtQuick import QQuickItem
 
@@ -963,7 +1046,23 @@ def _start_installed_wave2_commands(
         *,
         completed: Callable[[], bool],
     ) -> None:
-        target = root.findChild(QQuickItem, object_name)
+        try:
+            _settle_until(
+                app,
+                lambda: _find_quick_item(root, object_name) is not None,
+                f"{object_name} instantiated",
+            )
+        except RuntimeError as error:
+            related_actions = tuple(
+                str(item.property("objectName"))
+                for item in root.findChildren(QQuickItem)
+                if object_name.split("-", maxsplit=1)[0]
+                in str(item.property("objectName"))
+            )
+            raise RuntimeError(
+                f"{error}; related QML actions: {related_actions!r}"
+            ) from error
+        target = _find_quick_item(root, object_name)
         if target is None:
             raise RuntimeError(
                 f"Installed Journey action is absent: {object_name}"
@@ -1032,10 +1131,293 @@ def _start_installed_wave2_commands(
         lambda: scenario_projection.property("presentationState") == "ready",
         "installed authoritative Scenario Lab inventory",
     )
+    def set_text_input(object_name: str, value: str) -> None:
+        target = _find_quick_item(root, object_name)
+        if target is None:
+            raise RuntimeError(
+                f"Installed Journey text input is absent: {object_name}"
+            )
+        _focus_with_keyboard(app=app, host=host, target=target)
+        _key_click(
+            host,
+            Qt.Key.Key_A,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+        _type_text_with_keyboard(host, value)
+        _settle_until(
+            app,
+            lambda: str(target.property("text")) == value,
+            f"{object_name} exact keyboard input",
+        )
+
+    def set_combo_index(object_name: str, index: int) -> None:
+        target = _find_quick_item(root, object_name)
+        if target is None:
+            raise RuntimeError(
+                f"Installed Journey selector is absent: {object_name}"
+            )
+        _focus_with_keyboard(app=app, host=host, target=target)
+        _key_click(
+            host,
+            Qt.Key.Key_Space,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        _key_click(
+            host,
+            Qt.Key.Key_Home,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        for _ in range(index):
+            _key_click(
+                host,
+                Qt.Key.Key_Down,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        _key_click(
+            host,
+            Qt.Key.Key_Return,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        _settle_until(
+            app,
+            lambda: int(target.property("currentIndex")) == index,
+            f"{object_name} closed catalog selection",
+        )
+
+    set_text_input("scenarioLabRecipeSlippageInput", "5")
+    catalog = tuple(scenario_projection.transformations)
+    catalog_index = {
+        str(item["transformationId"]): index
+        for index, item in enumerate(catalog, start=1)
+    }
+    formal_transformation_ids = (
+        "trend-regime.v1",
+        "volatility-scaling.v1",
+        "shock-recovery.v1",
+        "market-structure.v1",
+        "liquidity-stress.v1",
+        "execution-stress.v1",
+    )
+    if set(catalog_index) != set(formal_transformation_ids):
+        raise RuntimeError(
+            "Installed closed transformation catalog does not match the "
+            "formal bounded sweep"
+        )
+
+    def transformation_level_hints(
+        transformation_id: str,
+    ) -> tuple[str, str]:
+        entry = next(
+            item
+            for item in catalog
+            if item["transformationId"] == transformation_id
+        )
+        parameter = entry["parameters"][0]
+        choices = tuple(str(value) for value in parameter["choices"])
+        if len(choices) >= 2:
+            return choices[0], choices[-1]
+        minimum = str(parameter["minimum"])
+        maximum = str(parameter["maximum"])
+        if not minimum or not maximum or minimum == maximum:
+            raise RuntimeError(
+                "Installed formal transformation lacks two closed first-"
+                f"parameter levels: {transformation_id}"
+            )
+        return minimum, maximum
+
+    def author_validate_approve_materialize(
+        *,
+        name: str,
+        primary_transformation_id: str = "",
+        primary_parameter_hint: str = "",
+        secondary_transformation_id: str = "",
+        secondary_parameter_hint: str = "",
+    ) -> tuple[dict[str, Any], ...]:
+        draft_count = int(scenario_projection.property("recipeDraftCount"))
+        validation_count = int(
+            scenario_projection.property("recipeValidationCount")
+        )
+        approved_count = int(
+            scenario_projection.property("approvedRecipeVersionCount")
+        )
+        handle_count = int(scenario_projection.property("taskHandleCount"))
+        prior_draft_ids = {
+            str(item["draftId"])
+            for item in scenario_projection.recipeDrafts
+        }
+        set_text_input("scenarioLabRecipeNameInput", name)
+        set_combo_index(
+            "scenarioLabRecipeTransformationInput",
+            0
+            if not primary_transformation_id
+            else catalog_index[primary_transformation_id],
+        )
+        set_text_input(
+            "scenarioLabRecipeTransformationParameterInput",
+            primary_parameter_hint,
+        )
+        set_combo_index(
+            "scenarioLabRecipeSecondaryTransformationInput",
+            0
+            if not secondary_transformation_id
+            else catalog_index[secondary_transformation_id],
+        )
+        set_text_input(
+            "scenarioLabRecipeSecondaryTransformationParameterInput",
+            secondary_parameter_hint,
+        )
+        activate(
+            (
+                "scenarioLabCreateCompoundRecipeDraftButton"
+                if secondary_transformation_id
+                else "scenarioLabCreateRecipeDraftButton"
+            ),
+            completed=lambda: scenario_projection.property("recipeDraftCount")
+            == draft_count + 1,
+        )
+        recipe_draft = next(
+            item
+            for item in scenario_projection.recipeDrafts
+            if str(item["draftId"]) not in prior_draft_ids
+        )
+        recipe_draft_id = str(recipe_draft["draftId"])
+        activate(
+            "scenarioLabValidateRecipeDraft-" + recipe_draft_id,
+            completed=lambda: scenario_projection.property(
+                "recipeValidationCount"
+            )
+            == validation_count + 1,
+        )
+        recipe_validation = next(
+            item
+            for item in scenario_projection.recipeValidations
+            if str(item["draftId"]) == recipe_draft_id
+        )
+        if (
+            str(recipe_validation["draftId"]) != recipe_draft_id
+            or recipe_validation["valid"] is not True
+        ):
+            raise RuntimeError(
+                "Installed Recipe validation did not accept the exact Draft"
+            )
+        recipe_validation_id = str(recipe_validation["validationId"])
+        activate(
+            "scenarioLabApproveRecipe-" + recipe_validation_id,
+            completed=lambda: scenario_projection.property(
+                "approvedRecipeVersionCount"
+            )
+            == approved_count + 1,
+        )
+        approved_recipe = next(
+            item
+            for item in scenario_projection.approvedRecipeVersions
+            if item["validationId"] == recipe_validation_id
+        )
+        approved_recipe_id = str(approved_recipe["recipeVersionId"])
+        activate(
+            "scenarioLabMaterializeApprovedRecipe-" + approved_recipe_id,
+            completed=lambda: bool(
+                scenario_projection.property("taskHandleCount")
+                == handle_count + 1
+                and any(
+                    item["targetIdentity"] == approved_recipe_id
+                    and item["terminal"]
+                    for item in scenario_projection.taskHandles
+                )
+            ),
+        )
+        materialization_handle = next(
+            item
+            for item in scenario_projection.taskHandles
+            if item["targetIdentity"] == approved_recipe_id
+        )
+        if (
+            materialization_handle["phase"] != "completed"
+            or materialization_handle["targetIdentity"]
+            != approved_recipe_id
+        ):
+            raise RuntimeError(
+                "Installed Recipe materialization did not complete for the "
+                "approved version"
+            )
+        materialized_path_id = str(
+            materialization_handle["resultIdentity"]
+        )
+        materialized_scenario = next(
+            item
+            for item in scenario_projection.marketScenarios
+            if item["pathId"] == materialized_path_id
+            and item["recipeVersionId"] == approved_recipe_id
+        )
+        return (
+            recipe_draft,
+            recipe_validation,
+            approved_recipe,
+            materialization_handle,
+            materialized_scenario,
+        )
+
+    materialized_records = [
+        author_validate_approve_materialize(
+            name="Installed formal baseline control"
+        )
+    ]
+    for transformation_id in formal_transformation_ids:
+        for level, parameter_hint in enumerate(
+            transformation_level_hints(transformation_id),
+            start=1,
+        ):
+            materialized_records.append(
+                author_validate_approve_materialize(
+                    name=(
+                        f"Installed {transformation_id} bounded level {level}"
+                    ),
+                    primary_transformation_id=transformation_id,
+                    primary_parameter_hint=parameter_hint,
+                )
+            )
+    primary_id, secondary_id = formal_transformation_ids[:2]
+    materialized_records.append(
+        author_validate_approve_materialize(
+            name="Installed trend and volatility formal compound",
+            primary_transformation_id=primary_id,
+            primary_parameter_hint=transformation_level_hints(primary_id)[0],
+            secondary_transformation_id=secondary_id,
+            secondary_parameter_hint=(
+                transformation_level_hints(secondary_id)[1]
+            ),
+        )
+    )
+    (
+        recipe_draft,
+        recipe_validation,
+        approved_recipe,
+        materialization_handle,
+        materialized_scenario,
+    ) = materialized_records[0]
+    recipe_draft_id = str(recipe_draft["draftId"])
+    recipe_validation_id = str(recipe_validation["validationId"])
+    approved_recipe_id = str(approved_recipe["recipeVersionId"])
+    materialized_path_id = str(materialization_handle["resultIdentity"])
+    materialized_scenario_id = str(materialized_scenario["scenarioId"])
+    scenario_set_count = int(scenario_projection.property("scenarioSetCount"))
     activate(
         "scenarioLabComposeVisibleScenarioSetButton",
-        completed=lambda: scenario_projection.property("scenarioSetCount") >= 1,
+        completed=lambda: scenario_projection.property("scenarioSetCount")
+        == scenario_set_count + 1,
     )
+    formal_scenario_set = scenario_projection.scenarioSets[-1]
+    if (
+        formal_scenario_set["eligibility"]
+        != "formal_campaign_eligible"
+        or materialized_scenario_id not in formal_scenario_set["caseIds"]
+    ):
+        raise RuntimeError(
+            "Installed Formal Scenario Set omitted the materialized case; "
+            f"case={materialized_scenario!r}; "
+            f"set={formal_scenario_set!r}; "
+            f"visible_cases={scenario_projection.marketScenarios!r}"
+        )
     activate(
         "scenarioLabResolveExecutionAssumptionsButton",
         completed=lambda: scenario_projection.property(
@@ -1047,6 +1429,17 @@ def _start_installed_wave2_commands(
         "scenarioLabSelectFormalScenarioSetButton",
         completed=lambda: scenario_projection.property("selectionContextCount")
         >= 1,
+    )
+    scenario_selection = scenario_projection.current_diagnostic_selection()
+    if scenario_selection is None or materialized_scenario_id not in {
+        item.scenario_id.value
+        for item in scenario_selection.market_scenarios
+    }:
+        raise RuntimeError(
+            "Installed formal Scenario selection omitted the materialized case"
+        )
+    scenario_selection_context_id = (
+        scenario_selection.context.selection_context_id.value
     )
 
     _navigate_route(
@@ -1154,6 +1547,40 @@ def _start_installed_wave2_commands(
         raise RuntimeError(
             "Installed QML did not start a Formal Diagnostic Campaign"
         )
+    setup_selection = context.diagnostic_setup_selection_coordinator.current()
+    if setup_selection is None:
+        raise RuntimeError(
+            "Installed Diagnostic Task lost its exact setup selection"
+        )
+    installed_bindings = {
+        str(record[4]["scenarioId"]): (
+            str(record[2]["recipeVersionId"]),
+            str(record[3]["resultIdentity"]),
+        )
+        for record in materialized_records
+    }
+    setup_bindings = {
+        item.campaign_case_id.value: (
+            item.recipe_version_id.value,
+            item.market_scenario_id.value,
+        )
+        for item in setup_selection.configuration.campaign_case_selections
+    }
+    selected_bindings = {
+        item.campaign_case_id.value: (
+            item.recipe_version_id.value,
+            item.market_scenario_id.value,
+        )
+        for item in running.handoff.selected_cases
+    }
+    if (
+        setup_bindings != installed_bindings
+        or selected_bindings != installed_bindings
+    ):
+        raise RuntimeError(
+            "Installed Recipe/path/case identities did not reach the "
+            "Diagnostic Task Campaign handoff"
+        )
 
     with _serialized_application_access(application):
         started_campaign = application.diagnostic_campaign_status(
@@ -1188,7 +1615,54 @@ def _start_installed_wave2_commands(
             "Installed Campaign exposed Evidence or a Reproduction Manifest "
             "before terminal completion"
         )
-    return running, WAVE2_ACCEPTED_COMMAND_KINDS
+    setup_evidence = InstalledWave3SetupEvidence(
+        strategy_selection_context_identity=(
+            setup_selection.strategy_selection.context_identity
+        ),
+        recipe_draft_identity=recipe_draft_id,
+        recipe_validation_identity=recipe_validation_id,
+        approved_recipe_identity=approved_recipe_id,
+        materialization_task_handle_identity=str(
+            materialization_handle["taskHandleId"]
+        ),
+        materialized_path_identity=materialized_path_id,
+        materialized_scenario_identity=materialized_scenario_id,
+        formal_scenario_set_identity=str(
+            formal_scenario_set["scenarioSetId"]
+        ),
+        scenario_selection_context_identity=(
+            scenario_selection_context_id
+        ),
+        setup_selection_context_identity=setup_selection.context_identity,
+        installed_setup_command_kinds=(
+            WAVE3_ACCEPTED_SETUP_COMMAND_KINDS
+        ),
+        recipe_draft_identities=tuple(
+            str(record[0]["draftId"])
+            for record in materialized_records
+        ),
+        recipe_validation_identities=tuple(
+            str(record[1]["validationId"])
+            for record in materialized_records
+        ),
+        approved_recipe_identities=tuple(
+            str(record[2]["recipeVersionId"])
+            for record in materialized_records
+        ),
+        materialization_task_handle_identities=tuple(
+            str(record[3]["taskHandleId"])
+            for record in materialized_records
+        ),
+        materialized_path_identities=tuple(
+            str(record[3]["resultIdentity"])
+            for record in materialized_records
+        ),
+        materialized_scenario_identities=tuple(
+            str(record[4]["scenarioId"])
+            for record in materialized_records
+        ),
+    )
+    return running, WAVE2_ACCEPTED_COMMAND_KINDS, setup_evidence
 
 
 def _quiesce_installed_wave2_mount(
@@ -1504,7 +1978,7 @@ def run_smoke_journey(
     defer_native_teardown: bool = False,
 ) -> PackageSmokeResult:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
-        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+        WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
 
     cleanup_errors: list[str] = []
@@ -1513,7 +1987,7 @@ def run_smoke_journey(
         if (
             fixture_archive_path is None
             or fixture_archive_path.name
-            == WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+            == WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE
         ):
             result = _run_wave2_smoke_journey(
                 report_dir=report_dir,
@@ -1665,10 +2139,12 @@ def _run_smoke_journey(
             cleanup=cleanup,
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=defer_native_teardown,
-            temporary_directory_prefix="uti-wave2-runtime-",
+            temporary_directory_prefix="uti-wave3-runtime-",
         )
         if fixture_archive_path is None:
-            raise RuntimeError("Wave 2 input fixture archive is unavailable")
+            raise RuntimeError(
+                "Wave 3 authoritative input fixture archive is unavailable"
+            )
         extract_sealed_wave2_release_input_fixture_archive(
             archive_path=fixture_archive_path,
             bundle_root=persistence_root,
@@ -1735,6 +2211,13 @@ def _run_smoke_journey(
             fixture.evidence_package.sealed_payload()["status"]
         )
         expected_identity_graph = fixture.expected_identity_graph
+    terminal_campaign_case_identity = ""
+    terminal_selected_campaign_case_identity = ""
+    terminal_node_market_scenario_identity = ""
+    terminal_campaign_node_lifecycle = ""
+    terminal_case_manifest_binding_verified = False
+    installed_setup_ledger_reopened = False
+    reopened_installed_setup_ledger: dict[str, tuple[str, ...]] = {}
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
         fixture.application,
         fixture.engine,
@@ -1968,6 +2451,7 @@ def _run_smoke_journey(
     diagnostic_task_identity = ""
     accepted_command_kinds: tuple[str, ...] = ()
     task_handle_identities: tuple[str, ...] = ()
+    installed_setup: InstalledWave3SetupEvidence | None = None
     cancel_order_isolation_verified = False
     application_reopened = False
     writable_persistence_verified = False
@@ -1977,6 +2461,7 @@ def _run_smoke_journey(
         (
             running_task,
             accepted_command_kinds,
+            installed_setup,
         ) = _start_installed_wave2_commands(
             app=app,
             host=host,
@@ -2346,6 +2831,320 @@ def _run_smoke_journey(
         evidence_status = str(
             fixture.evidence_package.sealed_payload()["status"]
         )
+        if installed_setup is None:
+            raise RuntimeError(
+                "Installed Wave 3 setup evidence is unavailable after reopen"
+            )
+        try:
+            terminal_setup_index = (
+                installed_setup.approved_recipe_identities.index(recipe_id)
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "Terminal Recipe identity was not created after installation: "
+                f"{recipe_id}"
+            ) from error
+        terminal_setup_case = (
+            installed_setup.materialized_scenario_identities[
+                terminal_setup_index
+            ]
+        )
+        terminal_setup_path = installed_setup.materialized_path_identities[
+            terminal_setup_index
+        ]
+        terminal_nodes = tuple(
+            node
+            for node in completed_task.handoff.campaign_nodes
+            if node.lifecycle.value == "completed"
+            and any(
+                run.reproduction_manifest_id is not None
+                and run.reproduction_manifest_id.value == manifest_id
+                for attempt in node.attempts
+                for run in attempt.runs
+            )
+        )
+        if len(terminal_nodes) != 1:
+            raise RuntimeError(
+                "Terminal Reproduction Manifest did not bind exactly one "
+                "Formal Campaign node"
+            )
+        terminal_node = terminal_nodes[0]
+        terminal_campaign_case_identity = (
+            terminal_node.campaign_case_id.value
+        )
+        terminal_selected_campaign_case_identity = (
+            terminal_node.selected_campaign_case_id.value
+        )
+        terminal_node_market_scenario_identity = (
+            terminal_node.market_scenario_id.value
+        )
+        terminal_campaign_node_lifecycle = terminal_node.lifecycle.value
+        terminal_case_manifest_binding_verified = bool(
+            terminal_campaign_node_lifecycle == "completed"
+            and
+            terminal_campaign_case_identity == case_id
+            and terminal_selected_campaign_case_identity
+            == terminal_setup_case
+            and terminal_node_market_scenario_identity
+            == terminal_setup_path
+        )
+        if not terminal_case_manifest_binding_verified:
+            raise RuntimeError(
+                "Terminal execution Case/Manifest did not preserve its "
+                "selected Campaign Case and Reference Market Path binding: "
+                f"execution_case={terminal_campaign_case_identity!r}; "
+                f"manifest_case={case_id!r}; "
+                "selected_campaign_case="
+                f"{terminal_selected_campaign_case_identity!r}; "
+                f"setup_case={terminal_setup_case!r}; "
+                f"node_path={terminal_node_market_scenario_identity!r}; "
+                f"setup_path={terminal_setup_path!r}"
+            )
+        with _serialized_application_access(fixture.application):
+            reopened_drafts = (
+                fixture.application.scenario_recipe_draft_revisions()
+            )
+            reopened_validations = (
+                fixture.application.scenario_recipe_validation_history()
+            )
+            reopened_approvals = (
+                fixture.application.scenario_recipe_approval_history()
+            )
+            reopened_materialization_tasks = (
+                fixture.application.scenario_materialization_task_handles()
+            )
+            reopened_recipe_ids = {
+                item.version_id
+                for item in fixture.application.list_approved_scenario_recipes()
+            }
+            reopened_path_ids = {
+                item.artifact_hash
+                for item in fixture.application.list_materialized_market_paths()
+            }
+            reopened_campaign_cases = (
+                fixture.application.list_available_diagnostic_campaign_cases()
+            )
+            reopened_campaign_case_ids = {
+                item.case_id for item in reopened_campaign_cases
+            }
+            reopened_formal_sets = (
+                fixture.application.scenario_lab_formal_scenario_sets()
+            )
+            reopened_scenario_selections = (
+                fixture.application.scenario_lab_selection_contexts()
+            )
+            reopened_task = fixture.application.get_diagnostic_task(
+                diagnostic_task_identity
+            )
+        reopened_binding = (
+            None
+            if reopened_task is None
+            else reopened_task.setup_dependency_binding
+        )
+        reopened_installed_setup_ledger = {
+            "recipe_drafts": tuple(
+                sorted(item.draft.draft_id for item in reopened_drafts)
+            ),
+            "recipe_validations": tuple(
+                sorted(item.validation_id for item in reopened_validations)
+            ),
+            "approved_recipes": tuple(sorted(reopened_recipe_ids)),
+            "materialization_task_handles": tuple(
+                sorted(
+                    item.task_handle_id
+                    for item in reopened_materialization_tasks
+                )
+            ),
+            "materialized_paths": tuple(sorted(reopened_path_ids)),
+            "materialized_scenarios": tuple(
+                sorted(reopened_campaign_case_ids)
+            ),
+            "draft_validation_approval_bindings": tuple(
+                sorted(
+                    "|".join(
+                        (
+                            item.draft.draft.draft_id,
+                            ""
+                            if item.validation is None
+                            else item.validation.validation_id,
+                            item.version.version_id,
+                        )
+                    )
+                    for item in reopened_approvals
+                )
+            ),
+            "materialization_bindings": tuple(
+                sorted(
+                    "|".join(
+                        (
+                            item.target_identity,
+                            item.task_handle_id,
+                            item.result_identity or "",
+                        )
+                    )
+                    for item in reopened_materialization_tasks
+                )
+            ),
+            "campaign_case_bindings": tuple(
+                sorted(
+                    "|".join(
+                        (
+                            item.recipe_version_id,
+                            item.materialization_hash,
+                            item.case_id,
+                        )
+                    )
+                    for item in reopened_campaign_cases
+                )
+            ),
+            "formal_scenario_sets": tuple(
+                sorted(item.scenario_set_id for item in reopened_formal_sets)
+            ),
+            "scenario_selection_contexts": tuple(
+                sorted(
+                    item.selection_context_id
+                    for item in reopened_scenario_selections
+                )
+            ),
+            "scenario_selection_set_bindings": tuple(
+                sorted(
+                    f"{item.selection_context_id}|{item.scenario_set_id}"
+                    for item in reopened_scenario_selections
+                )
+            ),
+            "strategy_selection_contexts": (
+                ()
+                if reopened_binding is None
+                else (reopened_binding.strategy_selection_context_id,)
+            ),
+            "setup_selection_contexts": (
+                ()
+                if reopened_binding is None
+                else (reopened_binding.source_identity,)
+            ),
+            "task_scenario_selection_contexts": (
+                ()
+                if reopened_binding is None
+                else (reopened_binding.scenario_selection_context_id,)
+            ),
+        }
+        expected_reopened_setup_ledger = {
+            "recipe_drafts": tuple(
+                sorted(installed_setup.recipe_draft_identities)
+            ),
+            "recipe_validations": tuple(
+                sorted(installed_setup.recipe_validation_identities)
+            ),
+            "approved_recipes": tuple(
+                sorted(installed_setup.approved_recipe_identities)
+            ),
+            "materialization_task_handles": tuple(
+                sorted(
+                    installed_setup.materialization_task_handle_identities
+                )
+            ),
+            "materialized_paths": tuple(
+                sorted(installed_setup.materialized_path_identities)
+            ),
+            "materialized_scenarios": tuple(
+                sorted(installed_setup.materialized_scenario_identities)
+            ),
+            "draft_validation_approval_bindings": tuple(
+                sorted(
+                    "|".join(values)
+                    for values in zip(
+                        installed_setup.recipe_draft_identities,
+                        installed_setup.recipe_validation_identities,
+                        installed_setup.approved_recipe_identities,
+                        strict=True,
+                    )
+                )
+            ),
+            "materialization_bindings": tuple(
+                sorted(
+                    "|".join(values)
+                    for values in zip(
+                        installed_setup.approved_recipe_identities,
+                        installed_setup.materialization_task_handle_identities,
+                        installed_setup.materialized_path_identities,
+                        strict=True,
+                    )
+                )
+            ),
+            "campaign_case_bindings": tuple(
+                sorted(
+                    "|".join(values)
+                    for values in zip(
+                        installed_setup.approved_recipe_identities,
+                        installed_setup.materialized_path_identities,
+                        installed_setup.materialized_scenario_identities,
+                        strict=True,
+                    )
+                )
+            ),
+            "formal_scenario_sets": (
+                installed_setup.formal_scenario_set_identity,
+            ),
+            "scenario_selection_contexts": (
+                installed_setup.scenario_selection_context_identity,
+            ),
+            "scenario_selection_set_bindings": (
+                installed_setup.scenario_selection_context_identity
+                + "|"
+                + installed_setup.formal_scenario_set_identity,
+            ),
+            "strategy_selection_contexts": (
+                installed_setup.strategy_selection_context_identity,
+            ),
+            "setup_selection_contexts": (
+                installed_setup.setup_selection_context_identity,
+            ),
+            "task_scenario_selection_contexts": (
+                installed_setup.scenario_selection_context_identity,
+            ),
+        }
+        installed_setup_ledger_reopened = (
+            reopened_installed_setup_ledger
+            == expected_reopened_setup_ledger
+        )
+        if (
+            not installed_setup_ledger_reopened
+            or terminal_setup_path not in fixture.raw_artifact_hashes
+            or not set(installed_setup.materialized_path_identities).issubset(
+                fixture.raw_artifact_hashes
+            )
+        ):
+            raise RuntimeError(
+                "Installed-created Recipe/path/case identities did not "
+                "survive terminal Application reopen; "
+                f"selected_recipe={recipe_id!r}; "
+                f"selected_case={case_id!r}; "
+                f"setup_case={terminal_setup_case!r}; "
+                f"setup_path={terminal_setup_path!r}; "
+                f"expected_ledger={expected_reopened_setup_ledger!r}; "
+                f"reopened_ledger={reopened_installed_setup_ledger!r}"
+            )
+        installed_setup = replace(
+            installed_setup,
+            recipe_draft_identity=(
+                installed_setup.recipe_draft_identities[
+                    terminal_setup_index
+                ]
+            ),
+            recipe_validation_identity=(
+                installed_setup.recipe_validation_identities[
+                    terminal_setup_index
+                ]
+            ),
+            approved_recipe_identity=recipe_id,
+            materialization_task_handle_identity=(
+                installed_setup.materialization_task_handle_identities[
+                    terminal_setup_index
+                ]
+            ),
+            materialized_path_identity=terminal_setup_path,
+            materialized_scenario_identity=terminal_setup_case,
+        )
         expected_identity_graph = tuple(
             sorted(
                 {
@@ -2686,7 +3485,7 @@ def _run_smoke_journey(
     read_only_context_visible = _read_only_context_visible(host)
 
     result = PackageSmokeResult(
-        schema_version=2,
+        schema_version=3,
         source_commit=source_commit,
         renderer_lane=renderer_lane,
         graphics_api=graphics_api,
@@ -2755,9 +3554,125 @@ def _run_smoke_journey(
         errors=(),
         clean_exit=False,
         fixture_kind=(
-            "authoritative_writable_wave2_inputs"
+            "authoritative_writable_wave3_inputs"
             if wave2_mode
             else "sealed_completed_v1"
+        ),
+        strategy_selection_created_after_install=(
+            installed_setup is not None
+        ),
+        recipe_draft_created_after_install=(installed_setup is not None),
+        recipe_validation_created_after_install=(
+            installed_setup is not None
+        ),
+        recipe_approval_created_after_install=(installed_setup is not None),
+        reference_path_materialized_after_install=(
+            installed_setup is not None
+        ),
+        scenario_set_created_after_install=(installed_setup is not None),
+        scenario_selection_created_after_install=(
+            installed_setup is not None
+        ),
+        strategy_selection_context_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.strategy_selection_context_identity
+        ),
+        recipe_draft_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.recipe_draft_identity
+        ),
+        recipe_validation_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.recipe_validation_identity
+        ),
+        materialization_task_handle_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.materialization_task_handle_identity
+        ),
+        materialized_path_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.materialized_path_identity
+        ),
+        materialized_scenario_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.materialized_scenario_identity
+        ),
+        terminal_campaign_case_identity=(
+            terminal_campaign_case_identity
+        ),
+        terminal_selected_campaign_case_identity=(
+            terminal_selected_campaign_case_identity
+        ),
+        terminal_node_market_scenario_identity=(
+            terminal_node_market_scenario_identity
+        ),
+        terminal_campaign_node_lifecycle=(
+            terminal_campaign_node_lifecycle
+        ),
+        terminal_case_manifest_binding_verified=(
+            terminal_case_manifest_binding_verified
+        ),
+        installed_setup_ledger_reopened=(
+            installed_setup_ledger_reopened
+        ),
+        reopened_installed_setup_ledger=(
+            reopened_installed_setup_ledger
+        ),
+        formal_scenario_set_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.formal_scenario_set_identity
+        ),
+        scenario_selection_context_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.scenario_selection_context_identity
+        ),
+        setup_selection_context_identity=(
+            ""
+            if installed_setup is None
+            else installed_setup.setup_selection_context_identity
+        ),
+        installed_setup_command_kinds=(
+            ()
+            if installed_setup is None
+            else installed_setup.installed_setup_command_kinds
+        ),
+        installed_recipe_draft_identities=(
+            ()
+            if installed_setup is None
+            else installed_setup.recipe_draft_identities
+        ),
+        installed_recipe_validation_identities=(
+            ()
+            if installed_setup is None
+            else installed_setup.recipe_validation_identities
+        ),
+        installed_approved_recipe_identities=(
+            ()
+            if installed_setup is None
+            else installed_setup.approved_recipe_identities
+        ),
+        installed_materialization_task_handle_identities=(
+            ()
+            if installed_setup is None
+            else installed_setup.materialization_task_handle_identities
+        ),
+        installed_materialized_path_identities=(
+            ()
+            if installed_setup is None
+            else installed_setup.materialized_path_identities
+        ),
+        installed_materialized_scenario_identities=(
+            ()
+            if installed_setup is None
+            else installed_setup.materialized_scenario_identities
         ),
         task_created_after_install=wave2_mode,
         campaign_created_after_install=wave2_mode,
@@ -3258,13 +4173,275 @@ def _run_interactive() -> int:
 
 def _installed_fixture_archive_path() -> Path:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
-        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+        WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
 
     return (
         Path(sys.argv[0]).resolve().parent
-        / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+        / str(WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE)
     )
+
+
+def _installed_recipe_family_is_complete(result: PackageSmokeResult) -> bool:
+    collections = (
+        result.installed_recipe_draft_identities,
+        result.installed_recipe_validation_identities,
+        result.installed_approved_recipe_identities,
+        result.installed_materialization_task_handle_identities,
+        result.installed_materialized_path_identities,
+        result.installed_materialized_scenario_identities,
+    )
+    if any(
+        len(values) != 14
+        or len(set(values)) != 14
+        or any(not value.strip() for value in values)
+        for values in collections
+    ):
+        return False
+    try:
+        selected_index = result.installed_approved_recipe_identities.index(
+            result.approved_recipe_identity
+        )
+    except ValueError:
+        return False
+    return (
+        result.recipe_draft_identity
+        == result.installed_recipe_draft_identities[selected_index]
+        and result.recipe_validation_identity
+        == result.installed_recipe_validation_identities[selected_index]
+        and result.materialization_task_handle_identity
+        == result.installed_materialization_task_handle_identities[
+            selected_index
+        ]
+        and result.materialized_path_identity
+        == result.installed_materialized_path_identities[selected_index]
+        and result.materialized_scenario_identity
+        == result.installed_materialized_scenario_identities[selected_index]
+    )
+
+
+def _expected_reopened_setup_ledger(
+    result: PackageSmokeResult,
+) -> dict[str, tuple[str, ...]]:
+    identity_families = (
+        result.installed_recipe_draft_identities,
+        result.installed_recipe_validation_identities,
+        result.installed_approved_recipe_identities,
+        result.installed_materialization_task_handle_identities,
+        result.installed_materialized_path_identities,
+        result.installed_materialized_scenario_identities,
+    )
+    if any(len(values) != 14 for values in identity_families):
+        return {}
+    return {
+        "recipe_drafts": tuple(
+            sorted(result.installed_recipe_draft_identities)
+        ),
+        "recipe_validations": tuple(
+            sorted(result.installed_recipe_validation_identities)
+        ),
+        "approved_recipes": tuple(
+            sorted(result.installed_approved_recipe_identities)
+        ),
+        "materialization_task_handles": tuple(
+            sorted(result.installed_materialization_task_handle_identities)
+        ),
+        "materialized_paths": tuple(
+            sorted(result.installed_materialized_path_identities)
+        ),
+        "materialized_scenarios": tuple(
+            sorted(result.installed_materialized_scenario_identities)
+        ),
+        "draft_validation_approval_bindings": tuple(
+            sorted(
+                "|".join(values)
+                for values in zip(
+                    result.installed_recipe_draft_identities,
+                    result.installed_recipe_validation_identities,
+                    result.installed_approved_recipe_identities,
+                    strict=True,
+                )
+            )
+        ),
+        "materialization_bindings": tuple(
+            sorted(
+                "|".join(values)
+                for values in zip(
+                    result.installed_approved_recipe_identities,
+                    result.installed_materialization_task_handle_identities,
+                    result.installed_materialized_path_identities,
+                    strict=True,
+                )
+            )
+        ),
+        "campaign_case_bindings": tuple(
+            sorted(
+                "|".join(values)
+                for values in zip(
+                    result.installed_approved_recipe_identities,
+                    result.installed_materialized_path_identities,
+                    result.installed_materialized_scenario_identities,
+                    strict=True,
+                )
+            )
+        ),
+        "formal_scenario_sets": (result.formal_scenario_set_identity,),
+        "scenario_selection_contexts": (
+            result.scenario_selection_context_identity,
+        ),
+        "scenario_selection_set_bindings": (
+            result.scenario_selection_context_identity
+            + "|"
+            + result.formal_scenario_set_identity,
+        ),
+        "strategy_selection_contexts": (
+            result.strategy_selection_context_identity,
+        ),
+        "setup_selection_contexts": (
+            result.setup_selection_context_identity,
+        ),
+        "task_scenario_selection_contexts": (
+            result.scenario_selection_context_identity,
+        ),
+    }
+
+
+def _compiled_smoke_failures(
+    result: PackageSmokeResult,
+    *,
+    shutdown_errors: Sequence[str],
+) -> tuple[str, ...]:
+    failures = [*shutdown_errors, *result.errors]
+    checks = (
+        (result.clean_exit, "installed Journey did not exit cleanly"),
+        (
+            result.manual_trading_action_count == 0,
+            "installed Journey exposed a manual-trading action",
+        ),
+        (
+            result.read_only_context_visible,
+            "installed Journey lost its read-only context",
+        ),
+        (
+            result.fixture_kind == "authoritative_writable_wave3_inputs",
+            "installed Journey did not use authoritative Wave 3 inputs",
+        ),
+        (
+            result.strategy_selection_created_after_install,
+            "formal Strategy selection was not created after install",
+        ),
+        (
+            result.recipe_draft_created_after_install,
+            "Recipe Draft was not created after install",
+        ),
+        (
+            result.recipe_validation_created_after_install,
+            "Recipe validation was not created after install",
+        ),
+        (
+            result.recipe_approval_created_after_install,
+            "Recipe approval was not created after install",
+        ),
+        (
+            result.reference_path_materialized_after_install,
+            "Reference Market Path was not materialized after install",
+        ),
+        (
+            result.scenario_set_created_after_install,
+            "Formal Scenario Set was not created after install",
+        ),
+        (
+            result.scenario_selection_created_after_install,
+            "Formal Scenario selection was not created after install",
+        ),
+        (
+            result.installed_setup_command_kinds
+            == WAVE3_ACCEPTED_SETUP_COMMAND_KINDS,
+            "installed setup command kinds are incomplete",
+        ),
+        (
+            _installed_recipe_family_is_complete(result),
+            "installed 14-case Recipe family is incomplete or misbound",
+        ),
+        (
+            result.terminal_case_manifest_binding_verified
+            and result.terminal_campaign_case_identity
+            == result.case_identity
+            and result.terminal_selected_campaign_case_identity
+            == result.materialized_scenario_identity
+            and result.terminal_node_market_scenario_identity
+            == result.materialized_path_identity
+            and result.terminal_campaign_node_lifecycle == "completed",
+            "terminal Manifest execution Case is not bound to the selected "
+            "installed Campaign Case",
+        ),
+        (
+            result.installed_setup_ledger_reopened
+            and result.reopened_installed_setup_ledger
+            == _expected_reopened_setup_ledger(result),
+            "installed setup ledger was not authoritatively re-read after "
+            "Application reopen",
+        ),
+        (
+            all(
+                value.strip()
+                for value in (
+                    result.strategy_selection_context_identity,
+                    result.recipe_draft_identity,
+                    result.recipe_validation_identity,
+                    result.approved_recipe_identity,
+                    result.materialization_task_handle_identity,
+                    result.materialized_path_identity,
+                    result.materialized_scenario_identity,
+                    result.formal_scenario_set_identity,
+                    result.scenario_selection_context_identity,
+                    result.setup_selection_context_identity,
+                )
+            ),
+            "installed setup identity evidence is incomplete",
+        ),
+        (
+            result.task_created_after_install,
+            "Diagnostic Task was not created after install",
+        ),
+        (
+            result.campaign_created_after_install,
+            "Formal Diagnostic Campaign was not created after install",
+        ),
+        (
+            bool(result.diagnostic_task_identity.strip()),
+            "Diagnostic Task identity is unavailable",
+        ),
+        (
+            result.accepted_command_kinds == WAVE2_ACCEPTED_COMMAND_KINDS,
+            "Diagnostic Task command kinds are incomplete",
+        ),
+        (
+            len(result.task_handle_identities) >= 3
+            and all(
+                identity.strip()
+                for identity in result.task_handle_identities
+            )
+            and len(set(result.task_handle_identities))
+            == len(result.task_handle_identities),
+            "Diagnostic TaskHandle identities are incomplete or invalid",
+        ),
+        (
+            result.writable_persistence_verified,
+            "writable persistence was not verified",
+        ),
+        (result.application_reopened, "Application reopen was not verified"),
+        (
+            result.background_continuation_verified,
+            "background Campaign continuation was not verified",
+        ),
+        (
+            result.task_cancel_order_isolation_verified,
+            "Diagnostic Task cancel/order isolation was not verified",
+        ),
+    )
+    failures.extend(message for passed, message in checks if not passed)
+    return tuple(failures)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -3305,35 +4482,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     shutdown_errors,
                     run_qt_teardown="__compiled__" not in globals(),
                 )
-        return (
-            0
-            if (
-                not shutdown_errors
-                and not result.errors
-                and result.clean_exit
-                and result.manual_trading_action_count == 0
-                and result.read_only_context_visible
-                and result.fixture_kind
-                == "authoritative_writable_wave2_inputs"
-                and result.task_created_after_install
-                and result.campaign_created_after_install
-                and bool(result.diagnostic_task_identity.strip())
-                and result.accepted_command_kinds
-                == WAVE2_ACCEPTED_COMMAND_KINDS
-                and len(result.task_handle_identities) >= 3
-                and all(
-                    identity.strip()
-                    for identity in result.task_handle_identities
-                )
-                and len(set(result.task_handle_identities))
-                == len(result.task_handle_identities)
-                and result.writable_persistence_verified
-                and result.application_reopened
-                and result.background_continuation_verified
-                and result.task_cancel_order_isolation_verified
-            )
-            else 1
+        failures = _compiled_smoke_failures(
+            result,
+            shutdown_errors=shutdown_errors,
         )
+        if failures:
+            print(
+                "Installed smoke rejected: " + "; ".join(failures),
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     return _run_interactive()
 
 

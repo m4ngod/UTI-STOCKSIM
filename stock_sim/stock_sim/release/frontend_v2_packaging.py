@@ -33,8 +33,8 @@ from stock_sim.release.no_manual_trading_gate import (
 from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
     FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
     FORMAL_V1_RELEASE_FIXTURE_DIRNAME,
-    WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
-    WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME,
+    WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    WAVE3_RELEASE_INPUT_FIXTURE_DIRNAME,
     SealedFormalV1ReleaseFixtureManifest,
     SealedWave2ReleaseInputFixtureManifest,
     create_sealed_formal_v1_release_fixture,
@@ -165,7 +165,18 @@ _PRODUCTION_JOURNEY_PATH = (
     "LiveEvidenceAndFindingsAdapter",
     "JourneyWorkspaceHost",
 )
-_WAVE2_RELEASE_FIXTURE_KIND = "authoritative_writable_wave2_inputs"
+_WAVE2_RELEASE_FIXTURE_KIND = "authoritative_writable_wave3_inputs"
+_WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
+    "compare_formal_strategy_set",
+    "select_formal_strategy_set",
+    "create_recipe_draft",
+    "validate_recipe_draft",
+    "approve_recipe",
+    "materialize_reference_path",
+    "compose_formal_scenario_set",
+    "resolve_execution_assumptions",
+    "select_formal_scenario_set",
+)
 _WAVE2_ACCEPTED_COMMAND_KINDS = (
     "create_diagnostic_task",
     "revise_configuration",
@@ -283,6 +294,17 @@ REAL_V1_IDENTITY_FIELDS = (
 )
 _CROSS_LANE_STABLE_FIELDS = (
     "fixture_kind",
+    "strategy_selection_created_after_install",
+    "recipe_draft_created_after_install",
+    "recipe_validation_created_after_install",
+    "recipe_approval_created_after_install",
+    "reference_path_materialized_after_install",
+    "scenario_set_created_after_install",
+    "scenario_selection_created_after_install",
+    "terminal_case_manifest_binding_verified",
+    "terminal_campaign_node_lifecycle",
+    "installed_setup_ledger_reopened",
+    "installed_setup_command_kinds",
     "task_created_after_install",
     "campaign_created_after_install",
     "accepted_command_kinds",
@@ -428,6 +450,36 @@ class RendererLaneEvidence:
     routes_rendered: tuple[str, ...]
     production_path: tuple[str, ...]
     fixture_kind: str
+    strategy_selection_created_after_install: bool
+    recipe_draft_created_after_install: bool
+    recipe_validation_created_after_install: bool
+    recipe_approval_created_after_install: bool
+    reference_path_materialized_after_install: bool
+    scenario_set_created_after_install: bool
+    scenario_selection_created_after_install: bool
+    strategy_selection_context_identity: str
+    recipe_draft_identity: str
+    recipe_validation_identity: str
+    materialization_task_handle_identity: str
+    materialized_path_identity: str
+    materialized_scenario_identity: str
+    terminal_campaign_case_identity: str
+    terminal_selected_campaign_case_identity: str
+    terminal_node_market_scenario_identity: str
+    terminal_campaign_node_lifecycle: str
+    terminal_case_manifest_binding_verified: bool
+    installed_setup_ledger_reopened: bool
+    reopened_installed_setup_ledger: dict[str, tuple[str, ...]]
+    formal_scenario_set_identity: str
+    scenario_selection_context_identity: str
+    setup_selection_context_identity: str
+    installed_setup_command_kinds: tuple[str, ...]
+    installed_recipe_draft_identities: tuple[str, ...]
+    installed_recipe_validation_identities: tuple[str, ...]
+    installed_approved_recipe_identities: tuple[str, ...]
+    installed_materialization_task_handle_identities: tuple[str, ...]
+    installed_materialized_path_identities: tuple[str, ...]
+    installed_materialized_scenario_identities: tuple[str, ...]
     task_created_after_install: bool
     campaign_created_after_install: bool
     diagnostic_task_identity: str
@@ -1305,15 +1357,174 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
+_REOPENED_SETUP_LEDGER_KEYS = (
+    "recipe_drafts",
+    "recipe_validations",
+    "approved_recipes",
+    "materialization_task_handles",
+    "materialized_paths",
+    "materialized_scenarios",
+    "draft_validation_approval_bindings",
+    "materialization_bindings",
+    "campaign_case_bindings",
+    "formal_scenario_sets",
+    "scenario_selection_contexts",
+    "scenario_selection_set_bindings",
+    "strategy_selection_contexts",
+    "setup_selection_contexts",
+    "task_scenario_selection_contexts",
+)
+
+
+def _canonical_reopened_setup_ledger(
+    value: object,
+) -> dict[str, tuple[str, ...]] | None:
+    if not isinstance(value, Mapping) or set(value) != set(
+        _REOPENED_SETUP_LEDGER_KEYS
+    ):
+        return None
+    ledger: dict[str, tuple[str, ...]] = {}
+    for key in _REOPENED_SETUP_LEDGER_KEYS:
+        entries = value.get(key)
+        if not isinstance(entries, (list, tuple)) or any(
+            not isinstance(entry, str) or not entry.strip()
+            for entry in entries
+        ):
+            return None
+        ledger[key] = tuple(entries)
+    return ledger
+
+
+def _expected_reopened_setup_ledger(
+    payload: Mapping[str, Any],
+) -> dict[str, tuple[str, ...]] | None:
+    family_fields = (
+        "installed_recipe_draft_identities",
+        "installed_recipe_validation_identities",
+        "installed_approved_recipe_identities",
+        "installed_materialization_task_handle_identities",
+        "installed_materialized_path_identities",
+        "installed_materialized_scenario_identities",
+    )
+    family: dict[str, tuple[str, ...]] = {}
+    for field_name in family_fields:
+        values = payload.get(field_name)
+        if (
+            not isinstance(values, (list, tuple))
+            or len(values) != 14
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in values
+            )
+        ):
+            return None
+        family[field_name] = tuple(values)
+    singular_fields = (
+        "formal_scenario_set_identity",
+        "scenario_selection_context_identity",
+        "strategy_selection_context_identity",
+        "setup_selection_context_identity",
+    )
+    if any(
+        not isinstance(payload.get(field_name), str)
+        or not str(payload[field_name]).strip()
+        for field_name in singular_fields
+    ):
+        return None
+    drafts = family["installed_recipe_draft_identities"]
+    validations = family["installed_recipe_validation_identities"]
+    recipes = family["installed_approved_recipe_identities"]
+    handles = family[
+        "installed_materialization_task_handle_identities"
+    ]
+    paths = family["installed_materialized_path_identities"]
+    cases = family["installed_materialized_scenario_identities"]
+    formal_set = str(payload["formal_scenario_set_identity"])
+    scenario_selection = str(
+        payload["scenario_selection_context_identity"]
+    )
+    return {
+        "recipe_drafts": tuple(sorted(drafts)),
+        "recipe_validations": tuple(sorted(validations)),
+        "approved_recipes": tuple(sorted(recipes)),
+        "materialization_task_handles": tuple(sorted(handles)),
+        "materialized_paths": tuple(sorted(paths)),
+        "materialized_scenarios": tuple(sorted(cases)),
+        "draft_validation_approval_bindings": tuple(
+            sorted(
+                "|".join(values)
+                for values in zip(
+                    drafts,
+                    validations,
+                    recipes,
+                    strict=True,
+                )
+            )
+        ),
+        "materialization_bindings": tuple(
+            sorted(
+                "|".join(values)
+                for values in zip(recipes, handles, paths, strict=True)
+            )
+        ),
+        "campaign_case_bindings": tuple(
+            sorted(
+                "|".join(values)
+                for values in zip(recipes, paths, cases, strict=True)
+            )
+        ),
+        "formal_scenario_sets": (formal_set,),
+        "scenario_selection_contexts": (scenario_selection,),
+        "scenario_selection_set_bindings": (
+            f"{scenario_selection}|{formal_set}",
+        ),
+        "strategy_selection_contexts": (
+            str(payload["strategy_selection_context_identity"]),
+        ),
+        "setup_selection_contexts": (
+            str(payload["setup_selection_context_identity"]),
+        ),
+        "task_scenario_selection_contexts": (scenario_selection,),
+    }
+
+
 def _installed_wave2_smoke_failures(
     payload: Mapping[str, Any],
 ) -> tuple[str, ...]:
     failures: list[str] = []
     if payload.get("fixture_kind") != _WAVE2_RELEASE_FIXTURE_KIND:
         failures.append(
-            "did not use the authoritative writable Wave 2 input fixture"
+            "did not use the authoritative writable Wave 3 input fixture"
         )
     for field_name, message in (
+        (
+            "strategy_selection_created_after_install",
+            "did not select the formal Strategy set after install",
+        ),
+        (
+            "recipe_draft_created_after_install",
+            "did not create a Scenario Recipe Draft after install",
+        ),
+        (
+            "recipe_validation_created_after_install",
+            "did not validate the Scenario Recipe Draft after install",
+        ),
+        (
+            "recipe_approval_created_after_install",
+            "did not approve the Scenario Recipe after install",
+        ),
+        (
+            "reference_path_materialized_after_install",
+            "did not materialize a Reference Market Path after install",
+        ),
+        (
+            "scenario_set_created_after_install",
+            "did not compose a Formal Scenario Set after install",
+        ),
+        (
+            "scenario_selection_created_after_install",
+            "did not select a Formal Scenario Set after install",
+        ),
         (
             "task_created_after_install",
             "did not create a Diagnostic Task after install",
@@ -1342,6 +1553,209 @@ def _installed_wave2_smoke_failures(
     ):
         if payload.get(field_name) is not True:
             failures.append(message)
+    setup_identity_messages = {
+        "strategy_selection_context_identity": (
+            "formal Strategy selection identity is unavailable"
+        ),
+        "recipe_draft_identity": "Scenario Recipe Draft identity is unavailable",
+        "recipe_validation_identity": (
+            "Scenario Recipe validation identity is unavailable"
+        ),
+        "approved_recipe_identity": (
+            "approved Scenario Recipe identity is unavailable"
+        ),
+        "materialization_task_handle_identity": (
+            "materialization TaskHandle identity is unavailable"
+        ),
+        "materialized_path_identity": (
+            "materialized Reference Market Path identity is unavailable"
+        ),
+        "materialized_scenario_identity": (
+            "materialized Scenario identity is unavailable"
+        ),
+        "formal_scenario_set_identity": (
+            "Formal Scenario Set identity is unavailable"
+        ),
+        "scenario_selection_context_identity": (
+            "formal Scenario selection identity is unavailable"
+        ),
+        "setup_selection_context_identity": (
+            "Diagnostic setup selection identity is unavailable"
+        ),
+    }
+    for field_name, message in setup_identity_messages.items():
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            failures.append(message)
+    if tuple(payload.get("installed_setup_command_kinds", ())) != (
+        _WAVE3_ACCEPTED_SETUP_COMMAND_KINDS
+    ):
+        failures.append(
+            "did not accept the exact Strategy/Recipe/Path/Scenario setup "
+            "command journey"
+        )
+    installed_identity_fields = (
+        "installed_recipe_draft_identities",
+        "installed_recipe_validation_identities",
+        "installed_approved_recipe_identities",
+        "installed_materialization_task_handle_identities",
+        "installed_materialized_path_identities",
+        "installed_materialized_scenario_identities",
+    )
+    installed_identities: dict[str, tuple[Any, ...]] = {}
+    for field_name in installed_identity_fields:
+        values = payload.get(field_name)
+        if (
+            not isinstance(values, (list, tuple))
+            or len(values) != 14
+            or any(not isinstance(value, str) or not value for value in values)
+            or len(set(values)) != 14
+        ):
+            failures.append(
+                f"{field_name} does not contain the complete 14-case "
+                "installed formal Recipe family"
+            )
+            continue
+        installed_identities[field_name] = tuple(values)
+    for singular_field, collection_field in (
+        ("recipe_draft_identity", "installed_recipe_draft_identities"),
+        (
+            "recipe_validation_identity",
+            "installed_recipe_validation_identities",
+        ),
+        (
+            "approved_recipe_identity",
+            "installed_approved_recipe_identities",
+        ),
+        (
+            "materialization_task_handle_identity",
+            "installed_materialization_task_handle_identities",
+        ),
+        (
+            "materialized_path_identity",
+            "installed_materialized_path_identities",
+        ),
+        (
+            "materialized_scenario_identity",
+            "installed_materialized_scenario_identities",
+        ),
+    ):
+        if payload.get(singular_field) not in installed_identities.get(
+            collection_field,
+            (),
+        ):
+            failures.append(
+                f"{singular_field} is not bound to the installed formal "
+                "Recipe family"
+            )
+    installed_recipe_ids = installed_identities.get(
+        "installed_approved_recipe_identities",
+        (),
+    )
+    approved_recipe_identity = payload.get("approved_recipe_identity")
+    if approved_recipe_identity in installed_recipe_ids:
+        selected_index = installed_recipe_ids.index(approved_recipe_identity)
+        for singular_field, collection_field in (
+            ("recipe_draft_identity", "installed_recipe_draft_identities"),
+            (
+                "recipe_validation_identity",
+                "installed_recipe_validation_identities",
+            ),
+            (
+                "materialization_task_handle_identity",
+                "installed_materialization_task_handle_identities",
+            ),
+            (
+                "materialized_path_identity",
+                "installed_materialized_path_identities",
+            ),
+            (
+                "materialized_scenario_identity",
+                "installed_materialized_scenario_identities",
+            ),
+        ):
+            values = installed_identities.get(collection_field, ())
+            if (
+                len(values) != 14
+                or payload.get(singular_field) != values[selected_index]
+            ):
+                failures.append(
+                    f"{singular_field} is not bound to the terminal "
+                    "installed Recipe identity"
+                )
+    terminal_campaign_case_identity = payload.get(
+        "terminal_campaign_case_identity"
+    )
+    terminal_selected_campaign_case_identity = payload.get(
+        "terminal_selected_campaign_case_identity"
+    )
+    if (
+        not isinstance(terminal_campaign_case_identity, str)
+        or not terminal_campaign_case_identity.strip()
+        or terminal_campaign_case_identity != payload.get("case_identity")
+    ):
+        failures.append(
+            "terminal Manifest execution Case identity is not bound to "
+            "the completed Campaign node"
+        )
+    if (
+        not isinstance(terminal_selected_campaign_case_identity, str)
+        or not terminal_selected_campaign_case_identity.strip()
+        or terminal_selected_campaign_case_identity
+        != payload.get("materialized_scenario_identity")
+    ):
+        failures.append(
+            "terminal execution Case is not bound to the selected installed "
+            "Campaign Case identity"
+        )
+    terminal_node_market_scenario_identity = payload.get(
+        "terminal_node_market_scenario_identity"
+    )
+    if (
+        not isinstance(terminal_node_market_scenario_identity, str)
+        or not terminal_node_market_scenario_identity.strip()
+        or terminal_node_market_scenario_identity
+        != payload.get("materialized_path_identity")
+    ):
+        failures.append(
+            "terminal Campaign node is not bound to the selected installed "
+            "Reference Market Path identity"
+        )
+    if payload.get("terminal_campaign_node_lifecycle") != "completed":
+        failures.append("terminal Campaign node is not completed")
+    if payload.get("terminal_case_manifest_binding_verified") is not True:
+        failures.append(
+            "terminal Campaign Case to execution Case/Manifest binding was "
+            "not verified"
+        )
+    reopened_setup_ledger = _canonical_reopened_setup_ledger(
+        payload.get("reopened_installed_setup_ledger")
+    )
+    expected_setup_ledger = _expected_reopened_setup_ledger(payload)
+    if (
+        payload.get("installed_setup_ledger_reopened") is not True
+        or reopened_setup_ledger is None
+        or expected_setup_ledger is None
+        or reopened_setup_ledger != expected_setup_ledger
+    ):
+        failures.append(
+            "installed setup ledger was not authoritatively re-read after "
+            "Application reopen"
+        )
+    raw_artifact_hashes = payload.get("raw_artifact_hashes")
+    if (
+        not isinstance(raw_artifact_hashes, (list, tuple))
+        or not set(
+            installed_identities.get(
+                "installed_materialized_path_identities",
+                (),
+            )
+        ).issubset(raw_artifact_hashes)
+    ):
+        failures.append(
+            "installed materialized Reference Market Paths did not reach "
+            "the persisted raw artifact inventory"
+        )
     diagnostic_task_identity = payload.get("diagnostic_task_identity")
     if (
         not isinstance(diagnostic_task_identity, str)
@@ -2101,6 +2515,92 @@ def _load_renderer_lane(
         routes_rendered=routes_rendered,
         production_path=production_path,
         fixture_kind=str(payload["fixture_kind"]),
+        strategy_selection_created_after_install=True,
+        recipe_draft_created_after_install=True,
+        recipe_validation_created_after_install=True,
+        recipe_approval_created_after_install=True,
+        reference_path_materialized_after_install=True,
+        scenario_set_created_after_install=True,
+        scenario_selection_created_after_install=True,
+        strategy_selection_context_identity=str(
+            payload["strategy_selection_context_identity"]
+        ),
+        recipe_draft_identity=str(payload["recipe_draft_identity"]),
+        recipe_validation_identity=str(
+            payload["recipe_validation_identity"]
+        ),
+        materialization_task_handle_identity=str(
+            payload["materialization_task_handle_identity"]
+        ),
+        materialized_path_identity=str(
+            payload["materialized_path_identity"]
+        ),
+        materialized_scenario_identity=str(
+            payload["materialized_scenario_identity"]
+        ),
+        terminal_campaign_case_identity=str(
+            payload["terminal_campaign_case_identity"]
+        ),
+        terminal_selected_campaign_case_identity=str(
+            payload["terminal_selected_campaign_case_identity"]
+        ),
+        terminal_node_market_scenario_identity=str(
+            payload["terminal_node_market_scenario_identity"]
+        ),
+        terminal_campaign_node_lifecycle=str(
+            payload["terminal_campaign_node_lifecycle"]
+        ),
+        terminal_case_manifest_binding_verified=True,
+        installed_setup_ledger_reopened=True,
+        reopened_installed_setup_ledger=(
+            _canonical_reopened_setup_ledger(
+                payload["reopened_installed_setup_ledger"]
+            )
+            or {}
+        ),
+        formal_scenario_set_identity=str(
+            payload["formal_scenario_set_identity"]
+        ),
+        scenario_selection_context_identity=str(
+            payload["scenario_selection_context_identity"]
+        ),
+        setup_selection_context_identity=str(
+            payload["setup_selection_context_identity"]
+        ),
+        installed_setup_command_kinds=tuple(
+            str(value)
+            for value in payload["installed_setup_command_kinds"]
+        ),
+        installed_recipe_draft_identities=tuple(
+            str(value)
+            for value in payload["installed_recipe_draft_identities"]
+        ),
+        installed_recipe_validation_identities=tuple(
+            str(value)
+            for value in payload[
+                "installed_recipe_validation_identities"
+            ]
+        ),
+        installed_approved_recipe_identities=tuple(
+            str(value)
+            for value in payload["installed_approved_recipe_identities"]
+        ),
+        installed_materialization_task_handle_identities=tuple(
+            str(value)
+            for value in payload[
+                "installed_materialization_task_handle_identities"
+            ]
+        ),
+        installed_materialized_path_identities=tuple(
+            str(value)
+            for value in payload["installed_materialized_path_identities"]
+        ),
+        installed_materialized_scenario_identities=tuple(
+            str(value)
+            for value in payload[
+                "installed_materialized_scenario_identities"
+            ]
+        ),
         task_created_after_install=True,
         campaign_created_after_install=True,
         diagnostic_task_identity=str(payload["diagnostic_task_identity"]),
@@ -2609,19 +3109,19 @@ def stage_packaged_wave2_release_input_fixture(
             "package"
         )
     destination = (
-        plan.distribution_dir / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+        plan.distribution_dir / WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE
     )
     if destination.exists():
         raise RuntimeError(
-            "Packaged Wave 2 input fixture already exists: "
+            "Packaged Wave 3 authoritative input fixture already exists: "
             f"{destination}"
         )
     with tempfile.TemporaryDirectory(
-        prefix="uti-wave2-inputs-",
+        prefix="uti-wave3-inputs-",
         dir=PROJECT_ROOT.parent,
     ) as temporary_root:
         staged = (
-            Path(temporary_root) / WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME
+            Path(temporary_root) / WAVE3_RELEASE_INPUT_FIXTURE_DIRNAME
         )
         manifest = create_sealed_wave2_release_input_fixture(
             bundle_root=staged,
@@ -2637,7 +3137,7 @@ def stage_packaged_wave2_release_input_fixture(
         )
         if verified != manifest:
             raise RuntimeError(
-                "Packaged Wave 2 input fixture changed during staging"
+                "Packaged Wave 3 authoritative input fixture changed during staging"
             )
     return verified
 

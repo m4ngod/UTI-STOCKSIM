@@ -161,6 +161,49 @@ _IDENTITY_GRAPH = sorted(
 )
 
 
+def _reopened_setup_ledger(
+    drafts,
+    validations,
+    recipes,
+    handles,
+    paths,
+    cases,
+    *,
+    formal_set="SCENARIO-SET-RC-001",
+    scenario_selection="SCENARIO-SELECTION-RC-001",
+    strategy_selection="STRATEGY-SELECTION-RC-001",
+    setup_selection="SETUP-SELECTION-RC-001",
+):
+    return {
+        "recipe_drafts": tuple(sorted(drafts)),
+        "recipe_validations": tuple(sorted(validations)),
+        "approved_recipes": tuple(sorted(recipes)),
+        "materialization_task_handles": tuple(sorted(handles)),
+        "materialized_paths": tuple(sorted(paths)),
+        "materialized_scenarios": tuple(sorted(cases)),
+        "draft_validation_approval_bindings": tuple(sorted(
+            "|".join(values)
+            for values in zip(drafts, validations, recipes, strict=True)
+        )),
+        "materialization_bindings": tuple(sorted(
+            "|".join(values)
+            for values in zip(recipes, handles, paths, strict=True)
+        )),
+        "campaign_case_bindings": tuple(sorted(
+            "|".join(values)
+            for values in zip(recipes, paths, cases, strict=True)
+        )),
+        "formal_scenario_sets": (formal_set,),
+        "scenario_selection_contexts": (scenario_selection,),
+        "scenario_selection_set_bindings": (
+            f"{scenario_selection}|{formal_set}",
+        ),
+        "strategy_selection_contexts": (strategy_selection,),
+        "setup_selection_contexts": (setup_selection,),
+        "task_scenario_selection_contexts": (scenario_selection,),
+    }
+
+
 def _passing_real_v1_performance_probe():
     identities = {
         "campaign_identity": "FDC-REAL-001",
@@ -416,6 +459,10 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
 
     assert manifest.initial_diagnostic_task_count == 0
     assert manifest.initial_formal_campaign_count == 0
+    assert manifest.initial_recipe_draft_count == 0
+    assert manifest.initial_approved_recipe_count == 0
+    assert manifest.initial_materialized_path_count == 0
+    assert manifest.initial_campaign_case_count == 0
     assert manifest.authoritative_input_identities
 
     audited_bundle = tmp_path / "audited-wave2-input-fixture"
@@ -534,7 +581,59 @@ def test_installed_wave2_smoke_creates_task_and_campaign_after_install(
     )
 
     assert result.source_commit == source_commit
-    assert result.fixture_kind == "authoritative_writable_wave2_inputs"
+    assert result.fixture_kind == "authoritative_writable_wave3_inputs"
+    assert result.strategy_selection_created_after_install is True
+    assert result.recipe_draft_created_after_install is True
+    assert result.recipe_validation_created_after_install is True
+    assert result.recipe_approval_created_after_install is True
+    assert result.reference_path_materialized_after_install is True
+    assert result.scenario_set_created_after_install is True
+    assert result.scenario_selection_created_after_install is True
+    assert result.strategy_selection_context_identity
+    assert result.recipe_draft_identity
+    assert result.recipe_validation_identity
+    assert result.approved_recipe_identity
+    assert result.materialization_task_handle_identity
+    assert result.materialized_path_identity
+    assert result.materialized_scenario_identity
+    assert result.terminal_campaign_case_identity == result.case_identity
+    assert result.terminal_selected_campaign_case_identity == (
+        result.materialized_scenario_identity
+    )
+    assert result.terminal_node_market_scenario_identity == (
+        result.materialized_path_identity
+    )
+    assert result.terminal_campaign_node_lifecycle == "completed"
+    assert result.terminal_case_manifest_binding_verified is True
+    assert result.installed_setup_ledger_reopened is True
+    assert result.reopened_installed_setup_ledger == (
+        _reopened_setup_ledger(
+            result.installed_recipe_draft_identities,
+            result.installed_recipe_validation_identities,
+            result.installed_approved_recipe_identities,
+            result.installed_materialization_task_handle_identities,
+            result.installed_materialized_path_identities,
+            result.installed_materialized_scenario_identities,
+            formal_set=result.formal_scenario_set_identity,
+            scenario_selection=result.scenario_selection_context_identity,
+            strategy_selection=result.strategy_selection_context_identity,
+            setup_selection=result.setup_selection_context_identity,
+        )
+    )
+    assert result.formal_scenario_set_identity
+    assert result.scenario_selection_context_identity
+    assert result.setup_selection_context_identity
+    assert result.installed_setup_command_kinds == (
+        "compare_formal_strategy_set",
+        "select_formal_strategy_set",
+        "create_recipe_draft",
+        "validate_recipe_draft",
+        "approve_recipe",
+        "materialize_reference_path",
+        "compose_formal_scenario_set",
+        "resolve_execution_assumptions",
+        "select_formal_scenario_set",
+    )
     assert result.task_created_after_install is True
     assert result.campaign_created_after_install is True
     assert result.diagnostic_task_identity
@@ -1159,6 +1258,36 @@ def test_clean_room_report_requires_the_complete_production_journey(
         ("hardware", "Direct3D11"),
         ("software", "Software"),
     ):
+        installed_recipe_drafts = [
+            "RECIPE-DRAFT-RC-001",
+            *(f"RECIPE-DRAFT-RC-{index:03d}" for index in range(2, 15)),
+        ]
+        installed_recipe_validations = [
+            "RECIPE-VALIDATION-RC-001",
+            *(
+                f"RECIPE-VALIDATION-RC-{index:03d}"
+                for index in range(2, 15)
+            ),
+        ]
+        installed_approved_recipes = [
+            "RECIPE-RC-001",
+            *(f"RECIPE-RC-{index:03d}" for index in range(2, 15)),
+        ]
+        installed_materialization_handles = [
+            "MATERIALIZATION-TASK-RC-001",
+            *(
+                f"MATERIALIZATION-TASK-RC-{index:03d}"
+                for index in range(2, 15)
+            ),
+        ]
+        installed_paths = [f"{index:064x}" for index in range(1, 15)]
+        installed_scenarios = [
+            "CAMPAIGN-CASE-RC-001",
+            *(f"CAMPAIGN-CASE-RC-{index:03d}" for index in range(2, 15)),
+        ]
+        installed_identity_graph = sorted(
+            {*_IDENTITY_GRAPH, *installed_paths}
+        )
         renderer_lanes[lane] = {
             "exit_code": 0,
             "graphics_api": graphics_api,
@@ -1178,7 +1307,64 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "LiveEvidenceAndFindingsAdapter",
                 "JourneyWorkspaceHost",
             ],
-            "fixture_kind": "authoritative_writable_wave2_inputs",
+            "fixture_kind": "authoritative_writable_wave3_inputs",
+            "strategy_selection_created_after_install": True,
+            "recipe_draft_created_after_install": True,
+            "recipe_validation_created_after_install": True,
+            "recipe_approval_created_after_install": True,
+            "reference_path_materialized_after_install": True,
+            "scenario_set_created_after_install": True,
+            "scenario_selection_created_after_install": True,
+            "strategy_selection_context_identity": "STRATEGY-SELECTION-RC-001",
+            "recipe_draft_identity": "RECIPE-DRAFT-RC-001",
+            "recipe_validation_identity": "RECIPE-VALIDATION-RC-001",
+            "materialization_task_handle_identity": "MATERIALIZATION-TASK-RC-001",
+            "materialized_path_identity": installed_paths[0],
+            "materialized_scenario_identity": installed_scenarios[0],
+            "terminal_campaign_case_identity": "CASE-RC-001",
+            "terminal_selected_campaign_case_identity": (
+                installed_scenarios[0]
+            ),
+            "terminal_node_market_scenario_identity": installed_paths[0],
+            "terminal_campaign_node_lifecycle": "completed",
+            "terminal_case_manifest_binding_verified": True,
+            "installed_setup_ledger_reopened": True,
+            "reopened_installed_setup_ledger": _reopened_setup_ledger(
+                installed_recipe_drafts,
+                installed_recipe_validations,
+                installed_approved_recipes,
+                installed_materialization_handles,
+                installed_paths,
+                installed_scenarios,
+            ),
+            "formal_scenario_set_identity": "SCENARIO-SET-RC-001",
+            "scenario_selection_context_identity": "SCENARIO-SELECTION-RC-001",
+            "setup_selection_context_identity": "SETUP-SELECTION-RC-001",
+            "installed_setup_command_kinds": [
+                "compare_formal_strategy_set",
+                "select_formal_strategy_set",
+                "create_recipe_draft",
+                "validate_recipe_draft",
+                "approve_recipe",
+                "materialize_reference_path",
+                "compose_formal_scenario_set",
+                "resolve_execution_assumptions",
+                "select_formal_scenario_set",
+            ],
+            "installed_recipe_draft_identities": installed_recipe_drafts,
+            "installed_recipe_validation_identities": (
+                installed_recipe_validations
+            ),
+            "installed_approved_recipe_identities": (
+                installed_approved_recipes
+            ),
+            "installed_materialization_task_handle_identities": (
+                installed_materialization_handles
+            ),
+            "installed_materialized_path_identities": installed_paths,
+            "installed_materialized_scenario_identities": (
+                installed_scenarios
+            ),
             "task_created_after_install": True,
             "campaign_created_after_install": True,
             "diagnostic_task_identity": "DT-RC-001",
@@ -1221,10 +1407,10 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "campaign_status": "completed",
             "run_status": "completed",
             "evidence_status": "sealed",
-            "expected_identity_graph": _IDENTITY_GRAPH,
-            "feature_identity_graph": _IDENTITY_GRAPH,
+            "expected_identity_graph": installed_identity_graph,
+            "feature_identity_graph": installed_identity_graph,
             "qml_identity_graph_checkpoints": {
-                stage: _IDENTITY_GRAPH
+                stage: installed_identity_graph
                 for stage, *_ in EXPECTED_JOURNEY
             },
             "evidence_identity_sets": _IDENTITY_SETS,
@@ -1232,7 +1418,10 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 _PERSISTED_MANIFEST_IDENTITIES
             ),
             "persisted_run_identities": _PERSISTED_RUN_IDENTITIES,
-            "raw_artifact_hashes": _RAW_ARTIFACT_HASHES,
+            "raw_artifact_hashes": [
+                *_RAW_ARTIFACT_HASHES,
+                *installed_paths,
+            ],
             "keyboard_navigation_verified": True,
             "accessibility_preferences_verified": True,
             "accessibility_announcements": [
@@ -1320,7 +1509,97 @@ def test_clean_room_report_requires_the_complete_production_journey(
         (
             "fixture_kind",
             "sealed_completed_v1",
-            "did not use the authoritative writable Wave 2 input fixture",
+            "did not use the authoritative writable Wave 3 input fixture",
+        ),
+        (
+            "recipe_draft_created_after_install",
+            False,
+            "did not create a Scenario Recipe Draft after install",
+        ),
+        (
+            "reference_path_materialized_after_install",
+            False,
+            "did not materialize a Reference Market Path after install",
+        ),
+        (
+            "materialized_path_identity",
+            "",
+            "materialized Reference Market Path identity is unavailable",
+        ),
+        (
+            "installed_setup_command_kinds",
+            ["compare_formal_strategy_set"],
+            "did not accept the exact Strategy/Recipe/Path/Scenario setup",
+        ),
+        (
+            "installed_materialized_path_identities",
+            [f"{index:064x}" for index in range(1, 14)],
+            "does not contain the complete 14-case installed formal Recipe",
+        ),
+        (
+            "materialized_scenario_identity",
+            "CAMPAIGN-CASE-RC-002",
+            "is not bound to the terminal installed Recipe identity",
+        ),
+        (
+            "terminal_campaign_case_identity",
+            "CASE-RC-STALE",
+            "terminal Manifest execution Case identity is not bound",
+        ),
+        (
+            "terminal_selected_campaign_case_identity",
+            "CAMPAIGN-CASE-RC-STALE",
+            "terminal execution Case is not bound to the selected installed",
+        ),
+        (
+            "terminal_node_market_scenario_identity",
+            f"{99:064x}",
+            "terminal Campaign node is not bound to the selected installed",
+        ),
+        (
+            "terminal_campaign_node_lifecycle",
+            "running",
+            "terminal Campaign node is not completed",
+        ),
+        (
+            "terminal_case_manifest_binding_verified",
+            False,
+            "terminal Campaign Case to execution Case/Manifest binding was not",
+        ),
+        (
+            "installed_setup_ledger_reopened",
+            False,
+            "installed setup ledger was not authoritatively re-read",
+        ),
+        (
+            "reopened_installed_setup_ledger",
+            {
+                **_reopened_setup_ledger(
+                    installed_recipe_drafts,
+                    installed_recipe_validations,
+                    installed_approved_recipes,
+                    installed_materialization_handles,
+                    installed_paths,
+                    installed_scenarios,
+                ),
+                "recipe_drafts": tuple(installed_recipe_drafts[1:]),
+            },
+            "installed setup ledger was not authoritatively re-read",
+        ),
+        (
+            "reopened_installed_setup_ledger",
+            {
+                **_reopened_setup_ledger(
+                    installed_recipe_drafts,
+                    installed_recipe_validations,
+                    installed_approved_recipes,
+                    installed_materialization_handles,
+                    installed_paths,
+                    installed_scenarios,
+                ),
+                "setup_selection_contexts": ("SETUP-SELECTION-STALE",),
+            },
+            "installed setup ledger was not authoritatively re-read",
         ),
         (
             "task_created_after_install",
@@ -2038,7 +2317,79 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         clean_exit = True
         manual_trading_action_count = 0
         read_only_context_visible = True
-        fixture_kind = "authoritative_writable_wave2_inputs"
+        fixture_kind = "authoritative_writable_wave3_inputs"
+        strategy_selection_created_after_install = True
+        recipe_draft_created_after_install = True
+        recipe_validation_created_after_install = True
+        recipe_approval_created_after_install = True
+        reference_path_materialized_after_install = True
+        scenario_set_created_after_install = True
+        scenario_selection_created_after_install = True
+        strategy_selection_context_identity = "strategy-selection-installed"
+        recipe_draft_identity = "recipe-draft-installed-01"
+        recipe_validation_identity = "recipe-validation-installed-01"
+        approved_recipe_identity = "recipe-version-installed-01"
+        materialization_task_handle_identity = "materialize-installed-01"
+        materialized_path_identity = f"{1:064x}"
+        materialized_scenario_identity = "campaign-case-installed-01"
+        case_identity = "sensitivity-case-installed-01"
+        terminal_campaign_case_identity = case_identity
+        terminal_selected_campaign_case_identity = (
+            materialized_scenario_identity
+        )
+        terminal_node_market_scenario_identity = materialized_path_identity
+        terminal_campaign_node_lifecycle = "completed"
+        terminal_case_manifest_binding_verified = True
+        formal_scenario_set_identity = "formal-scenario-set-installed"
+        scenario_selection_context_identity = "scenario-selection-installed"
+        setup_selection_context_identity = "setup-selection-installed"
+        installed_setup_command_kinds = (
+            "compare_formal_strategy_set",
+            "select_formal_strategy_set",
+            "create_recipe_draft",
+            "validate_recipe_draft",
+            "approve_recipe",
+            "materialize_reference_path",
+            "compose_formal_scenario_set",
+            "resolve_execution_assumptions",
+            "select_formal_scenario_set",
+        )
+        installed_recipe_draft_identities = tuple(
+            f"recipe-draft-installed-{index:02d}"
+            for index in range(1, 15)
+        )
+        installed_recipe_validation_identities = tuple(
+            f"recipe-validation-installed-{index:02d}"
+            for index in range(1, 15)
+        )
+        installed_approved_recipe_identities = tuple(
+            f"recipe-version-installed-{index:02d}"
+            for index in range(1, 15)
+        )
+        installed_materialization_task_handle_identities = tuple(
+            f"materialize-installed-{index:02d}"
+            for index in range(1, 15)
+        )
+        installed_materialized_path_identities = tuple(
+            f"{index:064x}" for index in range(1, 15)
+        )
+        installed_materialized_scenario_identities = tuple(
+            f"campaign-case-installed-{index:02d}"
+            for index in range(1, 15)
+        )
+        installed_setup_ledger_reopened = True
+        reopened_installed_setup_ledger = _reopened_setup_ledger(
+            installed_recipe_draft_identities,
+            installed_recipe_validation_identities,
+            installed_approved_recipe_identities,
+            installed_materialization_task_handle_identities,
+            installed_materialized_path_identities,
+            installed_materialized_scenario_identities,
+            formal_set=formal_scenario_set_identity,
+            scenario_selection=scenario_selection_context_identity,
+            strategy_selection=strategy_selection_context_identity,
+            setup_selection=setup_selection_context_identity,
+        )
         task_created_after_install = True
         campaign_created_after_install = True
         diagnostic_task_identity = "diagnostic-task-installed"
@@ -2079,6 +2430,53 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
     )
     assert observed["defer_native_teardown"] is True
+
+    class MissingRecipeFamilySmoke(PassingSmoke):
+        installed_materialized_scenario_identities = (
+            PassingSmoke.installed_materialized_scenario_identities[:-1]
+        )
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: MissingRecipeFamilySmoke(),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'incomplete-recipes'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 1
+    )
+
+    class MissingReopenedSetupLedgerSmoke(PassingSmoke):
+        reopened_installed_setup_ledger = {
+            **PassingSmoke.reopened_installed_setup_ledger,
+            "recipe_drafts": (
+                PassingSmoke.installed_recipe_draft_identities[1:]
+            ),
+        }
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: MissingReopenedSetupLedgerSmoke(),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'missing-reopen-ledger'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 1
+    )
 
     class MissingTaskHandlesSmoke(PassingSmoke):
         task_handle_identities = ()

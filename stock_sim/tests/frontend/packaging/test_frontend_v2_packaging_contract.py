@@ -184,6 +184,49 @@ _REQUIRED_QML_DEPENDENCY_MODULES = (
     "strategy_diagnostics.quentx_scenario_native_strategy",
     "strategy_diagnostics.strategy_inventory",
 )
+
+
+def _reopened_setup_ledger(
+    drafts,
+    validations,
+    recipes,
+    handles,
+    paths,
+    cases,
+    *,
+    formal_set="SCENARIO-SET-RC-001",
+    scenario_selection="SCENARIO-SELECTION-RC-001",
+    strategy_selection="STRATEGY-SELECTION-RC-001",
+    setup_selection="SETUP-SELECTION-RC-001",
+):
+    return {
+        "recipe_drafts": tuple(sorted(drafts)),
+        "recipe_validations": tuple(sorted(validations)),
+        "approved_recipes": tuple(sorted(recipes)),
+        "materialization_task_handles": tuple(sorted(handles)),
+        "materialized_paths": tuple(sorted(paths)),
+        "materialized_scenarios": tuple(sorted(cases)),
+        "draft_validation_approval_bindings": tuple(sorted(
+            "|".join(values)
+            for values in zip(drafts, validations, recipes, strict=True)
+        )),
+        "materialization_bindings": tuple(sorted(
+            "|".join(values)
+            for values in zip(recipes, handles, paths, strict=True)
+        )),
+        "campaign_case_bindings": tuple(sorted(
+            "|".join(values)
+            for values in zip(recipes, paths, cases, strict=True)
+        )),
+        "formal_scenario_sets": (formal_set,),
+        "scenario_selection_contexts": (scenario_selection,),
+        "scenario_selection_set_bindings": (
+            f"{scenario_selection}|{formal_set}",
+        ),
+        "strategy_selection_contexts": (strategy_selection,),
+        "setup_selection_contexts": (setup_selection,),
+        "task_scenario_selection_contexts": (scenario_selection,),
+    }
 _REQUIRED_QML_FORMAL_STRATEGY_SOURCE_FILES = (
     (
         "strategy_diagnostics/formal_sources/"
@@ -248,6 +291,26 @@ def _write_clean_room_screenshots(root, lane):
 
 
 def _clean_room_lane(root, lane, graphics_api):
+    installed_recipe_drafts = [
+        f"RECIPE-DRAFT-RC-{index:03d}" for index in range(1, 15)
+    ]
+    installed_recipe_validations = [
+        f"RECIPE-VALIDATION-RC-{index:03d}" for index in range(1, 15)
+    ]
+    installed_approved_recipes = [
+        f"RECIPE-RC-{index:03d}" for index in range(1, 15)
+    ]
+    installed_materialization_handles = [
+        f"MATERIALIZATION-TASK-RC-{index:03d}"
+        for index in range(1, 15)
+    ]
+    installed_paths = [f"{index:064x}" for index in range(1, 15)]
+    installed_scenarios = [
+        f"CAMPAIGN-CASE-RC-{index:03d}" for index in range(1, 15)
+    ]
+    installed_identity_graph = sorted(
+        {*_CLEAN_ROOM_IDENTITY_GRAPH, *installed_paths}
+    )
     return {
         "exit_code": 0,
         "graphics_api": graphics_api,
@@ -267,7 +330,60 @@ def _clean_room_lane(root, lane, graphics_api):
             "LiveEvidenceAndFindingsAdapter",
             "JourneyWorkspaceHost",
         ],
-        "fixture_kind": "authoritative_writable_wave2_inputs",
+        "fixture_kind": "authoritative_writable_wave3_inputs",
+        "strategy_selection_created_after_install": True,
+        "recipe_draft_created_after_install": True,
+        "recipe_validation_created_after_install": True,
+        "recipe_approval_created_after_install": True,
+        "reference_path_materialized_after_install": True,
+        "scenario_set_created_after_install": True,
+        "scenario_selection_created_after_install": True,
+        "strategy_selection_context_identity": "STRATEGY-SELECTION-RC-001",
+        "recipe_draft_identity": installed_recipe_drafts[0],
+        "recipe_validation_identity": installed_recipe_validations[0],
+        "materialization_task_handle_identity": (
+            installed_materialization_handles[0]
+        ),
+        "materialized_path_identity": installed_paths[0],
+        "materialized_scenario_identity": installed_scenarios[0],
+        "terminal_campaign_case_identity": "CASE-RC-001",
+        "terminal_selected_campaign_case_identity": installed_scenarios[0],
+        "terminal_node_market_scenario_identity": installed_paths[0],
+        "terminal_campaign_node_lifecycle": "completed",
+        "terminal_case_manifest_binding_verified": True,
+        "installed_setup_ledger_reopened": True,
+        "reopened_installed_setup_ledger": _reopened_setup_ledger(
+            installed_recipe_drafts,
+            installed_recipe_validations,
+            installed_approved_recipes,
+            installed_materialization_handles,
+            installed_paths,
+            installed_scenarios,
+        ),
+        "formal_scenario_set_identity": "SCENARIO-SET-RC-001",
+        "scenario_selection_context_identity": "SCENARIO-SELECTION-RC-001",
+        "setup_selection_context_identity": "SETUP-SELECTION-RC-001",
+        "installed_setup_command_kinds": [
+            "compare_formal_strategy_set",
+            "select_formal_strategy_set",
+            "create_recipe_draft",
+            "validate_recipe_draft",
+            "approve_recipe",
+            "materialize_reference_path",
+            "compose_formal_scenario_set",
+            "resolve_execution_assumptions",
+            "select_formal_scenario_set",
+        ],
+        "installed_recipe_draft_identities": installed_recipe_drafts,
+        "installed_recipe_validation_identities": (
+            installed_recipe_validations
+        ),
+        "installed_approved_recipe_identities": installed_approved_recipes,
+        "installed_materialization_task_handle_identities": (
+            installed_materialization_handles
+        ),
+        "installed_materialized_path_identities": installed_paths,
+        "installed_materialized_scenario_identities": installed_scenarios,
         "task_created_after_install": True,
         "campaign_created_after_install": True,
         "diagnostic_task_identity": "DT-RC-001",
@@ -310,10 +426,10 @@ def _clean_room_lane(root, lane, graphics_api):
         "campaign_status": "completed",
         "run_status": "completed",
         "evidence_status": "sealed",
-        "expected_identity_graph": _CLEAN_ROOM_IDENTITY_GRAPH,
-        "feature_identity_graph": _CLEAN_ROOM_IDENTITY_GRAPH,
+        "expected_identity_graph": installed_identity_graph,
+        "feature_identity_graph": installed_identity_graph,
         "qml_identity_graph_checkpoints": {
-            stage: _CLEAN_ROOM_IDENTITY_GRAPH
+            stage: installed_identity_graph
             for stage, *_ in _CLEAN_ROOM_JOURNEY
         },
         "evidence_identity_sets": _CLEAN_ROOM_IDENTITY_SETS,
@@ -321,7 +437,10 @@ def _clean_room_lane(root, lane, graphics_api):
             _CLEAN_ROOM_MANIFEST_IDENTITIES
         ),
         "persisted_run_identities": _CLEAN_ROOM_RUN_IDENTITIES,
-        "raw_artifact_hashes": _CLEAN_ROOM_RAW_ARTIFACT_HASHES,
+        "raw_artifact_hashes": [
+            *_CLEAN_ROOM_RAW_ARTIFACT_HASHES,
+            *installed_paths,
+        ],
         "keyboard_navigation_verified": True,
         "accessibility_preferences_verified": True,
         "accessibility_announcements": [
@@ -1431,10 +1550,31 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
     ):
         report_path = tmp_path / lane / "smoke-report.json"
         report_path.parent.mkdir()
+        installed_recipe_drafts = [
+            f"RECIPE-DRAFT-RC-{index:03d}" for index in range(1, 15)
+        ]
+        installed_recipe_validations = [
+            f"RECIPE-VALIDATION-RC-{index:03d}"
+            for index in range(1, 15)
+        ]
+        installed_approved_recipes = [
+            f"RECIPE-RC-{index:03d}" for index in range(1, 15)
+        ]
+        installed_materialization_handles = [
+            f"MATERIALIZATION-TASK-RC-{index:03d}"
+            for index in range(1, 15)
+        ]
+        installed_paths = [f"{index:064x}" for index in range(1, 15)]
+        installed_scenarios = [
+            f"CAMPAIGN-CASE-RC-{index:03d}" for index in range(1, 15)
+        ]
+        installed_identity_graph = sorted(
+            {*_CLEAN_ROOM_IDENTITY_GRAPH, *installed_paths}
+        )
         report_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "source_commit": "abc123",
                     "renderer_lane": lane,
                     "graphics_api": graphics_api,
@@ -1453,7 +1593,80 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "LiveEvidenceAndFindingsAdapter",
                         "JourneyWorkspaceHost",
                     ],
-                    "fixture_kind": "authoritative_writable_wave2_inputs",
+                    "fixture_kind": "authoritative_writable_wave3_inputs",
+                    "strategy_selection_created_after_install": True,
+                    "recipe_draft_created_after_install": True,
+                    "recipe_validation_created_after_install": True,
+                    "recipe_approval_created_after_install": True,
+                    "reference_path_materialized_after_install": True,
+                    "scenario_set_created_after_install": True,
+                    "scenario_selection_created_after_install": True,
+                    "strategy_selection_context_identity": (
+                        "STRATEGY-SELECTION-RC-001"
+                    ),
+                    "recipe_draft_identity": installed_recipe_drafts[0],
+                    "recipe_validation_identity": (
+                        installed_recipe_validations[0]
+                    ),
+                    "materialization_task_handle_identity": (
+                        installed_materialization_handles[0]
+                    ),
+                    "materialized_path_identity": installed_paths[0],
+                    "materialized_scenario_identity": installed_scenarios[0],
+                    "terminal_campaign_case_identity": "CASE-RC-001",
+                    "terminal_selected_campaign_case_identity": (
+                        installed_scenarios[0]
+                    ),
+                    "terminal_node_market_scenario_identity": (
+                        installed_paths[0]
+                    ),
+                    "terminal_campaign_node_lifecycle": "completed",
+                    "terminal_case_manifest_binding_verified": True,
+                    "installed_setup_ledger_reopened": True,
+                    "reopened_installed_setup_ledger": (
+                        _reopened_setup_ledger(
+                            installed_recipe_drafts,
+                            installed_recipe_validations,
+                            installed_approved_recipes,
+                            installed_materialization_handles,
+                            installed_paths,
+                            installed_scenarios,
+                        )
+                    ),
+                    "formal_scenario_set_identity": "SCENARIO-SET-RC-001",
+                    "scenario_selection_context_identity": (
+                        "SCENARIO-SELECTION-RC-001"
+                    ),
+                    "setup_selection_context_identity": (
+                        "SETUP-SELECTION-RC-001"
+                    ),
+                    "installed_setup_command_kinds": [
+                        "compare_formal_strategy_set",
+                        "select_formal_strategy_set",
+                        "create_recipe_draft",
+                        "validate_recipe_draft",
+                        "approve_recipe",
+                        "materialize_reference_path",
+                        "compose_formal_scenario_set",
+                        "resolve_execution_assumptions",
+                        "select_formal_scenario_set",
+                    ],
+                    "installed_recipe_draft_identities": (
+                        installed_recipe_drafts
+                    ),
+                    "installed_recipe_validation_identities": (
+                        installed_recipe_validations
+                    ),
+                    "installed_approved_recipe_identities": (
+                        installed_approved_recipes
+                    ),
+                    "installed_materialization_task_handle_identities": (
+                        installed_materialization_handles
+                    ),
+                    "installed_materialized_path_identities": installed_paths,
+                    "installed_materialized_scenario_identities": (
+                        installed_scenarios
+                    ),
                     "task_created_after_install": True,
                     "campaign_created_after_install": True,
                     "diagnostic_task_identity": "DT-RC-001",
@@ -1497,13 +1710,13 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     "run_status": "completed",
                     "evidence_status": "sealed",
                     "expected_identity_graph": (
-                        _CLEAN_ROOM_IDENTITY_GRAPH
+                        installed_identity_graph
                     ),
                     "feature_identity_graph": (
-                        _CLEAN_ROOM_IDENTITY_GRAPH
+                        installed_identity_graph
                     ),
                     "qml_identity_graph_checkpoints": {
-                        stage: _CLEAN_ROOM_IDENTITY_GRAPH
+                        stage: installed_identity_graph
                         for stage, *_ in _CLEAN_ROOM_JOURNEY
                     },
                     "evidence_identity_sets": (
@@ -1516,7 +1729,10 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         _CLEAN_ROOM_RUN_IDENTITIES
                     ),
                     "raw_artifact_hashes": (
-                        _CLEAN_ROOM_RAW_ARTIFACT_HASHES
+                        [
+                            *_CLEAN_ROOM_RAW_ARTIFACT_HASHES,
+                            *installed_paths,
+                        ]
                     ),
                     "keyboard_navigation_verified": True,
                     "accessibility_preferences_verified": True,
@@ -2370,6 +2586,29 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "old_generation_rejected" in script
     assert "authoritative_reconnect_verified" in script
     assert "fixture_kind" in script
+    assert "strategy_selection_created_after_install" in script
+    assert "recipe_draft_created_after_install" in script
+    assert "recipe_validation_created_after_install" in script
+    assert "recipe_approval_created_after_install" in script
+    assert "reference_path_materialized_after_install" in script
+    assert "scenario_set_created_after_install" in script
+    assert "scenario_selection_created_after_install" in script
+    assert "strategy_selection_context_identity" in script
+    assert "installed_setup_command_kinds" in script
+    assert "installed_recipe_draft_identities" in script
+    assert "installed_recipe_validation_identities" in script
+    assert "installed_approved_recipe_identities" in script
+    assert "installed_materialization_task_handle_identities" in script
+    assert "installed_materialized_path_identities" in script
+    assert "installed_materialized_scenario_identities" in script
+    assert "terminal_campaign_case_identity" in script
+    assert "terminal_selected_campaign_case_identity" in script
+    assert "terminal_node_market_scenario_identity" in script
+    assert "terminal_campaign_node_lifecycle" in script
+    assert "terminal_case_manifest_binding_verified" in script
+    assert "installed_setup_ledger_reopened" in script
+    assert "reopened_installed_setup_ledger" in script
+    assert "Test-ExactStringArray" in script
     assert "task_created_after_install" in script
     assert "campaign_created_after_install" in script
     assert "diagnostic_task_identity" in script
@@ -2395,8 +2634,10 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
         "$rendererLanes.hardware.artifact_hashes -join"
         not in script
     )
-    assert "installed_wave2_journey_valid" in script
+    assert "installed_wave3_journey_valid" in script
     assert (
+        "StrategyLibraryFeature/1.0|"
+        "ScenarioLabFeature/1.0|"
         "DiagnosticTasksFeature/1.0|"
         "RunMonitoringFeature/1.2|"
         "EvidenceAndFindingsFeature/1.1"
