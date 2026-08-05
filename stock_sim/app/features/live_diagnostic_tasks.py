@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from threading import RLock
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from app.event_bridge import (
     EventBridge,
@@ -65,6 +65,7 @@ from .diagnostic_tasks_application import (
     DiagnosticTaskConfiguration,
     DiagnosticTasksApplicationAvailability,
     DiagnosticTasksApplicationCampaignCaseReference,
+    DiagnosticTasksApplicationCommandResult,
     DiagnosticTasksApplicationCommand,
     DiagnosticTasksApplicationConfigurationReference,
     DiagnosticTasksApplicationError,
@@ -94,6 +95,7 @@ from .diagnostic_tasks_application import (
     StrategyDiagnosticsV1DiagnosticTasksApplication,
     TransformationParameterValue,
     ValidateDiagnosticTaskConfiguration,
+    _DiagnosticSetupInputApplicationCapability,
 )
 from .evidence_and_findings import DiagnosticEvidencePackageId
 from .run_monitoring import (
@@ -113,11 +115,15 @@ from .run_monitoring import (
     TaskPhase,
     ViewPhase,
 )
+
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
 from .versioning import (
     DIAGNOSTIC_TASKS_INTERFACE_VERSION,
     FeatureInterfaceVersion,
 )
+
+if TYPE_CHECKING:
+    from .diagnostic_setup import DiagnosticSetupSelectionContext
 
 _DiagnosticCommandT = TypeVar(
     "_DiagnosticCommandT",
@@ -405,7 +411,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         command: CreateDiagnosticTask,
     ) -> DiagnosticTasksCommandResult:
-        return self._submit_command(
+        return self._submit_setup_command(
             command,
             self._application.create_diagnostic_task,
         )
@@ -414,7 +420,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         command: ReviseDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
-        return self._submit_command(
+        return self._submit_setup_command(
             command,
             self._application.revise_configuration,
         )
@@ -423,7 +429,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         command: ValidateDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
-        return self._submit_command(
+        return self._submit_setup_command(
             command,
             self._application.validate_configuration,
         )
@@ -432,7 +438,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         command: ApproveDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
-        return self._submit_command(
+        return self._submit_setup_command(
             command,
             self._application.approve_configuration,
         )
@@ -441,7 +447,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
         self,
         command: StartFormalDiagnosticCampaign,
     ) -> DiagnosticTasksCommandResult:
-        return self._submit_command(
+        return self._submit_setup_command(
             command,
             self._application.start_formal_diagnostic_campaign,
         )
@@ -512,6 +518,27 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
             ):
                 return _disconnected_command_result(command)
         return result
+
+    def _submit_setup_command(
+        self,
+        command: _DiagnosticCommandT,
+        submit: Callable[
+            [_DiagnosticCommandT],
+            DiagnosticTasksCommandResult,
+        ],
+    ) -> DiagnosticTasksCommandResult:
+        if (
+            _setup_selection_from_command(command) is not None
+            and not isinstance(
+                self._application,
+                _DiagnosticSetupInputApplicationCapability,
+            )
+        ):
+            return _fake_rejection(
+                command,
+                DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+            )
+        return self._submit_command(command, submit)
 
     def subscribe(
         self,
@@ -677,12 +704,16 @@ class DeterministicFakeDiagnosticTasksAdapter(
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=5),
         fail_first_campaign_node: bool = False,
+        setup_selection_provider: (
+            Callable[[], DiagnosticSetupSelectionContext | None] | None
+        ) = None,
     ) -> None:
         if inventory is not None and scripted_results is not None:
             raise ValueError("inventory and scripted_results are mutually exclusive")
         self._clock = clock or (lambda: datetime(2030, 1, 1, tzinfo=timezone.utc))
         self._freshness_threshold = freshness_threshold
         self._fail_first_campaign_node = fail_first_campaign_node
+        self._setup_selection_provider = setup_selection_provider
         initial_inventory = inventory or _default_inventory()
         self._scripted_results = list(
             scripted_results
@@ -716,6 +747,11 @@ class DeterministicFakeDiagnosticTasksAdapter(
         ] = []
         self._tasks: dict[DiagnosticTaskId, DiagnosticTaskPresentation] = {}
         self._latest_task_id: DiagnosticTaskId | None = None
+        self._setup_bindings: dict[DiagnosticTaskId, str] = {}
+        self._current_setup_identity: str | None = None
+        self._setup_observation_initialized = False
+        self._setup_authorized_command_ids: set[str] = set()
+        self._setup_rebinding_command_ids: set[str] = set()
         self._commands_by_id: dict[
             str,
             tuple[str, DiagnosticTasksCommandResult],
@@ -740,6 +776,7 @@ class DeterministicFakeDiagnosticTasksAdapter(
     ) -> DiagnosticTasksViewState:
         with self._lock:
             self._ensure_open()
+            self._observe_current_setup_from_provider()
             source = self._source()
             previous = self._states.get(context)
             previous_token = self._source_tokens.get(context)
@@ -816,13 +853,20 @@ class DeterministicFakeDiagnosticTasksAdapter(
         self,
         command: CreateDiagnosticTask,
     ) -> DiagnosticTasksCommandResult:
+        setup = _setup_selection_from_command(command)
+        if setup is None:
+            return self._create_diagnostic_task_base(command)
+        return self._create_diagnostic_task_from_setup(command, setup)
+
+    def _create_diagnostic_task_base(
+        self,
+        command: CreateDiagnosticTask,
+    ) -> DiagnosticTasksCommandResult:
         with self._lock:
             self._ensure_open()
             if self._is_disconnected():
                 return _disconnected_command_result(command)
-            content_identity = _fake_command_content_identity(
-                command.configuration
-            )
+            content_identity = _fake_command_content_identity(command)
             command_binding = self._commands_by_id.get(
                 command.command_id.value
             )
@@ -875,9 +919,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     current_revision=2,
                 )
             inventory = self._last_scripted_result.inventory
-            if not _configuration_matches_inventory(
-                command.configuration,
-                inventory,
+            if (
+                command.command_id.value
+                not in self._setup_authorized_command_ids
+                and not _configuration_matches_inventory(
+                    command.configuration,
+                    inventory,
+                )
             ):
                 return _fake_rejection(
                     command,
@@ -961,7 +1009,104 @@ class DeterministicFakeDiagnosticTasksAdapter(
             self._commands_by_key[command.idempotency_key.value] = record
             return result
 
+    def _observe_diagnostic_setup_selection(
+        self,
+        setup: DiagnosticSetupSelectionContext | None,
+    ) -> None:
+        with self._lock:
+            self._ensure_open()
+            self._setup_observation_initialized = True
+            self._current_setup_identity = (
+                None if setup is None else setup.context_identity
+            )
+            for task_id, binding_identity in tuple(
+                self._setup_bindings.items()
+            ):
+                task = self._tasks.get(task_id)
+                if (
+                    task is None
+                    or task.validation.state
+                    is DiagnosticTaskValidationState.NOT_VALIDATED
+                    or binding_identity == self._current_setup_identity
+                    or task.handoff.campaign_id is not None
+                    or task.lifecycle
+                    not in {
+                        DiagnosticTaskLifecycle.DRAFT,
+                        DiagnosticTaskLifecycle.AWAITING_APPROVAL,
+                        DiagnosticTaskLifecycle.APPROVED,
+                    }
+                ):
+                    continue
+                self._tasks[task_id] = replace(
+                    task,
+                    lifecycle=DiagnosticTaskLifecycle.DRAFT,
+                    validation=_not_validated_summary(),
+                    approval=None,
+                )
+
+    def _current_setup_from_provider(
+        self,
+    ) -> DiagnosticSetupSelectionContext | None:
+        provider = self._setup_selection_provider
+        if provider is None:
+            return None
+        try:
+            return provider()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return None
+
+    def _observe_current_setup_from_provider(self) -> None:
+        if self._setup_selection_provider is not None:
+            self._observe_diagnostic_setup_selection(
+                self._current_setup_from_provider()
+            )
+
+    def _setup_for_later_command(
+        self,
+        command: DiagnosticTasksApplicationCommand,
+    ) -> DiagnosticSetupSelectionContext | None:
+        setup = _setup_selection_from_command(command)
+        if setup is not None:
+            self._observe_diagnostic_setup_selection(setup)
+        return setup
+
+    def _create_diagnostic_task_from_setup(
+        self,
+        command: CreateDiagnosticTask,
+        setup: DiagnosticSetupSelectionContext,
+    ) -> DiagnosticTasksCommandResult:
+        if setup.configuration != command.configuration:
+            return _fake_rejection(
+                command,
+                DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+            )
+        self._observe_diagnostic_setup_selection(setup)
+        with self._lock:
+            self._setup_authorized_command_ids.add(command.command_id.value)
+        try:
+            result = self._create_diagnostic_task_base(command)
+        finally:
+            with self._lock:
+                self._setup_authorized_command_ids.discard(
+                    command.command_id.value
+                )
+        if result.affected_task_id is not None and result.rejection_reason is None:
+            with self._lock:
+                self._setup_bindings[result.affected_task_id] = (
+                    setup.context_identity
+                )
+        return result
+
     def revise_configuration(
+        self,
+        command: ReviseDiagnosticTaskConfiguration,
+    ) -> DiagnosticTasksCommandResult:
+        setup = _setup_selection_from_command(command)
+        if setup is None:
+            return self._revise_configuration_base(command)
+        return self._revise_configuration_from_setup(command, setup)
+
+    def _revise_configuration_base(
         self,
         command: ReviseDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
@@ -982,6 +1127,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     command,
                     DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
                 )
+            if not self._setup_binding_is_current(task.task_id):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
             if task.revision != command.expected_revision:
                 return _fake_rejection(
                     command,
@@ -997,10 +1149,18 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     affected_task_id=task.task_id,
                 )
             if (
-                command.configuration == task.configuration
-                or not _configuration_matches_inventory(
-                    command.configuration,
-                    self._last_scripted_result.inventory,
+                (
+                    command.configuration == task.configuration
+                    and command.command_id.value
+                    not in self._setup_rebinding_command_ids
+                )
+                or (
+                    command.command_id.value
+                    not in self._setup_authorized_command_ids
+                    and not _configuration_matches_inventory(
+                        command.configuration,
+                        self._last_scripted_result.inventory,
+                    )
                 )
             ):
                 return _fake_rejection(
@@ -1043,15 +1203,56 @@ class DeterministicFakeDiagnosticTasksAdapter(
             self._store_fake_command(command, content_identity, result)
             return result
 
+    def _revise_configuration_from_setup(
+        self,
+        command: ReviseDiagnosticTaskConfiguration,
+        setup: DiagnosticSetupSelectionContext,
+    ) -> DiagnosticTasksCommandResult:
+        if setup.configuration != command.configuration:
+            return _fake_rejection(
+                command,
+                DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+            )
+        self._observe_diagnostic_setup_selection(setup)
+        with self._lock:
+            previous_binding = self._setup_bindings.get(command.task_id)
+            self._setup_bindings[command.task_id] = setup.context_identity
+            self._setup_authorized_command_ids.add(command.command_id.value)
+            if previous_binding != setup.context_identity:
+                self._setup_rebinding_command_ids.add(command.command_id.value)
+        try:
+            result = self._revise_configuration_base(command)
+        finally:
+            with self._lock:
+                self._setup_authorized_command_ids.discard(
+                    command.command_id.value
+                )
+                self._setup_rebinding_command_ids.discard(
+                    command.command_id.value
+                )
+        if result.rejection_reason is not None:
+            with self._lock:
+                if previous_binding is None:
+                    self._setup_bindings.pop(command.task_id, None)
+                else:
+                    self._setup_bindings[command.task_id] = previous_binding
+        return result
+
     def validate_configuration(
         self,
         command: ValidateDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
+        setup = self._setup_for_later_command(command)
         with self._lock:
             self._ensure_open()
             if self._is_disconnected():
                 return _disconnected_command_result(command)
-            content_identity = _fake_mutation_content_identity(command)
+            content_identity = _fake_mutation_content_identity(
+                command,
+                setup_identity=(
+                    None if setup is None else setup.context_identity
+                ),
+            )
             existing = self._fake_existing_result(
                 command,
                 content_identity,
@@ -1063,6 +1264,24 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 return _fake_rejection(
                     command,
                     DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            if (
+                command.task_id in self._setup_bindings
+                and setup is None
+                and self._setup_selection_provider is None
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            if not self._setup_binding_is_current(task.task_id):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_APPROVAL,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
                 )
             if task.revision != command.expected_revision:
                 return _fake_rejection(
@@ -1078,9 +1297,13 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     current_revision=task.revision,
                     affected_task_id=task.task_id,
                 )
-            findings = _fake_validation_findings(
-                task.configuration,
-                self._last_scripted_result.inventory,
+            findings = (
+                ()
+                if task.task_id in self._setup_bindings
+                else _fake_validation_findings(
+                    task.configuration,
+                    self._last_scripted_result.inventory,
+                )
             )
             valid = not any(
                 item.severity is DiagnosticTaskValidationSeverity.ERROR
@@ -1166,15 +1389,28 @@ class DeterministicFakeDiagnosticTasksAdapter(
             self._store_fake_command(command, content_identity, result)
             return result
 
+    def _setup_binding_is_current(self, task_id: DiagnosticTaskId) -> bool:
+        binding = self._setup_bindings.get(task_id)
+        return binding is None or (
+            self._setup_observation_initialized
+            and self._current_setup_identity == binding
+        )
+
     def approve_configuration(
         self,
         command: ApproveDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksCommandResult:
+        setup = self._setup_for_later_command(command)
         with self._lock:
             self._ensure_open()
             if self._is_disconnected():
                 return _disconnected_command_result(command)
-            content_identity = _fake_mutation_content_identity(command)
+            content_identity = _fake_mutation_content_identity(
+                command,
+                setup_identity=(
+                    None if setup is None else setup.context_identity
+                ),
+            )
             existing = self._fake_existing_result(
                 command,
                 content_identity,
@@ -1186,6 +1422,24 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 return _fake_rejection(
                     command,
                     DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            if (
+                command.task_id in self._setup_bindings
+                and setup is None
+                and self._setup_selection_provider is None
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            if not self._setup_binding_is_current(task.task_id):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_APPROVAL,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
                 )
             if task.revision != command.expected_revision:
                 return _fake_rejection(
@@ -1314,11 +1568,17 @@ class DeterministicFakeDiagnosticTasksAdapter(
         self,
         command: StartFormalDiagnosticCampaign,
     ) -> DiagnosticTasksCommandResult:
+        setup = self._setup_for_later_command(command)
         with self._lock:
             self._ensure_open()
             if self._is_disconnected():
                 return _disconnected_command_result(command)
-            content_identity = _fake_mutation_content_identity(command)
+            content_identity = _fake_mutation_content_identity(
+                command,
+                setup_identity=(
+                    None if setup is None else setup.context_identity
+                ),
+            )
             existing = self._fake_existing_result(
                 command,
                 content_identity,
@@ -1330,6 +1590,24 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 return _fake_rejection(
                     command,
                     DiagnosticTaskCommandRejectionReason.INVALID_COMMAND,
+                )
+            if (
+                command.task_id in self._setup_bindings
+                and setup is None
+                and self._setup_selection_provider is None
+            ):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.UNAVAILABLE_INPUT,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
+                )
+            if not self._setup_binding_is_current(task.task_id):
+                return _fake_rejection(
+                    command,
+                    DiagnosticTaskCommandRejectionReason.STALE_APPROVAL,
+                    current_revision=task.revision,
+                    affected_task_id=task.task_id,
                 )
             if task.revision != command.expected_revision:
                 return _fake_rejection(
@@ -3742,18 +4020,25 @@ def _stable_fake_identity(prefix: str, seed: str) -> str:
 
 
 def _fake_command_content_identity(
-    configuration: DiagnosticTaskConfiguration,
+    command: CreateDiagnosticTask,
 ) -> str:
+    configuration = command.configuration
     calculated = DiagnosticTaskConfiguration.create(
         strategy_selections=configuration.strategy_selections,
         campaign_case_selections=configuration.campaign_case_selections,
     ).content_identity.value
-    value = f"{configuration.content_identity.value}:{calculated}"
+    setup = _setup_selection_from_command(command)
+    value = (
+        f"{configuration.content_identity.value}:{calculated}:"
+        f"{'' if setup is None else setup.context_identity}"
+    )
     return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _fake_mutation_content_identity(
     command: DiagnosticTasksApplicationCommand,
+    *,
+    setup_identity: str | None = None,
 ) -> str:
     semantic_fields = tuple(
         (field.name, getattr(command, field.name))
@@ -3761,8 +4046,36 @@ def _fake_mutation_content_identity(
         if field.name not in {"command_id", "idempotency_key"}
     )
     return hashlib.sha256(
-        f"{type(command).__name__}:{semantic_fields!r}".encode()
+        (
+            f"{type(command).__name__}:{semantic_fields!r}:"
+            f"{'' if setup_identity is None else setup_identity}"
+        ).encode()
     ).hexdigest()
+
+
+def _setup_selection_from_command(
+    command: DiagnosticTasksApplicationCommand,
+) -> DiagnosticSetupSelectionContext | None:
+    from .diagnostic_setup import (
+        ApproveDiagnosticTaskConfigurationFromSetup,
+        CreateDiagnosticTaskFromSetup,
+        ReviseDiagnosticTaskConfigurationFromSetup,
+        StartFormalDiagnosticCampaignFromSetup,
+        ValidateDiagnosticTaskConfigurationFromSetup,
+    )
+
+    if isinstance(
+        command,
+        (
+            ApproveDiagnosticTaskConfigurationFromSetup,
+            CreateDiagnosticTaskFromSetup,
+            ReviseDiagnosticTaskConfigurationFromSetup,
+            StartFormalDiagnosticCampaignFromSetup,
+            ValidateDiagnosticTaskConfigurationFromSetup,
+        ),
+    ):
+        return command.setup_selection
+    return None
 
 
 def _aware(value: datetime) -> datetime:

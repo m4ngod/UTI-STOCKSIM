@@ -1,6 +1,6 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 contract
 
-Status: incremental source-level integration contract for Issues #77–#83 plus the
+Status: incremental source-level integration contract for Issues #77–#84 plus the
 certified Wave 2 delivery in Issues #56–#66. This is not a Wave 3 installed
 release-certification claim. Issue #88 owns Wave 3 installed offline release certification,
 T08/T09/T10 evidence, packages, tag, and release assets.
@@ -31,7 +31,8 @@ Adapter calls only public `DiagnosticsApplication.list_historical_segments`,
 `read_diagnostic_campaign_case_inventory`, `transformation_catalog_view`, and
 `preview_reference_market_path` behavior plus the public Recipe authoring,
 materialization, formal Scenario Set composition, execution-resolution, and
-formal-selection commands owned by Issues #80–#83. It translates admitted Historical
+formal-selection commands owned by Issues #80–#83 and the typed handoff read
+projections consumed by Issue #84. It translates admitted Historical
 Market Segments, content-addressed Reference Market Paths, the registered
 Transformation Catalog, and Campaign Case projections into immutable typed
 values. `CampaignCaseId` is the only Market Scenario identity; the Reference
@@ -43,8 +44,9 @@ as reconstructed rather than recorded tick or order-book microstructure.
 Recipe Draft, validation, approval, materialization, retry, composition,
 assumption-resolution, and formal-selection operation allowlist. Issue #79
 activates read capabilities; Issues #80–#83 activate each declared mutation
-without changing the Interface version. Diagnostic Task handoff remains unavailable
-until Issue #84; the deterministic fake is never a production fallback.
+without changing the Interface version. Issue #84 activates the typed handoff
+without adding a Scenario Lab command or changing the Interface version; the
+deterministic fake is never a production fallback.
 
 The Diagnostic Tasks command boundary is the separate in-process
 `StrategyDiagnosticsV1DiagnosticTasksApplication` version 1.0. The existing
@@ -109,6 +111,37 @@ Successor composition or resolution makes an older context stale. QML presents
 these typed projections and never treats a Reproduction Manifest as editable or
 predictive Scenario Lab input.
 
+Issue #84 activates `DiagnosticSetupSelectionContext` as an immutable typed
+navigation intent over two independent current selections. It combines the
+exact `StrategySelectionContext` and `ScenarioSelectionContext`, verifies every
+Strategy/Case execution target and projection revision, and converts them into
+the unchanged `DiagnosticTaskConfiguration` accepted by
+`DiagnosticTasksFeature` 1.0. The Journey Workspace displays the exact Strategy
+selection, Scenario Set, execution resolution, selection/view revisions,
+source generations, and configuration content identity before enabling create
+or revise. It does not introduce a shared catalog/lab facade or duplicate
+backend truth.
+
+The handoff uses frozen typed input variants through the five existing
+`DiagnosticTasksFeature` 1.0 operations: create, revise, validate, approve, and
+start. It adds no Feature or Application operation. An AppContext-owned
+`DiagnosticSetupSelectionCoordinator` supplies only the current immutable
+typed setup for read-time reconciliation in the live and deterministic-fake
+adapters. Only an explicit typed input variant carries that setup into command
+content identity; legacy base commands retain their pre-Wave-3 identity and
+idempotent replay behavior. The live adapter reconciles task reads through the
+public backend `get_diagnostic_task` path; the coordinator never reads
+persistence, acts as a Repository, or becomes a QML-facing Interface.
+
+Persistence migration `0021_diagnostic_selection_dependency_invalidation`
+atomically binds validation and approval to the exact upstream selection
+content. Authority is rechecked on task read and before later commands. A
+successor or unavailable upstream selection invalidates active validation and
+approval, returns the task to Draft, preserves prior rows and an immutable
+invalidation audit, and makes campaign start fail closed. Legacy callers that
+do not supply the new typed navigation context retain Diagnostic Tasks 1.0
+behavior.
+
 Formal Set, execution-resolution, and selection projections persist separate
 monotonic revisions in their immutable command results. Authoritative successor
 ordering therefore does not depend on wall-clock uniqueness, command UUID sort
@@ -119,9 +152,10 @@ order, or a database-specific insertion-order feature.
 The journey preserves exact task, Campaign, node, attempt, run, Evidence
 Package, and Reproduction Manifest identities. Commands use typed identities,
 idempotency keys, expected revisions, and persistent `TaskHandle` values.
-Approval binds the exact validated revision; a changed configuration invalidates
-the prior approval. Retry creates a new attempt without replacing failed
-history.
+Approval binds the exact validated revision and, for Issue #84 handoffs, the
+exact upstream dependency hash; a changed configuration or later upstream
+authority drift invalidates the prior approval without deleting its history.
+Retry creates a new attempt without replacing failed history.
 
 Disconnect, reconnect, route leave/remount, and Application reopen trigger an
 authoritative reread. Older connection generations and late callbacks are
@@ -168,6 +202,14 @@ formal context, and reopens the same file-backed Application to recover the
 authoritative identities. The production QML route receives the exact current
 Strategy Library selection through the root composition and exposes accessible
 composition, resolution, and selection controls without a generic payload bus.
+
+The Issue #84 source slice composes those two current formal selections into
+the unchanged task configuration, creates and validates a real persisted task,
+atomically binds approval to the exact dependency hash, then creates an
+authoritative Scenario successor and proves task reread invalidates the old
+approval and rejects campaign start. QML adapter tests prove unavailable
+upstream selection disables handoff and that the accessible setup summary
+contains every exact identity.
 
 It never substitutes a fake, dictionary producer, Repository read, mocked
 Application, direct final-result database insert, or QML property injection for
@@ -221,6 +263,7 @@ WebEngine, or a general-purpose frontend façade. It does not remove legacy
 Widgets. Issues #77 and #78 activate Strategy Library browse, explicit
 comparison, exact formal selection, and authoritative bookmark recovery.
 Issues #79–#83 activate Scenario Lab read tracing, Recipe writes, approval,
-materialization, scenario-set composition, and formal selection. Typed handoff
-remains owned by Issue #84. System Health and Wave 4 remain unimplemented. This contract does not claim Wave 3
+materialization, scenario-set composition, and formal selection. Issue #84
+activates the exact typed handoff into unchanged Diagnostic Tasks 1.0. System
+Health and Wave 4 remain unimplemented. This contract does not claim Wave 3
 T08/T09/T10 or release certification.

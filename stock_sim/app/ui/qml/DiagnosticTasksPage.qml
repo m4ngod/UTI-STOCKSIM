@@ -11,6 +11,7 @@ Item {
     readonly property string strategyCatalogText: adapter.strategyCatalogText
     readonly property string recipeCatalogText: adapter.recipeCatalogText
     readonly property string marketScenarioCatalogText: adapter.marketScenarioCatalogText
+    readonly property string setupSelectionText: adapter.setupSelectionText
     readonly property string stateTitle: adapter.stateTitle
     readonly property string blockingReasonsText: adapter.blockingReasonsText
     readonly property string reproductionManifestStatus: adapter.reproductionManifestStatus
@@ -263,6 +264,10 @@ Item {
                 Repeater {
                     model: [
                         {
+                            heading: "EXACT SETUP SELECTION",
+                            detail: adapter.setupSelectionText
+                        },
+                        {
                             heading: "STRATEGIES UNDER TEST",
                             detail: adapter.strategyCatalogText
                         },
@@ -330,7 +335,7 @@ Item {
                 border.color: tokens.border
                 Accessible.role: Accessible.Grouping
                 Accessible.name: "Durable Diagnostic Task configuration validation and approval"
-                Accessible.description: adapter.taskStatusText + ". " + adapter.validationStatusText + ". " + adapter.approvalStatusText
+                Accessible.description: adapter.setupSelectionText + ". " + adapter.taskStatusText + ". " + adapter.validationStatusText + ". " + adapter.approvalStatusText
 
                 ColumnLayout {
                     id: creationContent
@@ -369,7 +374,7 @@ Item {
                         enabled: adapter.canCreate
                         Layout.fillWidth: true
                         Layout.preferredHeight: tokens.controlHeight
-                        accessibleDescription: "Create one durable task from the authoritative baseline and required strategies"
+                        accessibleDescription: "Create one durable task from the exact current Strategy and Scenario setup selection"
                         onFocusEntered: page.rememberFocus(item)
                         onInvoked: {
                             adapter.createTask()

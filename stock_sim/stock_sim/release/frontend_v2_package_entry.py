@@ -408,6 +408,7 @@ def _create_production_window(
     strategy_diagnostics_tasks_application: Any | None = None,
     strategy_diagnostics_library_application: Any | None = None,
     strategy_diagnostics_scenario_lab_application: Any | None = None,
+    diagnostic_setup_selection_coordinator: Any | None = None,
 ) -> tuple[Any, Any, Any]:
     from app.app_context import build_app_context
     from app.ui.main_window import MainWindow
@@ -427,6 +428,9 @@ def _create_production_window(
         strategy_diagnostics_scenario_lab_application=(
             strategy_diagnostics_scenario_lab_application
         ),
+        diagnostic_setup_selection_coordinator=(
+            diagnostic_setup_selection_coordinator
+        ),
     )
     window = None
     try:
@@ -437,6 +441,13 @@ def _create_production_window(
             scenario_lab_context=context.scenario_lab_context,
             diagnostic_tasks_feature=context.diagnostic_tasks_feature,
             diagnostic_tasks_context=context.diagnostic_tasks_context,
+            diagnostic_setup_selection_coordinator=(
+                getattr(
+                    context,
+                    "diagnostic_setup_selection_coordinator",
+                    diagnostic_setup_selection_coordinator,
+                )
+            ),
             run_monitoring_feature=context.run_monitoring_feature,
             run_monitoring_context=context.run_monitoring_context,
             evidence_and_findings_feature=(
@@ -937,7 +948,7 @@ def _start_installed_wave2_commands(
         target = root.findChild(QQuickItem, object_name)
         if target is None:
             raise RuntimeError(
-                f"Installed Diagnostic Tasks action is absent: {object_name}"
+                f"Installed Journey action is absent: {object_name}"
             )
         _settle_until(
             app,
@@ -954,11 +965,71 @@ def _start_installed_wave2_commands(
             Qt.Key.Key_Space,
             Qt.KeyboardModifier.NoModifier,
         )
-        _settle_until(
-            app,
-            completed,
-            f"{object_name} authoritative completion",
+        try:
+            _settle_until(
+                app,
+                completed,
+                f"{object_name} authoritative completion",
+            )
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"{error}; Diagnostic Tasks status: "
+                f"{projection.property('commandStatusText')}"
+            ) from error
+
+    strategy_projection = host._strategy_library
+    scenario_projection = host._scenario_lab
+    if strategy_projection is None or scenario_projection is None:
+        raise RuntimeError(
+            "Installed Strategy Library or Scenario Lab Adapter is unavailable"
         )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="strategy_library",
+    )
+    _settle_until(
+        app,
+        lambda: strategy_projection.property("presentationState") == "ready",
+        "installed authoritative Strategy Library inventory",
+    )
+    activate(
+        "strategyLibraryCompareFormalSet",
+        completed=lambda: strategy_projection.property("comparisonCount") >= 2,
+    )
+    activate(
+        "strategyLibrarySelectFormalSet",
+        completed=lambda: strategy_projection.property("selectionStatus")
+        == "current",
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="scenario_lab",
+    )
+    _settle_until(
+        app,
+        lambda: scenario_projection.property("presentationState") == "ready",
+        "installed authoritative Scenario Lab inventory",
+    )
+    activate(
+        "scenarioLabComposeVisibleScenarioSetButton",
+        completed=lambda: scenario_projection.property("scenarioSetCount") >= 1,
+    )
+    activate(
+        "scenarioLabResolveExecutionAssumptionsButton",
+        completed=lambda: scenario_projection.property(
+            "executionResolutionCount"
+        )
+        >= 1,
+    )
+    activate(
+        "scenarioLabSelectFormalScenarioSetButton",
+        completed=lambda: scenario_projection.property("selectionContextCount")
+        >= 1,
+    )
 
     _navigate_route(
         app=app,
@@ -968,8 +1039,9 @@ def _start_installed_wave2_commands(
     )
     _settle_until(
         app,
-        lambda: projection.property("presentationState") == "ready",
-        "installed authoritative Diagnostic Tasks inventory",
+        lambda: bool(projection.property("setupSelectionReady"))
+        and projection.property("presentationState") == "ready",
+        "installed exact Diagnostic Tasks setup selection",
     )
     if projection.property("reproductionManifestStatus") != (
         "not_yet_available"
@@ -987,6 +1059,35 @@ def _start_installed_wave2_commands(
     if created is None:
         raise RuntimeError("Installed QML did not create a Diagnostic Task")
     created_revision = created.revision
+
+    original_strategy_selection = strategy_projection.property(
+        "selectionContextId"
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="strategy_library",
+    )
+    activate(
+        "strategyLibrarySelectFormalSet",
+        completed=lambda: bool(
+            strategy_projection.property("selectionContextId")
+        )
+        and strategy_projection.property("selectionContextId")
+        != original_strategy_selection,
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="diagnostic_tasks",
+    )
+    _settle_until(
+        app,
+        lambda: bool(projection.property("setupSelectionReady")),
+        "installed corrected exact setup selection",
+    )
 
     activate(
         "reviseDiagnosticTaskButton",
@@ -1516,6 +1617,9 @@ def _run_smoke_journey(
         LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
     )
+    from app.features.diagnostic_setup import (
+        DiagnosticSetupSelectionCoordinator,
+    )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         create_file_backed_formal_v1_release_fixture,
         create_file_backed_wave2_release_input_fixture,
@@ -1617,9 +1721,11 @@ def _run_smoke_journey(
         fixture.application,
         fixture.engine,
     )
+    setup_coordinator = DiagnosticSetupSelectionCoordinator()
     diagnostic_tasks_application = (
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-            fixture.application
+            fixture.application,
+            setup_selection_provider=setup_coordinator.current,
         )
     )
     strategy_library_application = (
@@ -1785,6 +1891,7 @@ def _run_smoke_journey(
         strategy_diagnostics_tasks_application=diagnostic_tasks_application,
         strategy_diagnostics_library_application=strategy_library_application,
         strategy_diagnostics_scenario_lab_application=scenario_lab_application,
+        diagnostic_setup_selection_coordinator=setup_coordinator,
         settings_path=report_dir / "frontend-v2-settings.json",
     )
     close_initial_mount = register_mount(
@@ -2138,7 +2245,8 @@ def _run_smoke_journey(
         )
         diagnostic_tasks_application = (
             LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-                fixture.application
+                fixture.application,
+                setup_selection_provider=setup_coordinator.current,
             )
         )
         strategy_library_application = (
@@ -2163,6 +2271,7 @@ def _run_smoke_journey(
             strategy_diagnostics_scenario_lab_application=(
                 scenario_lab_application
             ),
+            diagnostic_setup_selection_coordinator=setup_coordinator,
             settings_path=report_dir / "frontend-v2-settings.json",
         )
         close_initial_mount = register_mount(
@@ -2492,6 +2601,7 @@ def _run_smoke_journey(
             strategy_diagnostics_scenario_lab_application=(
                 scenario_lab_application
             ),
+            diagnostic_setup_selection_coordinator=setup_coordinator,
             settings_path=report_dir / "frontend-v2-settings.json",
         )
         register_mount(

@@ -224,6 +224,7 @@ def test_integration_gate_is_complete_and_repository_valid():
         for category in PERSISTED_PRODUCT_TRACER.coverage
     ) == (
         "authoritative-strategy-library-slice",
+        "typed-diagnostic-setup-selection-handoff",
         "authoritative-input-and-exact-revision",
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",

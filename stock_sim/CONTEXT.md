@@ -40,3 +40,11 @@ _Avoid_: Frontend estimate, editable execution policy
 **Scenario Selection Context**:
 The immutable, content-identified formal handoff candidate binding the exact Strategy Under Test set, Scenario Set, Campaign Cases, Approved Scenario Recipe versions and hashes, Reference Market Paths, execution resolution, source generation, and originating selection/view revisions.
 _Avoid_: QML payload, copied campaign configuration
+
+**Diagnostic Setup Selection Context**:
+An immutable typed navigation intent that combines one current formal Strategy Selection Context with one current formal Scenario Selection Context and converts those exact identities into the existing Diagnostic Task Configuration; it never owns or copies upstream truth.
+_Avoid_: Generic setup dictionary, frontend campaign builder
+
+**Diagnostic Selection Dependency Binding**:
+The immutable backend validation and approval dependency record for the exact Strategy and Scenario setup source, content hash, and Diagnostic Task revision. An AppContext-owned typed coordinator presents the current setup to existing Diagnostic Tasks operations; authoritative backend reread and later commands invalidate active validation and approval after upstream drift while retaining their history.
+_Avoid_: Editable approval input, cached QML state

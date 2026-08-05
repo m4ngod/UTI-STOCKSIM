@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -28,7 +28,11 @@ from .run_monitoring import (
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
 
 if TYPE_CHECKING:
+    from .diagnostic_setup import DiagnosticSetupSelectionContext
     from strategy_diagnostics.application import DiagnosticsApplication
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticSelectionDependencyBinding as BackendDiagnosticSelectionDependencyBinding,
+    )
     from strategy_diagnostics.diagnostic_tasks import (
         DiagnosticTaskConfiguration as BackendDiagnosticTaskConfiguration,
     )
@@ -883,11 +887,25 @@ class StrategyDiagnosticsV1DiagnosticTasksApplication(Protocol):
     ) -> DiagnosticTasksApplicationCommandResult: ...
 
 
-class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
+class _DiagnosticSetupInputApplicationCapability:
+    """Nominal marker for concrete adapters that consume setup input variants."""
+
+
+class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+    _DiagnosticSetupInputApplicationCapability
+):
     """Translate only public DiagnosticsApplication behavior to typed inputs."""
 
-    def __init__(self, application: DiagnosticsApplication) -> None:
+    def __init__(
+        self,
+        application: DiagnosticsApplication,
+        *,
+        setup_selection_provider: (
+            Callable[[], DiagnosticSetupSelectionContext | None] | None
+        ) = None,
+    ) -> None:
         self._application = application
+        self._setup_selection_provider = setup_selection_provider
         self._application_access_gate = (
             shared_diagnostics_application_access_gate(application)
         )
@@ -951,9 +969,20 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         observed_at = datetime.now(timezone.utc)
         try:
             with self._application_access_gate:
-                snapshot = self._application.get_diagnostic_task(
-                    None if task_id is None else task_id.value
-                )
+                identity = None if task_id is None else task_id.value
+                if self._setup_selection_provider is None:
+                    snapshot = self._application.get_diagnostic_task(identity)
+                else:
+                    setup = self._current_setup_selection()
+                    snapshot = self._application.get_diagnostic_task(
+                        identity,
+                        dependency_binding=(
+                            None
+                            if setup is None
+                            else _backend_dependency_binding(setup)
+                        ),
+                        dependency_binding_observed=True,
+                    )
         except RuntimeError:
             return DiagnosticTasksApplicationTaskResult(
                 availability=DiagnosticTasksApplicationAvailability.FAILED,
@@ -1001,81 +1030,23 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: CreateDiagnosticTask,
     ) -> DiagnosticTasksApplicationCommandResult:
+        setup = _setup_selection_from_command(command)
         from strategy_diagnostics.diagnostic_tasks import (
             CreateDiagnosticTaskRequest as BackendCreateDiagnosticTaskRequest,
         )
-        from strategy_diagnostics.diagnostic_tasks import (
-            DiagnosticCampaignCaseSelection as BackendCampaignCaseSelection,
-        )
-        from strategy_diagnostics.diagnostic_tasks import (
-            DiagnosticStrategySelection as BackendStrategySelection,
-        )
-        from strategy_diagnostics.diagnostic_tasks import (
-            DiagnosticTaskConfiguration as BackendTaskConfiguration,
-        )
-
         try:
             with self._application_access_gate:
                 result = self._application.create_diagnostic_task(
                     BackendCreateDiagnosticTaskRequest(
                         command_id=command.command_id.value,
                         idempotency_key=command.idempotency_key.value,
-                        configuration=BackendTaskConfiguration(
-                            content_identity=(
-                                command.configuration.content_identity.value
-                            ),
-                            strategy_selections=tuple(
-                                BackendStrategySelection(
-                                    strategy_id=item.strategy_id.value,
-                                    strategy_version=item.strategy_version,
-                                    compatibility_manifest_hash=(
-                                        item.compatibility_manifest_hash
-                                    ),
-                                    guardrail_profile_id=(
-                                        item.guardrail_profile_id.value
-                                    ),
-                                    guardrail_profile_version=(
-                                        item.guardrail_profile_version
-                                    ),
-                                )
-                                for item in (
-                                    command.configuration.strategy_selections
-                                )
-                            ),
-                            campaign_case_selections=tuple(
-                                BackendCampaignCaseSelection(
-                                    layer=item.layer.value,
-                                    recipe_version_id=(
-                                        item.recipe_version_id.value
-                                    ),
-                                    recipe_content_hash=item.recipe_content_hash,
-                                    market_scenario_id=(
-                                        item.market_scenario_id.value
-                                    ),
-                                    campaign_case_id=(
-                                        item.campaign_case_id.value
-                                    ),
-                                    comparison_role=item.comparison_role.value,
-                                    baseline_campaign_case_id=(
-                                        None
-                                        if item.baseline_campaign_case_id
-                                        is None
-                                        else item.baseline_campaign_case_id.value
-                                    ),
-                                    execution_policy_values=tuple(
-                                        (
-                                            value.name,
-                                            value.value,
-                                            value.version,
-                                            value.source,
-                                        )
-                                        for value in item.execution_policy_values
-                                    ),
-                                )
-                                for item in (
-                                    command.configuration.campaign_case_selections
-                                )
-                            ),
+                        configuration=_backend_configuration(
+                            command.configuration
+                        ),
+                        dependency_binding=(
+                            None
+                            if setup is None
+                            else _backend_dependency_binding(setup)
                         ),
                     )
                 )
@@ -1106,6 +1077,7 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: ReviseDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
+        setup = _setup_selection_from_command(command)
         from strategy_diagnostics.diagnostic_tasks import (
             ReviseDiagnosticTaskConfigurationRequest,
         )
@@ -1121,6 +1093,11 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                         configuration=_backend_configuration(
                             command.configuration
                         ),
+                        dependency_binding=(
+                            None
+                            if setup is None
+                            else _backend_dependency_binding(setup)
+                        ),
                     )
                 )
         except RuntimeError:
@@ -1131,6 +1108,8 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: ValidateDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
+        setup = _setup_selection_from_command(command)
+        setup_observed = setup is not None
         from strategy_diagnostics.diagnostic_tasks import (
             ValidateDiagnosticTaskConfigurationRequest,
         )
@@ -1144,6 +1123,12 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                             idempotency_key=command.idempotency_key.value,
                             task_id=command.task_id.value,
                             expected_revision=command.expected_revision,
+                            dependency_binding=(
+                                None
+                                if setup is None
+                                else _backend_dependency_binding(setup)
+                            ),
+                            dependency_binding_observed=setup_observed,
                         )
                     )
                 )
@@ -1155,6 +1140,8 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: ApproveDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
+        setup = _setup_selection_from_command(command)
+        setup_observed = setup is not None
         from strategy_diagnostics.diagnostic_tasks import (
             ApproveDiagnosticTaskConfigurationRequest,
         )
@@ -1175,6 +1162,12 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                                 command.configuration_content_id.value
                             ),
                             actor_id=command.actor_id.value,
+                            dependency_binding=(
+                                None
+                                if setup is None
+                                else _backend_dependency_binding(setup)
+                            ),
+                            dependency_binding_observed=setup_observed,
                         )
                     )
                 )
@@ -1186,6 +1179,8 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
         self,
         command: StartFormalDiagnosticCampaign,
     ) -> DiagnosticTasksApplicationCommandResult:
+        setup = _setup_selection_from_command(command)
+        setup_observed = setup is not None
         from strategy_diagnostics.diagnostic_tasks import (
             StartFormalDiagnosticCampaignRequest,
         )
@@ -1200,6 +1195,12 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
                             task_id=command.task_id.value,
                             expected_revision=command.expected_revision,
                             approved_revision=command.approved_revision,
+                            dependency_binding=(
+                                None
+                                if setup is None
+                                else _backend_dependency_binding(setup)
+                            ),
+                            dependency_binding_observed=setup_observed,
                         )
                     )
                 )
@@ -1377,6 +1378,18 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter:
             retryable=True,
             correlation_id=None,
         )
+
+    def _current_setup_selection(
+        self,
+    ) -> DiagnosticSetupSelectionContext | None:
+        provider = self._setup_selection_provider
+        if provider is None:
+            return None
+        try:
+            setup = provider()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return None
+        return setup
 
     def _read_inventory(self) -> DiagnosticTasksInventory:
         configuration = self._application.v1_diagnostic_configuration()
@@ -1715,6 +1728,50 @@ def _backend_configuration(
             for item in configuration.campaign_case_selections
         ),
     )
+
+
+def _backend_dependency_binding(
+    setup: DiagnosticSetupSelectionContext,
+) -> BackendDiagnosticSelectionDependencyBinding:
+    from strategy_diagnostics.diagnostic_tasks import (
+        DiagnosticSelectionDependencyBinding,
+    )
+
+    return DiagnosticSelectionDependencyBinding.create(
+        source_identity=setup.context_identity,
+        strategy_selection_context_id=(
+            setup.strategy_selection.context_identity
+        ),
+        scenario_selection_context_id=(
+            setup.scenario_selection.context.selection_context_id.value
+        ),
+        canonical_payload_json=setup.canonical_payload_json,
+    )
+
+
+def _setup_selection_from_command(
+    command: DiagnosticTasksApplicationCommand,
+) -> DiagnosticSetupSelectionContext | None:
+    from .diagnostic_setup import (
+        ApproveDiagnosticTaskConfigurationFromSetup,
+        CreateDiagnosticTaskFromSetup,
+        ReviseDiagnosticTaskConfigurationFromSetup,
+        StartFormalDiagnosticCampaignFromSetup,
+        ValidateDiagnosticTaskConfigurationFromSetup,
+    )
+
+    if isinstance(
+        command,
+        (
+            ApproveDiagnosticTaskConfigurationFromSetup,
+            CreateDiagnosticTaskFromSetup,
+            ReviseDiagnosticTaskConfigurationFromSetup,
+            StartFormalDiagnosticCampaignFromSetup,
+            ValidateDiagnosticTaskConfigurationFromSetup,
+        ),
+    ):
+        return command.setup_selection
+    return None
 
 
 def _lifecycle_target_identity(

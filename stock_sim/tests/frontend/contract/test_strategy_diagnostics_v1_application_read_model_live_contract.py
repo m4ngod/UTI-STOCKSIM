@@ -249,7 +249,7 @@ def _persist_formal_v1(database_path: Path, artifact_root: Path):
     migration = reopened.initialize_persistence(reopened_engine)
     assert (
         migration.current_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     return (
         reopened,

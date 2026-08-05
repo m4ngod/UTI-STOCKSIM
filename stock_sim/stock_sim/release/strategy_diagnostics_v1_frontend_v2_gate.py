@@ -128,6 +128,16 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
             ),
         ),
         PersistedTracerCoverage(
+            requirement="typed-diagnostic-setup-selection-handoff",
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_diagnostic_setup_handoff_live_contract.py::"
+                    "test_live_exact_setup_selection_is_bound_through_approval"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
             requirement="authoritative-input-and-exact-revision",
             pytest_targets=(
                 (
@@ -493,6 +503,7 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "`StrategyDiagnosticsV1StrategyLibraryApplication` version 1.0",
         "`StrategyDiagnosticsV1ScenarioLabApplication` version 1.0",
         "Issue #79 activates Scenario Lab read tracing",
+        "Issue #84 activates `DiagnosticSetupSelectionContext`",
         "durable bookmark contains those immutable references",
         "Seam 1",
         "Seam 2",
@@ -510,12 +521,13 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0",
         "`StrategyDiagnosticsV1ScenarioLabApplication` 1.0",
-        "including Issues #77, #78, and #79",
+        "including Issues #77–#84",
         "durable bookmark reread",
         PERSISTED_PRODUCT_TRACER.function_name,
         "test_diagnostic_tasks_live_fake_conformance.py",
         "test_strategy_library_live_fake_conformance.py",
         "test_scenario_lab_live_fake_conformance.py",
+        "test_live_exact_setup_selection_is_bound_through_approval",
         "Seam 3",
         "Issue #88",
         "does not claim T08, T09, or T10",
@@ -572,6 +584,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         )
     expected_tracer_requirements = (
         "authoritative-strategy-library-slice",
+        "typed-diagnostic-setup-selection-handoff",
         "authoritative-input-and-exact-revision",
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",

@@ -242,14 +242,18 @@ class CreateDiagnosticTaskRequest:
     command_id: str
     idempotency_key: str
     configuration: DiagnosticTaskConfiguration
+    dependency_binding: DiagnosticSelectionDependencyBinding | None = None
 
     def command_content_identity(self) -> str:
-        return _content_identity(
-            {
-                "command_type": "create_diagnostic_task",
-                "configuration": self.configuration.to_storage_dict(),
-            }
-        )
+        payload: dict[str, object] = {
+            "command_type": "create_diagnostic_task",
+            "configuration": self.configuration.to_storage_dict(),
+        }
+        if self.dependency_binding is not None:
+            payload["diagnostic_setup_dependency_binding_hash"] = (
+                self.dependency_binding.binding_hash
+            )
+        return _content_identity(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,16 +263,20 @@ class ReviseDiagnosticTaskConfigurationRequest:
     task_id: str
     expected_revision: int
     configuration: DiagnosticTaskConfiguration
+    dependency_binding: DiagnosticSelectionDependencyBinding | None = None
 
     def command_content_identity(self) -> str:
-        return _content_identity(
-            {
-                "command_type": "revise_diagnostic_task_configuration",
-                "configuration": self.configuration.to_storage_dict(),
-                "expected_revision": self.expected_revision,
-                "task_id": self.task_id,
-            }
-        )
+        payload: dict[str, object] = {
+            "command_type": "revise_diagnostic_task_configuration",
+            "configuration": self.configuration.to_storage_dict(),
+            "expected_revision": self.expected_revision,
+            "task_id": self.task_id,
+        }
+        if self.dependency_binding is not None:
+            payload["diagnostic_setup_dependency_binding_hash"] = (
+                self.dependency_binding.binding_hash
+            )
+        return _content_identity(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,15 +285,22 @@ class ValidateDiagnosticTaskConfigurationRequest:
     idempotency_key: str
     task_id: str
     expected_revision: int
+    dependency_binding: DiagnosticSelectionDependencyBinding | None = None
+    dependency_binding_observed: bool = False
 
     def command_content_identity(self) -> str:
-        return _content_identity(
-            {
-                "command_type": "validate_diagnostic_task_configuration",
-                "expected_revision": self.expected_revision,
-                "task_id": self.task_id,
-            }
-        )
+        payload: dict[str, object] = {
+            "command_type": "validate_diagnostic_task_configuration",
+            "expected_revision": self.expected_revision,
+            "task_id": self.task_id,
+        }
+        if self.dependency_binding_observed:
+            payload["diagnostic_setup_dependency_binding_hash"] = (
+                None
+                if self.dependency_binding is None
+                else self.dependency_binding.binding_hash
+            )
+        return _content_identity(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,20 +314,27 @@ class ApproveDiagnosticTaskConfigurationRequest:
     validated_revision: int
     configuration_content_id: str
     actor_id: str
+    dependency_binding: DiagnosticSelectionDependencyBinding | None = None
+    dependency_binding_observed: bool = False
 
     def command_content_identity(self) -> str:
-        return _content_identity(
-            {
-                "actor_id": self.actor_id,
-                "command_type": "approve_diagnostic_task_configuration",
-                "configuration_content_id": self.configuration_content_id,
-                "expected_revision": self.expected_revision,
-                "task_id": self.task_id,
-                "validation_id": self.validation_id,
-                "validation_revision": self.validation_revision,
-                "validated_revision": self.validated_revision,
-            }
-        )
+        payload: dict[str, object] = {
+            "actor_id": self.actor_id,
+            "command_type": "approve_diagnostic_task_configuration",
+            "configuration_content_id": self.configuration_content_id,
+            "expected_revision": self.expected_revision,
+            "task_id": self.task_id,
+            "validation_id": self.validation_id,
+            "validation_revision": self.validation_revision,
+            "validated_revision": self.validated_revision,
+        }
+        if self.dependency_binding_observed:
+            payload["diagnostic_setup_dependency_binding_hash"] = (
+                None
+                if self.dependency_binding is None
+                else self.dependency_binding.binding_hash
+            )
+        return _content_identity(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,16 +344,23 @@ class StartFormalDiagnosticCampaignRequest:
     task_id: str
     expected_revision: int
     approved_revision: int
+    dependency_binding: DiagnosticSelectionDependencyBinding | None = None
+    dependency_binding_observed: bool = False
 
     def command_content_identity(self) -> str:
-        return _content_identity(
-            {
-                "approved_revision": self.approved_revision,
-                "command_type": "start_formal_diagnostic_campaign",
-                "expected_revision": self.expected_revision,
-                "task_id": self.task_id,
-            }
-        )
+        payload: dict[str, object] = {
+            "approved_revision": self.approved_revision,
+            "command_type": "start_formal_diagnostic_campaign",
+            "expected_revision": self.expected_revision,
+            "task_id": self.task_id,
+        }
+        if self.dependency_binding_observed:
+            payload["diagnostic_setup_dependency_binding_hash"] = (
+                None
+                if self.dependency_binding is None
+                else self.dependency_binding.binding_hash
+            )
+        return _content_identity(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +440,65 @@ class DiagnosticTaskApprovalSnapshot:
     actor_id: str
     policy_identities: tuple[str, ...]
     approved_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticSelectionDependencyBinding:
+    binding_id: str
+    binding_hash: str
+    source_identity: str
+    strategy_selection_context_id: str
+    scenario_selection_context_id: str
+    canonical_payload_json: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        source_identity: str,
+        strategy_selection_context_id: str,
+        scenario_selection_context_id: str,
+        canonical_payload_json: str,
+    ) -> DiagnosticSelectionDependencyBinding:
+        if not all(
+            value.strip()
+            for value in (
+                source_identity,
+                strategy_selection_context_id,
+                scenario_selection_context_id,
+            )
+        ):
+            raise ValueError("Diagnostic selection dependency identities are required")
+        payload = json.loads(canonical_payload_json)
+        if not isinstance(payload, dict):
+            raise ValueError("Diagnostic selection dependency payload must be an object")
+        canonical = _canonical_json(payload)
+        binding_hash = "sha256:" + hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+        return cls(
+            binding_id=(
+                "diagnostic-selection-dependency-" + binding_hash[7:31]
+            ),
+            binding_hash=binding_hash,
+            source_identity=source_identity,
+            strategy_selection_context_id=strategy_selection_context_id,
+            scenario_selection_context_id=scenario_selection_context_id,
+            canonical_payload_json=canonical,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticSelectionDependencyInvalidation:
+    invalidation_id: str
+    dependency_binding_id: str
+    task_id: str
+    task_revision: int
+    reason_code: str
+    source_identity: str
+    expected_binding_hash: str
+    observed_binding_hash: str
+    invalidated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,6 +1058,7 @@ class DiagnosticTaskRepository(Protocol):
         acceptance_json: str,
         task: DiagnosticTaskSnapshot,
         handle: DiagnosticTaskHandleSnapshot,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> DiagnosticTaskAcceptance: ...
 
     def get_task(self, task_id: str) -> DiagnosticTaskSnapshot | None: ...
@@ -1011,7 +1100,13 @@ class DiagnosticTaskRepository(Protocol):
         command_json: str,
         task: DiagnosticTaskSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool: ...
+
+    def active_setup_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None: ...
 
     def accept_validation(
         self,
@@ -1022,6 +1117,7 @@ class DiagnosticTaskRepository(Protocol):
         validation: DiagnosticTaskValidationSnapshot,
         queued_handle: DiagnosticTaskHandleSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool: ...
 
     def complete_validation(
@@ -1038,7 +1134,34 @@ class DiagnosticTaskRepository(Protocol):
         task: DiagnosticTaskSnapshot,
         approval: DiagnosticTaskApprovalSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool: ...
+
+    def active_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None: ...
+
+    def active_approval_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None: ...
+
+    def dependency_invalidations(
+        self,
+        task_id: str,
+    ) -> tuple[DiagnosticSelectionDependencyInvalidation, ...]: ...
+
+    def invalidate_dependency_binding(
+        self,
+        *,
+        task: DiagnosticTaskSnapshot,
+        binding: DiagnosticSelectionDependencyBinding,
+        reason_code: str,
+        source_identity: str,
+        observed_binding_hash: str,
+        invalidated_at: datetime,
+    ) -> None: ...
 
     def accept_start(
         self,
@@ -1153,6 +1276,21 @@ class InMemoryDiagnosticTaskRepository:
             str,
             ChangeDiagnosticLifecycleRequest,
         ] = {}
+        self._validation_dependency_bindings: dict[
+            str,
+            DiagnosticSelectionDependencyBinding,
+        ] = {}
+        self._setup_dependency_bindings: dict[
+            str,
+            DiagnosticSelectionDependencyBinding,
+        ] = {}
+        self._approval_dependency_bindings: dict[
+            str,
+            DiagnosticSelectionDependencyBinding,
+        ] = {}
+        self._dependency_invalidation_history: list[
+            DiagnosticSelectionDependencyInvalidation
+        ] = []
 
     def find_command(
         self,
@@ -1185,6 +1323,7 @@ class InMemoryDiagnosticTaskRepository:
         acceptance_json: str,
         task: DiagnosticTaskSnapshot,
         handle: DiagnosticTaskHandleSnapshot,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> DiagnosticTaskAcceptance:
         del command_json, acceptance_json
         existing = self.find_command(
@@ -1196,6 +1335,8 @@ class InMemoryDiagnosticTaskRepository:
         if task.task_id in self._tasks:
             raise ValueError("Diagnostic Task identity collision")
         self._tasks[task.task_id] = replace(task, task_handles=(handle,))
+        if dependency_binding is not None:
+            self._setup_dependency_bindings[task.task_id] = dependency_binding
         self._commands_by_id[record.command_id] = record
         self._commands_by_key[record.idempotency_key] = record
         return DiagnosticTaskAcceptance(created=True, record=record)
@@ -1342,6 +1483,7 @@ class InMemoryDiagnosticTaskRepository:
         command_json: str,
         task: DiagnosticTaskSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool:
         del command_json
         if (
@@ -1366,6 +1508,12 @@ class InMemoryDiagnosticTaskRepository:
         ):
             return False
         self._tasks[task.task_id] = task
+        if dependency_binding is None:
+            self._setup_dependency_bindings.pop(task.task_id, None)
+        else:
+            self._setup_dependency_bindings[task.task_id] = dependency_binding
+        self._validation_dependency_bindings.pop(task.task_id, None)
+        self._approval_dependency_bindings.pop(task.task_id, None)
         self._store_mutation(record)
         return True
 
@@ -1378,6 +1526,7 @@ class InMemoryDiagnosticTaskRepository:
         validation: DiagnosticTaskValidationSnapshot,
         queued_handle: DiagnosticTaskHandleSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool:
         del command_json
         if (
@@ -1407,6 +1556,12 @@ class InMemoryDiagnosticTaskRepository:
             task_handles=(*task.task_handles, queued_handle),
         )
         self._validations_by_handle[queued_handle.task_handle_id] = validation
+        self._validation_dependency_bindings.pop(task.task_id, None)
+        self._approval_dependency_bindings.pop(task.task_id, None)
+        if dependency_binding is not None:
+            self._validation_dependency_bindings[task.task_id] = (
+                dependency_binding
+            )
         self._store_mutation(record)
         return True
 
@@ -1469,6 +1624,7 @@ class InMemoryDiagnosticTaskRepository:
         task: DiagnosticTaskSnapshot,
         approval: DiagnosticTaskApprovalSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool:
         del command_json
         if (
@@ -1502,9 +1658,96 @@ class InMemoryDiagnosticTaskRepository:
             )
         ):
             return False
+        active_binding = self._validation_dependency_bindings.get(task.task_id)
+        if dependency_binding != active_binding:
+            return False
         self._tasks[task.task_id] = replace(task, approval=approval)
+        if dependency_binding is not None:
+            self._approval_dependency_bindings[task.task_id] = (
+                dependency_binding
+            )
         self._store_mutation(record)
         return True
+
+    def active_setup_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        return self._setup_dependency_bindings.get(task_id)
+
+    def active_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        return self._validation_dependency_bindings.get(task_id)
+
+    def active_approval_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        return self._approval_dependency_bindings.get(task_id)
+
+    def dependency_invalidations(
+        self,
+        task_id: str,
+    ) -> tuple[DiagnosticSelectionDependencyInvalidation, ...]:
+        return tuple(
+            item
+            for item in self._dependency_invalidation_history
+            if item.task_id == task_id
+        )
+
+    def invalidate_dependency_binding(
+        self,
+        *,
+        task: DiagnosticTaskSnapshot,
+        binding: DiagnosticSelectionDependencyBinding,
+        reason_code: str,
+        source_identity: str,
+        observed_binding_hash: str,
+        invalidated_at: datetime,
+    ) -> None:
+        if self._validation_dependency_bindings.get(task.task_id) != binding:
+            return
+        current = self._tasks.get(task.task_id)
+        if (
+            current is None
+            or current.campaign_handoff is not None
+            or current.lifecycle
+            not in {
+                DiagnosticTaskLifecycle.DRAFT,
+                DiagnosticTaskLifecycle.AWAITING_APPROVAL,
+                DiagnosticTaskLifecycle.APPROVED,
+            }
+        ):
+            return
+        invalidation = DiagnosticSelectionDependencyInvalidation(
+            invalidation_id=_stable_identity(
+                "diagnostic-selection-invalidation",
+                (
+                    f"{task.task_id}:{task.revision}:{binding.binding_hash}:"
+                    f"{reason_code}:{observed_binding_hash}"
+                ),
+            ),
+            dependency_binding_id=binding.binding_id,
+            task_id=task.task_id,
+            task_revision=task.revision,
+            reason_code=reason_code,
+            source_identity=source_identity,
+            expected_binding_hash=binding.binding_hash,
+            observed_binding_hash=observed_binding_hash,
+            invalidated_at=invalidated_at,
+        )
+        self._dependency_invalidation_history.append(invalidation)
+        self._validation_dependency_bindings.pop(task.task_id, None)
+        self._approval_dependency_bindings.pop(task.task_id, None)
+        self._tasks[task.task_id] = replace(
+            current,
+            lifecycle=DiagnosticTaskLifecycle.DRAFT,
+            validation=None,
+            approval=None,
+            updated_at=invalidated_at,
+        )
 
     def accept_start(
         self,
@@ -2317,6 +2560,7 @@ class SqlDiagnosticTaskRepository:
         acceptance_json: str,
         task: DiagnosticTaskSnapshot,
         handle: DiagnosticTaskHandleSnapshot,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> DiagnosticTaskAcceptance:
         try:
             with self._engine.begin() as connection:
@@ -2410,6 +2654,36 @@ class SqlDiagnosticTaskRepository:
                         "created_at_utc": task.created_at.isoformat(),
                     },
                 )
+                if dependency_binding is not None:
+                    connection.execute(
+                        text(
+                            "INSERT INTO "
+                            "diagnostic_task_setup_dependency_bindings ("
+                            "task_id, task_revision, configuration_content_id, "
+                            "dependency_binding_id, dependency_binding_hash, "
+                            "dependency_binding_json, bound_at_utc, "
+                            "invalidated_at_utc) VALUES ("
+                            ":task_id, :task_revision, "
+                            ":configuration_content_id, "
+                            ":dependency_binding_id, :dependency_binding_hash, "
+                            ":dependency_binding_json, :bound_at_utc, NULL)"
+                        ),
+                        {
+                            "task_id": task.task_id,
+                            "task_revision": task.revision,
+                            "configuration_content_id": (
+                                task.configuration.content_identity
+                            ),
+                            "dependency_binding_id": dependency_binding.binding_id,
+                            "dependency_binding_hash": (
+                                dependency_binding.binding_hash
+                            ),
+                            "dependency_binding_json": (
+                                _dependency_binding_json(dependency_binding)
+                            ),
+                            "bound_at_utc": task.created_at.isoformat(),
+                        },
+                    )
                 connection.execute(
                     text(
                         "INSERT INTO diagnostic_task_commands ("
@@ -2810,6 +3084,7 @@ class SqlDiagnosticTaskRepository:
         command_json: str,
         task: DiagnosticTaskSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool:
         with self._engine.begin() as connection:
             updated = connection.execute(
@@ -2873,6 +3148,23 @@ class SqlDiagnosticTaskRepository:
                     "task_id": task.task_id,
                 },
             )
+            for table_name in (
+                "diagnostic_task_setup_dependency_bindings",
+                "diagnostic_task_validation_dependency_bindings",
+                "diagnostic_task_approval_dependency_bindings",
+            ):
+                connection.execute(
+                    text(
+                        f"UPDATE {table_name} "
+                        "SET invalidated_at_utc = :invalidated_at_utc "
+                        "WHERE task_id = :task_id "
+                        "AND invalidated_at_utc IS NULL"
+                    ),
+                    {
+                        "invalidated_at_utc": task.updated_at.isoformat(),
+                        "task_id": task.task_id,
+                    },
+                )
             connection.execute(
                 text(
                     "INSERT INTO diagnostic_task_configuration_revisions ("
@@ -2895,6 +3187,33 @@ class SqlDiagnosticTaskRepository:
                     "created_at_utc": task.updated_at.isoformat(),
                 },
             )
+            if dependency_binding is not None:
+                connection.execute(
+                    text(
+                        "INSERT INTO "
+                        "diagnostic_task_setup_dependency_bindings ("
+                        "task_id, task_revision, configuration_content_id, "
+                        "dependency_binding_id, dependency_binding_hash, "
+                        "dependency_binding_json, bound_at_utc, "
+                        "invalidated_at_utc) VALUES ("
+                        ":task_id, :task_revision, :configuration_content_id, "
+                        ":dependency_binding_id, :dependency_binding_hash, "
+                        ":dependency_binding_json, :bound_at_utc, NULL)"
+                    ),
+                    {
+                        "task_id": task.task_id,
+                        "task_revision": task.revision,
+                        "configuration_content_id": (
+                            task.configuration.content_identity
+                        ),
+                        "dependency_binding_id": dependency_binding.binding_id,
+                        "dependency_binding_hash": dependency_binding.binding_hash,
+                        "dependency_binding_json": (
+                            _dependency_binding_json(dependency_binding)
+                        ),
+                        "bound_at_utc": task.updated_at.isoformat(),
+                    },
+                )
             self._insert_mutation_command(
                 connection,
                 record=record,
@@ -2911,6 +3230,7 @@ class SqlDiagnosticTaskRepository:
         validation: DiagnosticTaskValidationSnapshot,
         queued_handle: DiagnosticTaskHandleSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool:
         with self._engine.begin() as connection:
             updated = connection.execute(
@@ -2964,6 +3284,22 @@ class SqlDiagnosticTaskRepository:
                     "task_id": task.task_id,
                 },
             )
+            for table_name in (
+                "diagnostic_task_validation_dependency_bindings",
+                "diagnostic_task_approval_dependency_bindings",
+            ):
+                connection.execute(
+                    text(
+                        f"UPDATE {table_name} "
+                        "SET invalidated_at_utc = :invalidated_at_utc "
+                        "WHERE task_id = :task_id "
+                        "AND invalidated_at_utc IS NULL"
+                    ),
+                    {
+                        "invalidated_at_utc": validation.validated_at.isoformat(),
+                        "task_id": task.task_id,
+                    },
+                )
             connection.execute(
                 text(
                     "INSERT INTO diagnostic_task_handles ("
@@ -2992,6 +3328,37 @@ class SqlDiagnosticTaskRepository:
                 ),
                 _validation_row(validation),
             )
+            if dependency_binding is not None:
+                connection.execute(
+                    text(
+                        "INSERT INTO "
+                        "diagnostic_task_validation_dependency_bindings ("
+                        "validation_id, validation_revision, task_id, "
+                        "task_revision, configuration_content_id, "
+                        "dependency_binding_id, dependency_binding_hash, "
+                        "dependency_binding_json, bound_at_utc, "
+                        "invalidated_at_utc) VALUES ("
+                        ":validation_id, :validation_revision, :task_id, "
+                        ":task_revision, :configuration_content_id, "
+                        ":dependency_binding_id, :dependency_binding_hash, "
+                        ":dependency_binding_json, :bound_at_utc, NULL)"
+                    ),
+                    {
+                        "validation_id": validation.validation_id,
+                        "validation_revision": validation.validation_revision,
+                        "task_id": validation.task_id,
+                        "task_revision": validation.task_revision,
+                        "configuration_content_id": (
+                            validation.configuration_content_id
+                        ),
+                        "dependency_binding_id": dependency_binding.binding_id,
+                        "dependency_binding_hash": dependency_binding.binding_hash,
+                        "dependency_binding_json": (
+                            _dependency_binding_json(dependency_binding)
+                        ),
+                        "bound_at_utc": validation.validated_at.isoformat(),
+                    },
+                )
             self._insert_mutation_command(
                 connection,
                 record=record,
@@ -3070,6 +3437,7 @@ class SqlDiagnosticTaskRepository:
         task: DiagnosticTaskSnapshot,
         approval: DiagnosticTaskApprovalSnapshot,
         expected_revision: int,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None,
     ) -> bool:
         with self._engine.begin() as connection:
             updated = connection.execute(
@@ -3136,12 +3504,264 @@ class SqlDiagnosticTaskRepository:
                 ),
                 _approval_row(approval),
             )
+            if dependency_binding is not None:
+                connection.execute(
+                    text(
+                        "INSERT INTO "
+                        "diagnostic_task_approval_dependency_bindings ("
+                        "approval_id, validation_id, validation_revision, "
+                        "task_id, task_revision, configuration_content_id, "
+                        "dependency_binding_id, dependency_binding_hash, "
+                        "bound_at_utc, invalidated_at_utc) VALUES ("
+                        ":approval_id, :validation_id, :validation_revision, "
+                        ":task_id, :task_revision, :configuration_content_id, "
+                        ":dependency_binding_id, :dependency_binding_hash, "
+                        ":bound_at_utc, NULL)"
+                    ),
+                    {
+                        "approval_id": approval.approval_id,
+                        "validation_id": approval.validation_id,
+                        "validation_revision": approval.validation_revision,
+                        "task_id": approval.task_id,
+                        "task_revision": approval.task_revision,
+                        "configuration_content_id": (
+                            approval.configuration_content_id
+                        ),
+                        "dependency_binding_id": dependency_binding.binding_id,
+                        "dependency_binding_hash": dependency_binding.binding_hash,
+                        "bound_at_utc": approval.approved_at.isoformat(),
+                    },
+                )
             self._insert_mutation_command(
                 connection,
                 record=record,
                 command_json=command_json,
             )
         return True
+
+    def active_setup_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        with self._engine.connect() as connection:
+            value = connection.execute(
+                text(
+                    "SELECT dependency_binding_json FROM "
+                    "diagnostic_task_setup_dependency_bindings "
+                    "WHERE task_id = :task_id "
+                    "AND invalidated_at_utc IS NULL "
+                    "ORDER BY task_revision DESC LIMIT 1"
+                ),
+                {"task_id": task_id},
+            ).scalar_one_or_none()
+        return None if value is None else _dependency_binding_from_json(str(value))
+
+    def active_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        with self._engine.connect() as connection:
+            value = connection.execute(
+                text(
+                    "SELECT b.dependency_binding_json FROM "
+                    "diagnostic_task_validation_dependency_bindings b "
+                    "JOIN diagnostic_task_validations v "
+                    "ON v.validation_id = b.validation_id "
+                    "WHERE b.task_id = :task_id "
+                    "AND b.invalidated_at_utc IS NULL "
+                    "AND v.invalidated_at_utc IS NULL "
+                    "ORDER BY b.bound_at_utc DESC, b.validation_id DESC LIMIT 1"
+                ),
+                {"task_id": task_id},
+            ).scalar_one_or_none()
+        return None if value is None else _dependency_binding_from_json(str(value))
+
+    def active_approval_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        with self._engine.connect() as connection:
+            value = connection.execute(
+                text(
+                    "SELECT v.dependency_binding_json FROM "
+                    "diagnostic_task_approval_dependency_bindings a "
+                    "JOIN diagnostic_task_validation_dependency_bindings v "
+                    "ON v.validation_id = a.validation_id "
+                    "JOIN diagnostic_task_approvals p "
+                    "ON p.approval_id = a.approval_id "
+                    "WHERE a.task_id = :task_id "
+                    "AND a.invalidated_at_utc IS NULL "
+                    "AND v.invalidated_at_utc IS NULL "
+                    "AND p.invalidated_at_utc IS NULL "
+                    "ORDER BY a.bound_at_utc DESC, a.approval_id DESC LIMIT 1"
+                ),
+                {"task_id": task_id},
+            ).scalar_one_or_none()
+        return None if value is None else _dependency_binding_from_json(str(value))
+
+    def dependency_invalidations(
+        self,
+        task_id: str,
+    ) -> tuple[DiagnosticSelectionDependencyInvalidation, ...]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT invalidation_id, dependency_binding_id, task_id, "
+                    "task_revision, reason_code, source_identity, "
+                    "expected_binding_hash, observed_binding_hash, "
+                    "invalidated_at_utc FROM "
+                    "diagnostic_task_selection_dependency_invalidations "
+                    "WHERE task_id = :task_id "
+                    "ORDER BY invalidated_at_utc, invalidation_id"
+                ),
+                {"task_id": task_id},
+            ).mappings().all()
+        return tuple(
+            DiagnosticSelectionDependencyInvalidation(
+                invalidation_id=str(row["invalidation_id"]),
+                dependency_binding_id=str(row["dependency_binding_id"]),
+                task_id=str(row["task_id"]),
+                task_revision=int(row["task_revision"]),
+                reason_code=str(row["reason_code"]),
+                source_identity=str(row["source_identity"]),
+                expected_binding_hash=str(row["expected_binding_hash"]),
+                observed_binding_hash=str(row["observed_binding_hash"]),
+                invalidated_at=datetime.fromisoformat(
+                    str(row["invalidated_at_utc"])
+                ),
+            )
+            for row in rows
+        )
+
+    def invalidate_dependency_binding(
+        self,
+        *,
+        task: DiagnosticTaskSnapshot,
+        binding: DiagnosticSelectionDependencyBinding,
+        reason_code: str,
+        source_identity: str,
+        observed_binding_hash: str,
+        invalidated_at: datetime,
+    ) -> None:
+        invalidated_at_utc = invalidated_at.isoformat()
+        invalidation_id = _stable_identity(
+            "diagnostic-selection-invalidation",
+            (
+                f"{task.task_id}:{task.revision}:{binding.binding_hash}:"
+                f"{reason_code}:{observed_binding_hash}"
+            ),
+        )
+        with self._engine.begin() as connection:
+            eligible = connection.execute(
+                text(
+                    "SELECT 1 FROM diagnostic_tasks t "
+                    "WHERE t.task_id = :task_id "
+                    "AND t.lifecycle IN ("
+                    ":draft_lifecycle, :awaiting_lifecycle, "
+                    ":approved_lifecycle) "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM diagnostic_task_campaign_handoffs h "
+                    "WHERE h.task_id = t.task_id)"
+                ),
+                {
+                    "task_id": task.task_id,
+                    "draft_lifecycle": DiagnosticTaskLifecycle.DRAFT.value,
+                    "awaiting_lifecycle": (
+                        DiagnosticTaskLifecycle.AWAITING_APPROVAL.value
+                    ),
+                    "approved_lifecycle": (
+                        DiagnosticTaskLifecycle.APPROVED.value
+                    ),
+                },
+            ).scalar_one_or_none()
+            if eligible is None:
+                return
+            updated = connection.execute(
+                text(
+                    "UPDATE diagnostic_task_validation_dependency_bindings "
+                    "SET invalidated_at_utc = :invalidated_at_utc "
+                    "WHERE task_id = :task_id "
+                    "AND dependency_binding_id = :dependency_binding_id "
+                    "AND invalidated_at_utc IS NULL"
+                ),
+                {
+                    "invalidated_at_utc": invalidated_at_utc,
+                    "task_id": task.task_id,
+                    "dependency_binding_id": binding.binding_id,
+                },
+            )
+            if updated.rowcount != 1:
+                return
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_task_approval_dependency_bindings "
+                    "SET invalidated_at_utc = :invalidated_at_utc "
+                    "WHERE task_id = :task_id AND invalidated_at_utc IS NULL"
+                ),
+                {
+                    "invalidated_at_utc": invalidated_at_utc,
+                    "task_id": task.task_id,
+                },
+            )
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_task_validations "
+                    "SET invalidated_at_utc = :invalidated_at_utc "
+                    "WHERE task_id = :task_id AND invalidated_at_utc IS NULL"
+                ),
+                {
+                    "invalidated_at_utc": invalidated_at_utc,
+                    "task_id": task.task_id,
+                },
+            )
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_task_approvals "
+                    "SET invalidated_at_utc = :invalidated_at_utc "
+                    "WHERE task_id = :task_id AND invalidated_at_utc IS NULL"
+                ),
+                {
+                    "invalidated_at_utc": invalidated_at_utc,
+                    "task_id": task.task_id,
+                },
+            )
+            connection.execute(
+                text(
+                    "UPDATE diagnostic_tasks SET lifecycle = :lifecycle, "
+                    "updated_at_utc = :updated_at_utc "
+                    "WHERE task_id = :task_id"
+                ),
+                {
+                    "lifecycle": DiagnosticTaskLifecycle.DRAFT.value,
+                    "updated_at_utc": invalidated_at_utc,
+                    "task_id": task.task_id,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO "
+                    "diagnostic_task_selection_dependency_invalidations ("
+                    "invalidation_id, dependency_binding_id, task_id, "
+                    "task_revision, reason_code, source_identity, "
+                    "expected_binding_hash, observed_binding_hash, "
+                    "invalidated_at_utc) VALUES ("
+                    ":invalidation_id, :dependency_binding_id, :task_id, "
+                    ":task_revision, :reason_code, :source_identity, "
+                    ":expected_binding_hash, :observed_binding_hash, "
+                    ":invalidated_at_utc)"
+                ),
+                {
+                    "invalidation_id": invalidation_id,
+                    "dependency_binding_id": binding.binding_id,
+                    "task_id": task.task_id,
+                    "task_revision": task.revision,
+                    "reason_code": reason_code,
+                    "source_identity": source_identity,
+                    "expected_binding_hash": binding.binding_hash,
+                    "observed_binding_hash": observed_binding_hash,
+                    "invalidated_at_utc": invalidated_at_utc,
+                },
+            )
 
     def accept_start(
         self,
@@ -4394,6 +5014,14 @@ class DiagnosticTaskService:
             tuple[str, ...],
         ]
         | None = None,
+        dependency_binding_provider: Callable[
+            [
+                DiagnosticTaskConfiguration,
+                DiagnosticSelectionDependencyBinding,
+            ],
+            DiagnosticSelectionDependencyBinding | None,
+        ]
+        | None = None,
     ) -> None:
         self._repository = repository or InMemoryDiagnosticTaskRepository()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -4405,6 +5033,7 @@ class DiagnosticTaskService:
             validation_policy_provider
             or (lambda _configuration: ("diagnostic-task-validation.v1",))
         )
+        self._dependency_binding_provider = dependency_binding_provider
 
     def replace_repository(self, repository: DiagnosticTaskRepository) -> None:
         self._repository = repository
@@ -4414,6 +5043,8 @@ class DiagnosticTaskService:
     def create(
         self,
         request: CreateDiagnosticTaskRequest,
+        *,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None = None,
     ) -> DiagnosticTaskCreationResult:
         command_content_id = request.command_content_identity()
         try:
@@ -4435,7 +5066,15 @@ class DiagnosticTaskService:
                 existing,
             )
         try:
-            valid = self._is_valid(request)
+            valid = (
+                self._is_valid(request)
+                if dependency_binding is None
+                else self._validated_dependency_binding(
+                        request.configuration,
+                        dependency_binding,
+                    )
+                == dependency_binding
+            )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             return self._rejected(
                 request,
@@ -4485,19 +5124,20 @@ class DiagnosticTaskService:
             task_id=task_id,
             task_handle_id=handle_id,
         )
+        command_payload: dict[str, object] = {
+            "command_id": request.command_id,
+            "command_type": "create_diagnostic_task",
+            "configuration": request.configuration.to_storage_dict(),
+            "idempotency_key": request.idempotency_key,
+        }
+        if dependency_binding is not None:
+            command_payload["diagnostic_setup_dependency_binding_hash"] = (
+                dependency_binding.binding_hash
+            )
         try:
             acceptance = self._repository.accept_creation(
                 record=record,
-                command_json=_canonical_json(
-                    {
-                        "command_id": request.command_id,
-                        "command_type": "create_diagnostic_task",
-                        "configuration": (
-                            request.configuration.to_storage_dict()
-                        ),
-                        "idempotency_key": request.idempotency_key,
-                    }
-                ),
+                command_json=_canonical_json(command_payload),
                 acceptance_json=_canonical_json(
                     {
                         "disposition": "asynchronous_acceptance",
@@ -4507,6 +5147,7 @@ class DiagnosticTaskService:
                 ),
                 task=task,
                 handle=handle,
+                dependency_binding=dependency_binding,
             )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             return self._rejected(
@@ -4546,10 +5187,38 @@ class DiagnosticTaskService:
         )
 
     def get(self, task_id: str) -> DiagnosticTaskSnapshot | None:
-        return self._repository.get_task(task_id)
+        return self._reconcile_dependency_authority(
+            self._repository.get_task(task_id)
+        )
 
     def latest(self) -> DiagnosticTaskSnapshot | None:
-        return self._repository.latest_task()
+        return self._reconcile_dependency_authority(
+            self._repository.latest_task()
+        )
+
+    def active_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        return self._repository.active_dependency_binding(task_id)
+
+    def active_setup_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        return self._repository.active_setup_dependency_binding(task_id)
+
+    def active_approval_dependency_binding(
+        self,
+        task_id: str,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        return self._repository.active_approval_dependency_binding(task_id)
+
+    def dependency_invalidations(
+        self,
+        task_id: str,
+    ) -> tuple[DiagnosticSelectionDependencyInvalidation, ...]:
+        return self._repository.dependency_invalidations(task_id)
 
     def lifecycle_target(
         self,
@@ -4934,6 +5603,8 @@ class DiagnosticTaskService:
     def revise_configuration(
         self,
         request: ReviseDiagnosticTaskConfigurationRequest,
+        *,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None = None,
     ) -> DiagnosticTaskCommandResult:
         if (
             not request.command_id.strip()
@@ -4981,12 +5652,34 @@ class DiagnosticTaskService:
         )
         if locked is not None:
             return locked
+        try:
+            active_setup_binding = (
+                self._repository.active_setup_dependency_binding(
+                    request.task_id
+                )
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            return self._mutation_rejected(
+                command_id=request.command_id,
+                idempotency_key=request.idempotency_key,
+                task_id=request.task_id,
+                reason=DiagnosticTaskCreationRejectionReason.PERSISTENCE_FAILURE,
+                message="Exact setup binding could not be read.",
+                current_revision=current.revision,
+                retryable=True,
+            )
         if (
             not request.command_id.strip()
             or not request.idempotency_key.strip()
             or request.configuration.content_identity
             != request.configuration.calculated_content_identity()
-            or request.configuration == current.configuration
+            or (
+                request.configuration == current.configuration
+                and (
+                    dependency_binding is None
+                    or dependency_binding == active_setup_binding
+                )
+            )
         ):
             return self._mutation_rejected(
                 command_id=request.command_id,
@@ -4997,8 +5690,14 @@ class DiagnosticTaskService:
                 current_revision=current.revision,
             )
         try:
-            authoritative = self._configuration_validator(
-                request.configuration
+            authoritative = (
+                self._configuration_validator(request.configuration)
+                if dependency_binding is None
+                else self._validated_dependency_binding(
+                        request.configuration,
+                        dependency_binding,
+                    )
+                == dependency_binding
             )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             return self._mutation_rejected(
@@ -5042,23 +5741,25 @@ class DiagnosticTaskService:
             message="Diagnostic Task configuration revised.",
             current_revision=revised.revision,
         )
+        command_payload: dict[str, object] = {
+            "command_id": request.command_id,
+            "command_type": record.command_type,
+            "configuration": request.configuration.to_storage_dict(),
+            "expected_revision": request.expected_revision,
+            "idempotency_key": request.idempotency_key,
+            "task_id": request.task_id,
+        }
+        if dependency_binding is not None:
+            command_payload["diagnostic_setup_dependency_binding_hash"] = (
+                dependency_binding.binding_hash
+            )
         try:
             accepted = self._repository.accept_revision(
                 record=record,
-                command_json=_canonical_json(
-                    {
-                        "command_id": request.command_id,
-                        "command_type": record.command_type,
-                        "configuration": (
-                            request.configuration.to_storage_dict()
-                        ),
-                        "expected_revision": request.expected_revision,
-                        "idempotency_key": request.idempotency_key,
-                        "task_id": request.task_id,
-                    }
-                ),
+                command_json=_canonical_json(command_payload),
                 task=revised,
                 expected_revision=request.expected_revision,
+                dependency_binding=dependency_binding,
             )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             existing_after_failure = self._find_existing_mutation(
@@ -5157,8 +5858,35 @@ class DiagnosticTaskService:
         if locked is not None:
             return locked
         try:
-            findings = self._configuration_validation(
-                current.configuration
+            expected_binding = self._repository.active_setup_dependency_binding(
+                request.task_id
+            )
+            dependency_binding = (
+                None
+                if expected_binding is None
+                else self._validated_dependency_binding(
+                    current.configuration,
+                    expected_binding,
+                )
+            )
+            if expected_binding is not None and dependency_binding is None:
+                return self._mutation_rejected(
+                    command_id=request.command_id,
+                    idempotency_key=request.idempotency_key,
+                    task_id=request.task_id,
+                    reason=(
+                        DiagnosticTaskCreationRejectionReason.UNAVAILABLE_INPUT
+                    ),
+                    message=(
+                        "The exact Strategy/Scenario selection binding is no "
+                        "longer authoritative. Reselect, revise, and revalidate."
+                    ),
+                    current_revision=current.revision,
+                )
+            findings = (
+                ()
+                if dependency_binding is not None
+                else self._configuration_validation(current.configuration)
             )
             policies = tuple(
                 sorted(
@@ -5169,6 +5897,17 @@ class DiagnosticTaskService:
                     )
                 )
             )
+            if dependency_binding is not None:
+                policies = tuple(
+                    sorted(
+                        {
+                            *policies,
+                            dependency_binding.source_identity,
+                            dependency_binding.binding_id,
+                            dependency_binding.binding_hash,
+                        }
+                    )
+                )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             return self._mutation_rejected(
                 command_id=request.command_id,
@@ -5257,22 +5996,28 @@ class DiagnosticTaskService:
             message="Diagnostic Task validation accepted.",
             current_revision=current.revision,
         )
+        command_payload: dict[str, object] = {
+            "command_id": request.command_id,
+            "command_type": record.command_type,
+            "expected_revision": request.expected_revision,
+            "idempotency_key": request.idempotency_key,
+            "task_id": request.task_id,
+        }
+        if request.dependency_binding_observed:
+            command_payload["diagnostic_setup_dependency_binding_hash"] = (
+                None
+                if request.dependency_binding is None
+                else request.dependency_binding.binding_hash
+            )
         try:
             accepted = self._repository.accept_validation(
                 record=record,
-                command_json=_canonical_json(
-                    {
-                        "command_id": request.command_id,
-                        "command_type": record.command_type,
-                        "expected_revision": request.expected_revision,
-                        "idempotency_key": request.idempotency_key,
-                        "task_id": request.task_id,
-                    }
-                ),
+                command_json=_canonical_json(command_payload),
                 task=validated_task,
                 validation=validation,
                 queued_handle=queued_handle,
                 expected_revision=request.expected_revision,
+                dependency_binding=dependency_binding,
             )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             existing_after_failure = self._find_existing_mutation(
@@ -5503,28 +6248,37 @@ class DiagnosticTaskService:
             message="Diagnostic Task configuration approved.",
             current_revision=current.revision,
         )
+        command_payload: dict[str, object] = {
+            "actor_id": request.actor_id,
+            "command_id": request.command_id,
+            "command_type": record.command_type,
+            "configuration_content_id": (
+                request.configuration_content_id
+            ),
+            "expected_revision": request.expected_revision,
+            "idempotency_key": request.idempotency_key,
+            "task_id": request.task_id,
+            "validation_id": request.validation_id,
+            "validation_revision": request.validation_revision,
+            "validated_revision": request.validated_revision,
+        }
+        if request.dependency_binding_observed:
+            command_payload["diagnostic_setup_dependency_binding_hash"] = (
+                None
+                if request.dependency_binding is None
+                else request.dependency_binding.binding_hash
+            )
         try:
+            dependency_binding = self._repository.active_dependency_binding(
+                request.task_id
+            )
             accepted = self._repository.accept_approval(
                 record=record,
-                command_json=_canonical_json(
-                    {
-                        "actor_id": request.actor_id,
-                        "command_id": request.command_id,
-                        "command_type": record.command_type,
-                        "configuration_content_id": (
-                            request.configuration_content_id
-                        ),
-                        "expected_revision": request.expected_revision,
-                        "idempotency_key": request.idempotency_key,
-                        "task_id": request.task_id,
-                        "validation_id": request.validation_id,
-                        "validation_revision": request.validation_revision,
-                        "validated_revision": request.validated_revision,
-                    }
-                ),
+                command_json=_canonical_json(command_payload),
                 task=approved_task,
                 approval=approval,
                 expected_revision=request.expected_revision,
+                dependency_binding=dependency_binding,
             )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             existing_after_failure = self._find_existing_mutation(
@@ -5682,8 +6436,19 @@ class DiagnosticTaskService:
             and layers.count("compound") >= 1
         )
         try:
-            authoritative = self._configuration_validator(
-                current.configuration
+            exact_approval_binding = (
+                self._repository.active_approval_dependency_binding(
+                    current.task_id
+                )
+            )
+            authoritative = (
+                self._configuration_validator(current.configuration)
+                if exact_approval_binding is None
+                else self._validated_dependency_binding(
+                    current.configuration,
+                    exact_approval_binding,
+                )
+                == exact_approval_binding
             )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             authoritative = False
@@ -5745,19 +6510,24 @@ class DiagnosticTaskService:
             message="Formal Diagnostic Campaign start accepted.",
             current_revision=current.revision,
         )
+        command_payload: dict[str, object] = {
+            "approved_revision": request.approved_revision,
+            "command_id": request.command_id,
+            "command_type": record.command_type,
+            "expected_revision": request.expected_revision,
+            "idempotency_key": request.idempotency_key,
+            "task_id": request.task_id,
+        }
+        if request.dependency_binding_observed:
+            command_payload["diagnostic_setup_dependency_binding_hash"] = (
+                None
+                if request.dependency_binding is None
+                else request.dependency_binding.binding_hash
+            )
         try:
             accepted = self._repository.accept_start(
                 record=record,
-                command_json=_canonical_json(
-                    {
-                        "approved_revision": request.approved_revision,
-                        "command_id": request.command_id,
-                        "command_type": record.command_type,
-                        "expected_revision": request.expected_revision,
-                        "idempotency_key": request.idempotency_key,
-                        "task_id": request.task_id,
-                    }
-                ),
+                command_json=_canonical_json(command_payload),
                 task=queued_task,
                 queued_handle=queued_handle,
                 expected_revision=request.expected_revision,
@@ -6380,6 +7150,50 @@ class DiagnosticTaskService:
             ),
         )
 
+    def _reconcile_dependency_authority(
+        self,
+        task: DiagnosticTaskSnapshot | None,
+    ) -> DiagnosticTaskSnapshot | None:
+        if task is None:
+            return None
+        binding = self._repository.active_dependency_binding(task.task_id)
+        if binding is None:
+            return task
+        provider = self._dependency_binding_provider
+        try:
+            observed = (
+                None
+                if provider is None
+                else provider(task.configuration, binding)
+            )
+        except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
+            observed = None
+        if observed == binding:
+            return task
+        self._repository.invalidate_dependency_binding(
+            task=task,
+            binding=binding,
+            reason_code="authoritative_dependency_mismatch",
+            source_identity=(
+                binding.source_identity
+                if observed is None
+                else observed.source_identity
+            ),
+            observed_binding_hash=(
+                "unavailable" if observed is None else observed.binding_hash
+            ),
+            invalidated_at=_aware(self._clock()),
+        )
+        return self._repository.get_task(task.task_id)
+
+    def _validated_dependency_binding(
+        self,
+        configuration: DiagnosticTaskConfiguration,
+        expected: DiagnosticSelectionDependencyBinding,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        provider = self._dependency_binding_provider
+        return None if provider is None else provider(configuration, expected)
+
     def _read_task_for_command(
         self,
         command_id: str,
@@ -6387,7 +7201,9 @@ class DiagnosticTaskService:
         task_id: str,
     ) -> DiagnosticTaskSnapshot | DiagnosticTaskCommandResult:
         try:
-            task = self._repository.get_task(task_id)
+            task = self._reconcile_dependency_authority(
+                self._repository.get_task(task_id)
+            )
         except (KeyError, OSError, SQLAlchemyError, TypeError, ValueError):
             return self._mutation_rejected(
                 command_id=command_id,
@@ -7712,6 +8528,52 @@ def _canonical_json(payload: object) -> str:
     )
 
 
+def _dependency_binding_json(
+    binding: DiagnosticSelectionDependencyBinding,
+) -> str:
+    return _canonical_json(
+        {
+            "schema_version": "diagnostic-selection-dependency-binding.v1",
+            "binding_id": binding.binding_id,
+            "binding_hash": binding.binding_hash,
+            "source_identity": binding.source_identity,
+            "strategy_selection_context_id": (
+                binding.strategy_selection_context_id
+            ),
+            "scenario_selection_context_id": (
+                binding.scenario_selection_context_id
+            ),
+            "canonical_payload_json": binding.canonical_payload_json,
+        }
+    )
+
+
+def _dependency_binding_from_json(
+    value: str,
+) -> DiagnosticSelectionDependencyBinding:
+    payload = json.loads(value)
+    if not isinstance(payload, dict) or payload.get("schema_version") != (
+        "diagnostic-selection-dependency-binding.v1"
+    ):
+        raise ValueError("Unsupported Diagnostic selection dependency binding")
+    binding = DiagnosticSelectionDependencyBinding.create(
+        source_identity=str(payload["source_identity"]),
+        strategy_selection_context_id=str(
+            payload["strategy_selection_context_id"]
+        ),
+        scenario_selection_context_id=str(
+            payload["scenario_selection_context_id"]
+        ),
+        canonical_payload_json=str(payload["canonical_payload_json"]),
+    )
+    if (
+        binding.binding_id != str(payload["binding_id"])
+        or binding.binding_hash != str(payload["binding_hash"])
+    ):
+        raise ValueError("Diagnostic selection dependency binding is corrupted")
+    return binding
+
+
 def _content_identity(payload: object) -> str:
     encoded = _canonical_json(payload).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
@@ -7773,6 +8635,8 @@ __all__ = [
     "DiagnosticLifecycleOperation",
     "DiagnosticLifecycleTargetKind",
     "DiagnosticLifecycleTargetSnapshot",
+    "DiagnosticSelectionDependencyBinding",
+    "DiagnosticSelectionDependencyInvalidation",
     "DiagnosticStrategySelection",
     "DiagnosticTaskApprovalSnapshot",
     "DiagnosticTaskCampaignHandoffSnapshot",

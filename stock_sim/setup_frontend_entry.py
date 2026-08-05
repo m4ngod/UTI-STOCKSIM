@@ -175,6 +175,11 @@ def _start_frontend(*, headless: bool):
             "diagnostic_tasks_context",
             None,
         ),
+        diagnostic_setup_selection_coordinator=getattr(
+            context,
+            "diagnostic_setup_selection_coordinator",
+            None,
+        ),
         run_monitoring_feature=context.run_monitoring_feature,
         run_monitoring_context=getattr(
             context,

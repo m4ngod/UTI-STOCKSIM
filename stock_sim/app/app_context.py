@@ -51,6 +51,7 @@ from app.features import (
     decode_strategy_selection_bookmark,
     encode_strategy_selection_bookmark,
 )
+from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
 from app.state.settings_store import SettingsStore
 
 if TYPE_CHECKING:
@@ -107,6 +108,9 @@ class AppContext:
     strategy_diagnostics_scenario_lab_application: (
         StrategyDiagnosticsV1ScenarioLabApplication | None
     )
+    diagnostic_setup_selection_coordinator: (
+        DiagnosticSetupSelectionCoordinator
+    )
     strategy_library_feature: StrategyLibraryFeature
     strategy_library_context: StrategyLibraryContext
     scenario_lab_feature: ScenarioLabFeature
@@ -150,8 +154,15 @@ def build_app_context(
     strategy_diagnostics_scenario_lab_application: (
         StrategyDiagnosticsV1ScenarioLabApplication | None
     ) = None,
+    diagnostic_setup_selection_coordinator: (
+        DiagnosticSetupSelectionCoordinator | None
+    ) = None,
     legacy_read_only: bool = False,
 ) -> AppContext:
+    setup_coordinator = (
+        diagnostic_setup_selection_coordinator
+        or DiagnosticSetupSelectionCoordinator()
+    )
     settings_store = SettingsStore(path=settings_path, auto_save=False)
     frontend_v2_enabled = _frontend_v2_enabled()
     if runtime_gateway is None:
@@ -230,7 +241,9 @@ def build_app_context(
             DeterministicFakeScenarioLabAdapter()
         )
         diagnostic_tasks_feature: DiagnosticTasksFeature = (
-            DeterministicFakeDiagnosticTasksAdapter()
+            DeterministicFakeDiagnosticTasksAdapter(
+                setup_selection_provider=setup_coordinator.current,
+            )
         )
         run_monitoring_feature: RunMonitoringFeature = (
             DeterministicFakeRunMonitoringAdapter()
@@ -251,7 +264,7 @@ def build_app_context(
                 strategy_diagnostics_tasks_application,
                 strategy_diagnostics_library_application,
                 strategy_diagnostics_scenario_lab_application,
-            ) = _build_strategy_diagnostics_adapters()
+            ) = _build_strategy_diagnostics_adapters(setup_coordinator)
         else:
             if strategy_diagnostics_read_model is None:
                 strategy_diagnostics_read_model = (
@@ -259,7 +272,9 @@ def build_app_context(
                 )
             if strategy_diagnostics_tasks_application is None:
                 strategy_diagnostics_tasks_application = (
-                    _build_strategy_diagnostics_tasks_application()
+                    _build_strategy_diagnostics_tasks_application(
+                        setup_coordinator
+                    )
                 )
             if strategy_diagnostics_library_application is None:
                 strategy_diagnostics_library_application = (
@@ -326,6 +341,7 @@ def build_app_context(
         strategy_diagnostics_scenario_lab_application=(
             strategy_diagnostics_scenario_lab_application
         ),
+        diagnostic_setup_selection_coordinator=setup_coordinator,
         strategy_library_feature=strategy_library_feature,
         strategy_library_context=strategy_library_context,
         scenario_lab_feature=scenario_lab_feature,
@@ -542,14 +558,19 @@ def _build_strategy_diagnostics_read_model() -> (
     return LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine)
 
 
-def _build_strategy_diagnostics_tasks_application() -> (
+def _build_strategy_diagnostics_tasks_application(
+    setup_coordinator: DiagnosticSetupSelectionCoordinator,
+) -> (
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter
 ):
     from strategy_diagnostics import create_diagnostics_application
 
     application = create_diagnostics_application()
     application.start()
-    return LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application)
+    return LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+        application,
+        setup_selection_provider=setup_coordinator.current,
+    )
 
 
 def _build_strategy_diagnostics_library_application() -> (
@@ -574,7 +595,9 @@ def _build_strategy_diagnostics_scenario_lab_application() -> (
     return LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application)
 
 
-def _build_strategy_diagnostics_adapters() -> tuple[
+def _build_strategy_diagnostics_adapters(
+    setup_coordinator: DiagnosticSetupSelectionCoordinator,
+) -> tuple[
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
@@ -588,7 +611,10 @@ def _build_strategy_diagnostics_adapters() -> tuple[
     application.initialize_persistence(engine)
     return (
         LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
-        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(application),
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            application,
+            setup_selection_provider=setup_coordinator.current,
+        ),
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(application),
         LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application),
     )
