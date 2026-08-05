@@ -994,6 +994,9 @@ class DiagnosticTaskSnapshot:
     validation: DiagnosticTaskValidationSnapshot | None = None
     approval: DiagnosticTaskApprovalSnapshot | None = None
     campaign_handoff: DiagnosticTaskCampaignHandoffSnapshot | None = None
+    setup_dependency_binding: (
+        DiagnosticSelectionDependencyBinding | None
+    ) = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -5187,13 +5190,37 @@ class DiagnosticTaskService:
         )
 
     def get(self, task_id: str) -> DiagnosticTaskSnapshot | None:
-        return self._reconcile_dependency_authority(
+        task = self._reconcile_dependency_authority(
             self._repository.get_task(task_id)
+        )
+        return (
+            None
+            if task is None
+            else replace(
+                task,
+                setup_dependency_binding=(
+                    self._repository.active_setup_dependency_binding(
+                        task.task_id
+                    )
+                ),
+            )
         )
 
     def latest(self) -> DiagnosticTaskSnapshot | None:
-        return self._reconcile_dependency_authority(
+        task = self._reconcile_dependency_authority(
             self._repository.latest_task()
+        )
+        return (
+            None
+            if task is None
+            else replace(
+                task,
+                setup_dependency_binding=(
+                    self._repository.active_setup_dependency_binding(
+                        task.task_id
+                    )
+                ),
+            )
         )
 
     def active_dependency_binding(

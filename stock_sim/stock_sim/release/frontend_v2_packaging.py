@@ -196,7 +196,7 @@ _EXPECTED_CLEAN_ROOM_JOURNEY = (
         "terminal",
         "ready",
         "disconnected",
-        "disconnected",
+        "fresh",
     ),
     (
         "disconnected_evidence",
@@ -228,7 +228,7 @@ _EXPECTED_CLEAN_ROOM_JOURNEY = (
         "terminal",
         "ready",
         "fresh",
-        "fresh",
+        "stale",
     ),
     (
         "reconnected_evidence",

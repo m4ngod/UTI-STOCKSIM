@@ -19,9 +19,11 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.features import (
+    DiagnosticTaskId,
     DeterministicFakeRunMonitoringAdapter,
     DeterministicFakeScenarioLabAdapter,
     ScenarioLabContext,
+    ScenarioLabFocusTarget,
     LiveScenarioLabAdapter,
     LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
     LiveStrategyLibraryAdapter,
@@ -31,6 +33,10 @@ from app.features import (
     ScenarioLabApplicationErrorCode,
     ScenarioLabIntegrityState,
     ScenarioReproducibilityState,
+)
+from app.journey_recovery import (
+    JourneyWorkspaceBookmark,
+    JourneyWorkspaceRoute,
 )
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
     _formal_live_stack,
@@ -758,11 +764,80 @@ def test_scenario_lab_route_restores_meaningful_keyboard_focus() -> None:
     scenario_route.forceActiveFocus()
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
+    app.processEvents()
     assert root.property("activeRoute") == "scenario_lab"
-    assert search.property("activeFocus") is True
+    restored_search = root.findChild(QQuickItem, "scenarioLabSearchInput")
+    assert restored_search is not None
+    assert restored_search is not search
+    assert restored_search.property("activeFocus") is True
     host.close_adapter()
     run_feature.close()
     scenario_feature.close()
+
+
+def test_workspace_persists_and_restores_typed_route_focus_and_task_bookmark(
+) -> None:
+    app = _app()
+    task_id = DiagnosticTaskId("diagnostic-task-recovery-85")
+    initial = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.SCENARIO_LAB,
+        diagnostic_task_id=task_id,
+    )
+    persisted: list[JourneyWorkspaceBookmark] = []
+    first_run = DeterministicFakeRunMonitoringAdapter()
+    first_scenario = DeterministicFakeScenarioLabAdapter()
+    first = JourneyWorkspaceHost(
+        first_run,
+        scenario_lab_feature=first_scenario,
+        scenario_lab_context=ScenarioLabContext(),
+        journey_workspace_bookmark=initial,
+        journey_workspace_bookmark_sink=persisted.append,
+        initial_route=initial.last_route.value,
+    )
+    app.processEvents()
+    root = first.rootObject()
+    assert root is not None
+    assert root.property("activeRoute") == "scenario_lab"
+    path_identity = first._scenario_lab.referencePaths[0]["pathId"]
+
+    first._scenario_lab.setFocusIdentity(path_identity)
+    assert root.setProperty("activeRoute", "run_monitoring")
+    app.processEvents()
+
+    saved = persisted[-1]
+    assert saved == JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.RUN_MONITORING,
+        diagnostic_task_id=task_id,
+        scenario_focus_target=ScenarioLabFocusTarget.REFERENCE_PATH,
+        scenario_focus_identity=path_identity,
+    )
+    first.close_adapter()
+    first_scenario.close()
+    first_run.close()
+
+    reopened_run = DeterministicFakeRunMonitoringAdapter()
+    reopened_scenario = DeterministicFakeScenarioLabAdapter()
+    reopened = JourneyWorkspaceHost(
+        reopened_run,
+        scenario_lab_feature=reopened_scenario,
+        scenario_lab_context=ScenarioLabContext(
+            focus_target=saved.scenario_focus_target,
+            focus_identity=saved.scenario_focus_identity,
+        ),
+        journey_workspace_bookmark=saved,
+        journey_workspace_bookmark_sink=persisted.append,
+        initial_route=saved.last_route.value,
+    )
+    app.processEvents()
+
+    reopened_root = reopened.rootObject()
+    assert reopened_root is not None
+    assert reopened_root.property("activeRoute") == "run_monitoring"
+    assert reopened._scenario_lab.focusRestorationIdentity == path_identity
+    assert persisted[-1].diagnostic_task_id == task_id
+    reopened.close_adapter()
+    reopened_scenario.close()
+    reopened_run.close()
 
 
 def test_real_backend_inventory_traces_through_live_feature_into_qml() -> None:

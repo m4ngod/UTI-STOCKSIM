@@ -586,6 +586,8 @@ def test_file_backed_formal_campaign_reopens_and_traces_exact_ids_through_qml(
     assert root.property("activeRoute") == "evidence_and_findings"
     candidate_item = root.property("evidenceInitialFocusItem")
     assert candidate_item.property("activeFocus") is True
+    evidence_status = root.findChild(QObject, "evidenceAccessibleStatus")
+    assert evidence_status is not None
 
     expected_identity_graph = (
         durable_top_level
@@ -664,7 +666,7 @@ def test_file_backed_formal_campaign_reopens_and_traces_exact_ids_through_qml(
     ).casefold()
     assert "disconnected" in disconnected_evidence_announcement
     assert (
-        "disconnected"
+        "fresh"
         in _accessible_text(
             run_status,
             QAccessible.Text.Description,

@@ -26,6 +26,7 @@ class SettingsState:
     # Task33 可访问性: 高对比模式 (后续可驱动主题变量调整)
     high_contrast: bool = False
     strategy_library_bookmark_json: str = ""
+    journey_workspace_bookmark_json: str = ""
     persist_path: Optional[str] = None
 
     def __post_init__(self):
@@ -86,6 +87,10 @@ class SettingsState:
             alert = dict(_DEFAULT_ALERT_THRESHOLDS)
             alert.update(raw.get("alert_thresholds", {}))
             bookmark_json = raw.get("strategy_library_bookmark_json", "")
+            journey_bookmark_json = raw.get(
+                "journey_workspace_bookmark_json",
+                "",
+            )
             inst = cls(
                 language=raw.get("language", "zh_CN"),
                 theme=raw.get("theme", "light"),
@@ -95,6 +100,11 @@ class SettingsState:
                 high_contrast=raw.get("high_contrast", False),  # Task33 新增
                 strategy_library_bookmark_json=(
                     bookmark_json if isinstance(bookmark_json, str) else ""
+                ),
+                journey_workspace_bookmark_json=(
+                    journey_bookmark_json
+                    if isinstance(journey_bookmark_json, str)
+                    else ""
                 ),
                 persist_path=path,
             )
@@ -119,6 +129,9 @@ class SettingsState:
             "high_contrast": self.high_contrast,  # Task33
             "strategy_library_bookmark_json": (
                 self.strategy_library_bookmark_json
+            ),
+            "journey_workspace_bookmark_json": (
+                self.journey_workspace_bookmark_json
             ),
         }
 

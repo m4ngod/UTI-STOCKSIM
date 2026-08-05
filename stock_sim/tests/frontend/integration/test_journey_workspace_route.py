@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 from dataclasses import replace
 from types import SimpleNamespace
@@ -12,12 +13,20 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication
 
 import setup_frontend_entry as entry
+from app.app_context import build_app_context
 from app.features import (
+    DiagnosticTaskId,
     DeterministicFakeRunMonitoringAdapter,
     FormalDiagnosticCampaignId,
     RunMonitoringContext,
     RunMonitoringSelection,
+    ScenarioLabFocusTarget,
     StrategyRunId,
+)
+from app.journey_recovery import (
+    JourneyWorkspaceBookmark,
+    JourneyWorkspaceRoute,
+    encode_journey_workspace_bookmark,
 )
 from app.ui.main_window import MainWindow
 
@@ -67,6 +76,182 @@ def test_route_flag_mounts_one_centralized_qml_workspace_with_loading_state():
 
     window.close()
     feature.close()
+
+
+def test_product_reopen_restores_route_focus_and_task_identity_from_app_context(
+    tmp_path,
+    monkeypatch,
+):
+    app = _app()
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    settings_path = tmp_path / "frontend-settings.json"
+    task_id = DiagnosticTaskId("diagnostic-task-product-reopen-85")
+    settings_path.write_text(
+        json.dumps(
+            {
+                "journey_workspace_bookmark_json": (
+                    encode_journey_workspace_bookmark(
+                        JourneyWorkspaceBookmark(
+                            last_route=JourneyWorkspaceRoute.SCENARIO_LAB,
+                            diagnostic_task_id=task_id,
+                        )
+                    )
+                )
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first_context = build_app_context(
+        settings_path=str(settings_path),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    first = MainWindow(
+        strategy_library_feature=first_context.strategy_library_feature,
+        strategy_library_context=first_context.strategy_library_context,
+        strategy_library_bookmark_sink=(
+            first_context.persist_strategy_library_bookmark
+        ),
+        journey_workspace_bookmark=(
+            first_context.journey_workspace_bookmark
+        ),
+        journey_workspace_bookmark_sink=(
+            first_context.persist_journey_workspace_bookmark
+        ),
+        scenario_lab_feature=first_context.scenario_lab_feature,
+        scenario_lab_context=first_context.scenario_lab_context,
+        diagnostic_tasks_feature=first_context.diagnostic_tasks_feature,
+        diagnostic_tasks_context=first_context.diagnostic_tasks_context,
+        diagnostic_setup_selection_coordinator=(
+            first_context.diagnostic_setup_selection_coordinator
+        ),
+        run_monitoring_feature=first_context.run_monitoring_feature,
+        run_monitoring_context=first_context.run_monitoring_context,
+        evidence_and_findings_feature=(
+            first_context.evidence_and_findings_feature
+        ),
+        evidence_and_findings_context=(
+            first_context.evidence_and_findings_context
+        ),
+        frontend_v2_enabled=True,
+    )
+    first_root = first.centralWidget().rootObject()
+    assert first_root.property("activeRoute") == "scenario_lab"
+    first.centralWidget()._scenario_lab.refresh()
+    first.centralWidget()._scenario_lab.refresh()
+    app.processEvents()
+    path_identity = first.centralWidget()._scenario_lab.referencePaths[0][
+        "pathId"
+    ]
+    first.centralWidget()._scenario_lab.setFocusIdentity(path_identity)
+    assert first_root.setProperty("activeRoute", "run_monitoring")
+    app.processEvents()
+    assert first_context.journey_workspace_bookmark.last_route is (
+        JourneyWorkspaceRoute.RUN_MONITORING
+    )
+    assert first_context.journey_workspace_bookmark.diagnostic_task_id == task_id
+    assert first._journey_workspace_bookmark == (
+        first_context.journey_workspace_bookmark
+    )
+    first.close()
+
+    same_context_remount = MainWindow(
+        strategy_library_feature=first_context.strategy_library_feature,
+        strategy_library_context=first_context.strategy_library_context,
+        journey_workspace_bookmark=(
+            first_context.journey_workspace_bookmark
+        ),
+        journey_workspace_bookmark_sink=(
+            first_context.persist_journey_workspace_bookmark
+        ),
+        scenario_lab_feature=first_context.scenario_lab_feature,
+        scenario_lab_context=first_context.scenario_lab_context,
+        diagnostic_tasks_feature=first_context.diagnostic_tasks_feature,
+        diagnostic_tasks_context=first_context.diagnostic_tasks_context,
+        diagnostic_setup_selection_coordinator=(
+            first_context.diagnostic_setup_selection_coordinator
+        ),
+        run_monitoring_feature=first_context.run_monitoring_feature,
+        run_monitoring_context=first_context.run_monitoring_context,
+        evidence_and_findings_feature=(
+            first_context.evidence_and_findings_feature
+        ),
+        evidence_and_findings_context=(
+            first_context.evidence_and_findings_context
+        ),
+        frontend_v2_enabled=True,
+    )
+    app.processEvents()
+    assert same_context_remount.centralWidget().rootObject().property(
+        "activeRoute"
+    ) == "run_monitoring"
+    same_context_remount.close()
+    for feature in (
+        first_context.strategy_library_feature,
+        first_context.scenario_lab_feature,
+        first_context.diagnostic_tasks_feature,
+        first_context.run_monitoring_feature,
+        first_context.evidence_and_findings_feature,
+    ):
+        feature.close()
+
+    reopened_context = build_app_context(
+        settings_path=str(settings_path),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    reopened = MainWindow(
+        strategy_library_feature=reopened_context.strategy_library_feature,
+        strategy_library_context=reopened_context.strategy_library_context,
+        journey_workspace_bookmark=(
+            reopened_context.journey_workspace_bookmark
+        ),
+        journey_workspace_bookmark_sink=(
+            reopened_context.persist_journey_workspace_bookmark
+        ),
+        scenario_lab_feature=reopened_context.scenario_lab_feature,
+        scenario_lab_context=reopened_context.scenario_lab_context,
+        diagnostic_tasks_feature=reopened_context.diagnostic_tasks_feature,
+        diagnostic_tasks_context=reopened_context.diagnostic_tasks_context,
+        diagnostic_setup_selection_coordinator=(
+            reopened_context.diagnostic_setup_selection_coordinator
+        ),
+        run_monitoring_feature=reopened_context.run_monitoring_feature,
+        run_monitoring_context=reopened_context.run_monitoring_context,
+        evidence_and_findings_feature=(
+            reopened_context.evidence_and_findings_feature
+        ),
+        evidence_and_findings_context=(
+            reopened_context.evidence_and_findings_context
+        ),
+        frontend_v2_enabled=True,
+    )
+    app.processEvents()
+
+    reopened_host = reopened.centralWidget()
+    assert reopened_host.rootObject().property("activeRoute") == "run_monitoring"
+    assert reopened_context.diagnostic_tasks_context.task_id == task_id
+    assert reopened_context.scenario_lab_context.focus_target is (
+        ScenarioLabFocusTarget.REFERENCE_PATH
+    )
+    assert reopened_host.rootObject().setProperty(
+        "activeRoute",
+        "scenario_lab",
+    )
+    app.processEvents()
+    reopened_host._scenario_lab.refresh()
+    app.processEvents()
+    assert reopened_host._scenario_lab.focusRestorationIdentity == path_identity
+    reopened.close()
+    for feature in (
+        reopened_context.strategy_library_feature,
+        reopened_context.scenario_lab_feature,
+        reopened_context.diagnostic_tasks_feature,
+        reopened_context.run_monitoring_feature,
+        reopened_context.evidence_and_findings_feature,
+    ):
+        feature.close()
 
 
 def test_workspace_exposes_every_approved_shared_token_family():

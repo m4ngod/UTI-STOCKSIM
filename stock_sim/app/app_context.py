@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +52,11 @@ from app.features import (
     encode_strategy_selection_bookmark,
 )
 from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
+from app.journey_recovery import (
+    JourneyWorkspaceBookmark,
+    decode_journey_workspace_bookmark,
+    encode_journey_workspace_bookmark,
+)
 from app.state.settings_store import SettingsStore
 
 if TYPE_CHECKING:
@@ -76,6 +81,7 @@ if TYPE_CHECKING:
 class AppContext:
     settings_store: SettingsStore
     runtime_gateway: Any
+    journey_workspace_bookmark: JourneyWorkspaceBookmark
 
     market_data_service: MarketDataService | None
     market_controller: MarketController | None
@@ -121,6 +127,11 @@ class AppContext:
     run_monitoring_context: RunMonitoringContext
     evidence_and_findings_feature: EvidenceAndFindingsFeature
     evidence_and_findings_context: EvidenceAndFindingsContext
+    _journey_workspace_bookmark_lock: RLock = field(
+        default_factory=RLock,
+        init=False,
+        repr=False,
+    )
 
     def persist_strategy_library_bookmark(
         self,
@@ -134,6 +145,21 @@ class AppContext:
             )
         )
         self.settings_store.get_state().save()
+
+    def persist_journey_workspace_bookmark(
+        self,
+        bookmark: JourneyWorkspaceBookmark,
+    ) -> None:
+        """Persist only typed recovery hints, never durable configuration truth."""
+
+        with self._journey_workspace_bookmark_lock:
+            self.settings_store.update(
+                journey_workspace_bookmark_json=(
+                    encode_journey_workspace_bookmark(bookmark)
+                )
+            )
+            self.settings_store.get_state().save()
+            self.journey_workspace_bookmark = bookmark
 
 
 def build_app_context(
@@ -220,7 +246,15 @@ def build_app_context(
         arena_experiment_runner = legacy_context.arena_experiment_runner
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
-    diagnostic_tasks_context = DiagnosticTasksContext.workspace()
+    journey_workspace_bookmark = (
+        decode_journey_workspace_bookmark(
+            settings_store.get_state().journey_workspace_bookmark_json
+        )
+        or JourneyWorkspaceBookmark()
+    )
+    diagnostic_tasks_context = DiagnosticTasksContext(
+        task_id=journey_workspace_bookmark.diagnostic_task_id
+    )
     strategy_library_bookmark = decode_strategy_selection_bookmark(
         settings_store.get_state().strategy_library_bookmark_json
     )
@@ -232,7 +266,10 @@ def build_app_context(
         ),
         selection_bookmark=strategy_library_bookmark,
     )
-    scenario_lab_context = ScenarioLabContext()
+    scenario_lab_context = ScenarioLabContext(
+        focus_target=journey_workspace_bookmark.scenario_focus_target,
+        focus_identity=journey_workspace_bookmark.scenario_focus_identity,
+    )
     if resolved_mode == "fake":
         strategy_library_feature: StrategyLibraryFeature = (
             DeterministicFakeStrategyLibraryAdapter()
@@ -316,6 +353,7 @@ def build_app_context(
     return AppContext(
         settings_store=settings_store,
         runtime_gateway=runtime_gateway,
+        journey_workspace_bookmark=journey_workspace_bookmark,
         market_data_service=market_data_service,
         market_controller=market_controller,
         account_service=account_service,

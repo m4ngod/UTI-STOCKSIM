@@ -1095,6 +1095,16 @@ class DeterministicFakeDiagnosticTasksAdapter(
                 self._setup_bindings[result.affected_task_id] = (
                     setup.context_identity
                 )
+                self._tasks[result.affected_task_id] = replace(
+                    self._tasks[result.affected_task_id],
+                    setup_selection_context_identity=setup.context_identity,
+                    setup_strategy_source_generation=(
+                        setup.strategy_selection.source_generation.value
+                    ),
+                    setup_scenario_selection_context_identity=(
+                        setup.scenario_selection.context.selection_context_id.value
+                    ),
+                )
         return result
 
     def revise_configuration(
@@ -1236,6 +1246,18 @@ class DeterministicFakeDiagnosticTasksAdapter(
                     self._setup_bindings.pop(command.task_id, None)
                 else:
                     self._setup_bindings[command.task_id] = previous_binding
+        else:
+            with self._lock:
+                self._tasks[command.task_id] = replace(
+                    self._tasks[command.task_id],
+                    setup_selection_context_identity=setup.context_identity,
+                    setup_strategy_source_generation=(
+                        setup.strategy_selection.source_generation.value
+                    ),
+                    setup_scenario_selection_context_identity=(
+                        setup.scenario_selection.context.selection_context_id.value
+                    ),
+                )
         return result
 
     def validate_configuration(
@@ -3392,6 +3414,15 @@ def _task_presentation(
                     task.campaign_handoff.campaign_lifecycle.value
                 )
             ),
+        ),
+        setup_selection_context_identity=(
+            task.setup_selection_context_identity
+        ),
+        setup_strategy_source_generation=(
+            task.setup_strategy_source_generation
+        ),
+        setup_scenario_selection_context_identity=(
+            task.setup_scenario_selection_context_identity
         ),
     )
 

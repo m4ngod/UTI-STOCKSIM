@@ -76,7 +76,19 @@ def test_diagnostic_tasks_adapter_gates_and_uses_exact_upstream_selection(
         setup_selection_coordinator=coordinator,
     )
     remounted.refresh()
-    assert not remounted.canValidate
+    assert remounted.canValidate
+    assert (
+        remounted._state.task.setup_selection_context_identity
+        == setup.context_identity
+    )
+    assert (
+        remounted._state.task.setup_strategy_source_generation
+        == setup.strategy_selection.source_generation.value
+    )
+    assert (
+        remounted._state.task.setup_scenario_selection_context_identity
+        == setup.scenario_selection.context.selection_context_id.value
+    )
     assert not remounted.canApprove
     assert not remounted.canStartCampaign
     remounted.close()
@@ -103,6 +115,10 @@ def test_diagnostic_tasks_adapter_gates_and_uses_exact_upstream_selection(
     adapter.reviseTask()
     adapter.refresh()
     assert adapter.canValidate
+    assert (
+        adapter._state.task.setup_selection_context_identity
+        == successor.context_identity
+    )
 
     current["setup"] = None
     adapter.upstreamSelectionChanged()

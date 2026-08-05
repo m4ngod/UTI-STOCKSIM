@@ -818,6 +818,9 @@ class DiagnosticTasksApplicationTask:
     approval: DiagnosticTasksApplicationApproval | None
     task_handles: tuple[TaskHandle, ...]
     campaign_handoff: DiagnosticTasksApplicationCampaignHandoff | None
+    setup_selection_context_identity: str | None = None
+    setup_strategy_source_generation: int | None = None
+    setup_scenario_selection_context_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1810,6 +1813,9 @@ def _map_diagnostic_task(
 ) -> DiagnosticTasksApplicationTask:
     configuration = snapshot.configuration
     task_id = DiagnosticTaskId(snapshot.task_id)
+    setup_strategy_source_generation = _setup_strategy_source_generation(
+        snapshot.setup_dependency_binding
+    )
     return DiagnosticTasksApplicationTask(
         task_id=task_id,
         revision=snapshot.revision,
@@ -2096,7 +2102,31 @@ def _map_diagnostic_task(
                 ),
             )
         ),
+        setup_selection_context_identity=(
+            None
+            if snapshot.setup_dependency_binding is None
+            else snapshot.setup_dependency_binding.source_identity
+        ),
+        setup_strategy_source_generation=setup_strategy_source_generation,
+        setup_scenario_selection_context_identity=(
+            None
+            if snapshot.setup_dependency_binding is None
+            else snapshot.setup_dependency_binding.scenario_selection_context_id
+        ),
     )
+
+
+def _setup_strategy_source_generation(
+    binding: BackendDiagnosticSelectionDependencyBinding | None,
+) -> int | None:
+    if binding is None:
+        return None
+    try:
+        payload = json.loads(binding.canonical_payload_json)
+        generation = payload["strategy_selection"]["source_generation"]["value"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return None
+    return generation if isinstance(generation, int) and generation >= 1 else None
 
 
 def _map_creation_result(

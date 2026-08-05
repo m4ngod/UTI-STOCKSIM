@@ -206,8 +206,27 @@ class LiveEvidenceAndFindingsAdapter:
             connection_generation = self._connection_generation
         if current is not None:
             aged = self._age_state(current)
+            aged_from_fresh_cache = bool(
+                aged is not current
+                and current.freshness is Freshness.FRESH
+                and current.error is None
+                and aged.freshness is Freshness.STALE
+            )
             if aged is not current:
-                return self._store_and_notify(context, aged)
+                current = self._store_and_notify(context, aged)
+            age_stale_cache = bool(
+                current.freshness is Freshness.STALE
+                and current.error is not None
+                and current.error.code
+                == "evidence_and_findings_source_stale"
+            )
+            if (aged_from_fresh_cache or age_stale_cache) and (
+                connection_phase is EventBridgeConnectionPhase.CONNECTED
+            ):
+                self._schedule_context_refresh(
+                    context,
+                    generation=connection_generation,
+                )
             return current
         if connection_phase is EventBridgeConnectionPhase.DISCONNECTED:
             observed_at = _aware(self._clock())
@@ -312,6 +331,37 @@ class LiveEvidenceAndFindingsAdapter:
                         self._pending_refreshes.pop(context, None)
                         raise
         return loading
+
+    def _schedule_context_refresh(
+        self,
+        context: EvidenceAndFindingsContext,
+        *,
+        generation: SourceGenerationId,
+    ) -> None:
+        should_schedule = False
+        with self._lock:
+            if (
+                self._closed
+                or self._connection_phase
+                is not EventBridgeConnectionPhase.CONNECTED
+                or generation != self._connection_generation
+                or context not in self._states
+            ):
+                return
+            self._pending_refreshes[context] = generation
+            if context not in self._scheduled_refreshes:
+                self._scheduled_refreshes.add(context)
+                should_schedule = True
+        if not should_schedule:
+            return
+        try:
+            self._executor.submit(self._drain_refreshes, context)
+        except RuntimeError:
+            with self._lock:
+                if not self._closed:
+                    self._scheduled_refreshes.discard(context)
+                    self._pending_refreshes.pop(context, None)
+                    raise
 
     def subscribe(
         self,

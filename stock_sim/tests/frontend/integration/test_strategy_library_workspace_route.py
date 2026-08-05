@@ -302,8 +302,12 @@ def test_strategy_library_route_restores_meaningful_keyboard_focus() -> None:
     strategy_route.forceActiveFocus()
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
+    app.processEvents()
     assert root.property("activeRoute") == "strategy_library"
-    assert search.property("activeFocus") is True
+    restored_search = root.findChild(QQuickItem, "strategyLibrarySearchInput")
+    assert restored_search is not None
+    assert restored_search is not search
+    assert restored_search.property("activeFocus") is True
     host.close_adapter()
     run_feature.close()
     strategy_feature.close()

@@ -224,7 +224,11 @@ def test_keyboard_route_actions_restore_meaningful_visible_focus_immediately():
     )
     app.processEvents()
     assert root.property("activeRoute") == "evidence_and_findings"
-    assert finding.property("activeFocus") is True
+    restored_candidate = root.property("evidenceInitialFocusItem")
+    assert restored_candidate is not None
+    assert restored_candidate is not finding
+    assert restored_candidate.property("activeFocus") is True
+    assert restored_candidate.property("focusVisible") is True
 
     _close(host, run_feature, evidence_feature)
 
@@ -452,11 +456,6 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
     tokens = root.findChild(QObject, "designTokens")
     run_scroll = root.findChild(QQuickItem, "runMonitoringFlickable")
     run_grid = root.findChild(QObject, "runMonitoringResearchGrid")
-    evidence_grid = root.findChild(QObject, "evidenceResearchGrid")
-    candidate_grid = root.findChild(
-        QObject,
-        "evidenceCandidateControlsGrid",
-    )
     cancel = root.findChild(QQuickItem, "cancelDiagnosticTask")
     run_route = root.findChild(QQuickItem, "runMonitoringRouteNavigation")
     evidence_route = root.findChild(
@@ -476,8 +475,6 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
     assert tokens.property("durationForMotion") == 0
     assert run_scroll.property("contentHeight") > run_scroll.property("height")
     assert run_grid.property("columns") == 1
-    assert evidence_grid.property("columns") == 1
-    assert candidate_grid.property("columns") == 1
     assert cancel.property("scale") == 1.0
     assert_within_viewport(run_route)
     assert_within_viewport(evidence_route)
@@ -499,6 +496,13 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
 
     root.setProperty("activeRoute", "evidence_and_findings")
     _settle(app)
+    evidence_grid = root.findChild(QObject, "evidenceResearchGrid")
+    candidate_grid = root.findChild(
+        QObject,
+        "evidenceCandidateControlsGrid",
+    )
+    assert evidence_grid.property("columns") == 1
+    assert candidate_grid.property("columns") == 1
     first_candidate = root.property("evidenceInitialFocusItem")
     second_candidate = root.property("evidenceSecondCandidateFocusItem")
     for candidate in (first_candidate, second_candidate):

@@ -1196,6 +1196,36 @@ def test_live_adapter_aging_preserves_authoritative_error_semantics():
     adapter.close()
 
 
+def test_live_adapter_rereads_an_age_stale_cache_on_remount():
+    current_time = [NOW]
+    queries = _EvidenceQueries()
+    bridge = EventBridge(subscribe_backend=False)
+    adapter = LiveEvidenceAndFindingsAdapter(
+        application_read_model=DictionaryFixtureApplicationReadModel(
+            queries,
+            evidence_context=_selected_context(),
+        ),
+        event_bridge=bridge,
+        clock=lambda: current_time[0],
+        freshness_threshold=timedelta(seconds=5),
+        executor=_DirectExecutor(),
+    )
+    context = _selected_context()
+    accepted = adapter.snapshot(context)
+    assert accepted.freshness is Freshness.FRESH
+
+    current_time[0] += timedelta(seconds=6)
+    queries.record["updated_at"] = current_time[0].isoformat()
+    aged = adapter.snapshot(context)
+    refreshed = adapter.snapshot(context)
+
+    assert aged.freshness is Freshness.STALE
+    assert refreshed.revision == aged.revision + 1
+    assert refreshed.freshness is Freshness.FRESH
+    assert refreshed.last_reliable_data == accepted.last_reliable_data
+    adapter.close()
+
+
 @pytest.mark.parametrize(
     ("status", "phase", "presentation", "error_code"),
     (
