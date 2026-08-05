@@ -65,7 +65,7 @@ def test_scenario_lab_1_0_activates_complete_five_feature_registry() -> None:
     }
 
 
-def test_scenario_lab_1_0_freezes_typed_read_state_and_unavailable_writes() -> None:
+def test_scenario_lab_1_0_freezes_typed_read_and_scenario_composition_state() -> None:
     assert {field.name for field in fields(ScenarioLabViewState)} == {
         "interface_version",
         "revision",
@@ -93,6 +93,9 @@ def test_scenario_lab_1_0_freezes_typed_read_state_and_unavailable_writes() -> N
         "blocking_reasons",
         "focus_restoration_identity",
         "error",
+        "scenario_sets",
+        "execution_resolutions",
+        "selection_contexts",
     }
     capabilities = ScenarioLabCapabilities.read_only()
     assert capabilities.can_browse

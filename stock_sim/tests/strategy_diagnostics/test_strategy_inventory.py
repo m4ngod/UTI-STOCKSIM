@@ -68,6 +68,16 @@ def test_public_application_inventory_exposes_only_formal_v1_strategies() -> Non
     surface = application.v1_product_surface_inventory()
     assert "read_strategy_under_test_inventory" in surface.application_commands
     assert "validate_formal_strategy_set" in surface.application_commands
+    assert "compose_formal_scenario_set_command" in surface.application_commands
+    assert (
+        "resolve_scenario_execution_assumptions_command"
+        in surface.application_commands
+    )
+    assert "select_formal_scenario_set_command" in surface.application_commands
+    assert "scenario_lab_formal_scenario_sets" in surface.application_commands
+    assert "scenario_lab_execution_resolutions" in surface.application_commands
+    assert "scenario_lab_selection_contexts" in surface.application_commands
+    assert "replay_scenario_lab_projection_command" in surface.application_commands
     assert surface.unclassified_commands == ()
     assert surface.status == "verified"
 

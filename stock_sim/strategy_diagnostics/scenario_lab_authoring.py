@@ -143,6 +143,7 @@ class ScenarioLabAuthoringCommandRecord:
     expected_source_generation: int
     result_kind: str | None
     result_identity: str | None
+    result_json: str | None
     created_at: datetime
     completed_at: datetime | None
 
@@ -156,6 +157,17 @@ class ScenarioLabAuthoringResult:
     validation: ScenarioRecipeValidationRecord | None = None
     approval: ScenarioRecipeApprovalRecord | None = None
     authoritative_draft_revision: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioLabProjectionCommandResult:
+    disposition: ScenarioLabCommandDisposition
+    message: str
+    command: ScenarioLabAuthoringCommandRecord | None = None
+
+    @property
+    def result_json(self) -> str | None:
+        return None if self.command is None else self.command.result_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +338,7 @@ class ScenarioLabAuthoringRepository(Protocol):
         *,
         result_kind: str,
         result_identity: str,
+        result_json: str | None = None,
         completed_at: datetime,
     ) -> ScenarioLabAuthoringCommandRecord: ...
 
@@ -336,6 +349,8 @@ class ScenarioLabAuthoringRepository(Protocol):
     def get_command(
         self, command_id: str
     ) -> ScenarioLabAuthoringCommandRecord | None: ...
+
+    def list_commands(self) -> tuple[ScenarioLabAuthoringCommandRecord, ...]: ...
 
     def get_draft_by_accepted_command(
         self, command_id: str
@@ -433,6 +448,7 @@ class InMemoryScenarioLabAuthoringRepository:
         *,
         result_kind: str,
         result_identity: str,
+        result_json: str | None = None,
         completed_at: datetime,
     ) -> ScenarioLabAuthoringCommandRecord:
         current = self._commands[command_id]
@@ -442,6 +458,7 @@ class InMemoryScenarioLabAuthoringRepository:
             message="Scenario Lab command completed.",
             result_kind=result_kind,
             result_identity=result_identity,
+            result_json=result_json,
             completed_at=completed_at,
         )
         self._commands[command_id] = completed
@@ -454,6 +471,7 @@ class InMemoryScenarioLabAuthoringRepository:
         message: str,
         result_kind: str,
         result_identity: str,
+        result_json: str | None = None,
         completed_at: datetime,
     ) -> ScenarioLabAuthoringCommandRecord:
         current = self._commands[command_id]
@@ -478,6 +496,14 @@ class InMemoryScenarioLabAuthoringRepository:
         self, command_id: str
     ) -> ScenarioLabAuthoringCommandRecord | None:
         return self._commands.get(command_id)
+
+    def list_commands(self) -> tuple[ScenarioLabAuthoringCommandRecord, ...]:
+        return tuple(
+            sorted(
+                self._commands.values(),
+                key=lambda item: (item.created_at, item.command_id),
+            )
+        )
 
     def add_draft_revision(
         self, record: ScenarioRecipeDraftRevisionRecord
@@ -691,6 +717,7 @@ class SqlScenarioLabAuthoringRepository:
         *,
         result_kind: str,
         result_identity: str,
+        result_json: str | None = None,
         completed_at: datetime,
     ) -> ScenarioLabAuthoringCommandRecord:
         with self._engine.begin() as connection:
@@ -701,12 +728,14 @@ class SqlScenarioLabAuthoringRepository:
                     "message = 'Scenario Lab command completed.', "
                     "result_kind = :result_kind, "
                     "result_identity = :result_identity, "
+                    "result_json = :result_json, "
                     "completed_at_utc = :completed_at "
                     "WHERE command_id = :command_id"
                 ),
                 {
                     "result_kind": result_kind,
                     "result_identity": result_identity,
+                    "result_json": result_json,
                     "completed_at": completed_at.isoformat(),
                     "command_id": command_id,
                 },
@@ -757,7 +786,8 @@ class SqlScenarioLabAuthoringRepository:
                     "SELECT command_id, idempotency_identity, "
                     "canonical_content_identity, operation, disposition, message, "
                     "expected_source_revision, expected_source_generation, "
-                    "result_kind, result_identity, created_at_utc, completed_at_utc "
+                    "result_kind, result_identity, result_json, created_at_utc, "
+                    "completed_at_utc "
                     "FROM diagnostic_scenario_lab_commands "
                     "WHERE command_id = :command_id"
                 ),
@@ -776,13 +806,28 @@ class SqlScenarioLabAuthoringRepository:
                     "SELECT command_id, idempotency_identity, "
                     "canonical_content_identity, operation, disposition, message, "
                     "expected_source_revision, expected_source_generation, "
-                    "result_kind, result_identity, created_at_utc, completed_at_utc "
+                    "result_kind, result_identity, result_json, created_at_utc, "
+                    "completed_at_utc "
                     "FROM diagnostic_scenario_lab_commands "
                     "WHERE idempotency_identity = :identity"
                 ),
                 {"identity": identity},
             ).mappings().one_or_none()
         return None if row is None else _command_from_row(row)
+
+    def list_commands(self) -> tuple[ScenarioLabAuthoringCommandRecord, ...]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT command_id, idempotency_identity, "
+                    "canonical_content_identity, operation, disposition, message, "
+                    "expected_source_revision, expected_source_generation, "
+                    "result_kind, result_identity, result_json, created_at_utc, "
+                    "completed_at_utc FROM diagnostic_scenario_lab_commands "
+                    "ORDER BY created_at_utc, command_id"
+                )
+            ).mappings().all()
+        return tuple(_command_from_row(row) for row in rows)
 
     def add_draft_revision(
         self, record: ScenarioRecipeDraftRevisionRecord
@@ -1362,6 +1407,158 @@ class ScenarioLabAuthoringService:
                         message=str(exc),
                         retryable=True,
                     )
+
+    def execute_projection_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        producer: Callable[[], tuple[str, str, object]],
+    ) -> ScenarioLabProjectionCommandResult:
+        """Durably execute one deterministic synchronous Scenario Lab projection."""
+
+        with self._lock:
+            existing = self._repository.get_command_by_idempotency(
+                idempotency_identity
+            )
+            if existing is None:
+                collision = self._repository.get_command(command_id)
+                if collision is not None:
+                    return ScenarioLabProjectionCommandResult(
+                        disposition="conflict",
+                        message=(
+                            "The command identity is already bound to a different "
+                            "idempotency identity."
+                        ),
+                    )
+                existing = self._repository.claim_command(
+                    _pending_command(
+                        command_id=command_id,
+                        idempotency_identity=idempotency_identity,
+                        canonical_content_identity=canonical_content_identity,
+                        operation=operation,
+                        expected_source_revision=expected_source_revision,
+                        expected_source_generation=expected_source_generation,
+                        created_at=self._now(),
+                    )
+                )
+            if (
+                existing.canonical_content_identity
+                != canonical_content_identity
+                or existing.operation != operation
+            ):
+                return ScenarioLabProjectionCommandResult(
+                    disposition="conflict",
+                    message=(
+                        "The idempotency identity is already bound to different "
+                        "canonical content."
+                    ),
+                    command=existing,
+                )
+            if existing.completed_at is not None:
+                disposition: ScenarioLabCommandDisposition = cast(
+                    ScenarioLabCommandDisposition, existing.disposition
+                )
+                return ScenarioLabProjectionCommandResult(
+                    disposition=disposition,
+                    message=existing.message,
+                    command=existing,
+                )
+            try:
+                result_kind, result_identity, payload = producer()
+            except (KeyError, TypeError, ValueError) as exc:
+                message = str(exc) or type(exc).__name__
+                rejected = self._repository.reject_command(
+                    existing.command_id,
+                    message=message,
+                    result_kind=f"{operation}_rejection",
+                    result_identity=(
+                        "scenario-lab-rejection-"
+                        + hashlib.sha256(message.encode("utf-8")).hexdigest()[:24]
+                    ),
+                    completed_at=self._now(),
+                )
+                return ScenarioLabProjectionCommandResult(
+                    disposition="rejected",
+                    message=message,
+                    command=rejected,
+                )
+            completed = self._repository.complete_command(
+                existing.command_id,
+                result_kind=result_kind,
+                result_identity=result_identity,
+                result_json=canonical_json(payload),
+                completed_at=self._now(),
+            )
+            return ScenarioLabProjectionCommandResult(
+                disposition="accepted",
+                message=completed.message,
+                command=completed,
+            )
+
+    def replay_projection_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+    ) -> ScenarioLabProjectionCommandResult | None:
+        with self._lock:
+            existing = self._repository.get_command_by_idempotency(
+                idempotency_identity
+            )
+            if existing is None:
+                collision = self._repository.get_command(command_id)
+                if collision is None:
+                    return None
+                return ScenarioLabProjectionCommandResult(
+                    disposition="conflict",
+                    message=(
+                        "The command identity is already bound to a different "
+                        "idempotency identity."
+                    ),
+                    command=collision,
+                )
+            if (
+                existing.canonical_content_identity
+                != canonical_content_identity
+                or existing.operation != operation
+            ):
+                return ScenarioLabProjectionCommandResult(
+                    disposition="conflict",
+                    message=(
+                        "The idempotency identity is already bound to different "
+                        "canonical content."
+                    ),
+                    command=existing,
+                )
+            if existing.completed_at is None:
+                return None
+            return ScenarioLabProjectionCommandResult(
+                disposition=cast(
+                    ScenarioLabCommandDisposition, existing.disposition
+                ),
+                message=existing.message,
+                command=existing,
+            )
+
+    def list_projection_commands(
+        self,
+        result_kind: str,
+    ) -> tuple[ScenarioLabAuthoringCommandRecord, ...]:
+        with self._lock:
+            return tuple(
+                item
+                for item in self._repository.list_commands()
+                if item.result_kind == result_kind
+                and item.disposition == "accepted"
+                and item.result_json is not None
+            )
 
     def author_draft_with_ai(
         self,
@@ -2771,6 +2968,7 @@ def _pending_command(
         expected_source_generation=expected_source_generation,
         result_kind=None,
         result_identity=None,
+        result_json=None,
         created_at=created_at,
         completed_at=None,
     )
@@ -2798,6 +2996,11 @@ def _command_from_row(
         result_identity=(
             str(row["result_identity"])
             if row["result_identity"] is not None
+            else None
+        ),
+        result_json=(
+            str(row["result_json"])
+            if row["result_json"] is not None
             else None
         ),
         created_at=datetime.fromisoformat(str(row["created_at_utc"])),
@@ -2981,6 +3184,7 @@ __all__ = [
     "InMemoryScenarioLabAuthoringRepository",
     "ScenarioLabAuthoringResult",
     "ScenarioLabAuthoringService",
+    "ScenarioLabProjectionCommandResult",
     "ScenarioMaterializationAttemptRecord",
     "ScenarioMaterializationPhase",
     "ScenarioMaterializationResult",

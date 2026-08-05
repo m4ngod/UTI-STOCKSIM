@@ -94,13 +94,16 @@ from app.features.strategy_library_application import StrategyLibraryEntry
 from app.features.scenario_lab_application import (
     ApprovedScenarioRecipeVersionProjection,
     ApproveScenarioRecipeCommand,
+    ComposeFormalScenarioSetCommand,
     CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     HistoricalSegmentEntry,
     MaterializeApprovedScenarioRecipeCommand,
     MarketScenarioEntry,
+    FormalScenarioSetProjection,
     ReferenceMarketPathEntry,
     RequestedExecutionAssumptionsProjection,
+    ResolveScenarioExecutionAssumptionsCommand,
     ReviseScenarioRecipeDraftCommand,
     ScenarioLabActorId,
     ScenarioLabCommandContentIdentity,
@@ -110,6 +113,9 @@ from app.features.scenario_lab_application import (
     ScenarioLabIdempotencyIdentity,
     ScenarioLabTaskHandle,
     ScenarioLabUnavailabilityReason,
+    ScenarioExecutionAssumptionTarget,
+    ScenarioExecutionResolutionProjection,
+    ScenarioSelectionContextProjection,
     ScenarioMaterializationAttemptId,
     ScenarioRecipeAuthoringMode,
     ScenarioRecipeDataPolicy,
@@ -119,6 +125,7 @@ from app.features.scenario_lab_application import (
     ScenarioRecipeParameterKind,
     ScenarioRecipeTransformationInput,
     ScenarioRecipeValidationProjection,
+    SelectFormalScenarioSetCommand,
     TransformationCatalogEntryProjection,
     TransformationParameterProjection,
     ValidateScenarioRecipeDraftCommand,
@@ -311,6 +318,12 @@ class StrategyLibraryQtAdapter(QObject):
         selection = self._state.selection
         return "" if selection is None else selection.context_identity
 
+    def current_formal_strategy_ids(self) -> tuple[StrategyUnderTestId, ...]:
+        selection = self._state.selection
+        if self._state.selection_status.value != "current" or selection is None:
+            return ()
+        return tuple(item.strategy_id for item in selection.selections)
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def commandMessage(self) -> str:  # noqa: N802
         return self._command_message
@@ -362,7 +375,7 @@ class StrategyLibraryQtAdapter(QObject):
             else ()
         )
         self._comparison_source = (
-            self._state.source_revision.value,
+            source_revision.value,
             self._state.source.generation.value,
         )
         self._command_message = result.message
@@ -613,6 +626,9 @@ class ScenarioLabQtAdapter(QObject):
         feature: ScenarioLabFeature,
         *,
         context: ScenarioLabContext | None = None,
+        formal_strategy_selection_provider: (
+            Callable[[], tuple[StrategyUnderTestId, ...]] | None
+        ) = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -621,6 +637,9 @@ class ScenarioLabQtAdapter(QObject):
         self._state = feature.snapshot(self._context)
         self._selected_draft_id: str | None = None
         self._selected_recipe_version_id: str | None = None
+        self._formal_strategy_selection_provider = (
+            formal_strategy_selection_provider or (lambda: ())
+        )
         self._command_message = (
             "Create an exact manual Recipe Draft from an admitted segment. "
             "Optional AI assistance is unavailable unless a configured provider "
@@ -826,6 +845,58 @@ class ScenarioLabQtAdapter(QObject):
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def taskHandleCount(self) -> int:  # noqa: N802
         return len(self._state.task_handles)
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def scenarioSetCount(self) -> int:  # noqa: N802
+        return len(self._state.scenario_sets)
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def executionResolutionCount(self) -> int:  # noqa: N802
+        return len(self._state.execution_resolutions)
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def selectionContextCount(self) -> int:  # noqa: N802
+        return len(self._state.selection_contexts)
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def scenarioSets(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _formal_scenario_set_payload(item)
+            for item in self._state.scenario_sets
+        ]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def executionResolutions(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _scenario_execution_resolution_payload(item)
+            for item in self._state.execution_resolutions
+        ]
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def selectionContexts(self) -> list[dict[str, object]]:  # noqa: N802
+        return [
+            _scenario_selection_context_payload(item)
+            for item in self._state.selection_contexts
+        ]
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canComposeScenarioSet(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_compose_scenario_set
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canResolveExecutionAssumptions(self) -> bool:  # noqa: N802
+        return (
+            self._state.capabilities.can_resolve_execution_assumptions
+            and len(self._formal_strategy_selection_provider()) == 2
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def canSelectFormalScenarioSet(self) -> bool:  # noqa: N802
+        return self._state.capabilities.can_select_formal_scenario_set
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def scenarioCommandMessage(self) -> str:  # noqa: N802
+        return self._command_message
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreateRecipeDraft(self) -> bool:  # noqa: N802
@@ -1362,6 +1433,189 @@ class ScenarioLabQtAdapter(QObject):
             self._command_message = f"Materialization retry rejected: {exc}"
             self.stateChanged.emit()
 
+    @Slot()
+    def composeVisibleScenarioSet(self) -> None:  # noqa: N802
+        inventory = self._state.last_reliable_inventory
+        if inventory is None or not self.canComposeScenarioSet:
+            return
+        baseline = next(
+            (
+                item
+                for item in inventory.market_scenarios
+                if item.layer.value == "baseline"
+            ),
+            None,
+        )
+        if baseline is None:
+            self._command_message = (
+                "Composition requires one authoritative untransformed baseline."
+            )
+            self.stateChanged.emit()
+            return
+        try:
+            metadata = self._authoring_metadata("compose-scenario-set")
+            command = ComposeFormalScenarioSetCommand(
+                metadata=metadata,
+                baseline_case_id=baseline.scenario_id,
+                isolated_case_ids=tuple(
+                    item.scenario_id
+                    for item in self._state.market_scenarios
+                    if item.layer.value == "isolated_sensitivity"
+                ),
+                compound_case_ids=tuple(
+                    item.scenario_id
+                    for item in self._state.market_scenarios
+                    if item.layer.value == "compound"
+                ),
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.compose_scenario_set(command)
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Scenario Set composition rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot()
+    def resolveLatestScenarioSet(self) -> None:  # noqa: N802
+        if not self.canResolveExecutionAssumptions:
+            self._command_message = (
+                "Resolve assumptions after selecting the exact formal Strategy set."
+            )
+            self.stateChanged.emit()
+            return
+        scenario_set = next(
+            (
+                item
+                for item in reversed(self._state.scenario_sets)
+                if item.formal_handoff_eligible
+            ),
+            None,
+        )
+        if scenario_set is None:
+            self._command_message = (
+                "Resolve assumptions requires a complete Formal Scenario Set."
+            )
+            self.stateChanged.emit()
+            return
+        baseline = next(
+            (
+                item
+                for item in self._state.market_scenarios
+                if item.scenario_id == scenario_set.baseline_case_id
+            ),
+            None,
+        )
+        path = next(
+            (
+                item
+                for item in self._state.reference_paths
+                if baseline is not None and item.path_id == baseline.path_id
+            ),
+            None,
+        )
+        if path is None:
+            self._command_message = (
+                "The baseline Reference Market Path is unavailable."
+            )
+            self.stateChanged.emit()
+            return
+        try:
+            metadata = self._authoring_metadata(
+                "resolve-execution-assumptions"
+            )
+            command = ResolveScenarioExecutionAssumptionsCommand(
+                metadata=metadata,
+                scenario_set_id=scenario_set.scenario_set_id,
+                targets=tuple(
+                    ScenarioExecutionAssumptionTarget(
+                        strategy_id=strategy_id,
+                        campaign_case_id=case_id,
+                        decision_time=path.start_time,
+                    )
+                    for strategy_id in self._formal_strategy_selection_provider()
+                    for case_id in scenario_set.case_ids
+                ),
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.resolve_execution_assumptions(command)
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Execution resolution rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot()
+    def selectLatestFormalScenarioSet(self) -> None:  # noqa: N802
+        if not self.canSelectFormalScenarioSet:
+            return
+        scenario_set = next(
+            (
+                item
+                for item in reversed(self._state.scenario_sets)
+                if item.formal_handoff_eligible
+            ),
+            None,
+        )
+        resolution = next(
+            (
+                item
+                for item in reversed(self._state.execution_resolutions)
+                if scenario_set is not None
+                and item.scenario_set_id == scenario_set.scenario_set_id
+                and item.formal_handoff_eligible
+            ),
+            None,
+        )
+        if scenario_set is None or resolution is None:
+            return
+        try:
+            metadata = self._authoring_metadata("select-formal-scenario-set")
+            command = SelectFormalScenarioSetCommand(
+                metadata=metadata,
+                scenario_set_id=scenario_set.scenario_set_id,
+                case_ids=scenario_set.case_ids,
+                originating_view_revision=self._state.revision,
+                execution_resolution_id=resolution.resolution_id,
+            )
+            command = replace(
+                command,
+                metadata=replace(
+                    metadata,
+                    canonical_content_identity=(
+                        canonical_scenario_lab_command_content_identity(command)
+                    ),
+                ),
+            )
+            result = self._feature.select_formal_scenario_set(command)
+            self._finish_recipe_command(
+                result.receipt.disposition,
+                result.receipt.message,
+            )
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Formal Scenario selection rejected: {exc}"
+            self.stateChanged.emit()
+
     @Slot(str)
     def setSearchText(self, value: str) -> None:  # noqa: N802
         normalized = " ".join(value.split())
@@ -1787,6 +2041,155 @@ def _market_scenario_payload(item: MarketScenarioEntry) -> dict[str, object]:
         "unavailabilityReasons": [
             _scenario_lab_reason_payload(reason)
             for reason in item.unavailability_reasons
+        ],
+    }
+
+
+def _formal_scenario_set_payload(
+    item: FormalScenarioSetProjection,
+) -> dict[str, object]:
+    return {
+        "scenarioSetId": item.scenario_set_id.value,
+        "eligibility": item.eligibility.value,
+        "baselineCaseId": item.baseline_case_id.value,
+        "isolatedCaseIds": [value.value for value in item.isolated_case_ids],
+        "compoundCaseIds": [value.value for value in item.compound_case_ids],
+        "caseIds": [value.value for value in item.case_ids],
+        "comparisonRelationships": [
+            {
+                "kind": value.kind,
+                "subjectCaseId": value.subject_case_id.value,
+                "controlCaseIds": [
+                    identity.value for identity in value.control_case_ids
+                ],
+            }
+            for value in item.comparison_relationships
+        ],
+        "missingRequirements": list(item.missing_requirements),
+        "formalHandoffEligible": item.formal_handoff_eligible,
+    }
+
+
+def _scenario_execution_resolution_payload(
+    item: ScenarioExecutionResolutionProjection,
+) -> dict[str, object]:
+    return {
+        "resolutionId": item.resolution_id.value,
+        "scenarioSetId": item.scenario_set_id.value,
+        "formalHandoffEligible": item.formal_handoff_eligible,
+        "targets": [
+            {
+                "strategyId": value.strategy_id.value,
+                "strategyVersion": value.strategy_version,
+                "compatibilityManifestHash": (
+                    value.compatibility_manifest_hash
+                ),
+                "guardrailProfileId": value.guardrail_profile_id,
+                "guardrailProfileVersion": value.guardrail_profile_version,
+                "campaignCaseId": value.campaign_case_id.value,
+                "state": value.state.value,
+                "decisionTime": (
+                    ""
+                    if value.decision_time is None
+                    else value.decision_time.isoformat()
+                ),
+                "afterDecisionTime": (
+                    ""
+                    if value.after_decision_time is None
+                    else value.after_decision_time.isoformat()
+                ),
+                "activationTime": (
+                    ""
+                    if value.activation_time is None
+                    else value.activation_time.isoformat()
+                ),
+                "decisionCadenceMinutes": value.decision_cadence_minutes,
+                "decisionGrid": value.decision_grid,
+                "activationPolicy": value.activation_policy,
+                "executionPolicyVersion": value.execution_policy_version,
+                "conditions": [
+                    {
+                        "name": condition.name,
+                        "requestedValue": condition.requested_value,
+                        "effectiveValue": condition.effective_value,
+                        "overrideReason": condition.override_reason or "",
+                    }
+                    for condition in value.conditions
+                ],
+                "unavailabilityReasons": list(value.unavailability_reasons),
+            }
+            for value in item.targets
+        ],
+    }
+
+
+def _scenario_selection_context_payload(
+    item: ScenarioSelectionContextProjection,
+) -> dict[str, object]:
+    return {
+        "selectionContextId": item.selection_context_id.value,
+        "scenarioSetId": item.scenario_set_id.value,
+        "scenarioSetProjectionRevision": (
+            item.scenario_set_projection_revision
+        ),
+        "caseIds": [value.value for value in item.case_ids],
+        "executionResolutionId": item.execution_resolution_id.value,
+        "executionResolutionProjectionRevision": (
+            item.execution_resolution_projection_revision
+        ),
+        "status": item.status.value,
+        "selectionRevision": item.selection_revision,
+        "originatingViewRevision": item.originating_view_revision,
+        "sourceRevision": item.source_revision.value,
+        "sourceGeneration": item.source_generation.value,
+        "formalHandoffEligible": item.formal_handoff_eligible,
+        "exactRecipeBindings": [
+            value.recipe_version_id.value
+            + " / "
+            + value.recipe_content_hash
+            for value in item.case_bindings
+        ],
+        "exactPathBindings": [
+            value.reference_path_id.value
+            + " / "
+            + value.reference_path_content_hash
+            for value in item.case_bindings
+        ],
+        "exactStrategyBindings": [
+            value.strategy_id.value
+            + "@"
+            + value.strategy_version
+            + " / manifest "
+            + value.compatibility_manifest_hash
+            + " / Guardrail "
+            + value.guardrail_profile_id
+            + "@"
+            + value.guardrail_profile_version
+            + " / execution "
+            + value.execution_policy_version
+            for value in item.strategy_bindings
+        ],
+        "caseBindings": [
+            {
+                "caseId": value.campaign_case_id.value,
+                "segmentId": value.segment_id.value,
+                "segmentContentHash": value.segment_content_hash,
+                "sourceSnapshotId": value.source_snapshot_id.value,
+                "seed": value.seed,
+                "transformationCatalogVersion": (
+                    value.transformation_catalog_version
+                ),
+                "marketRuleProfileVersion": (
+                    value.market_rule_profile_version
+                ),
+                "transformations": [
+                    transformation.transformation_id
+                    + "@"
+                    + transformation.implementation_version
+                    for transformation in value.transformations
+                ],
+            }
+            for value in item.case_bindings
         ],
     }
 
@@ -4892,6 +5295,11 @@ class JourneyWorkspaceHost(QQuickWidget):
             ScenarioLabQtAdapter(
                 scenario_lab_feature,
                 context=scenario_lab_context,
+                formal_strategy_selection_provider=(
+                    (lambda: ())
+                    if self._strategy_library is None
+                    else self._strategy_library.current_formal_strategy_ids
+                ),
                 parent=self,
             )
             if scenario_lab_feature is not None
@@ -4901,6 +5309,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             "scenarioLab",
             self._scenario_lab,
         )
+        if self._strategy_library is not None and self._scenario_lab is not None:
+            self._strategy_library.stateChanged.connect(
+                self._scenario_lab.stateChanged
+            )
         self._diagnostic_tasks = (
             DiagnosticTasksQtAdapter(
                 diagnostic_tasks_feature,

@@ -32,6 +32,9 @@ from .scenario_lab_application import (
     MarketScenarioEntry,
     ReferenceMarketPathEntry,
     ScenarioLabInventory,
+    FormalScenarioSetProjection,
+    ScenarioExecutionResolutionProjection,
+    ScenarioSelectionContextProjection,
     ScenarioLabTaskHandle,
     ScenarioRecipeDraftProjection,
     ScenarioRecipeValidationProjection,
@@ -195,6 +198,11 @@ class ScenarioLabViewState:
     blocking_reasons: tuple[ScenarioLabBlockingReason, ...]
     focus_restoration_identity: str | None
     error: StructuredFeatureError | None
+    scenario_sets: tuple[FormalScenarioSetProjection, ...] = ()
+    execution_resolutions: tuple[
+        ScenarioExecutionResolutionProjection, ...
+    ] = ()
+    selection_contexts: tuple[ScenarioSelectionContextProjection, ...] = ()
 
 
 ScenarioLabObserver = Callable[[ScenarioLabViewState], None]
