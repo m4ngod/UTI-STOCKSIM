@@ -504,12 +504,13 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "`StrategyDiagnosticsV1ScenarioLabApplication` version 1.0",
         "Issue #79 activates Scenario Lab read tracing",
         "Issue #84 activates `DiagnosticSetupSelectionContext`",
+        "Issue #86 completes source-level T08/T09/T10 preflight",
         "durable bookmark contains those immutable references",
         "Seam 1",
         "Seam 2",
         "Seam 3",
         "Wave 4 remain unimplemented",
-        "Issue #88 owns Wave 3 installed offline release certification",
+        "Issue #88 owns the installed offline black-box certification",
     ),
     REQUIRED_CONTRACT_DOCUMENTS[1]: (
         "# Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook",
@@ -521,7 +522,7 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0",
         "`StrategyDiagnosticsV1ScenarioLabApplication` 1.0",
-        "including Issues #77–#84",
+        "including Issues #77–#86",
         "durable bookmark reread",
         PERSISTED_PRODUCT_TRACER.function_name,
         "test_diagnostic_tasks_live_fake_conformance.py",
@@ -530,7 +531,7 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "test_live_exact_setup_selection_is_bound_through_approval",
         "Seam 3",
         "Issue #88",
-        "does not claim T08, T09, or T10",
+        "source-level T08/T09/T10 preflight",
     ),
 }
 

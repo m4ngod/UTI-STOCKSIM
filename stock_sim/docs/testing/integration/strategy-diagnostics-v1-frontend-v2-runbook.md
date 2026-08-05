@@ -1,9 +1,9 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
 
 This runbook reproduces the incremental Wave 3 source-level integration gate,
-including Issues #77–#84 and the inherited Wave 2 union. It does not claim T08, T09, or T10
-and is not the Issue #88 installed offline release-certification
-procedure.
+including Issues #77–#86 and the inherited Wave 2 union. It includes Issue
+#86 source-level T08/T09/T10 preflight, but is not the Issue #88 installed
+offline black-box release-certification procedure.
 
 ## Preconditions
 
@@ -103,8 +103,39 @@ The gate deliberately uses separate pytest processes for:
 7. Frontend V2 unit tests against a fresh temporary SQLite database;
 8. EventBridge unit tests in their own fresh-database process;
 9. no-manual-trading safety;
-10. performance and packaging preflight, including the typed Diagnostic Tasks
-    command and persistent `TaskHandle` observation load.
+10. performance and packaging preflight, including Strategy Library and
+    Scenario Lab readiness/focus observations, active formal compare/select
+    and Scenario Set composition with accepted revisions, cross-renderer setup
+    identity binding, plus the inherited typed Diagnostic Tasks command and
+    persistent `TaskHandle` observation load.
+
+## Issue #86 source-level T08/T09/T10 preflight
+
+Run the pointerless five-route, 200% scale, remount/reconnect, semantic-status,
+and dual-renderer T08 probes:
+
+```powershell
+python -m pytest tests/frontend/integration/test_accessible_journey.py `
+  tests/frontend/integration/test_accessible_journey_renderer_lanes.py -q
+```
+
+Run the complete T09 source, import, Interface, QML, runtime, shortcut,
+telemetry, cancel-isolation, AI-boundary, and no-score safety gate:
+
+```powershell
+python -m pytest tests/frontend/safety -q
+```
+
+Run the T10 five-Feature performance contract and both renderer smoke lanes:
+
+```powershell
+python -m pytest tests/frontend/performance -q
+```
+
+Retain the exact source commit and raw reports when evidence directories are
+enabled. These commands are source-level readiness checks. They do not replace
+the installed-package, no-network, clean-machine T08/T09/T10 execution owned
+by Issue #88, and they do not authorize a Wave 3 release claim.
 
 The gate creates and removes the temporary unit-test databases itself. On
 Windows it uses the `py -3.11` launcher for the lazy-import probe because the
@@ -140,17 +171,17 @@ flake.
 - Verify Scenario Lab shows exact admitted segment/content/source identities,
   provenance and coverage; a verified content-addressed Reference Path with
   bounded preview and explicit reconstruction notice; and a separate backend
-  `CampaignCaseId` Market Scenario identity. Confirm effective execution is
-  `not_yet_resolved` and all Recipe/materialization/composition actions are
-  typed unavailable in Issue #79.
+  `CampaignCaseId` Market Scenario identity. Confirm Baseline, Isolated,
+  Compound, and Quick Experiment semantics are explicit and requested,
+  effective, and overridden execution assumptions are independently visible.
 - Verify the Diagnostic Tasks route remains disabled until both current formal
   selections exist, displays the exact selection/set/resolution/revision/source
   identities, and creates the unchanged typed task configuration. After an
   upstream successor, verify the prior validation and approval remain in
   history, the active task returns to Draft, and start fails closed.
 
-Wave 3 Seam 3 remains owned by Issue #88. It must independently produce T08/T09/T10,
-same-source QML and Widgets packages, clean-room reports, checksums, dependency
-manifests, screenshots, logs, tag, assets, and remote verification before any
-Wave 3 release certification is claimed. Issue #66 remains the immutable Wave 2
-certification baseline.
+Wave 3 Seam 3 remains owned by Issue #88. It must independently rerun and retain
+installed-package T08/T09/T10, same-source QML and Widgets packages, clean-room
+reports, checksums, dependency manifests, screenshots, logs, tag, assets, and
+remote verification before any Wave 3 release certification is claimed. Issue
+#66 remains the immutable Wave 2 certification baseline.

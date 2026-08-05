@@ -40,6 +40,7 @@ Rectangle {
             ? null
             : scenarioLabPageLoader.item.firstActionControl
     )
+    readonly property var runMonitoringInitialFocusItem: runFocusFallback()
     readonly property var evidenceSecondCandidateFocusItem: (
         evidencePageLoader.item === null
             ? null
@@ -103,20 +104,20 @@ Rectangle {
             )
     }
 
+    function runFocusFallback() {
+        if (pauseDiagnosticTask.visible && pauseDiagnosticTask.enabled)
+            return pauseDiagnosticTask
+        if (resumeDiagnosticTask.visible && resumeDiagnosticTask.enabled)
+            return resumeDiagnosticTask
+        if (cancelDiagnosticTask.visible && cancelDiagnosticTask.enabled)
+            return cancelDiagnosticTask
+        return runMonitoringRouteNavigation
+    }
+
     function restoreRunFocus() {
         var target = lastRunFocus
-        if (target === null || !target.visible || !target.enabled) {
-            if (pauseDiagnosticTask.visible && pauseDiagnosticTask.enabled)
-                target = pauseDiagnosticTask
-            else if (resumeDiagnosticTask.visible
-                    && resumeDiagnosticTask.enabled)
-                target = resumeDiagnosticTask
-            else if (cancelDiagnosticTask.visible
-                    && cancelDiagnosticTask.enabled)
-                target = cancelDiagnosticTask
-            else
-                target = runMonitoringRouteNavigation
-        }
+        if (target === null || !target.visible || !target.enabled)
+            target = runFocusFallback()
         target.forceActiveFocus()
         ensureRunItemVisible(target)
     }
@@ -311,6 +312,7 @@ Rectangle {
                     property string accessibleDescription: (
                         "Browse the backend-owned formal Strategy Under Test inventory"
                     )
+                    readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
                     visible: workspace.strategyLibraryAvailable
                     Layout.fillWidth: true
@@ -368,6 +370,7 @@ Rectangle {
                     property string accessibleDescription: (
                         "Inspect admitted data, immutable Reference Market Paths, and Market Scenarios"
                     )
+                    readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
                     visible: workspace.scenarioLabAvailable
                     Layout.fillWidth: true
@@ -427,6 +430,7 @@ Rectangle {
                         + ", inventory "
                         + workspace.diagnosticTasksInventoryState
                     )
+                    readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
                     visible: workspace.diagnosticTasksAvailable
                     Layout.fillWidth: true
@@ -488,6 +492,7 @@ Rectangle {
                     property string accessibleDescription: (
                         "Navigate to the read-only Run Monitoring route"
                     )
+                    readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
@@ -550,6 +555,7 @@ Rectangle {
                     property string accessibleDescription: (
                         "Navigate to read-only evidence and failure reasons"
                     )
+                    readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
                     visible: workspace.evidenceAvailable
                     Layout.fillWidth: true

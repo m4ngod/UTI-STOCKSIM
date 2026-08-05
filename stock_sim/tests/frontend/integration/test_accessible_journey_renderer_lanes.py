@@ -16,6 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QAccessible
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.features import (
@@ -23,6 +24,8 @@ from app.features import (
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DeterministicFakeScenarioLabAdapter,
+    DeterministicFakeStrategyLibraryAdapter,
     DiagnosticTasksContext,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsSelection,
@@ -31,7 +34,9 @@ from app.features import (
     ReproductionManifestId,
     RunMonitoringContext,
     RunMonitoringSelection,
+    ScenarioLabContext,
     StrategyRunId,
+    StrategyLibraryContext,
     StrategyUnderTestId,
 )
 from app.ui.journey_workspace import JourneyWorkspaceHost
@@ -76,11 +81,17 @@ evidence_context = EvidenceAndFindingsContext.for_selection(
 run_feature = DeterministicFakeRunMonitoringAdapter()
 evidence_feature = DeterministicFakeEvidenceAndFindingsAdapter()
 diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter()
+strategy_library = DeterministicFakeStrategyLibraryAdapter()
+scenario_lab = DeterministicFakeScenarioLabAdapter()
 run_feature.advance_to_running(run_context)
 evidence_feature.advance_to_completed(evidence_context)
 host = JourneyWorkspaceHost(
     run_feature,
     context=run_context,
+    strategy_library_feature=strategy_library,
+    strategy_library_context=StrategyLibraryContext(),
+    scenario_lab_feature=scenario_lab,
+    scenario_lab_context=ScenarioLabContext(),
     diagnostic_tasks_feature=diagnostic_tasks,
     diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
     evidence_feature=evidence_feature,
@@ -94,17 +105,76 @@ for _ in range(4):
     app.processEvents()
 root = host.rootObject()
 tokens = root.findChild(QObject, "designTokens")
+strategy_navigation = root.findChild(
+    QObject,
+    "strategyLibraryRouteNavigation",
+)
+strategy_navigation.forceActiveFocus()
+QTest.keyClick(host, Qt.Key.Key_Return)
+for _ in range(4):
+    app.processEvents()
+strategy_scroll = root.findChild(QObject, "strategyLibraryFlickable")
+strategy_status = root.findChild(QObject, "strategyLibraryAccessibleStatus")
+strategy_focus_item = root.property("strategyLibraryInitialFocusItem")
+strategy_scrollable = (
+    strategy_scroll.property("contentHeight")
+    > strategy_scroll.property("height")
+)
+strategy_focus = strategy_focus_item.property("activeFocus")
+strategy_status_role = QAccessible.queryAccessibleInterface(
+    strategy_status
+).role().name
+strategy_image = host.grabFramebuffer()
+save_evidence(strategy_image, "strategy_library.png")
+strategy_digest = hashlib.sha256(bytes(strategy_image.bits())).hexdigest()
+scenario_navigation = root.findChild(QObject, "scenarioLabRouteNavigation")
+scenario_navigation.forceActiveFocus()
+QTest.keyClick(host, Qt.Key.Key_Return)
+for _ in range(4):
+    app.processEvents()
+scenario_scroll = root.findChild(QObject, "scenarioLabFlickable")
+scenario_status = root.findChild(QObject, "scenarioLabAccessibleStatus")
+scenario_focus_item = root.property("scenarioLabInitialFocusItem")
+scenario_scrollable = (
+    scenario_scroll.property("contentHeight")
+    > scenario_scroll.property("height")
+)
+scenario_focus = scenario_focus_item.property("activeFocus")
+scenario_status_role = QAccessible.queryAccessibleInterface(
+    scenario_status
+).role().name
+scenario_image = host.grabFramebuffer()
+save_evidence(scenario_image, "scenario_lab.png")
+scenario_digest = hashlib.sha256(bytes(scenario_image.bits())).hexdigest()
+diagnostic_navigation = root.findChild(
+    QObject,
+    "diagnosticTasksRouteNavigation",
+)
+diagnostic_navigation.forceActiveFocus()
+QTest.keyClick(host, Qt.Key.Key_Return)
+for _ in range(4):
+    app.processEvents()
 diagnostic_scroll = root.findChild(QObject, "diagnosticTasksFlickable")
 diagnostic_status = root.findChild(QObject, "diagnosticTasksAccessibleStatus")
 diagnostic_create = root.findChild(QObject, "createDiagnosticTaskButton")
-diagnostic_focus = diagnostic_create.property("activeFocus")
+diagnostic_focus_item = root.property("diagnosticTasksInitialFocusItem")
+diagnostic_focus = diagnostic_focus_item.property("activeFocus")
 diagnostic_control_height = diagnostic_create.property("height")
+diagnostic_scrollable = (
+    diagnostic_scroll.property("contentHeight")
+    > diagnostic_scroll.property("height")
+)
+diagnostic_status_role = QAccessible.queryAccessibleInterface(
+    diagnostic_status
+).role().name
 diagnostic_image = host.grabFramebuffer()
 save_evidence(diagnostic_image, "diagnostic_tasks.png")
 diagnostic_digest = hashlib.sha256(
     bytes(diagnostic_image.bits())
 ).hexdigest()
-root.setProperty("activeRoute", "run_monitoring")
+run_navigation = root.findChild(QObject, "runMonitoringRouteNavigation")
+run_navigation.forceActiveFocus()
+QTest.keyClick(host, Qt.Key.Key_Return)
 for _ in range(4):
     app.processEvents()
 run_scroll = root.findChild(QObject, "runMonitoringFlickable")
@@ -112,7 +182,12 @@ run_status = root.findChild(QObject, "runMonitoringAccessibleStatus")
 run_image = host.grabFramebuffer()
 save_evidence(run_image, "run_monitoring.png")
 run_digest = hashlib.sha256(bytes(run_image.bits())).hexdigest()
-root.setProperty("activeRoute", "evidence_and_findings")
+evidence_navigation = root.findChild(
+    QObject,
+    "evidenceAndFindingsRouteNavigation",
+)
+evidence_navigation.forceActiveFocus()
+QTest.keyClick(host, Qt.Key.Key_Return)
 for _ in range(4):
     app.processEvents()
 candidate = root.property("evidenceInitialFocusItem")
@@ -136,25 +211,32 @@ print(
             "body_size": tokens.property("bodySize"),
             "reduced_motion": tokens.property("reducedMotion"),
             "high_contrast": tokens.property("highContrast"),
-            "diagnostic_scrollable": (
-                diagnostic_scroll.property("contentHeight")
-                > diagnostic_scroll.property("height")
-            ),
+            "strategy_scrollable": strategy_scrollable,
+            "strategy_focus": strategy_focus,
+            "strategy_status_role": strategy_status_role,
+            "scenario_scrollable": scenario_scrollable,
+            "scenario_focus": scenario_focus,
+            "scenario_status_role": scenario_status_role,
+            "diagnostic_scrollable": diagnostic_scrollable,
             "diagnostic_focus": diagnostic_focus,
             "diagnostic_control_height": diagnostic_control_height,
-            "diagnostic_status_role": (
-                QAccessible.queryAccessibleInterface(
-                    diagnostic_status
-                ).role().name
-            ),
+            "diagnostic_status_role": diagnostic_status_role,
             "run_scrollable": (
                 run_scroll.property("contentHeight")
                 > run_scroll.property("height")
             ),
             "route_screenshots_distinct": len(
-                {diagnostic_digest, run_digest, evidence_digest}
-            ) == 3,
+                {
+                    strategy_digest,
+                    scenario_digest,
+                    diagnostic_digest,
+                    run_digest,
+                    evidence_digest,
+                }
+            ) == 5,
             "route_framebuffer_sha256": {
+                "strategy_library.png": strategy_digest,
+                "scenario_lab.png": scenario_digest,
                 "diagnostic_tasks.png": diagnostic_digest,
                 "run_monitoring.png": run_digest,
                 "evidence_and_findings.png": evidence_digest,
@@ -171,6 +253,8 @@ print(
 )
 host.close_adapter()
 host.close()
+strategy_library.close()
+scenario_lab.close()
 diagnostic_tasks.close()
 run_feature.close()
 evidence_feature.close()
@@ -237,6 +321,8 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
                 (evidence_directory / filename).read_bytes()
             ).hexdigest()
             for filename in (
+                "strategy_library.png",
+                "scenario_lab.png",
                 "diagnostic_tasks.png",
                 "run_monitoring.png",
                 "evidence_and_findings.png",
@@ -267,13 +353,19 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
     assert observation["body_size"] == 26
     assert observation["reduced_motion"] is True
     assert observation["high_contrast"] is True
+    assert observation["strategy_scrollable"] is True
+    assert observation["strategy_focus"] is True
+    assert observation["strategy_status_role"] == "StatusBar"
+    assert observation["scenario_scrollable"] is True
+    assert observation["scenario_focus"] is True
+    assert observation["scenario_status_role"] == "StatusBar"
     assert observation["diagnostic_scrollable"] is True
     assert observation["diagnostic_focus"] is True
     assert observation["diagnostic_control_height"] >= 76
     assert observation["diagnostic_status_role"] == "StatusBar"
     assert observation["run_scrollable"] is True
     assert observation["route_screenshots_distinct"] is True
-    assert len(set(observation["route_framebuffer_sha256"].values())) == 3
+    assert len(set(observation["route_framebuffer_sha256"].values())) == 5
     assert observation["image_width"] == 2560
     assert observation["image_height"] == 1440
     assert observation["candidate_focus"] is True

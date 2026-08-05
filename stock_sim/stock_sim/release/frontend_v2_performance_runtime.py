@@ -51,6 +51,8 @@ from app.features import (
     ApprovedScenarioRecipeId,
     CreateDiagnosticTask,
     DeterministicFakeDiagnosticTasksAdapter,
+    DeterministicFakeScenarioLabAdapter,
+    DeterministicFakeStrategyLibraryAdapter,
     DiagnosticActorId,
     DiagnosticCampaignCaseSelection,
     DiagnosticCampaignLayer,
@@ -84,11 +86,13 @@ from app.features import (
     RunMonitoringData,
     RunMonitoringSelection,
     RunProgress,
+    ScenarioLabContext,
     ScenarioSetId,
     SimulationTime,
     SourceRevisionToken,
     StartFormalDiagnosticCampaign,
     StrategyRunId,
+    StrategyLibraryContext,
     StrategyUnderTestId,
     TerminalOutcome,
     V1JourneySelector,
@@ -108,7 +112,7 @@ from .frontend_v2_performance import (
     REFERENCE_FIXTURE,
     REFERENCE_MEASUREMENT_PROTOCOL,
     WAVE2_PERFORMANCE_COMMAND_IDS,
-    WAVE2_PERFORMANCE_PRODUCTION_PATH,
+    WAVE3_PERFORMANCE_PRODUCTION_PATH,
     build_performance_metric,
     reference_fixture_digest,
     validate_performance_lane,
@@ -980,14 +984,17 @@ def capture_real_v1_performance_preflight(
 ) -> dict[str, Any]:
     """Capture and release real V1 evidence before timing the renderer."""
 
-    probe = prepare_real_v1_performance_probe(
+    probe: _RealV1PerformanceProbe | None = prepare_real_v1_performance_probe(
         fixture_archive_path=fixture_archive_path,
         expected_source_commit=expected_source_commit,
     )
     try:
+        assert probe is not None
         probe.run_preflight(sample_count=2)
     finally:
+        assert probe is not None
         probe.close()
+    assert probe is not None
     evidence = probe.evidence()
     probe = None
     gc.collect()
@@ -1298,7 +1305,7 @@ class _QtPerformanceProbe(QObject):
     def _request_initial_chart_paint(self) -> None:
         """Cross the threaded Canvas acknowledgement barrier before timing."""
 
-        if not QMetaObject.invokeMethod(
+        if not QMetaObject.invokeMethod(  # type: ignore[call-overload]
             self._series_canvas,
             "requestPaint",
         ):
@@ -1785,6 +1792,94 @@ def _qml_observes_ready_inventory(
     )
 
 
+def _activate_setup_route(
+    host: JourneyWorkspaceHost,
+    app: QApplication,
+    *,
+    route: str,
+    navigation_name: str,
+    focus_property: str,
+    status_name: str,
+) -> tuple[bool, str]:
+    root = host.rootObject()
+    if root is None:
+        raise RuntimeError("Journey Workspace QML did not load")
+    navigation = root.findChild(QObject, navigation_name)
+    if navigation is None:
+        raise RuntimeError(f"Missing route navigation {navigation_name}")
+    navigation.forceActiveFocus()
+    for event_type in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+        QCoreApplication.sendEvent(
+            navigation,
+            QKeyEvent(
+                event_type,
+                Qt.Key.Key_Return,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+    for _ in range(4):
+        app.processEvents()
+    if root.property("activeRoute") != route:
+        raise RuntimeError(f"Could not activate setup route {route}")
+    focus_item = root.property(focus_property)
+    status = root.findChild(QObject, status_name)
+    if focus_item is None or status is None:
+        raise RuntimeError(f"Setup route {route} is missing T08 semantics")
+    accessible = QAccessible.queryAccessibleInterface(status)
+    if accessible is None or not accessible.isValid():
+        raise RuntimeError(f"Setup route {route} status is inaccessible")
+    return bool(
+        focus_item.property("activeFocus")
+        and focus_item.property("focusVisible")
+        and focus_item.property("visible")
+    ), accessible.role().name
+
+
+def _observe_wave3_setup_features(
+    host: JourneyWorkspaceHost,
+    app: QApplication,
+) -> dict[str, Any]:
+    strategy_adapter = host._strategy_library
+    scenario_adapter = host._scenario_lab
+    if strategy_adapter is None or scenario_adapter is None:
+        raise RuntimeError("Wave 3 setup Feature Qt Adapters are unavailable")
+    strategy_focus, strategy_role = _activate_setup_route(
+        host,
+        app,
+        route="strategy_library",
+        navigation_name="strategyLibraryRouteNavigation",
+        focus_property="strategyLibraryInitialFocusItem",
+        status_name="strategyLibraryAccessibleStatus",
+    )
+    scenario_focus, scenario_role = _activate_setup_route(
+        host,
+        app,
+        route="scenario_lab",
+        navigation_name="scenarioLabRouteNavigation",
+        focus_property="scenarioLabInitialFocusItem",
+        status_name="scenarioLabAccessibleStatus",
+    )
+    return {
+        "presentation_states": {
+            "strategy_library": strategy_adapter.presentationState,
+            "scenario_lab": scenario_adapter.presentationState,
+        },
+        "freshness": {
+            "strategy_library": strategy_adapter.freshness,
+            "scenario_lab": scenario_adapter.freshness,
+        },
+        "qml_status_roles": {
+            "strategy_library": strategy_role,
+            "scenario_lab": scenario_role,
+        },
+        "initial_focus_observed": {
+            "strategy_library": strategy_focus,
+            "scenario_lab": scenario_focus,
+        },
+        "observed_before_load": True,
+    }
+
+
 def run_performance_lane(
     *,
     lane: str,
@@ -1808,7 +1903,32 @@ def run_performance_lane(
         else cast(QApplication, existing_app)
     )
     queries = _PerformanceLoadProjectionReadModel()
+    strategy_library = DeterministicFakeStrategyLibraryAdapter()
+    scenario_lab = DeterministicFakeScenarioLabAdapter()
     diagnostic_tasks = _wave2_performance_feature()
+    wave3_setup_features: dict[str, Any] = {
+        "feature_interfaces": [
+            f"StrategyLibraryFeature/{strategy_library.interface_version.render()}",
+            f"ScenarioLabFeature/{scenario_lab.interface_version.render()}",
+        ],
+        "adapters": [
+            type(strategy_library).__name__,
+            type(scenario_lab).__name__,
+        ],
+        "routes": ["strategy_library", "scenario_lab"],
+        "presentation_states": {},
+        "freshness": {},
+        "qml_status_roles": {},
+        "initial_focus_observed": {},
+        "observed_before_load": False,
+        "executed_during_active_load": False,
+        "accepted_setup_commands": [],
+        "accepted_revisions": {},
+        "comparison_count": 0,
+        "strategy_selection_status": "unavailable",
+        "scenario_set_count": 0,
+        "scenario_set_eligibility": "unavailable",
+    }
     wave2_diagnostic_tasks: dict[str, Any] = {
         "feature_interface": (
             f"DiagnosticTasksFeature/"
@@ -1855,12 +1975,54 @@ def run_performance_lane(
         finished[0] = True
         app.quit()
 
-    def run_wave2_active_load() -> None:
+    def run_wave3_active_load() -> None:
         nonlocal wave2_qml_observation_graph
-        if probe is None or not probe.measurement_active:
+        if probe is None or not probe.measurement_active or host is None:
             raise RuntimeError(
-                "Wave 2 commands were not started inside the active load"
+                "Wave 3 commands were not started inside the active load"
             )
+        strategy_adapter = host._strategy_library
+        scenario_adapter = host._scenario_lab
+        if strategy_adapter is None or scenario_adapter is None:
+            raise RuntimeError("Wave 3 setup adapters are unavailable")
+        strategy_before = strategy_adapter._state.revision
+        scenario_before = scenario_adapter._state.revision
+        strategy_adapter.compareFormalSet()
+        strategy_adapter.selectFormalSet()
+        app.processEvents()
+        scenario_adapter.composeVisibleScenarioSet()
+        app.processEvents()
+        scenario_eligibility = (
+            "unavailable"
+            if not scenario_adapter.scenarioSets
+            else str(scenario_adapter.scenarioSets[-1]["eligibility"])
+        )
+        wave3_setup_features.update(
+            {
+                "executed_during_active_load": probe.measurement_active,
+                "accepted_setup_commands": [
+                    "compare_formal_strategy_set",
+                    "select_formal_strategy_set",
+                    "compose_visible_scenario_set",
+                ],
+                "accepted_revisions": {
+                    "strategy_library": [
+                        strategy_before,
+                        strategy_adapter._state.revision,
+                    ],
+                    "scenario_lab": [
+                        scenario_before,
+                        scenario_adapter._state.revision,
+                    ],
+                },
+                "comparison_count": strategy_adapter.comparisonCount,
+                "strategy_selection_status": (
+                    strategy_adapter.selectionStatus
+                ),
+                "scenario_set_count": scenario_adapter.scenarioSetCount,
+                "scenario_set_eligibility": scenario_eligibility,
+            }
+        )
         source_events_before = probe.source_events
         report, _identity_graph_value, qml_graph = (
             _prepare_wave2_diagnostic_task_load(diagnostic_tasks)
@@ -1895,6 +2057,10 @@ def run_performance_lane(
         host = JourneyWorkspaceHost(
             run_feature,
             context=_run_context(),
+            strategy_library_feature=strategy_library,
+            strategy_library_context=StrategyLibraryContext(),
+            scenario_lab_feature=scenario_lab,
+            scenario_lab_context=ScenarioLabContext(),
             diagnostic_tasks_feature=diagnostic_tasks,
             diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
             evidence_feature=evidence_feature,
@@ -1938,6 +2104,13 @@ def run_performance_lane(
         )
         host.show()
         app.processEvents()
+        wave3_setup_features.update(
+            _observe_wave3_setup_features(host, app)
+        )
+        root.setProperty("activeRoute", "evidence_and_findings")
+        evidence_qt_adapter.setActiveTab("context")
+        app.processEvents()
+        app.processEvents()
         probe = _QtPerformanceProbe(
             app=app,
             host=host,
@@ -1946,7 +2119,7 @@ def run_performance_lane(
             bridge=bridge,
             duration_seconds=duration_seconds,
             process_started_ns=process_started_ns,
-            on_measurement_active=run_wave2_active_load,
+            on_measurement_active=run_wave3_active_load,
             on_finished=quit_app,
         )
         host.quickWindow().beforeSynchronizing.connect(
@@ -1982,59 +2155,68 @@ def run_performance_lane(
             and qml_observed_after_load
         )
     finally:
-        cleanup_actions: tuple[
-            tuple[str, Callable[[], None]],
+        cleanup_candidates: tuple[
+            tuple[str, Callable[[], None] | None],
             ...,
-        ] = tuple(
-            item
-            for item in (
+        ] = (
+            (
+                "performance subscription",
                 (
-                    "performance subscription",
-                    (
-                        performance_subscription.dispose
-                        if performance_subscription is not None
-                        else None
-                    ),
+                    performance_subscription.dispose
+                    if performance_subscription is not None
+                    else None
                 ),
+            ),
+            (
+                "Journey Workspace adapter",
+                host.close_adapter if host is not None else None,
+            ),
+            (
+                "Journey Workspace host",
+                host.close if host is not None else None,
+            ),
+            (
+                "Strategy Library Feature",
+                strategy_library.close,
+            ),
+            (
+                "Scenario Lab Feature",
+                scenario_lab.close,
+            ),
+            (
+                "Diagnostic Tasks Feature",
+                diagnostic_tasks.close,
+            ),
+            (
+                "Run Monitoring Feature",
                 (
-                    "Journey Workspace adapter",
-                    host.close_adapter if host is not None else None,
+                    run_feature.close
+                    if run_feature is not None
+                    else None
                 ),
+            ),
+            (
+                "Evidence and Findings Feature",
                 (
-                    "Journey Workspace host",
-                    host.close if host is not None else None,
+                    evidence_feature.close
+                    if evidence_feature is not None
+                    else None
                 ),
-                (
-                    "Diagnostic Tasks Feature",
-                    diagnostic_tasks.close,
-                ),
-                (
-                    "Run Monitoring Feature",
-                    (
-                        run_feature.close
-                        if run_feature is not None
-                        else None
-                    ),
-                ),
-                (
-                    "Evidence and Findings Feature",
-                    (
-                        evidence_feature.close
-                        if evidence_feature is not None
-                        else None
-                    ),
-                ),
-                (
-                    "EventBridge batch probe",
-                    dispose_batch_probe,
-                ),
-                (
-                    "EventBridge",
-                    bridge.stop,
-                ),
-                ("Qt event drain", app.processEvents),
-            )
-            if item[1] is not None
+            ),
+            (
+                "EventBridge batch probe",
+                dispose_batch_probe,
+            ),
+            (
+                "EventBridge",
+                bridge.stop,
+            ),
+            ("Qt event drain", app.processEvents),
+        )
+        cleanup_actions = tuple(
+            (label, action)
+            for label, action in cleanup_candidates
+            if action is not None
         )
         for label, action in cleanup_actions:
             try:
@@ -2056,6 +2238,7 @@ def run_performance_lane(
         recorder=recorder,
         observed_fixture=observed_fixture,
         real_v1_evidence=integrated_v1_evidence,
+        wave3_setup_features=wave3_setup_features,
         wave2_diagnostic_tasks=wave2_diagnostic_tasks,
     )
     return report
@@ -2070,6 +2253,7 @@ def _build_report(
     recorder: _MetricRecorder,
     observed_fixture: Mapping[str, int],
     real_v1_evidence: Mapping[str, Any] | None,
+    wave3_setup_features: Mapping[str, Any],
     wave2_diagnostic_tasks: Mapping[str, Any],
 ) -> dict[str, Any]:
     event_metric = build_performance_metric(recorder.event_to_visible_ms)
@@ -2095,7 +2279,7 @@ def _build_report(
         )
     terminal_visible_ms = recorder.terminal_visible_ms
     report: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "smoke" if smoke else "passed",
         "lane": lane,
         "graphics_api": probe.graphics_api,
@@ -2106,12 +2290,13 @@ def _build_report(
         "measurement": asdict(REFERENCE_MEASUREMENT_PROTOCOL),
         "observed_fixture": dict(observed_fixture),
         "sampling_policy": "uniform_endpoints_v1",
-        "production_path": list(WAVE2_PERFORMANCE_PRODUCTION_PATH),
+        "production_path": list(WAVE3_PERFORMANCE_PRODUCTION_PATH),
         "integrated_v1_probe": (
             None
             if real_v1_evidence is None
             else dict(real_v1_evidence)
         ),
+        "wave3_setup_features": dict(wave3_setup_features),
         "wave2_diagnostic_tasks": dict(wave2_diagnostic_tasks),
         "start_marker": SOURCE_MARKER,
         "end_marker": END_MARKER,

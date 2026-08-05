@@ -1337,13 +1337,41 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
     evidence.close()
 
 
-def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
+def test_keyboard_completes_five_route_journey_with_narrator_identity_summary(
     tmp_path,
 ) -> None:
     app = _app()
     workspace = DiagnosticTasksContext.workspace()
+    (
+        _source,
+        _artifact_store,
+        engine,
+        application,
+        _diagnostic_application,
+        initial_diagnostic_tasks,
+    ) = _formal_live_stack(tmp_path)
+    initial_diagnostic_tasks.snapshot(workspace)
+    initial_inventory = initial_diagnostic_tasks.snapshot(
+        workspace
+    ).last_reliable_inventory
+    assert initial_inventory is not None
+    initial_diagnostic_tasks.close()
+    bridge = EventBridge(subscribe_backend=False)
+    strategy_feature = LiveStrategyLibraryAdapter(
+        application=LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+            application
+        ),
+        event_bridge=bridge,
+    )
+    scenario_feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        ),
+        event_bridge=bridge,
+    )
+    setup_coordinator = DiagnosticSetupSelectionCoordinator()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
-        inventory=_formal_inventory(tmp_path),
+        inventory=initial_inventory,
         fail_first_campaign_node=True,
     )
     run_monitoring = DeterministicFakeRunMonitoringAdapter()
@@ -1351,8 +1379,13 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     host = JourneyWorkspaceHost(
         run_monitoring,
         context=RunMonitoringContext.no_selection(),
+        strategy_library_feature=strategy_feature,
+        strategy_library_context=StrategyLibraryContext(),
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
         diagnostic_tasks_feature=diagnostic_tasks,
         diagnostic_tasks_context=workspace,
+        diagnostic_setup_selection_coordinator=setup_coordinator,
         evidence_feature=evidence,
         evidence_context=EvidenceAndFindingsContext.no_selection(),
         accessibility_preferences=AccessibilityPreferences(
@@ -1360,27 +1393,39 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
             reduced_motion=True,
             high_contrast=True,
         ),
+        initial_route="strategy_library",
     )
     host.resize(1280, 720)
     host.show()
     app.processEvents()
     app.processEvents()
     root = host.rootObject()
-    diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
-    assert diagnostic_page is not None
-    diagnostic_projection = diagnostic_page.property("adapter")
-    assert hasattr(diagnostic_projection, "announcementChanged")
-    announcement_spy = QSignalSpy(diagnostic_projection.announcementChanged)
+
+    def find_quick_item(object_name: str) -> QQuickItem | None:
+        direct = root.findChild(QQuickItem, object_name)
+        if direct is not None:
+            return direct
+        pending = list(root.childItems())
+        while pending:
+            item = pending.pop()
+            if item.objectName() == object_name:
+                return item
+            pending.extend(item.childItems())
+        return None
 
     def traverse_to(
         object_name: str,
         *,
         backward: bool = False,
     ) -> QQuickItem:
-        target = root.findChild(QQuickItem, object_name)
-        assert target is not None
+        target = find_quick_item(object_name)
+        assert target is not None, [
+            item.objectName()
+            for item in root.childItems()
+            if object_name.split("-")[0] in item.objectName()
+        ]
         visited: list[str] = []
-        for _ in range(48):
+        for _ in range(512):
             if target.property("activeFocus") is True:
                 assert target.property("visible") is True
                 return target
@@ -1404,8 +1449,136 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
             f"{object_name} was not keyboard reachable; visited={visited}"
         )
 
+    def settle() -> None:
+        app.processEvents()
+        app.processEvents()
+
+    def wait_until(predicate) -> None:
+        for _ in range(200):
+            settle()
+            if predicate():
+                return
+            QTest.qWait(5)
+        raise AssertionError("Qt event-loop condition did not become true")
+
+    def activate_setup(
+        object_name: str,
+        *,
+        key: Qt.Key = Qt.Key.Key_Space,
+    ) -> QQuickItem:
+        item = find_quick_item(object_name)
+        assert item is not None
+        assert item.property("enabled") is True
+        assert item.property("activeFocus") is True
+        assert item.property("visible") is True
+        item_top = item.mapToItem(root, QPointF(0, 0)).y()
+        assert 0 <= item_top
+        assert item_top + item.property("height") <= root.property("height")
+        QTest.keyClick(host, key)
+        settle()
+        return item
+
+    assert root.property("activeRoute") == "strategy_library"
+    traverse_to("strategyLibraryCompareFormalSet")
+    activate_setup("strategyLibraryCompareFormalSet")
+    traverse_to("strategyLibrarySelectFormalSet")
+    activate_setup("strategyLibrarySelectFormalSet")
+    assert host._strategy_library.selectionStatus == "current"
+
+    traverse_to("scenarioLabRouteNavigation", backward=True)
+    activate_setup(
+        "scenarioLabRouteNavigation",
+        key=Qt.Key.Key_Return,
+    )
+    assert root.property("activeRoute") == "scenario_lab"
+    draft_count_before = host._scenario_lab.recipeDraftCount
+    handle_count_before = host._scenario_lab.taskHandleCount
+    transformation = traverse_to("scenarioLabRecipeTransformationInput")
+    QTest.keyClick(host, Qt.Key.Key_Space)
+    settle()
+    QTest.keyClick(host, Qt.Key.Key_Down)
+    QTest.keyClick(host, Qt.Key.Key_Return)
+    settle()
+    assert transformation.property("currentIndex") > 0
+    assert str(transformation.property("currentValue"))
+    slippage = traverse_to("scenarioLabRecipeSlippageInput")
+    QTest.keyClick(host, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClicks(host, "5")
+    settle()
+    assert slippage.property("text") == "5"
+
+    traverse_to("scenarioLabCreateRecipeDraftButton")
+    activate_setup("scenarioLabCreateRecipeDraftButton")
+    assert host._scenario_lab.recipeDraftCount == draft_count_before + 1
+    draft = host._scenario_lab.recipeDrafts[-1]
+    validate_name = "scenarioLabValidateRecipeDraft-" + draft["draftId"]
+    traverse_to(validate_name)
+    activate_setup(validate_name)
+    validation = host._scenario_lab.recipeValidations[-1]
+    assert validation["draftId"] == draft["draftId"]
+    assert validation["valid"] is True
+
+    approve_name = "scenarioLabApproveRecipe-" + validation["validationId"]
+    traverse_to(approve_name)
+    activate_setup(approve_name)
+    approved = next(
+        item
+        for item in host._scenario_lab.approvedRecipeVersions
+        if item["validationId"] == validation["validationId"]
+    )
+
+    materialize_name = (
+        "scenarioLabMaterializeApprovedRecipe-"
+        + approved["recipeVersionId"]
+    )
+    traverse_to(materialize_name)
+    activate_setup(materialize_name)
+    wait_until(
+        lambda: host._scenario_lab.taskHandleCount == handle_count_before + 1
+        and host._scenario_lab.taskHandles[-1]["terminal"]
+    )
+    recipe_task_handle = host._scenario_lab.taskHandles[-1]
+    assert recipe_task_handle["phase"] == "completed"
+    assert recipe_task_handle["targetIdentity"] == approved["recipeVersionId"]
+    materialized_case = next(
+        item
+        for item in host._scenario_lab.marketScenarios
+        if item["pathId"] == recipe_task_handle["resultIdentity"]
+    )
+
+    traverse_to("scenarioLabComposeVisibleScenarioSetButton")
+    activate_setup("scenarioLabComposeVisibleScenarioSetButton")
+    assert host._scenario_lab.scenarioSets, (
+        host._scenario_lab.scenarioCommandMessage
+    )
+    composed_set = host._scenario_lab.scenarioSets[-1]
+    assert composed_set["eligibility"] == "formal_campaign_eligible"
+    assert materialized_case["scenarioId"] in composed_set["caseIds"]
+    traverse_to("scenarioLabResolveExecutionAssumptionsButton")
+    activate_setup("scenarioLabResolveExecutionAssumptionsButton")
+    traverse_to("scenarioLabSelectFormalScenarioSetButton")
+    activate_setup("scenarioLabSelectFormalScenarioSetButton")
+    scenario_selection = host._scenario_lab.current_diagnostic_selection()
+    assert scenario_selection is not None
+    assert materialized_case["scenarioId"] in {
+        item.scenario_id.value for item in scenario_selection.market_scenarios
+    }
+
+    traverse_to("diagnosticTasksRouteNavigation", backward=True)
+    activate_setup(
+        "diagnosticTasksRouteNavigation",
+        key=Qt.Key.Key_Return,
+    )
+    assert root.property("activeRoute") == "diagnostic_tasks"
+    assert setup_coordinator.current() is not None
+    diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
+    assert diagnostic_page is not None
+    diagnostic_projection = diagnostic_page.property("adapter")
+    assert hasattr(diagnostic_projection, "announcementChanged")
+    announcement_spy = QSignalSpy(diagnostic_projection.announcementChanged)
+
     def activate(object_name: str) -> QQuickItem:
-        item = root.findChild(QQuickItem, object_name)
+        item = find_quick_item(object_name)
         assert item is not None
         assert item.property("enabled") is True
         assert item.property("activeFocus") is True
@@ -1451,6 +1624,17 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     task = diagnostic_tasks.snapshot(workspace).task
     assert task is not None
     assert task.handoff.campaign_id is not None
+    selected_materialized_case = next(
+        selected
+        for selected in task.handoff.selected_cases
+        if selected.campaign_case_id.value == materialized_case["scenarioId"]
+    )
+    assert selected_materialized_case.recipe_version_id.value == (
+        approved["recipeVersionId"]
+    )
+    assert recipe_task_handle["taskHandleId"] in {
+        item["taskHandleId"] for item in host._scenario_lab.taskHandles
+    }
     run_context = next(
         RunMonitoringContext.for_run(
             RunMonitoringSelection(
@@ -1618,6 +1802,10 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     diagnostic_tasks.close()
     run_monitoring.close()
     evidence.close()
+    strategy_feature.close()
+    scenario_feature.close()
+    bridge.stop()
+    engine.dispose()
 
 
 def test_revision_conflict_announces_authoritative_reread_and_invalid_approval(
