@@ -468,6 +468,9 @@ class DiagnosticTaskPresentation:
     task_handles: tuple[TaskHandle, ...]
     capabilities: DiagnosticTasksCapabilities
     handoff: DiagnosticTaskHandoff
+    setup_selection_context_identity: str | None = None
+    setup_strategy_source_generation: int | None = None
+    setup_scenario_selection_context_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -680,6 +680,7 @@ Rectangle {
                 objectName: "strategyLibraryPageLoader"
                 anchors.fill: parent
                 active: workspace.strategyLibraryAvailable
+                    && workspace.activeRoute === "strategy_library"
                 visible: workspace.activeRoute === "strategy_library"
                 function ensureLoaded() {
                     if (active && status === Loader.Null) {
@@ -701,6 +702,7 @@ Rectangle {
                 objectName: "scenarioLabPageLoader"
                 anchors.fill: parent
                 active: workspace.scenarioLabAvailable
+                    && workspace.activeRoute === "scenario_lab"
                 visible: workspace.activeRoute === "scenario_lab"
                 function ensureLoaded() {
                     if (active && status === Loader.Null) {
@@ -722,7 +724,7 @@ Rectangle {
                 objectName: "diagnosticTasksPageLoader"
                 anchors.fill: parent
                 active: workspace.diagnosticTasksAvailable
-                    && workspace.diagnosticTasksPageActivated
+                    && workspace.activeRoute === "diagnostic_tasks"
                 visible: workspace.activeRoute === "diagnostic_tasks"
                 function ensureLoaded() {
                     if (active && status === Loader.Null) {
@@ -1260,6 +1262,7 @@ Rectangle {
                 objectName: "evidenceAndFindingsPageLoader"
                 anchors.fill: parent
                 active: workspace.evidenceAvailable
+                    && workspace.activeRoute === "evidence_and_findings"
                 visible: workspace.activeRoute === "evidence_and_findings"
                 sourceComponent: Component {
                     EvidenceAndFindingsPage {

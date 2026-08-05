@@ -45,6 +45,7 @@ from app.features import (
     DiagnosticSetupSelectionContext,
     DiagnosticStrategySelection,
     DiagnosticTaskConfiguration,
+    DiagnosticTaskId,
     DiagnosticTaskLifecycle,
     DiagnosticTasksCommandResult,
     DiagnosticTasksContext,
@@ -145,6 +146,10 @@ from app.features.diagnostic_setup import (
     ValidateDiagnosticTaskConfigurationFromSetup,
 )
 from app.features.run_monitoring import SourceGenerationId, TaskHandleId, TaskPhase
+from app.journey_recovery import (
+    JourneyWorkspaceBookmark,
+    JourneyWorkspaceRoute,
+)
 
 
 from .accessibility import (
@@ -207,6 +212,7 @@ class StrategyLibraryQtAdapter(QObject):
             "Compare the backend-declared formal set before selecting it."
         )
         self._mount_generation = _next_mount_generation()
+        self._route_active = True
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
@@ -218,7 +224,7 @@ class StrategyLibraryQtAdapter(QObject):
         )
 
     def _queue_state(self, state: StrategyLibraryViewState) -> None:
-        if not self._closed:
+        if not self._closed and self._route_active:
             self.deliveryRequested.emit(self._mount_generation.value, state)
 
     @Slot(int, object)
@@ -533,6 +539,7 @@ class StrategyLibraryQtAdapter(QObject):
         self._subscription = None
         if subscription is not None:
             subscription.dispose()
+        self._mount_generation = _next_mount_generation()
         self._context = context
         self._state = self._feature.snapshot(context)
         current_source = (
@@ -550,13 +557,35 @@ class StrategyLibraryQtAdapter(QObject):
         ):
             self._comparison_entries = ()
             self._comparison_source = None
-        self._subscription = self._feature.subscribe(context, self._queue_state)
+        self._subscription = (
+            self._feature.subscribe(context, self._queue_state)
+            if self._route_active
+            else None
+        )
         self.stateChanged.emit()
+
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        if active:
+            self._state = self._feature.snapshot(self._context)
+            self._subscription = self._feature.subscribe(
+                self._context,
+                self._queue_state,
+            )
+            self.stateChanged.emit()
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._route_active = False
         self._mount_generation = _next_mount_generation()
         subscription = self._subscription
         self._subscription = None
@@ -672,6 +701,7 @@ class ScenarioLabQtAdapter(QObject):
             "produces an audited typed Draft."
         )
         self._mount_generation = _next_mount_generation()
+        self._route_active = True
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
@@ -683,7 +713,7 @@ class ScenarioLabQtAdapter(QObject):
         )
 
     def _queue_state(self, state: ScenarioLabViewState) -> None:
-        if not self._closed:
+        if not self._closed and self._route_active:
             self.deliveryRequested.emit(self._mount_generation.value, state)
 
     @Slot(int, object)
@@ -1952,15 +1982,43 @@ class ScenarioLabQtAdapter(QObject):
         self._subscription = None
         if subscription is not None:
             subscription.dispose()
+        self._mount_generation = _next_mount_generation()
         self._context = context
         self._state = self._feature.snapshot(context)
-        self._subscription = self._feature.subscribe(context, self._queue_state)
+        self._subscription = (
+            self._feature.subscribe(context, self._queue_state)
+            if self._route_active
+            else None
+        )
         self.stateChanged.emit()
+
+    def recovery_context(self) -> ScenarioLabContext:
+        """Return immutable presentation focus for the workspace bookmark."""
+
+        return self._context
+
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        if active:
+            self._state = self._feature.snapshot(self._context)
+            self._subscription = self._feature.subscribe(
+                self._context,
+                self._queue_state,
+            )
+            self.stateChanged.emit()
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._route_active = False
         self._mount_generation = _next_mount_generation()
         subscription = self._subscription
         self._subscription = None
@@ -2553,18 +2611,13 @@ def _scenario_lab_task_handle_payload(
     }
 
 
-@dataclass(frozen=True, slots=True)
-class _DiagnosticTaskSetupBindingPresentation:
-    task_identity: str
-    setup_identity: str
-
-
 class DiagnosticTasksQtAdapter(QObject):
     """Qt-only projection of the typed Diagnostic Tasks Feature Interface."""
 
     stateChanged = Signal()
     announcementChanged = Signal()
     deliveryRequested = Signal(int, object)
+    campaignContextReady = Signal(object)
     campaignHandoffReady = Signal(object)
     evidenceHandoffReady = Signal(object)
 
@@ -2576,6 +2629,7 @@ class DiagnosticTasksQtAdapter(QObject):
         setup_selection_provider: (
             Callable[[], DiagnosticSetupSelectionContext | None] | None
         ) = None,
+        setup_selection_refresh: Callable[[], None] | None = None,
         setup_selection_coordinator: (
             DiagnosticSetupSelectionCoordinator | None
         ) = None,
@@ -2585,14 +2639,20 @@ class DiagnosticTasksQtAdapter(QObject):
         self._feature = feature
         self._context = context or DiagnosticTasksContext.workspace()
         self._setup_selection_provider = setup_selection_provider
+        self._setup_selection_refresh = setup_selection_refresh
         self._setup_selection_coordinator = setup_selection_coordinator
-        self._task_setup_binding: (
-            _DiagnosticTaskSetupBindingPresentation | None
-        ) = None
+        self._refreshing_setup_selection = False
         if setup_selection_provider is not None:
             self._observe_current_setup_selection()
         self._state = feature.snapshot(self._context)
+        self._setup_sources_diagnostic_generation = (
+            None
+            if setup_selection_provider is None
+            else self._state.source.generation.value
+        )
         self._mount_generation = _next_mount_generation()
+        self._route_active = True
+        self._campaign_navigation_pending = False
         self._last_emitted_monitoring_selection: tuple[str, str] | None = None
         self._last_emitted_evidence_selection: (
             tuple[str, str, str, str, str, str] | None
@@ -2621,7 +2681,7 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     def _queue_state(self, state: DiagnosticTasksViewState) -> None:
-        if not self._closed:
+        if not self._closed and self._route_active:
             self.deliveryRequested.emit(self._mount_generation.value, state)
 
     @Slot(int, object)
@@ -2634,6 +2694,10 @@ class DiagnosticTasksQtAdapter(QObject):
             return
         if state.context != self._context or state.revision <= self._state.revision:
             return
+        self._refresh_setup_selection_sources(
+            diagnostic_generation=state.source.generation.value,
+            force=state.freshness.value != "fresh",
+        )
         self._state = state
         self.stateChanged.emit()
         self._emit_monitoring_handoff_if_ready()
@@ -3355,7 +3419,6 @@ class DiagnosticTasksQtAdapter(QObject):
             )
         )
         result = self._feature.create_diagnostic_task(command)
-        self._record_setup_binding(result, setup)
         self._create_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
@@ -3399,7 +3462,6 @@ class DiagnosticTasksQtAdapter(QObject):
             )
         )
         result = self._feature.revise_configuration(command)
-        self._record_setup_binding(result, setup)
         self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
@@ -3547,6 +3609,8 @@ class DiagnosticTasksQtAdapter(QObject):
             )
         )
         self._command_status = self._command_result_text(result)
+        if result.rejection_reason is None:
+            self._campaign_navigation_pending = True
         self.refresh()
         self.stateChanged.emit()
         self._emit_monitoring_handoff_if_ready()
@@ -3810,8 +3874,11 @@ class DiagnosticTasksQtAdapter(QObject):
             )
         )
         self._command_status = self._command_result_text(result)
+        if result.rejection_reason is None:
+            self._campaign_navigation_pending = True
         self.refresh()
         self.stateChanged.emit()
+        self._emit_monitoring_handoff_if_ready()
 
     def _complete_lifecycle_command(
         self,
@@ -3940,6 +4007,12 @@ class DiagnosticTasksQtAdapter(QObject):
                     )
         return None
 
+    def recovery_task_id(self) -> DiagnosticTaskId | None:
+        """Return only the selected durable task identity, never its config."""
+
+        task = self._state.task
+        return self._context.task_id if task is None else task.task_id
+
     def evidence_context(self) -> EvidenceAndFindingsContext | None:
         task = self._state.task
         if task is None or not task.handoff.ready_for_evidence_and_findings:
@@ -4003,7 +4076,10 @@ class DiagnosticTasksQtAdapter(QObject):
         if identity == self._last_emitted_monitoring_selection:
             return
         self._last_emitted_monitoring_selection = identity
-        self.campaignHandoffReady.emit(context)
+        self.campaignContextReady.emit(context)
+        if self._campaign_navigation_pending:
+            self._campaign_navigation_pending = False
+            self.campaignHandoffReady.emit(context)
 
     def _emit_evidence_handoff_if_ready(self) -> None:
         context = self.evidence_context()
@@ -4113,38 +4189,58 @@ class DiagnosticTasksQtAdapter(QObject):
         if coordinator is not None:
             coordinator.observe(self._current_setup_selection())
 
-    def _record_setup_binding(
+    def _refresh_setup_selection_sources(
         self,
-        result: DiagnosticTasksCommandResult,
-        setup: DiagnosticSetupSelectionContext | None,
+        *,
+        diagnostic_generation: int | None = None,
+        force: bool = False,
     ) -> None:
+        if self._refreshing_setup_selection:
+            return
         if (
-            setup is None
-            or result.rejection_reason is not None
-            or result.affected_task_id is None
+            not force
+            and diagnostic_generation is not None
+            and diagnostic_generation
+            == self._setup_sources_diagnostic_generation
         ):
             return
-        self._task_setup_binding = _DiagnosticTaskSetupBindingPresentation(
-            task_identity=result.affected_task_id.value,
-            setup_identity=setup.context_identity,
-        )
+        self._refreshing_setup_selection = True
+        try:
+            refresh = self._setup_selection_refresh
+            if refresh is not None:
+                refresh()
+            self._observe_current_setup_selection()
+            if diagnostic_generation is not None:
+                self._setup_sources_diagnostic_generation = (
+                    diagnostic_generation
+                )
+        finally:
+            self._refreshing_setup_selection = False
 
     def _current_setup_matches_task(self) -> bool:
         if self._setup_selection_provider is None:
             return True
         setup = self._current_setup_selection()
         task = self._state.task
-        binding = self._task_setup_binding
+        if setup is None or task is None:
+            return False
+        binding_identity = task.setup_selection_context_identity
+        if binding_identity is None or binding_identity == setup.context_identity:
+            return True
+        binding_generation = task.setup_strategy_source_generation
+        binding_scenario = task.setup_scenario_selection_context_identity
         return bool(
-            setup is not None
-            and task is not None
-            and binding is not None
-            and binding.task_identity == task.task_id.value
-            and binding.setup_identity == setup.context_identity
+            binding_generation is not None
+            and setup.strategy_selection.source_generation.value
+            > binding_generation
+            and binding_scenario
+            == setup.scenario_selection.context.selection_context_id.value
+            and task.configuration.content_identity
+            == setup.configuration.content_identity
         )
 
     def upstreamSelectionChanged(self) -> None:  # noqa: N802
-        if self._closed:
+        if self._closed or self._refreshing_setup_selection:
             return
         self._observe_current_setup_selection()
         self.refresh()
@@ -4157,10 +4253,36 @@ class DiagnosticTasksQtAdapter(QObject):
             self._feature.snapshot(self._context),
         )
 
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        if active:
+            state = self._feature.snapshot(self._context)
+            self._refresh_setup_selection_sources(
+                diagnostic_generation=state.source.generation.value,
+                force=state.freshness.value != "fresh",
+            )
+            self._state = state
+            self._subscription = self._feature.subscribe(
+                self._context,
+                self._queue_state,
+            )
+            self.stateChanged.emit()
+            self._emit_monitoring_handoff_if_ready()
+            self._emit_evidence_handoff_if_ready()
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._route_active = False
+        self._mount_generation = _next_mount_generation()
         subscription = self._subscription
         self._subscription = None
         if subscription is not None:
@@ -4190,6 +4312,7 @@ class RunMonitoringQtAdapter(QObject):
         self._context = context or RunMonitoringContext.no_selection()
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
+        self._route_active = True
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
@@ -4201,7 +4324,7 @@ class RunMonitoringQtAdapter(QObject):
         )
 
     def _queue_state(self, state: RunMonitoringViewState) -> None:
-        if self._closed:
+        if self._closed or not self._route_active:
             return
         self.deliveryRequested.emit(self._mount_generation.value, state)
 
@@ -4235,11 +4358,29 @@ class RunMonitoringQtAdapter(QObject):
         self._mount_generation = _next_mount_generation()
         self._context = context
         self._state = self._feature.snapshot(context)
-        self._subscription = self._feature.subscribe(
-            context,
-            self._queue_state,
+        self._subscription = (
+            self._feature.subscribe(context, self._queue_state)
+            if self._route_active
+            else None
         )
         self.stateChanged.emit()
+
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        if active:
+            self._state = self._feature.snapshot(self._context)
+            self._subscription = self._feature.subscribe(
+                self._context,
+                self._queue_state,
+            )
+            self.stateChanged.emit()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802 - QML property convention
@@ -4538,6 +4679,8 @@ class RunMonitoringQtAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        self._route_active = False
+        self._mount_generation = _next_mount_generation()
         subscription = self._subscription
         self._subscription = None
         if subscription is not None:
@@ -4572,6 +4715,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self._context = context or EvidenceAndFindingsContext.no_selection()
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
+        self._route_active = True
         self._closed = False
         self._selected_candidate = ""
         self._selected_finding = ""
@@ -4618,7 +4762,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         )
 
     def _queue_state(self, state: EvidenceAndFindingsViewState) -> None:
-        if not self._closed:
+        if not self._closed and self._route_active:
             self.deliveryRequested.emit(self._mount_generation.value, state)
 
     @Slot(int, object)
@@ -4684,8 +4828,49 @@ class EvidenceAndFindingsQtAdapter(QObject):
             raise RuntimeError(
                 "Selected Evidence chart presentation was not committed"
             )
+        self._subscription = (
+            self._feature.subscribe(context, self._queue_state)
+            if self._route_active
+            else None
+        )
+        self.stateChanged.emit()
+        self.localStateChanged.emit()
+        self.chartPresentationChanged.emit()
+        self.chartSemanticsChanged.emit()
+        self.chartGeometryChanged.emit()
+        self._sync_chart_interaction_enabled()
+
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._chart_timer.stop()
+        self._pending_chart_presentations.clear()
+        if not active:
+            return
+        self._state = self._feature.snapshot(self._context)
+        self._repair_local_selection()
+        self._chart_frame_gate = EvidenceChartFrameGate(
+            max_frames_per_second=20
+        )
+        self._chart_presentation = self._build_chart_presentation()
+        self._chart_semantic_presentation = self._chart_presentation
+        self._chart_frame_sequence += 1
+        initial_gate = self._chart_frame_gate.offer(
+            self._chart_presentation.frame,
+            now_ns=self._chart_clock(),
+        )
+        if not initial_gate.committed:
+            raise RuntimeError(
+                "Reactivated Evidence chart presentation was not committed"
+            )
         self._subscription = self._feature.subscribe(
-            context,
+            self._context,
             self._queue_state,
         )
         self.stateChanged.emit()
@@ -5469,6 +5654,8 @@ class EvidenceAndFindingsQtAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        self._route_active = False
+        self._mount_generation = _next_mount_generation()
         self._chart_timer.stop()
         self._pending_chart_presentations.clear()
         subscription = self._subscription
@@ -5516,6 +5703,10 @@ class JourneyWorkspaceHost(QQuickWidget):
         strategy_library_bookmark_sink: (
             Callable[[StrategySelectionBookmark], None] | None
         ) = None,
+        journey_workspace_bookmark: JourneyWorkspaceBookmark | None = None,
+        journey_workspace_bookmark_sink: (
+            Callable[[JourneyWorkspaceBookmark], None] | None
+        ) = None,
         scenario_lab_feature: ScenarioLabFeature | None = None,
         scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
@@ -5540,6 +5731,15 @@ class JourneyWorkspaceHost(QQuickWidget):
             raise ValueError(
                 f"Unsupported Journey Workspace route: {initial_route!r}"
             )
+        initial_route_identity = JourneyWorkspaceRoute(initial_route)
+        self._journey_workspace_bookmark = replace(
+            journey_workspace_bookmark or JourneyWorkspaceBookmark(),
+            last_route=initial_route_identity,
+        )
+        self._journey_workspace_bookmark_sink = (
+            journey_workspace_bookmark_sink
+        )
+        self._active_route = initial_route_identity
         self.setObjectName("journeyWorkspaceHost")
         self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self._workspace_closed = False
@@ -5587,9 +5787,17 @@ class JourneyWorkspaceHost(QQuickWidget):
             "scenarioLab",
             self._scenario_lab,
         )
+        if self._strategy_library is not None:
+            self._strategy_library.refresh()
+        if self._scenario_lab is not None:
+            self._scenario_lab.refresh()
         if self._strategy_library is not None and self._scenario_lab is not None:
             self._strategy_library.stateChanged.connect(
                 self._scenario_lab.stateChanged
+            )
+        if self._scenario_lab is not None:
+            self._scenario_lab.stateChanged.connect(
+                self._persist_journey_workspace_bookmark
             )
         self._diagnostic_tasks = (
             DiagnosticTasksQtAdapter(
@@ -5597,6 +5805,12 @@ class JourneyWorkspaceHost(QQuickWidget):
                 context=diagnostic_tasks_context,
                 setup_selection_provider=(
                     self._current_diagnostic_setup_selection
+                    if self._strategy_library is not None
+                    and self._scenario_lab is not None
+                    else None
+                ),
+                setup_selection_refresh=(
+                    self._refresh_diagnostic_setup_sources
                     if self._strategy_library is not None
                     and self._scenario_lab is not None
                     else None
@@ -5628,8 +5842,14 @@ class JourneyWorkspaceHost(QQuickWidget):
             parent=self,
         )
         if self._diagnostic_tasks is not None:
+            self._diagnostic_tasks.campaignContextReady.connect(
+                self._select_run_monitoring_handoff
+            )
             self._diagnostic_tasks.campaignHandoffReady.connect(
                 self._open_run_monitoring_handoff
+            )
+            self._diagnostic_tasks.stateChanged.connect(
+                self._persist_journey_workspace_bookmark
             )
         self.rootContext().setContextProperty(
             "runMonitoring",
@@ -5659,13 +5879,72 @@ class JourneyWorkspaceHost(QQuickWidget):
         if self.status() == QQuickWidget.Status.Error:
             details = "; ".join(error.toString() for error in self.errors())
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
+        root = self.rootObject()
+        if root is not None:
+            root.activeRouteChanged.connect(self._active_route_changed)
+            self._active_route_changed()
         if self._diagnostic_tasks is not None:
+            if (
+                initial_route_identity
+                is not JourneyWorkspaceRoute.DIAGNOSTIC_TASKS
+            ):
+                self._diagnostic_tasks.refresh()
             monitoring_context = self._diagnostic_tasks.monitoring_context()
             if monitoring_context is not None:
-                self._open_run_monitoring_handoff(monitoring_context)
+                self._run_monitoring.select_context(monitoring_context)
             evidence_context = self._diagnostic_tasks.evidence_context()
             if evidence_context is not None:
-                self._open_evidence_and_findings_handoff(evidence_context)
+                if self._evidence_and_findings is not None:
+                    self._evidence_and_findings.select_context(evidence_context)
+
+    @Slot()
+    def _active_route_changed(self) -> None:
+        root = self.rootObject()
+        if self._workspace_closed or root is None:
+            return
+        try:
+            route = JourneyWorkspaceRoute(str(root.property("activeRoute")))
+        except ValueError:
+            return
+        self._apply_route_activation(route)
+        if route is self._active_route:
+            return
+        self._active_route = route
+        self._persist_journey_workspace_bookmark()
+
+    @Slot()
+    def _persist_journey_workspace_bookmark(self) -> None:
+        sink = self._journey_workspace_bookmark_sink
+        if self._workspace_closed or sink is None:
+            return
+        scenario_context = (
+            None
+            if self._scenario_lab is None
+            else self._scenario_lab.recovery_context()
+        )
+        task_id = self._journey_workspace_bookmark.diagnostic_task_id
+        if self._diagnostic_tasks is not None:
+            recovered_task_id = self._diagnostic_tasks.recovery_task_id()
+            if recovered_task_id is not None:
+                task_id = recovered_task_id
+        candidate = JourneyWorkspaceBookmark(
+            last_route=self._active_route,
+            diagnostic_task_id=task_id,
+            scenario_focus_target=(
+                self._journey_workspace_bookmark.scenario_focus_target
+                if scenario_context is None
+                else scenario_context.focus_target
+            ),
+            scenario_focus_identity=(
+                self._journey_workspace_bookmark.scenario_focus_identity
+                if scenario_context is None
+                else scenario_context.focus_identity
+            ),
+        )
+        if candidate == self._journey_workspace_bookmark:
+            return
+        self._journey_workspace_bookmark = candidate
+        sink(candidate)
 
     def _current_diagnostic_setup_selection(
         self,
@@ -5681,6 +5960,45 @@ class JourneyWorkspaceHost(QQuickWidget):
         except (KeyError, TypeError, ValueError):
             return None
 
+    def _refresh_diagnostic_setup_sources(self) -> None:
+        if self._strategy_library is not None:
+            self._strategy_library.refresh()
+        if self._scenario_lab is not None:
+            self._scenario_lab.refresh()
+
+    def _apply_route_activation(
+        self,
+        route: JourneyWorkspaceRoute,
+    ) -> None:
+        if self._strategy_library is not None:
+            self._strategy_library.set_route_active(
+                route is JourneyWorkspaceRoute.STRATEGY_LIBRARY
+            )
+        if self._scenario_lab is not None:
+            self._scenario_lab.set_route_active(
+                route is JourneyWorkspaceRoute.SCENARIO_LAB
+            )
+        if self._diagnostic_tasks is not None:
+            self._diagnostic_tasks.set_route_active(
+                route is JourneyWorkspaceRoute.DIAGNOSTIC_TASKS
+            )
+        self._run_monitoring.set_route_active(
+            route is JourneyWorkspaceRoute.RUN_MONITORING
+        )
+        if self._evidence_and_findings is not None:
+            self._evidence_and_findings.set_route_active(
+                route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            )
+
+    @Slot(object)
+    def _select_run_monitoring_handoff(
+        self,
+        context: RunMonitoringContext,
+    ) -> None:
+        if self._workspace_closed or not isinstance(context, RunMonitoringContext):
+            return
+        self._run_monitoring.select_context(context)
+
     @Slot(object)
     def _open_run_monitoring_handoff(
         self,
@@ -5688,7 +6006,7 @@ class JourneyWorkspaceHost(QQuickWidget):
     ) -> None:
         if self._workspace_closed or not isinstance(context, RunMonitoringContext):
             return
-        self._run_monitoring.select_context(context)
+        self._select_run_monitoring_handoff(context)
         root = self.rootObject()
         if root is not None:
             root.setProperty("activeRoute", "run_monitoring")
@@ -5710,6 +6028,12 @@ class JourneyWorkspaceHost(QQuickWidget):
         if self._workspace_closed:
             return
         self._workspace_closed = True
+        root = self.rootObject()
+        if root is not None:
+            try:
+                root.activeRouteChanged.disconnect(self._active_route_changed)
+            except (RuntimeError, TypeError):
+                pass
         if self._strategy_library is not None:
             self._strategy_library.close()
         if self._scenario_lab is not None:

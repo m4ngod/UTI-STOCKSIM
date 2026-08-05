@@ -42,7 +42,27 @@ from app.features import (
     ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
     RunMonitoringSelection,
+    ScenarioLabContext,
     StartFormalDiagnosticCampaign,
+    StrategyUnderTestId,
+)
+from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
+from app.features.live_scenario_lab import LiveScenarioLabAdapter
+from app.features.live_strategy_library import LiveStrategyLibraryAdapter
+from app.features.scenario_lab_application import (
+    ComposeFormalScenarioSetCommand,
+    LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    ResolveScenarioExecutionAssumptionsCommand,
+    ScenarioExecutionAssumptionTarget,
+    SelectFormalScenarioSetCommand,
+)
+from app.features.strategy_library import StrategyLibraryContext
+from app.features.strategy_library_application import (
+    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+)
+from app.journey_recovery import (
+    JourneyWorkspaceBookmark,
+    JourneyWorkspaceRoute,
 )
 from app.ui.accessibility import AccessibilityPreferences
 from app.ui.journey_workspace import JourneyWorkspaceHost
@@ -64,6 +84,11 @@ from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contrac
 )
 from tests.frontend.contract.test_strategy_diagnostics_v1_run_monitoring_live_contract import (
     _DirectExecutor,
+)
+from tests.frontend.contract.test_scenario_lab_formal_scenario_sets_live_contract import (
+    _canonical,
+    _formal_cases,
+    _metadata,
 )
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
     _baseline_payload,
@@ -145,6 +170,90 @@ def _formal_inventory(tmp_path: Path) -> DiagnosticTasksInventory:
         return inventory
     finally:
         feature.close()
+
+
+def _prepare_live_five_feature_setup(application, event_bridge: EventBridge):
+    scenario_feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        ),
+        event_bridge=event_bridge,
+    )
+    scenario_context = ScenarioLabContext()
+    scenario_feature.snapshot(scenario_context)
+    ready = scenario_feature.snapshot(scenario_context)
+    baseline, isolated, compound = _formal_cases(ready)
+    composed = scenario_feature.compose_scenario_set(
+        _canonical(
+            ComposeFormalScenarioSetCommand(
+                metadata=_metadata(ready, "compose-five-feature-reopen-85"),
+                baseline_case_id=baseline.scenario_id,
+                isolated_case_ids=tuple(
+                    item.scenario_id for item in isolated
+                ),
+                compound_case_ids=tuple(
+                    item.scenario_id for item in compound
+                ),
+            )
+        )
+    )
+    assert composed.scenario_set is not None
+
+    after_compose = scenario_feature.snapshot(scenario_context)
+    strategy_ids = tuple(
+        StrategyUnderTestId(item.strategy_id)
+        for item in application.read_strategy_under_test_inventory().entries
+    )
+    decision_time = next(
+        item.start_time
+        for item in after_compose.reference_paths
+        if item.path_id == baseline.path_id
+    )
+    resolved = scenario_feature.resolve_execution_assumptions(
+        _canonical(
+            ResolveScenarioExecutionAssumptionsCommand(
+                metadata=_metadata(
+                    after_compose,
+                    "resolve-five-feature-reopen-85",
+                ),
+                scenario_set_id=composed.scenario_set.scenario_set_id,
+                targets=tuple(
+                    ScenarioExecutionAssumptionTarget(
+                        strategy_id=strategy_id,
+                        campaign_case_id=case_id,
+                        decision_time=decision_time,
+                    )
+                    for strategy_id in strategy_ids
+                    for case_id in composed.scenario_set.case_ids
+                ),
+            )
+        )
+    )
+    assert resolved.resolution is not None
+    after_resolution = scenario_feature.snapshot(scenario_context)
+    selected = scenario_feature.select_formal_scenario_set(
+        _canonical(
+            SelectFormalScenarioSetCommand(
+                metadata=_metadata(
+                    after_resolution,
+                    "select-five-feature-reopen-85",
+                ),
+                scenario_set_id=composed.scenario_set.scenario_set_id,
+                case_ids=composed.scenario_set.case_ids,
+                originating_view_revision=after_resolution.revision,
+                execution_resolution_id=resolved.resolution.resolution_id,
+            )
+        )
+    )
+    assert selected.selection_context is not None
+
+    strategy_feature = LiveStrategyLibraryAdapter(
+        application=LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+            application
+        ),
+        event_bridge=event_bridge,
+    )
+    return strategy_feature, scenario_feature
 
 
 @dataclass(frozen=True)
@@ -271,6 +380,75 @@ def test_available_diagnostic_evidence_hands_exact_ids_to_evidence_route(
     evidence.close()
 
 
+def test_reopen_rereads_task_handoffs_without_overriding_last_route(
+    tmp_path,
+) -> None:
+    app = _app()
+    diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter(
+        inventory=_formal_inventory(tmp_path)
+    )
+    approved = _approved_formal_task(diagnostic_tasks)
+    diagnostic_tasks.start_formal_diagnostic_campaign(
+        StartFormalDiagnosticCampaign(
+            command_id=DiagnosticCommandId("reopen-start-command-85"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "reopen-start-idempotency-85"
+            ),
+            task_id=approved.task_id,
+            expected_revision=approved.revision,
+            approved_revision=approved.revision,
+        )
+    )
+    diagnostic_tasks.advance_evidence_available(approved.task_id)
+    task_context = DiagnosticTasksContext(task_id=approved.task_id)
+    diagnostic_tasks.snapshot(task_context)
+    task = diagnostic_tasks.snapshot(task_context).task
+    assert task is not None
+    expected_run = RunMonitoringContext.for_run(
+        RunMonitoringSelection(
+            campaign_id=task.handoff.campaign_id,
+            run_id=next(
+                run.run_id
+                for node in task.handoff.campaign_nodes
+                for attempt in node.attempts
+                if attempt.attempt_id == node.active_attempt_id
+                for run in attempt.runs
+            ),
+        )
+    )
+    expected_evidence = _authoritative_evidence_handoff(task).context
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+        diagnostic_task_id=approved.task_id,
+    )
+    run_monitoring = DeterministicFakeRunMonitoringAdapter()
+    evidence = DeterministicFakeEvidenceAndFindingsAdapter()
+
+    host = JourneyWorkspaceHost(
+        run_monitoring,
+        context=RunMonitoringContext.no_selection(),
+        diagnostic_tasks_feature=diagnostic_tasks,
+        diagnostic_tasks_context=task_context,
+        evidence_feature=evidence,
+        evidence_context=EvidenceAndFindingsContext.no_selection(),
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+    app.processEvents()
+
+    root = host.rootObject()
+    assert root is not None
+    assert root.property("activeRoute") == "evidence_and_findings"
+    assert host._run_monitoring._context == expected_run
+    assert host._evidence_and_findings._context == expected_evidence
+    assert host._diagnostic_tasks.recovery_task_id() == approved.task_id
+    host.close_adapter()
+    host.close()
+    diagnostic_tasks.close()
+    run_monitoring.close()
+    evidence.close()
+
+
 def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
     tmp_path,
 ) -> None:
@@ -374,7 +552,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         artifact_store,
         engine,
         application,
-        diagnostic_application,
+        _diagnostic_application,
         initial_diagnostic_tasks,
     ) = _formal_live_stack(
         tmp_path,
@@ -385,8 +563,16 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     )
     initial_diagnostic_tasks.close()
     bridge = EventBridge(subscribe_backend=False)
+    strategy_feature, scenario_feature = _prepare_live_five_feature_setup(
+        application,
+        bridge,
+    )
+    setup_coordinator = DiagnosticSetupSelectionCoordinator()
     diagnostic_tasks = LiveDiagnosticTasksAdapter(
-        application=diagnostic_application,
+        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            application,
+            setup_selection_provider=setup_coordinator.current,
+        ),
         event_bridge=bridge,
     )
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
@@ -404,11 +590,20 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         executor=_DirectExecutor(),
     )
     workspace = DiagnosticTasksContext.workspace()
+    strategy_bookmarks = []
+    journey_bookmarks = []
     host = JourneyWorkspaceHost(
         run_monitoring,
         context=RunMonitoringContext.no_selection(),
+        strategy_library_feature=strategy_feature,
+        strategy_library_context=StrategyLibraryContext(),
+        strategy_library_bookmark_sink=strategy_bookmarks.append,
+        journey_workspace_bookmark_sink=journey_bookmarks.append,
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
         diagnostic_tasks_feature=diagnostic_tasks,
         diagnostic_tasks_context=workspace,
+        diagnostic_setup_selection_coordinator=setup_coordinator,
         evidence_feature=evidence,
         evidence_context=EvidenceAndFindingsContext.no_selection(),
         accessibility_preferences=AccessibilityPreferences(
@@ -416,12 +611,39 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
             reduced_motion=True,
             high_contrast=True,
         ),
+        initial_route="strategy_library",
     )
     host.resize(1280, 720)
     host.show()
     app.processEvents()
     app.processEvents()
     root = host.rootObject()
+    assert root.property("activeRoute") == "strategy_library"
+    assert root.findChild(QObject, "strategyLibraryPage") is not None
+    host._strategy_library.compareFormalSet()
+    host._strategy_library.selectFormalSet()
+    app.processEvents()
+    app.processEvents()
+    assert strategy_bookmarks
+    assert host._strategy_library.current_formal_strategy_selection() is not None
+
+    assert root.setProperty("activeRoute", "scenario_lab")
+    app.processEvents()
+    app.processEvents()
+    assert root.findChild(QObject, "scenarioLabPage") is not None
+    assert host._scenario_lab.current_diagnostic_selection() is not None
+    assert root.setProperty("activeRoute", "diagnostic_tasks")
+    app.processEvents()
+    app.processEvents()
+    setup_selection = setup_coordinator.current()
+    assert setup_selection is not None
+    expected_setup_identity = setup_selection.context_identity
+    expected_setup_generation = (
+        setup_selection.strategy_selection.source_generation.value
+    )
+    expected_scenario_selection_identity = (
+        setup_selection.scenario_selection.context.selection_context_id.value
+    )
     diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
     assert diagnostic_page is not None
     diagnostic_projection = diagnostic_page.property("adapter")
@@ -554,11 +776,21 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         QObject,
         "runMonitoringRunIdentity",
     ).property("text") == f"Run · {failed_run.run_id.value}"
+    setup_generation_before_disconnect = (
+        setup_selection.strategy_selection.source_generation.value
+    )
 
     announcements_before_disconnect = announcement_spy.count()
     bridge.mark_disconnected()
     settle()
+    assert diagnostic_projection.freshness == "fresh"
+    assert host._diagnostic_tasks._subscription is None
+    assert announcement_spy.count() == announcements_before_disconnect
+    assert root.setProperty("activeRoute", "diagnostic_tasks")
+    settle()
     assert diagnostic_projection.freshness == "disconnected"
+    assert setup_coordinator.current() is None
+    assert host._diagnostic_tasks._subscription is not None
     assert announcement_spy.count() == announcements_before_disconnect + 1
     announcements_before_reconnect = announcement_spy.count()
     bridge.mark_reconnected()
@@ -566,6 +798,12 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     diagnostic_projection.refresh()
     settle()
     assert diagnostic_projection.freshness == "fresh"
+    recovered_setup = setup_coordinator.current()
+    assert recovered_setup is not None
+    assert (
+        recovered_setup.strategy_selection.source_generation.value
+        > setup_generation_before_disconnect
+    )
     assert (
         announcements_before_reconnect
         < announcement_spy.count()
@@ -619,6 +857,10 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     diagnostic_projection.refresh()
     settle()
     completed_task = current_task()
+    assert (
+        completed_task.setup_selection_context_identity
+        == expected_setup_identity
+    )
     assert completed_task.handoff.ready_for_evidence_and_findings
     assert completed_task.handoff.evidence_package_id is not None
     assert completed_task.handoff.reproduction_manifest_id is not None
@@ -658,33 +900,47 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         f"Run · {accepted_run.run_id.value}",
         manifest_id.value,
     )
+    assert strategy_bookmarks
+    assert journey_bookmarks
+    saved_strategy_bookmark = strategy_bookmarks[-1]
+    saved_journey_bookmark = journey_bookmarks[-1]
+    assert saved_journey_bookmark.last_route is (
+        JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+    assert saved_journey_bookmark.diagnostic_task_id == completed_task.task_id
+    recovered_workspace = DiagnosticTasksContext(
+        task_id=saved_journey_bookmark.diagnostic_task_id
+    )
     host.close_adapter()
     host.close()
     remounted = JourneyWorkspaceHost(
         run_monitoring,
         context=RunMonitoringContext.no_selection(),
+        strategy_library_feature=strategy_feature,
+        strategy_library_context=StrategyLibraryContext(
+            focus_strategy_id=saved_strategy_bookmark.focus_strategy_id,
+            selection_bookmark=saved_strategy_bookmark,
+        ),
+        strategy_library_bookmark_sink=strategy_bookmarks.append,
+        journey_workspace_bookmark=saved_journey_bookmark,
+        journey_workspace_bookmark_sink=journey_bookmarks.append,
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(
+            focus_target=saved_journey_bookmark.scenario_focus_target,
+            focus_identity=saved_journey_bookmark.scenario_focus_identity,
+        ),
         diagnostic_tasks_feature=diagnostic_tasks,
-        diagnostic_tasks_context=workspace,
+        diagnostic_tasks_context=recovered_workspace,
+        diagnostic_setup_selection_coordinator=setup_coordinator,
         evidence_feature=evidence,
         evidence_context=EvidenceAndFindingsContext.no_selection(),
+        initial_route=saved_journey_bookmark.last_route.value,
     )
     remounted.resize(1280, 720)
     remounted.show()
     settle()
     remounted_root = remounted.rootObject()
-    assert remounted_root.findChild(
-        QObject,
-        "runMonitoringCampaignIdentity",
-    ).property("text") == expected_identity_text[0]
-    assert remounted_root.findChild(
-        QObject,
-        "runMonitoringRunIdentity",
-    ).property("text") == expected_identity_text[1]
-    assert remounted_root.setProperty(
-        "activeRoute",
-        "evidence_and_findings",
-    )
-    settle()
+    assert remounted_root.property("activeRoute") == "evidence_and_findings"
     remounted_status = remounted_root.findChild(
         QObject,
         "evidenceAccessibleStatus",
@@ -696,12 +952,44 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert expected_identity_text[2] in remounted_interface.text(
         QAccessible.Text.Description
     )
+    assert remounted_root.setProperty("activeRoute", "run_monitoring")
+    settle()
+    assert remounted_root.findChild(
+        QObject,
+        "runMonitoringCampaignIdentity",
+    ).property("text") == expected_identity_text[0]
+    assert remounted_root.findChild(
+        QObject,
+        "runMonitoringRunIdentity",
+    ).property("text") == expected_identity_text[1]
+    assert remounted_root.setProperty("activeRoute", "strategy_library")
+    settle()
+    remounted_strategy = (
+        remounted._strategy_library.current_formal_strategy_selection()
+    )
+    assert remounted_strategy is not None
+    assert (
+        remounted_strategy.context_identity
+        == recovered_setup.strategy_selection.context_identity
+    )
+    assert remounted_root.setProperty("activeRoute", "scenario_lab")
+    settle()
+    remounted_scenario = remounted._scenario_lab.current_diagnostic_selection()
+    assert remounted_scenario is not None
+    assert (
+        remounted_scenario.context.selection_context_id
+        == setup_selection.scenario_selection.context.selection_context_id
+    )
+    assert remounted_root.setProperty("activeRoute", "evidence_and_findings")
+    settle()
 
     remounted.close_adapter()
     remounted.close()
     diagnostic_tasks.close()
     run_monitoring.close()
     evidence.close()
+    strategy_feature.close()
+    scenario_feature.close()
     bridge.stop()
     engine.dispose()
 
@@ -730,9 +1018,23 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     restarted_application.start()
     restarted_application.initialize_persistence(restarted_engine)
     restarted_bridge = EventBridge(subscribe_backend=False)
+    restarted_strategy = LiveStrategyLibraryAdapter(
+        application=LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+            restarted_application
+        ),
+        event_bridge=restarted_bridge,
+    )
+    restarted_scenario = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            restarted_application
+        ),
+        event_bridge=restarted_bridge,
+    )
+    restarted_setup_coordinator = DiagnosticSetupSelectionCoordinator()
     restarted_tasks = LiveDiagnosticTasksAdapter(
         application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-            restarted_application
+            restarted_application,
+            setup_selection_provider=restarted_setup_coordinator.current,
         ),
         event_bridge=restarted_bridge,
     )
@@ -753,17 +1055,32 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     reopened = JourneyWorkspaceHost(
         restarted_monitoring,
         context=RunMonitoringContext.no_selection(),
+        strategy_library_feature=restarted_strategy,
+        strategy_library_context=StrategyLibraryContext(
+            focus_strategy_id=saved_strategy_bookmark.focus_strategy_id,
+            selection_bookmark=saved_strategy_bookmark,
+        ),
+        strategy_library_bookmark_sink=strategy_bookmarks.append,
+        journey_workspace_bookmark=saved_journey_bookmark,
+        journey_workspace_bookmark_sink=journey_bookmarks.append,
+        scenario_lab_feature=restarted_scenario,
+        scenario_lab_context=ScenarioLabContext(
+            focus_target=saved_journey_bookmark.scenario_focus_target,
+            focus_identity=saved_journey_bookmark.scenario_focus_identity,
+        ),
         diagnostic_tasks_feature=restarted_tasks,
-        diagnostic_tasks_context=workspace,
+        diagnostic_tasks_context=recovered_workspace,
+        diagnostic_setup_selection_coordinator=restarted_setup_coordinator,
         evidence_feature=restarted_evidence,
         evidence_context=EvidenceAndFindingsContext.no_selection(),
+        initial_route=saved_journey_bookmark.last_route.value,
     )
     reopened.resize(1280, 720)
     reopened.show()
     settle()
     reopened_root = reopened.rootObject()
-    restarted_tasks.snapshot(workspace)
-    reopened_task_state = restarted_tasks.snapshot(workspace)
+    restarted_tasks.snapshot(recovered_workspace)
+    reopened_task_state = restarted_tasks.snapshot(recovered_workspace)
     assert reopened_task_state.task is not None
     assert (
         durable_identity_graph(reopened_task_state.task)
@@ -773,6 +1090,42 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         reopened_task_state.task.lifecycle
         is DiagnosticTaskLifecycle.COMPLETED
     )
+    assert (
+        reopened_task_state.task.setup_selection_context_identity
+        == expected_setup_identity
+    )
+    assert (
+        reopened_task_state.task.setup_strategy_source_generation
+        == expected_setup_generation
+    )
+    assert (
+        reopened_task_state.task.setup_scenario_selection_context_identity
+        == expected_scenario_selection_identity
+    )
+    reopened_setup = restarted_setup_coordinator.current()
+    assert reopened_setup is not None
+    assert reopened_setup.context_identity != expected_setup_identity
+    assert (
+        reopened_setup.strategy_selection.source_generation.value
+        > expected_setup_generation
+    )
+    assert (
+        reopened_setup.scenario_selection.context.selection_context_id.value
+        == expected_scenario_selection_identity
+    )
+    assert reopened_setup.configuration == setup_selection.configuration
+    assert reopened_root.property("activeRoute") == "evidence_and_findings"
+    reopened_status = reopened_root.findChild(
+        QObject,
+        "evidenceAccessibleStatus",
+    )
+    reopened_interface = QAccessible.queryAccessibleInterface(reopened_status)
+    assert reopened_interface is not None
+    assert expected_identity_text[2] in reopened_interface.text(
+        QAccessible.Text.Description
+    )
+    assert reopened_root.setProperty("activeRoute", "run_monitoring")
+    settle()
     assert reopened_root.findChild(
         QObject,
         "runMonitoringCampaignIdentity",
@@ -798,6 +1151,8 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     restarted_tasks.close()
     restarted_monitoring.close()
     restarted_evidence.close()
+    restarted_strategy.close()
+    restarted_scenario.close()
     restarted_bridge.stop()
     restarted_engine.dispose()
 
@@ -912,8 +1267,20 @@ def test_diagnostic_route_restores_visible_focus_after_navigation_and_recovery(
     diagnostic_route.forceActiveFocus()
     QTest.keyClick(host, Qt.Key.Key_Return)
     app.processEvents()
+    app.processEvents()
     assert root.property("activeRoute") == "diagnostic_tasks"
-    assert actor.property("activeFocus") is True
+    restored_actor = root.findChild(
+        QQuickItem,
+        "diagnosticTaskApprovalActorInput",
+    )
+    restored_create = root.findChild(QQuickItem, "createDiagnosticTaskButton")
+    assert restored_actor is not None
+    assert restored_create is not None
+    assert restored_actor is not actor
+    assert restored_create.property("activeFocus") is True
+    restored_actor.forceActiveFocus()
+    app.processEvents()
+    actor = restored_actor
 
     diagnostic_tasks.advance_to_disconnected()
     app.processEvents()
@@ -1053,6 +1420,7 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
         assert announcement_spy.count() == announcement_count + 1
         return item
 
+    traverse_to("createDiagnosticTaskButton")
     activate("createDiagnosticTaskButton")
     assert root.findChild(
         QQuickItem,
@@ -1152,11 +1520,17 @@ def test_keyboard_completes_three_route_journey_with_narrator_identity_summary(
     )
     diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
     remembered_after_retry = diagnostic_page.property("lastFocusedItem")
-    assert pause_after_retry.property("activeFocus") is True, (
+    create_after_retry = root.findChild(
+        QQuickItem,
+        "createDiagnosticTaskButton",
+    )
+    assert create_after_retry.property("activeFocus") is True, (
         remembered_after_retry.objectName(),
         pause_after_retry.property("enabled"),
         root.property("activeRoute"),
     )
+    assert remembered_after_retry is create_after_retry
+    traverse_to("pauseDiagnosticTaskTargetButton")
     activate("pauseDiagnosticTaskTargetButton")
     assert root.findChild(
         QQuickItem,
@@ -1511,7 +1885,7 @@ def test_diagnostic_tasks_is_the_active_typed_qml_workspace_route() -> None:
     run_monitoring.close()
 
 
-def test_workspace_loads_only_the_selected_initial_route_then_retains_visits(
+def test_workspace_route_exit_disposes_subscription_and_remounts_page(
 ) -> None:
     app = _app()
     diagnostic_tasks = DeterministicFakeDiagnosticTasksAdapter()
@@ -1530,21 +1904,36 @@ def test_workspace_loads_only_the_selected_initial_route_then_retains_visits(
     app.processEvents()
     app.processEvents()
     root = host.rootObject()
+    diagnostic_loader = root.findChild(QObject, "diagnosticTasksPageLoader")
+    assert diagnostic_loader is not None
 
     assert root.property("activeRoute") == "evidence_and_findings"
     assert root.findChild(QObject, "evidenceResearchFlickable") is not None
-    assert root.findChild(QObject, "diagnosticTasksPage") is None
+    assert diagnostic_loader.property("item") is None
+    assert host._evidence_and_findings._subscription is not None
+    assert host._diagnostic_tasks._subscription is None
 
     assert root.setProperty("activeRoute", "diagnostic_tasks")
     app.processEvents()
     app.processEvents()
-    diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
+    diagnostic_page = diagnostic_loader.property("item")
     assert diagnostic_page is not None
+    assert host._diagnostic_tasks._subscription is not None
+    assert host._evidence_and_findings._subscription is None
 
     assert root.setProperty("activeRoute", "evidence_and_findings")
     app.processEvents()
     app.processEvents()
-    assert root.findChild(QObject, "diagnosticTasksPage") is diagnostic_page
+    assert diagnostic_loader.property("item") is None
+    assert host._diagnostic_tasks._subscription is None
+    assert host._evidence_and_findings._subscription is not None
+
+    assert root.setProperty("activeRoute", "diagnostic_tasks")
+    app.processEvents()
+    app.processEvents()
+    remounted_page = diagnostic_loader.property("item")
+    assert remounted_page is not None
+    assert remounted_page is not diagnostic_page
 
     host.close_adapter()
     host.close()
@@ -1895,27 +2284,44 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     assert diagnostic_navigation is not None
     assert root.setProperty("activeRoute", "diagnostic_tasks")
     app.processEvents()
+    app.processEvents()
     assert root.property("activeRoute") == "diagnostic_tasks"
-    lifecycle_panel = root.findChild(QObject, "diagnosticLifecyclePanel")
-    pause_task = root.findChild(
+    diagnostic_loader = root.findChild(QObject, "diagnosticTasksPageLoader")
+    assert diagnostic_loader is not None
+    active_diagnostic_page = diagnostic_loader.property("item")
+    assert active_diagnostic_page is not None
+    lifecycle_panel = active_diagnostic_page.findChild(
+        QObject,
+        "diagnosticLifecyclePanel",
+    )
+    pause_task = active_diagnostic_page.findChild(
         QObject,
         "pauseDiagnosticTaskTargetButton",
     )
-    resume_task = root.findChild(
+    resume_task = active_diagnostic_page.findChild(
         QObject,
         "resumeDiagnosticTaskTargetButton",
     )
-    pause_campaign = root.findChild(
+    pause_campaign = active_diagnostic_page.findChild(
         QObject,
         "pauseFormalDiagnosticCampaignTargetButton",
     )
-    resume_campaign = root.findChild(
+    resume_campaign = active_diagnostic_page.findChild(
         QObject,
         "resumeFormalDiagnosticCampaignTargetButton",
     )
-    pause_node = root.findChild(QObject, "pauseCampaignNodeTargetButton")
-    resume_node = root.findChild(QObject, "resumeCampaignNodeTargetButton")
-    cancel_node = root.findChild(QObject, "cancelCampaignNodeTargetButton")
+    pause_node = active_diagnostic_page.findChild(
+        QObject,
+        "pauseCampaignNodeTargetButton",
+    )
+    resume_node = active_diagnostic_page.findChild(
+        QObject,
+        "resumeCampaignNodeTargetButton",
+    )
+    cancel_node = active_diagnostic_page.findChild(
+        QObject,
+        "cancelCampaignNodeTargetButton",
+    )
     assert lifecycle_panel is not None
     assert pause_task is not None
     assert resume_task is not None
@@ -1966,7 +2372,10 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     app.processEvents()
     app.processEvents()
     remounted_root = remounted.centralWidget().rootObject()
-    assert remounted_root.property("activeRoute") == "run_monitoring"
+    assert remounted_root.property("activeRoute") == "diagnostic_tasks"
+    assert remounted_root.setProperty("activeRoute", "run_monitoring")
+    app.processEvents()
+    app.processEvents()
     assert remounted_root.findChild(
         QObject,
         "runMonitoringCampaignIdentity",
@@ -2019,7 +2428,10 @@ def test_qml_starts_approved_campaign_and_hands_real_run_to_monitoring(
     app.processEvents()
     app.processEvents()
     reopened_root = reopened.centralWidget().rootObject()
-    assert reopened_root.property("activeRoute") == "run_monitoring"
+    assert reopened_root.property("activeRoute") == "diagnostic_tasks"
+    assert reopened_root.setProperty("activeRoute", "run_monitoring")
+    app.processEvents()
+    app.processEvents()
     assert reopened_root.findChild(
         QObject,
         "runMonitoringCampaignIdentity",

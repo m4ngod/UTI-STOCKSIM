@@ -155,6 +155,16 @@ def _start_frontend(*, headless: bool):
         strategy_library_bookmark_sink=(
             getattr(context, "persist_strategy_library_bookmark", None)
         ),
+        journey_workspace_bookmark=getattr(
+            context,
+            "journey_workspace_bookmark",
+            None,
+        ),
+        journey_workspace_bookmark_sink=getattr(
+            context,
+            "persist_journey_workspace_bookmark",
+            None,
+        ),
         scenario_lab_feature=getattr(
             context,
             "scenario_lab_feature",

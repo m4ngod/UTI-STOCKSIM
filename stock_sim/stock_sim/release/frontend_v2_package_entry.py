@@ -102,7 +102,7 @@ EXPECTED_JOURNEY = (
         "terminal",
         "ready",
         "disconnected",
-        "disconnected",
+        "fresh",
     ),
     (
         "disconnected_evidence",
@@ -134,7 +134,7 @@ EXPECTED_JOURNEY = (
         "terminal",
         "ready",
         "fresh",
-        "fresh",
+        "stale",
     ),
     (
         "reconnected_evidence",
@@ -437,6 +437,23 @@ def _create_production_window(
         window = MainWindow(
             strategy_library_feature=context.strategy_library_feature,
             strategy_library_context=context.strategy_library_context,
+            strategy_library_bookmark_sink=(
+                getattr(
+                    context,
+                    "persist_strategy_library_bookmark",
+                    None,
+                )
+            ),
+            journey_workspace_bookmark=(
+                getattr(context, "journey_workspace_bookmark", None)
+            ),
+            journey_workspace_bookmark_sink=(
+                getattr(
+                    context,
+                    "persist_journey_workspace_bookmark",
+                    None,
+                )
+            ),
             scenario_lab_feature=context.scenario_lab_feature,
             scenario_lab_context=context.scenario_lab_context,
             diagnostic_tasks_feature=context.diagnostic_tasks_feature,
@@ -731,8 +748,6 @@ def _collect_qml_identity_checkpoint(
     quick_window = host.quickWindow()
     if quick_window is None:
         raise RuntimeError("Journey Workspace Quick Window is unavailable")
-    original_focus = quick_window.activeFocusItem()
-
     _navigate_route(
         app=app,
         host=host,
@@ -821,9 +836,12 @@ def _collect_qml_identity_checkpoint(
         root=root,
         route=original_route,
     )
-    if original_focus is not None:
-        original_focus.forceActiveFocus()
-        app.processEvents()
+    app.processEvents()
+    restored_focus = quick_window.activeFocusItem()
+    if restored_focus is None or not restored_focus.property("visible"):
+        raise RuntimeError(
+            "Restored QML route has no meaningful visible keyboard focus"
+        )
     return checkpoint
 
 
@@ -2565,7 +2583,7 @@ def _run_smoke_journey(
             for item in observations[-2:]
         )
         == (
-            ("reconnected_terminal_run", "fresh", "fresh"),
+            ("reconnected_terminal_run", "fresh", "stale"),
             ("reconnected_evidence", "fresh", "fresh"),
         )
     )

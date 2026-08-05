@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         StrategyLibraryFeature,
         StrategySelectionBookmark,
     )
+    from app.journey_recovery import JourneyWorkspaceBookmark
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
@@ -90,6 +91,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         strategy_library_context: StrategyLibraryContext | None = None,
         strategy_library_bookmark_sink: (
             Callable[[StrategySelectionBookmark], None] | None
+        ) = None,
+        journey_workspace_bookmark: JourneyWorkspaceBookmark | None = None,
+        journey_workspace_bookmark_sink: (
+            Callable[[JourneyWorkspaceBookmark], None] | None
         ) = None,
         scenario_lab_feature: ScenarioLabFeature | None = None,
         scenario_lab_context: ScenarioLabContext | None = None,
@@ -148,6 +153,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._strategy_library_feature = strategy_library_feature
         self._strategy_library_context = strategy_library_context
         self._strategy_library_bookmark_sink = strategy_library_bookmark_sink
+        self._journey_workspace_bookmark = journey_workspace_bookmark
+        self._journey_workspace_bookmark_sink = (
+            journey_workspace_bookmark_sink
+        )
         self._scenario_lab_feature = scenario_lab_feature
         self._scenario_lab_context = scenario_lab_context
         self._diagnostic_tasks_feature = diagnostic_tasks_feature
@@ -224,6 +233,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             strategy_library_bookmark_sink=(
                 self._strategy_library_bookmark_sink
             ),
+            journey_workspace_bookmark=self._journey_workspace_bookmark,
+            journey_workspace_bookmark_sink=(
+                self._persist_journey_workspace_bookmark
+            ),
             scenario_lab_feature=self._scenario_lab_feature,
             scenario_lab_context=self._scenario_lab_context,
             diagnostic_tasks_feature=self._diagnostic_tasks_feature,
@@ -234,14 +247,27 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             evidence_feature=self._evidence_and_findings_feature,
             evidence_context=self._evidence_and_findings_context,
             initial_route=(
-                "strategy_library"
-                if self._strategy_library_feature is not None
-                else "diagnostic_tasks"
+                self._journey_workspace_bookmark.last_route.value
+                if self._journey_workspace_bookmark is not None
+                else (
+                    "strategy_library"
+                    if self._strategy_library_feature is not None
+                    else "diagnostic_tasks"
+                )
             ),
             parent=self,
         )
         self.setCentralWidget(workspace)  # type: ignore[attr-defined]
         self._journey_workspace = workspace
+
+    def _persist_journey_workspace_bookmark(
+        self,
+        bookmark: JourneyWorkspaceBookmark,
+    ) -> None:
+        self._journey_workspace_bookmark = bookmark
+        sink = self._journey_workspace_bookmark_sink
+        if sink is not None:
+            sink(bookmark)
 
     def ensure_legacy_central_layout(self):
         if self._frontend_v2_enabled:
