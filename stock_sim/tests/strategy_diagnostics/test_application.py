@@ -16,7 +16,7 @@ def test_headless_application_starts_the_diagnostics_workspace() -> None:
         "persistence_status": "not_initialized",
         "persistence_revision": None,
         "supported_persistence_revision": (
-            "0020_scenario_lab_commands_and_materialization_handles"
+            "0021_diagnostic_selection_dependency_invalidation"
         ),
     }
     assert application.status() == state

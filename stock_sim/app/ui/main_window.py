@@ -20,6 +20,9 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from app.features.diagnostic_setup import (
+        DiagnosticSetupSelectionCoordinator,
+    )
     from app.features import (
         DiagnosticTasksContext,
         DiagnosticTasksFeature,
@@ -92,6 +95,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
+        diagnostic_setup_selection_coordinator: (
+            DiagnosticSetupSelectionCoordinator | None
+        ) = None,
         run_monitoring_feature: RunMonitoringFeature | None = None,
         run_monitoring_context: RunMonitoringContext | None = None,
         evidence_and_findings_feature: EvidenceAndFindingsFeature | None = None,
@@ -146,6 +152,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._scenario_lab_context = scenario_lab_context
         self._diagnostic_tasks_feature = diagnostic_tasks_feature
         self._diagnostic_tasks_context = diagnostic_tasks_context
+        self._diagnostic_setup_selection_coordinator = (
+            diagnostic_setup_selection_coordinator
+        )
         self._run_monitoring_feature = run_monitoring_feature
         self._run_monitoring_context = run_monitoring_context
         self._evidence_and_findings_feature = evidence_and_findings_feature
@@ -219,6 +228,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             scenario_lab_context=self._scenario_lab_context,
             diagnostic_tasks_feature=self._diagnostic_tasks_feature,
             diagnostic_tasks_context=self._diagnostic_tasks_context,
+            diagnostic_setup_selection_coordinator=(
+                self._diagnostic_setup_selection_coordinator
+            ),
             evidence_feature=self._evidence_and_findings_feature,
             evidence_context=self._evidence_and_findings_context,
             initial_route=(

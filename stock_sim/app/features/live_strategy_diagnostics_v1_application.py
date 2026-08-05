@@ -116,6 +116,7 @@ _SUPPORTED_MIGRATIONS = frozenset(
         "0017_diagnostic_lifecycle_targets",
         "0018_diagnostic_campaign_attempt_history",
         "0019_scenario_recipe_dependency_bindings",
+        "0020_scenario_lab_commands_and_materialization_handles",
         DIAGNOSTIC_SCHEMA_REVISION,
     }
 )

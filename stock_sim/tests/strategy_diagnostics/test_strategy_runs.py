@@ -1489,6 +1489,7 @@ def test_pre_execution_profile_paused_run_is_read_only_after_upgrade(
         "0018_diagnostic_campaign_attempt_history",
         "0019_scenario_recipe_dependency_bindings",
         "0020_scenario_lab_commands_and_materialization_handles",
+        "0021_diagnostic_selection_dependency_invalidation",
     )
     assert restored.run_id == legacy_run_id
     assert restored.status == "paused"

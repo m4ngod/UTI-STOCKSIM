@@ -939,7 +939,7 @@ def test_approved_recipe_version_survives_application_restart(tmp_path: Path) ->
 
     assert (
         migration.current_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     assert restored.to_dict() == approved.to_dict()
     assert {

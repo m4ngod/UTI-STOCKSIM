@@ -10,7 +10,7 @@ from math import ceil
 from pathlib import Path
 from threading import Lock
 from time import monotonic_ns
-from typing import cast
+from typing import Protocol, cast
 from uuid import uuid4
 
 from PySide6.QtCore import (
@@ -42,6 +42,7 @@ from app.features import (
     DiagnosticCommandId,
     DiagnosticCommandIdempotencyKey,
     DiagnosticComparisonRole,
+    DiagnosticSetupSelectionContext,
     DiagnosticStrategySelection,
     DiagnosticTaskConfiguration,
     DiagnosticTaskLifecycle,
@@ -73,6 +74,7 @@ from app.features import (
     ScenarioLabFeature,
     ScenarioLabFocusTarget,
     ScenarioLabViewState,
+    ScenarioDiagnosticSelection,
     StartFormalDiagnosticCampaign,
     StrategyLibraryContext,
     StrategyLibraryFeature,
@@ -81,6 +83,7 @@ from app.features import (
     StrategyUnderTestId,
     Subscription,
     ValidateDiagnosticTaskConfiguration,
+    compose_diagnostic_setup_selection_context,
 )
 from app.features.strategy_library import (
     CompareStrategies,
@@ -88,6 +91,7 @@ from app.features.strategy_library import (
     StrategyComparisonDisposition,
     StrategyLibraryAvailabilityFilter,
     StrategyLibraryViewState,
+    StrategySelectionContext,
     StrategySelectionDisposition,
 )
 from app.features.strategy_library_application import StrategyLibraryEntry
@@ -132,7 +136,16 @@ from app.features.scenario_lab_application import (
     RetryScenarioMaterializationCommand,
     canonical_scenario_lab_command_content_identity,
 )
+from app.features.diagnostic_setup import (
+    ApproveDiagnosticTaskConfigurationFromSetup,
+    CreateDiagnosticTaskFromSetup,
+    DiagnosticSetupSelectionCoordinator,
+    ReviseDiagnosticTaskConfigurationFromSetup,
+    StartFormalDiagnosticCampaignFromSetup,
+    ValidateDiagnosticTaskConfigurationFromSetup,
+)
 from app.features.run_monitoring import SourceGenerationId, TaskHandleId, TaskPhase
+
 
 from .accessibility import (
     AccessibilityPreferences,
@@ -319,10 +332,23 @@ class StrategyLibraryQtAdapter(QObject):
         return "" if selection is None else selection.context_identity
 
     def current_formal_strategy_ids(self) -> tuple[StrategyUnderTestId, ...]:
-        selection = self._state.selection
-        if self._state.selection_status.value != "current" or selection is None:
+        selection = self.current_formal_strategy_selection()
+        if selection is None:
             return ()
         return tuple(item.strategy_id for item in selection.selections)
+
+    def current_formal_strategy_selection(self) -> StrategySelectionContext | None:
+        selection = self._state.selection
+        if (
+            self._state.selection_status.value != "current"
+            or selection is None
+            or self._state.freshness.value != "fresh"
+            or self._state.presentation.value not in {"ready", "partial"}
+            or self._state.source_revision is None
+            or self._state.error is not None
+        ):
+            return None
+        return selection
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def commandMessage(self) -> str:  # noqa: N802
@@ -878,6 +904,62 @@ class ScenarioLabQtAdapter(QObject):
             _scenario_selection_context_payload(item)
             for item in self._state.selection_contexts
         ]
+
+    def current_diagnostic_selection(self) -> ScenarioDiagnosticSelection | None:
+        if (
+            self._state.freshness.value != "fresh"
+            or self._state.presentation.value not in {"ready", "partial"}
+            or self._state.error is not None
+        ):
+            return None
+        contexts = tuple(
+            item
+            for item in self._state.selection_contexts
+            if item.status.value == "current" and item.formal_handoff_eligible
+        )
+        if not contexts:
+            return None
+        context = max(contexts, key=lambda item: item.selection_revision)
+        scenario_set = next(
+            (
+                item
+                for item in self._state.scenario_sets
+                if item.scenario_set_id == context.scenario_set_id
+                and item.projection_revision
+                == context.scenario_set_projection_revision
+            ),
+            None,
+        )
+        resolution = next(
+            (
+                item
+                for item in self._state.execution_resolutions
+                if item.resolution_id == context.execution_resolution_id
+                and item.projection_revision
+                == context.execution_resolution_projection_revision
+            ),
+            None,
+        )
+        scenarios_by_id = {
+            item.scenario_id: item for item in self._state.market_scenarios
+        }
+        scenarios = tuple(
+            scenarios_by_id[identity]
+            for identity in context.case_ids
+            if identity in scenarios_by_id
+        )
+        if (
+            scenario_set is None
+            or resolution is None
+            or len(scenarios) != len(context.case_ids)
+        ):
+            return None
+        return ScenarioDiagnosticSelection(
+            context=context,
+            scenario_set=scenario_set,
+            market_scenarios=scenarios,
+            execution_resolution=resolution,
+        )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canComposeScenarioSet(self) -> bool:  # noqa: N802
@@ -2471,6 +2553,12 @@ def _scenario_lab_task_handle_payload(
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _DiagnosticTaskSetupBindingPresentation:
+    task_identity: str
+    setup_identity: str
+
+
 class DiagnosticTasksQtAdapter(QObject):
     """Qt-only projection of the typed Diagnostic Tasks Feature Interface."""
 
@@ -2485,11 +2573,24 @@ class DiagnosticTasksQtAdapter(QObject):
         feature: DiagnosticTasksFeature,
         *,
         context: DiagnosticTasksContext | None = None,
+        setup_selection_provider: (
+            Callable[[], DiagnosticSetupSelectionContext | None] | None
+        ) = None,
+        setup_selection_coordinator: (
+            DiagnosticSetupSelectionCoordinator | None
+        ) = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._feature = feature
         self._context = context or DiagnosticTasksContext.workspace()
+        self._setup_selection_provider = setup_selection_provider
+        self._setup_selection_coordinator = setup_selection_coordinator
+        self._task_setup_binding: (
+            _DiagnosticTaskSetupBindingPresentation | None
+        ) = None
+        if setup_selection_provider is not None:
+            self._observe_current_setup_selection()
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
         self._last_emitted_monitoring_selection: tuple[str, str] | None = None
@@ -2692,23 +2793,76 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreate(self) -> bool:  # noqa: N802
-        return bool(self._state.capabilities.can_create)
+        return bool(
+            self._state.capabilities.can_create
+            and (
+                self._setup_selection_provider is None
+                or self._current_setup_selection() is not None
+            )
+        )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canRevise(self) -> bool:  # noqa: N802
-        return bool(self._state.capabilities.can_revise)
+        return bool(
+            self._state.capabilities.can_revise
+            and (
+                self._setup_selection_provider is None
+                or self._current_setup_selection() is not None
+            )
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def setupSelectionReady(self) -> bool:  # noqa: N802
+        return self._current_setup_selection() is not None
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def setupSelectionText(self) -> str:  # noqa: N802
+        setup = self._current_setup_selection()
+        if setup is None:
+            return (
+                "Select one current formal Strategy set and one current "
+                "formal Scenario Set before Diagnostic Task handoff."
+            )
+        scenario = setup.scenario_selection.context
+        strategy = setup.strategy_selection
+        return (
+            f"Setup {setup.context_identity} · Strategy selection "
+            f"{strategy.context_identity} · Strategy source "
+            f"{strategy.source_revision.value} / view "
+            f"r{strategy.originating_view_revision} / generation "
+            f"g{strategy.source_generation.value} · Scenario selection "
+            f"{scenario.selection_context_id.value} / set "
+            f"{scenario.scenario_set_id.value}@"
+            f"r{scenario.scenario_set_projection_revision} / resolution "
+            f"{scenario.execution_resolution_id.value}@"
+            f"r{scenario.execution_resolution_projection_revision} / "
+            f"selection r{scenario.selection_revision} / view "
+            f"r{scenario.originating_view_revision} / source "
+            f"{scenario.source_revision.value} / generation "
+            f"g{scenario.source_generation.value} · configuration "
+            f"{setup.configuration.content_identity.value}"
+        )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canValidate(self) -> bool:  # noqa: N802
-        return bool(self._state.capabilities.can_validate)
+        return bool(
+            self._state.capabilities.can_validate
+            and self._current_setup_matches_task()
+        )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canApprove(self) -> bool:  # noqa: N802
-        return bool(self._state.capabilities.can_approve)
+        return bool(
+            self._state.capabilities.can_approve
+            and self._current_setup_matches_task()
+        )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canStartCampaign(self) -> bool:  # noqa: N802
-        return bool(self._state.capabilities.can_start_campaign)
+        return bool(
+            self._state.capabilities.can_start_campaign
+            and self._current_setup_matches_task()
+        )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canPauseTask(self) -> bool:  # noqa: N802
@@ -3169,6 +3323,7 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def createTask(self) -> None:  # noqa: N802
+        setup = self._current_setup_selection()
         configuration = self._configuration_from_inventory(
             include_all_cases=False
         )
@@ -3179,17 +3334,28 @@ class DiagnosticTasksQtAdapter(QObject):
             self.stateChanged.emit()
             return
         command_identity = uuid4().hex
-        result = self._feature.create_diagnostic_task(
+        command_id = DiagnosticCommandId(
+            f"create-diagnostic-task-{command_identity}"
+        )
+        idempotency_key = DiagnosticCommandIdempotencyKey(
+            f"diagnostic-task-create-{command_identity}"
+        )
+        command = (
             CreateDiagnosticTask(
-                command_id=DiagnosticCommandId(
-                    f"create-diagnostic-task-{command_identity}"
-                ),
-                idempotency_key=DiagnosticCommandIdempotencyKey(
-                    f"diagnostic-task-create-{command_identity}"
-                ),
+                command_id=command_id,
+                idempotency_key=idempotency_key,
                 configuration=configuration,
             )
+            if setup is None
+            else CreateDiagnosticTaskFromSetup(
+                command_id=command_id,
+                idempotency_key=idempotency_key,
+                configuration=configuration,
+                setup_selection=setup,
+            )
         )
+        result = self._feature.create_diagnostic_task(command)
+        self._record_setup_binding(result, setup)
         self._create_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
@@ -3197,6 +3363,7 @@ class DiagnosticTasksQtAdapter(QObject):
     @Slot()
     def reviseTask(self) -> None:  # noqa: N802
         task = self._state.task
+        setup = self._current_setup_selection()
         configuration = self._configuration_from_inventory(
             include_all_cases=True
         )
@@ -3207,19 +3374,32 @@ class DiagnosticTasksQtAdapter(QObject):
             self.stateChanged.emit()
             return
         command_identity = uuid4().hex
-        result = self._feature.revise_configuration(
+        command_id = DiagnosticCommandId(
+            f"revise-diagnostic-task-{command_identity}"
+        )
+        idempotency_key = DiagnosticCommandIdempotencyKey(
+            f"diagnostic-task-revise-{command_identity}"
+        )
+        command = (
             ReviseDiagnosticTaskConfiguration(
-                command_id=DiagnosticCommandId(
-                    f"revise-diagnostic-task-{command_identity}"
-                ),
-                idempotency_key=DiagnosticCommandIdempotencyKey(
-                    f"diagnostic-task-revise-{command_identity}"
-                ),
+                command_id=command_id,
+                idempotency_key=idempotency_key,
                 task_id=task.task_id,
                 expected_revision=task.revision,
                 configuration=configuration,
             )
+            if setup is None
+            else ReviseDiagnosticTaskConfigurationFromSetup(
+                command_id=command_id,
+                idempotency_key=idempotency_key,
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                configuration=configuration,
+                setup_selection=setup,
+            )
         )
+        result = self._feature.revise_configuration(command)
+        self._record_setup_binding(result, setup)
         self._command_status = self._command_result_text(result)
         self.refresh()
         self.stateChanged.emit()
@@ -3234,16 +3414,27 @@ class DiagnosticTasksQtAdapter(QObject):
             self.stateChanged.emit()
             return
         command_identity = uuid4().hex
+        setup = self._current_setup_selection()
+        command_id = DiagnosticCommandId(
+            f"validate-diagnostic-task-{command_identity}"
+        )
+        idempotency_key = DiagnosticCommandIdempotencyKey(
+            f"diagnostic-task-validate-{command_identity}"
+        )
         result = self._feature.validate_configuration(
             ValidateDiagnosticTaskConfiguration(
-                command_id=DiagnosticCommandId(
-                    f"validate-diagnostic-task-{command_identity}"
-                ),
-                idempotency_key=DiagnosticCommandIdempotencyKey(
-                    f"diagnostic-task-validate-{command_identity}"
-                ),
+                command_id=command_id,
+                idempotency_key=idempotency_key,
                 task_id=task.task_id,
                 expected_revision=task.revision,
+            )
+            if setup is None
+            else ValidateDiagnosticTaskConfigurationFromSetup(
+                command_id=command_id,
+                idempotency_key=idempotency_key,
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                setup_selection=setup,
             )
         )
         self._command_status = self._command_result_text(result)
@@ -3273,14 +3464,17 @@ class DiagnosticTasksQtAdapter(QObject):
             self.stateChanged.emit()
             return
         command_identity = uuid4().hex
+        setup = self._current_setup_selection()
+        command_id = DiagnosticCommandId(
+            f"approve-diagnostic-task-{command_identity}"
+        )
+        idempotency_key = DiagnosticCommandIdempotencyKey(
+            f"diagnostic-task-approve-{command_identity}"
+        )
         result = self._feature.approve_configuration(
             ApproveDiagnosticTaskConfiguration(
-                command_id=DiagnosticCommandId(
-                    f"approve-diagnostic-task-{command_identity}"
-                ),
-                idempotency_key=DiagnosticCommandIdempotencyKey(
-                    f"diagnostic-task-approve-{command_identity}"
-                ),
+                command_id=command_id,
+                idempotency_key=idempotency_key,
                 task_id=task.task_id,
                 expected_revision=task.revision,
                 validation_id=validation.validation_id,
@@ -3290,6 +3484,21 @@ class DiagnosticTasksQtAdapter(QObject):
                     validation.configuration_content_identity
                 ),
                 actor_id=DiagnosticActorId(actor),
+            )
+            if setup is None
+            else ApproveDiagnosticTaskConfigurationFromSetup(
+                command_id=command_id,
+                idempotency_key=idempotency_key,
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                validation_id=validation.validation_id,
+                validation_revision=validation.validation_revision,
+                validated_revision=validation.validated_revision,
+                configuration_content_id=(
+                    validation.configuration_content_identity
+                ),
+                actor_id=DiagnosticActorId(actor),
+                setup_selection=setup,
             )
         )
         self._command_status = self._command_result_text(result)
@@ -3312,17 +3521,29 @@ class DiagnosticTasksQtAdapter(QObject):
             self.stateChanged.emit()
             return
         command_identity = uuid4().hex
+        setup = self._current_setup_selection()
+        command_id = DiagnosticCommandId(
+            f"start-diagnostic-campaign-{command_identity}"
+        )
+        idempotency_key = DiagnosticCommandIdempotencyKey(
+            f"diagnostic-campaign-start-{command_identity}"
+        )
         result = self._feature.start_formal_diagnostic_campaign(
             StartFormalDiagnosticCampaign(
-                command_id=DiagnosticCommandId(
-                    f"start-diagnostic-campaign-{command_identity}"
-                ),
-                idempotency_key=DiagnosticCommandIdempotencyKey(
-                    f"diagnostic-campaign-start-{command_identity}"
-                ),
+                command_id=command_id,
+                idempotency_key=idempotency_key,
                 task_id=task.task_id,
                 expected_revision=task.revision,
                 approved_revision=approval.approved_revision,
+            )
+            if setup is None
+            else StartFormalDiagnosticCampaignFromSetup(
+                command_id=command_id,
+                idempotency_key=idempotency_key,
+                task_id=task.task_id,
+                expected_revision=task.revision,
+                approved_revision=approval.approved_revision,
+                setup_selection=setup,
             )
         )
         self._command_status = self._command_result_text(result)
@@ -3814,6 +4035,9 @@ class DiagnosticTasksQtAdapter(QObject):
         *,
         include_all_cases: bool,
     ) -> DiagnosticTaskConfiguration | None:
+        if self._setup_selection_provider is not None:
+            setup = self._current_setup_selection()
+            return None if setup is None else setup.configuration
         inventory = self._state.last_reliable_inventory
         if inventory is None or not inventory.market_scenarios:
             return None
@@ -3874,6 +4098,57 @@ class DiagnosticTasksQtAdapter(QObject):
                 for item in selected_scenarios
             ),
         )
+
+    def _current_setup_selection(self) -> DiagnosticSetupSelectionContext | None:
+        provider = self._setup_selection_provider
+        if provider is None:
+            return None
+        try:
+            return provider()
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _observe_current_setup_selection(self) -> None:
+        coordinator = self._setup_selection_coordinator
+        if coordinator is not None:
+            coordinator.observe(self._current_setup_selection())
+
+    def _record_setup_binding(
+        self,
+        result: DiagnosticTasksCommandResult,
+        setup: DiagnosticSetupSelectionContext | None,
+    ) -> None:
+        if (
+            setup is None
+            or result.rejection_reason is not None
+            or result.affected_task_id is None
+        ):
+            return
+        self._task_setup_binding = _DiagnosticTaskSetupBindingPresentation(
+            task_identity=result.affected_task_id.value,
+            setup_identity=setup.context_identity,
+        )
+
+    def _current_setup_matches_task(self) -> bool:
+        if self._setup_selection_provider is None:
+            return True
+        setup = self._current_setup_selection()
+        task = self._state.task
+        binding = self._task_setup_binding
+        return bool(
+            setup is not None
+            and task is not None
+            and binding is not None
+            and binding.task_identity == task.task_id.value
+            and binding.setup_identity == setup.context_identity
+        )
+
+    def upstreamSelectionChanged(self) -> None:  # noqa: N802
+        if self._closed:
+            return
+        self._observe_current_setup_selection()
+        self.refresh()
+        self.stateChanged.emit()
 
     @Slot()
     def refresh(self) -> None:
@@ -5245,6 +5520,9 @@ class JourneyWorkspaceHost(QQuickWidget):
         scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
         diagnostic_tasks_context: DiagnosticTasksContext | None = None,
+        diagnostic_setup_selection_coordinator: (
+            DiagnosticSetupSelectionCoordinator | None
+        ) = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
         evidence_context: EvidenceAndFindingsContext | None = None,
         accessibility_preferences: AccessibilityPreferences | None = None,
@@ -5317,6 +5595,15 @@ class JourneyWorkspaceHost(QQuickWidget):
             DiagnosticTasksQtAdapter(
                 diagnostic_tasks_feature,
                 context=diagnostic_tasks_context,
+                setup_selection_provider=(
+                    self._current_diagnostic_setup_selection
+                    if self._strategy_library is not None
+                    and self._scenario_lab is not None
+                    else None
+                ),
+                setup_selection_coordinator=(
+                    diagnostic_setup_selection_coordinator
+                ),
                 parent=self,
             )
             if diagnostic_tasks_feature is not None
@@ -5326,6 +5613,15 @@ class JourneyWorkspaceHost(QQuickWidget):
             "diagnosticTasks",
             self._diagnostic_tasks,
         )
+        if self._diagnostic_tasks is not None:
+            if self._strategy_library is not None:
+                self._strategy_library.stateChanged.connect(
+                    self._diagnostic_tasks.upstreamSelectionChanged
+                )
+            if self._scenario_lab is not None:
+                self._scenario_lab.stateChanged.connect(
+                    self._diagnostic_tasks.upstreamSelectionChanged
+                )
         self._run_monitoring = RunMonitoringQtAdapter(
             feature,
             context=context,
@@ -5370,6 +5666,20 @@ class JourneyWorkspaceHost(QQuickWidget):
             evidence_context = self._diagnostic_tasks.evidence_context()
             if evidence_context is not None:
                 self._open_evidence_and_findings_handoff(evidence_context)
+
+    def _current_diagnostic_setup_selection(
+        self,
+    ) -> DiagnosticSetupSelectionContext | None:
+        if self._strategy_library is None or self._scenario_lab is None:
+            return None
+        strategy = self._strategy_library.current_formal_strategy_selection()
+        scenario = self._scenario_lab.current_diagnostic_selection()
+        if strategy is None or scenario is None:
+            return None
+        try:
+            return compose_diagnostic_setup_selection_context(strategy, scenario)
+        except (KeyError, TypeError, ValueError):
+            return None
 
     @Slot(object)
     def _open_run_monitoring_handoff(

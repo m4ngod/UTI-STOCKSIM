@@ -40,6 +40,7 @@ from .diagnostic_tasks import (
     DiagnosticEvidenceHandoffState,
     DiagnosticLifecycleOperation,
     DiagnosticLifecycleTargetKind,
+    DiagnosticSelectionDependencyBinding,
     DiagnosticTaskCampaignHandoffSnapshot,
     DiagnosticTaskCommandResult,
     DiagnosticTaskConfiguration,
@@ -359,6 +360,10 @@ class DiagnosticsApplication:
             materialization_scheduler=materialization_scheduler,
             clock=recipe_clock,
         )
+        self._observed_diagnostic_setup_binding: (
+            DiagnosticSelectionDependencyBinding | None
+        ) = None
+        self._diagnostic_setup_observation_initialized = False
         self._diagnostic_tasks = DiagnosticTaskService(
             clock=diagnostic_task_clock,
             configuration_validator=(
@@ -369,6 +374,9 @@ class DiagnosticsApplication:
             ),
             validation_policy_provider=(
                 self._diagnostic_task_validation_policy_identities
+            ),
+            dependency_binding_provider=(
+                self._diagnostic_selection_dependency_binding
             ),
         )
         self._recipe_assistant = recipe_assistant
@@ -773,15 +781,37 @@ class DiagnosticsApplication:
         """Create one durable task without validating or starting a Campaign."""
 
         self.status()
-        return self._diagnostic_tasks.create(request)
+        binding = request.dependency_binding
+        if binding is not None:
+            self._observe_diagnostic_setup_dependency_binding(binding)
+        return self._diagnostic_tasks.create(
+            request,
+            dependency_binding=binding,
+        )
+
+    def _observe_diagnostic_setup_dependency_binding(
+        self,
+        binding: DiagnosticSelectionDependencyBinding | None,
+    ) -> None:
+        """Record the current UI selection for authoritative reconciliation."""
+
+        self._observed_diagnostic_setup_binding = binding
+        self._diagnostic_setup_observation_initialized = True
 
     def get_diagnostic_task(
         self,
         task_id: str | None = None,
+        *,
+        dependency_binding: DiagnosticSelectionDependencyBinding | None = None,
+        dependency_binding_observed: bool = False,
     ) -> DiagnosticTaskSnapshot | None:
         """Read a durable task by identity, or the latest workspace task."""
 
         self.status()
+        if dependency_binding_observed:
+            self._observe_diagnostic_setup_dependency_binding(
+                dependency_binding
+            )
         if task_id is None:
             return self._diagnostic_tasks.latest()
         return self._diagnostic_tasks.get(task_id)
@@ -793,7 +823,13 @@ class DiagnosticsApplication:
         """Correct one exact durable task revision without starting work."""
 
         self.status()
-        return self._diagnostic_tasks.revise_configuration(request)
+        binding = request.dependency_binding
+        if binding is not None:
+            self._observe_diagnostic_setup_dependency_binding(binding)
+        return self._diagnostic_tasks.revise_configuration(
+            request,
+            dependency_binding=binding,
+        )
 
     def validate_diagnostic_task_configuration(
         self,
@@ -802,6 +838,10 @@ class DiagnosticsApplication:
         """Validate one exact task revision against authoritative inputs."""
 
         self.status()
+        if request.dependency_binding_observed:
+            self._observe_diagnostic_setup_dependency_binding(
+                request.dependency_binding
+            )
         return self._diagnostic_tasks.validate_configuration(request)
 
     def approve_diagnostic_task_configuration(
@@ -811,6 +851,10 @@ class DiagnosticsApplication:
         """Approve only the exact current successfully validated revision."""
 
         self.status()
+        if request.dependency_binding_observed:
+            self._observe_diagnostic_setup_dependency_binding(
+                request.dependency_binding
+            )
         return self._diagnostic_tasks.approve_configuration(request)
 
     def start_formal_diagnostic_task_campaign(
@@ -820,6 +864,10 @@ class DiagnosticsApplication:
         """Start the exact approved task as one real Formal Campaign."""
 
         self.status()
+        if request.dependency_binding_observed:
+            self._observe_diagnostic_setup_dependency_binding(
+                request.dependency_binding
+            )
         preflight = self._diagnostic_tasks.preflight_start(request)
         if isinstance(preflight, DiagnosticTaskCreationResult):
             if (
@@ -1777,6 +1825,235 @@ class DiagnosticsApplication:
                     + path.market_rule_profile_version
                 )
         return tuple(sorted(identities))
+
+    def _diagnostic_selection_dependency_binding(
+        self,
+        candidate: DiagnosticTaskConfiguration,
+        expected: DiagnosticSelectionDependencyBinding,
+    ) -> DiagnosticSelectionDependencyBinding | None:
+        if (
+            self._diagnostic_setup_observation_initialized
+            and self._observed_diagnostic_setup_binding != expected
+        ):
+            return None
+        payload = json.loads(expected.canonical_payload_json)
+        if not isinstance(payload, dict):
+            return None
+        strategy_payload = payload.get("strategy_selection")
+        scenario_payload = payload.get("scenario_selection")
+        if not isinstance(strategy_payload, dict) or not isinstance(
+            scenario_payload, dict
+        ):
+            return None
+        scenario_context_payload = scenario_payload.get("context")
+        if not isinstance(scenario_context_payload, dict):
+            return None
+        scenario_context_identity = scenario_context_payload.get(
+            "selection_context_id"
+        )
+        if isinstance(scenario_context_identity, dict):
+            scenario_context_identity = scenario_context_identity.get("value")
+        if (
+            payload.get("schema_version")
+            != "diagnostic-setup-selection-context.v1"
+            or payload.get("configuration_content_identity")
+            != candidate.content_identity
+            or strategy_payload.get("context_identity")
+            != expected.strategy_selection_context_id
+            or scenario_context_identity != expected.scenario_selection_context_id
+            or expected.source_identity != expected.binding_hash
+        ):
+            return None
+        case_ids = tuple(
+            item.campaign_case_id for item in candidate.campaign_case_selections
+        )
+        strategy_ids = tuple(
+            item.strategy_id for item in candidate.strategy_selections
+        )
+        selection = next(
+            (
+                item
+                for item in reversed(self.scenario_lab_selection_contexts())
+                if item.selection_context_id
+                == expected.scenario_selection_context_id
+                and item.status == "current"
+                and item.formal_handoff_eligible
+                and len(item.case_ids) == len(case_ids)
+                and set(item.case_ids) == set(case_ids)
+                and len(item.strategy_bindings) == len(strategy_ids)
+                and {
+                    binding.strategy_id for binding in item.strategy_bindings
+                }
+                == set(strategy_ids)
+            ),
+            None,
+        )
+        if selection is None:
+            return None
+        scenario_set = next(
+            (
+                item
+                for item in self.scenario_lab_formal_scenario_sets()
+                if item.scenario_set_id == selection.scenario_set_id
+                and item.projection_revision
+                == selection.scenario_set_projection_revision
+            ),
+            None,
+        )
+        resolution = next(
+            (
+                item
+                for item in self.scenario_lab_execution_resolutions()
+                if item.resolution_id == selection.execution_resolution_id
+                and item.projection_revision
+                == selection.execution_resolution_projection_revision
+            ),
+            None,
+        )
+        if (
+            scenario_set is None
+            or resolution is None
+            or not scenario_set.formal_handoff_eligible
+            or not resolution.formal_handoff_eligible
+        ):
+            return None
+        expected_strategies = tuple(
+            (
+                item.strategy_id,
+                item.strategy_version,
+                item.compatibility_manifest_hash,
+                item.guardrail_profile_id,
+                item.guardrail_profile_version,
+            )
+            for item in selection.strategy_bindings
+        )
+        actual_strategies = tuple(
+            (
+                item.strategy_id,
+                item.strategy_version,
+                item.compatibility_manifest_hash,
+                item.guardrail_profile_id,
+                item.guardrail_profile_version,
+            )
+            for item in candidate.strategy_selections
+        )
+        if tuple(sorted(actual_strategies)) != tuple(sorted(expected_strategies)):
+            return None
+        cases = (
+            scenario_set.baseline_case,
+            *scenario_set.isolated_cases,
+            *scenario_set.compound_cases,
+        )
+        baseline_id = scenario_set.baseline_case.case_id
+        expected_cases = []
+        for case in cases:
+            targets = tuple(
+                item
+                for item in resolution.targets
+                if item.campaign_case_id == case.case_id
+            )
+            if not targets or any(
+                item.state != "resolved" or item.resolved_conditions is None
+                for item in targets
+            ):
+                return None
+            policy_values = tuple(
+                (
+                    item.name,
+                    item.effective_value,
+                    targets[0].execution_policy_version,
+                    (
+                        "backend-resolved:requested=" + item.requested_value
+                        if item.override_reason is None
+                        else (
+                            "backend-resolved:"
+                            + item.override_reason
+                            + ";requested="
+                            + item.requested_value
+                        )
+                    ),
+                )
+                for item in sorted(
+                    cast(
+                        ResolvedExecutionConditions,
+                        targets[0].resolved_conditions,
+                    ).resolutions,
+                    key=lambda value: value.name,
+                )
+            )
+            if any(
+                tuple(
+                    (
+                        item.name,
+                        item.effective_value,
+                        target.execution_policy_version,
+                        (
+                            "backend-resolved:requested=" + item.requested_value
+                            if item.override_reason is None
+                            else (
+                                "backend-resolved:"
+                                + item.override_reason
+                                + ";requested="
+                                + item.requested_value
+                            )
+                        ),
+                    )
+                    for item in sorted(
+                        cast(
+                            ResolvedExecutionConditions,
+                            target.resolved_conditions,
+                        ).resolutions,
+                        key=lambda value: value.name,
+                    )
+                )
+                != policy_values
+                for target in targets[1:]
+            ):
+                return None
+            expected_cases.append(
+                (
+                    {
+                        "baseline": "baseline",
+                        "isolated": "isolated_sensitivity",
+                        "compound": "compound",
+                    }[case.layer],
+                    case.recipe_version_id,
+                    case.recipe_content_hash,
+                    case.materialization_hash,
+                    case.case_id,
+                    (
+                        "control"
+                        if case.case_id == baseline_id
+                        else "compare_to_baseline"
+                    ),
+                    None if case.case_id == baseline_id else baseline_id,
+                    policy_values,
+                )
+            )
+        actual_cases = tuple(
+            (
+                item.layer,
+                item.recipe_version_id,
+                item.recipe_content_hash,
+                item.market_scenario_id,
+                item.campaign_case_id,
+                item.comparison_role,
+                item.baseline_campaign_case_id,
+                item.execution_policy_values,
+            )
+            for item in candidate.campaign_case_selections
+        )
+        if tuple(sorted(actual_cases, key=lambda item: item[4])) != tuple(
+            sorted(expected_cases, key=lambda item: item[4])
+        ):
+            return None
+        inventory = self.read_strategy_under_test_inventory()
+        strategy_source_revision = strategy_payload.get("source_revision")
+        if isinstance(strategy_source_revision, dict):
+            strategy_source_revision = strategy_source_revision.get("value")
+        if strategy_source_revision != inventory.content_hash:
+            return None
+        return expected
 
     def _is_authoritative_diagnostic_task_configuration(
         self,

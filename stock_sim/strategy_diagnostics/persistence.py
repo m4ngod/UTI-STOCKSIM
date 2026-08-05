@@ -63,8 +63,11 @@ _DIAGNOSTIC_CAMPAIGN_ATTEMPT_HISTORY_REVISION: Final = (
 _SCENARIO_RECIPE_DEPENDENCY_BINDINGS_REVISION: Final = (
     "0019_scenario_recipe_dependency_bindings"
 )
-DIAGNOSTIC_SCHEMA_REVISION: Final = (
+_SCENARIO_LAB_COMMANDS_AND_MATERIALIZATION_HANDLES_REVISION: Final = (
     "0020_scenario_lab_commands_and_materialization_handles"
+)
+DIAGNOSTIC_SCHEMA_REVISION: Final = (
+    "0021_diagnostic_selection_dependency_invalidation"
 )
 _MIGRATION_TABLE: Final = "diagnostic_schema_migrations"
 _MIGRATION_REVISIONS: Final = (
@@ -87,6 +90,7 @@ _MIGRATION_REVISIONS: Final = (
     _DIAGNOSTIC_LIFECYCLE_TARGETS_REVISION,
     _DIAGNOSTIC_CAMPAIGN_ATTEMPT_HISTORY_REVISION,
     _SCENARIO_RECIPE_DEPENDENCY_BINDINGS_REVISION,
+    _SCENARIO_LAB_COMMANDS_AND_MATERIALIZATION_HANDLES_REVISION,
     DIAGNOSTIC_SCHEMA_REVISION,
 )
 
@@ -163,10 +167,14 @@ def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationRepo
                 _extend_diagnostic_campaign_attempt_history(connection)
             elif revision == _SCENARIO_RECIPE_DEPENDENCY_BINDINGS_REVISION:
                 _create_scenario_recipe_dependency_bindings(connection)
-            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+            elif revision == (
+                _SCENARIO_LAB_COMMANDS_AND_MATERIALIZATION_HANDLES_REVISION
+            ):
                 _create_scenario_lab_commands_and_materialization_handles(
                     connection
                 )
+            elif revision == DIAGNOSTIC_SCHEMA_REVISION:
+                _create_diagnostic_selection_dependency_invalidation(connection)
             connection.execute(
                 text(
                     f"INSERT INTO {_MIGRATION_TABLE} "
@@ -999,6 +1007,81 @@ def _create_scenario_lab_commands_and_materialization_handles(
         "REFERENCES diagnostic_scenario_lab_task_handles(task_handle_id), "
         "FOREIGN KEY(predecessor_attempt_id) "
         "REFERENCES diagnostic_scenario_materialization_attempts(attempt_id)"
+        ")"
+    )
+
+
+def _create_diagnostic_selection_dependency_invalidation(
+    connection: Connection,
+) -> None:
+    """Bind task validation/approval to exact upstream dependency truth."""
+
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS "
+        "diagnostic_task_setup_dependency_bindings ("
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "dependency_binding_id VARCHAR(128) NOT NULL, "
+        "dependency_binding_hash VARCHAR(128) NOT NULL, "
+        "dependency_binding_json TEXT NOT NULL, "
+        "bound_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "PRIMARY KEY(task_id, task_revision), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS "
+        "diagnostic_task_validation_dependency_bindings ("
+        "validation_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "validation_revision INTEGER NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "dependency_binding_id VARCHAR(128) NOT NULL, "
+        "dependency_binding_hash VARCHAR(128) NOT NULL, "
+        "dependency_binding_json TEXT NOT NULL, "
+        "bound_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(validation_id) "
+        "REFERENCES diagnostic_task_validations(validation_id), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS "
+        "diagnostic_task_approval_dependency_bindings ("
+        "approval_id VARCHAR(96) PRIMARY KEY NOT NULL, "
+        "validation_id VARCHAR(96) NOT NULL, "
+        "validation_revision INTEGER NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "configuration_content_id VARCHAR(96) NOT NULL, "
+        "dependency_binding_id VARCHAR(128) NOT NULL, "
+        "dependency_binding_hash VARCHAR(128) NOT NULL, "
+        "bound_at_utc VARCHAR(64) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NULL, "
+        "FOREIGN KEY(approval_id) "
+        "REFERENCES diagnostic_task_approvals(approval_id), "
+        "FOREIGN KEY(validation_id) "
+        "REFERENCES diagnostic_task_validations(validation_id), "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS "
+        "diagnostic_task_selection_dependency_invalidations ("
+        "invalidation_id VARCHAR(128) PRIMARY KEY NOT NULL, "
+        "dependency_binding_id VARCHAR(128) NOT NULL, "
+        "task_id VARCHAR(96) NOT NULL, "
+        "task_revision INTEGER NOT NULL, "
+        "reason_code VARCHAR(96) NOT NULL, "
+        "source_identity VARCHAR(128) NOT NULL, "
+        "expected_binding_hash VARCHAR(128) NOT NULL, "
+        "observed_binding_hash VARCHAR(128) NOT NULL, "
+        "invalidated_at_utc VARCHAR(64) NOT NULL, "
+        "FOREIGN KEY(task_id) REFERENCES diagnostic_tasks(task_id)"
         ")"
     )
 

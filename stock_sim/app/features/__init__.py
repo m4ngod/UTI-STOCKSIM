@@ -1,5 +1,10 @@
 """Versioned Feature Interfaces for Frontend V2."""
 
+from .diagnostic_setup import (
+    DiagnosticSetupSelectionContext,
+    ScenarioDiagnosticSelection,
+    compose_diagnostic_setup_selection_context,
+)
 from .diagnostic_tasks import (
     DiagnosticCampaignAttemptHandoff,
     DiagnosticCampaignCaseSelectionReference,
@@ -451,6 +456,7 @@ __all__ = [
     "DiagnosticStrategyInput",
     "DiagnosticStrategySelection",
     "DiagnosticStrategySelectionReference",
+    "DiagnosticSetupSelectionContext",
     "DiagnosticTaskApprovalId",
     "DiagnosticTaskApprovalSummary",
     "DiagnosticTaskCapabilities",
@@ -507,6 +513,7 @@ __all__ = [
     "DiagnosticTasksPresentationState",
     "DiagnosticTasksSource",
     "DiagnosticTasksViewState",
+    "ScenarioDiagnosticSelection",
     "EvidenceAndFindingsContext",
     "EvidenceAndFindingsData",
     "EvidenceAndFindingsFeature",
@@ -641,6 +648,7 @@ __all__ = [
     "TransformationParameterValue",
     "V1JourneySelector",
     "ValidateDiagnosticTaskConfiguration",
+    "compose_diagnostic_setup_selection_context",
     "ValidateFormalStrategySet",
     "ViewPhase",
     "WallTime",

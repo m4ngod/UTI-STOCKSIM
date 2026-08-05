@@ -48,7 +48,7 @@ def test_public_application_inventory_exposes_only_formal_v1_strategies() -> Non
     }
     assert inventory.formal_campaign_required_strategy_count == 2
     assert inventory.persistence_migration_revision == (
-        "0020_scenario_lab_commands_and_materialization_handles"
+        "0021_diagnostic_selection_dependency_invalidation"
     )
     for entry in inventory.entries:
         assert entry.formal_campaign_eligible
@@ -86,7 +86,7 @@ def test_missing_guardrail_profiles_remain_visible_without_fabricated_identity()
     inventory = build_strategy_under_test_inventory(
         guardrail_profiles=(),
         persistence_migration_revision=(
-            "0020_scenario_lab_commands_and_materialization_handles"
+            "0021_diagnostic_selection_dependency_invalidation"
         ),
     )
 
@@ -115,7 +115,7 @@ def test_unavailable_formal_entry_returns_typed_unavailable_validation() -> None
     inventory = build_strategy_under_test_inventory(
         guardrail_profiles=(),
         persistence_migration_revision=(
-            "0020_scenario_lab_commands_and_materialization_handles"
+            "0021_diagnostic_selection_dependency_invalidation"
         ),
     )
     validation = validate_formal_strategy_set(

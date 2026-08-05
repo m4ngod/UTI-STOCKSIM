@@ -77,7 +77,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
 
     assert (
         first.current_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     assert first.applied_revisions == (
         "0001_diagnostics_baseline",
@@ -100,16 +100,17 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0018_diagnostic_campaign_attempt_history",
         "0019_scenario_recipe_dependency_bindings",
         "0020_scenario_lab_commands_and_materialization_handles",
+        "0021_diagnostic_selection_dependency_invalidation",
     )
     assert (
         second.current_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     assert second.applied_revisions == ()
     assert application.status().persistence_status == "ready"
     assert (
         application.status().persistence_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     assert _column_contract(engine, "legacy_accounts") == columns_before
     with engine.connect() as connection:
@@ -144,6 +145,7 @@ def test_diagnostic_migration_baseline_preserves_legacy_tables(tmp_path: Path) -
         "0018_diagnostic_campaign_attempt_history",
         "0019_scenario_recipe_dependency_bindings",
         "0020_scenario_lab_commands_and_materialization_handles",
+        "0021_diagnostic_selection_dependency_invalidation",
     ]
     strategy_run_columns = {
         column["name"]
@@ -232,7 +234,7 @@ def test_issue_58_migration_upgrades_and_backfills_issue_57_tasks(
 
     assert (
         report.current_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     assert report.applied_revisions == ("0014_diagnostic_task_approval",)
     with engine.connect() as connection:
@@ -294,7 +296,7 @@ def test_issue_59_migration_adds_durable_campaign_handoff_without_rewriting_0014
 
     assert (
         report.current_revision
-        == "0020_scenario_lab_commands_and_materialization_handles"
+        == "0021_diagnostic_selection_dependency_invalidation"
     )
     assert report.applied_revisions == (
         "0015_diagnostic_task_campaign_handoff",
@@ -698,11 +700,12 @@ def test_issue_80_migrations_create_exact_recipe_dependency_and_command_schema(
     report = initialize_diagnostic_persistence(engine)
 
     assert report.current_revision == (
-        "0020_scenario_lab_commands_and_materialization_handles"
+        "0021_diagnostic_selection_dependency_invalidation"
     )
-    assert report.applied_revisions[-2:] == (
+    assert report.applied_revisions[-3:] == (
         "0019_scenario_recipe_dependency_bindings",
         "0020_scenario_lab_commands_and_materialization_handles",
+        "0021_diagnostic_selection_dependency_invalidation",
     )
     schema = inspect(engine)
     assert {
@@ -756,7 +759,8 @@ def test_issue_80_upgrade_from_0018_backfills_immutable_legacy_history(
             text(
                 "DELETE FROM diagnostic_schema_migrations WHERE revision IN ("
                 "'0019_scenario_recipe_dependency_bindings', "
-                "'0020_scenario_lab_commands_and_materialization_handles')"
+                "'0020_scenario_lab_commands_and_materialization_handles', "
+                "'0021_diagnostic_selection_dependency_invalidation')"
             )
         )
         connection.execute(
@@ -785,6 +789,7 @@ def test_issue_80_upgrade_from_0018_backfills_immutable_legacy_history(
     assert report.applied_revisions == (
         "0019_scenario_recipe_dependency_bindings",
         "0020_scenario_lab_commands_and_materialization_handles",
+        "0021_diagnostic_selection_dependency_invalidation",
     )
     with engine.connect() as connection:
         lineage = connection.execute(
@@ -857,15 +862,17 @@ def test_issue_80_migration_failure_rolls_back_partial_schema_and_revision(
                 text(
                     "DELETE FROM diagnostic_schema_migrations WHERE revision IN ("
                     "'0019_scenario_recipe_dependency_bindings', "
-                    "'0020_scenario_lab_commands_and_materialization_handles')"
+                    "'0020_scenario_lab_commands_and_materialization_handles', "
+                    "'0021_diagnostic_selection_dependency_invalidation')"
                 )
             )
         else:
             connection.execute(
                 text(
                     "DELETE FROM diagnostic_schema_migrations "
-                    "WHERE revision = "
-                    "'0020_scenario_lab_commands_and_materialization_handles'"
+                    "WHERE revision IN ("
+                    "'0020_scenario_lab_commands_and_materialization_handles', "
+                    "'0021_diagnostic_selection_dependency_invalidation')"
                 )
             )
 
@@ -897,3 +904,179 @@ def test_issue_80_migration_failure_rolls_back_partial_schema_and_revision(
         )
     assert revisions[-1] == expected_revision
     assert target_revision not in revisions
+
+
+def test_issue_84_migration_creates_exact_validation_approval_dependency_schema(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'issue-84-fresh.sqlite'}")
+
+    report = initialize_diagnostic_persistence(engine)
+
+    assert report.current_revision == (
+        "0021_diagnostic_selection_dependency_invalidation"
+    )
+    assert report.applied_revisions[-1] == (
+        "0021_diagnostic_selection_dependency_invalidation"
+    )
+    schema = inspect(engine)
+    assert {
+        "diagnostic_task_setup_dependency_bindings",
+        "diagnostic_task_validation_dependency_bindings",
+        "diagnostic_task_approval_dependency_bindings",
+        "diagnostic_task_selection_dependency_invalidations",
+    }.issubset(schema.get_table_names())
+    assert {
+        item["name"]
+        for item in schema.get_columns(
+            "diagnostic_task_setup_dependency_bindings"
+        )
+    } == {
+        "task_id",
+        "task_revision",
+        "configuration_content_id",
+        "dependency_binding_id",
+        "dependency_binding_hash",
+        "dependency_binding_json",
+        "bound_at_utc",
+        "invalidated_at_utc",
+    }
+    assert {
+        item["name"]
+        for item in schema.get_columns(
+            "diagnostic_task_validation_dependency_bindings"
+        )
+    } == {
+        "validation_id",
+        "validation_revision",
+        "task_id",
+        "task_revision",
+        "configuration_content_id",
+        "dependency_binding_id",
+        "dependency_binding_hash",
+        "dependency_binding_json",
+        "bound_at_utc",
+        "invalidated_at_utc",
+    }
+    assert {
+        item["name"]
+        for item in schema.get_columns(
+            "diagnostic_task_approval_dependency_bindings"
+        )
+    } == {
+        "approval_id",
+        "validation_id",
+        "validation_revision",
+        "task_id",
+        "task_revision",
+        "configuration_content_id",
+        "dependency_binding_id",
+        "dependency_binding_hash",
+        "bound_at_utc",
+        "invalidated_at_utc",
+    }
+    assert {
+        item["name"]
+        for item in schema.get_columns(
+            "diagnostic_task_selection_dependency_invalidations"
+        )
+    } == {
+        "invalidation_id",
+        "dependency_binding_id",
+        "task_id",
+        "task_revision",
+        "reason_code",
+        "source_identity",
+        "expected_binding_hash",
+        "observed_binding_hash",
+        "invalidated_at_utc",
+    }
+
+
+def test_issue_84_upgrade_from_0020_is_idempotent_and_preserves_task_history(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'issue-84-upgrade.sqlite'}")
+    initialize_diagnostic_persistence(engine)
+    with engine.begin() as connection:
+        for table_name in (
+            "diagnostic_task_selection_dependency_invalidations",
+            "diagnostic_task_approval_dependency_bindings",
+            "diagnostic_task_validation_dependency_bindings",
+            "diagnostic_task_setup_dependency_bindings",
+        ):
+            connection.exec_driver_sql(f"DROP TABLE {table_name}")
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations WHERE revision = "
+                "'0021_diagnostic_selection_dependency_invalidation'"
+            )
+        )
+        configuration_count = connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_task_configuration_revisions")
+        ).scalar_one()
+
+    first = initialize_diagnostic_persistence(engine)
+    second = initialize_diagnostic_persistence(engine)
+
+    assert first.applied_revisions == (
+        "0021_diagnostic_selection_dependency_invalidation",
+    )
+    assert second.applied_revisions == ()
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM diagnostic_task_configuration_revisions")
+        ).scalar_one() == configuration_count
+
+
+def test_issue_84_migration_failure_rolls_back_partial_schema_and_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'issue-84-failure.sqlite'}")
+    initialize_diagnostic_persistence(engine)
+    with engine.begin() as connection:
+        for table_name in (
+            "diagnostic_task_selection_dependency_invalidations",
+            "diagnostic_task_approval_dependency_bindings",
+            "diagnostic_task_validation_dependency_bindings",
+            "diagnostic_task_setup_dependency_bindings",
+        ):
+            connection.exec_driver_sql(f"DROP TABLE {table_name}")
+        connection.execute(
+            text(
+                "DELETE FROM diagnostic_schema_migrations WHERE revision = "
+                "'0021_diagnostic_selection_dependency_invalidation'"
+            )
+        )
+
+    def fail_after_partial_ddl(connection) -> None:
+        connection.exec_driver_sql(
+            "CREATE TABLE issue_84_partial_migration_sentinel (id INTEGER)"
+        )
+        raise RuntimeError("injected 0021 migration failure")
+
+    monkeypatch.setattr(
+        diagnostic_persistence,
+        "_create_diagnostic_selection_dependency_invalidation",
+        fail_after_partial_ddl,
+    )
+
+    with pytest.raises(RuntimeError, match="injected 0021"):
+        initialize_diagnostic_persistence(engine)
+
+    schema = inspect(engine)
+    assert "issue_84_partial_migration_sentinel" not in schema.get_table_names()
+    with engine.connect() as connection:
+        revisions = tuple(
+            connection.execute(
+                text(
+                    "SELECT revision FROM diagnostic_schema_migrations "
+                    "ORDER BY revision"
+                )
+            ).scalars()
+        )
+    assert revisions[-1] == (
+        "0020_scenario_lab_commands_and_materialization_handles"
+    )
+    assert "0021_diagnostic_selection_dependency_invalidation" not in revisions

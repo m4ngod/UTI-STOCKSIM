@@ -1470,7 +1470,7 @@ def _default_inventory() -> StrategyLibraryInventory:
         ),
         formal_campaign_required_strategy_count=2,
         persistence_migration_revision=(
-            "0020_scenario_lab_commands_and_materialization_handles"
+            "0021_diagnostic_selection_dependency_invalidation"
         ),
     )
 

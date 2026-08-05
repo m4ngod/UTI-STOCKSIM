@@ -1,7 +1,7 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
 
 This runbook reproduces the incremental Wave 3 source-level integration gate,
-including Issues #77, #78, and #79 and the inherited Wave 2 union. It does not claim T08, T09, or T10
+including Issues #77–#84 and the inherited Wave 2 union. It does not claim T08, T09, or T10
 and is not the Issue #88 installed offline release-certification
 procedure.
 
@@ -37,6 +37,16 @@ typed stale/conflict/unavailable recovery, and focus restoration.
 For Issue #79 it binds admitted Historical Segment, immutable Reference Path,
 Campaign Case, Transformation Catalog, bounded preview, reconstruction honesty,
 typed unavailable write capability, and the exact five-Feature registry.
+For Issue #84 it also binds the exact independent Strategy/Scenario setup
+selection, unchanged Diagnostic Tasks 1.0 configuration, migration 0021,
+validation/approval dependency hashes, successor invalidation, and start
+fail-closed behavior. The handoff exercises frozen typed inputs through the
+five existing Diagnostic Tasks operations, with no additional Feature or
+Application operation. An AppContext-owned immutable setup coordinator feeds
+both adapters for task reread; only explicit typed variants carry setup identity
+into a command. The live reread proves invalidation through the public backend
+task-read path, an unknown current setup fails closed, and legacy base-command
+replays remain binding-free across coordinator changes.
 
 ## Gate execution
 
@@ -81,6 +91,9 @@ The gate deliberately uses separate pytest processes for:
    `test_real_backend_inventory_traces_through_live_feature_into_qml` for real
    admission → approved Recipe → Reference Path → Campaign Case → production
    Scenario Lab QML tracing, and
+   `test_live_exact_setup_selection_is_bound_through_approval` for exact
+   Strategy + Scenario selection → task validation/approval → successor
+   invalidation and start rejection, and
    exact live targets for input/revision, command/idempotency, lifecycle/retry,
    connection-generation, disposal, and no-late-callback edges;
 3. Strategy Diagnostics V1 regression under the pinned interpreter;
@@ -130,6 +143,11 @@ flake.
   `CampaignCaseId` Market Scenario identity. Confirm effective execution is
   `not_yet_resolved` and all Recipe/materialization/composition actions are
   typed unavailable in Issue #79.
+- Verify the Diagnostic Tasks route remains disabled until both current formal
+  selections exist, displays the exact selection/set/resolution/revision/source
+  identities, and creates the unchanged typed task configuration. After an
+  upstream successor, verify the prior validation and approval remain in
+  history, the active task returns to Draft, and start fails closed.
 
 Wave 3 Seam 3 remains owned by Issue #88. It must independently produce T08/T09/T10,
 same-source QML and Widgets packages, clean-room reports, checksums, dependency
