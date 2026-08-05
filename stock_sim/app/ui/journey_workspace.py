@@ -1180,29 +1180,81 @@ class ScenarioLabQtAdapter(QObject):
                 allow_partial_fills=allow_partial_fills,
                 market_rule_profile_version=market_rule_profile_version,
             )
-            metadata = self._authoring_metadata("create-recipe-draft")
-            command = CreateScenarioRecipeDraftCommand(
-                metadata=metadata,
-                payload=payload,
-                author_id=ScenarioLabActorId("journey-workspace-operator"),
-                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            self._submit_manual_recipe_draft(
+                payload,
+                operation="create-recipe-draft",
             )
-            command = replace(
-                command,
-                metadata=replace(
-                    metadata,
-                    canonical_content_identity=(
-                        canonical_scenario_lab_command_content_identity(command)
-                    ),
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Recipe Draft input rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        int,
+        bool,
+        str,
+    )
+    def createCompoundRecipeDraft(  # noqa: N802
+        self,
+        name: str,
+        segment_id: str,
+        primary_transformation_id: str,
+        primary_parameter_hint: str,
+        secondary_transformation_id: str,
+        secondary_parameter_hint: str,
+        commission_bps: str,
+        slippage_bps: str,
+        max_fill_fraction: str,
+        latency_nodes: int,
+        decision_cadence_minutes: int,
+        materialization_seed: int,
+        allow_partial_fills: bool,
+        market_rule_profile_version: str,
+    ) -> None:
+        try:
+            if (
+                not primary_transformation_id
+                or not secondary_transformation_id
+            ):
+                raise ValueError(
+                    "Compound Recipe Draft requires two registered "
+                    "transformations"
+                )
+            if primary_transformation_id == secondary_transformation_id:
+                raise ValueError(
+                    "Compound Recipe Draft requires distinct transformations"
+                )
+            payload = self._build_recipe_payload(
+                name=name,
+                segment_id=segment_id,
+                transformation_id=primary_transformation_id,
+                transformation_parameter_hint=primary_parameter_hint,
+                secondary_transformation_id=secondary_transformation_id,
+                secondary_transformation_parameter_hint=(
+                    secondary_parameter_hint
                 ),
+                commission_bps=commission_bps,
+                slippage_bps=slippage_bps,
+                max_fill_fraction=max_fill_fraction,
+                latency_nodes=latency_nodes,
+                decision_cadence_minutes=decision_cadence_minutes,
+                materialization_seed=materialization_seed,
+                allow_partial_fills=allow_partial_fills,
+                market_rule_profile_version=market_rule_profile_version,
             )
-            result = self._feature.create_recipe_draft(command)
-            if result.draft is not None:
-                self._selected_draft_id = result.draft.draft_id.value
-                self._selected_recipe_version_id = None
-            self._finish_recipe_command(
-                result.receipt.disposition,
-                result.receipt.message,
+            self._submit_manual_recipe_draft(
+                payload,
+                operation="create-compound-recipe-draft",
             )
         except (TypeError, ValueError) as exc:
             self._command_message = f"Recipe Draft input rejected: {exc}"
@@ -1276,6 +1328,13 @@ class ScenarioLabQtAdapter(QObject):
             self._command_message = "Select an authoritative Recipe Draft revision first."
             self.stateChanged.emit()
             return
+        if len(predecessor.payload.transformations) > 1:
+            self._command_message = (
+                "Compound Recipe Draft revision requires the explicit "
+                "two-transformation successor action."
+            )
+            self.stateChanged.emit()
+            return
         try:
             payload = self._build_recipe_payload(
                 name=name,
@@ -1291,37 +1350,86 @@ class ScenarioLabQtAdapter(QObject):
                 allow_partial_fills=allow_partial_fills,
                 market_rule_profile_version=market_rule_profile_version,
             )
-            metadata = self._authoring_metadata("revise-recipe-draft")
-            command = ReviseScenarioRecipeDraftCommand(
-                metadata=metadata,
-                predecessor_draft_id=predecessor.draft_id,
-                expected_draft_revision=predecessor.revision,
-                payload=payload,
-                author_id=ScenarioLabActorId("journey-workspace-operator"),
-                based_on_recipe_version_id=(
-                    predecessor.based_on_recipe_version_id
-                    if self._selected_recipe_version_id is None
-                    else ApprovedScenarioRecipeVersionId(
-                        self._selected_recipe_version_id
-                    )
-                ),
+            self._submit_manual_recipe_revision(
+                predecessor,
+                payload,
+                operation="revise-recipe-draft",
             )
-            command = replace(
-                command,
-                metadata=replace(
-                    metadata,
-                    canonical_content_identity=(
-                        canonical_scenario_lab_command_content_identity(command)
-                    ),
+        except (TypeError, ValueError) as exc:
+            self._command_message = f"Recipe Draft revision rejected: {exc}"
+            self.stateChanged.emit()
+
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        int,
+        bool,
+        str,
+    )
+    def reviseSelectedCompoundRecipeDraft(  # noqa: N802
+        self,
+        name: str,
+        primary_transformation_id: str,
+        primary_parameter_hint: str,
+        secondary_transformation_id: str,
+        secondary_parameter_hint: str,
+        commission_bps: str,
+        slippage_bps: str,
+        max_fill_fraction: str,
+        latency_nodes: int,
+        decision_cadence_minutes: int,
+        materialization_seed: int,
+        allow_partial_fills: bool,
+        market_rule_profile_version: str,
+    ) -> None:
+        predecessor = self._selected_draft()
+        if predecessor is None:
+            self._command_message = "Select an authoritative Recipe Draft revision first."
+            self.stateChanged.emit()
+            return
+        try:
+            if (
+                not primary_transformation_id
+                or not secondary_transformation_id
+            ):
+                raise ValueError(
+                    "Compound Recipe Draft requires two registered "
+                    "transformations"
+                )
+            if primary_transformation_id == secondary_transformation_id:
+                raise ValueError(
+                    "Compound Recipe Draft requires distinct transformations"
+                )
+            payload = self._build_recipe_payload(
+                name=name,
+                segment_id=predecessor.payload.historical_segment_id.value,
+                transformation_id=primary_transformation_id,
+                transformation_parameter_hint=primary_parameter_hint,
+                secondary_transformation_id=secondary_transformation_id,
+                secondary_transformation_parameter_hint=(
+                    secondary_parameter_hint
                 ),
+                commission_bps=commission_bps,
+                slippage_bps=slippage_bps,
+                max_fill_fraction=max_fill_fraction,
+                latency_nodes=latency_nodes,
+                decision_cadence_minutes=decision_cadence_minutes,
+                materialization_seed=materialization_seed,
+                allow_partial_fills=allow_partial_fills,
+                market_rule_profile_version=market_rule_profile_version,
             )
-            result = self._feature.revise_recipe_draft(command)
-            if result.draft is not None:
-                self._selected_draft_id = result.draft.draft_id.value
-                self._selected_recipe_version_id = None
-            self._finish_recipe_command(
-                result.receipt.disposition,
-                result.receipt.message,
+            self._submit_manual_recipe_revision(
+                predecessor,
+                payload,
+                operation="revise-compound-recipe-draft",
             )
         except (TypeError, ValueError) as exc:
             self._command_message = f"Recipe Draft revision rejected: {exc}"
@@ -1843,6 +1951,77 @@ class ScenarioLabQtAdapter(QObject):
             ),
         )
 
+    def _submit_manual_recipe_draft(
+        self,
+        payload: ScenarioRecipeDraftPayload,
+        *,
+        operation: str,
+    ) -> None:
+        metadata = self._authoring_metadata(operation)
+        command = CreateScenarioRecipeDraftCommand(
+            metadata=metadata,
+            payload=payload,
+            author_id=ScenarioLabActorId("journey-workspace-operator"),
+            authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+        )
+        command = replace(
+            command,
+            metadata=replace(
+                metadata,
+                canonical_content_identity=(
+                    canonical_scenario_lab_command_content_identity(command)
+                ),
+            ),
+        )
+        result = self._feature.create_recipe_draft(command)
+        if result.draft is not None:
+            self._selected_draft_id = result.draft.draft_id.value
+            self._selected_recipe_version_id = None
+        self._finish_recipe_command(
+            result.receipt.disposition,
+            result.receipt.message,
+        )
+
+    def _submit_manual_recipe_revision(
+        self,
+        predecessor: ScenarioRecipeDraftProjection,
+        payload: ScenarioRecipeDraftPayload,
+        *,
+        operation: str,
+    ) -> None:
+        metadata = self._authoring_metadata(operation)
+        command = ReviseScenarioRecipeDraftCommand(
+            metadata=metadata,
+            predecessor_draft_id=predecessor.draft_id,
+            expected_draft_revision=predecessor.revision,
+            payload=payload,
+            author_id=ScenarioLabActorId("journey-workspace-operator"),
+            based_on_recipe_version_id=(
+                predecessor.based_on_recipe_version_id
+                if self._selected_recipe_version_id is None
+                else ApprovedScenarioRecipeVersionId(
+                    self._selected_recipe_version_id
+                )
+            ),
+        )
+        command = replace(
+            command,
+            metadata=replace(
+                metadata,
+                canonical_content_identity=(
+                    canonical_scenario_lab_command_content_identity(command)
+                ),
+            ),
+        )
+        result = self._feature.revise_recipe_draft(command)
+        if result.draft is not None:
+            self._selected_draft_id = result.draft.draft_id.value
+            self._selected_recipe_version_id = None
+        self._finish_recipe_command(
+            result.receipt.disposition,
+            result.receipt.message,
+        )
+
     def _build_recipe_payload(
         self,
         *,
@@ -1850,6 +2029,8 @@ class ScenarioLabQtAdapter(QObject):
         segment_id: str,
         transformation_id: str,
         transformation_parameter_hint: str,
+        secondary_transformation_id: str = "",
+        secondary_transformation_parameter_hint: str = "",
         commission_bps: str,
         slippage_bps: str,
         max_fill_fraction: str,
@@ -1872,8 +2053,19 @@ class ScenarioLabQtAdapter(QObject):
         Decimal(commission_bps)
         Decimal(slippage_bps)
         Decimal(max_fill_fraction)
+        transformation_inputs = tuple(
+            (identity, hint)
+            for identity, hint in (
+                (transformation_id, transformation_parameter_hint),
+                (
+                    secondary_transformation_id,
+                    secondary_transformation_parameter_hint,
+                ),
+            )
+            if identity
+        )
         transformations: tuple[ScenarioRecipeTransformationInput, ...] = ()
-        if transformation_id:
+        for identity, parameter_hint in transformation_inputs:
             catalog = self._state.transformation_catalog
             definition = (
                 None
@@ -1882,7 +2074,7 @@ class ScenarioLabQtAdapter(QObject):
                     (
                         item
                         for item in catalog.entries
-                        if item.transformation_id == transformation_id
+                        if item.transformation_id == identity
                     ),
                     None,
                 )
@@ -1892,11 +2084,12 @@ class ScenarioLabQtAdapter(QObject):
             parameters = tuple(
                 self._recipe_parameter_input(
                     parameter,
-                    transformation_parameter_hint if index == 0 else "",
+                    parameter_hint if index == 0 else "",
                 )
                 for index, parameter in enumerate(definition.parameters)
             )
             transformations = (
+                *transformations,
                 ScenarioRecipeTransformationInput(
                     transformation_id=definition.transformation_id,
                     parameters=parameters,
