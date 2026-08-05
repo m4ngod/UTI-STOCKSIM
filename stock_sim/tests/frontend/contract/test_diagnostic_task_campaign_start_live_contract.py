@@ -138,9 +138,13 @@ def _formal_live_stack(
     *,
     ptrade_host=None,
     evidence_artifact_store=None,
+    artifact_store=None,
+    source=None,
 ):
-    source = _FormalCampaignFixtureSource()
-    artifact_store = InMemoryMarketPathArtifactStore()
+    if source is None:
+        source = _FormalCampaignFixtureSource()
+    if artifact_store is None:
+        artifact_store = InMemoryMarketPathArtifactStore()
     engine = create_engine(
         f"sqlite:///{tmp_path / 'diagnostic-task-campaign.db'}",
         future=True,

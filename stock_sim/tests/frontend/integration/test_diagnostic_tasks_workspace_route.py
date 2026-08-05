@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -50,11 +51,7 @@ from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
 from app.features.live_scenario_lab import LiveScenarioLabAdapter
 from app.features.live_strategy_library import LiveStrategyLibraryAdapter
 from app.features.scenario_lab_application import (
-    ComposeFormalScenarioSetCommand,
     LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
-    ResolveScenarioExecutionAssumptionsCommand,
-    ScenarioExecutionAssumptionTarget,
-    SelectFormalScenarioSetCommand,
 )
 from app.features.strategy_library import StrategyLibraryContext
 from app.features.strategy_library_application import (
@@ -71,7 +68,15 @@ from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
-from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
+from strategy_diagnostics.market_paths import (
+    InMemoryMarketPathArtifactStore,
+    ParquetMarketPathArtifactStore,
+)
+from strategy_diagnostics.ptrade_host import (
+    PTradeHostInvocation,
+    PTradeHostResult,
+    PTradeOrderRequest,
+)
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
     _approved_formal_task,
     _formal_live_stack,
@@ -85,10 +90,8 @@ from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contrac
 from tests.frontend.contract.test_strategy_diagnostics_v1_run_monitoring_live_contract import (
     _DirectExecutor,
 )
-from tests.frontend.contract.test_scenario_lab_formal_scenario_sets_live_contract import (
-    _canonical,
-    _formal_cases,
-    _metadata,
+from tests.frontend.unit.test_diagnostics_panel import (
+    _MarketStructureWorkspaceSource,
 )
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
     _baseline_payload,
@@ -106,6 +109,78 @@ class _Clock:
 
     def __call__(self) -> datetime:
         return self.now
+
+
+class _FailFirstDecisionThenTradePTradeHost(
+    _FailFirstDecisionPTradeHost
+):
+    """Exercise retry, then produce auditable backend trading evidence."""
+
+    def invoke(self, invocation: PTradeHostInvocation) -> PTradeHostResult:
+        result = super().invoke(invocation)
+        if invocation.event != "decision":
+            return result
+        return replace(
+            result,
+            order_requests=(PTradeOrderRequest("sh.600000", 100),),
+        )
+
+
+class _TradingMarketStructureWorkspaceSource(
+    _MarketStructureWorkspaceSource
+):
+    """Keep a real multi-asset path open past the first decision time."""
+
+    def inspect(self, selection):
+        inspection = super().inspect(selection)
+        return (
+            None
+            if inspection is None
+            else replace(inspection, bar_count=56)
+        )
+
+    def load_scenario_data_world(self, segment):
+        world = super().load_scenario_data_world(segment)
+        liquid_bars = tuple(
+            replace(
+                bar,
+                volume=100_000,
+                amount=bar.close * 100_000,
+            )
+            for bar in world.bars
+        )
+        last_by_instrument = {
+            bar.instrument: bar for bar in liquid_bars
+        }
+        continuation = tuple(
+            replace(
+                bar,
+                end_time=datetime(2024, 1, 2, 10, 5)
+                + timedelta(minutes=5 * offset),
+                open=bar.close,
+                high=bar.close,
+                low=bar.close,
+                volume=100_000,
+                amount=bar.close * 100_000,
+            )
+            for offset in range(1, 8)
+            for _instrument, bar in sorted(last_by_instrument.items())
+        )
+        price_limit_references = tuple(
+            replace(
+                reference,
+                rule_code=(
+                    f"{reference.board}.ordinary.10pct."
+                    "effective-2024-01-02"
+                ),
+            )
+            for reference in world.price_limit_references
+        )
+        return replace(
+            world,
+            bars=(*liquid_bars, *continuation),
+            price_limit_references=price_limit_references,
+        )
 
 
 def _real_feature(
@@ -172,81 +247,13 @@ def _formal_inventory(tmp_path: Path) -> DiagnosticTasksInventory:
         feature.close()
 
 
-def _prepare_live_five_feature_setup(application, event_bridge: EventBridge):
+def _live_five_feature_setup_features(application, event_bridge: EventBridge):
     scenario_feature = LiveScenarioLabAdapter(
         application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
             application
         ),
         event_bridge=event_bridge,
     )
-    scenario_context = ScenarioLabContext()
-    scenario_feature.snapshot(scenario_context)
-    ready = scenario_feature.snapshot(scenario_context)
-    baseline, isolated, compound = _formal_cases(ready)
-    composed = scenario_feature.compose_scenario_set(
-        _canonical(
-            ComposeFormalScenarioSetCommand(
-                metadata=_metadata(ready, "compose-five-feature-reopen-85"),
-                baseline_case_id=baseline.scenario_id,
-                isolated_case_ids=tuple(
-                    item.scenario_id for item in isolated
-                ),
-                compound_case_ids=tuple(
-                    item.scenario_id for item in compound
-                ),
-            )
-        )
-    )
-    assert composed.scenario_set is not None
-
-    after_compose = scenario_feature.snapshot(scenario_context)
-    strategy_ids = tuple(
-        StrategyUnderTestId(item.strategy_id)
-        for item in application.read_strategy_under_test_inventory().entries
-    )
-    decision_time = next(
-        item.start_time
-        for item in after_compose.reference_paths
-        if item.path_id == baseline.path_id
-    )
-    resolved = scenario_feature.resolve_execution_assumptions(
-        _canonical(
-            ResolveScenarioExecutionAssumptionsCommand(
-                metadata=_metadata(
-                    after_compose,
-                    "resolve-five-feature-reopen-85",
-                ),
-                scenario_set_id=composed.scenario_set.scenario_set_id,
-                targets=tuple(
-                    ScenarioExecutionAssumptionTarget(
-                        strategy_id=strategy_id,
-                        campaign_case_id=case_id,
-                        decision_time=decision_time,
-                    )
-                    for strategy_id in strategy_ids
-                    for case_id in composed.scenario_set.case_ids
-                ),
-            )
-        )
-    )
-    assert resolved.resolution is not None
-    after_resolution = scenario_feature.snapshot(scenario_context)
-    selected = scenario_feature.select_formal_scenario_set(
-        _canonical(
-            SelectFormalScenarioSetCommand(
-                metadata=_metadata(
-                    after_resolution,
-                    "select-five-feature-reopen-85",
-                ),
-                scenario_set_id=composed.scenario_set.scenario_set_id,
-                case_ids=composed.scenario_set.case_ids,
-                originating_view_revision=after_resolution.revision,
-                execution_resolution_id=resolved.resolution.resolution_id,
-            )
-        )
-    )
-    assert selected.selection_context is not None
-
     strategy_feature = LiveStrategyLibraryAdapter(
         application=LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
             application
@@ -547,23 +554,30 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
 ) -> None:
     app = _app()
     evidence_root = tmp_path / "diagnostic-evidence"
+    market_path_root = tmp_path / "market-paths"
+    artifact_store = ParquetMarketPathArtifactStore(market_path_root)
+    source = _TradingMarketStructureWorkspaceSource()
     (
-        source,
-        artifact_store,
+        returned_source,
+        returned_artifact_store,
         engine,
         application,
         _diagnostic_application,
         initial_diagnostic_tasks,
     ) = _formal_live_stack(
         tmp_path,
-        ptrade_host=_FailFirstDecisionPTradeHost(),
+        ptrade_host=_FailFirstDecisionThenTradePTradeHost(),
         evidence_artifact_store=JsonDiagnosticEvidenceArtifactStore(
             evidence_root
         ),
+        artifact_store=artifact_store,
+        source=source,
     )
+    assert returned_source is source
+    assert returned_artifact_store is artifact_store
     initial_diagnostic_tasks.close()
     bridge = EventBridge(subscribe_backend=False)
-    strategy_feature, scenario_feature = _prepare_live_five_feature_setup(
+    strategy_feature, scenario_feature = _live_five_feature_setup_features(
         application,
         bridge,
     )
@@ -618,25 +632,152 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     app.processEvents()
     app.processEvents()
     root = host.rootObject()
+
+    def settle_setup() -> None:
+        app.processEvents()
+        app.processEvents()
+
+    def wait_for_setup(predicate) -> None:
+        for _ in range(200):
+            settle_setup()
+            if predicate():
+                return
+            QTest.qWait(5)
+        raise AssertionError("Five-Feature setup did not reach authoritative state")
+
     assert root.property("activeRoute") == "strategy_library"
     assert root.findChild(QObject, "strategyLibraryPage") is not None
     host._strategy_library.compareFormalSet()
     host._strategy_library.selectFormalSet()
-    app.processEvents()
-    app.processEvents()
+    settle_setup()
     assert strategy_bookmarks
-    assert host._strategy_library.current_formal_strategy_selection() is not None
+    strategy_selection = (
+        host._strategy_library.current_formal_strategy_selection()
+    )
+    assert strategy_selection is not None
+    strategy_entries = tuple(host._strategy_library.entries)
+    strategy_entry_identities = tuple(
+        (
+            item.strategy_id.value,
+            item.strategy_version,
+            item.manifest_content_hash,
+            item.guardrail_profile_id.value,
+            item.guardrail_profile_version,
+        )
+        for item in strategy_selection.selections
+    )
+    assert len(strategy_entry_identities) == 2
+    assert sorted(strategy_entry_identities) == sorted(
+        (
+            str(entry["strategyId"]),
+            str(entry["strategyVersion"]),
+            str(entry["manifestHash"]),
+            str(entry["guardrailProfileId"]),
+            str(entry["guardrailProfileVersion"]),
+        )
+        for entry in strategy_entries
+    )
 
     assert root.setProperty("activeRoute", "scenario_lab")
-    app.processEvents()
-    app.processEvents()
+    settle_setup()
     assert root.findChild(QObject, "scenarioLabPage") is not None
-    assert host._scenario_lab.current_diagnostic_selection() is not None
+    scenario_adapter = host._scenario_lab
+    draft_count = scenario_adapter.recipeDraftCount
+    handle_count = scenario_adapter.taskHandleCount
+    admitted_segment = scenario_adapter.historicalSegments[0]
+    execution_stress = next(
+        item
+        for item in scenario_adapter.transformations
+        if item["transformationId"] == "execution-stress.v1"
+    )
+    scenario_adapter.createRecipeDraft(
+        "Wave 3 persisted five-Feature tracer recipe",
+        str(admitted_segment["segmentId"]),
+        str(execution_stress["transformationId"]),
+        "3",
+        "5",
+        "1",
+        "75",
+        0,
+        30,
+        17,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    assert scenario_adapter.recipeDraftCount == draft_count + 1
+    recipe_draft = scenario_adapter.recipeDrafts[-1]
+    scenario_adapter.validateRecipeDraft(str(recipe_draft["draftId"]))
+    recipe_validation = scenario_adapter.recipeValidations[-1]
+    assert recipe_validation["draftId"] == recipe_draft["draftId"]
+    assert recipe_validation["valid"] is True
+    scenario_adapter.approveRecipeValidation(
+        str(recipe_validation["validationId"])
+    )
+    approved_recipe = next(
+        item
+        for item in scenario_adapter.approvedRecipeVersions
+        if item["validationId"] == recipe_validation["validationId"]
+    )
+    scenario_adapter.materializeApprovedRecipeVersion(
+        str(approved_recipe["recipeVersionId"])
+    )
+    wait_for_setup(
+        lambda: scenario_adapter.taskHandleCount == handle_count + 1
+        and scenario_adapter.taskHandles[-1]["terminal"]
+    )
+    materialization_handle = scenario_adapter.taskHandles[-1]
+    assert materialization_handle["phase"] == "completed"
+    assert (
+        materialization_handle["targetIdentity"]
+        == approved_recipe["recipeVersionId"]
+    )
+    materialized_case = next(
+        item
+        for item in scenario_adapter.marketScenarios
+        if item["pathId"] == materialization_handle["resultIdentity"]
+        and item["recipeVersionId"] == approved_recipe["recipeVersionId"]
+    )
+    scenario_adapter.composeVisibleScenarioSet()
+    assert (
+        scenario_adapter.scenarioSets
+    ), scenario_adapter.recipeCapabilityMessage
+    formal_scenario_set = scenario_adapter.scenarioSets[-1]
+    assert formal_scenario_set["eligibility"] == "formal_campaign_eligible"
+    assert materialized_case["scenarioId"] in formal_scenario_set["caseIds"]
+    scenario_adapter.resolveLatestScenarioSet()
+    execution_resolution = scenario_adapter.executionResolutions[-1]
+    scenario_adapter.selectLatestFormalScenarioSet()
+    scenario_selection = scenario_adapter.current_diagnostic_selection()
+    assert scenario_selection is not None
+    assert materialized_case["scenarioId"] in {
+        item.scenario_id.value for item in scenario_selection.market_scenarios
+    }
     assert root.setProperty("activeRoute", "diagnostic_tasks")
-    app.processEvents()
-    app.processEvents()
+    settle_setup()
     setup_selection = setup_coordinator.current()
     assert setup_selection is not None
+    materialized_configuration_case = next(
+        item
+        for item in setup_selection.configuration.campaign_case_selections
+        if item.campaign_case_id.value == materialized_case["scenarioId"]
+    )
+    assert (
+        materialized_configuration_case.recipe_version_id.value
+        == approved_recipe["recipeVersionId"]
+    )
+    assert (
+        materialized_configuration_case.market_scenario_id.value
+        == materialization_handle["resultIdentity"]
+    )
+    selection_context = scenario_adapter.selectionContexts[-1]
+    assert (
+        selection_context["selectionContextId"]
+        == setup_selection.scenario_selection.context.selection_context_id.value
+    )
+    assert (
+        selection_context["executionResolutionId"]
+        == execution_resolution["resolutionId"]
+    )
     expected_setup_identity = setup_selection.context_identity
     expected_setup_generation = (
         setup_selection.strategy_selection.source_generation.value
@@ -644,6 +785,54 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     expected_scenario_selection_identity = (
         setup_selection.scenario_selection.context.selection_context_id.value
     )
+
+    def assert_exact_scenario_identities(projector) -> None:
+        assert any(
+            item["draftId"] == recipe_draft["draftId"]
+            and item["payloadHash"] == recipe_draft["payloadHash"]
+            for item in projector.recipeDrafts
+        )
+        assert any(
+            item["validationId"] == recipe_validation["validationId"]
+            and item["draftId"] == recipe_draft["draftId"]
+            for item in projector.recipeValidations
+        )
+        assert any(
+            item["recipeVersionId"] == approved_recipe["recipeVersionId"]
+            and item["contentHash"] == approved_recipe["contentHash"]
+            and item["approvalId"] == approved_recipe["approvalId"]
+            for item in projector.approvedRecipeVersions
+        )
+        assert any(
+            item["taskHandleId"] == materialization_handle["taskHandleId"]
+            and item["attemptId"] == materialization_handle["attemptId"]
+            and item["resultIdentity"]
+            == materialization_handle["resultIdentity"]
+            for item in projector.taskHandles
+        )
+        assert any(
+            item["scenarioId"] == materialized_case["scenarioId"]
+            and item["pathId"] == materialized_case["pathId"]
+            and item["recipeVersionId"]
+            == materialized_case["recipeVersionId"]
+            for item in projector.marketScenarios
+        )
+        assert any(
+            item["scenarioSetId"] == formal_scenario_set["scenarioSetId"]
+            and item["caseIds"] == formal_scenario_set["caseIds"]
+            for item in projector.scenarioSets
+        )
+        assert any(
+            item["resolutionId"] == execution_resolution["resolutionId"]
+            for item in projector.executionResolutions
+        )
+        assert any(
+            item["selectionContextId"]
+            == selection_context["selectionContextId"]
+            for item in projector.selectionContexts
+        )
+
+    assert_exact_scenario_identities(scenario_adapter)
     diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
     assert diagnostic_page is not None
     diagnostic_projection = diagnostic_page.property("adapter")
@@ -870,6 +1059,77 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     accepted_run = authoritative_handoff.selected_run
     manifest_id = accepted_run.reproduction_manifest_id
     assert manifest_id is not None
+    materialized_node = next(
+        node
+        for node in completed_task.handoff.campaign_nodes
+        if node.selected_campaign_case_id.value
+        == materialized_case["scenarioId"]
+    )
+    materialized_attempt = next(
+        item
+        for item in materialized_node.attempts
+        if item.attempt_id == materialized_node.active_attempt_id
+    )
+    materialized_run = materialized_attempt.runs[0]
+    resolved_target = next(
+        item
+        for item in setup_selection.scenario_selection.execution_resolution.targets
+        if item.campaign_case_id.value == materialized_case["scenarioId"]
+        and item.strategy_id == materialized_run.strategy_id
+    )
+    run_snapshot = application.strategy_run_status(
+        materialized_run.run_id.value
+    )
+    assert run_snapshot.fills, [
+        order.rejection_reason for order in run_snapshot.orders
+    ]
+    run_conditions = run_snapshot.specification.resolved_execution_conditions
+    assert run_conditions is not None
+    run_condition_payload = run_conditions.to_dict()
+
+    def normalized_condition_value(value: object) -> str:
+        if isinstance(value, bool):
+            return str(value).lower()
+        return str(value)
+
+    run_resolutions = {
+        str(item["name"]): item
+        for item in run_condition_payload["resolutions"]
+    }
+    assert set(run_resolutions) == {
+        item.name for item in resolved_target.conditions
+    }
+    for condition in resolved_target.conditions:
+        run_resolution = run_resolutions[condition.name]
+        assert normalized_condition_value(
+            run_resolution["requested_value"]
+        ) == condition.requested_value
+        assert normalized_condition_value(
+            run_resolution["effective_value"]
+        ) == condition.effective_value
+        assert run_resolution["override_reason"] == condition.override_reason
+    for name, value in run_condition_payload["requested"].items():
+        assert normalized_condition_value(value) == next(
+            item.requested_value
+            for item in resolved_target.conditions
+            if item.name == name
+        )
+    for name, value in run_condition_payload["effective"].items():
+        assert normalized_condition_value(value) == next(
+            item.effective_value
+            for item in resolved_target.conditions
+            if item.name == name
+        )
+    policy_by_name = {
+        item.name: item
+        for item in materialized_configuration_case.execution_policy_values
+    }
+    for condition in resolved_target.conditions:
+        policy = policy_by_name[condition.name]
+        assert policy.value == condition.effective_value
+        assert f"requested={condition.requested_value}" in policy.source
+        if condition.override_reason is not None:
+            assert condition.override_reason in policy.source
     expected_durable_identity_graph = durable_identity_graph(completed_task)
     assert len(expected_durable_identity_graph) >= 50
 
@@ -894,6 +1154,41 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         completed_task.handoff.evidence_package_id.value,
     ):
         assert identity in evidence_text
+
+    evidence.snapshot(authoritative_handoff.context)
+    evidence_state = evidence.snapshot(authoritative_handoff.context)
+    evidence_data = evidence_state.last_reliable_data
+    assert evidence_data is not None
+    assert evidence_data.evidence_package_id.value == (
+        completed_task.handoff.evidence_package_id.value
+    )
+    assert evidence_data.selection.reproduction_manifest_id == manifest_id
+    evidence_record_ids = tuple(
+        item.identity.value
+        for candidate in evidence_data.candidates
+        for item in candidate.evidence
+    )
+    finding_ids = tuple(
+        item.identity.value
+        for candidate in evidence_data.candidates
+        for item in candidate.findings
+    )
+    breakpoint_ids = tuple(
+        breakpoint.identity.value
+        for candidate in evidence_data.candidates
+        for finding in candidate.findings
+        for breakpoint in finding.sensitivity_breakpoints
+    )
+    breakpoint_finding_edges = tuple(
+        (finding.identity.value, breakpoint.identity.value)
+        for candidate in evidence_data.candidates
+        for finding in candidate.findings
+        for breakpoint in finding.sensitivity_breakpoints
+    )
+    assert evidence_record_ids
+    assert finding_ids
+    assert breakpoint_ids
+    assert breakpoint_finding_edges
 
     expected_identity_text = (
         f"Campaign · {campaign_id.value}",
@@ -976,6 +1271,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     settle()
     remounted_scenario = remounted._scenario_lab.current_diagnostic_selection()
     assert remounted_scenario is not None
+    assert_exact_scenario_identities(remounted._scenario_lab)
     assert (
         remounted_scenario.context.selection_context_id
         == setup_selection.scenario_selection.context.selection_context_id
@@ -1000,10 +1296,20 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         future=True,
     )
     assert restarted_engine is not engine
+    restarted_artifact_store = ParquetMarketPathArtifactStore(
+        market_path_root
+    )
+    assert restarted_artifact_store is not artifact_store
+    assert (
+        restarted_artifact_store.get(
+            materialization_handle["resultIdentity"]
+        ).artifact_hash
+        == materialization_handle["resultIdentity"]
+    )
     restarted_application = create_diagnostics_application(
         historical_source=source,
         market_data_source=source,
-        artifact_store=artifact_store,
+        artifact_store=restarted_artifact_store,
         evidence_artifact_store=JsonDiagnosticEvidenceArtifactStore(
             evidence_root
         ),
@@ -1114,6 +1420,18 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         == expected_scenario_selection_identity
     )
     assert reopened_setup.configuration == setup_selection.configuration
+    assert tuple(reopened._strategy_library.entries) == strategy_entries
+    assert tuple(
+        (
+            item.strategy_id.value,
+            item.strategy_version,
+            item.manifest_content_hash,
+            item.guardrail_profile_id.value,
+            item.guardrail_profile_version,
+        )
+        for item in reopened_setup.strategy_selection.selections
+    ) == strategy_entry_identities
+    assert_exact_scenario_identities(reopened._scenario_lab)
     assert reopened_root.property("activeRoute") == "evidence_and_findings"
     reopened_status = reopened_root.findChild(
         QObject,
@@ -1145,6 +1463,137 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert expected_identity_text[2] in reopened_interface.text(
         QAccessible.Text.Description
     )
+    restarted_evidence.snapshot(authoritative_handoff.context)
+    reopened_evidence_state = restarted_evidence.snapshot(
+        authoritative_handoff.context
+    )
+    reopened_evidence_data = reopened_evidence_state.last_reliable_data
+    assert reopened_evidence_data is not None
+    assert reopened_evidence_data.evidence_package_id == (
+        evidence_data.evidence_package_id
+    )
+    assert tuple(
+        item.identity.value
+        for candidate in reopened_evidence_data.candidates
+        for item in candidate.evidence
+    ) == evidence_record_ids
+    assert tuple(
+        item.identity.value
+        for candidate in reopened_evidence_data.candidates
+        for item in candidate.findings
+    ) == finding_ids
+    assert tuple(
+        breakpoint.identity.value
+        for candidate in reopened_evidence_data.candidates
+        for finding in candidate.findings
+        for breakpoint in finding.sensitivity_breakpoints
+    ) == breakpoint_ids
+    assert tuple(
+        (finding.identity.value, breakpoint.identity.value)
+        for candidate in reopened_evidence_data.candidates
+        for finding in candidate.findings
+        for breakpoint in finding.sensitivity_breakpoints
+    ) == breakpoint_finding_edges
+
+    identity_ledger_value = os.environ.get(
+        "STOCKSIM_WAVE3_IDENTITY_LEDGER"
+    )
+    if identity_ledger_value is not None:
+        candidate_source = os.environ.get(
+            "STOCKSIM_WAVE3_CANDIDATE_SOURCE",
+            "",
+        )
+        assert len(candidate_source) == 40
+        assert completed_task.validation.validation_id is not None
+        assert completed_task.approval is not None
+        identity_ledger = {
+            "schema_version": 1,
+            "candidate_source": candidate_source,
+            "feature_interfaces": [
+                "StrategyLibraryFeature/1.0",
+                "ScenarioLabFeature/1.0",
+                "DiagnosticTasksFeature/1.0",
+                "RunMonitoringFeature/1.2",
+                "EvidenceAndFindingsFeature/1.1",
+            ],
+            "strategy_library": {
+                "selection_context_id": strategy_selection.context_identity,
+                "entries": strategy_entry_identities,
+            },
+            "scenario_lab": {
+                "historical_segment": admitted_segment,
+                "recipe_draft": recipe_draft,
+                "recipe_validation": recipe_validation,
+                "approved_recipe": approved_recipe,
+                "materialization_task_handle": materialization_handle,
+                "materialized_case": materialized_case,
+                "formal_scenario_set": formal_scenario_set,
+                "execution_resolution": execution_resolution,
+                "selection_context": selection_context,
+            },
+            "diagnostic_tasks": {
+                "setup_context_id": expected_setup_identity,
+                "task_id": completed_task.task_id.value,
+                "configuration_content_id": (
+                    completed_task.configuration.content_identity.value
+                ),
+                "validation_id": (
+                    completed_task.validation.validation_id.value
+                ),
+                "approval_id": completed_task.approval.approval_id.value,
+                "task_handle_ids": [
+                    item.identity.value for item in completed_task.task_handles
+                ],
+            },
+            "campaign": {
+                "campaign_id": campaign_id.value,
+                "node_ids": [
+                    item.campaign_node_id.value
+                    for item in completed_task.handoff.campaign_nodes
+                ],
+                "attempt_ids": [
+                    attempt.attempt_id.value
+                    for node in completed_task.handoff.campaign_nodes
+                    for attempt in node.attempts
+                ],
+                "run_ids": [
+                    run.run_id.value
+                    for node in completed_task.handoff.campaign_nodes
+                    for attempt in node.attempts
+                    for run in attempt.runs
+                ],
+                "requested_effective_override": run_condition_payload,
+            },
+            "evidence_and_findings": {
+                "evidence_package_id": (
+                    evidence_data.evidence_package_id.value
+                ),
+                "evidence_record_ids": evidence_record_ids,
+                "finding_ids": finding_ids,
+                "breakpoint_ids": breakpoint_ids,
+                "breakpoint_finding_edges": breakpoint_finding_edges,
+                "reproduction_manifest_id": manifest_id.value,
+            },
+            "recovery": {
+                "remount_preserved_exact_identities": True,
+                "application_reopen_preserved_exact_identities": True,
+                "market_path_store_reopened_from_files": True,
+                "old_generation_quarantined": True,
+                "durable_identity_graph": expected_durable_identity_graph,
+            },
+        }
+        identity_ledger_path = Path(identity_ledger_value)
+        identity_ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        identity_ledger_path.write_text(
+            json.dumps(
+                identity_ledger,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     reopened.close_adapter()
     reopened.close()
