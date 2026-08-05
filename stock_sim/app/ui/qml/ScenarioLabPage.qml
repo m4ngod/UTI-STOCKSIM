@@ -1014,6 +1014,33 @@ Item {
                             onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
                         }
 
+                        Label { text: "Optional second registered transformation" }
+                        ComboBox {
+                            id: recipeSecondaryTransformationInput
+                            property string accessibleName: "Select optional second registered Scenario transformation"
+                            objectName: "scenarioLabRecipeSecondaryTransformationInput"
+                            Layout.fillWidth: true
+                            model: [{"label": "No second transformation", "transformationId": ""}].concat(adapter.transformations)
+                            textRole: "label"
+                            valueRole: "transformationId"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "Compound Drafts accept only a second closed registered transformation identity"
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Label { text: "Second transformation first parameter hint" }
+                        TextField {
+                            id: recipeSecondaryTransformationParameterInput
+                            property string accessibleName: "Closed second transformation first parameter value"
+                            objectName: "scenarioLabRecipeSecondaryTransformationParameterInput"
+                            Layout.fillWidth: true
+                            placeholderText: "Blank uses the catalog minimum or first choice"
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
                         Label { text: "Commission bps" }
                         TextField {
                             id: recipeCommissionInput
@@ -1115,6 +1142,7 @@ Item {
                             text: "Create immutable Draft"
                             enabled: adapter.canCreateRecipeDraft
                                 && recipeSegmentInput.currentIndex >= 0
+                                && !recipeSecondaryTransformationInput.currentValue
                             activeFocusOnTab: true
                             Accessible.name: accessibleName
                             onClicked: adapter.createRecipeDraft(
@@ -1135,11 +1163,45 @@ Item {
                         }
 
                         Button {
+                            id: createCompoundRecipeDraftButton
+                            property string accessibleName: "Create exact immutable Compound Scenario Recipe Draft"
+                            objectName: "scenarioLabCreateCompoundRecipeDraftButton"
+                            text: "Create compound Draft"
+                            enabled: adapter.canCreateRecipeDraft
+                                && recipeSegmentInput.currentIndex >= 0
+                                && recipeTransformationInput.currentValue
+                                && recipeSecondaryTransformationInput.currentValue
+                                && recipeTransformationInput.currentValue
+                                    !== recipeSecondaryTransformationInput.currentValue
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "Creates one immutable typed Draft from two distinct registered transformation identities"
+                            onClicked: adapter.createCompoundRecipeDraft(
+                                recipeNameInput.text,
+                                recipeSegmentInput.currentValue || "",
+                                recipeTransformationInput.currentValue || "",
+                                recipeTransformationParameterInput.text,
+                                recipeSecondaryTransformationInput.currentValue || "",
+                                recipeSecondaryTransformationParameterInput.text,
+                                recipeCommissionInput.text,
+                                recipeSlippageInput.text,
+                                recipeMaxFillInput.text,
+                                recipeLatencyInput.value,
+                                recipeCadenceInput.value,
+                                recipeSeedInput.value,
+                                recipePartialFillsInput.checked,
+                                recipeMarketRuleInput.text
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Button {
                             id: reviseRecipeDraftButton
                             property string accessibleName: "Create immutable successor Recipe Draft revision"
                             objectName: "scenarioLabReviseRecipeDraftButton"
                             text: "Create successor revision"
                             enabled: adapter.canReviseRecipeDraft
+                                && !recipeSecondaryTransformationInput.currentValue
                             activeFocusOnTab: true
                             Accessible.name: accessibleName
                             onClicked: adapter.reviseSelectedRecipeDraft(
@@ -1149,6 +1211,37 @@ Item {
                                 recipeSlippageInput.text,
                                 recipeMaxFillInput.text,
                                 recipeTransformationParameterInput.text,
+                                recipeLatencyInput.value,
+                                recipeCadenceInput.value,
+                                recipeSeedInput.value,
+                                recipePartialFillsInput.checked,
+                                recipeMarketRuleInput.text
+                            )
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Button {
+                            id: reviseCompoundRecipeDraftButton
+                            property string accessibleName: "Create immutable Compound Recipe successor revision"
+                            objectName: "scenarioLabReviseCompoundRecipeDraftButton"
+                            text: "Revise compound Draft"
+                            enabled: adapter.canReviseRecipeDraft
+                                && recipeTransformationInput.currentValue
+                                && recipeSecondaryTransformationInput.currentValue
+                                && recipeTransformationInput.currentValue
+                                    !== recipeSecondaryTransformationInput.currentValue
+                            activeFocusOnTab: true
+                            Accessible.name: accessibleName
+                            Accessible.description: "Preserves two distinct closed registered transformations in the immutable successor Draft"
+                            onClicked: adapter.reviseSelectedCompoundRecipeDraft(
+                                recipeNameInput.text,
+                                recipeTransformationInput.currentValue || "",
+                                recipeTransformationParameterInput.text,
+                                recipeSecondaryTransformationInput.currentValue || "",
+                                recipeSecondaryTransformationParameterInput.text,
+                                recipeCommissionInput.text,
+                                recipeSlippageInput.text,
+                                recipeMaxFillInput.text,
                                 recipeLatencyInput.value,
                                 recipeCadenceInput.value,
                                 recipeSeedInput.value,

@@ -114,6 +114,10 @@ def test_scenario_lab_qml_authoring_controls_bind_only_typed_exact_identities() 
     assert "adapter.composeVisibleScenarioSet()" in source
     assert "adapter.resolveLatestScenarioSet()" in source
     assert "adapter.selectLatestFormalScenarioSet()" in source
+    assert "scenarioLabRecipeSecondaryTransformationInput" in source
+    assert "adapter.createCompoundRecipeDraft(" in source
+    assert "adapter.reviseSelectedCompoundRecipeDraft(" in source
+    assert "scenarioLabReviseCompoundRecipeDraftButton" in source
     assert "after-Decision-Time" in source
     assert "Quick Experiment" in source
     assert "requested " in source and " effective " in source
@@ -445,7 +449,9 @@ def test_production_workspace_authors_materializes_and_remounts_exact_recipes() 
         "a-share-cash-equity.v1",
     )
     app.processEvents()
-    assert host._scenario_lab.recipeDraftCount == 1
+    assert host._scenario_lab.recipeDraftCount == 1, (
+        host._scenario_lab.recipeCapabilityMessage
+    )
     created = host._scenario_lab.recipeDrafts[0]
     assert created["revision"] == 1
     assert created["historicalSegmentId"] == segment_id
@@ -685,6 +691,164 @@ def test_production_workspace_authors_materializes_and_remounts_exact_recipes() 
         item["pathId"] for item in remounted._scenario_lab.referencePaths
     }
     remounted.close_adapter()
+    scenario_feature.close()
+    run_feature.close()
+
+
+def test_production_workspace_preserves_compound_recipe_successor_truth() -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    source = _AdmittedScenarioLabSource()
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=InMemoryMarketPathArtifactStore(),
+    )
+    application.start()
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    scenario_feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+    host = JourneyWorkspaceHost(
+        run_feature,
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
+        initial_route="scenario_lab",
+    )
+    app.processEvents()
+    root = host.rootObject()
+    assert root is not None
+    segment_id = admission.segment.segment_id
+
+    host._scenario_lab.createCompoundRecipeDraft(
+        "QML compound recipe",
+        segment_id,
+        "trend-regime.v1",
+        "bearish",
+        "volatility-scaling.v1",
+        "1.25",
+        "3",
+        "5",
+        "1",
+        0,
+        30,
+        83,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    app.processEvents()
+    assert host._scenario_lab.recipeDraftCount == 1, (
+        host._scenario_lab.recipeCapabilityMessage
+    )
+    created = host._scenario_lab.recipeDrafts[0]
+    assert [
+        item["transformationId"] for item in created["transformations"]
+    ] == ["trend-regime.v1", "volatility-scaling.v1"]
+
+    host.close_adapter()
+    host = JourneyWorkspaceHost(
+        run_feature,
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
+        initial_route="scenario_lab",
+    )
+    app.processEvents()
+    root = host.rootObject()
+    assert root is not None
+    host._scenario_lab.selectRecipeDraft(created["draftId"])
+    host._scenario_lab.reviseSelectedRecipeDraft(
+        "QML compound accidental simple successor",
+        "trend-regime.v1",
+        "4",
+        "5",
+        "0.75",
+        "bullish",
+        1,
+        30,
+        84,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    app.processEvents()
+    assert host._scenario_lab.recipeDraftCount == 1
+    assert "explicit two-transformation successor action" in (
+        host._scenario_lab.recipeCapabilityMessage
+    )
+
+    host._scenario_lab.reviseSelectedCompoundRecipeDraft(
+        "QML compound successor",
+        "trend-regime.v1",
+        "bullish",
+        "volatility-scaling.v1",
+        "1.5",
+        "4",
+        "5",
+        "0.75",
+        1,
+        30,
+        84,
+        True,
+        "a-share-cash-equity.v1",
+    )
+    app.processEvents()
+    assert host._scenario_lab.recipeDraftCount == 2
+    successor = host._scenario_lab.recipeDrafts[-1]
+    assert successor["revision"] == 2
+    assert successor["predecessorDraftId"] == created["draftId"]
+    assert [
+        item["transformationId"] for item in successor["transformations"]
+    ] == ["trend-regime.v1", "volatility-scaling.v1"]
+    assert successor["transformations"][0]["parameters"][0]["value"] == (
+        "bullish"
+    )
+    assert successor["transformations"][1]["parameters"][0]["value"] == (
+        "1.5"
+    )
+
+    primary = root.findChild(QObject, "scenarioLabRecipeTransformationInput")
+    secondary = root.findChild(
+        QObject,
+        "scenarioLabRecipeSecondaryTransformationInput",
+    )
+    create_simple = root.findChild(
+        QObject,
+        "scenarioLabCreateRecipeDraftButton",
+    )
+    create_compound = root.findChild(
+        QObject,
+        "scenarioLabCreateCompoundRecipeDraftButton",
+    )
+    revise_simple = root.findChild(
+        QObject,
+        "scenarioLabReviseRecipeDraftButton",
+    )
+    revise_compound = root.findChild(
+        QObject,
+        "scenarioLabReviseCompoundRecipeDraftButton",
+    )
+    assert all(
+        item is not None
+        for item in (
+            primary,
+            secondary,
+            create_simple,
+            create_compound,
+            revise_simple,
+            revise_compound,
+        )
+    )
+    primary.setProperty("currentIndex", 1)
+    secondary.setProperty("currentIndex", 2)
+    app.processEvents()
+    assert create_simple.property("enabled") is False
+    assert revise_simple.property("enabled") is False
+    assert create_compound.property("enabled") is True
+    assert revise_compound.property("enabled") is True
+
+    host.close_adapter()
     scenario_feature.close()
     run_feature.close()
 
