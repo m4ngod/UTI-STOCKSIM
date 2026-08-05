@@ -32,3 +32,11 @@ _Avoid_: Backtest, quick experiment
 **Quick Experiment**:
 An incomplete or selectively composed scenario comparison that does not claim formal diagnostic attribution.
 _Avoid_: Formal Diagnostic Campaign
+
+**Scenario Execution Resolution**:
+An immutable backend resolution of requested and effective execution conditions for exact Strategy Under Test and Campaign Case targets, including the first market node strictly after Decision Time and typed override reasons.
+_Avoid_: Frontend estimate, editable execution policy
+
+**Scenario Selection Context**:
+The immutable, content-identified formal handoff candidate binding the exact Strategy Under Test set, Scenario Set, Campaign Cases, Approved Scenario Recipe versions and hashes, Reference Market Paths, execution resolution, source generation, and originating selection/view revisions.
+_Avoid_: QML payload, copied campaign configuration

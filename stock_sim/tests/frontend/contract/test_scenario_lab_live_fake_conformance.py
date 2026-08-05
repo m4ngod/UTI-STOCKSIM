@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from time import monotonic, sleep
 from typing import Callable
@@ -36,6 +36,7 @@ from app.features.scenario_lab_application import (
     ApproveScenarioRecipeResult,
     ComposeFormalScenarioSetCommand,
     ComposeFormalScenarioSetResult,
+    FormalScenarioSetEligibility,
     CreateAiAssistedScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftCommand,
     CreateScenarioRecipeDraftResult,
@@ -67,7 +68,9 @@ from app.features.scenario_lab_application import (
     ScenarioLabTaskHandle,
     ScenarioLabUnavailabilityCode,
     ScenarioLabUnavailabilityReason,
+    ScenarioSelectionContextStatus,
     ScenarioExecutionAssumptionTarget,
+    ScenarioExecutionResolutionState,
     ScenarioMaterializationAttemptId,
     ScenarioRecipeAuthoringMode,
     ScenarioRecipeDataPolicy,
@@ -86,11 +89,16 @@ from app.features.strategy_diagnostics_v1_read_model import SourceRevisionToken
 from strategy_diagnostics import (
     AIRecipeDraftOutputV1,
     DeterministicFakeAIRecipeAssistant,
+    LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
+    QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     ScenarioRecipeV1,
 )
 from strategy_diagnostics.application import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.strategy_diagnostics.test_recipe_lifecycle import _RecipeFixtureSource
+from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
+    _formal_live_stack,
+)
 
 
 def _await_materialization_task(
@@ -2129,7 +2137,7 @@ def test_shared_read_body_filters_only_typed_view_state(
     "feature_factory",
     (_live_authoring_feature, _fake_authoring_feature),
 )
-def test_shared_authoring_body_keeps_post_materialization_mutations_unavailable(
+def test_shared_authoring_body_rejects_noncanonical_scenario_commands(
     feature_factory: Callable[[], ScenarioLabFeature],
 ) -> None:
     feature = feature_factory()
@@ -2261,7 +2269,7 @@ def test_shared_authoring_body_keeps_post_materialization_mutations_unavailable(
     )
 
     assert all(
-        result.receipt.disposition is ScenarioLabCommandDisposition.UNAVAILABLE
+        result.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
         for result in future_results
     )
     assert tuple(result.receipt.operation for result in future_results) == (
@@ -2270,6 +2278,476 @@ def test_shared_authoring_body_keeps_post_materialization_mutations_unavailable(
         ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET,
     )
     assert all(result.receipt.task_handle is None for result in future_results)
+    feature.close()
+
+
+def _formal_scenario_feature(kind: str, tmp_path) -> ScenarioLabFeature:
+    _, _, engine, application, _, _ = _formal_live_stack(tmp_path)
+    application_adapter = LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+        application
+    )
+    if kind == "live":
+        return LiveScenarioLabAdapter(application=application_adapter)
+    inventory_result = application_adapter.read_inventory()
+    assert inventory_result.inventory is not None
+    engine.dispose()
+    return DeterministicFakeScenarioLabAdapter(
+        inventory=inventory_result.inventory
+    )
+
+
+@pytest.mark.parametrize("kind", ("live", "fake"))
+def test_shared_formal_scenario_set_resolution_and_selection_body(
+    kind: str,
+    tmp_path,
+) -> None:
+    feature = _formal_scenario_feature(kind, tmp_path)
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    assert ready.source_revision is not None
+    baseline = next(
+        item
+        for item in ready.market_scenarios
+        if item.layer.value == "baseline"
+    )
+    isolated = tuple(
+        item
+        for item in ready.market_scenarios
+        if item.layer.value == "isolated_sensitivity"
+    )
+    compound = tuple(
+        item
+        for item in ready.market_scenarios
+        if item.layer.value == "compound"
+    )
+    assert len(isolated) == 12
+    assert len(compound) == 1
+
+    def metadata(identity: str, state) -> ScenarioLabCommandMetadata:
+        assert state.source_revision is not None
+        return ScenarioLabCommandMetadata(
+            command_id=ScenarioLabCommandId(f"{kind}-{identity}-command"),
+            idempotency_identity=ScenarioLabIdempotencyIdentity(
+                f"{kind}-{identity}-idempotency"
+            ),
+            canonical_content_identity=ScenarioLabCommandContentIdentity(
+                "pending-canonical-content"
+            ),
+            expected_source_revision=state.source_revision,
+            expected_source_generation=state.source.generation,
+        )
+
+    compose_command = _canonicalize_authoring(
+        ComposeFormalScenarioSetCommand(
+            metadata("compose-83", ready),
+            baseline.scenario_id,
+            tuple(item.scenario_id for item in isolated),
+            tuple(item.scenario_id for item in compound),
+        )
+    )
+    composed = feature.compose_scenario_set(compose_command)
+    replayed = feature.compose_scenario_set(compose_command)
+    assert composed == replayed
+    assert composed.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert composed.scenario_set is not None
+    assert composed.scenario_set.eligibility is (
+        FormalScenarioSetEligibility.FORMAL_CAMPAIGN_ELIGIBLE
+    )
+    assert composed.scenario_set.formal_handoff_eligible
+
+    after_compose = feature.snapshot(context)
+    assert after_compose.source_revision is not None
+    decision_time = next(
+        item.start_time
+        for item in after_compose.reference_paths
+        if item.path_id == baseline.path_id
+    )
+    strategy_ids = (
+        StrategyUnderTestId(LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID),
+        StrategyUnderTestId(QUENTX_SCENARIO_NATIVE_STRATEGY_ID),
+    )
+    resolve_command = _canonicalize_authoring(
+        ResolveScenarioExecutionAssumptionsCommand(
+            metadata=metadata("resolve-83", after_compose),
+            scenario_set_id=composed.scenario_set.scenario_set_id,
+            targets=tuple(
+                ScenarioExecutionAssumptionTarget(
+                    strategy_id=strategy_id,
+                    campaign_case_id=case_id,
+                    decision_time=decision_time,
+                )
+                for strategy_id in strategy_ids
+                for case_id in composed.scenario_set.case_ids
+            ),
+        )
+    )
+    resolved = feature.resolve_execution_assumptions(resolve_command)
+    assert resolved.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert resolved.resolution is not None
+    assert resolved.resolution.formal_handoff_eligible
+    assert all(
+        item.state is ScenarioExecutionResolutionState.RESOLVED
+        and item.after_decision_time is not None
+        and item.after_decision_time > decision_time
+        and item.activation_time is not None
+        and item.activation_time >= item.after_decision_time
+        for item in resolved.resolution.targets
+    )
+    assert all(item.conditions for item in resolved.resolution.targets)
+
+    after_resolve = feature.snapshot(context)
+    select_command = _canonicalize_authoring(
+        SelectFormalScenarioSetCommand(
+            metadata=metadata("select-83", after_resolve),
+            scenario_set_id=composed.scenario_set.scenario_set_id,
+            case_ids=composed.scenario_set.case_ids,
+            originating_view_revision=after_resolve.revision,
+            execution_resolution_id=resolved.resolution.resolution_id,
+        )
+    )
+    selected = feature.select_formal_scenario_set(select_command)
+    assert selected.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert selected.selection_context is not None
+    assert selected.selection_context.status is ScenarioSelectionContextStatus.CURRENT
+    assert selected.selection_context.formal_handoff_eligible
+    assert selected.selection_context.scenario_set_projection_revision == (
+        composed.scenario_set.projection_revision
+    )
+    assert (
+        selected.selection_context.execution_resolution_projection_revision
+        == resolved.resolution.projection_revision
+    )
+    assert tuple(
+        item.campaign_case_id
+        for item in selected.selection_context.case_bindings
+    ) == composed.scenario_set.case_ids
+    scenarios_by_id = {
+        item.scenario_id: item for item in after_resolve.market_scenarios
+    }
+    paths_by_id = {
+        item.path_id: item for item in after_resolve.reference_paths
+    }
+    for binding in selected.selection_context.case_bindings:
+        scenario = scenarios_by_id[binding.campaign_case_id]
+        path = paths_by_id[scenario.path_id]
+        assert binding.recipe_version_id == scenario.recipe_version_id
+        assert binding.recipe_content_hash == scenario.recipe_content_hash
+        assert binding.reference_path_id == scenario.path_id
+        assert binding.reference_path_content_hash == path.path_id.value
+        assert binding.segment_id == scenario.segment_id
+        assert binding.segment_content_hash == scenario.segment_content_hash
+        assert binding.source_snapshot_id == scenario.source_snapshot_id
+        assert binding.seed == scenario.seed
+        assert binding.expander_version == path.expander_version
+        assert binding.source_resolution == path.source_resolution
+        assert binding.runtime_resolution == path.runtime_resolution
+        assert binding.numeric_tolerance == path.numeric_tolerance
+        assert (
+            binding.normalization_provenance
+            == path.normalization_provenance
+        )
+        assert (
+            binding.transformation_catalog_version
+            == scenario.transformation_catalog_version
+        )
+        assert binding.transformations == scenario.transformations
+        assert (
+            binding.market_rule_profile_version
+            == scenario.market_rule_profile_version
+        )
+        assert (
+            binding.decision_cadence_minutes
+            == scenario.decision_cadence_minutes
+        )
+    assert {
+        item.strategy_id for item in selected.selection_context.strategy_bindings
+    } == set(strategy_ids)
+    for binding in selected.selection_context.strategy_bindings:
+        target = next(
+            item
+            for item in resolved.resolution.targets
+            if item.strategy_id == binding.strategy_id
+        )
+        assert binding.strategy_version == target.strategy_version
+        assert (
+            binding.compatibility_manifest_hash
+            == target.compatibility_manifest_hash
+        )
+        assert binding.guardrail_profile_id == target.guardrail_profile_id
+        assert (
+            binding.guardrail_profile_version
+            == target.guardrail_profile_version
+        )
+        assert binding.execution_policy_version == target.execution_policy_version
+    after_select = feature.snapshot(context)
+    assert after_select.selection_contexts[-1] == selected.selection_context
+    assert after_select.capabilities.can_compose_scenario_set
+    assert after_select.capabilities.can_resolve_execution_assumptions
+    assert after_select.capabilities.can_select_formal_scenario_set
+
+    identical_successor = feature.compose_scenario_set(
+        _canonicalize_authoring(
+            ComposeFormalScenarioSetCommand(
+                metadata=metadata("identical-successor-compose-83", after_select),
+                baseline_case_id=baseline.scenario_id,
+                isolated_case_ids=tuple(
+                    item.scenario_id for item in isolated
+                ),
+                compound_case_ids=tuple(
+                    item.scenario_id for item in compound
+                ),
+            )
+        )
+    )
+    assert identical_successor.scenario_set is not None
+    assert (
+        identical_successor.scenario_set.scenario_set_id
+        == composed.scenario_set.scenario_set_id
+    )
+    assert (
+        identical_successor.scenario_set.projection_revision
+        > composed.scenario_set.projection_revision
+    )
+    after_identical_successor = feature.snapshot(context)
+    assert after_identical_successor.selection_contexts[-1].status is (
+        ScenarioSelectionContextStatus.STALE
+    )
+    assert not (
+        after_identical_successor.selection_contexts[-1].formal_handoff_eligible
+    )
+
+    arbitrary = feature.resolve_execution_assumptions(
+        _canonicalize_authoring(
+            ResolveScenarioExecutionAssumptionsCommand(
+                metadata=metadata(
+                    "arbitrary-strategies-83",
+                    after_identical_successor,
+                ),
+                scenario_set_id=composed.scenario_set.scenario_set_id,
+                targets=tuple(
+                    ScenarioExecutionAssumptionTarget(
+                        strategy_id=StrategyUnderTestId(
+                            f"arbitrary-strategy-{strategy_index}"
+                        ),
+                        campaign_case_id=case_id,
+                        decision_time=decision_time,
+                    )
+                    for strategy_index in (1, 2)
+                    for case_id in composed.scenario_set.case_ids
+                ),
+            )
+        )
+    )
+    assert arbitrary.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+    assert arbitrary.resolution is None
+    after_arbitrary = feature.snapshot(context)
+    assert after_arbitrary.selection_contexts[-1].status is (
+        ScenarioSelectionContextStatus.STALE
+    )
+
+    unresolved_command = _canonicalize_authoring(
+        ResolveScenarioExecutionAssumptionsCommand(
+            metadata=metadata("unresolved-83", after_arbitrary),
+            scenario_set_id=composed.scenario_set.scenario_set_id,
+            targets=tuple(
+                ScenarioExecutionAssumptionTarget(
+                    strategy_id=strategy_id,
+                    campaign_case_id=case_id,
+                )
+                for strategy_id in strategy_ids
+                for case_id in composed.scenario_set.case_ids
+            ),
+        )
+    )
+    unresolved = feature.resolve_execution_assumptions(unresolved_command)
+    assert unresolved.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert unresolved.resolution is not None
+    assert not unresolved.resolution.formal_handoff_eligible
+    assert all(
+        item.state is ScenarioExecutionResolutionState.NOT_YET_RESOLVED
+        and item.decision_time is None
+        and item.after_decision_time is None
+        for item in unresolved.resolution.targets
+    )
+    after_unresolved = feature.snapshot(context)
+    assert after_unresolved.selection_contexts[-1].status is (
+        ScenarioSelectionContextStatus.STALE
+    )
+    assert not after_unresolved.selection_contexts[-1].formal_handoff_eligible
+    excluded = feature.select_formal_scenario_set(
+        _canonicalize_authoring(
+            SelectFormalScenarioSetCommand(
+                metadata=metadata("exclude-unresolved-83", after_unresolved),
+                scenario_set_id=composed.scenario_set.scenario_set_id,
+                case_ids=composed.scenario_set.case_ids,
+                originating_view_revision=after_unresolved.revision,
+                execution_resolution_id=unresolved.resolution.resolution_id,
+            )
+        )
+    )
+    assert excluded.receipt.disposition is ScenarioLabCommandDisposition.REJECTED
+
+    after_excluded = feature.snapshot(context)
+    successor_resolution = feature.resolve_execution_assumptions(
+        _canonicalize_authoring(
+            ResolveScenarioExecutionAssumptionsCommand(
+                metadata=metadata("successor-resolution-83", after_excluded),
+                scenario_set_id=composed.scenario_set.scenario_set_id,
+                targets=tuple(
+                    ScenarioExecutionAssumptionTarget(
+                        strategy_id=strategy_id,
+                        campaign_case_id=case_id,
+                            decision_time=decision_time + timedelta(seconds=30),
+                    )
+                    for strategy_id in strategy_ids
+                    for case_id in composed.scenario_set.case_ids
+                ),
+            )
+        )
+    )
+    assert successor_resolution.resolution is not None
+    after_successor_resolution = feature.snapshot(context)
+    assert tuple(
+        item.resolution_id
+        for item in after_successor_resolution.execution_resolutions
+    ) == (
+        resolved.resolution.resolution_id,
+        unresolved.resolution.resolution_id,
+        successor_resolution.resolution.resolution_id,
+    )
+    successor_selection = feature.select_formal_scenario_set(
+        _canonicalize_authoring(
+            SelectFormalScenarioSetCommand(
+                metadata=metadata(
+                    "successor-selection-83",
+                    after_successor_resolution,
+                ),
+                scenario_set_id=composed.scenario_set.scenario_set_id,
+                case_ids=composed.scenario_set.case_ids,
+                originating_view_revision=after_successor_resolution.revision,
+                execution_resolution_id=(
+                    successor_resolution.resolution.resolution_id
+                ),
+            )
+        )
+    )
+    assert successor_selection.selection_context is not None
+    after_successor_selection = feature.snapshot(context)
+    assert after_successor_selection.selection_contexts[0].status is (
+        ScenarioSelectionContextStatus.STALE
+    )
+    assert not after_successor_selection.selection_contexts[0].formal_handoff_eligible
+    assert after_successor_selection.selection_contexts[-1].status is (
+        ScenarioSelectionContextStatus.CURRENT
+    )
+    current_successor = after_successor_selection.selection_contexts[-1]
+    assert (
+        current_successor.scenario_set_projection_revision
+        == identical_successor.scenario_set.projection_revision
+    )
+    assert (
+        current_successor.execution_resolution_projection_revision
+        == successor_resolution.resolution.projection_revision
+    )
+
+    stale_metadata = replace(
+        metadata("stale-compose-83", after_successor_selection),
+        expected_source_revision=ready.source_revision,
+    )
+    stale_command = ComposeFormalScenarioSetCommand(
+        stale_metadata,
+        baseline.scenario_id,
+        tuple(item.scenario_id for item in isolated),
+        tuple(item.scenario_id for item in compound),
+    )
+    stale_command = _canonicalize_authoring(stale_command)
+    stale = feature.compose_scenario_set(stale_command)
+    assert stale.receipt.disposition is ScenarioLabCommandDisposition.CONFLICT
+    feature.close()
+
+
+def test_fake_formal_composition_respects_larger_authoritative_sweep(
+    tmp_path,
+) -> None:
+    _, _, engine, application, _, _ = _formal_live_stack(tmp_path)
+    inventory_result = (
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        ).read_inventory()
+    )
+    assert inventory_result.inventory is not None
+    inventory = inventory_result.inventory
+    seed = next(
+        item
+        for item in inventory.market_scenarios
+        if item.layer.value == "isolated_sensitivity"
+    )
+    extra_level = replace(
+        seed,
+        scenario_id=CampaignCaseId("fake-authoritative-third-level-case"),
+        transformations=(
+            replace(
+                seed.transformations[0],
+                parameters=(("level", "3"),),
+            ),
+        ),
+    )
+    feature = DeterministicFakeScenarioLabAdapter(
+        inventory=replace(
+            inventory,
+            market_scenarios=(*inventory.market_scenarios, extra_level),
+        )
+    )
+    engine.dispose()
+    context = ScenarioLabContext()
+    feature.snapshot(context)
+    ready = feature.snapshot(context)
+    assert ready.source_revision is not None
+    baseline = next(
+        item
+        for item in ready.market_scenarios
+        if item.layer.value == "baseline"
+    )
+    isolated = tuple(
+        item
+        for item in ready.market_scenarios
+        if item.layer.value == "isolated_sensitivity"
+        and item.scenario_id != extra_level.scenario_id
+    )
+    compound = tuple(
+        item
+        for item in ready.market_scenarios
+        if item.layer.value == "compound"
+    )
+    command = ComposeFormalScenarioSetCommand(
+        metadata=ScenarioLabCommandMetadata(
+            command_id=ScenarioLabCommandId(
+                "fake-larger-authority-command"
+            ),
+            idempotency_identity=ScenarioLabIdempotencyIdentity(
+                "fake-larger-authority-idempotency"
+            ),
+            canonical_content_identity=ScenarioLabCommandContentIdentity(
+                "pending-canonical-content"
+            ),
+            expected_source_revision=ready.source_revision,
+            expected_source_generation=ready.source.generation,
+        ),
+        baseline_case_id=baseline.scenario_id,
+        isolated_case_ids=tuple(item.scenario_id for item in isolated),
+        compound_case_ids=tuple(item.scenario_id for item in compound),
+    )
+    result = feature.compose_scenario_set(_canonicalize_authoring(command))
+
+    assert result.receipt.disposition is ScenarioLabCommandDisposition.ACCEPTED
+    assert result.scenario_set is not None
+    assert result.scenario_set.eligibility is (
+        FormalScenarioSetEligibility.QUICK_EXPERIMENT_ONLY
+    )
+    assert "complete isolated sensitivity sweep" in (
+        result.scenario_set.missing_requirements
+    )
     feature.close()
 
 

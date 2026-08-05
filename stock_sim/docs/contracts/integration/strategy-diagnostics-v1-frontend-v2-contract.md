@@ -1,6 +1,6 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 contract
 
-Status: incremental source-level integration contract for Issues #77, #78, and #79 plus the
+Status: incremental source-level integration contract for Issues #77–#83 plus the
 certified Wave 2 delivery in Issues #56–#66. This is not a Wave 3 installed
 release-certification claim. Issue #88 owns Wave 3 installed offline release certification,
 T08/T09/T10 evidence, packages, tag, and release assets.
@@ -29,7 +29,9 @@ The Scenario Lab read boundary is the separate in-process
 `StrategyDiagnosticsV1ScenarioLabApplication` version 1.0. Its production
 Adapter calls only public `DiagnosticsApplication.list_historical_segments`,
 `read_diagnostic_campaign_case_inventory`, `transformation_catalog_view`, and
-`preview_reference_market_path` behavior. It translates admitted Historical
+`preview_reference_market_path` behavior plus the public Recipe authoring,
+materialization, formal Scenario Set composition, execution-resolution, and
+formal-selection commands owned by Issues #80–#83. It translates admitted Historical
 Market Segments, content-addressed Reference Market Paths, the registered
 Transformation Catalog, and Campaign Case projections into immutable typed
 values. `CampaignCaseId` is the only Market Scenario identity; the Reference
@@ -40,9 +42,9 @@ as reconstructed rather than recorded tick or order-book microstructure.
 `ScenarioLabFeature` 1.0 freezes the complete snapshot, subscription, close,
 Recipe Draft, validation, approval, materialization, retry, composition,
 assumption-resolution, and formal-selection operation allowlist. Issue #79
-activates only read capabilities. Recipe and scenario mutations return typed
-unavailable results until Issues #80–#83 implement their owning slices; the
-deterministic fake is never a production fallback.
+activates read capabilities; Issues #80–#83 activate each declared mutation
+without changing the Interface version. Diagnostic Task handoff remains unavailable
+until Issue #84; the deterministic fake is never a production fallback.
 
 The Diagnostic Tasks command boundary is the separate in-process
 `StrategyDiagnosticsV1DiagnosticTasksApplication` version 1.0. The existing
@@ -84,8 +86,33 @@ reconstruction notice, tolerance, normalization, Market Rule Profile,
 Transformation versions, time range, integrity, reproducibility, and bounded
 preview. Market Scenario entries retain backend-created Campaign Case identity,
 layer, comparison role, baseline relationship, Recipe/path/source/seed and
-Transformation identities. Effective execution assumptions remain explicitly
-`not_yet_resolved` until Issue #83; QML neither guesses nor synthesizes them.
+Transformation identities.
+
+Issue #83 activates Formal Campaign Scenario Set composition. A formal set has
+exactly one untransformed Baseline, every bounded level from exactly one family
+in each Isolated Sensitivity sweep, and declared multi-family Compound cases.
+The backend collapses immutable Recipe history to the active approved version
+of each Recipe lineage and compares isolated/compound semantic slots; retained
+historical baseline or successor versions do not silently enlarge one declared
+sweep, while a newly declared parameter level does.
+Selective or incomplete composition is typed as `quick_experiment` and cannot
+enter formal handoff. The backend resolves each exact Strategy Under Test and
+Campaign Case target through the same production run-specification resolver,
+publishing requested and effective conditions, typed override reasons, and the
+first market node strictly later than Decision Time. Missing Decision Time stays
+`not_yet_resolved`; incompatible Strategy, Guardrail, Recipe, path, Market Rule,
+Transformation, or execution-policy bindings fail closed. A content-identified
+`ScenarioSelectionContext` binds exact identities and hashes plus separate
+source-generation, selection-revision, originating-view-revision, Scenario Set
+projection-revision, and execution-resolution projection-revision facts.
+Successor composition or resolution makes an older context stale. QML presents
+these typed projections and never treats a Reproduction Manifest as editable or
+predictive Scenario Lab input.
+
+Formal Set, execution-resolution, and selection projections persist separate
+monotonic revisions in their immutable command results. Authoritative successor
+ordering therefore does not depend on wall-clock uniqueness, command UUID sort
+order, or a database-specific insertion-order feature.
 
 ## Identity, commands, and recovery
 
@@ -134,6 +161,14 @@ Lab Application Adapter, live Feature Adapter, and production QML route. The
 path hash and Campaign Case identity are independently reasserted and never
 substituted for one another.
 
+The Issue #83 source slice composes complete and selective sets from the real
+backend inventory, proves formal versus Quick Experiment eligibility, resolves
+exact targets through the production resolver, selects only a fully resolved
+formal context, and reopens the same file-backed Application to recover the
+authoritative identities. The production QML route receives the exact current
+Strategy Library selection through the root composition and exposes accessible
+composition, resolution, and selection controls without a generic payload bus.
+
 It never substitutes a fake, dictionary producer, Repository read, mocked
 Application, direct final-result database insert, or QML property injection for
 the production path.
@@ -156,8 +191,10 @@ Scenario Lab uses unchanged test bodies for loading/ready search state,
 immutable segment/path/scenario/catalog values, bounded preview and
 reconstruction honesty, source revision/generation, subscription disposal,
 idempotent close, exact Campaign Case versus path identity, and typed
-unavailable Recipe/materialization/composition capabilities. Structured
-failure retains the last reliable immutable inventory as stale.
+Recipe/materialization commands, complete versus Quick Experiment composition,
+execution resolution and override reasons, `not_yet_resolved` exclusion,
+formal selection, idempotency, source conflict, and stale successor contexts.
+Structured failure retains the last reliable immutable inventory as stale.
 
 ### Seam 3: installed offline black-box release
 
@@ -183,7 +220,7 @@ Wave 3 does not add manual trading, HTTP, REST, OpenAPI, IPC, a second process,
 WebEngine, or a general-purpose frontend façade. It does not remove legacy
 Widgets. Issues #77 and #78 activate Strategy Library browse, explicit
 comparison, exact formal selection, and authoritative bookmark recovery.
-Issue #79 activates Scenario Lab read tracing; Recipe writes, approval,
-materialization, scenario-set composition, and handoff remain owned by Issues
-#80–#84. System Health and Wave 4 remain unimplemented. This contract does not claim Wave 3
+Issues #79–#83 activate Scenario Lab read tracing, Recipe writes, approval,
+materialization, scenario-set composition, and formal selection. Typed handoff
+remains owned by Issue #84. System Health and Wave 4 remain unimplemented. This contract does not claim Wave 3
 T08/T09/T10 or release certification.

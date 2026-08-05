@@ -39,10 +39,17 @@ if TYPE_CHECKING:
     from strategy_diagnostics.formal_diagnostic_campaigns import (
         DiagnosticCampaignCase,
     )
+    from strategy_diagnostics.formal_scenario_sets import (
+        FormalScenarioSetRecord,
+        ScenarioExecutionResolutionRecord,
+        ScenarioExecutionTargetResolutionRecord,
+        ScenarioSelectionContextRecord,
+    )
     from strategy_diagnostics.historical_segments import HistoricalMarketSegment
     from strategy_diagnostics.market_paths import MaterializedMarketPath
     from strategy_diagnostics.scenario_lab_authoring import (
         ScenarioLabAuthoringResult,
+        ScenarioLabProjectionCommandResult,
         ScenarioMaterializationResult,
         ScenarioMaterializationTaskRecord,
         ScenarioRecipeApprovalRecord,
@@ -311,6 +318,127 @@ class MarketScenarioEntry:
     unavailability_reasons: tuple[ScenarioLabUnavailabilityReason, ...]
 
 
+class FormalScenarioSetEligibility(str, Enum):
+    FORMAL_CAMPAIGN_ELIGIBLE = "formal_campaign_eligible"
+    QUICK_EXPERIMENT_ONLY = "quick_experiment_only"
+
+
+class ScenarioSelectionContextStatus(str, Enum):
+    CURRENT = "current"
+    STALE = "stale"
+    CONFLICT = "conflict"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class FormalScenarioComparisonProjection:
+    kind: str
+    subject_case_id: CampaignCaseId
+    control_case_ids: tuple[CampaignCaseId, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FormalScenarioSetProjection:
+    scenario_set_id: ScenarioSetId
+    projection_revision: int
+    eligibility: FormalScenarioSetEligibility
+    baseline_case_id: CampaignCaseId
+    isolated_case_ids: tuple[CampaignCaseId, ...]
+    compound_case_ids: tuple[CampaignCaseId, ...]
+    case_ids: tuple[CampaignCaseId, ...]
+    comparison_relationships: tuple[FormalScenarioComparisonProjection, ...]
+    missing_requirements: tuple[str, ...]
+    formal_handoff_eligible: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioExecutionConditionProjection:
+    name: str
+    requested_value: str
+    effective_value: str
+    override_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioExecutionTargetProjection:
+    strategy_id: StrategyUnderTestId
+    strategy_version: str
+    compatibility_manifest_hash: str
+    guardrail_profile_id: str
+    guardrail_profile_version: str
+    campaign_case_id: CampaignCaseId
+    state: ScenarioExecutionResolutionState
+    decision_time: datetime | None
+    after_decision_time: datetime | None
+    activation_time: datetime | None
+    decision_cadence_minutes: int
+    decision_grid: str
+    activation_policy: str
+    execution_policy_version: str
+    conditions: tuple[ScenarioExecutionConditionProjection, ...]
+    unavailability_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioExecutionResolutionProjection:
+    resolution_id: ScenarioExecutionResolutionId
+    projection_revision: int
+    scenario_set_id: ScenarioSetId
+    scenario_set_projection_revision: int
+    targets: tuple[ScenarioExecutionTargetProjection, ...]
+    formal_handoff_eligible: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioSelectionCaseBindingProjection:
+    campaign_case_id: CampaignCaseId
+    recipe_version_id: ApprovedScenarioRecipeVersionId
+    recipe_content_hash: str
+    reference_path_id: ReferenceMarketPathId
+    reference_path_content_hash: str
+    segment_id: HistoricalMarketSegmentId
+    segment_content_hash: str
+    source_snapshot_id: SourceSnapshotId
+    seed: int
+    expander_version: str
+    source_resolution: str
+    runtime_resolution: str
+    numeric_tolerance: str
+    normalization_provenance: str
+    transformation_catalog_version: str
+    transformations: tuple[MarketScenarioTransformationProjection, ...]
+    market_rule_profile_version: str
+    decision_cadence_minutes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioSelectionStrategyBindingProjection:
+    strategy_id: StrategyUnderTestId
+    strategy_version: str
+    compatibility_manifest_hash: str
+    guardrail_profile_id: str
+    guardrail_profile_version: str
+    execution_policy_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioSelectionContextProjection:
+    selection_context_id: ScenarioSelectionContextId
+    scenario_set_id: ScenarioSetId
+    scenario_set_projection_revision: int
+    case_ids: tuple[CampaignCaseId, ...]
+    case_bindings: tuple[ScenarioSelectionCaseBindingProjection, ...]
+    strategy_bindings: tuple[ScenarioSelectionStrategyBindingProjection, ...]
+    execution_resolution_id: ScenarioExecutionResolutionId
+    execution_resolution_projection_revision: int
+    status: ScenarioSelectionContextStatus
+    selection_revision: int
+    originating_view_revision: int
+    source_revision: SourceRevisionToken
+    source_generation: SourceGenerationId
+    formal_handoff_eligible: bool
+
+
 @dataclass(frozen=True, slots=True)
 class ScenarioLabInventory:
     historical_segments: tuple[HistoricalSegmentEntry, ...]
@@ -324,6 +452,11 @@ class ScenarioLabInventory:
         ApprovedScenarioRecipeVersionProjection, ...
     ] = ()
     task_handles: tuple[ScenarioLabTaskHandle, ...] = ()
+    scenario_sets: tuple[FormalScenarioSetProjection, ...] = ()
+    execution_resolutions: tuple[
+        ScenarioExecutionResolutionProjection, ...
+    ] = ()
+    selection_contexts: tuple[ScenarioSelectionContextProjection, ...] = ()
 
 
 class ScenarioLabApplicationAvailability(str, Enum):
@@ -868,12 +1001,14 @@ class ComposeFormalScenarioSetCommand:
 class ScenarioExecutionAssumptionTarget:
     strategy_id: StrategyUnderTestId
     campaign_case_id: CampaignCaseId
+    decision_time: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ResolveScenarioExecutionAssumptionsCommand:
     metadata: ScenarioLabCommandMetadata
     targets: tuple[ScenarioExecutionAssumptionTarget, ...]
+    scenario_set_id: ScenarioSetId | None = None
 
     def __post_init__(self) -> None:
         if not self.targets:
@@ -888,6 +1023,7 @@ class SelectFormalScenarioSetCommand:
     scenario_set_id: ScenarioSetId
     case_ids: tuple[CampaignCaseId, ...]
     originating_view_revision: int
+    execution_resolution_id: ScenarioExecutionResolutionId | None = None
 
     def __post_init__(self) -> None:
         if not self.case_ids:
@@ -1017,12 +1153,14 @@ class RetryScenarioMaterializationResult:
 class ComposeFormalScenarioSetResult:
     receipt: ScenarioLabCommandReceipt
     scenario_set_id: ScenarioSetId | None = None
+    scenario_set: FormalScenarioSetProjection | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ResolveScenarioExecutionAssumptionsResult:
     receipt: ScenarioLabCommandReceipt
     resolution_id: ScenarioExecutionResolutionId | None = None
+    resolution: ScenarioExecutionResolutionProjection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1030,6 +1168,7 @@ class SelectFormalScenarioSetResult:
     receipt: ScenarioLabCommandReceipt
     selection_context_id: ScenarioSelectionContextId | None = None
     scenario_set_id: ScenarioSetId | None = None
+    selection_context: ScenarioSelectionContextProjection | None = None
 
 
 ScenarioLabCommandResult = (
@@ -1054,6 +1193,9 @@ def canonical_scenario_lab_command_content_identity(
         | ApproveScenarioRecipeCommand
         | MaterializeApprovedScenarioRecipeCommand
         | RetryScenarioMaterializationCommand
+        | ComposeFormalScenarioSetCommand
+        | ResolveScenarioExecutionAssumptionsCommand
+        | SelectFormalScenarioSetCommand
     ),
 ) -> ScenarioLabCommandContentIdentity:
     """Calculate one durable Scenario Lab authoring/approval body identity."""
@@ -1110,12 +1252,60 @@ def canonical_scenario_lab_command_content_identity(
                 command.expected_recipe_content_hash
             ),
         }
-    else:
+    elif isinstance(command, RetryScenarioMaterializationCommand):
         value = {
             "operation": ScenarioLabTaskOperation.RETRY_MATERIALIZATION.value,
             "predecessor_attempt_id": command.predecessor_attempt_id.value,
             "predecessor_task_handle_id": (
                 command.predecessor_task_handle_id.value
+            ),
+        }
+    elif isinstance(command, ComposeFormalScenarioSetCommand):
+        value = {
+            "operation": ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET.value,
+            "baseline_case_id": command.baseline_case_id.value,
+            "isolated_case_ids": [
+                item.value for item in command.isolated_case_ids
+            ],
+            "compound_case_ids": [
+                item.value for item in command.compound_case_ids
+            ],
+        }
+    elif isinstance(command, ResolveScenarioExecutionAssumptionsCommand):
+        value = {
+            "operation": (
+                ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS.value
+            ),
+            "scenario_set_id": (
+                None
+                if command.scenario_set_id is None
+                else command.scenario_set_id.value
+            ),
+            "targets": [
+                {
+                    "strategy_id": item.strategy_id.value,
+                    "campaign_case_id": item.campaign_case_id.value,
+                    "decision_time": (
+                        None
+                        if item.decision_time is None
+                        else item.decision_time.isoformat()
+                    ),
+                }
+                for item in command.targets
+            ],
+        }
+    else:
+        value = {
+            "operation": (
+                ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET.value
+            ),
+            "scenario_set_id": command.scenario_set_id.value,
+            "case_ids": [item.value for item in command.case_ids],
+            "originating_view_revision": command.originating_view_revision,
+            "execution_resolution_id": (
+                None
+                if command.execution_resolution_id is None
+                else command.execution_resolution_id.value
             ),
         }
     encoded = json.dumps(
@@ -1210,6 +1400,15 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
                 materialization_tasks = (
                     self._application.scenario_materialization_task_handles()
                 )
+                formal_scenario_sets = (
+                    self._application.scenario_lab_formal_scenario_sets()
+                )
+                execution_resolutions = (
+                    self._application.scenario_lab_execution_resolutions()
+                )
+                selection_contexts = (
+                    self._application.scenario_lab_selection_contexts()
+                )
                 authoring_capabilities = (
                     self._application.recipe_authoring_capabilities()
                 )
@@ -1253,6 +1452,18 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
                 task_handles=tuple(
                     _map_materialization_task(item)
                     for item in materialization_tasks
+                ),
+                scenario_sets=tuple(
+                    _map_formal_scenario_set(item)
+                    for item in formal_scenario_sets
+                ),
+                execution_resolutions=tuple(
+                    _map_execution_resolution(item)
+                    for item in execution_resolutions
+                ),
+                selection_contexts=tuple(
+                    _map_selection_context(item)
+                    for item in selection_contexts
                 ),
             )
             partial = any(
@@ -1630,6 +1841,9 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
             | ApproveScenarioRecipeCommand
             | MaterializeApprovedScenarioRecipeCommand
             | RetryScenarioMaterializationCommand
+            | ComposeFormalScenarioSetCommand
+            | ResolveScenarioExecutionAssumptionsCommand
+            | SelectFormalScenarioSetCommand
         ),
         operation: ScenarioLabTaskOperation,
     ) -> ScenarioLabCommandReceipt | None:
@@ -1815,35 +2029,407 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
     def compose_scenario_set(
         self, command: ComposeFormalScenarioSetCommand
     ) -> ComposeFormalScenarioSetResult:
-        return ComposeFormalScenarioSetResult(
-            receipt=_unavailable_receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET,
-                "Scenario-set composition is owned by Issue #83.",
+        operation = ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return ComposeFormalScenarioSetResult(receipt=rejection)
+        result = self._projection_replay(command.metadata, operation)
+        if result is None:
+            conflict = self._source_conflict(command.metadata, operation)
+            if conflict is not None:
+                return ComposeFormalScenarioSetResult(receipt=conflict)
+            with self._application_access_gate:
+                result = self._application.compose_formal_scenario_set_command(
+                    command_id=command.metadata.command_id.value,
+                    idempotency_identity=(
+                        command.metadata.idempotency_identity.value
+                    ),
+                    canonical_content_identity=(
+                        command.metadata.canonical_content_identity.value
+                    ),
+                    expected_source_revision=(
+                        command.metadata.expected_source_revision.value
+                    ),
+                    expected_source_generation=(
+                        command.metadata.expected_source_generation.value
+                    ),
+                    baseline_case_id=command.baseline_case_id.value,
+                    isolated_case_ids=tuple(
+                        item.value for item in command.isolated_case_ids
+                    ),
+                    compound_case_ids=tuple(
+                        item.value for item in command.compound_case_ids
+                    ),
+                )
+        scenario_set = None
+        identity = None
+        if result.command is not None and result.command.result_kind == "formal_scenario_set":
+            from strategy_diagnostics.formal_scenario_sets import (
+                FormalScenarioSetRecord,
             )
+
+            identity = ScenarioSetId(str(result.command.result_identity))
+            if result.command.result_json is not None:
+                scenario_set = _map_formal_scenario_set(
+                    FormalScenarioSetRecord.from_dict(
+                        cast(
+                            dict[str, object],
+                            json.loads(result.command.result_json),
+                        )
+                    )
+                )
+        return ComposeFormalScenarioSetResult(
+            receipt=_map_authoring_receipt(result, command.metadata, operation),
+            scenario_set_id=identity,
+            scenario_set=scenario_set,
         )
 
     def resolve_execution_assumptions(
         self, command: ResolveScenarioExecutionAssumptionsCommand
     ) -> ResolveScenarioExecutionAssumptionsResult:
-        return ResolveScenarioExecutionAssumptionsResult(
-            receipt=_unavailable_receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS,
-                "Execution assumption resolution is owned by Issue #83.",
+        operation = ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return ResolveScenarioExecutionAssumptionsResult(receipt=rejection)
+        if command.scenario_set_id is None:
+            return ResolveScenarioExecutionAssumptionsResult(
+                receipt=ScenarioLabCommandReceipt(
+                    metadata=command.metadata,
+                    operation=operation,
+                    disposition=ScenarioLabCommandDisposition.REJECTED,
+                    message="Execution resolution requires one Scenario Set identity.",
+                    authoritative_revision=None,
+                    task_handle=None,
+                )
             )
+        result = self._projection_replay(command.metadata, operation)
+        if result is None:
+            conflict = self._source_conflict(command.metadata, operation)
+            if conflict is not None:
+                return ResolveScenarioExecutionAssumptionsResult(receipt=conflict)
+            with self._application_access_gate:
+                result = (
+                    self._application.resolve_scenario_execution_assumptions_command(
+                        command_id=command.metadata.command_id.value,
+                        idempotency_identity=(
+                            command.metadata.idempotency_identity.value
+                        ),
+                        canonical_content_identity=(
+                            command.metadata.canonical_content_identity.value
+                        ),
+                        expected_source_revision=(
+                            command.metadata.expected_source_revision.value
+                        ),
+                        expected_source_generation=(
+                            command.metadata.expected_source_generation.value
+                        ),
+                        scenario_set_id=command.scenario_set_id.value,
+                        targets=tuple(
+                            (
+                                item.strategy_id.value,
+                                item.campaign_case_id.value,
+                                item.decision_time,
+                            )
+                            for item in command.targets
+                        ),
+                    )
+                )
+        resolution = None
+        identity = None
+        if (
+            result.command is not None
+            and result.command.result_kind == "scenario_execution_resolution"
+        ):
+            from strategy_diagnostics.formal_scenario_sets import (
+                ScenarioExecutionResolutionRecord,
+            )
+
+            identity = ScenarioExecutionResolutionId(
+                str(result.command.result_identity)
+            )
+            if result.command.result_json is not None:
+                resolution = _map_execution_resolution(
+                    ScenarioExecutionResolutionRecord.from_dict(
+                        cast(
+                            dict[str, object],
+                            json.loads(result.command.result_json),
+                        )
+                    )
+                )
+        return ResolveScenarioExecutionAssumptionsResult(
+            receipt=_map_authoring_receipt(result, command.metadata, operation),
+            resolution_id=identity,
+            resolution=resolution,
         )
 
     def select_formal_scenario_set(
         self, command: SelectFormalScenarioSetCommand
     ) -> SelectFormalScenarioSetResult:
-        return SelectFormalScenarioSetResult(
-            receipt=_unavailable_receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET,
-                "Formal Scenario selection is owned by Issue #83.",
+        operation = ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return SelectFormalScenarioSetResult(receipt=rejection)
+        if command.execution_resolution_id is None:
+            return SelectFormalScenarioSetResult(
+                receipt=ScenarioLabCommandReceipt(
+                    metadata=command.metadata,
+                    operation=operation,
+                    disposition=ScenarioLabCommandDisposition.REJECTED,
+                    message=(
+                        "Formal selection requires one exact execution resolution."
+                    ),
+                    authoritative_revision=None,
+                    task_handle=None,
+                )
             )
+        result = self._projection_replay(command.metadata, operation)
+        if result is None:
+            conflict = self._source_conflict(command.metadata, operation)
+            if conflict is not None:
+                return SelectFormalScenarioSetResult(receipt=conflict)
+            with self._application_access_gate:
+                result = self._application.select_formal_scenario_set_command(
+                    command_id=command.metadata.command_id.value,
+                    idempotency_identity=(
+                        command.metadata.idempotency_identity.value
+                    ),
+                    canonical_content_identity=(
+                        command.metadata.canonical_content_identity.value
+                    ),
+                    expected_source_revision=(
+                        command.metadata.expected_source_revision.value
+                    ),
+                    expected_source_generation=(
+                        command.metadata.expected_source_generation.value
+                    ),
+                    scenario_set_id=command.scenario_set_id.value,
+                    case_ids=tuple(item.value for item in command.case_ids),
+                    originating_view_revision=(
+                        command.originating_view_revision
+                    ),
+                    execution_resolution_id=(
+                        command.execution_resolution_id.value
+                    ),
+                )
+        selection = None
+        identity = None
+        if (
+            result.command is not None
+            and result.command.result_kind == "scenario_selection_context"
+        ):
+            from strategy_diagnostics.formal_scenario_sets import (
+                ScenarioSelectionContextRecord,
+            )
+
+            identity = ScenarioSelectionContextId(
+                str(result.command.result_identity)
+            )
+            if result.command.result_json is not None:
+                selection = _map_selection_context(
+                    ScenarioSelectionContextRecord.from_dict(
+                        cast(
+                            dict[str, object],
+                            json.loads(result.command.result_json),
+                        )
+                    )
+                )
+        return SelectFormalScenarioSetResult(
+            receipt=_map_authoring_receipt(result, command.metadata, operation),
+            selection_context_id=identity,
+            scenario_set_id=command.scenario_set_id,
+            selection_context=selection,
         )
+
+    def _projection_replay(
+        self,
+        metadata: ScenarioLabCommandMetadata,
+        operation: ScenarioLabTaskOperation,
+    ) -> ScenarioLabProjectionCommandResult | None:
+        with self._application_access_gate:
+            return self._application.replay_scenario_lab_projection_command(
+                command_id=metadata.command_id.value,
+                idempotency_identity=metadata.idempotency_identity.value,
+                canonical_content_identity=(
+                    metadata.canonical_content_identity.value
+                ),
+                operation=operation.value,
+            )
+
+
+def _map_formal_scenario_set(
+    value: FormalScenarioSetRecord,
+) -> FormalScenarioSetProjection:
+    baseline_id = CampaignCaseId(value.baseline_case.case_id)
+    isolated_ids = tuple(
+        CampaignCaseId(item.case_id) for item in value.isolated_cases
+    )
+    compound_ids = tuple(
+        CampaignCaseId(item.case_id) for item in value.compound_cases
+    )
+    return FormalScenarioSetProjection(
+        scenario_set_id=ScenarioSetId(value.scenario_set_id),
+        projection_revision=value.projection_revision,
+        eligibility=FormalScenarioSetEligibility(value.eligibility),
+        baseline_case_id=baseline_id,
+        isolated_case_ids=isolated_ids,
+        compound_case_ids=compound_ids,
+        case_ids=(baseline_id, *isolated_ids, *compound_ids),
+        comparison_relationships=tuple(
+            FormalScenarioComparisonProjection(
+                kind=item.kind,
+                subject_case_id=CampaignCaseId(item.subject_case_id),
+                control_case_ids=tuple(
+                    CampaignCaseId(identity)
+                    for identity in item.control_case_ids
+                ),
+            )
+            for item in value.comparison_relationships
+        ),
+        missing_requirements=value.missing_requirements,
+        formal_handoff_eligible=value.formal_handoff_eligible,
+    )
+
+
+def _map_execution_target(
+    value: ScenarioExecutionTargetResolutionRecord,
+) -> ScenarioExecutionTargetProjection:
+    conditions = (
+        ()
+        if value.resolved_conditions is None
+        else tuple(
+            ScenarioExecutionConditionProjection(
+                name=item.name,
+                requested_value=item.requested_value,
+                effective_value=item.effective_value,
+                override_reason=item.override_reason,
+            )
+            for item in value.resolved_conditions.resolutions
+        )
+    )
+    return ScenarioExecutionTargetProjection(
+        strategy_id=StrategyUnderTestId(value.strategy_id),
+        strategy_version=value.strategy_version,
+        compatibility_manifest_hash=value.compatibility_manifest_hash,
+        guardrail_profile_id=value.guardrail_profile_id,
+        guardrail_profile_version=value.guardrail_profile_version,
+        campaign_case_id=CampaignCaseId(value.campaign_case_id),
+        state=ScenarioExecutionResolutionState(value.state),
+        decision_time=value.decision_time,
+        after_decision_time=value.after_decision_time,
+        activation_time=value.activation_time,
+        decision_cadence_minutes=value.decision_cadence_minutes,
+        decision_grid=value.decision_grid,
+        activation_policy=value.activation_policy,
+        execution_policy_version=value.execution_policy_version,
+        conditions=conditions,
+        unavailability_reasons=value.reasons,
+    )
+
+
+def _map_execution_resolution(
+    value: ScenarioExecutionResolutionRecord,
+) -> ScenarioExecutionResolutionProjection:
+    return ScenarioExecutionResolutionProjection(
+        resolution_id=ScenarioExecutionResolutionId(value.resolution_id),
+        projection_revision=value.projection_revision,
+        scenario_set_id=ScenarioSetId(value.scenario_set_id),
+        scenario_set_projection_revision=(
+            value.scenario_set_projection_revision
+        ),
+        targets=tuple(_map_execution_target(item) for item in value.targets),
+        formal_handoff_eligible=value.formal_handoff_eligible,
+    )
+
+
+def _map_selection_context(
+    value: ScenarioSelectionContextRecord,
+) -> ScenarioSelectionContextProjection:
+    return ScenarioSelectionContextProjection(
+        selection_context_id=ScenarioSelectionContextId(
+            value.selection_context_id
+        ),
+        scenario_set_id=ScenarioSetId(value.scenario_set_id),
+        scenario_set_projection_revision=(
+            value.scenario_set_projection_revision
+        ),
+        case_ids=tuple(CampaignCaseId(item) for item in value.case_ids),
+        case_bindings=tuple(
+            ScenarioSelectionCaseBindingProjection(
+                campaign_case_id=CampaignCaseId(item.campaign_case_id),
+                recipe_version_id=ApprovedScenarioRecipeVersionId(
+                    item.recipe_version_id
+                ),
+                recipe_content_hash=item.recipe_content_hash,
+                reference_path_id=ReferenceMarketPathId(
+                    item.reference_path_id
+                ),
+                reference_path_content_hash=(
+                    item.reference_path_content_hash
+                ),
+                segment_id=HistoricalMarketSegmentId(
+                    item.historical_segment_id
+                ),
+                segment_content_hash=(
+                    item.historical_segment_content_hash
+                ),
+                source_snapshot_id=SourceSnapshotId(
+                    item.source_snapshot_id
+                ),
+                seed=item.materialization_seed,
+                expander_version=item.expander_version,
+                source_resolution=item.source_resolution,
+                runtime_resolution=item.runtime_resolution,
+                numeric_tolerance=item.numeric_tolerance,
+                normalization_provenance=item.normalization_provenance,
+                transformation_catalog_version=(
+                    item.transformation_catalog_version
+                ),
+                transformations=tuple(
+                    MarketScenarioTransformationProjection(
+                        transformation_id=transformation.transformation_id,
+                        family=transformation.transformation_family,
+                        implementation_version=(
+                            transformation.transformation_implementation_version
+                        ),
+                        parameters=(
+                            transformation.transformation_parameters
+                        ),
+                    )
+                    for transformation in item.transformations
+                ),
+                market_rule_profile_version=(
+                    item.market_rule_profile_version
+                ),
+                decision_cadence_minutes=item.decision_cadence_minutes,
+            )
+            for item in value.case_bindings
+        ),
+        strategy_bindings=tuple(
+            ScenarioSelectionStrategyBindingProjection(
+                strategy_id=StrategyUnderTestId(item.strategy_id),
+                strategy_version=item.strategy_version,
+                compatibility_manifest_hash=(
+                    item.compatibility_manifest_hash
+                ),
+                guardrail_profile_id=item.guardrail_profile_id,
+                guardrail_profile_version=item.guardrail_profile_version,
+                execution_policy_version=item.execution_policy_version,
+            )
+            for item in value.strategy_bindings
+        ),
+        execution_resolution_id=ScenarioExecutionResolutionId(
+            value.execution_resolution_id
+        ),
+        execution_resolution_projection_revision=(
+            value.execution_resolution_projection_revision
+        ),
+        status=ScenarioSelectionContextStatus(value.status),
+        selection_revision=value.selection_revision,
+        originating_view_revision=value.originating_view_revision,
+        source_revision=SourceRevisionToken(value.source_revision),
+        source_generation=SourceGenerationId(value.source_generation),
+        formal_handoff_eligible=value.formal_handoff_eligible,
+    )
 
 
 def _map_segment(item: ScenarioLabAdmittedSegment) -> HistoricalSegmentEntry:
@@ -2452,7 +3038,7 @@ def _map_recipe_dependencies(
 
 
 def _map_authoring_receipt(
-    result: ScenarioLabAuthoringResult,
+    result: ScenarioLabAuthoringResult | ScenarioLabProjectionCommandResult,
     fallback_metadata: ScenarioLabCommandMetadata,
     operation: ScenarioLabTaskOperation,
 ) -> ScenarioLabCommandReceipt:
@@ -2668,6 +3254,9 @@ __all__ = [
     "ApproveScenarioRecipeResult",
     "ComposeFormalScenarioSetCommand",
     "ComposeFormalScenarioSetResult",
+    "FormalScenarioComparisonProjection",
+    "FormalScenarioSetEligibility",
+    "FormalScenarioSetProjection",
     "CreateAiAssistedScenarioRecipeDraftCommand",
     "CreateScenarioRecipeDraftCommand",
     "CreateScenarioRecipeDraftResult",
@@ -2687,7 +3276,10 @@ __all__ = [
     "RequestedExecutionAssumptionsProjection",
     "SCENARIO_LAB_APPLICATION_INTERFACE_VERSION",
     "ScenarioCompatibilityState",
+    "ScenarioExecutionConditionProjection",
+    "ScenarioExecutionResolutionProjection",
     "ScenarioExecutionResolutionState",
+    "ScenarioExecutionTargetProjection",
     "ScenarioLabApplicationAvailability",
     "ScenarioLabApplicationError",
     "ScenarioLabApplicationErrorCode",
@@ -2736,6 +3328,10 @@ __all__ = [
     "ScenarioRecipeValidationProjection",
     "ScenarioRecipeValidationSeverity",
     "ScenarioSelectionContextId",
+    "ScenarioSelectionCaseBindingProjection",
+    "ScenarioSelectionContextProjection",
+    "ScenarioSelectionContextStatus",
+    "ScenarioSelectionStrategyBindingProjection",
     "ResolveScenarioExecutionAssumptionsCommand",
     "ResolveScenarioExecutionAssumptionsResult",
     "RetryScenarioMaterializationCommand",

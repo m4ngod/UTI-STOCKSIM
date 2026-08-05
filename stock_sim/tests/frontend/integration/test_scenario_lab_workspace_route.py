@@ -23,12 +23,17 @@ from app.features import (
     DeterministicFakeScenarioLabAdapter,
     ScenarioLabContext,
     LiveScenarioLabAdapter,
+    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+    LiveStrategyLibraryAdapter,
     LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
     ScenarioCompatibilityState,
     ScenarioLabApplicationAvailability,
     ScenarioLabApplicationErrorCode,
     ScenarioLabIntegrityState,
     ScenarioReproducibilityState,
+)
+from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
+    _formal_live_stack,
 )
 from app.ui.journey_workspace import JourneyWorkspaceHost
 from strategy_diagnostics import (
@@ -100,6 +105,12 @@ def test_scenario_lab_qml_authoring_controls_bind_only_typed_exact_identities() 
     assert "adapter.retryMaterialization(" in source
     assert "modelData.attemptId" in source
     assert "modelData.taskHandleId" in source
+    assert "adapter.composeVisibleScenarioSet()" in source
+    assert "adapter.resolveLatestScenarioSet()" in source
+    assert "adapter.selectLatestFormalScenarioSet()" in source
+    assert "after-Decision-Time" in source
+    assert "Quick Experiment" in source
+    assert "requested " in source and " effective " in source
 
 
 _REQUIRED_ADMISSION_CHECKS = (
@@ -809,6 +820,91 @@ def test_real_backend_inventory_traces_through_live_feature_into_qml() -> None:
     run_feature.close()
 
 
+def test_production_qml_composes_resolves_and_selects_formal_scenario_context(
+    tmp_path,
+) -> None:
+    app = _app()
+    _, _, engine, application, _, _ = _formal_live_stack(tmp_path)
+    strategy_feature = LiveStrategyLibraryAdapter(
+        application=LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+            application
+        )
+    )
+    scenario_feature = LiveScenarioLabAdapter(
+        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application
+        )
+    )
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    host = JourneyWorkspaceHost(
+        run_feature,
+        strategy_library_feature=strategy_feature,
+        scenario_lab_feature=scenario_feature,
+        initial_route="scenario_lab",
+    )
+    app.processEvents()
+    assert host._strategy_library is not None
+    assert host._scenario_lab is not None
+
+    host._strategy_library.compareFormalSet()
+    host._strategy_library.selectFormalSet()
+    app.processEvents()
+    assert host._strategy_library.selectionStatus == "current"
+
+    host._scenario_lab.composeVisibleScenarioSet()
+    app.processEvents()
+    assert host._scenario_lab.scenarioSetCount == 1
+    assert host._scenario_lab.scenarioSets[0]["eligibility"] == (
+        "formal_campaign_eligible"
+    )
+
+    host._scenario_lab.resolveLatestScenarioSet()
+    app.processEvents()
+    assert host._scenario_lab.executionResolutionCount == 1
+    assert host._scenario_lab.executionResolutions[0][
+        "formalHandoffEligible"
+    ]
+    targets = host._scenario_lab.executionResolutions[0]["targets"]
+    assert targets
+    assert all(
+        item["afterDecisionTime"] > item["decisionTime"]
+        and item["activationTime"] >= item["afterDecisionTime"]
+        for item in targets
+    )
+
+    host._scenario_lab.selectLatestFormalScenarioSet()
+    app.processEvents()
+    assert host._scenario_lab.selectionContextCount == 1
+    assert host._scenario_lab.selectionContexts[0]["status"] == "current"
+    root = host.rootObject()
+    assert root is not None
+    assert root.findChild(
+        QQuickItem,
+        "scenarioLabComposeVisibleScenarioSetButton",
+    ) is not None
+    assert root.findChild(
+        QQuickItem,
+        "scenarioLabResolveExecutionAssumptionsButton",
+    ) is not None
+    assert root.findChild(
+        QQuickItem,
+        "scenarioLabSelectFormalScenarioSetButton",
+    ) is not None
+    _process_until(
+        app,
+        lambda: root.findChild(
+            QQuickItem,
+            "scenarioLabSelectionContextRepeater",
+        ) is not None,
+    )
+
+    host.close_adapter()
+    strategy_feature.close()
+    scenario_feature.close()
+    run_feature.close()
+    engine.dispose()
+
+
 def test_live_application_fails_closed_when_path_preview_integrity_fails() -> None:
     source = _AdmittedScenarioLabSource()
     application = create_diagnostics_application(
@@ -865,6 +961,15 @@ class _AssessmentOverrideApplication:
 
     def scenario_materialization_task_handles(self):
         return self._delegate.scenario_materialization_task_handles()
+
+    def scenario_lab_formal_scenario_sets(self):
+        return self._delegate.scenario_lab_formal_scenario_sets()
+
+    def scenario_lab_execution_resolutions(self):
+        return self._delegate.scenario_lab_execution_resolutions()
+
+    def scenario_lab_selection_contexts(self):
+        return self._delegate.scenario_lab_selection_contexts()
 
     def recipe_authoring_capabilities(self):
         return self._delegate.recipe_authoring_capabilities()

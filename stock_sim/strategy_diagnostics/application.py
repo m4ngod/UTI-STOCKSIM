@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 import hashlib
+import json
 from typing import cast
 from uuid import uuid4
 
@@ -57,7 +58,21 @@ from .diagnostic_tasks import (
 )
 from .execution_conditions import (
     RequestedExecutionAssumptions,
+    ResolvedExecutionConditions,
     resolve_execution_conditions,
+)
+from .formal_scenario_sets import (
+    FormalScenarioSetRecord,
+    ScenarioExecutionResolutionRecord,
+    ScenarioExecutionResolutionState,
+    ScenarioExecutionTargetResolutionRecord,
+    ScenarioSelectionCaseBindingRecord,
+    ScenarioSelectionContextRecord,
+    ScenarioSelectionContextStatus,
+    ScenarioSelectionStrategyBindingRecord,
+    compose_formal_scenario_set,
+    create_scenario_selection_context,
+    scenario_execution_resolution_identity,
 )
 from .formal_diagnostic_campaigns import (
     CampaignCaseSpecification,
@@ -132,6 +147,7 @@ from .scenario_lab_authoring import (
     ScenarioLabAuthoringMode,
     ScenarioLabAuthoringResult,
     ScenarioLabAuthoringService,
+    ScenarioLabProjectionCommandResult,
     ScenarioMaterializationResult,
     ScenarioMaterializationScheduler,
     ScenarioMaterializationTaskRecord,
@@ -163,6 +179,7 @@ from .strategy_runs import (
 from .strategy_inventory import (
     FormalStrategySelectionCandidate,
     FormalStrategySetValidation,
+    StrategyUnderTestInventoryEntry,
     StrategyUnderTestInventory,
     build_strategy_under_test_inventory,
     validate_formal_strategy_set,
@@ -472,7 +489,10 @@ class DiagnosticsApplication:
         """Enumerate immutable approved recipe versions for typed consumers."""
 
         self.status()
-        return self._recipe_workbench.list_approved_versions()
+        return cast(
+            tuple[ApprovedScenarioRecipeVersion, ...],
+            self._recipe_workbench.list_approved_versions(),
+        )
 
     def list_materialized_market_paths(
         self,
@@ -482,7 +502,10 @@ class DiagnosticsApplication:
         self.status()
         if self._scenario_materializer is None:
             return ()
-        return self._scenario_materializer.list_materialized_paths()
+        return cast(
+            tuple[MaterializedMarketPath, ...],
+            self._scenario_materializer.list_materialized_paths(),
+        )
 
     def list_available_diagnostic_campaign_cases(
         self,
@@ -492,6 +515,29 @@ class DiagnosticsApplication:
         self.status()
         return self._diagnostic_campaign_cases_for_paths(
             self.list_materialized_market_paths()
+        )
+
+    def _active_formal_scenario_authority_cases(
+        self,
+        cases: tuple[DiagnosticCampaignCase, ...],
+    ) -> tuple[DiagnosticCampaignCase, ...]:
+        """Collapse immutable Recipe history to each lineage's active version."""
+
+        latest_by_recipe: dict[str, ApprovedScenarioRecipeVersion] = {}
+        for version in self._recipe_workbench.list_approved_versions():
+            predecessor = latest_by_recipe.get(version.recipe_id)
+            if (
+                predecessor is None
+                or version.version_number > predecessor.version_number
+            ):
+                latest_by_recipe[version.recipe_id] = version
+        active_version_ids = {
+            item.version_id for item in latest_by_recipe.values()
+        }
+        return tuple(
+            item
+            for item in cases
+            if item.recipe_version_id in active_version_ids
         )
 
     def read_diagnostic_campaign_case_inventory(
@@ -3356,6 +3402,550 @@ class DiagnosticsApplication:
             operation=operation,
         )
 
+    def compose_formal_scenario_set_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        baseline_case_id: str,
+        isolated_case_ids: tuple[str, ...],
+        compound_case_ids: tuple[str, ...],
+    ) -> ScenarioLabProjectionCommandResult:
+        """Compose one backend-valid Formal Set or typed Quick Experiment."""
+
+        self.status()
+
+        def produce() -> tuple[str, str, object]:
+            available_cases = self.list_available_diagnostic_campaign_cases()
+            indexed = {
+                item.case_id: item
+                for item in available_cases
+            }
+            try:
+                baseline = indexed[baseline_case_id]
+                isolated = tuple(indexed[item] for item in isolated_case_ids)
+                compounds = tuple(indexed[item] for item in compound_case_ids)
+            except KeyError as exc:
+                raise ValueError(
+                    "A selected Campaign Case is no longer authoritative"
+                ) from exc
+            scenario_set = compose_formal_scenario_set(
+                baseline_case=baseline,
+                isolated_cases=isolated,
+                compound_cases=compounds,
+                authoritative_cases=(
+                    self._active_formal_scenario_authority_cases(
+                        available_cases
+                    )
+                ),
+                projection_revision=(
+                    max(
+                        (
+                            item.projection_revision
+                            for item in self.scenario_lab_formal_scenario_sets()
+                        ),
+                        default=0,
+                    )
+                    + 1
+                ),
+            )
+            return (
+                "formal_scenario_set",
+                scenario_set.scenario_set_id,
+                scenario_set.to_dict(),
+            )
+
+        return self._scenario_lab_authoring.execute_projection_command(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            operation="compose_scenario_set",
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            producer=produce,
+        )
+
+    def scenario_lab_formal_scenario_sets(
+        self,
+    ) -> tuple[FormalScenarioSetRecord, ...]:
+        self.status()
+        records = tuple(
+            FormalScenarioSetRecord.from_dict(
+                cast(Mapping[str, object], json.loads(str(item.result_json)))
+            )
+            for item in self._scenario_lab_authoring.list_projection_commands(
+                "formal_scenario_set"
+            )
+        )
+        return tuple(
+            sorted(records, key=lambda item: item.projection_revision)
+        )
+
+    def resolve_scenario_execution_assumptions_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        scenario_set_id: str,
+        targets: tuple[tuple[str, str, datetime | None], ...],
+    ) -> ScenarioLabProjectionCommandResult:
+        """Resolve exact Strategy/Case assumptions through the run resolver."""
+
+        self.status()
+
+        def produce() -> tuple[str, str, object]:
+            scenario_set = self._scenario_set_by_id(scenario_set_id)
+            provided: dict[tuple[str, str], datetime | None] = {}
+            for strategy_id, case_id, decision_time in targets:
+                key = (strategy_id, case_id)
+                if key in provided:
+                    raise ValueError(
+                        "Execution assumption targets must be unique"
+                    )
+                provided[key] = decision_time
+            inventory = self.read_strategy_under_test_inventory()
+            strategies = tuple(
+                item
+                for item in inventory.entries
+                if item.required_for_v1_formal_campaign
+            )
+            expected_keys = {
+                (strategy.strategy_id, case_id)
+                for strategy in strategies
+                for case_id in scenario_set.case_ids
+            }
+            unknown = tuple(sorted(set(provided) - expected_keys))
+            if unknown:
+                raise ValueError(
+                    "Execution assumption target is not an exact formal "
+                    f"Strategy/Case binding: {unknown!r}"
+                )
+            cases = {
+                item.case_id: item
+                for item in (
+                    scenario_set.baseline_case,
+                    *scenario_set.isolated_cases,
+                    *scenario_set.compound_cases,
+                )
+            }
+            resolutions = tuple(
+                self._scenario_execution_target_resolution(
+                    strategy=strategy,
+                    case=cases[case_id],
+                    decision_time=provided.get(
+                        (strategy.strategy_id, case_id)
+                    ),
+                )
+                for strategy in strategies
+                for case_id in scenario_set.case_ids
+            )
+            resolution_id = scenario_execution_resolution_identity(
+                scenario_set.scenario_set_id,
+                scenario_set.projection_revision,
+                resolutions,
+            )
+            record = ScenarioExecutionResolutionRecord(
+                resolution_id=resolution_id,
+                scenario_set_id=scenario_set.scenario_set_id,
+                scenario_set_projection_revision=(
+                    scenario_set.projection_revision
+                ),
+                targets=resolutions,
+                formal_handoff_eligible=(
+                    scenario_set.formal_handoff_eligible
+                    and all(item.state == "resolved" for item in resolutions)
+                ),
+                projection_revision=(
+                    max(
+                        (
+                            item.projection_revision
+                            for item in self.scenario_lab_execution_resolutions()
+                        ),
+                        default=0,
+                    )
+                    + 1
+                ),
+            )
+            return (
+                "scenario_execution_resolution",
+                record.resolution_id,
+                record.to_dict(),
+            )
+
+        return self._scenario_lab_authoring.execute_projection_command(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            operation="resolve_execution_assumptions",
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            producer=produce,
+        )
+
+    def scenario_lab_execution_resolutions(
+        self,
+    ) -> tuple[ScenarioExecutionResolutionRecord, ...]:
+        self.status()
+        records = tuple(
+            ScenarioExecutionResolutionRecord.from_dict(
+                cast(Mapping[str, object], json.loads(str(item.result_json)))
+            )
+            for item in self._scenario_lab_authoring.list_projection_commands(
+                "scenario_execution_resolution"
+            )
+        )
+        return tuple(
+            sorted(records, key=lambda item: item.projection_revision)
+        )
+
+    def select_formal_scenario_set_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        expected_source_revision: str,
+        expected_source_generation: int,
+        scenario_set_id: str,
+        case_ids: tuple[str, ...],
+        originating_view_revision: int,
+        execution_resolution_id: str,
+    ) -> ScenarioLabProjectionCommandResult:
+        """Persist one immutable, exact, formal handoff selection context."""
+
+        self.status()
+
+        def produce() -> tuple[str, str, object]:
+            scenario_set = self._scenario_set_by_id(scenario_set_id)
+            resolution = self._scenario_execution_resolution_by_id(
+                execution_resolution_id
+            )
+            selection = create_scenario_selection_context(
+                scenario_set=scenario_set,
+                execution_resolution=resolution,
+                case_ids=case_ids,
+                originating_view_revision=originating_view_revision,
+                source_revision=expected_source_revision,
+                source_generation=expected_source_generation,
+                selection_revision=(
+                    len(self.scenario_lab_selection_contexts()) + 1
+                ),
+            )
+            return (
+                "scenario_selection_context",
+                selection.selection_context_id,
+                selection.to_dict(),
+            )
+
+        return self._scenario_lab_authoring.execute_projection_command(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            operation="select_formal_scenario_set",
+            expected_source_revision=expected_source_revision,
+            expected_source_generation=expected_source_generation,
+            producer=produce,
+        )
+
+    def scenario_lab_selection_contexts(
+        self,
+    ) -> tuple[ScenarioSelectionContextRecord, ...]:
+        self.status()
+        stored = tuple(
+            ScenarioSelectionContextRecord.from_dict(
+                cast(Mapping[str, object], json.loads(str(item.result_json)))
+            )
+            for item in self._scenario_lab_authoring.list_projection_commands(
+                "scenario_selection_context"
+            )
+        )
+        stored = tuple(
+            sorted(stored, key=lambda item: item.selection_revision)
+        )
+        if not stored:
+            return ()
+        scenario_sets = self.scenario_lab_formal_scenario_sets()
+        resolutions = self.scenario_lab_execution_resolutions()
+        available_cases = self.list_available_diagnostic_campaign_cases()
+        authoritative_cases = {
+            item.case_id: item
+            for item in self._active_formal_scenario_authority_cases(
+                available_cases
+            )
+        }
+        authoritative_strategies = {
+            item.strategy_id: item
+            for item in self.read_strategy_under_test_inventory().entries
+            if item.required_for_v1_formal_campaign
+        }
+        statuses: tuple[ScenarioSelectionContextStatus, ...] = tuple(
+            self._scenario_selection_context_authority_status(
+                item,
+                scenario_sets=scenario_sets,
+                resolutions=resolutions,
+                authoritative_cases=authoritative_cases,
+                authoritative_strategies=authoritative_strategies,
+            )
+            if index == len(stored) - 1
+            else "stale"
+            for index, item in enumerate(stored)
+        )
+        return tuple(
+            replace(
+                item,
+                status=status,
+                formal_handoff_eligible=(
+                    item.formal_handoff_eligible
+                    and index == len(stored) - 1
+                    and status == "current"
+                ),
+            )
+            for index, (item, status) in enumerate(
+                zip(stored, statuses, strict=True)
+            )
+        )
+
+    def _scenario_selection_context_authority_status(
+        self,
+        context: ScenarioSelectionContextRecord,
+        *,
+        scenario_sets: tuple[FormalScenarioSetRecord, ...],
+        resolutions: tuple[ScenarioExecutionResolutionRecord, ...],
+        authoritative_cases: Mapping[str, DiagnosticCampaignCase],
+        authoritative_strategies: Mapping[
+            str, StrategyUnderTestInventoryEntry
+        ],
+    ) -> ScenarioSelectionContextStatus:
+        if not scenario_sets or not resolutions:
+            return "unavailable"
+        if (
+            context.scenario_set_id != scenario_sets[-1].scenario_set_id
+            or context.scenario_set_projection_revision
+            != scenario_sets[-1].projection_revision
+            or context.execution_resolution_id
+            != resolutions[-1].resolution_id
+            or context.execution_resolution_projection_revision
+            != resolutions[-1].projection_revision
+        ):
+            return "stale"
+        scenario_set = scenario_sets[-1]
+        resolution = resolutions[-1]
+        if (
+            not scenario_set.formal_handoff_eligible
+            or not resolution.formal_handoff_eligible
+            or resolution.scenario_set_id != scenario_set.scenario_set_id
+            or resolution.scenario_set_projection_revision
+            != scenario_set.projection_revision
+            or context.case_ids != scenario_set.case_ids
+        ):
+            return "conflict"
+        selected_cases = (
+            scenario_set.baseline_case,
+            *scenario_set.isolated_cases,
+            *scenario_set.compound_cases,
+        )
+        expected_case_bindings = tuple(
+            ScenarioSelectionCaseBindingRecord.from_case(item)
+            for item in selected_cases
+        )
+        if context.case_bindings != expected_case_bindings:
+            return "conflict"
+        if any(
+            authoritative_cases.get(item.case_id) != item
+            for item in selected_cases
+        ):
+            return "stale"
+        current_catalog_version = str(
+            self.transformation_catalog_view()["catalog_version"]
+        )
+        if any(
+            item.transformation_catalog_version
+            != current_catalog_version
+            for item in context.case_bindings
+        ):
+            return "stale"
+        expected_strategy_bindings: list[
+            ScenarioSelectionStrategyBindingRecord
+        ] = []
+        for strategy_id in sorted(authoritative_strategies):
+            strategy = authoritative_strategies[strategy_id]
+            profile = strategy.guardrail_profile
+            if not strategy.formal_campaign_eligible or profile is None:
+                return "stale"
+            expected_strategy_bindings.append(
+                ScenarioSelectionStrategyBindingRecord(
+                    strategy_id=strategy.strategy_id,
+                    strategy_version=strategy.strategy_version,
+                    compatibility_manifest_hash=(
+                        strategy.compatibility.content_hash
+                    ),
+                    guardrail_profile_id=profile.profile_id,
+                    guardrail_profile_version=profile.profile_version,
+                    execution_policy_version=(
+                        BASELINE_EXECUTION_POLICY_VERSION
+                    ),
+                )
+            )
+        if context.strategy_bindings != tuple(expected_strategy_bindings):
+            return "stale"
+        cases_by_id = {item.case_id: item for item in selected_cases}
+        recomputed_targets: list[
+            ScenarioExecutionTargetResolutionRecord
+        ] = []
+        try:
+            for target in resolution.targets:
+                strategy = authoritative_strategies[target.strategy_id]
+                case = cases_by_id[target.campaign_case_id]
+                recomputed_targets.append(
+                    self._scenario_execution_target_resolution(
+                        strategy=strategy,
+                        case=case,
+                        decision_time=target.decision_time,
+                    )
+                )
+        except (KeyError, OSError, TypeError, ValueError):
+            return "stale"
+        recomputed = tuple(recomputed_targets)
+        if (
+            recomputed != resolution.targets
+            or scenario_execution_resolution_identity(
+                scenario_set.scenario_set_id,
+                scenario_set.projection_revision,
+                recomputed,
+            )
+            != resolution.resolution_id
+        ):
+            return "stale"
+        return "current"
+
+    def replay_scenario_lab_projection_command(
+        self,
+        *,
+        command_id: str,
+        idempotency_identity: str,
+        canonical_content_identity: str,
+        operation: str,
+    ) -> ScenarioLabProjectionCommandResult | None:
+        self.status()
+        return self._scenario_lab_authoring.replay_projection_command(
+            command_id=command_id,
+            idempotency_identity=idempotency_identity,
+            canonical_content_identity=canonical_content_identity,
+            operation=operation,
+        )
+
+    def _scenario_set_by_id(self, identity: str) -> FormalScenarioSetRecord:
+        matches = tuple(
+            item
+            for item in self.scenario_lab_formal_scenario_sets()
+            if item.scenario_set_id == identity
+        )
+        if not matches:
+            raise ValueError("Formal Scenario Set is unavailable")
+        return matches[-1]
+
+    def _scenario_execution_resolution_by_id(
+        self,
+        identity: str,
+    ) -> ScenarioExecutionResolutionRecord:
+        matches = tuple(
+            item
+            for item in self.scenario_lab_execution_resolutions()
+            if item.resolution_id == identity
+        )
+        if not matches:
+            raise ValueError("Scenario execution resolution is unavailable")
+        return matches[-1]
+
+    def _scenario_execution_target_resolution(
+        self,
+        *,
+        strategy: StrategyUnderTestInventoryEntry,
+        case: DiagnosticCampaignCase,
+        decision_time: datetime | None,
+    ) -> ScenarioExecutionTargetResolutionRecord:
+        strategy_id = strategy.strategy_id
+        strategy_version = strategy.strategy_version
+        compatibility = strategy.compatibility
+        profile = strategy.guardrail_profile
+        if not strategy.formal_campaign_eligible or profile is None:
+            raise ValueError(
+                f"Strategy {strategy_id} is unavailable for a Formal Campaign"
+            )
+        authoritative = {
+            item.case_id: item
+            for item in self.list_available_diagnostic_campaign_cases()
+        }.get(case.case_id)
+        if authoritative != case:
+            raise ValueError("Campaign Case identity is no longer authoritative")
+        path = self._load_verified_reference_path(case.materialization_hash)
+        resolved = self._resolved_execution_conditions_for_case(case, path)
+        simulation_times = tuple(
+            sorted({item.simulation_time for item in path.nodes})
+        )
+        after_decision_time: datetime | None = None
+        activation_time: datetime | None = None
+        reasons: tuple[str, ...] = ()
+        state = "resolved"
+        if decision_time is None:
+            state = "not_yet_resolved"
+            reasons = ("Decision Time is required to resolve activation.",)
+        else:
+            after_index = next(
+                (
+                    index
+                    for index, value in enumerate(simulation_times)
+                    if value > decision_time
+                ),
+                None,
+            )
+            if after_index is None:
+                state = "unavailable"
+                reasons = (
+                    "No market node exists strictly later than Decision Time.",
+                )
+            else:
+                after_decision_time = simulation_times[after_index]
+                activation_index = (
+                    after_index + resolved.effective.latency_nodes
+                )
+                if activation_index >= len(simulation_times):
+                    state = "unavailable"
+                    reasons = (
+                        "Latency moves activation beyond the Reference Market Path.",
+                    )
+                else:
+                    activation_time = simulation_times[activation_index]
+        return ScenarioExecutionTargetResolutionRecord(
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            compatibility_manifest_hash=compatibility.content_hash,
+            guardrail_profile_id=profile.profile_id,
+            guardrail_profile_version=profile.profile_version,
+            campaign_case_id=case.case_id,
+            state=cast(ScenarioExecutionResolutionState, state),
+            decision_time=decision_time,
+            after_decision_time=after_decision_time,
+            activation_time=activation_time,
+            decision_cadence_minutes=case.decision_cadence_minutes,
+            decision_grid=(
+                f"{case.decision_cadence_minutes}-minute simulation-time grid"
+            ),
+            activation_policy=(
+                "first Reference Market Path node strictly later than "
+                "Decision Time, then effective latency_nodes"
+            ),
+            execution_policy_version=BASELINE_EXECUTION_POLICY_VERSION,
+            resolved_conditions=resolved,
+            reasons=reasons,
+        )
+
     def _scenario_recipe_validation_dependencies(
         self,
         draft: ScenarioRecipeDraft,
@@ -3990,47 +4580,37 @@ class DiagnosticsApplication:
             approved_strategies=specification.approved_strategies,
         )
 
-    def _baseline_strategy_run_specification(
+    def _resolved_execution_conditions_for_case(
         self,
-        recipe_version_id: str,
-        materialization_hash: str,
-        *,
-        initial_cash: Decimal,
-        order_shares: int,
-        replica_id: str,
-        strategy_id: str,
-        strategy_version: str,
-    ) -> StrategyRunSpecification:
-        self.status()
-        approved = self._recipe_workbench.get_version(recipe_version_id)
-        expected_path = self.materialize_reference_path(recipe_version_id)
-        if expected_path.artifact_hash != materialization_hash:
+        case: DiagnosticCampaignCase,
+        path: MaterializedMarketPath,
+    ) -> ResolvedExecutionConditions:
+        approved = self._recipe_workbench.get_version(case.recipe_version_id)
+        authoritative = self._diagnostic_campaign_case_from_existing_path(
+            approved,
+            path,
+        )
+        if authoritative != case:
             raise ValueError(
-                "Materialized inputs do not match the approved recipe"
+                "Campaign Case execution inputs are no longer authoritative"
             )
-        path = self._load_reference_path(materialization_hash)
-        if (
-            approved.recipe.historical_segment_id,
-            approved.recipe.materialization_seed,
-            approved.recipe.market_rule_profile,
-        ) != (
-            path.segment_id,
-            path.seed,
-            path.market_rule_profile_version,
-        ):
-            raise ValueError(
-                "Approved baseline recipe does not match the materialized market path"
-            )
+        return self._resolved_execution_conditions_for_recipe_path(
+            approved,
+            path,
+        )
+
+    def _resolved_execution_conditions_for_recipe_path(
+        self,
+        approved: ApprovedScenarioRecipeVersion,
+        path: MaterializedMarketPath,
+    ) -> ResolvedExecutionConditions:
+        execution = approved.recipe.execution_conditions
         requested_conditions = RequestedExecutionAssumptions(
-            commission_bps=approved.recipe.execution_conditions.commission_bps,
-            slippage_bps=approved.recipe.execution_conditions.slippage_bps,
-            max_fill_fraction=(
-                approved.recipe.execution_conditions.max_fill_fraction
-            ),
-            latency_nodes=approved.recipe.execution_conditions.latency_nodes,
-            allow_partial_fills=(
-                approved.recipe.execution_conditions.allow_partial_fills
-            ),
+            commission_bps=execution.commission_bps,
+            slippage_bps=execution.slippage_bps,
+            max_fill_fraction=execution.max_fill_fraction,
+            latency_nodes=execution.latency_nodes,
+            allow_partial_fills=execution.allow_partial_fills,
         )
         scenario_overrides = dict(
             next(
@@ -4063,6 +4643,45 @@ class DiagnosticsApplication:
             raise ValueError(
                 "Materialized execution conditions do not match the approved recipe"
             )
+        return resolved_conditions
+
+    def _baseline_strategy_run_specification(
+        self,
+        recipe_version_id: str,
+        materialization_hash: str,
+        *,
+        initial_cash: Decimal,
+        order_shares: int,
+        replica_id: str,
+        strategy_id: str,
+        strategy_version: str,
+    ) -> StrategyRunSpecification:
+        self.status()
+        approved = self._recipe_workbench.get_version(recipe_version_id)
+        expected_path = self.materialize_reference_path(recipe_version_id)
+        if expected_path.artifact_hash != materialization_hash:
+            raise ValueError(
+                "Materialized inputs do not match the approved recipe"
+            )
+        path = self._load_reference_path(materialization_hash)
+        if (
+            approved.recipe.historical_segment_id,
+            approved.recipe.materialization_seed,
+            approved.recipe.market_rule_profile,
+        ) != (
+            path.segment_id,
+            path.seed,
+            path.market_rule_profile_version,
+        ):
+            raise ValueError(
+                "Approved baseline recipe does not match the materialized market path"
+            )
+        resolved_conditions = (
+            self._resolved_execution_conditions_for_recipe_path(
+                approved,
+                path,
+            )
+        )
         manifest = ptrade_manifest_for(strategy_id, strategy_version)
         return StrategyRunSpecification(
             recipe_version_id=approved.version_id,

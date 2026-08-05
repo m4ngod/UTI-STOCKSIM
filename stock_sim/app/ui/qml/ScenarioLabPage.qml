@@ -101,6 +101,42 @@ Item {
         return rendered.join("\n")
     }
 
+    function renderExecutionTargets(values) {
+        if (values.length === 0)
+            return "none"
+        var rendered = []
+        for (var index = 0; index < values.length; ++index) {
+            var target = values[index]
+            var conditions = []
+            for (var conditionIndex = 0;
+                    conditionIndex < target.conditions.length;
+                    ++conditionIndex) {
+                var condition = target.conditions[conditionIndex]
+                conditions.push(
+                    condition.name + " requested " + condition.requestedValue
+                    + " effective " + condition.effectiveValue
+                    + (condition.overrideReason === ""
+                        ? "" : " because " + condition.overrideReason)
+                )
+            }
+            rendered.push(
+                target.strategyId + "@" + target.strategyVersion
+                + " / " + target.campaignCaseId
+                + " · " + target.state
+                + " · Decision Time " + target.decisionTime
+                + " · after-Decision-Time " + target.afterDecisionTime
+                + " · activation " + target.activationTime
+                + " · grid " + target.decisionGrid
+                + " · activation policy " + target.activationPolicy
+                + " · execution policy " + target.executionPolicyVersion
+                + " · Guardrail " + target.guardrailProfileId
+                + "@" + target.guardrailProfileVersion
+                + " · conditions " + conditions.join("; ")
+            )
+        }
+        return rendered.join("\n")
+    }
+
     Flickable {
         id: scroll
         objectName: "scenarioLabFlickable"
@@ -393,6 +429,194 @@ Item {
                         color: tokens.textPrimary
                         font.pixelSize: tokens.bodySize
                         wrapMode: Text.WrapAnywhere
+                    }
+                }
+            }
+
+            Rectangle {
+                objectName: "scenarioLabFormalScenarioSetPanel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: scenarioSetColumn.implicitHeight + tokens.spaceMd * 2
+                radius: tokens.radiusMd
+                color: tokens.surfaceRaised
+                border.color: tokens.border
+                Accessible.role: Accessible.Pane
+                Accessible.name: "Formal Campaign Scenario Sets and execution assumptions"
+
+                ColumnLayout {
+                    id: scenarioSetColumn
+                    anchors.fill: parent
+                    anchors.margins: tokens.spaceMd
+                    spacing: tokens.spaceSm
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "FORMAL CAMPAIGN SCENARIO SETS"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                        Accessible.role: Accessible.Heading
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Compose the visible baseline, bounded isolated sensitivity, and compound cases. Selective coverage is labeled Quick Experiment and cannot be handed off. Requested and effective execution assumptions are resolved by the same backend production-run policy."
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: tokens.spaceSm
+
+                        Button {
+                            objectName: "scenarioLabComposeVisibleScenarioSetButton"
+                            text: "Compose visible cases"
+                            enabled: adapter.canComposeScenarioSet
+                            activeFocusOnTab: true
+                            property string accessibleName: "Compose visible Campaign Cases into a Scenario Set"
+                            Accessible.name: "Compose visible Campaign Cases into a Scenario Set"
+                            Accessible.description: "Incomplete or filtered case coverage becomes a typed Quick Experiment"
+                            onClicked: adapter.composeVisibleScenarioSet()
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Button {
+                            objectName: "scenarioLabResolveExecutionAssumptionsButton"
+                            text: "Resolve assumptions"
+                            enabled: adapter.canResolveExecutionAssumptions
+                            activeFocusOnTab: true
+                            property string accessibleName: "Resolve requested and effective execution assumptions"
+                            Accessible.name: "Resolve requested and effective execution assumptions"
+                            Accessible.description: "Requires the exact selected formal Strategy set and uses after-Decision-Time activation"
+                            onClicked: adapter.resolveLatestScenarioSet()
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+
+                        Button {
+                            objectName: "scenarioLabSelectFormalScenarioSetButton"
+                            text: "Select formal context"
+                            enabled: adapter.canSelectFormalScenarioSet
+                            activeFocusOnTab: true
+                            property string accessibleName: "Select immutable Formal Scenario Set context"
+                            Accessible.name: "Select immutable Formal Scenario Set context"
+                            Accessible.description: "Quick Experiments and unresolved assumptions remain ineligible"
+                            onClicked: adapter.selectLatestFormalScenarioSet()
+                            onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
+                        }
+                    }
+
+                    Text {
+                        objectName: "scenarioLabScenarioCommandStatus"
+                        Layout.fillWidth: true
+                        text: adapter.scenarioCommandMessage
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.bodySize
+                        wrapMode: Text.WordWrap
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: text
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Scenario Sets (" + adapter.scenarioSetCount + ")"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                    }
+
+                    Repeater {
+                        objectName: "scenarioLabFormalScenarioSetRepeater"
+                        model: adapter.scenarioSets
+
+                        Text {
+                            required property var modelData
+                            objectName: "scenarioLabFormalScenarioSet-" + modelData.scenarioSetId
+                            Layout.fillWidth: true
+                            text: modelData.scenarioSetId
+                                + " · " + modelData.eligibility
+                                + " · formal handoff " + modelData.formalHandoffEligible
+                                + "\nBaseline " + modelData.baselineCaseId
+                                + " · isolated " + modelData.isolatedCaseIds.length
+                                + " · compound " + modelData.compoundCaseIds.length
+                                + " · comparisons " + modelData.comparisonRelationships.length
+                                + "\nMissing requirements "
+                                + (modelData.missingRequirements.length === 0
+                                    ? "none" : modelData.missingRequirements.join(", "))
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: text
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Execution resolutions (" + adapter.executionResolutionCount + ")"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                    }
+
+                    Repeater {
+                        objectName: "scenarioLabExecutionResolutionRepeater"
+                        model: adapter.executionResolutions
+
+                        Text {
+                            required property var modelData
+                            objectName: "scenarioLabExecutionResolution-" + modelData.resolutionId
+                            Layout.fillWidth: true
+                            text: modelData.resolutionId
+                                + " · Scenario Set " + modelData.scenarioSetId
+                                + " · formal handoff " + modelData.formalHandoffEligible
+                                + "\n" + page.renderExecutionTargets(modelData.targets)
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: text
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Selection contexts (" + adapter.selectionContextCount + ")"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                    }
+
+                    Repeater {
+                        objectName: "scenarioLabSelectionContextRepeater"
+                        model: adapter.selectionContexts
+
+                        Text {
+                            required property var modelData
+                            objectName: "scenarioLabSelectionContext-" + modelData.selectionContextId
+                            Layout.fillWidth: true
+                            text: modelData.selectionContextId
+                                + " · " + modelData.status
+                                + " · selection revision " + modelData.selectionRevision
+                                + " · view revision " + modelData.originatingViewRevision
+                                + " · source " + modelData.sourceRevision
+                                + " / generation " + modelData.sourceGeneration
+                                + "\nScenario Set " + modelData.scenarioSetId
+                                + "@projection-" + modelData.scenarioSetProjectionRevision
+                                + " · execution resolution " + modelData.executionResolutionId
+                                + "@projection-" + modelData.executionResolutionProjectionRevision
+                                + " · exact cases " + modelData.caseIds.join(", ")
+                                + "\nExact Recipes " + modelData.exactRecipeBindings.join(", ")
+                                + "\nExact Paths " + modelData.exactPathBindings.join(", ")
+                                + "\nExact Strategies / manifests / Guardrails / policies "
+                                + modelData.exactStrategyBindings.join(", ")
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: text
+                        }
                     }
                 }
             }

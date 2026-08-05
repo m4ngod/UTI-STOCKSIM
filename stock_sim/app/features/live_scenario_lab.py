@@ -29,6 +29,8 @@ from .run_monitoring import (
     Freshness,
     SourceGenerationId,
     SourceKind,
+    ScenarioSetId,
+    StrategyUnderTestId,
     StructuredFeatureError,
     Subscription,
     TaskHandleId,
@@ -57,6 +59,9 @@ from .scenario_lab_application import (
     CreateScenarioRecipeDraftResult,
     HistoricalSegmentEntry,
     HistoricalSegmentProvenance,
+    FormalScenarioComparisonProjection,
+    FormalScenarioSetEligibility,
+    FormalScenarioSetProjection,
     LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
     MaterializeApprovedScenarioRecipeCommand,
     MaterializeApprovedScenarioRecipeResult,
@@ -71,6 +76,11 @@ from .scenario_lab_application import (
     RequestedExecutionAssumptionsProjection,
     ScenarioCompatibilityState,
     ScenarioExecutionResolutionState,
+    ScenarioExecutionConditionProjection,
+    ScenarioExecutionAssumptionTarget,
+    ScenarioExecutionResolutionId,
+    ScenarioExecutionResolutionProjection,
+    ScenarioExecutionTargetProjection,
     ScenarioLabApplicationAvailability,
     ScenarioLabApplicationError,
     ScenarioLabApplicationErrorCode,
@@ -91,6 +101,11 @@ from .scenario_lab_application import (
     ScenarioLabTaskOperation,
     ScenarioLabUnavailabilityCode,
     ScenarioLabUnavailabilityReason,
+    ScenarioSelectionContextId,
+    ScenarioSelectionCaseBindingProjection,
+    ScenarioSelectionContextProjection,
+    ScenarioSelectionContextStatus,
+    ScenarioSelectionStrategyBindingProjection,
     ScenarioReproducibilityState,
     ScenarioMaterializationAttemptId,
     ScenarioRecipeAuthoringMode,
@@ -124,6 +139,12 @@ from .scenario_lab_application import (
     ValidateScenarioRecipeDraftCommand,
     ValidateScenarioRecipeDraftResult,
     canonical_scenario_lab_command_content_identity,
+)
+
+
+_DEFAULT_FORMAL_STRATEGY_IDS = (
+    StrategyUnderTestId("quentx-live-minute-scenario-native"),
+    StrategyUnderTestId("quentx-5.2.3-scenario-native"),
 )
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
 
@@ -521,11 +542,13 @@ class _ScenarioLabAdapter:
         blocked = self._disconnected_receipt(
             command.metadata, ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET
         )
-        return (
+        result = (
             ComposeFormalScenarioSetResult(receipt=blocked)
             if blocked is not None
             else self._application.compose_scenario_set(command)
         )
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def resolve_execution_assumptions(
         self, command: ResolveScenarioExecutionAssumptionsCommand
@@ -534,11 +557,13 @@ class _ScenarioLabAdapter:
             command.metadata,
             ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS,
         )
-        return (
+        result = (
             ResolveScenarioExecutionAssumptionsResult(receipt=blocked)
             if blocked is not None
             else self._application.resolve_execution_assumptions(command)
         )
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def select_formal_scenario_set(
         self, command: SelectFormalScenarioSetCommand
@@ -547,11 +572,13 @@ class _ScenarioLabAdapter:
             command.metadata,
             ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET,
         )
-        return (
+        result = (
             SelectFormalScenarioSetResult(receipt=blocked)
             if blocked is not None
             else self._application.select_formal_scenario_set(command)
         )
+        self._refresh_after_authoring(result.receipt)
+        return result
 
     def _disconnected_receipt(
         self,
@@ -722,6 +749,9 @@ class _ScenarioLabAdapter:
             ),
             focus_restoration_identity=focus,
             error=None,
+            scenario_sets=inventory.scenario_sets,
+            execution_resolutions=inventory.execution_resolutions,
+            selection_contexts=inventory.selection_contexts,
         )
 
     def _failure_state(
@@ -790,6 +820,15 @@ class _ScenarioLabAdapter:
             recipe_validations=validations,
             approved_recipe_versions=approved_versions,
             task_handles=task_handles,
+            scenario_sets=(
+                () if inventory is None else inventory.scenario_sets
+            ),
+            execution_resolutions=(
+                () if inventory is None else inventory.execution_resolutions
+            ),
+            selection_contexts=(
+                () if inventory is None else inventory.selection_contexts
+            ),
             last_reliable_inventory=inventory,
             blocking_reasons=(
                 ScenarioLabBlockingReason(
@@ -994,6 +1033,7 @@ class _DeterministicFakeScenarioLabApplication:
         clock: Callable[[], datetime],
         scripted_results: tuple[ScenarioLabApplicationInventoryResult, ...],
         materialization_scheduler: Callable[[Callable[[], None]], None],
+        formal_strategy_ids: tuple[StrategyUnderTestId, ...],
     ) -> None:
         self._clock = clock
         self._materialization_scheduler = materialization_scheduler
@@ -1023,6 +1063,7 @@ class _DeterministicFakeScenarioLabApplication:
         ] = {}
         self._materialization_failures_remaining = 0
         self._materialization_integrity_failures_remaining = 0
+        self._formal_strategy_ids = frozenset(formal_strategy_ids)
 
     def fail_next_materialization(self) -> None:
         """Inject one deterministic retryable materialization failure."""
@@ -1463,6 +1504,9 @@ class _DeterministicFakeScenarioLabApplication:
             | ApproveScenarioRecipeCommand
             | MaterializeApprovedScenarioRecipeCommand
             | RetryScenarioMaterializationCommand
+            | ComposeFormalScenarioSetCommand
+            | ResolveScenarioExecutionAssumptionsCommand
+            | SelectFormalScenarioSetCommand
         ),
         operation: ScenarioLabTaskOperation,
     ) -> ScenarioLabCommandReceipt | None:
@@ -1491,6 +1535,13 @@ class _DeterministicFakeScenarioLabApplication:
             approved_recipe_versions=tuple(
                 _reconcile_fake_recipe_approval(item, inventory)
                 for item in inventory.approved_recipe_versions
+            ),
+        )
+        inventory = replace(
+            inventory,
+            selection_contexts=_reconcile_fake_selection_contexts(
+                inventory,
+                formal_strategy_ids=self._formal_strategy_ids,
             ),
         )
         self._result = ScenarioLabApplicationInventoryResult(
@@ -2369,29 +2420,569 @@ class _DeterministicFakeScenarioLabApplication:
     def compose_scenario_set(
         self, command: ComposeFormalScenarioSetCommand
     ) -> ComposeFormalScenarioSetResult:
-        return ComposeFormalScenarioSetResult(
-            self._receipt(command.metadata, ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET)
+        operation = ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return ComposeFormalScenarioSetResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return ComposeFormalScenarioSetResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, ComposeFormalScenarioSetResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return ComposeFormalScenarioSetResult(receipt=source_conflict)
+        inventory = self._inventory()
+        indexed = {item.scenario_id: item for item in inventory.market_scenarios}
+        selected_ids = (
+            command.baseline_case_id,
+            *command.isolated_case_ids,
+            *command.compound_case_ids,
         )
+        if any(identity not in indexed for identity in selected_ids):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "A selected Campaign Case is no longer authoritative.",
+                )
+            )
+        baseline = indexed[command.baseline_case_id]
+        isolated = tuple(indexed[item] for item in command.isolated_case_ids)
+        compounds = tuple(indexed[item] for item in command.compound_case_ids)
+        if baseline.layer is not MarketScenarioLayer.BASELINE:
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Baseline Scenario Set requires one untransformed case.",
+                )
+            )
+        if any(item.layer is not MarketScenarioLayer.ISOLATED_SENSITIVITY for item in isolated):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Isolated Sensitivity cases require one transformation family.",
+                )
+            )
+        if any(item.layer is not MarketScenarioLayer.COMPOUND for item in compounds):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Compound Scenario Set requires multiple transformation families.",
+                )
+            )
+        comparable_fields = (
+            "segment_id",
+            "segment_content_hash",
+            "source_snapshot_id",
+            "seed",
+            "transformation_catalog_version",
+            "market_rule_profile_version",
+            "decision_cadence_minutes",
+            "requested_execution_assumptions",
+        )
+        cases = (baseline, *isolated, *compounds)
+        paths = {item.path_id: item for item in inventory.reference_paths}
+        if any(item.path_id not in paths for item in cases):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "A selected Reference Market Path is no longer authoritative.",
+                )
+            )
+        comparable_path_fields = (
+            "expander_version",
+            "source_resolution",
+            "runtime_resolution",
+            "numeric_tolerance",
+            "normalization_provenance",
+        )
+        if any(
+            getattr(item, field) != getattr(baseline, field)
+            for item in cases[1:]
+            for field in comparable_fields
+        ) or any(
+            getattr(paths[item.path_id], field)
+            != getattr(paths[baseline.path_id], field)
+            for item in cases[1:]
+            for field in comparable_path_fields
+        ):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Formal Scenario Set requires comparable pinned inputs.",
+                )
+            )
+        families = (
+            "trend-regime",
+            "volatility",
+            "shock-recovery",
+            "market-structure",
+            "liquidity",
+            "execution-stress",
+        )
+        selected_families = {
+            item.transformations[0].family for item in isolated
+        }
+        if selected_families - set(families):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Isolated Sensitivity case uses an unsupported family.",
+                )
+            )
+        comparable_authority = tuple(
+            item
+            for item in inventory.market_scenarios
+            if item.path_id in paths
+            and all(
+                getattr(item, field) == getattr(baseline, field)
+                for field in comparable_fields
+            )
+            and all(
+                getattr(paths[item.path_id], field)
+                == getattr(paths[baseline.path_id], field)
+                for field in comparable_path_fields
+            )
+        )
+        authoritative_isolated = tuple(
+            item
+            for item in comparable_authority
+            if item.layer is MarketScenarioLayer.ISOLATED_SENSITIVITY
+        )
+        authoritative_compounds = tuple(
+            item
+            for item in comparable_authority
+            if item.layer is MarketScenarioLayer.COMPOUND
+        )
+        if any(
+            item.transformations[0].family not in families
+            for item in authoritative_isolated
+        ):
+            return ComposeFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Authoritative Isolated Sensitivity family is unsupported.",
+                )
+            )
+        isolated_by_family = {
+            family: tuple(
+                item
+                for item in isolated
+                if item.transformations[0].family == family
+            )
+            for family in families
+        }
+        selected_isolated_slots = tuple(
+            _fake_isolated_scenario_slot(item) for item in isolated
+        )
+        authoritative_isolated_slots = {
+            _fake_isolated_scenario_slot(item)
+            for item in authoritative_isolated
+        }
+        complete_isolated = all(
+            2 <= len(items) <= 12
+            and len({item.transformations[0].parameters for item in items})
+            == len(items)
+            and len(
+                {
+                    (
+                        item.transformations[0].transformation_id,
+                        item.transformations[0].implementation_version,
+                    )
+                    for item in items
+                }
+            )
+            == 1
+            for items in isolated_by_family.values()
+        ) and (
+            len(selected_isolated_slots) == len(set(selected_isolated_slots))
+            and set(selected_isolated_slots)
+            == authoritative_isolated_slots
+        )
+        selected_compound_slots = tuple(
+            _fake_compound_scenario_slot(item) for item in compounds
+        )
+        authoritative_compound_slots = {
+            _fake_compound_scenario_slot(item)
+            for item in authoritative_compounds
+        }
+        complete_compounds = (
+            bool(compounds)
+            and len(selected_compound_slots)
+            == len(set(selected_compound_slots))
+            and set(selected_compound_slots)
+            == authoritative_compound_slots
+        )
+        missing = (
+            *(("complete isolated sensitivity sweep",) if not complete_isolated else ()),
+            *(("declared compound scenario set",) if not complete_compounds else ()),
+        )
+        eligibility = (
+            FormalScenarioSetEligibility.FORMAL_CAMPAIGN_ELIGIBLE
+            if not missing
+            else FormalScenarioSetEligibility.QUICK_EXPERIMENT_ONLY
+        )
+        comparisons = tuple(
+            FormalScenarioComparisonProjection(
+                kind="isolated-vs-baseline",
+                subject_case_id=item.scenario_id,
+                control_case_ids=(baseline.scenario_id,),
+            )
+            for item in isolated
+        ) + tuple(
+            FormalScenarioComparisonProjection(
+                kind="compound-vs-baseline-and-isolated",
+                subject_case_id=item.scenario_id,
+                control_case_ids=(
+                    baseline.scenario_id,
+                    *(
+                        candidate.scenario_id
+                        for candidate in isolated
+                        if candidate.transformations[0].family
+                        in {value.family for value in item.transformations}
+                    ),
+                ),
+            )
+            for item in compounds
+        )
+        identity = ScenarioSetId(
+            "formal-scenario-set-"
+            + hashlib.sha256(
+                repr((selected_ids, eligibility, comparisons)).encode("utf-8")
+            ).hexdigest()[:24]
+        )
+        scenario_set = FormalScenarioSetProjection(
+            scenario_set_id=identity,
+            projection_revision=len(inventory.scenario_sets) + 1,
+            eligibility=eligibility,
+            baseline_case_id=baseline.scenario_id,
+            isolated_case_ids=command.isolated_case_ids,
+            compound_case_ids=command.compound_case_ids,
+            case_ids=selected_ids,
+            comparison_relationships=comparisons,
+            missing_requirements=missing,
+            formal_handoff_eligible=(
+                eligibility
+                is FormalScenarioSetEligibility.FORMAL_CAMPAIGN_ELIGIBLE
+            ),
+        )
+        result = ComposeFormalScenarioSetResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            scenario_set_id=identity,
+            scenario_set=scenario_set,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(
+                inventory,
+                scenario_sets=(*inventory.scenario_sets, scenario_set),
+            )
+        )
+        return result
 
     def resolve_execution_assumptions(
         self, command: ResolveScenarioExecutionAssumptionsCommand
     ) -> ResolveScenarioExecutionAssumptionsResult:
-        return ResolveScenarioExecutionAssumptionsResult(
-            self._receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS,
+        operation = ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return ResolveScenarioExecutionAssumptionsResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return ResolveScenarioExecutionAssumptionsResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, ResolveScenarioExecutionAssumptionsResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return ResolveScenarioExecutionAssumptionsResult(receipt=source_conflict)
+        inventory = self._inventory()
+        scenario_set = next(
+            (
+                item
+                for item in reversed(inventory.scenario_sets)
+                if command.scenario_set_id is not None
+                and item.scenario_set_id == command.scenario_set_id
+            ),
+            None,
+        )
+        if scenario_set is None:
+            return ResolveScenarioExecutionAssumptionsResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Execution resolution requires one authoritative Scenario Set.",
+                )
+            )
+        if len(command.targets) != len(set(command.targets)):
+            return ResolveScenarioExecutionAssumptionsResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Execution assumption targets must be unique.",
+                )
+            )
+        strategy_ids = {item.strategy_id for item in command.targets}
+        if strategy_ids - self._formal_strategy_ids:
+            return ResolveScenarioExecutionAssumptionsResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    (
+                        "Execution assumption target is not an exact formal "
+                        "Strategy/Case binding."
+                    ),
+                )
+            )
+        cases = {item.scenario_id: item for item in inventory.market_scenarios}
+        resolved_targets = tuple(
+            _fake_execution_target(item, cases[item.campaign_case_id])
+            for item in command.targets
+            if item.campaign_case_id in scenario_set.case_ids
+            and item.campaign_case_id in cases
+        )
+        if len(resolved_targets) != len(command.targets):
+            return ResolveScenarioExecutionAssumptionsResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Execution target is outside the exact Scenario Set.",
+                )
+            )
+        expected = {
+            (strategy_id, case_id)
+            for strategy_id in self._formal_strategy_ids
+            for case_id in scenario_set.case_ids
+        }
+        provided = {
+            (item.strategy_id, item.campaign_case_id)
+            for item in command.targets
+        }
+        eligible = (
+            scenario_set.formal_handoff_eligible
+            and strategy_ids == self._formal_strategy_ids
+            and provided == expected
+            and all(
+                item.state is ScenarioExecutionResolutionState.RESOLVED
+                for item in resolved_targets
             )
         )
+        identity = ScenarioExecutionResolutionId(
+            "scenario-execution-resolution-"
+            + hashlib.sha256(
+                repr(
+                    (
+                        scenario_set.scenario_set_id,
+                        scenario_set.projection_revision,
+                        resolved_targets,
+                    )
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+        )
+        resolution = ScenarioExecutionResolutionProjection(
+            resolution_id=identity,
+            projection_revision=len(inventory.execution_resolutions) + 1,
+            scenario_set_id=scenario_set.scenario_set_id,
+            scenario_set_projection_revision=(
+                scenario_set.projection_revision
+            ),
+            targets=resolved_targets,
+            formal_handoff_eligible=eligible,
+        )
+        result = ResolveScenarioExecutionAssumptionsResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            resolution_id=identity,
+            resolution=resolution,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(
+                inventory,
+                execution_resolutions=(
+                    *inventory.execution_resolutions,
+                    resolution,
+                ),
+            )
+        )
+        return result
 
     def select_formal_scenario_set(
         self, command: SelectFormalScenarioSetCommand
     ) -> SelectFormalScenarioSetResult:
-        return SelectFormalScenarioSetResult(
-            self._receipt(
-                command.metadata,
-                ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET,
+        operation = ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET
+        rejection = self._content_identity_rejection(command, operation)
+        if rejection is not None:
+            return SelectFormalScenarioSetResult(receipt=rejection)
+        replay, conflict = self._replay(command.metadata, operation)
+        if conflict is not None:
+            return SelectFormalScenarioSetResult(receipt=conflict)
+        if replay is not None:
+            if not isinstance(replay, SelectFormalScenarioSetResult):
+                raise TypeError("Scenario Lab fake replay operation mismatch")
+            return replay
+        source_conflict = self._source_conflict(command.metadata, operation)
+        if source_conflict is not None:
+            return SelectFormalScenarioSetResult(receipt=source_conflict)
+        inventory = self._inventory()
+        scenario_set = next(
+            (
+                item
+                for item in reversed(inventory.scenario_sets)
+                if item.scenario_set_id == command.scenario_set_id
+            ),
+            None,
+        )
+        resolution = next(
+            (
+                item
+                for item in reversed(inventory.execution_resolutions)
+                if command.execution_resolution_id is not None
+                and item.resolution_id == command.execution_resolution_id
+            ),
+            None,
+        )
+        if (
+            scenario_set is None
+            or resolution is None
+            or not scenario_set.formal_handoff_eligible
+            or not resolution.formal_handoff_eligible
+            or resolution.scenario_set_id != scenario_set.scenario_set_id
+            or resolution.scenario_set_projection_revision
+            != scenario_set.projection_revision
+            or command.case_ids != scenario_set.case_ids
+        ):
+            return SelectFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Quick, incomplete, or stale Scenario Sets cannot be selected for formal handoff.",
+                )
+            )
+        selection_revision = len(inventory.selection_contexts) + 1
+        scenarios = {
+            item.scenario_id: item for item in inventory.market_scenarios
+        }
+        paths = {item.path_id: item for item in inventory.reference_paths}
+        if any(
+            case_id not in scenarios
+            or scenarios[case_id].path_id not in paths
+            for case_id in command.case_ids
+        ):
+            return SelectFormalScenarioSetResult(
+                receipt=self._rejected_receipt(
+                    command.metadata,
+                    operation,
+                    "Formal selection dependencies are no longer authoritative.",
+                )
+            )
+        case_bindings = tuple(
+            _fake_selection_case_binding(
+                scenarios[case_id],
+                paths[scenarios[case_id].path_id],
+            )
+            for case_id in command.case_ids
+        )
+        strategies: dict[
+            StrategyUnderTestId,
+            ScenarioSelectionStrategyBindingProjection,
+        ] = {}
+        for target in resolution.targets:
+            binding = ScenarioSelectionStrategyBindingProjection(
+                strategy_id=target.strategy_id,
+                strategy_version=target.strategy_version,
+                compatibility_manifest_hash=(
+                    target.compatibility_manifest_hash
+                ),
+                guardrail_profile_id=target.guardrail_profile_id,
+                guardrail_profile_version=(
+                    target.guardrail_profile_version
+                ),
+                execution_policy_version=target.execution_policy_version,
+            )
+            predecessor = strategies.setdefault(target.strategy_id, binding)
+            if predecessor != binding:
+                return SelectFormalScenarioSetResult(
+                    receipt=self._rejected_receipt(
+                        command.metadata,
+                        operation,
+                        "Execution resolution Strategy bindings conflict.",
+                    )
+                )
+        strategy_bindings = tuple(
+            strategies[identity]
+            for identity in sorted(strategies, key=lambda item: item.value)
+        )
+        identity = ScenarioSelectionContextId(
+            "scenario-selection-context-"
+            + hashlib.sha256(
+                repr(
+                    (
+                        scenario_set.scenario_set_id,
+                        scenario_set.projection_revision,
+                        resolution.resolution_id,
+                        resolution.projection_revision,
+                        command.case_ids,
+                        case_bindings,
+                        strategy_bindings,
+                        command.originating_view_revision,
+                        selection_revision,
+                    )
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+        )
+        selection = ScenarioSelectionContextProjection(
+            selection_context_id=identity,
+            scenario_set_id=scenario_set.scenario_set_id,
+            scenario_set_projection_revision=(
+                scenario_set.projection_revision
+            ),
+            case_ids=command.case_ids,
+            case_bindings=case_bindings,
+            strategy_bindings=strategy_bindings,
+            execution_resolution_id=resolution.resolution_id,
+            execution_resolution_projection_revision=(
+                resolution.projection_revision
+            ),
+            status=ScenarioSelectionContextStatus.CURRENT,
+            selection_revision=selection_revision,
+            originating_view_revision=command.originating_view_revision,
+            source_revision=command.metadata.expected_source_revision,
+            source_generation=command.metadata.expected_source_generation,
+            formal_handoff_eligible=True,
+        )
+        stale = tuple(
+            replace(
+                item,
+                status=ScenarioSelectionContextStatus.STALE,
+                formal_handoff_eligible=False,
+            )
+            for item in inventory.selection_contexts
+        )
+        result = SelectFormalScenarioSetResult(
+            receipt=self._accepted_receipt(command.metadata, operation),
+            selection_context_id=identity,
+            scenario_set_id=scenario_set.scenario_set_id,
+            selection_context=selection,
+        )
+        self._remember(command.metadata, operation, result)
+        self._set_inventory(
+            replace(
+                inventory,
+                selection_contexts=(*stale, selection),
             )
         )
+        return result
 
 
 class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
@@ -2408,6 +2999,9 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
         materialization_scheduler: (
             Callable[[Callable[[], None]], None] | None
         ) = None,
+        formal_strategy_ids: tuple[StrategyUnderTestId, ...] = (
+            _DEFAULT_FORMAL_STRATEGY_IDS
+        ),
     ) -> None:
         resolved_clock = clock or (lambda: datetime.now(timezone.utc))
         resolved_inventory = inventory or _default_inventory()
@@ -2430,6 +3024,7 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
             materialization_scheduler=(
                 materialization_scheduler or _schedule_fake_materialization
             ),
+            formal_strategy_ids=formal_strategy_ids,
         )
         self._deterministic_application = application
         self._fake_bridge = EventBridge(subscribe_backend=False)
@@ -2494,13 +3089,7 @@ class DeterministicFakeScenarioLabAdapter(_ScenarioLabAdapter):
 
 
 def _future_blocking_reasons() -> tuple[ScenarioLabBlockingReason, ...]:
-    return (
-        ScenarioLabBlockingReason(
-            ScenarioLabBlockingCode.SCENARIO_COMPOSITION_NOT_YET_AVAILABLE,
-            "Formal Scenario composition is owned by Issue #83.",
-            ("compose_scenario_set", "resolve_execution_assumptions", "select_formal_scenario_set"),
-        ),
-    )
+    return ()
 
 
 def _filtered_inventory(
@@ -2785,6 +3374,271 @@ def _contains_identity(
     }
 
 
+def _fake_selection_case_binding(
+    scenario: MarketScenarioEntry,
+    path: ReferenceMarketPathEntry,
+) -> ScenarioSelectionCaseBindingProjection:
+    return ScenarioSelectionCaseBindingProjection(
+        campaign_case_id=scenario.scenario_id,
+        recipe_version_id=scenario.recipe_version_id,
+        recipe_content_hash=scenario.recipe_content_hash,
+        reference_path_id=path.path_id,
+        reference_path_content_hash=path.path_id.value,
+        segment_id=scenario.segment_id,
+        segment_content_hash=scenario.segment_content_hash,
+        source_snapshot_id=scenario.source_snapshot_id,
+        seed=scenario.seed,
+        expander_version=path.expander_version,
+        source_resolution=path.source_resolution,
+        runtime_resolution=path.runtime_resolution,
+        numeric_tolerance=path.numeric_tolerance,
+        normalization_provenance=path.normalization_provenance,
+        transformation_catalog_version=(
+            scenario.transformation_catalog_version
+        ),
+        transformations=scenario.transformations,
+        market_rule_profile_version=scenario.market_rule_profile_version,
+        decision_cadence_minutes=scenario.decision_cadence_minutes,
+    )
+
+
+def _fake_isolated_scenario_slot(
+    scenario: MarketScenarioEntry,
+) -> tuple[str, str, str, tuple[tuple[str, str], ...]]:
+    transformation = scenario.transformations[0]
+    return (
+        transformation.family,
+        transformation.transformation_id,
+        transformation.implementation_version,
+        transformation.parameters,
+    )
+
+
+def _fake_compound_scenario_slot(
+    scenario: MarketScenarioEntry,
+) -> tuple[
+    tuple[str, str, str, tuple[tuple[str, str], ...]],
+    ...,
+]:
+    return tuple(
+        sorted(
+            (
+                transformation.family,
+                transformation.transformation_id,
+                transformation.implementation_version,
+                transformation.parameters,
+            )
+            for transformation in scenario.transformations
+        )
+    )
+
+
+def _reconcile_fake_selection_contexts(
+    inventory: ScenarioLabInventory,
+    *,
+    formal_strategy_ids: frozenset[StrategyUnderTestId],
+) -> tuple[ScenarioSelectionContextProjection, ...]:
+    if not inventory.selection_contexts:
+        return ()
+    latest_set = inventory.scenario_sets[-1] if inventory.scenario_sets else None
+    latest_resolution = (
+        inventory.execution_resolutions[-1]
+        if inventory.execution_resolutions
+        else None
+    )
+    scenarios = {
+        item.scenario_id: item for item in inventory.market_scenarios
+    }
+    paths = {item.path_id: item for item in inventory.reference_paths}
+    reconciled: list[ScenarioSelectionContextProjection] = []
+    for index, context in enumerate(inventory.selection_contexts):
+        current = (
+            index == len(inventory.selection_contexts) - 1
+            and latest_set is not None
+            and latest_resolution is not None
+            and context.scenario_set_id == latest_set.scenario_set_id
+            and context.scenario_set_projection_revision
+            == latest_set.projection_revision
+            and context.execution_resolution_id
+            == latest_resolution.resolution_id
+            and context.execution_resolution_projection_revision
+            == latest_resolution.projection_revision
+            and latest_set.formal_handoff_eligible
+            and latest_resolution.formal_handoff_eligible
+            and latest_resolution.scenario_set_id
+            == latest_set.scenario_set_id
+            and latest_resolution.scenario_set_projection_revision
+            == latest_set.projection_revision
+            and context.case_ids == latest_set.case_ids
+            and {
+                item.strategy_id for item in context.strategy_bindings
+            }
+            == formal_strategy_ids
+            and all(
+                case_id in scenarios
+                and scenarios[case_id].path_id in paths
+                for case_id in context.case_ids
+            )
+        )
+        if current:
+            assert latest_resolution is not None
+            expected_case_bindings = tuple(
+                _fake_selection_case_binding(
+                    scenarios[case_id],
+                    paths[scenarios[case_id].path_id],
+                )
+                for case_id in context.case_ids
+            )
+            expected_strategy_bindings_by_id: dict[
+                StrategyUnderTestId,
+                ScenarioSelectionStrategyBindingProjection,
+            ] = {}
+            for target in latest_resolution.targets:
+                binding = ScenarioSelectionStrategyBindingProjection(
+                    strategy_id=target.strategy_id,
+                    strategy_version=target.strategy_version,
+                    compatibility_manifest_hash=(
+                        target.compatibility_manifest_hash
+                    ),
+                    guardrail_profile_id=target.guardrail_profile_id,
+                    guardrail_profile_version=(
+                        target.guardrail_profile_version
+                    ),
+                    execution_policy_version=(
+                        target.execution_policy_version
+                    ),
+                )
+                predecessor = expected_strategy_bindings_by_id.setdefault(
+                    target.strategy_id,
+                    binding,
+                )
+                if predecessor != binding:
+                    current = False
+            expected_strategy_bindings = tuple(
+                expected_strategy_bindings_by_id[identity]
+                for identity in sorted(
+                    expected_strategy_bindings_by_id,
+                    key=lambda item: item.value,
+                )
+            )
+            current = (
+                current
+                and context.case_bindings == expected_case_bindings
+                and context.strategy_bindings == expected_strategy_bindings
+                and all(
+                    item.transformation_catalog_version
+                    == inventory.transformation_catalog.catalog_version
+                    for item in context.case_bindings
+                )
+            )
+        reconciled.append(
+            replace(
+                context,
+                status=(
+                    ScenarioSelectionContextStatus.CURRENT
+                    if current
+                    else ScenarioSelectionContextStatus.STALE
+                ),
+                formal_handoff_eligible=(
+                    context.formal_handoff_eligible and current
+                ),
+            )
+        )
+    return tuple(reconciled)
+
+
+def _fake_execution_target(
+    target: ScenarioExecutionAssumptionTarget,
+    scenario: MarketScenarioEntry,
+) -> ScenarioExecutionTargetProjection:
+    requested = scenario.requested_execution_assumptions
+    requested_values = {
+        "allow_partial_fills": (
+            "true" if requested.allow_partial_fills else "false"
+        ),
+        "commission_bps": requested.commission_bps,
+        "latency_nodes": str(requested.latency_nodes),
+        "max_fill_fraction": requested.max_fill_fraction,
+        "rejection_mode": "none",
+        "slippage_bps": requested.slippage_bps,
+    }
+    effective_values = dict(requested_values)
+    overridden: set[str] = set()
+    for transformation in scenario.transformations:
+        if transformation.family != "execution-stress":
+            continue
+        for name, value in transformation.parameters:
+            if name in effective_values:
+                effective_values[name] = value.casefold() if name == "allow_partial_fills" else value
+                overridden.add(name)
+    conditions = tuple(
+        ScenarioExecutionConditionProjection(
+            name=name,
+            requested_value=requested_values[name],
+            effective_value=effective_values[name],
+            override_reason=(
+                "scenario execution-stress.v1 override"
+                if name in overridden
+                else None
+            ),
+        )
+        for name in (
+            "allow_partial_fills",
+            "commission_bps",
+            "latency_nodes",
+            "max_fill_fraction",
+            "rejection_mode",
+            "slippage_bps",
+        )
+    )
+    after_decision_time = (
+        None
+        if target.decision_time is None
+        else target.decision_time + timedelta(seconds=30)
+    )
+    activation_time = (
+        None
+        if after_decision_time is None
+        else after_decision_time
+        + timedelta(seconds=30 * int(effective_values["latency_nodes"]))
+    )
+    state = (
+        ScenarioExecutionResolutionState.NOT_YET_RESOLVED
+        if target.decision_time is None
+        else ScenarioExecutionResolutionState.RESOLVED
+    )
+    strategy_digest = hashlib.sha256(
+        target.strategy_id.value.encode("utf-8")
+    ).hexdigest()
+    return ScenarioExecutionTargetProjection(
+        strategy_id=target.strategy_id,
+        strategy_version="1.0",
+        compatibility_manifest_hash=strategy_digest,
+        guardrail_profile_id="guardrail-profile-" + strategy_digest[:24],
+        guardrail_profile_version="1.0",
+        campaign_case_id=target.campaign_case_id,
+        state=state,
+        decision_time=target.decision_time,
+        after_decision_time=after_decision_time,
+        activation_time=activation_time,
+        decision_cadence_minutes=scenario.decision_cadence_minutes,
+        decision_grid=(
+            f"{scenario.decision_cadence_minutes}-minute simulation-time grid"
+        ),
+        activation_policy=(
+            "first Reference Market Path node strictly later than Decision Time, "
+            "then effective latency_nodes"
+        ),
+        execution_policy_version="a-share-baseline-execution-policy.v1",
+        conditions=conditions,
+        unavailability_reasons=(
+            ()
+            if state is ScenarioExecutionResolutionState.RESOLVED
+            else ("Decision Time is required to resolve activation.",)
+        ),
+    )
+
+
 def _authoring_capabilities(
     inventory: ScenarioLabInventory,
 ) -> ScenarioLabCapabilities:
@@ -2839,9 +3693,20 @@ def _authoring_capabilities(
             item.phase is TaskPhase.FAILED and item.retryable
             for item in inventory.task_handles
         ),
-        can_compose_scenario_set=False,
-        can_resolve_execution_assumptions=False,
-        can_select_formal_scenario_set=False,
+        can_compose_scenario_set=any(
+            item.layer is MarketScenarioLayer.BASELINE
+            for item in inventory.market_scenarios
+        ),
+        can_resolve_execution_assumptions=bool(inventory.scenario_sets),
+        can_select_formal_scenario_set=any(
+            scenario_set.formal_handoff_eligible
+            and any(
+                resolution.scenario_set_id == scenario_set.scenario_set_id
+                and resolution.formal_handoff_eligible
+                for resolution in inventory.execution_resolutions
+            )
+            for scenario_set in inventory.scenario_sets
+        ),
     )
 
 
