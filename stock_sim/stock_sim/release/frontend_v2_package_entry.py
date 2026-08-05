@@ -2449,6 +2449,33 @@ def _run_smoke_journey(
                 f"{missing}"
             )
 
+    def prime_evidence_route() -> None:
+        """Complete the current mount's first authoritative Evidence read."""
+        _navigate_route(
+            app=app,
+            host=host,
+            root=root,
+            route="evidence_and_findings",
+        )
+        keyboard_routes.add("evidence_and_findings")
+        evidence_adapter = host._evidence_and_findings
+        if evidence_adapter is None:
+            raise RuntimeError("Evidence & Findings Adapter is unavailable")
+        _settle_until(
+            app,
+            lambda: (
+                root.property("activeRoute") == "evidence_and_findings"
+                and root.property("evidenceScreenState") == "ready"
+                and evidence_adapter.property("freshness") == "fresh"
+            ),
+            "initial authoritative Evidence & Findings route",
+        )
+
+    # The route-scoped Evidence subscription is deactivated while the initial
+    # workspace route is active.  Prime each mount through production QML so
+    # launch and remount retain the strict ready/fresh evidence requirement.
+    prime_evidence_route()
+
     observe(*EXPECTED_JOURNEY[0])
     observe(*EXPECTED_JOURNEY[1])
     _navigate_route(
@@ -2640,6 +2667,7 @@ def _run_smoke_journey(
             _accessibility_preferences_verified(root)
         )
 
+    prime_evidence_route()
     observe(*EXPECTED_JOURNEY[8])
     observe(*EXPECTED_JOURNEY[9])
 

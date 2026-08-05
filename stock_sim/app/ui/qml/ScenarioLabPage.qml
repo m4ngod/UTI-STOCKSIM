@@ -11,11 +11,33 @@ Item {
     property var lastFocusedItem: null
     readonly property var firstActionControl: searchInput
     readonly property bool hasMeaningfulFocus: (
-        lastFocusedItem !== null && lastFocusedItem.activeFocus
+        lastFocusedItem !== null
+        && lastFocusedItem.activeFocus
+        && lastFocusedItem.visible
+        && lastFocusedItem.enabled
     )
 
     function rememberFocus(item) {
         lastFocusedItem = item
+        ensureItemVisible(item)
+    }
+
+    function ensureItemVisible(item) {
+        if (item === null || !scroll.visible)
+            return
+        var point = item.mapToItem(scroll.contentItem, 0, 0)
+        var top = point.y - tokens.spaceMd
+        var bottom = point.y + item.height + tokens.spaceMd
+        if (top < scroll.contentY)
+            scroll.contentY = Math.max(0, top)
+        else if (bottom > scroll.contentY + scroll.height)
+            scroll.contentY = Math.max(
+                0,
+                Math.min(
+                    scroll.contentHeight - scroll.height,
+                    bottom - scroll.height
+                )
+            )
     }
 
     function restoreFocus() {
@@ -23,6 +45,7 @@ Item {
         if (target === null || !target.visible || !target.enabled)
             target = searchInput
         target.forceActiveFocus()
+        ensureItemVisible(target)
         return true
     }
 
@@ -137,6 +160,35 @@ Item {
         return rendered.join("\n")
     }
 
+    function renderScenarioSemanticNarrative() {
+        var rendered = []
+        for (var setIndex = 0;
+                setIndex < adapter.scenarioSets.length;
+                ++setIndex) {
+            var scenarioSet = adapter.scenarioSets[setIndex]
+            rendered.push(
+                scenarioSet.scenarioSetId + " " + scenarioSet.eligibility
+                + " · Baseline " + scenarioSet.baselineCaseId
+                + " · Isolated Sensitivity cases "
+                + scenarioSet.isolatedCaseIds.join(", ")
+                + " · Compound cases "
+                + scenarioSet.compoundCaseIds.join(", ")
+            )
+        }
+        for (var resolutionIndex = 0;
+                resolutionIndex < adapter.executionResolutions.length;
+                ++resolutionIndex) {
+            var resolution = adapter.executionResolutions[resolutionIndex]
+            rendered.push(
+                resolution.resolutionId + " · "
+                + renderExecutionTargets(resolution.targets)
+            )
+        }
+        if (rendered.length === 0)
+            rendered.push("No accepted Scenario Set or execution resolution yet.")
+        return rendered.join("; ")
+    }
+
     Flickable {
         id: scroll
         objectName: "scenarioLabFlickable"
@@ -170,6 +222,7 @@ Item {
             }
 
             Rectangle {
+                objectName: "scenarioLabAccessibleStatus"
                 Layout.fillWidth: true
                 Layout.preferredHeight: statusColumn.implicitHeight + tokens.spaceMd * 2
                 radius: tokens.radiusMd
@@ -178,6 +231,12 @@ Item {
                     ? tokens.accent : tokens.focus
                 Accessible.role: Accessible.StatusBar
                 Accessible.name: adapter.statusMessage
+                Accessible.description: "Source revision "
+                    + adapter.sourceRevision + ", generation "
+                    + adapter.sourceGeneration + ", catalog "
+                    + adapter.catalogVersion + ", presentation "
+                    + adapter.presentationState + ", freshness "
+                    + adapter.freshness
 
                 ColumnLayout {
                     id: statusColumn
@@ -208,12 +267,21 @@ Item {
             TextField {
                 id: searchInput
                 objectName: "scenarioLabSearchInput"
+                property bool focusVisible: activeFocus
                 Layout.fillWidth: true
                 activeFocusOnTab: true
                 placeholderText: "Search segment, path, scenario, provenance, or transformation"
                 text: adapter.searchText
                 Accessible.name: "Search Scenario Lab inventory"
                 Accessible.description: "Search only the immutable typed Scenario Lab ViewState"
+                background: Rectangle {
+                    color: tokens.surface
+                    radius: tokens.radiusSm
+                    border.color: searchInput.activeFocus
+                        ? tokens.focus : tokens.border
+                    border.width: searchInput.activeFocus
+                        ? tokens.focusWidth : 1
+                }
                 onTextEdited: adapter.setSearchText(text)
                 onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
             }
@@ -464,6 +532,25 @@ Item {
                         color: tokens.textMuted
                         font.pixelSize: tokens.labelSize
                         wrapMode: Text.WordWrap
+                    }
+
+                    Text {
+                        objectName: "scenarioLabSemanticNarrative"
+                        Layout.fillWidth: true
+                        text: "Accepted Scenario Lab revision "
+                            + adapter.sourceRevision + " · source generation "
+                            + adapter.sourceGeneration
+                            + ". Semantic table alternative: Baseline; "
+                            + "Isolated Sensitivity; Compound; Quick Experiment. "
+                            + "Execution alternatives preserve each requested "
+                            + "value, effective value, and typed override reason. "
+                            + page.renderScenarioSemanticNarrative()
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: "Scenario comparison and execution narrative"
+                        Accessible.description: text
                     }
 
                     RowLayout {

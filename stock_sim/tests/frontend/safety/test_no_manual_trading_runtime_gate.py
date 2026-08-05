@@ -18,11 +18,13 @@ from app.event_bridge import EventBridge
 from app.features import (
     ApprovedScenarioRecipeId,
     CancelDiagnosticTask,
+    DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
     DeterministicFakeScenarioLabAdapter,
     DeterministicFakeStrategyLibraryAdapter,
     DiagnosticTaskId,
+    DiagnosticTasksContext,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
@@ -88,6 +90,11 @@ APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Resolve requested and effective execution assumptions|"
     r"Select immutable Formal Scenario Set context|"
     r"Open Diagnostic Tasks|"
+    r"Create Diagnostic Task|"
+    r"Correct Configuration|"
+    r"Validate Configuration|"
+    r"Approve Configuration|"
+    r"Start Formal Diagnostic Campaign|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
     r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
@@ -345,6 +352,7 @@ def _release_closed_qml_hosts_between_tests():
 def mounted_v2_mode(request):
     app = QApplication.instance() or QApplication([])
     controller = _DiagnosticTasks()
+    diagnostic_feature = DeterministicFakeDiagnosticTasksAdapter()
     bridge = None
     if request.param == "deterministic_fake":
         strategy_feature = DeterministicFakeStrategyLibraryAdapter()
@@ -400,6 +408,8 @@ def mounted_v2_mode(request):
         strategy_library_feature=strategy_feature,
         strategy_library_context=StrategyLibraryContext(),
         scenario_lab_feature=scenario_feature,
+        diagnostic_tasks_feature=diagnostic_feature,
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
         run_monitoring_feature=run_feature,
         run_monitoring_context=_run_context(),
         evidence_and_findings_feature=evidence_feature,
@@ -414,6 +424,7 @@ def mounted_v2_mode(request):
     window.close()
     strategy_feature.close()
     scenario_feature.close()
+    diagnostic_feature.close()
     run_feature.close()
     evidence_feature.close()
     if bridge is not None:
@@ -476,13 +487,43 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
     assert strategy_repeater is not None
     assert strategy_repeater.property("count") == 2
 
-    root.setProperty("activeRoute", "evidence_and_findings")
-    app.processEvents()
-    app.processEvents()
+    names = list(strategy_names)
+    for route, status_name in (
+        ("strategy_library", "strategyLibraryAccessibleStatus"),
+        ("scenario_lab", "scenarioLabAccessibleStatus"),
+        ("diagnostic_tasks", "diagnosticTasksAccessibleStatus"),
+        ("run_monitoring", "runMonitoringAccessibleStatus"),
+        ("evidence_and_findings", "evidenceAccessibleStatus"),
+    ):
+        root.setProperty("activeRoute", route)
+        app.processEvents()
+        app.processEvents()
+        status = root.findChild(QObject, status_name)
+        assert status is not None
+        status_interface = QAccessible.queryAccessibleInterface(status)
+        assert status_interface is not None
+        assert status_interface.role() == QAccessible.Role.StatusBar
+        assert status_interface.text(QAccessible.Text.Name).strip()
+        assert status_interface.text(QAccessible.Text.Description).strip()
+        names.extend(_interactive_accessible_names(root))
+        assert (
+            audit_qml_text(
+                f"{mode}-{route}-runtime-object-tree",
+                _runtime_surface_text(root),
+            )
+            == ()
+        )
 
-    names = tuple(strategy_names) + tuple(_interactive_accessible_names(root))
+    names = tuple(names)
     assert names
-    assert all(APPROVED_INTERACTIVE_NAMES.fullmatch(name) for name in names)
+    unapproved_names = sorted(
+        {
+            name
+            for name in names
+            if APPROVED_INTERACTIVE_NAMES.fullmatch(name) is None
+        }
+    )
+    assert unapproved_names == []
     assert any(name == "Cancel diagnostic task" for name in names)
     candidate = root.property("evidenceInitialFocusItem")
     finding = root.property("evidenceFindingFocusItem")

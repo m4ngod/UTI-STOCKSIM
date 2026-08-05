@@ -17,6 +17,64 @@ Item {
     )
     readonly property var firstActionControl: searchInput
 
+    function renderComparisonNarrative(values) {
+        if (values.length === 0)
+            return "No comparison has been accepted for this revision."
+        var rendered = []
+        for (var index = 0; index < values.length; ++index) {
+            var item = values[index]
+            var thresholds = []
+            for (var thresholdIndex = 0;
+                    thresholdIndex < item.guardrailThresholds.length;
+                    ++thresholdIndex) {
+                var threshold = item.guardrailThresholds[thresholdIndex]
+                thresholds.push(
+                    threshold.metric + " " + threshold.operator + " "
+                    + threshold.value
+                )
+            }
+            var dependencies = []
+            for (var dependencyIndex = 0;
+                    dependencyIndex < item.dependencies.length;
+                    ++dependencyIndex) {
+                var dependency = item.dependencies[dependencyIndex]
+                dependencies.push(
+                    dependency.kind + " · " + dependency.identity + " @ "
+                    + dependency.version + " · SHA-256 "
+                    + dependency.contentHash + " · availability "
+                    + (dependency.available ? "available" : "unavailable")
+                    + " · compatibility "
+                    + (dependency.compatible ? "compatible" : "incompatible")
+                    + (dependency.available && dependency.compatible
+                        ? " · ready" : " · blocked")
+                )
+            }
+            rendered.push(
+                "Identity and version · " + item.strategyId + " @ "
+                + item.strategyVersion
+                + " · Source lineage · " + item.lineage.join(" → ")
+                + " · Source identity · " + item.sourceModule + " · "
+                + item.sourcePath + " · SHA-256 " + item.sourceHash
+                + " · Compatibility · " + item.surfaceVersion
+                + " · manifest " + item.manifestHash
+                + " · Declared capabilities · "
+                + (item.capabilities.length > 0
+                    ? item.capabilities.join(", ") : "none")
+                + " · Candidate data policy · " + item.candidateDataPolicy
+                + " · Guardrail profile · " + item.guardrailProfileId + " @ "
+                + item.guardrailProfileVersion
+                + " · Guardrail thresholds · "
+                + (thresholds.length > 0 ? thresholds.join(", ") : "none")
+                + " · Dependency provenance · "
+                + (dependencies.length > 0 ? dependencies.join(", ") : "none")
+                + " · Diagnostic applicability · "
+                + (item.formalCampaignEligible
+                    ? "Formal Campaign ready" : "Unavailable")
+            )
+        }
+        return rendered.join("; ")
+    }
+
     function rememberFocus(item) {
         lastFocusedItem = item
         ensureItemVisible(item)
@@ -100,6 +158,7 @@ Item {
             }
 
             Rectangle {
+                objectName: "strategyLibraryAccessibleStatus"
                 Layout.fillWidth: true
                 Layout.preferredHeight: statusColumn.implicitHeight + tokens.spaceMd * 2
                 radius: tokens.radiusMd
@@ -108,6 +167,12 @@ Item {
                     ? tokens.accent : tokens.focus
                 Accessible.role: Accessible.StatusBar
                 Accessible.name: adapter.statusMessage
+                Accessible.description: "Source revision "
+                    + adapter.sourceRevision + ", generation "
+                    + adapter.sourceGeneration + ", selection "
+                    + adapter.selectionStatus + ", selection identity "
+                    + (adapter.selectionContextId.length === 0
+                        ? "unavailable" : adapter.selectionContextId)
 
                 ColumnLayout {
                     id: statusColumn
@@ -141,6 +206,7 @@ Item {
                 TextField {
                     id: searchInput
                     objectName: "strategyLibrarySearchInput"
+                    property bool focusVisible: activeFocus
                     property string accessibleName: (
                         "Search authoritative Strategy inventory"
                     )
@@ -154,6 +220,14 @@ Item {
                     Accessible.description: (
                         "Filters the already-read typed inventory; it does not discover files or modules"
                     )
+                    background: Rectangle {
+                        color: tokens.surface
+                        radius: tokens.radiusSm
+                        border.color: searchInput.activeFocus
+                            ? tokens.focus : tokens.border
+                        border.width: searchInput.activeFocus
+                            ? tokens.focusWidth : 1
+                    }
                     onTextEdited: adapter.setSearchText(text)
                     onActiveFocusChanged: {
                         if (activeFocus)
@@ -297,6 +371,22 @@ Item {
                         font.pixelSize: tokens.labelSize
                         wrapMode: Text.WordWrap
                     }
+                    Text {
+                        objectName: "strategyLibraryComparisonNarrative"
+                        Layout.fillWidth: true
+                        text: "Accepted comparison revision "
+                            + adapter.sourceRevision + " · source generation "
+                            + adapter.sourceGeneration + ". "
+                            + page.renderComparisonNarrative(
+                                adapter.comparisonEntries
+                            )
+                        color: tokens.textMuted
+                        font.pixelSize: tokens.labelSize
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: "Strategy comparison narrative"
+                        Accessible.description: text
+                    }
                     Repeater {
                         objectName: "strategyLibraryComparisonRepeater"
                         model: adapter.comparisonEntries
@@ -400,6 +490,12 @@ Item {
                                             + modelData.identity + " @ "
                                             + modelData.version + " · SHA-256 "
                                             + modelData.contentHash
+                                            + " · availability "
+                                            + (modelData.available
+                                                ? "available" : "unavailable")
+                                            + " · compatibility "
+                                            + (modelData.compatible
+                                                ? "compatible" : "incompatible")
                                             + (modelData.available
                                                 && modelData.compatible
                                                 ? " · ready" : " · blocked")

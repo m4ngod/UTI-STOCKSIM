@@ -104,7 +104,7 @@ def _sample_metric(
 
 def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "passed",
         "lane": lane,
         "graphics_api": (
@@ -140,11 +140,16 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         "duration_seconds": 60.0,
         "production_path": [
             "PerformanceLoadProjectionReadModel",
+            "DeterministicFakeStrategyLibraryAdapter",
+            "DeterministicFakeScenarioLabAdapter",
             "DeterministicFakeDiagnosticTasksAdapter",
             "EventBridge",
             "LiveRunMonitoringAdapter",
             "LiveEvidenceAndFindingsAdapter",
             "JourneyWorkspaceHost",
+            "StrategyLibraryPage.qml",
+            "ScenarioLabPage.qml",
+            "DiagnosticTasksPage.qml",
             "EvidenceChart.qml",
         ],
         "integrated_v1_probe": _passing_real_v1_probe(),
@@ -184,6 +189,48 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         },
         "accepted_revisions": [1, 2, 4, 7],
         "revisions_strictly_monotonic": True,
+        "wave3_setup_features": {
+            "feature_interfaces": [
+                "StrategyLibraryFeature/1.0",
+                "ScenarioLabFeature/1.0",
+            ],
+            "adapters": [
+                "DeterministicFakeStrategyLibraryAdapter",
+                "DeterministicFakeScenarioLabAdapter",
+            ],
+            "routes": ["strategy_library", "scenario_lab"],
+            "presentation_states": {
+                "strategy_library": "ready",
+                "scenario_lab": "ready",
+            },
+            "freshness": {
+                "strategy_library": "fresh",
+                "scenario_lab": "fresh",
+            },
+            "qml_status_roles": {
+                "strategy_library": "StatusBar",
+                "scenario_lab": "StatusBar",
+            },
+            "initial_focus_observed": {
+                "strategy_library": True,
+                "scenario_lab": True,
+            },
+            "observed_before_load": True,
+            "executed_during_active_load": True,
+            "accepted_setup_commands": [
+                "compare_formal_strategy_set",
+                "select_formal_strategy_set",
+                "compose_visible_scenario_set",
+            ],
+            "accepted_revisions": {
+                "strategy_library": [2, 3],
+                "scenario_lab": [2, 3],
+            },
+            "comparison_count": 2,
+            "strategy_selection_status": "current",
+            "scenario_set_count": 1,
+            "scenario_set_eligibility": "formal_campaign_eligible",
+        },
         "wave2_diagnostic_tasks": {
             "feature_interface": "DiagnosticTasksFeature/1.0",
             "application_interface": (
@@ -243,6 +290,22 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         },
         "errors": [],
     }
+
+
+def _passing_wave2_lane_report(lane: str) -> dict[str, object]:
+    report = _passing_lane_report(lane)
+    report["schema_version"] = 2
+    report["production_path"] = [
+        "PerformanceLoadProjectionReadModel",
+        "DeterministicFakeDiagnosticTasksAdapter",
+        "EventBridge",
+        "LiveRunMonitoringAdapter",
+        "LiveEvidenceAndFindingsAdapter",
+        "JourneyWorkspaceHost",
+        "EvidenceChart.qml",
+    ]
+    del report["wave3_setup_features"]
+    return report
 
 
 def _passing_safety_report() -> dict[str, object]:
@@ -360,6 +423,30 @@ def test_lane_validation_blocks_event_to_visible_p95_over_budget():
         "hardware event-to-visible p95 exceeds 20.0 ms: 20.001 ms",
         "hardware event-to-visible sample summary does not match samples",
     )
+
+
+def test_lane_validation_preserves_historical_wave2_schema_v2_reports():
+    report = _passing_lane_report()
+    report["schema_version"] = 2
+    report["production_path"] = [
+        "PerformanceLoadProjectionReadModel",
+        "DeterministicFakeDiagnosticTasksAdapter",
+        "EventBridge",
+        "LiveRunMonitoringAdapter",
+        "LiveEvidenceAndFindingsAdapter",
+        "JourneyWorkspaceHost",
+        "EvidenceChart.qml",
+    ]
+    del report["wave3_setup_features"]
+
+    failures = validate_performance_lane(
+        report,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert failures == ()
 
 
 def test_lane_validation_recomputes_raw_sample_digest_and_summary():
@@ -729,6 +816,77 @@ def test_performance_certification_rejects_mismatched_wave2_workloads():
         "hardware and software Wave 2 probes do not identify the "
         "same Diagnostic Task workload"
     ) in certification.failures
+
+
+def test_performance_certification_rejects_mixed_lane_schema_versions():
+    certification = certify_performance_evidence(
+        _passing_wave2_lane_report("hardware"),
+        _passing_lane_report("software"),
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert (
+        "hardware and software performance lane schemas do not match"
+        in certification.failures
+    )
+    assert (
+        "performance certification requires lane schema version 3"
+        in certification.failures
+    )
+
+
+def test_performance_certification_rejects_wave3_setup_revision_drift():
+    hardware = _passing_lane_report("hardware")
+    software = _passing_lane_report("software")
+    software["wave3_setup_features"]["accepted_revisions"][
+        "scenario_lab"
+    ] = [2, 4]
+
+    certification = certify_performance_evidence(
+        hardware,
+        software,
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert (
+        "hardware and software Wave 3 setup probes do not identify the "
+        "same workload"
+    ) in certification.failures
+
+
+def test_wave3_certification_rejects_two_historical_schema_v2_lanes():
+    certification = certify_performance_evidence(
+        _passing_wave2_lane_report("hardware"),
+        _passing_wave2_lane_report("software"),
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert certification.status == "blocked"
+    assert certification.failures == (
+        "performance certification requires lane schema version 3",
+    )
+
+
+def test_historical_wave2_recertification_requires_explicit_schema_v2():
+    certification = certify_performance_evidence(
+        _passing_wave2_lane_report("hardware"),
+        _passing_wave2_lane_report("software"),
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+        expected_lane_schema_version=2,
+    )
+
+    assert certification.status == "certified"
+    assert certification.failures == ()
 
 
 def test_performance_certification_rejects_schema1_without_wave2_load():

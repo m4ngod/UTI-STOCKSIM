@@ -1,9 +1,10 @@
 # Strategy Diagnostics V1 + Frontend V2 Wave 3 contract
 
-Status: incremental source-level integration contract for Issues #77–#84 plus the
+Status: incremental source-level integration contract for Issues #77–#86 plus the
 certified Wave 2 delivery in Issues #56–#66. This is not a Wave 3 installed
-release-certification claim. Issue #88 owns Wave 3 installed offline release certification,
-T08/T09/T10 evidence, packages, tag, and release assets.
+release-certification claim. Issue #86 owns source-level T08/T09/T10 preflight;
+Issue #88 owns the installed offline black-box certification, packages, tag,
+release assets, and retained final T08/T09/T10 evidence.
 
 ## Versioned boundary
 
@@ -249,12 +250,32 @@ by Issue #66.
 
 ## Accessibility, safety, and performance
 
-The current five-route journey preserves keyboard navigation, Narrator names and
-descriptions, focus restoration, 200% text scale, reduced motion, high
-contrast, background-task continuity, remount behavior, and clean subscription
-disposal. The source gate also exercises the fixed hardware/software
-performance projection with typed Diagnostic Task command and `TaskHandle`
-observations.
+Issue #86 completes source-level T08/T09/T10 preflight for the current
+five-route Journey. T08 drives all routes without a pointer, verifies logical
+visible focus and restoration, Narrator status identities and descriptions,
+200% text scale, high contrast, reduced motion, reconnect/remount behavior,
+and five distinct route frames in both Software and Direct3D 11 renderer
+lanes. Comparison and chart views retain synchronized narrative/table
+revisions.
+
+T09 audits Python imports and text, Feature and Application Interface surfaces,
+the runtime accessible object tree, QML navigation, shortcuts, telemetry,
+cancel isolation, AI source/evidence boundaries, and the absence of a universal
+score. It continues to reject manual-trading actions and every forbidden
+transport or generic facade.
+
+T10 expands the fixed hardware/software performance projection to mount the
+two independent setup Features with the inherited Diagnostic Tasks, Run
+Monitoring, and Evidence & Findings workload. Reports retain exact setup
+Interface versions, adapter identities, route readiness/freshness, semantic
+status roles, and visible initial focus. During the active measurement window,
+the same production composition executes formal Strategy comparison and
+selection plus Scenario Set composition, records the accepted revisions and
+eligibility, and preserves the Wave 2 typed Diagnostic Task command and
+persistent `TaskHandle` load. Hardware and Software reports must use the same
+current schema and identify the same accepted setup workload. All inherited
+thresholds remain unchanged. These are source-level preflight results, not
+installed black-box certification and not a claim that Seam 3 has passed.
 
 ## Explicit exclusions
 
@@ -264,6 +285,8 @@ Widgets. Issues #77 and #78 activate Strategy Library browse, explicit
 comparison, exact formal selection, and authoritative bookmark recovery.
 Issues #79–#83 activate Scenario Lab read tracing, Recipe writes, approval,
 materialization, scenario-set composition, and formal selection. Issue #84
-activates the exact typed handoff into unchanged Diagnostic Tasks 1.0. System
-Health and Wave 4 remain unimplemented. This contract does not claim Wave 3
-T08/T09/T10 or release certification.
+activates the exact typed handoff into unchanged Diagnostic Tasks 1.0. Issue
+#85 preserves five-Feature recovery truth and Issue #86 completes the
+accessible no-trading source preflight. System Health and Wave 4 remain unimplemented.
+This contract does not claim Wave 3 installed T08/T09/T10 or
+release certification.

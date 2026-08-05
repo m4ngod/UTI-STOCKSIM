@@ -53,7 +53,7 @@ Item {
             if (candidates[index].visible && candidates[index].enabled)
                 return candidates[index]
         }
-        return null
+        return status
     }
 
     function ensureItemVisible(item) {
@@ -168,7 +168,10 @@ Item {
             }
 
             Rectangle {
+                id: status
                 objectName: "diagnosticTasksAccessibleStatus"
+                readonly property bool focusVisible: activeFocus
+                activeFocusOnTab: true
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.max(
                     112,
@@ -176,10 +179,14 @@ Item {
                 )
                 radius: tokens.radiusMd
                 color: tokens.surface
-                border.color: tokens.border
+                border.color: activeFocus ? tokens.focus : tokens.border
+                border.width: activeFocus ? tokens.focusWidth : 1
                 Accessible.role: Accessible.StatusBar
                 Accessible.name: "Diagnostic Tasks " + adapter.presentationState
                 Accessible.description: adapter.statusText
+                Accessible.focusable: true
+                Accessible.focused: activeFocus
+                onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
 
                 ColumnLayout {
                     anchors.fill: parent

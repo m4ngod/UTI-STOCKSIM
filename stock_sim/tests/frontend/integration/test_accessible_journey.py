@@ -13,8 +13,12 @@ from PySide6.QtWidgets import QApplication
 
 from app.features import (
     ApprovedScenarioRecipeId,
+    DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
+    DeterministicFakeScenarioLabAdapter,
+    DeterministicFakeStrategyLibraryAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DiagnosticTasksContext,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
@@ -24,6 +28,8 @@ from app.features import (
     RunMonitoringSelection,
     StrategyRunId,
     StrategyUnderTestId,
+    ScenarioLabContext,
+    StrategyLibraryContext,
 )
 from app.ui.accessibility import AccessibilityPreferences
 from app.ui.journey_workspace import JourneyWorkspaceHost
@@ -58,6 +64,7 @@ def _evidence_context() -> EvidenceAndFindingsContext:
 def _mounted_host(
     *,
     preferences: AccessibilityPreferences | None = None,
+    run_context: RunMonitoringContext | None = None,
 ) -> tuple[
     JourneyWorkspaceHost,
     DeterministicFakeRunMonitoringAdapter,
@@ -66,18 +73,37 @@ def _mounted_host(
     app = _app()
     run_feature = DeterministicFakeRunMonitoringAdapter()
     evidence_feature = DeterministicFakeEvidenceAndFindingsAdapter()
-    run_feature.advance_to_running(_run_context())
+    strategy_feature = DeterministicFakeStrategyLibraryAdapter()
+    scenario_feature = DeterministicFakeScenarioLabAdapter()
+    diagnostic_feature = DeterministicFakeDiagnosticTasksAdapter()
+    selected_run_context = run_context or _run_context()
+    if selected_run_context == RunMonitoringContext.no_selection():
+        run_feature.advance_to_empty(selected_run_context)
+    else:
+        run_feature.advance_to_running(selected_run_context)
     evidence_feature.advance_to_completed(_evidence_context())
     host = JourneyWorkspaceHost(
         run_feature,
-        context=_run_context(),
+        context=selected_run_context,
+        strategy_library_feature=strategy_feature,
+        strategy_library_context=StrategyLibraryContext(),
+        scenario_lab_feature=scenario_feature,
+        scenario_lab_context=ScenarioLabContext(),
+        diagnostic_tasks_feature=diagnostic_feature,
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
         evidence_feature=evidence_feature,
         evidence_context=_evidence_context(),
         accessibility_preferences=preferences,
+        initial_route="run_monitoring",
     )
     host.resize(1280, 720)
     host.show()
     app.processEvents()
+    host._accessibility_feature_owners = (
+        strategy_feature,
+        scenario_feature,
+        diagnostic_feature,
+    )
     return host, run_feature, evidence_feature
 
 
@@ -113,6 +139,8 @@ def _close(
     evidence_feature: DeterministicFakeEvidenceAndFindingsAdapter,
 ) -> None:
     _close_host(host)
+    for feature in getattr(host, "_accessibility_feature_owners", ()):
+        feature.close()
     run_feature.close()
     evidence_feature.close()
 
@@ -177,6 +205,185 @@ def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
         "bulk order",
     ):
         assert forbidden not in accessible_text
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_five_route_journey_is_keyboard_operable_and_narrator_named():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host()
+    root = host.rootObject()
+    routes = (
+        (
+            "strategy_library",
+            "strategyLibraryRouteNavigation",
+            "strategyLibraryInitialFocusItem",
+            "strategyLibraryAccessibleStatus",
+        ),
+        (
+            "scenario_lab",
+            "scenarioLabRouteNavigation",
+            "scenarioLabInitialFocusItem",
+            "scenarioLabAccessibleStatus",
+        ),
+        (
+            "diagnostic_tasks",
+            "diagnosticTasksRouteNavigation",
+            "diagnosticTasksInitialFocusItem",
+            "diagnosticTasksAccessibleStatus",
+        ),
+        (
+            "run_monitoring",
+            "runMonitoringRouteNavigation",
+            "runMonitoringInitialFocusItem",
+            "runMonitoringAccessibleStatus",
+        ),
+        (
+            "evidence_and_findings",
+            "evidenceAndFindingsRouteNavigation",
+            "evidenceInitialFocusItem",
+            "evidenceAccessibleStatus",
+        ),
+    )
+
+    for route, navigation_name, focus_property, status_name in routes:
+        navigation = root.findChild(QQuickItem, navigation_name)
+        assert navigation is not None
+        navigation.forceActiveFocus()
+        QTest.keyClick(host, Qt.Key.Key_Return)
+        _settle(app)
+        assert root.property("activeRoute") == route
+        focus_item = root.property(focus_property) or navigation
+        assert focus_item.property("activeFocus") is True
+        assert focus_item.property("focusVisible") is True
+        assert focus_item.property("visible") is True
+        status = root.findChild(QObject, status_name)
+        assert status is not None
+        status_interface = _interface(status)
+        assert status_interface.role() == QAccessible.Role.StatusBar
+        assert status_interface.text(QAccessible.Text.Name).strip()
+        assert status_interface.text(QAccessible.Text.Description).strip()
+
+    _close(host, run_feature, evidence_feature)
+
+
+@pytest.mark.parametrize("run_state", ("terminal", "no_selection"))
+def test_run_monitoring_initial_focus_seam_matches_runtime_fallback(run_state):
+    app = _app()
+    context = (
+        RunMonitoringContext.no_selection()
+        if run_state == "no_selection"
+        else _run_context()
+    )
+    host, run_feature, evidence_feature = _mounted_host(run_context=context)
+    if run_state == "terminal":
+        run_feature.advance_to_completed(context)
+        _settle(app)
+
+    root = host.rootObject()
+    focus_item = root.property("runMonitoringInitialFocusItem")
+    navigation = root.findChild(QQuickItem, "runMonitoringRouteNavigation")
+    assert focus_item.objectName() == navigation.objectName()
+    assert focus_item.property("activeFocus") is True
+    assert focus_item.property("focusVisible") is True
+    assert focus_item.property("visible") is True
+    assert focus_item.property("enabled") is True
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_setup_comparisons_expose_revision_synchronized_narrative_alternatives():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host()
+    root = host.rootObject()
+
+    host._strategy_library.compareFormalSet()
+    _settle(app)
+    root.setProperty("activeRoute", "strategy_library")
+    _settle(app)
+    strategy_narrative = root.findChild(
+        QObject,
+        "strategyLibraryComparisonNarrative",
+    )
+    strategy_interface = _interface(strategy_narrative)
+    strategy_text = " ".join(
+        (
+            strategy_interface.text(QAccessible.Text.Name),
+            strategy_interface.text(QAccessible.Text.Description),
+        )
+    )
+    assert host._strategy_library.sourceRevision in strategy_text
+    assert str(host._strategy_library.sourceGeneration) in strategy_text
+    for entry in host._strategy_library.comparisonEntries:
+        for exact_value in (
+            entry["strategyId"],
+            entry["strategyVersion"],
+            *entry["lineage"],
+            entry["sourceModule"],
+            entry["sourcePath"],
+            entry["sourceHash"],
+            entry["surfaceVersion"],
+            entry["manifestHash"],
+            *entry["capabilities"],
+            entry["candidateDataPolicy"],
+            entry["guardrailProfileId"],
+            entry["guardrailProfileVersion"],
+        ):
+            assert str(exact_value) in strategy_text
+        for threshold in entry["guardrailThresholds"]:
+            assert (
+                f'{threshold["metric"]} {threshold["operator"]} '
+                f'{threshold["value"]}'
+            ) in strategy_text
+        for dependency in entry["dependencies"]:
+            for exact_value in (
+                dependency["kind"],
+                dependency["identity"],
+                dependency["version"],
+                dependency["contentHash"],
+                "available" if dependency["available"] else "unavailable",
+                (
+                    "compatible"
+                    if dependency["compatible"]
+                    else "incompatible"
+                ),
+                (
+                    "ready"
+                    if dependency["available"] and dependency["compatible"]
+                    else "blocked"
+                ),
+            ):
+                assert str(exact_value) in strategy_text
+        assert (
+            "Formal Campaign ready"
+            if entry["formalCampaignEligible"]
+            else "Unavailable"
+        ) in strategy_text
+
+    root.setProperty("activeRoute", "scenario_lab")
+    _settle(app)
+    scenario_narrative = root.findChild(
+        QObject,
+        "scenarioLabSemanticNarrative",
+    )
+    scenario_interface = _interface(scenario_narrative)
+    scenario_text = " ".join(
+        (
+            scenario_interface.text(QAccessible.Text.Name),
+            scenario_interface.text(QAccessible.Text.Description),
+        )
+    )
+    assert host._scenario_lab.sourceRevision in scenario_text
+    for semantic in (
+        "Baseline",
+        "Isolated Sensitivity",
+        "Compound",
+        "Quick Experiment",
+        "requested",
+        "effective",
+        "override",
+    ):
+        assert semantic.casefold() in scenario_text.casefold()
 
     _close(host, run_feature, evidence_feature)
 
@@ -396,6 +603,7 @@ def test_state_changes_remain_distinguishable_and_repair_focus_without_color():
 def test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation():
     app = _app()
     first, run_feature, evidence_feature = _mounted_host()
+    setup_features = first._accessibility_feature_owners
     first_root = first.rootObject()
     run_revision = run_feature.snapshot(_run_context()).revision
     evidence_revision = evidence_feature.snapshot(_evidence_context()).revision
@@ -418,9 +626,17 @@ def test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation(
     second = JourneyWorkspaceHost(
         run_feature,
         context=_run_context(),
+        strategy_library_feature=setup_features[0],
+        strategy_library_context=StrategyLibraryContext(),
+        scenario_lab_feature=setup_features[1],
+        scenario_lab_context=ScenarioLabContext(),
+        diagnostic_tasks_feature=setup_features[2],
+        diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
         evidence_feature=evidence_feature,
         evidence_context=_evidence_context(),
+        initial_route="run_monitoring",
     )
+    second._accessibility_feature_owners = setup_features
     second.resize(1280, 720)
     second.show()
     _settle(app)
@@ -516,6 +732,25 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
         assert_within_viewport(root.findChild(QQuickItem, object_name))
     assert second_candidate.mapToItem(root, QPointF(0, 0)).y() > (
         first_candidate.mapToItem(root, QPointF(0, 0)).y()
+    )
+
+    root.setProperty("activeRoute", "scenario_lab")
+    _settle(app)
+    scenario_scroll = root.findChild(QQuickItem, "scenarioLabFlickable")
+    scenario_action = root.findChild(
+        QQuickItem,
+        "scenarioLabCreateRecipeDraftButton",
+    )
+    assert scenario_scroll.property("contentHeight") > scenario_scroll.property(
+        "height"
+    )
+    scenario_action.forceActiveFocus()
+    _settle(app)
+    scenario_top = scenario_action.mapToItem(root, QPointF(0, 0)).y()
+    assert scenario_scroll.property("contentY") > 0
+    assert scenario_top >= 0
+    assert scenario_top + scenario_action.property("height") <= root.property(
+        "height"
     )
 
     image = host.grab().toImage()

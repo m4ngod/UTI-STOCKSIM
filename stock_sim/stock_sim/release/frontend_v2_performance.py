@@ -139,6 +139,21 @@ WAVE2_PERFORMANCE_PRODUCTION_PATH = (
     "EvidenceChart.qml",
 )
 
+WAVE3_PERFORMANCE_PRODUCTION_PATH = (
+    "PerformanceLoadProjectionReadModel",
+    "DeterministicFakeStrategyLibraryAdapter",
+    "DeterministicFakeScenarioLabAdapter",
+    "DeterministicFakeDiagnosticTasksAdapter",
+    "EventBridge",
+    "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
+    "JourneyWorkspaceHost",
+    "StrategyLibraryPage.qml",
+    "ScenarioLabPage.qml",
+    "DiagnosticTasksPage.qml",
+    "EvidenceChart.qml",
+)
+
 WAVE2_PERFORMANCE_COMMAND_IDS = (
     "performance-create-diagnostic-task",
     "performance-validate-diagnostic-task",
@@ -253,7 +268,8 @@ def validate_performance_lane(
     expected_api = (
         "Direct3D11" if expected_lane == "hardware" else "Software"
     )
-    if report.get("schema_version") != 2:
+    schema_version = report.get("schema_version")
+    if schema_version not in {2, 3}:
         failures.append(f"{expected_lane} lane schema version is invalid")
     if report.get("status") != "passed":
         failures.append(f"{expected_lane} lane status is not passed")
@@ -333,6 +349,19 @@ def validate_performance_lane(
             renderer_started_at=report.get("started_at"),
         )
     )
+    if schema_version == 3:
+        failures.extend(
+            _validate_wave3_setup_load(
+                report,
+                expected_lane=expected_lane,
+            )
+        )
+    elif schema_version == 2 and report.get("production_path") != list(
+        WAVE2_PERFORMANCE_PRODUCTION_PATH
+    ):
+        failures.append(
+            f"{expected_lane} Wave 2 performance production path does not match"
+        )
     failures.extend(
         _validate_wave2_diagnostic_task_load(
             report,
@@ -557,8 +586,12 @@ def certify_performance_evidence(
     expected_source_commit: str,
     expected_toolchain_digest: str,
     expected_fixture_archive_digest: str | None = None,
+    expected_lane_schema_version: int = 3,
 ) -> PerformanceCertification:
     """Bind both retained lanes and the #44 safety gate to one source."""
+
+    if expected_lane_schema_version not in {2, 3}:
+        raise ValueError("Expected lane schema version must be 2 or 3")
 
     hardware_digest = _payload_digest(hardware_report)
     software_digest = _payload_digest(software_report)
@@ -584,6 +617,20 @@ def certify_performance_evidence(
             expected_toolchain_digest=expected_toolchain_digest,
         )
     )
+    hardware_schema = hardware_report.get("schema_version")
+    software_schema = software_report.get("schema_version")
+    if hardware_schema != software_schema:
+        failures.append(
+            "hardware and software performance lane schemas do not match"
+        )
+    if (
+        hardware_schema != expected_lane_schema_version
+        or software_schema != expected_lane_schema_version
+    ):
+        failures.append(
+            "performance certification requires lane schema version "
+            f"{expected_lane_schema_version}"
+        )
     if hardware_digest == software_digest:
         failures.append(
             "hardware and software reports are not independent artifacts"
@@ -605,6 +652,20 @@ def certify_performance_evidence(
         failures.append(
             "hardware and software Wave 2 probes do not identify the "
             "same Diagnostic Task workload"
+        )
+    if (
+        hardware_schema == 3
+        and software_schema == 3
+        and _wave3_workload_identity(
+            hardware_report.get("wave3_setup_features")
+        )
+        != _wave3_workload_identity(
+            software_report.get("wave3_setup_features")
+        )
+    ):
+        failures.append(
+            "hardware and software Wave 3 setup probes do not identify the "
+            "same workload"
         )
     if (
         expected_fixture_archive_digest is not None
@@ -644,6 +705,7 @@ def certify_performance_report_files(
     expected_source_commit: str,
     expected_toolchain_digest: str,
     expected_fixture_archive_digest: str | None = None,
+    expected_lane_schema_version: int = 3,
     output_path: Path,
 ) -> PerformanceCertification:
     """Validate retained lane files and write their bound certification."""
@@ -664,6 +726,7 @@ def certify_performance_report_files(
         expected_fixture_archive_digest=(
             expected_fixture_archive_digest
         ),
+        expected_lane_schema_version=expected_lane_schema_version,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -821,12 +884,6 @@ def _validate_wave2_diagnostic_task_load(
     expected_lane: str,
 ) -> tuple[str, ...]:
     failures: list[str] = []
-    if report.get("production_path") != list(
-        WAVE2_PERFORMANCE_PRODUCTION_PATH
-    ):
-        failures.append(
-            f"{expected_lane} Wave 2 performance production path does not match"
-        )
     load = _mapping(report.get("wave2_diagnostic_tasks"))
     if (
         load.get("feature_interface") != "DiagnosticTasksFeature/1.0"
@@ -886,6 +943,103 @@ def _validate_wave2_diagnostic_task_load(
             "or non-canonical"
         )
     return tuple(failures)
+
+
+def _validate_wave3_setup_load(
+    report: Mapping[str, Any],
+    *,
+    expected_lane: str,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    if report.get("production_path") != list(
+        WAVE3_PERFORMANCE_PRODUCTION_PATH
+    ):
+        failures.append(
+            f"{expected_lane} Wave 3 performance production path does not match"
+        )
+    setup = _mapping(report.get("wave3_setup_features"))
+    if (
+        setup.get("feature_interfaces")
+        != ["StrategyLibraryFeature/1.0", "ScenarioLabFeature/1.0"]
+        or setup.get("adapters")
+        != [
+            "DeterministicFakeStrategyLibraryAdapter",
+            "DeterministicFakeScenarioLabAdapter",
+        ]
+        or setup.get("routes")
+        != ["strategy_library", "scenario_lab"]
+        or setup.get("presentation_states")
+        != {"strategy_library": "ready", "scenario_lab": "ready"}
+        or setup.get("freshness")
+        != {"strategy_library": "fresh", "scenario_lab": "fresh"}
+        or setup.get("qml_status_roles")
+        != {"strategy_library": "StatusBar", "scenario_lab": "StatusBar"}
+        or setup.get("initial_focus_observed")
+        != {"strategy_library": True, "scenario_lab": True}
+        or setup.get("observed_before_load") is not True
+    ):
+        failures.append(
+            f"{expected_lane} Wave 3 setup Feature observation is incomplete"
+        )
+    accepted_revisions = _mapping(setup.get("accepted_revisions"))
+    revision_pairs = tuple(
+        accepted_revisions.get(feature)
+        for feature in ("strategy_library", "scenario_lab")
+    )
+    revisions_are_accepted = all(
+        isinstance(pair, list)
+        and len(pair) == 2
+        and all(isinstance(value, int) and not isinstance(value, bool) for value in pair)
+        and pair[1] > pair[0]
+        for pair in revision_pairs
+    )
+    if (
+        setup.get("executed_during_active_load") is not True
+        or setup.get("accepted_setup_commands")
+        != [
+            "compare_formal_strategy_set",
+            "select_formal_strategy_set",
+            "compose_visible_scenario_set",
+        ]
+        or not revisions_are_accepted
+        or setup.get("comparison_count") != 2
+        or setup.get("strategy_selection_status") != "current"
+        or _positive_count(setup.get("scenario_set_count")) is None
+        or setup.get("scenario_set_eligibility")
+        not in {"formal_campaign_eligible", "quick_experiment_only"}
+    ):
+        failures.append(
+            f"{expected_lane} Wave 3 setup command load is incomplete"
+        )
+    return tuple(failures)
+
+
+def _wave3_workload_identity(value: Any) -> tuple[Any, ...]:
+    setup = _mapping(value)
+    accepted_revisions = _mapping(setup.get("accepted_revisions"))
+    return (
+        _sequence_identity(setup.get("feature_interfaces")),
+        _sequence_identity(setup.get("adapters")),
+        _sequence_identity(setup.get("routes")),
+        tuple(sorted(_mapping(setup.get("presentation_states")).items())),
+        tuple(sorted(_mapping(setup.get("freshness")).items())),
+        tuple(sorted(_mapping(setup.get("qml_status_roles")).items())),
+        tuple(sorted(_mapping(setup.get("initial_focus_observed")).items())),
+        setup.get("observed_before_load"),
+        setup.get("executed_during_active_load"),
+        _sequence_identity(setup.get("accepted_setup_commands")),
+        tuple(
+            (
+                feature,
+                _sequence_identity(accepted_revisions.get(feature)),
+            )
+            for feature in ("strategy_library", "scenario_lab")
+        ),
+        setup.get("comparison_count"),
+        setup.get("strategy_selection_status"),
+        setup.get("scenario_set_count"),
+        setup.get("scenario_set_eligibility"),
+    )
 
 
 def _wave2_workload_identity(value: Any) -> tuple[Any, ...]:

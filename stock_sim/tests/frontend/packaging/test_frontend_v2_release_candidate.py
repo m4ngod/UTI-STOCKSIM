@@ -53,7 +53,7 @@ EXPECTED_JOURNEY = (
         "terminal",
         "ready",
         "disconnected",
-        "disconnected",
+        "fresh",
     ),
     (
         "disconnected_evidence",
@@ -85,7 +85,7 @@ EXPECTED_JOURNEY = (
         "terminal",
         "ready",
         "fresh",
-        "fresh",
+        "stale",
     ),
     (
         "reconnected_evidence",
@@ -1532,16 +1532,63 @@ def _copy_performance_evidence(root):
     hardware = json.loads(hardware_path.read_text(encoding="utf-8"))
     software = json.loads(software_path.read_text(encoding="utf-8"))
     for report in (hardware, software):
-        report["schema_version"] = 2
+        report["schema_version"] = 3
         report["production_path"] = [
             "PerformanceLoadProjectionReadModel",
+            "DeterministicFakeStrategyLibraryAdapter",
+            "DeterministicFakeScenarioLabAdapter",
             "DeterministicFakeDiagnosticTasksAdapter",
             "EventBridge",
             "LiveRunMonitoringAdapter",
             "LiveEvidenceAndFindingsAdapter",
             "JourneyWorkspaceHost",
+            "StrategyLibraryPage.qml",
+            "ScenarioLabPage.qml",
+            "DiagnosticTasksPage.qml",
             "EvidenceChart.qml",
         ]
+        report["wave3_setup_features"] = {
+            "feature_interfaces": [
+                "StrategyLibraryFeature/1.0",
+                "ScenarioLabFeature/1.0",
+            ],
+            "adapters": [
+                "DeterministicFakeStrategyLibraryAdapter",
+                "DeterministicFakeScenarioLabAdapter",
+            ],
+            "routes": ["strategy_library", "scenario_lab"],
+            "presentation_states": {
+                "strategy_library": "ready",
+                "scenario_lab": "ready",
+            },
+            "freshness": {
+                "strategy_library": "fresh",
+                "scenario_lab": "fresh",
+            },
+            "qml_status_roles": {
+                "strategy_library": "StatusBar",
+                "scenario_lab": "StatusBar",
+            },
+            "initial_focus_observed": {
+                "strategy_library": True,
+                "scenario_lab": True,
+            },
+            "observed_before_load": True,
+            "executed_during_active_load": True,
+            "accepted_setup_commands": [
+                "compare_formal_strategy_set",
+                "select_formal_strategy_set",
+                "compose_visible_scenario_set",
+            ],
+            "accepted_revisions": {
+                "strategy_library": [2, 3],
+                "scenario_lab": [2, 3],
+            },
+            "comparison_count": 2,
+            "strategy_selection_status": "current",
+            "scenario_set_count": 1,
+            "scenario_set_eligibility": "formal_campaign_eligible",
+        }
         report["wave2_diagnostic_tasks"] = (
             _passing_wave2_performance_load()
         )

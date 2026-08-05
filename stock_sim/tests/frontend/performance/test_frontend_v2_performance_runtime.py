@@ -453,7 +453,7 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["status"] == "smoke"
     assert report["lane"] == "software"
     assert report["graphics_api"] == "Software"
@@ -478,13 +478,64 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
     }
     assert report["production_path"] == [
         "PerformanceLoadProjectionReadModel",
+        "DeterministicFakeStrategyLibraryAdapter",
+        "DeterministicFakeScenarioLabAdapter",
         "DeterministicFakeDiagnosticTasksAdapter",
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
         "JourneyWorkspaceHost",
+        "StrategyLibraryPage.qml",
+        "ScenarioLabPage.qml",
+        "DiagnosticTasksPage.qml",
         "EvidenceChart.qml",
     ]
+    wave3_setup = report["wave3_setup_features"]
+    assert wave3_setup["feature_interfaces"] == [
+        "StrategyLibraryFeature/1.0",
+        "ScenarioLabFeature/1.0",
+    ]
+    assert wave3_setup["adapters"] == [
+        "DeterministicFakeStrategyLibraryAdapter",
+        "DeterministicFakeScenarioLabAdapter",
+    ]
+    assert wave3_setup["routes"] == [
+        "strategy_library",
+        "scenario_lab",
+    ]
+    assert wave3_setup["presentation_states"] == {
+        "strategy_library": "ready",
+        "scenario_lab": "ready",
+    }
+    assert wave3_setup["freshness"] == {
+        "strategy_library": "fresh",
+        "scenario_lab": "fresh",
+    }
+    assert wave3_setup["qml_status_roles"] == {
+        "strategy_library": "StatusBar",
+        "scenario_lab": "StatusBar",
+    }
+    assert wave3_setup["initial_focus_observed"] == {
+        "strategy_library": True,
+        "scenario_lab": True,
+    }
+    assert wave3_setup["observed_before_load"] is True
+    assert wave3_setup["executed_during_active_load"] is True
+    assert wave3_setup["accepted_setup_commands"] == [
+        "compare_formal_strategy_set",
+        "select_formal_strategy_set",
+        "compose_visible_scenario_set",
+    ]
+    assert wave3_setup["comparison_count"] == 2
+    assert wave3_setup["strategy_selection_status"] == "current"
+    assert wave3_setup["scenario_set_count"] >= 1
+    assert wave3_setup["scenario_set_eligibility"] in {
+        "formal_campaign_eligible",
+        "quick_experiment_only",
+    }
+    for revisions in wave3_setup["accepted_revisions"].values():
+        assert len(revisions) == 2
+        assert revisions[1] > revisions[0]
     wave2_load = report["wave2_diagnostic_tasks"]
     assert wave2_load["feature_interface"] == "DiagnosticTasksFeature/1.0"
     assert wave2_load["application_interface"] == (
