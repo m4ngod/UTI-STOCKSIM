@@ -142,6 +142,7 @@ _QML_ALLOWED_APP_MODULE_PREFIXES = (
     "app.event_bridge",
     "app.features",
     "app.i18n",
+    "app.journey_recovery",
     "app.state",
     "app.ui.accessibility",
     "app.ui.docking",
