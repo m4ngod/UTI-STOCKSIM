@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "status": "verified",
+  "verification_method": "github_server_digest_plus_complete_public_range_coverage_plus_direct_cdn_distributed_content_ranges_v1",
+  "verified_at": "2026-08-06T17:05:27.2926507+08:00",
+  "repository": "m4ngod/UTI-STOCKSIM",
+  "release_tag": "strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c",
+  "release_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c",
+  "release_name": "Strategy Diagnostics V1 - Frontend V2 Wave 3 RC f49c269b0d5c",
+  "published_at": "2026-08-06T06:37:55Z",
+  "is_draft": false,
+  "is_prerelease": true,
+  "target_commitish": "f49c269b0d5cfd1f8882958d688b5f4425710ad5",
+  "tag_ref_type": "commit",
+  "tag_ref_sha": "f49c269b0d5cfd1f8882958d688b5f4425710ad5",
+  "source_commit": "f49c269b0d5cfd1f8882958d688b5f4425710ad5",
+  "release_body_sha256": "sha256:dd46f7b9895fecb559b486f2824ef7df41c8624313afba011298f91f0dfef29b",
+  "assets": [
+    {
+      "asset_id": "503570380",
+      "asset_node_id": "RA_kwDOQs7Qds4eA9_M",
+      "name": "qml-journey-f49c269b0d5c.zip",
+      "stable_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/download/strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c/qml-journey-f49c269b0d5c.zip",
+      "state": "uploaded",
+      "content_type": "application/zip",
+      "server_size": 143490033,
+      "server_sha256": "sha256:3903c9b1cd7535fd6abe7f73581603fd1fb48643d7e8d671601b4d358f2b7f87",
+      "local_source_size": 143490033,
+      "local_source_sha256": "sha256:3903c9b1cd7535fd6abe7f73581603fd1fb48643d7e8d671601b4d358f2b7f87",
+      "remote_download_size": 143490033,
+      "remote_download_sha256": "sha256:3903c9b1cd7535fd6abe7f73581603fd1fb48643d7e8d671601b4d358f2b7f87",
+      "full_size_match": true,
+      "full_sha256_match": true,
+      "full_download_method": "complete_public_range_coverage_reassembled_v1",
+      "probes": [
+        {
+          "position": "start",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 0-1023/143490033",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:e6062eee8a1dde9931b787369efa7259dacc8c4e43e2907e4ad7fb3ca6f372ae",
+          "local_range_sha256": "sha256:e6062eee8a1dde9931b787369efa7259dacc8c4e43e2907e4ad7fb3ca6f372ae",
+          "bytes_match": true
+        },
+        {
+          "position": "middle",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 71745016-71746039/143490033",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:eb34726bb4c8ba574527927f76e5e4cc91a8e6d0d2e60172d7e4e58ea0e74572",
+          "local_range_sha256": "sha256:eb34726bb4c8ba574527927f76e5e4cc91a8e6d0d2e60172d7e4e58ea0e74572",
+          "bytes_match": true
+        },
+        {
+          "position": "tail",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 143489009-143490032/143490033",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:89d4dab16becb52021280899201def37ffe292a3f9c8aaff3819171f9de02f74",
+          "local_range_sha256": "sha256:89d4dab16becb52021280899201def37ffe292a3f9c8aaff3819171f9de02f74",
+          "bytes_match": true
+        }
+      ]
+    },
+    {
+      "asset_id": "503570379",
+      "asset_node_id": "RA_kwDOQs7Qds4eA9_L",
+      "name": "widgets-rollback-f49c269b0d5c.zip",
+      "stable_url": "https://github.com/m4ngod/UTI-STOCKSIM/releases/download/strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c/widgets-rollback-f49c269b0d5c.zip",
+      "state": "uploaded",
+      "content_type": "application/zip",
+      "server_size": 133606793,
+      "server_sha256": "sha256:cb2dcc91856ebaa7163dace7a7984b297f71942e9251649b30572f8964c30ad5",
+      "local_source_size": 133606793,
+      "local_source_sha256": "sha256:cb2dcc91856ebaa7163dace7a7984b297f71942e9251649b30572f8964c30ad5",
+      "remote_download_size": 133606793,
+      "remote_download_sha256": "sha256:cb2dcc91856ebaa7163dace7a7984b297f71942e9251649b30572f8964c30ad5",
+      "full_size_match": true,
+      "full_sha256_match": true,
+      "full_download_method": "complete_public_range_coverage_reassembled_v1",
+      "probes": [
+        {
+          "position": "start",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 0-1023/133606793",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:4a93481a3c7d5289bcbc7ed22fd1a5bcd5bb8fccfe577eb860b1ee0078339f5b",
+          "local_range_sha256": "sha256:4a93481a3c7d5289bcbc7ed22fd1a5bcd5bb8fccfe577eb860b1ee0078339f5b",
+          "bytes_match": true
+        },
+        {
+          "position": "middle",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 66803396-66804419/133606793",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:2a0f67a7dee0f375f08ddfe9b971a8d1d8b2fd5e44d3b3650a90a6a8c915d49c",
+          "local_range_sha256": "sha256:2a0f67a7dee0f375f08ddfe9b971a8d1d8b2fd5e44d3b3650a90a6a8c915d49c",
+          "bytes_match": true
+        },
+        {
+          "position": "tail",
+          "http_status": "HTTP/1.1 206 Partial Content",
+          "content_range": "bytes 133605769-133606792/133606793",
+          "content_length": 1024,
+          "expected_content_length": 1024,
+          "total_matches": true,
+          "remote_range_sha256": "sha256:edb6c4d327925594e42d9ebfeb5bdeed13741fcc0f87daf0b55f27e843e7bc33",
+          "local_range_sha256": "sha256:edb6c4d327925594e42d9ebfeb5bdeed13741fcc0f87daf0b55f27e843e7bc33",
+          "bytes_match": true
+        }
+      ]
+    }
+  ]
+}

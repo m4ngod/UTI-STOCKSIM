@@ -199,3 +199,48 @@ exactly Diagnostic Tasks 1.0, Run Monitoring 1.2, and Evidence & Findings
 available, and Strategy Library, Scenario Lab, System Health, the complete
 Journey Rail, Waves 3–4, manual trading, and legacy deletion remain
 incomplete and outside scope.
+
+## Wave 3 certified candidate
+
+Issue #88 certified the immutable Wave 3 prerelease on 2026-08-06:
+
+- Source commit:
+  `f49c269b0d5cfd1f8882958d688b5f4425710ad5`
+- Release tag:
+  `strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c`
+- GitHub prerelease:
+  <https://github.com/m4ngod/UTI-STOCKSIM/releases/tag/strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c>
+- Retained evidence:
+  `docs/testing/frontend/evidence/issue-88/f49c269b0d5cfd1f8882958d688b5f4425710ad5/`
+
+The same source passed T08 with 16 tests, T09 no-manual-trading, certified
+Direct3D 11 and Software T10 lanes, and the installed Windows 11 Sandbox
+black-box journey. The clean room had no network adapters up, Python,
+compiler, or dependency cache. Both renderer lanes created and approved an
+exact Scenario Recipe after install, materialized its Reference Market Path
+and persistent TaskHandle, composed a Formal Campaign Scenario Set, handed
+the exact selections to Diagnostic Tasks, and preserved the five-Feature
+identity graph across remount, disconnect/reconnect, and Application reopen
+through terminal Evidence & Findings state and clean exit. The same-source
+read-only Widgets rollback also passed.
+
+The published offline archives are:
+
+- `qml-journey-f49c269b0d5c.zip`
+  (`sha256:3903c9b1cd7535fd6abe7f73581603fd1fb48643d7e8d671601b4d358f2b7f87`,
+  143490033 bytes)
+- `widgets-rollback-f49c269b0d5c.zip`
+  (`sha256:cb2dcc91856ebaa7163dace7a7984b297f71942e9251649b30572f8964c30ad5`,
+  133606793 bytes)
+
+The lightweight Release tag resolves directly to the immutable source.
+GitHub server digests, local digests, reconstructed full public-download
+digests, sizes, and independent start, middle, and tail byte ranges match for
+both assets. The certified registry contains exactly Strategy Library 1.0,
+Scenario Lab 1.0, Diagnostic Tasks 1.0, Run Monitoring 1.2, and Evidence &
+Findings 1.1 as five independent Feature Interfaces.
+
+No manual-trading capability or AI-authored diagnostic evidence is present.
+Legacy Widgets remains available. System Health, the complete six-route
+Journey Rail, Wave 4, manual trading, and legacy deletion were not started
+and remain outside scope.
