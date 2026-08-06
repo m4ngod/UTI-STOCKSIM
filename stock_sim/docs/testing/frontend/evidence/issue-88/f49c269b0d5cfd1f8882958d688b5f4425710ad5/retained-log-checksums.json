@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source_commit": "f49c269b0d5cfd1f8882958d688b5f4425710ad5",
+  "release_tag": "strategy-diagnostics-v1-frontend-v2-wave3-rc-f49c269b0d5c",
+  "logs": [
+    {
+      "path": "logs/build.stdout.log",
+      "size": 2865588,
+      "sha256": "sha256:b83d5662df12edae6826a4560f5311a21f5fcfa64adccb8c35fc60faf136f7be"
+    },
+    {
+      "path": "logs/build.stderr.log",
+      "size": 51533,
+      "sha256": "sha256:fab7f6980314dcb02a4ee730c14095926370292bf4e92d33486b1f6cd780fc1f"
+    },
+    {
+      "path": "sandbox-exit-code.txt",
+      "size": 1,
+      "sha256": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    }
+  ]
+}
