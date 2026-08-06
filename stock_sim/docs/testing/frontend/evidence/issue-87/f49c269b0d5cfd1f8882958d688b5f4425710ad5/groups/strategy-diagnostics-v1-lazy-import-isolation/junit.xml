@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="0.581" timestamp="2026-08-06T12:22:46.076463+08:00" hostname="Mango"><testcase classname="tests.strategy_diagnostics.test_installation" name="test_importing_root_package_keeps_persistence_lazy" time="0.511" /></testsuite></testsuites>
