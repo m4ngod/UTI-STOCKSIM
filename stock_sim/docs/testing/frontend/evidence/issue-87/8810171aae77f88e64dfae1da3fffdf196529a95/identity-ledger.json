@@ -1,0 +1,3726 @@
+{
+  "campaign": {
+    "attempt_ids": [
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-a2926f1a71549cc3bdc07f0b:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-a2926f1a71549cc3bdc07f0b:attempt-2",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-e0a42b9f8b08d6c9d467a815:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-6d2f627923a5ddbc8a9e273f:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-e62df050ddac03f00bf87af0:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-bf1cb44e43ebfb0f132d56f0:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-9add0802be8c00154c023a86:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-9dc71fe5a91f62164a89d487:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-9506fa8a0daed561a7a580e9:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-4b46f5be59f0bc87e6525b9a:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-81bc20a983002f04ec6096a2:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-76884402fc40edb9f6cf252c:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-e4e29d9892e0e3c79b9af677:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-cbb582b22bffcc503325657c:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-508cf07c8c60085b86507a19:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-c93a3c69f7443de662a3105f:attempt-1"
+    ],
+    "campaign_id": "diagnostic-campaign-bbeba406652e274ff8a59014",
+    "node_ids": [
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-a2926f1a71549cc3bdc07f0b",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-22b1ebf8646824c6ab16e294",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-6f884955e0d653a0fc4ad8cc",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-d1b776e454cf4adcdb03968a",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-e8cc66148827a5d1b7fa0aa1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-10e9ffde095aa7679b7e9f6a",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-6c0c8d56ce9384dbd1d34017",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-272e49cf97087bb7282b9a9d",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-de80996f44c8f96eb4782176",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-922ee46c477882b10f255534",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-74fe40bea7272da0abca900f",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-af79aa494a0a9416c43b2cd9",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-2acd80156c0752bbdbd3b071",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-65edeecb3a6943ec5e0d63c4",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-c93a3c69f7443de662a3105f"
+    ],
+    "requested_effective_override": {
+      "effective": {
+        "allow_partial_fills": false,
+        "commission_bps": "75",
+        "latency_nodes": 0,
+        "max_fill_fraction": "0.01",
+        "rejection_mode": "none",
+        "slippage_bps": "0"
+      },
+      "requested": {
+        "allow_partial_fills": true,
+        "commission_bps": "3",
+        "latency_nodes": 0,
+        "max_fill_fraction": "1",
+        "slippage_bps": "5"
+      },
+      "resolutions": [
+        {
+          "effective_value": "false",
+          "name": "allow_partial_fills",
+          "override_reason": "scenario execution-stress.v1 override",
+          "requested_value": "true"
+        },
+        {
+          "effective_value": "75",
+          "name": "commission_bps",
+          "override_reason": "scenario execution-stress.v1 override",
+          "requested_value": "3"
+        },
+        {
+          "effective_value": "0",
+          "name": "latency_nodes",
+          "override_reason": "scenario execution-stress.v1 override",
+          "requested_value": "0"
+        },
+        {
+          "effective_value": "0.01",
+          "name": "max_fill_fraction",
+          "override_reason": "scenario execution-stress.v1 override",
+          "requested_value": "1"
+        },
+        {
+          "effective_value": "none",
+          "name": "rejection_mode",
+          "override_reason": "scenario execution-stress.v1 override",
+          "requested_value": "none"
+        },
+        {
+          "effective_value": "0",
+          "name": "slippage_bps",
+          "override_reason": "scenario execution-stress.v1 override",
+          "requested_value": "5"
+        }
+      ]
+    },
+    "run_ids": [
+      "strategy-run-694d11c4ed7de5a8ee920124",
+      "strategy-run-5a806e35d324493810cce0a6",
+      "strategy-run-3e53901534567b02275d60c7",
+      "strategy-run-f5bea11e49bbc08ca5e4d981",
+      "strategy-run-096860f5137fc814f6e14f94",
+      "strategy-run-bdafaa87e0065d29c295add4",
+      "strategy-run-2e54c191ea37989be83b5b5b",
+      "strategy-run-23074d51096a8e1287d7b216",
+      "strategy-run-a56f73550934cf24d336b05e",
+      "strategy-run-2c401abbb6be15f562b7b539",
+      "strategy-run-c09f110628630dd37d788988",
+      "strategy-run-0bb8466e78c2e8d6e0e8a7b7",
+      "strategy-run-096f499b875642b243312f47",
+      "strategy-run-f7eba0de892e4630d4fe60fd",
+      "strategy-run-474126006e642a5d28cc8605",
+      "strategy-run-d162094afec9211c05759d13",
+      "strategy-run-2d3284286c6025a837a5f9d1",
+      "strategy-run-77cb0bf8cc97e85a297b3631",
+      "strategy-run-35357b0c86f8eeff579f6b7e",
+      "strategy-run-95e76d2e26a1f67b8a5b3ecb",
+      "strategy-run-6f735c717e5ad555a30b76c9",
+      "strategy-run-9c32ec3d2d6cb80419b71c4c",
+      "strategy-run-8f41a810e2b7f7380afe6540",
+      "strategy-run-e682e2e9a65ce797a7687c03",
+      "strategy-run-3d202667d30bb4965dca6690",
+      "strategy-run-db8021c0ba9e320c10b05acc",
+      "strategy-run-baf1cc79870100d39f976991",
+      "strategy-run-7c363df974f91130e41d9fd6",
+      "strategy-run-00f3c344c7a18b3351b07d94",
+      "strategy-run-94121666a4f24d078d8a7d53",
+      "strategy-run-72cd01c8345d3c9867d63c5b",
+      "strategy-run-4b3d151c58a69e28693b347b"
+    ]
+  },
+  "candidate_source": "8810171aae77f88e64dfae1da3fffdf196529a95",
+  "diagnostic_tasks": {
+    "approval_id": "diagnostic-task-approval-240e794586dc9262e17f1cfb",
+    "configuration_content_id": "sha256:61c4dc9b2a101e453f25596d77523851037966a42a9a6e189a8ccd5cc0c35951",
+    "setup_context_id": "sha256:ee579f0bbba096df4a2f6c990dd7e57daf9b071dbcecefa1b1f89bd35d50b110",
+    "task_handle_ids": [
+      "diagnostic-pause-handle-a634f62fba7a7da89e72a6db",
+      "diagnostic-resume-handle-9601168f2ebf9df8349751fc",
+      "diagnostic-task-campaign-start-handle-e2700b4c71a49c7984342ab5",
+      "diagnostic-task-failed-node-retry-handle-ce8f14e8d7fafc3c7698f786",
+      "diagnostic-task-handle-7ce618ab9ce195f5105ebf0d",
+      "diagnostic-task-validation-handle-76aabe9b49a34dfd02fe9250"
+    ],
+    "task_id": "diagnostic-task-7ce618ab9ce195f5105ebf0d",
+    "validation_id": "diagnostic-task-validation-76aabe9b49a34dfd02fe9250"
+  },
+  "evidence_and_findings": {
+    "breakpoint_finding_edges": [
+      [
+        "diagnostic-finding-152557a40f9aa3ef1c420115",
+        "sensitivity-breakpoint-89c0418ae499a7568347c2ca"
+      ],
+      [
+        "diagnostic-finding-816a3f8fe93766a646a258e2",
+        "sensitivity-breakpoint-dcbcd7b76bead1a9ea44baad"
+      ],
+      [
+        "diagnostic-finding-941b44935558601776f65eed",
+        "sensitivity-breakpoint-d9ebcc2aad3dcf552cc49ad0"
+      ],
+      [
+        "diagnostic-finding-9547ac160b486c0da06822bc",
+        "sensitivity-breakpoint-7869cac62788c0aa58cca9e1"
+      ],
+      [
+        "diagnostic-finding-baa5b47f50eef852edf8ec81",
+        "sensitivity-breakpoint-e2faf263f78dcf710fc89df5"
+      ],
+      [
+        "diagnostic-finding-c67dbac04424ea195fb9d519",
+        "sensitivity-breakpoint-14fea9491ef08f6efea327be"
+      ],
+      [
+        "diagnostic-finding-f01241d868f8244077bc70a9",
+        "sensitivity-breakpoint-78f561553185e67c0101a057"
+      ],
+      [
+        "diagnostic-finding-2e09712d76087305c8570cb2",
+        "sensitivity-breakpoint-6c8cb39b908c02e5e068db04"
+      ],
+      [
+        "diagnostic-finding-33a2a7b68232d8c9f1b8afd8",
+        "sensitivity-breakpoint-5b284a9853e07c9fa494d868"
+      ],
+      [
+        "diagnostic-finding-379e9d5151d0cd24f3e8b4b0",
+        "sensitivity-breakpoint-35433cce8fbbbc5086c45152"
+      ],
+      [
+        "diagnostic-finding-4797360cdb1b8e4a02ce82bf",
+        "sensitivity-breakpoint-0d942c74dd92b19e171c4c5c"
+      ],
+      [
+        "diagnostic-finding-55852680f2f6ed1b2e8aefc7",
+        "sensitivity-breakpoint-315bbfd1b9abaa0a3b271cd7"
+      ],
+      [
+        "diagnostic-finding-c610bb8c99e38c6fec577321",
+        "sensitivity-breakpoint-39f6e892f0459f13f7f24f78"
+      ],
+      [
+        "diagnostic-finding-c90f2daec6979785b82853bc",
+        "sensitivity-breakpoint-7a5db4f554d8d68cea866b13"
+      ],
+      [
+        "diagnostic-finding-db4c8400447e19d5b4168109",
+        "sensitivity-breakpoint-306507d6833fb980fa19ac8c"
+      ],
+      [
+        "diagnostic-finding-dc61297677f5d48958e723ec",
+        "sensitivity-breakpoint-6364d7e4f77a20aa4c6ca017"
+      ],
+      [
+        "diagnostic-finding-ddefdcb13ce90f2d902e70ca",
+        "sensitivity-breakpoint-fce1ea152c098483f47f5245"
+      ],
+      [
+        "diagnostic-finding-dff154f82c27151e4527a1ce",
+        "sensitivity-breakpoint-d004d11968c905fd8dd5ecf1"
+      ],
+      [
+        "diagnostic-finding-fe5c087157257258baebce9f",
+        "sensitivity-breakpoint-9d80466bf76233279901a683"
+      ]
+    ],
+    "breakpoint_ids": [
+      "sensitivity-breakpoint-89c0418ae499a7568347c2ca",
+      "sensitivity-breakpoint-dcbcd7b76bead1a9ea44baad",
+      "sensitivity-breakpoint-d9ebcc2aad3dcf552cc49ad0",
+      "sensitivity-breakpoint-7869cac62788c0aa58cca9e1",
+      "sensitivity-breakpoint-e2faf263f78dcf710fc89df5",
+      "sensitivity-breakpoint-14fea9491ef08f6efea327be",
+      "sensitivity-breakpoint-78f561553185e67c0101a057",
+      "sensitivity-breakpoint-6c8cb39b908c02e5e068db04",
+      "sensitivity-breakpoint-5b284a9853e07c9fa494d868",
+      "sensitivity-breakpoint-35433cce8fbbbc5086c45152",
+      "sensitivity-breakpoint-0d942c74dd92b19e171c4c5c",
+      "sensitivity-breakpoint-315bbfd1b9abaa0a3b271cd7",
+      "sensitivity-breakpoint-39f6e892f0459f13f7f24f78",
+      "sensitivity-breakpoint-7a5db4f554d8d68cea866b13",
+      "sensitivity-breakpoint-306507d6833fb980fa19ac8c",
+      "sensitivity-breakpoint-6364d7e4f77a20aa4c6ca017",
+      "sensitivity-breakpoint-fce1ea152c098483f47f5245",
+      "sensitivity-breakpoint-d004d11968c905fd8dd5ecf1",
+      "sensitivity-breakpoint-9d80466bf76233279901a683"
+    ],
+    "evidence_package_id": "diagnostic-evidence-90d7212d1471a2aff4608165",
+    "evidence_record_ids": [
+      "diagnostic-metric-cf953fabbae0af0abde6ff15",
+      "diagnostic-metric-1ae3b70c543b8a31ef1bf5f0",
+      "diagnostic-metric-2c08d703f72fa7251034aea3",
+      "diagnostic-metric-f7606689124036f2f7ebb6a9",
+      "diagnostic-metric-898cff7bbc92e81b9cc30c35",
+      "diagnostic-metric-9bcd9cbc84396cb2a604e8a9",
+      "diagnostic-metric-1390c6d1e4bad411f2c96d78",
+      "diagnostic-metric-e875620e5bf2b790c20d0ade",
+      "diagnostic-metric-479710621d84a12ad6b32be4",
+      "diagnostic-metric-878d15f1eaf20550d3eeeedb",
+      "diagnostic-metric-74be9f62bad31a92e2d75a00",
+      "diagnostic-metric-52fdb789650f016d1c7a629a",
+      "diagnostic-metric-c452fb8ef6872d1692677c93",
+      "diagnostic-metric-91932fea9bc73f48b6d0b874",
+      "diagnostic-metric-9f02d41e0b93ce964b216d42",
+      "diagnostic-metric-61f6b1efa897863786ed6fce",
+      "diagnostic-metric-a99b47c7de63c4947f43d3b8",
+      "diagnostic-metric-3722e1b39bbcb34b287e3a50",
+      "diagnostic-metric-058e64f3a675761170a641e4",
+      "diagnostic-metric-75ad27202407412fcc89012d",
+      "diagnostic-metric-39ec311490dc76c98b756e52",
+      "diagnostic-metric-0648e0a49ea804e949aba260",
+      "diagnostic-metric-9fa71e28a3fc591940f38705",
+      "diagnostic-metric-4b0e05e14445049916d78860",
+      "diagnostic-metric-9b92766f295a63cc2ecb112c",
+      "diagnostic-metric-90e080fb63dfd2b39d4b5f3e",
+      "diagnostic-metric-9db77f5caa2bce731ff8f23c",
+      "diagnostic-metric-3effb787c0180a604bc39265",
+      "diagnostic-metric-ceb240f40aab0a4e3aa45677",
+      "diagnostic-metric-1d4cd14f48480dfafe70f611",
+      "diagnostic-metric-5f4ac8a48aa1288d7deb9fc5",
+      "diagnostic-metric-2a25429622832bda24517e2d",
+      "diagnostic-metric-2238a290948727da6f9aaca6",
+      "diagnostic-metric-950fb21cc7e2021408e48254",
+      "diagnostic-metric-fe282fd7cb7e5057a187887e",
+      "diagnostic-metric-ce28dc85cea00485ada7d2b5",
+      "diagnostic-metric-0452fd7a8139a1e481841ba4",
+      "diagnostic-metric-31ae6f8b82960f9a121b8848",
+      "diagnostic-metric-47acbf3ebd9a74720803d4b8",
+      "diagnostic-metric-def6618236658a6de233463e",
+      "diagnostic-metric-941c14737400a06ca70d3bbf",
+      "diagnostic-metric-3f4ace2e063ccb8b8d3b5f67",
+      "diagnostic-metric-20184f4c92d5fa935ea9da19",
+      "diagnostic-metric-0ea6f05e5595a4efa375feb0",
+      "diagnostic-metric-ad777f8810a33a3780c480d6",
+      "diagnostic-metric-18333a09914ad3e8bf886f51",
+      "diagnostic-metric-04de03a3b0ce3387ae8c7690",
+      "diagnostic-metric-0c7379565fc2f8cb6fd7bb10",
+      "diagnostic-metric-b926d0935f91230bf038ffca",
+      "diagnostic-metric-23db5805a1302642524a76c6",
+      "diagnostic-metric-45a597eb9f1ed178e1633bf5",
+      "diagnostic-metric-0b55df9268dfa27b8bbeee63",
+      "diagnostic-metric-9ca71dd7dc30ec744b6787cb",
+      "diagnostic-metric-a7d72c361b76ba9610639cd9",
+      "diagnostic-metric-7b6e2839b1a967cee424a606",
+      "diagnostic-metric-420e37342c8a66a61f19e74f",
+      "diagnostic-metric-6648f968820e647841604e92",
+      "diagnostic-metric-9e4e4da9fd43fe4999b4c23d",
+      "diagnostic-metric-f67908fdf450aca0d11a5e99",
+      "diagnostic-metric-045f43a48b18ec36d79c000d",
+      "diagnostic-metric-f7abdc39213b665e038d5098",
+      "diagnostic-metric-5e44e51a7606701cbd38855e",
+      "diagnostic-metric-a9144dad551ab189a7e03946",
+      "diagnostic-metric-e314c3b73b4a0fcd62699bfe",
+      "diagnostic-metric-869f59a091d9fd17fab181ce",
+      "diagnostic-metric-933dbe82439cbb74453dcdcd",
+      "diagnostic-metric-8f0044aed595d00aeb8b7af6",
+      "diagnostic-metric-129eb916c9bcfc20acf841cf",
+      "diagnostic-metric-76ac1a48825876124b42fb5a",
+      "diagnostic-metric-631bdab16669f1d616be3c02",
+      "diagnostic-metric-2dab7c8e6e058a244a584d56",
+      "diagnostic-metric-32733a973d3aa4d7c1b15e25",
+      "diagnostic-metric-1ff8c458f81500a8fd754df8",
+      "diagnostic-metric-3dbed2ab9beb9e4406f0f310",
+      "diagnostic-metric-3aedd73c4837bfb02c210bab",
+      "diagnostic-metric-bb34118ed853765fc394410e",
+      "diagnostic-metric-57e4faaec86d93543197f6ae",
+      "diagnostic-metric-33661638e155db9c58c323d4",
+      "diagnostic-metric-20d9ec08980c3b3234645bc7",
+      "diagnostic-metric-18d75a28000bf4c3830ad340",
+      "diagnostic-metric-37d1c16660cd80bb41cd1912",
+      "diagnostic-metric-bb2a8b7a8b74f8940db5f2af",
+      "diagnostic-metric-eaa929897cbf762d5c41f931",
+      "diagnostic-metric-f821b0a40b4b570bb1142a1f",
+      "diagnostic-metric-c9792fcdded418be7d504409",
+      "diagnostic-metric-7358f6daaf6daf860f7e9ff1",
+      "diagnostic-metric-f5e039d8b805c35fb4968666",
+      "diagnostic-metric-83019b1b31c1b416b92ac4fe",
+      "diagnostic-metric-8e462ed63de9f35b26a4cf34",
+      "diagnostic-metric-476fd8f41621fa69642e1cc5",
+      "diagnostic-metric-8326f68ea8cb47342431cae6",
+      "diagnostic-metric-c2c15b4df54c0a7794a7a413",
+      "diagnostic-metric-7c7d137f892e32c56b3ed173",
+      "diagnostic-metric-a9c2461336ae549c71f0dfac",
+      "diagnostic-metric-6c4a58afc3e57c05d4baf072",
+      "diagnostic-metric-c444e355827e2bdfdde6454f",
+      "diagnostic-metric-9436c1b2ad65fcd43d20dc94",
+      "diagnostic-metric-fb3452213faa3ac027c69603",
+      "diagnostic-metric-970dbef549082d4ec91a6da3",
+      "diagnostic-metric-79f5c0f15dfc46d5e449d964",
+      "diagnostic-metric-9818e8c1efb1353dcd906d6c",
+      "diagnostic-metric-b336faeb7e317e91e74d8626",
+      "diagnostic-metric-24f5de717ef00e7f4685867f",
+      "diagnostic-metric-21a1095faef1deab301360fd",
+      "diagnostic-metric-fc42901df442b1edec8e42ff",
+      "diagnostic-metric-40e906959769cecd944ef775",
+      "diagnostic-metric-6e5d672229cc26f7949837f8",
+      "diagnostic-metric-d97367d048a987be7dcdffc6",
+      "diagnostic-metric-06ac5d3fbcae5d630afd5c66",
+      "diagnostic-metric-d6b7412372a0bd3a4688eb84",
+      "diagnostic-metric-b1d1ae996f9d8b8223bfbb7d",
+      "diagnostic-metric-467f33a193fe35e4d5d45157",
+      "diagnostic-metric-447a8936384be0aa97d5bf9f",
+      "diagnostic-metric-36eecf9cc87128f748c5d753",
+      "diagnostic-metric-bc6a03711d758b3d3f4fa6cc",
+      "diagnostic-metric-211b8dfdd8ee2dd48017ab56",
+      "diagnostic-metric-426114c768f235e65353e1a0",
+      "diagnostic-metric-1a730835a9e15740516678f3",
+      "diagnostic-metric-eb4ffa3d57eb1cdfbf88bbb7",
+      "diagnostic-metric-7fe7fbb7a895519ea4b87bd2",
+      "diagnostic-metric-d1d231706577ea1886f6a3fb",
+      "diagnostic-metric-833db667dd464bf855ba4a42",
+      "diagnostic-metric-9424de03d192701db168d666",
+      "diagnostic-metric-34f01d4d24d2de62d55e5cba",
+      "diagnostic-metric-481cb575db8886be4668428e",
+      "diagnostic-metric-301ebf2a999aa025caf44077",
+      "diagnostic-metric-fda3b9d17c1f96bee52b290c",
+      "diagnostic-metric-1dfc74268fe0c8748dbac5aa",
+      "diagnostic-metric-752173a6c76556553c2a45fd",
+      "diagnostic-metric-b4d8869b21d3de1f60f185af",
+      "diagnostic-metric-912889d3283f8c95b63c7b07",
+      "diagnostic-metric-92d4e27e59fb500a1124efdf",
+      "diagnostic-metric-e305f681c1913a8530effe66",
+      "diagnostic-metric-94690f16962024fa107eb4ed",
+      "diagnostic-metric-672545d827fbbb3930dbaa2f",
+      "diagnostic-metric-03a2ef12942ee7711db3d3ab",
+      "diagnostic-metric-9620f4c7aa45d3b573f1b33d",
+      "diagnostic-metric-1ad454f99e955f9c150d253b",
+      "diagnostic-metric-488d5c9d6948f4e89ec1e31e",
+      "diagnostic-metric-5b510865c3c4893effe76db3",
+      "diagnostic-metric-807b233e076b218d9def07b6",
+      "diagnostic-metric-3fd6a0cb220a5d478b055ae9",
+      "diagnostic-metric-8c3a26533a5e038db27ca992",
+      "diagnostic-metric-9c88120982112ebd2a439550",
+      "diagnostic-metric-0b76e2992923d5aedb1ee530",
+      "diagnostic-metric-062df4f5362aef9ddd4bb8ef",
+      "diagnostic-metric-43998fc222bbbd6651a5c4ee",
+      "diagnostic-metric-cc33e44ae281a43786983688",
+      "diagnostic-metric-ae8805e2ac849765a055f388",
+      "diagnostic-metric-3838a56aa58efd5b7d707dcb",
+      "diagnostic-metric-e7eeb7b26f7f78631c5893b1",
+      "diagnostic-metric-b82c5b8142000c5a4a03804f",
+      "diagnostic-metric-c2dbd2d90294fbb1157da8e9",
+      "diagnostic-metric-10249391c249b74e49d64615",
+      "diagnostic-metric-85f8821d4529ea16dcb4680d",
+      "diagnostic-metric-01f680f1bc6b175938b192f7",
+      "diagnostic-metric-504794a8eb1b92068c54957b",
+      "diagnostic-metric-e0deff7f2bffa42a36ca88ec",
+      "diagnostic-metric-a91f3826aa295117c950c81b",
+      "diagnostic-metric-e339629fb3b5af643491160a",
+      "diagnostic-metric-1f18033b37e629dba08b6f9d",
+      "diagnostic-metric-31aff814a8f61082b51e5b49",
+      "diagnostic-metric-2422f6c28842e86de8b2712e",
+      "diagnostic-metric-2659f6fd3818e2b0a2662403",
+      "diagnostic-metric-5ce5bd85810c0fe4ad366b16",
+      "diagnostic-metric-5222caf1928702919d36c899",
+      "diagnostic-metric-181ac66c74e571ce86a43f47",
+      "diagnostic-metric-953c32058274ae0a8bd49437",
+      "diagnostic-metric-c878262c03a77cd4f50ed51e",
+      "diagnostic-metric-96fbce2befc79cdd9c6650fb",
+      "diagnostic-metric-8dd92078c5e3d3db1656c1d3",
+      "diagnostic-metric-f926b8d20e3b93cf8a7f7183",
+      "diagnostic-metric-ece7c5e1f073dfd93b11555c",
+      "diagnostic-metric-e14fb8bc83ce7ca601ca54f5",
+      "diagnostic-metric-51608df4618e7f59f21f0f11",
+      "diagnostic-metric-06f6f8e83ab9997f9e2dc59b",
+      "diagnostic-metric-63e4f456e07a85fa4d221c33",
+      "diagnostic-metric-b3467c7843eb62a3838c7398",
+      "diagnostic-metric-e20c6f45b944cc5b0d40b684",
+      "diagnostic-metric-348deac0e2c9cf8dddc75813",
+      "diagnostic-metric-255adb8db9a4367da5265b9f",
+      "diagnostic-metric-1ba1baaa6d564090c6068270",
+      "diagnostic-metric-5eb07ae63b85000dfd4cad14",
+      "diagnostic-metric-122d68304aeda8e9f0ba540f",
+      "diagnostic-metric-fb0d1c22ceed7de4bf423708",
+      "diagnostic-metric-123b54bcd4980dfb8a95a18f",
+      "diagnostic-metric-f732b0f3e4efb5ff41d815fb",
+      "diagnostic-metric-a4e74c981acd7cffecc65e23",
+      "diagnostic-metric-3f1b1d6743ca16278e596c72",
+      "diagnostic-metric-3f941f20677d1a79df39bd86",
+      "diagnostic-metric-e2d4d09f361a7032fdecc4e3",
+      "diagnostic-metric-7f749dcbfc3f26b4d1bd4365",
+      "diagnostic-metric-fbdf10f17add5941ad42c2c2",
+      "diagnostic-metric-24af6b70f4b97a770087de88",
+      "diagnostic-metric-0fbdf53f2a21934c6b9bd131",
+      "diagnostic-metric-6760d435fc9950363be85f6b",
+      "diagnostic-metric-6c217b794692a9d8d8508c5d",
+      "diagnostic-metric-8f67834df060d5f210ed2e6d",
+      "diagnostic-metric-209b65855341714e764a6e36",
+      "diagnostic-metric-958568a1befa0e6388dbf228",
+      "diagnostic-metric-71b8a17ab8fec1e0af93368e",
+      "diagnostic-metric-aa3f99ea9f01599ee36f4ee5",
+      "diagnostic-metric-4b2db846337cd79c1278ca47",
+      "diagnostic-metric-bc1ab34915c0fb7b682ff090",
+      "diagnostic-metric-39b3afdfd69cab2b2751b4e9",
+      "diagnostic-metric-dc5f9fc630a0b8bfea5cb9b9",
+      "diagnostic-metric-81a1c2c90ef9881ad35173b9",
+      "diagnostic-metric-941d61cca0f5282ae2d7d0d7",
+      "diagnostic-metric-73cdf2532ecc92bf491ee908",
+      "diagnostic-metric-08ad24e5fe4c76bb3646d89c",
+      "diagnostic-metric-e55d9f3d3e523d13f4b2e13a",
+      "diagnostic-metric-eba36a1b2a410ab4cbcaff0a",
+      "diagnostic-metric-c6bfcd7d7634444142b9f4d6",
+      "diagnostic-metric-1e66d3eb8fa1e4652ba5f188",
+      "diagnostic-metric-233e268fdef99038424b23c7",
+      "diagnostic-metric-1f030c12d02131d76c8effb8",
+      "diagnostic-metric-9d5f4d49c983aa82c92bc7c7",
+      "diagnostic-metric-396d5a92d38b8613eea41c65",
+      "diagnostic-metric-d8287fb9100867fd18d058b7",
+      "diagnostic-metric-244303dad8f41a4ea411d02a",
+      "diagnostic-metric-d192b76b3f0bf3d1a090f6eb",
+      "diagnostic-metric-ce71cf441ee4002e2d177c66",
+      "diagnostic-metric-c162269a5e575e3421f65d17",
+      "diagnostic-metric-7a6d0a4ff5ba14a64b7cd43e",
+      "diagnostic-metric-472648cdfcf96d83dacf5b31",
+      "diagnostic-metric-72138d492ad68bb572345ead",
+      "diagnostic-metric-6243890c1f1b7963bc3b4946",
+      "diagnostic-metric-5be2b3a32024818fab02b530",
+      "diagnostic-metric-6d508e142e859e4759ce13ec",
+      "diagnostic-metric-512a60393e09b0f8af840792",
+      "diagnostic-metric-e9056731c1d84e7682914630",
+      "diagnostic-metric-04c4217f39bee196f4dd9182",
+      "diagnostic-metric-f9fa003d0893a8098d018fe9",
+      "diagnostic-metric-f348876de11277e377bb2dbb",
+      "diagnostic-metric-f5a11f631df8b3cdcde53e14",
+      "diagnostic-metric-606948c0aeb4b4d4562f5fa8",
+      "diagnostic-metric-92ce57b2df59e53b0b240329",
+      "diagnostic-metric-2ce678aee586a8a1c6604dc1",
+      "diagnostic-metric-eca1f3d405493948c1c9cd4c",
+      "diagnostic-metric-309bde4ed73789688bf3fbb9",
+      "diagnostic-metric-6c4aed5bd264ca5d8b6ba5e9",
+      "diagnostic-metric-514ee468b165e4a8f1228867",
+      "diagnostic-metric-134267071ee9d52b374bb95e",
+      "diagnostic-metric-fc870315d153e6f82210525e",
+      "diagnostic-metric-181a0bbd2d6acfe668a46b33",
+      "diagnostic-metric-962c08ecead04d41ed1633c4",
+      "diagnostic-metric-3d365ebd30bb5c3aec5c9102",
+      "diagnostic-metric-1d5d8297e1acc9b2c41f5d8f",
+      "diagnostic-metric-a47fd7cd180527a61b013d14",
+      "diagnostic-metric-2d9144eb3b2fdc4c65a171e2",
+      "diagnostic-metric-f02e4cc2e5dd4363ce7aafb3",
+      "diagnostic-metric-bcb15161d6d48467cb739dca",
+      "diagnostic-metric-87ac8fca141fa112538365aa",
+      "diagnostic-metric-f6d7b10db3beccb35d6aa3c5",
+      "diagnostic-metric-2285719f6ed8ae8a544139dc",
+      "diagnostic-metric-7f64ec440fe3547f4bf46ad1",
+      "diagnostic-metric-9cd1d38e2f8c4ca0735e160d",
+      "diagnostic-metric-90fc1a32882decfb483aea36",
+      "diagnostic-metric-6c6be397eb12b4958bd356b5",
+      "diagnostic-metric-700836b77350ca2c2f9de103",
+      "diagnostic-metric-a13f3f579906592d20db4e4d",
+      "diagnostic-metric-a28c63a8581b7b19cab17785",
+      "diagnostic-metric-ce4fdf64e2c4cf1dc8ef8329",
+      "diagnostic-metric-7616267e9d7ff76b6b52659a",
+      "diagnostic-metric-eee6cffcc5bd031627e74aa5",
+      "diagnostic-metric-06711f996bb9c955ac290da4",
+      "diagnostic-metric-78351bf00a5c4593809d532f",
+      "diagnostic-metric-211fe2081f3971bd4214e652",
+      "diagnostic-metric-762aaf5c259af1dcc28dae8b",
+      "diagnostic-metric-3db2ff175f9014f67c4938be",
+      "diagnostic-metric-b783ee26b8617b1d729d3eae",
+      "diagnostic-metric-1f88c98a2cbc85c2f2e23662",
+      "diagnostic-metric-6a5428ce35eedd879defb5fc",
+      "diagnostic-metric-538abc3b74e51f94f19055a3",
+      "diagnostic-metric-66a80adf9dd9a2601b7826d5",
+      "diagnostic-metric-e817af34159a918de177f75f",
+      "diagnostic-metric-9570fc4a88ee4f58763e84f1",
+      "diagnostic-metric-f629260ec41de27f042895e6",
+      "diagnostic-metric-4fefd317a1d2b3d62811bb69",
+      "diagnostic-metric-c1700bf64efe4d55a3a43b55",
+      "diagnostic-metric-c2bedd547c4baf86f411f11c",
+      "diagnostic-metric-3032f4ad59aec6522f618c26",
+      "diagnostic-metric-be2b628cbf03b179613f4593",
+      "diagnostic-metric-db0877a69d730b3ff151f3c3",
+      "diagnostic-metric-49d6f1e019b51f9ca5ba9fc2",
+      "diagnostic-metric-33d45c2cfe2c0438625e5624",
+      "diagnostic-metric-168773830dbfb0593182d539",
+      "diagnostic-metric-46bcea046d9c76a3b9ff5797",
+      "diagnostic-metric-1bc20031498f94f3325638bf",
+      "diagnostic-metric-ff6f13aed3455e0d4de857ca",
+      "diagnostic-metric-251db7fe053abd1f421cb19b",
+      "diagnostic-metric-33ca0ddd388b339ff217894c",
+      "diagnostic-metric-dc21bdae79d7d45c17674104",
+      "diagnostic-metric-a99c1829afc426425265bd9a",
+      "diagnostic-metric-f683fa647845999d792debcd",
+      "diagnostic-metric-95b802ed3f54df4dab01831d",
+      "diagnostic-metric-f9b9d0c2119e563992d415f7",
+      "diagnostic-metric-2087768bc66e572e507a3258",
+      "diagnostic-metric-52ce1d77c5dfe4432e84d123",
+      "diagnostic-metric-70cd0725e74e108b363d4291",
+      "diagnostic-metric-1e3ab2e6adc21a0ee7ba3344",
+      "diagnostic-metric-d8c2c80cced3ff6259cdf490",
+      "diagnostic-metric-4b634bfe6b753f0da3629a95",
+      "diagnostic-metric-00c35450c407225ab5008f1e",
+      "diagnostic-metric-54f4af7ed733ff8292489c47",
+      "diagnostic-metric-1fbb768d0b7e1339a6c3c5c7",
+      "diagnostic-metric-608d482311e4143aafb13582",
+      "diagnostic-metric-627634bf294164c41e75f660",
+      "diagnostic-metric-a3af0b1ee84f0e92593fd0ec",
+      "diagnostic-metric-8e324dbb70137af84032f7e5",
+      "diagnostic-metric-ed8934554a972841241d38a7",
+      "diagnostic-metric-de6faf0af28b7d843d6d4863",
+      "diagnostic-metric-56aba927ff869d74f9603896",
+      "diagnostic-metric-b9ee31b2f305e8cf8edbe0c3",
+      "diagnostic-metric-8d18b754f48e9fa13ed414ae",
+      "diagnostic-metric-fbe5c70a0fd26be3eec4003f",
+      "diagnostic-metric-bef6223f6264861a51dd3ffd",
+      "diagnostic-metric-c4ea229821edcf1545202f25",
+      "diagnostic-metric-5d99d724409baf7635e15afa",
+      "diagnostic-metric-1a35275cf7f0ffe1008a0c5a",
+      "diagnostic-metric-99e593d8ef12e3c0ee4d47fc",
+      "diagnostic-metric-93b6afd6476ec34a34e713d4",
+      "diagnostic-metric-c87e78c223caad73ca68726a",
+      "diagnostic-metric-b3002ec3aa51cb4456127cf3",
+      "diagnostic-metric-bd2a653ff295bc067b22bac1",
+      "diagnostic-metric-cd98a47cebbf6774132699ba",
+      "diagnostic-metric-1c2d126303e9db24eb3c3507",
+      "diagnostic-metric-8d72491c8f758797b13cd837",
+      "diagnostic-metric-4ba598040fa5942135aec9fc",
+      "diagnostic-metric-c20c704f323f807dc53a35ba",
+      "diagnostic-metric-9e1684d1361d0b95ea04f809",
+      "diagnostic-metric-f73b3db0cc675abe50d9b1e7",
+      "diagnostic-metric-a566e890936ee5121bc787fc",
+      "diagnostic-metric-a3998585bde991502b405d0a",
+      "diagnostic-metric-d7f043ea98bb1655e993dff3",
+      "diagnostic-metric-f1bc751bda5815372bde3519",
+      "diagnostic-metric-2923283c41be099b73fb7fec",
+      "diagnostic-metric-19dea64e48b7933a0463ae98",
+      "diagnostic-metric-72c8cc87e73157ecd1ec3df0",
+      "diagnostic-metric-4a4bc7e7a5f652280ebae26c",
+      "diagnostic-metric-4d60d7024d26db7444b2d076",
+      "diagnostic-metric-f40373433c337504369b6a61",
+      "diagnostic-metric-bbae39f9d27cc01350aefdda",
+      "diagnostic-metric-ffc65a920ab232ce74bee4ac",
+      "diagnostic-metric-4541ff7a3a84fb788a979dd4",
+      "diagnostic-metric-bffbbc32ebaa47da3a26daec",
+      "diagnostic-metric-899b8174ef1cc463d3531d2b",
+      "diagnostic-metric-e72969dffbee459e54a781ad",
+      "diagnostic-metric-a4bba2dadd846b96dd8edd8a",
+      "diagnostic-metric-4f9dc717d55445d6caaddddc",
+      "diagnostic-metric-10273fca499d864729683399",
+      "diagnostic-metric-e89b2ef5e0914fc41e302220",
+      "diagnostic-metric-79d72f63b1c7b1102a4728d5",
+      "diagnostic-metric-0a9262d8a039496f4ee640c7",
+      "diagnostic-metric-f8997bcd977ee12dcd08f1b3",
+      "diagnostic-metric-4578bc64e23e31500eea00fb",
+      "diagnostic-metric-83833c1eb753cc911e5426fd",
+      "diagnostic-metric-cb612b24abae5278597b42fa",
+      "diagnostic-metric-5f6acee4ad04d25527df911f",
+      "diagnostic-metric-0722ede9c464f5353454bb4e",
+      "diagnostic-metric-85b683bb4d15c61f73c7012b",
+      "diagnostic-metric-0a86bf9a84eeff1321a8be04",
+      "diagnostic-metric-042f37864c67d7b571779cb3",
+      "diagnostic-metric-8ddd684f03e4f443c2193569",
+      "diagnostic-metric-ae6d9077b28265eeb41b8632",
+      "diagnostic-metric-ab89028b52d3ea039d51164c",
+      "diagnostic-metric-07138f5aff8b855ac6488bce",
+      "diagnostic-metric-b9c085a061198a1a23516d61",
+      "diagnostic-metric-85a5bd99c66e61620c818ffc",
+      "diagnostic-metric-9e900833efe89555f81d3614",
+      "diagnostic-metric-ec791a0c4c022ca4f59dcf19",
+      "diagnostic-metric-b89f7da6007704d97fd06b1c",
+      "diagnostic-metric-0b38e6d00d77557f3068b16e",
+      "diagnostic-metric-4079d03ae92c292c3e280964",
+      "diagnostic-metric-2c8c337fa9a694ae16799b91",
+      "diagnostic-metric-d5f0dd776759a94d8645f11f",
+      "diagnostic-metric-77c3e5e9a2a3aa32d3c86fd1",
+      "diagnostic-metric-419f946385614572ea54f2a8",
+      "diagnostic-metric-7f8d90770dcc8ae917b3b8ad",
+      "diagnostic-metric-d0472b099a879e7a72aa8040",
+      "diagnostic-metric-c724036d54161253fc0254ef",
+      "diagnostic-metric-a90200a9af2c03bd660c3380",
+      "diagnostic-metric-bc46ff8a44e97ac284cb50b4",
+      "diagnostic-metric-7b0a8259d724f14f5f43adfa",
+      "diagnostic-metric-bc237379136b9e3a162ec145",
+      "diagnostic-metric-de9570a4f4af6e3aa9ef7b3b",
+      "diagnostic-metric-efdcfd79eafa81101ea46e41",
+      "diagnostic-metric-8962cb1b2af4bdd59f0b711c",
+      "diagnostic-metric-3530866244170daebde1906e",
+      "diagnostic-metric-b0e1cafee62ed5494a09c536",
+      "diagnostic-metric-9f2585635d7c3d8b11c51e9e",
+      "diagnostic-metric-08f7e788ed65878ad6c6ac67",
+      "diagnostic-metric-84254e340fc3dbbac0d6f24a",
+      "diagnostic-metric-0bc13423a4bc4fe1e6272906",
+      "diagnostic-metric-fee9af8224b54380394448d1",
+      "diagnostic-metric-a88c5a9149c0f7c2cd62076c",
+      "diagnostic-metric-53e4a265fb2cb595049dc61f",
+      "diagnostic-metric-249a834adae542bca7fbb267",
+      "diagnostic-metric-93cb0015d657e9db8c8301a5",
+      "diagnostic-metric-44b18fea59b4cdf471f2e781",
+      "diagnostic-metric-8c5541f8debdfe115434edfe",
+      "diagnostic-metric-d1c1265916b74bc97c733bd3",
+      "diagnostic-metric-3bebd14a596ea793613f42fc",
+      "diagnostic-metric-7b8f77371fcbf5ff4f00340e",
+      "diagnostic-metric-16d52588dbeeec2086653029",
+      "diagnostic-metric-e9e089e8b8b13f09720443c8",
+      "diagnostic-metric-bc85c4322dcac5dd6d6ad04e",
+      "diagnostic-metric-f73f15a4147110d4c3bae4c8",
+      "diagnostic-metric-370858b336c59968d7e0dc56",
+      "diagnostic-metric-e6d182087a35ff96e6f3d571",
+      "diagnostic-metric-6f219df0ae2b63f8a6b7b698",
+      "diagnostic-metric-e3c8e88653dd79fec0ae39ee",
+      "diagnostic-metric-6f6e1a0f11c1121ec40ca1e7",
+      "diagnostic-metric-d3c95ac70b4764cbec6173a7",
+      "diagnostic-metric-b19576f53f6d7153d33581ff",
+      "diagnostic-metric-06347c58602be89db9650230",
+      "diagnostic-metric-d0b9e110dd9d815f19a89c49",
+      "diagnostic-metric-34e243bcaa6d2d30e062e777",
+      "diagnostic-metric-e9ef916364873b3cdb7e05c5",
+      "diagnostic-metric-b6a68c262b1225b6089d443f",
+      "diagnostic-metric-4bbec5e44e26968757bd6c3b",
+      "diagnostic-metric-58d93339be39149bc2d1d60f",
+      "diagnostic-metric-eae44121e56f597d79d42b96",
+      "diagnostic-metric-2d6eb192fdce173d415fa3d8",
+      "diagnostic-metric-da4a888a7b98a2641d21ed31",
+      "diagnostic-metric-26531814b3235ad7ab29958c",
+      "diagnostic-metric-a27090e74871d7f7a42e84a1",
+      "diagnostic-metric-9640202798de5d77b549a085",
+      "diagnostic-metric-cc8fd73376ad14b510ce2d22",
+      "diagnostic-metric-756db21c0703e7d78aae3bc7",
+      "diagnostic-metric-22147ad4cb50777a1517fa49",
+      "diagnostic-metric-c298c701c72cedd7a7e42005",
+      "diagnostic-metric-cc7f90e34085c3d58b8f6b89",
+      "diagnostic-metric-b96f8c8a712746ab7a1980de",
+      "diagnostic-metric-e5996b79438922036238c837",
+      "diagnostic-metric-89de1787b3c3056812903fca",
+      "diagnostic-metric-5f145cb9bc73ea94ac45e03a",
+      "diagnostic-metric-63edc261d77da3fc77f56428",
+      "diagnostic-metric-0b8d6cf385c9c36ebd751853",
+      "diagnostic-metric-93e5b3ed654d80ddbb5e9ba7",
+      "diagnostic-metric-998f2375c24824df483640b7",
+      "diagnostic-metric-c5129cdc80b693afac274147",
+      "diagnostic-metric-34d5f684851c333f40158e35",
+      "diagnostic-metric-d9875857869c426a114bae31",
+      "diagnostic-metric-a69e2767c2b3621370779845",
+      "diagnostic-metric-400a10eaa5597419b4fc3aa0",
+      "diagnostic-metric-f5959ca2af4acf382fd2056d",
+      "diagnostic-metric-86075cf91558c0db53565bde",
+      "diagnostic-metric-7624de1043be75aa0cba6060",
+      "diagnostic-metric-a274c15787d45827583455f2",
+      "diagnostic-metric-667616b9c140872fe7748fe1",
+      "diagnostic-metric-7df687702f417da04adae8b7",
+      "diagnostic-metric-25b730d2efb2ed816abeba17",
+      "diagnostic-metric-6daca25374db94e651782195",
+      "diagnostic-metric-8efb86081abf3051e0a4a361",
+      "diagnostic-metric-a004bb437a27158089ca81dd",
+      "diagnostic-metric-cd68c4fb088f8273263cdd82",
+      "diagnostic-metric-d661c1b5e4e4e1d5828549fd",
+      "diagnostic-metric-42b0cdaba7a78fd4451538e5",
+      "diagnostic-metric-a6dbd2b539c5986a419b2024",
+      "diagnostic-metric-26fb7b0cf8431cfcde2f2a1b",
+      "diagnostic-metric-fdcef5e30854b370d03675d6",
+      "diagnostic-metric-f229f8cc50fca176081f62b7",
+      "diagnostic-metric-17c1776b7822a9657e0a546e",
+      "diagnostic-metric-5e08e9211bc149fb29ad77a4",
+      "diagnostic-metric-b762044550927062bcec71a9",
+      "diagnostic-metric-6eec33f9aeaa84e7639ed4dd",
+      "diagnostic-metric-9b642df1afe7880c726821fa",
+      "diagnostic-metric-ea32d19bf44133928a753dd6",
+      "diagnostic-metric-9c7118efc862382658139909",
+      "diagnostic-metric-9eb53125ec8656ccb6b02b77",
+      "diagnostic-metric-7e9016591a21384a52249f11",
+      "diagnostic-metric-5b4f0ee4ab05e20462099a9e",
+      "diagnostic-metric-85aa6f925671513ecfb8e7a3",
+      "diagnostic-metric-590501fe67d900fbf3b2fb66",
+      "diagnostic-metric-15ca7a25dec0c1b4dbfd3426",
+      "diagnostic-metric-ba8fc1c9d88e525367f59b90",
+      "diagnostic-metric-0dbe192d9db0fe32e7c43241",
+      "diagnostic-metric-e293596d8bc04e7d6947f4a7",
+      "diagnostic-metric-5ae457f5f7924f713f5d9a7d",
+      "diagnostic-metric-c58742df39282168006a6426",
+      "diagnostic-metric-21f85e345624f8f642340d50",
+      "diagnostic-metric-18e81e86dbdd11cee4186eff",
+      "diagnostic-metric-5d342b36f694918b5eeb0f0e",
+      "diagnostic-metric-2f5f7561f0f498928dcd1f29",
+      "diagnostic-metric-c6ea5c205a24481259be4be3",
+      "diagnostic-metric-9856b7c1cc4f386ad8385427",
+      "diagnostic-metric-92db2ab0a2009314e337106e",
+      "diagnostic-metric-541680b1e11121e66b1ec55b",
+      "diagnostic-metric-77bc9002bf86f0558d98ecfa",
+      "diagnostic-metric-8ec0530b2ae14543b017fce0",
+      "diagnostic-metric-dc1503cf9f4c796e50ca05a7",
+      "diagnostic-metric-28a3e99fecae6b87b531e605",
+      "diagnostic-metric-cb9dbb34fd58aec4f5e0cae7",
+      "diagnostic-metric-fbcf715d848af207f56f1834",
+      "diagnostic-metric-f29901206421a5aec16bfbf2",
+      "diagnostic-metric-1cdf49707e4f679ebe83e118",
+      "diagnostic-metric-d7050da975247bf53b66ebb1",
+      "diagnostic-metric-d7d209d060d3d015c60b2caf",
+      "diagnostic-metric-2676b6a00c820e0e9a7af515",
+      "diagnostic-metric-068da161ab8d8ad08a608fd2",
+      "diagnostic-metric-1dffc53492015ea3bb8a3ddc",
+      "diagnostic-metric-58d9733123c84b53496f8a4c",
+      "diagnostic-metric-ae99baac31f1383b971bc112",
+      "diagnostic-metric-f4d9bd1abedbecb77a3ba2b5",
+      "diagnostic-metric-57eeda5c87bea7767f6b7955",
+      "diagnostic-metric-f886f44bec28cebad44e2770",
+      "diagnostic-metric-789b3d1851761ec2c9f0b32e",
+      "diagnostic-metric-76efa5d4d832c9864db332bd",
+      "diagnostic-metric-cad1e494f555a7542d04dc27",
+      "diagnostic-metric-6e7483b58c0abda017ad3707",
+      "diagnostic-metric-32b9529bc2b51906f255da92",
+      "diagnostic-metric-955c75d2f6283ee5065275da",
+      "diagnostic-metric-0bfef84109323c73b847fdd6",
+      "diagnostic-metric-5b57d944e89f606dbd78f6c4",
+      "diagnostic-metric-725840fe2459fa463baac0fb",
+      "diagnostic-metric-e4ef02b479bb996ab20c0898",
+      "diagnostic-metric-f9feb8f0826648ef5c998e3d",
+      "diagnostic-metric-df30f84bf7a6ef36317b18e2",
+      "diagnostic-metric-65ae179d8e73f2f1905eee69",
+      "diagnostic-metric-65a90b8b3a2413da11b7f823",
+      "diagnostic-metric-e474478bbc521d971db7b80f",
+      "diagnostic-metric-16088a48cf5162c095987cee",
+      "diagnostic-metric-0d8d6df71ec5ef3a311f1089",
+      "diagnostic-metric-530cc75250da86a77e4f2277",
+      "diagnostic-metric-c4a99f0feec4f856e2858227",
+      "diagnostic-metric-75d533261a1cd3001eaf83f3",
+      "diagnostic-metric-6f308a9edda9ce54e03f20c7",
+      "diagnostic-metric-0ab5e397381d792acbc8bfe2",
+      "diagnostic-metric-cb4168cd1d901f5fd7263a7b",
+      "diagnostic-metric-4678585cc8f86d881e9682be",
+      "diagnostic-metric-775e57a47bc787ad887d47f2",
+      "diagnostic-metric-5adc9d97625e552c5b8474b6",
+      "diagnostic-metric-e4cc15c60eb9d5d004ffa44f",
+      "diagnostic-metric-d721643ba7e2bce351fc0bfc",
+      "diagnostic-metric-b72ccb57f70d1d085f73c8da",
+      "diagnostic-metric-511754f9a1c405e5c7ca9ad2",
+      "diagnostic-metric-b79449e226e1d1e35b11544a",
+      "diagnostic-metric-75237bea1af81360c2ca303c",
+      "diagnostic-metric-78296eda110475f9d7520c25",
+      "diagnostic-metric-8067647e1a26bcf71af1fc46",
+      "diagnostic-metric-f287710f768b70d934b68ccc",
+      "diagnostic-metric-a12be5ec2c8ed345a45609fd",
+      "diagnostic-metric-17e0a85e001d0d0d758fe412",
+      "diagnostic-metric-e964766b9b843c544a0fb8f5",
+      "diagnostic-metric-386043d7f673f4770df8b9e5",
+      "diagnostic-metric-47e27ec908328ed25f535497",
+      "diagnostic-metric-dbeab3c61beb0f35e4a6b510",
+      "diagnostic-metric-84fb167143dc355f2793d5f3",
+      "diagnostic-metric-4a2c4afee501e5606529b514",
+      "diagnostic-metric-579c1f7ba5a3024ece535d5f",
+      "diagnostic-metric-050fb518ebc2188dac566ceb",
+      "diagnostic-metric-ac7923fb640c7cd31d78949f",
+      "diagnostic-metric-215d053c6f378d6ca8eb12e2",
+      "diagnostic-metric-4dacfc4b6a25aba5933193fa",
+      "diagnostic-metric-8b42dfe08a7d9dbeb77b08e1",
+      "diagnostic-metric-95ce2cc07cd17a879dd7ca39",
+      "diagnostic-metric-bd36bafaed94cc8ced8aa647",
+      "diagnostic-metric-eb170782cdad914ccfdb21f4",
+      "diagnostic-metric-94a826968fec326f5e1f7859",
+      "diagnostic-metric-ef5491f530b8bb146d67d417",
+      "diagnostic-metric-3653e9c81cd271049db18b6f",
+      "diagnostic-metric-eec53f0a11bf912d984883b8",
+      "diagnostic-metric-9e04d7cff06508616b30cb58",
+      "diagnostic-metric-1ab03ce4db1c7894142883f9",
+      "diagnostic-metric-5a4afc4c93dad2940949ea41",
+      "diagnostic-metric-3bea758065ac5d5423c7a02e",
+      "diagnostic-metric-71f01dfcc2bad858fb7f9fb0",
+      "diagnostic-metric-b21c3641e176a5e91d05af63",
+      "diagnostic-metric-a29992b62e65ede8269fbbe2",
+      "diagnostic-metric-1f965fa285baee4c03e3ac21",
+      "diagnostic-metric-4b48441c3189ee639ac3f18e",
+      "diagnostic-metric-c0ae7bf69a2b590669fa420f",
+      "diagnostic-metric-6725b932e324ddfd758f9ef2",
+      "diagnostic-metric-8486e98b7db05e37615fbfda",
+      "diagnostic-metric-f496415b04db3e92e2a4fcff",
+      "diagnostic-metric-4c28e89bc70552e7d4b228fa",
+      "diagnostic-metric-2ae4daeceb44553b5321cd45",
+      "diagnostic-metric-8f1c3712544d170324a51edd",
+      "diagnostic-metric-a1c10d92bc7a72135b83e8f6",
+      "diagnostic-metric-63fa3de82b22c25d182d784e",
+      "diagnostic-metric-978dfdab11e5ad1e156e87fa",
+      "diagnostic-metric-b62fd46c3fd459508aeba815",
+      "diagnostic-metric-1fb2ace64f4c2dab0b6a5960",
+      "diagnostic-metric-a031ba8f6e732f803866c291",
+      "diagnostic-metric-35d0efbcd6a59f8159a32544",
+      "diagnostic-metric-b723633de1406d573811bb77",
+      "diagnostic-metric-ee71a8d50e21f43d3d84fcaa",
+      "diagnostic-metric-f35164bb4c51ba0fa68571c7",
+      "diagnostic-metric-77119c5ba5e9c53ec351c8a8",
+      "diagnostic-metric-eb04aaac3caac9d8527b2bf3",
+      "diagnostic-metric-c32183a86af9a2c0c4ab67e0",
+      "diagnostic-metric-c124b4b5a52cc304ee4d336f",
+      "diagnostic-metric-853f8ddc1efcb00df07c7111",
+      "diagnostic-metric-bcf9acff262180f053eff14b",
+      "diagnostic-metric-de80a91d75335e7bd2534529",
+      "diagnostic-metric-262727f0f78764064a3866c0",
+      "diagnostic-metric-9aad37885e3d86d07e18849e",
+      "diagnostic-metric-8e6f955fdb2fdcc98df6d9ff",
+      "diagnostic-metric-4f5ebeafb0f30e1f5f4fa1c8",
+      "diagnostic-metric-71f27a8dae53fd4e03525e46",
+      "diagnostic-metric-1f1b0e559da42eb3ad7673b4",
+      "diagnostic-metric-66cf6a58849752157c34fb22",
+      "diagnostic-metric-a2a99558826aa46d5549132d",
+      "diagnostic-metric-eec1a42b5132439c597b0e2a",
+      "diagnostic-metric-385b232c1d32a50c5e047875",
+      "diagnostic-metric-bef432f482e4c89e36199d36",
+      "diagnostic-metric-100caac0fa65e2362b4e0464",
+      "diagnostic-metric-17d7b446b56ef0d98d7978c6",
+      "diagnostic-metric-f9a3e0b1f5af6ed21fbe61e1",
+      "diagnostic-metric-c51e20ccbf7a1f162090527c",
+      "diagnostic-metric-a11ab49dc36290c365cd889b",
+      "diagnostic-metric-c711fa5877dbf047631150aa",
+      "diagnostic-metric-1366aad0199116b3d5185a3c",
+      "diagnostic-metric-d5fa42eaa06d5b2b848af03a",
+      "diagnostic-metric-6624c49bdf55940992875726",
+      "diagnostic-metric-5b4555e0ab11fc9c211cc228",
+      "diagnostic-metric-adfba8b8caa29705b78b6686",
+      "diagnostic-metric-eccf159ed5e32e302ec6fd30",
+      "diagnostic-metric-77d4ad1c3e46cc4799e9a761",
+      "diagnostic-metric-02a9a09be20ff621f3da2a5e",
+      "diagnostic-metric-c7cd1650eb097bbe766c3fec",
+      "diagnostic-metric-ad99bc2c64d79c84a9655ba6",
+      "diagnostic-metric-29f37b53178868d39f94296c",
+      "diagnostic-metric-468063c5d207f3696e32e142",
+      "diagnostic-metric-dab3817c5e3b70d2056a3cd7",
+      "diagnostic-metric-a6297aa333fd2c0c346109a4",
+      "diagnostic-metric-eb7c00cfd5ab990cc2ac0c22",
+      "diagnostic-metric-ca3bd38f4261dba724c10566",
+      "diagnostic-metric-bac1474ec0474d1c11e46611",
+      "diagnostic-metric-2acdc395dfaa469782f9369d",
+      "diagnostic-metric-c20c7605fab0d6a1f9b8e627",
+      "diagnostic-metric-01738b4c7931d15abc9826f5",
+      "diagnostic-metric-8f048af0dd1d7cf8793457aa",
+      "diagnostic-metric-4bde4f0fbe578b893fff64d6",
+      "diagnostic-metric-47b7bfdd596ecc59da29b79a",
+      "diagnostic-metric-f155dbdab5251244caa65992",
+      "diagnostic-metric-8d9e715bc828d63403d8b5a1",
+      "diagnostic-metric-bbf0329ff42dd4be3f8a2a04",
+      "diagnostic-metric-f85e7b665250853fbb5bc8be",
+      "diagnostic-metric-d4494d6d558e43355a27e3a4",
+      "diagnostic-metric-a07af4570e861f9fd3bc8e0c",
+      "diagnostic-metric-a57954cc9ea48dfeafc46678",
+      "diagnostic-metric-57e48ebd7ace08bfa1eacc84",
+      "diagnostic-metric-2efea0084ff2cfde7b0c6769",
+      "diagnostic-metric-f55466a746bdab6bab6cd1db",
+      "diagnostic-metric-64a9892e9166438737633fd6",
+      "diagnostic-metric-1ccb268ad935e0cd95f18870",
+      "diagnostic-metric-3ef72e2f282a3a3737b00d4c",
+      "diagnostic-metric-a9590332dbcf6b2f9c854f5d",
+      "diagnostic-metric-ea573f06ee17c79586e6f58d",
+      "diagnostic-metric-2212dde72e666d8648e66a17",
+      "diagnostic-metric-fd851d1a9536f3c22336e49c",
+      "diagnostic-metric-28d27be99fca100b62affd0e",
+      "diagnostic-metric-ee3717726c6d4a4170096e2e",
+      "diagnostic-metric-eb349713b7304717c790d1a0",
+      "diagnostic-metric-8564fd7c65f0ba12c884a0a9",
+      "diagnostic-metric-e39f722dec18b550cb159f8e",
+      "diagnostic-metric-5c45a3abac53bfbabb1cbd18",
+      "diagnostic-metric-a6ac7803365e8a52a27a8495",
+      "diagnostic-metric-c5f22a8d3514f6e341e24823",
+      "diagnostic-metric-46dc917314390ce3d1212ace",
+      "diagnostic-metric-13902ee82ea7bed2f87c3819",
+      "diagnostic-metric-5eb59cc96f44268a5693b1aa",
+      "diagnostic-metric-53a9261f3e235f305b7a3c85",
+      "diagnostic-metric-d1103c14e9e12ddcc3bda276",
+      "diagnostic-metric-56c90c2d82688fb2cb0a2493",
+      "diagnostic-metric-e2ed802c58a0ddadcbb9cdcf",
+      "diagnostic-metric-d4a3b3dfc242525745f523d4",
+      "diagnostic-metric-0a0bba7b2c0e94530c60cfe9",
+      "diagnostic-metric-ead66092df6d8412319fc18a",
+      "diagnostic-metric-7803c4b41acff4134b0023dd",
+      "diagnostic-metric-5a45cd34dacc1ae605543af0",
+      "diagnostic-metric-1d7e08a1deaa37eaf9db9dcd",
+      "diagnostic-metric-43a6dd8fed6a22d96a5f5894",
+      "diagnostic-metric-bea792a6c0e480147366a96c",
+      "diagnostic-metric-ae9fbd3c2eee11503440a1f1",
+      "diagnostic-metric-4d18dcf7c8e67ed6516f4f2a",
+      "diagnostic-metric-3a6d8797040ee0531428adee",
+      "diagnostic-metric-08f6fcb841ddfdaa3f08f7d4",
+      "diagnostic-metric-b9075a9e93690774552ab8b3",
+      "diagnostic-metric-5639e2e2d349cf1777ddb5e9",
+      "diagnostic-metric-1302d5e02680a1f4fc30ee6a",
+      "diagnostic-metric-ae103191eda1a9297e5d19e1",
+      "diagnostic-metric-c160170275cbebb72f859933",
+      "diagnostic-metric-f83783d9d7529f76cc712128",
+      "diagnostic-metric-8e6dbdd9f7bd396220546c13",
+      "diagnostic-metric-f51cba87e3d315c3964c7701",
+      "diagnostic-metric-ff23db3ab9e191c6eedd7903",
+      "diagnostic-metric-a50eeaf3e46cad836b28d508",
+      "diagnostic-metric-c7ea88778f9a1eda206f0b26",
+      "diagnostic-metric-ff78bb769d070958a0692ff8",
+      "diagnostic-metric-c3f7020b6d5550022bea3c73",
+      "diagnostic-metric-90d0af4b95f9f23d0d3f41bb",
+      "diagnostic-metric-bb25755964d515f8384e216a",
+      "diagnostic-metric-b64907a1f7ef8a15b7b5b898",
+      "diagnostic-metric-35e4c93e8e738437ad0a94de",
+      "diagnostic-metric-652bcc812d78d782cbcaff00",
+      "diagnostic-metric-550049485b6ee1a383001f32",
+      "diagnostic-metric-458d19cf8ddb16e07bb5f1f4",
+      "diagnostic-metric-45be633293380cb2c10dc8a3",
+      "diagnostic-metric-94f5974b05c9f9c6e017af5e",
+      "diagnostic-metric-32de8e304a397ae26a02392b",
+      "diagnostic-metric-6a83cff8e619bb0acc9c1d53",
+      "diagnostic-metric-ae89afc98ca8d857f98ad965",
+      "diagnostic-metric-888c86ba0a17308220f28f0d",
+      "diagnostic-metric-4f7a090a875587eec10b5f41",
+      "diagnostic-metric-69a3f294564022b907f0d86f",
+      "diagnostic-metric-246f8824ba840591336227a6",
+      "diagnostic-metric-886475ef52f0d79e97188eb5",
+      "diagnostic-metric-9e6e791a7e3a34020cd7e016",
+      "diagnostic-metric-1c9f753e5ff84bdf48513b34",
+      "diagnostic-metric-9aed64c6df1591c8a7e64b5e",
+      "diagnostic-metric-77fc46a3b7171e6cae2f7006",
+      "diagnostic-metric-5447492d6e508599cff64e36",
+      "diagnostic-metric-119f3f8771a4726501a1e8b9",
+      "diagnostic-metric-9537aac1afac5d6ffe613277",
+      "diagnostic-metric-9bd2db2bb5de3a2e6dd86fb6",
+      "diagnostic-metric-5357163184cfeebd0b9250df",
+      "diagnostic-metric-58f97123c9e5045bcf2aa57d",
+      "diagnostic-metric-c511bc08910d3cd6e07fa06d",
+      "diagnostic-metric-fbf2d3a6f1550ce8f570c943",
+      "diagnostic-metric-a9422bc259255f1884eee8d3",
+      "diagnostic-metric-155f76671e9ff15bd4679fd8",
+      "diagnostic-metric-b56dae94a9cb5085231d06b6",
+      "diagnostic-metric-afeaf385f5fd2abb37a602c5",
+      "diagnostic-metric-3de71b0aedb29f0180c3f9f2",
+      "diagnostic-metric-c3ec46bcda2ec5e25553d348",
+      "diagnostic-metric-b5124e346eee608354a90335",
+      "diagnostic-metric-edda8ce9dbc4b4e700fc9c56",
+      "diagnostic-metric-81536b49d0a2c9d68380e337",
+      "diagnostic-metric-e50281858e2919eb06d09e09",
+      "diagnostic-metric-f4de3eb602dd70c9ff303891",
+      "diagnostic-metric-462b6471c7d3dce5d72e4ae8",
+      "diagnostic-metric-fea68e8c66ad5c3c26d31497",
+      "diagnostic-metric-0ea08a0bd30548374b04bdf5",
+      "diagnostic-metric-8355e65f545ca8c2e0c393c0",
+      "diagnostic-metric-329d2c37445f2b23fb6d9c98",
+      "diagnostic-metric-d22365765ec357fc2e908413",
+      "diagnostic-metric-a370eb85fe7f8ad60a5779d9",
+      "diagnostic-metric-ed29e46c8edd61fb6dd79adf",
+      "diagnostic-metric-579c8edba822bf2f4078e62f",
+      "diagnostic-metric-8219d7b050097a370789aa13",
+      "diagnostic-metric-a94937bf7c020d3da6cc4280",
+      "diagnostic-metric-d27f98d646197cc3f2cfe7db",
+      "diagnostic-metric-595ce48e24522e9af01a4088",
+      "diagnostic-metric-c4722c57d398b7d5c5f315f2",
+      "diagnostic-metric-c5042f9b8ab8fdb94f1508eb",
+      "diagnostic-metric-3f2ab11d5ca6a50f2eac9e2b",
+      "diagnostic-metric-adc30d203325fafeeb1aae10",
+      "diagnostic-metric-15885cfe5915c79cb0a72845",
+      "diagnostic-metric-98b76f000feab0da6bed41c5",
+      "diagnostic-metric-8ea11a9ad721c4ad00e88e0c",
+      "diagnostic-metric-c15179157543b517f4f7cb91",
+      "diagnostic-metric-72330292018fda9b201e1259",
+      "diagnostic-metric-23c9ea5cd50fa8d3729207f0",
+      "diagnostic-metric-bb2ba1ba538d479f11c2554d",
+      "diagnostic-metric-9895f4e4f19478a622893358",
+      "diagnostic-metric-618931bd80311d01acaba511",
+      "diagnostic-metric-0f28f1f0c3d01f3545537d5a",
+      "diagnostic-metric-937bd556677f0cbc3112ffce",
+      "diagnostic-metric-2703840c8de849d287468d8c",
+      "diagnostic-metric-4506738f01a5f32c02972be4",
+      "diagnostic-metric-b2061e97326105f5248dc47c",
+      "diagnostic-metric-96e1683c0945454fdfc6aa60",
+      "diagnostic-metric-66cd22bb85069a9047e35c6e",
+      "diagnostic-metric-f6b706941cf032d343917809",
+      "diagnostic-metric-5d5eba06b2abb46833348bbc",
+      "diagnostic-metric-9e80998f2c12a408123361c4",
+      "diagnostic-metric-adacbe25ee3b4cfeb97a5944",
+      "diagnostic-metric-b2fdfa37926331f5a6b2697f",
+      "diagnostic-metric-ad3cbde1b1c16ce26536e867",
+      "diagnostic-metric-6f832aa16f758fcbd3252e4a",
+      "diagnostic-metric-d604f0b8cdd416176291fb5a",
+      "diagnostic-metric-a0a04b8a930d22c7de0058f6",
+      "diagnostic-metric-e015c3a7fa05418cac2dd478",
+      "diagnostic-metric-51fb192170cd5abc64b4ee71",
+      "diagnostic-metric-cfd960bfc856a5436eefbe32",
+      "diagnostic-metric-aef392571a6644bc97919884",
+      "diagnostic-metric-1f7e6335026d032b80a22047",
+      "diagnostic-metric-8eaed6bee904db29377f00b8",
+      "diagnostic-metric-eeb54393753c1a844f5ac3c9",
+      "diagnostic-metric-f5815b56ec096bb29bc7aba6",
+      "diagnostic-metric-70399418538e99e19c306b3c",
+      "diagnostic-metric-527cee6b0ab1020e3b51af5c",
+      "diagnostic-metric-5ae986b7cd723e819899892a",
+      "diagnostic-metric-02a14c2d123966c7106a9ab4",
+      "diagnostic-metric-9dc784705054b6c708bae5c9",
+      "diagnostic-metric-18d2248c996f63133c25bc3c",
+      "diagnostic-metric-690f084ad2ceacdfcd9710e9",
+      "diagnostic-metric-a8c9d116082b233642f07378",
+      "diagnostic-metric-5912ddf308c5d462dcda642d",
+      "diagnostic-metric-7d6cf10da0f08774b70577ff",
+      "diagnostic-metric-b82476c96d970bc573467d7a",
+      "diagnostic-metric-49ccf57aa5bab0bebdadddc6",
+      "diagnostic-metric-1b7e558b2703866ac1125332",
+      "diagnostic-metric-d59ac659d80fc4371dc66efb",
+      "diagnostic-metric-6ca4e3ef7efc0577794ddd4b",
+      "diagnostic-metric-2991c826754c69dbbdb1ebfd",
+      "diagnostic-metric-da876bf29c9cc2af706551b7",
+      "diagnostic-metric-11b97d4137ae08b1c141443a",
+      "diagnostic-metric-86354aeac814cd65ee3a129a",
+      "diagnostic-metric-4605f982349b1c19c6f96a00",
+      "diagnostic-metric-7f58dc875d8bf0e53175202f",
+      "diagnostic-metric-eb6dbde9ee488f43f9871dfa",
+      "diagnostic-metric-f928a703fe37bf33abfad442",
+      "diagnostic-metric-03c3451754159e92b7c77420",
+      "diagnostic-metric-d2cb5fab8edc18dff1812e51",
+      "diagnostic-metric-665d83a28870396bfebdb3bc",
+      "diagnostic-metric-dfbd8497d247da84229180e3",
+      "diagnostic-metric-be07585355d77ea94fd5fa4c",
+      "diagnostic-metric-9042326d6425f0df44282b29",
+      "diagnostic-metric-4312ecd64ca1dbf740676f70",
+      "diagnostic-metric-776046401463571e36a0749a",
+      "diagnostic-metric-f5f129b48ed4f978c9eb3fec",
+      "diagnostic-metric-6573c2db1c4c110273a0ce47",
+      "diagnostic-metric-4882820dfc1ed2dd577c1aeb",
+      "diagnostic-metric-b50538773b26d12a040d7e0b",
+      "diagnostic-metric-fcdb7548bd879a64f904905f",
+      "diagnostic-metric-ac3e573205e520c68bf169d3",
+      "diagnostic-metric-12e5ef5e6afcaa7867d8be70",
+      "diagnostic-metric-3cff6fba438a84c71ab50597",
+      "diagnostic-metric-588a0081a3834d29198934c1",
+      "diagnostic-metric-48ced72a27503321874131c5",
+      "diagnostic-metric-a6cf03ca58f40a706156552d",
+      "diagnostic-metric-bd5bc2eba90790cd1be507a1",
+      "diagnostic-metric-8ec6f3ea0da8e27c8d509920",
+      "diagnostic-metric-9cfa495069d4fdca46399220",
+      "diagnostic-metric-106411e7470dfd5dcc4316c4",
+      "diagnostic-metric-0d5925d60a10fb8242df048b",
+      "diagnostic-metric-935f204cd86e7d1814ff740f",
+      "diagnostic-metric-b68d7993e0f389f55b1098fd",
+      "diagnostic-metric-96b96d32c8343d873fb0c3b3",
+      "diagnostic-metric-39304d95d171ea399d3f2dcb",
+      "diagnostic-metric-0ec3ae0ebaa4d76442932840",
+      "diagnostic-metric-5e0ea130c24c6e618f7c3be8",
+      "diagnostic-metric-af6dc5d0cb1accc5ace85256",
+      "diagnostic-metric-3f6404fab7eb9e37d1571ff7",
+      "diagnostic-metric-af3a854e0afcfc9bde569d1d",
+      "diagnostic-metric-3a887242a6f7e34389681f08",
+      "diagnostic-metric-2cb964cf649c7e465b5682fc",
+      "diagnostic-metric-23ca401e4681ea94bb922aa7",
+      "diagnostic-metric-2e64fff59ce4f80a890fa707",
+      "diagnostic-metric-901504a77b2d3316fbb82a6b",
+      "diagnostic-metric-14d3aeb4d58902fe80c1d9c9",
+      "diagnostic-metric-27f29cab94ecd7a53984f19e",
+      "diagnostic-metric-3d4aeb1de23a05c82b217cd5",
+      "diagnostic-metric-09fbca1cd177b86bb8da6ba2",
+      "diagnostic-metric-6c5fc810248f379f601c8462",
+      "diagnostic-metric-65320b87372caadd64a3c89d",
+      "diagnostic-metric-0e48f8e4ed7c4b08627851d1",
+      "diagnostic-metric-f73d8efdb5ea52634a965c4a",
+      "diagnostic-metric-27c6467d979a268941ccc012",
+      "diagnostic-metric-dad8efe68f1e9c63aee5087c",
+      "diagnostic-metric-2e9d2b753d9e9b7b4b525f37",
+      "diagnostic-metric-1563575027dc9c2ec3964e09",
+      "diagnostic-metric-2b9584e11c9febbc43e53675",
+      "diagnostic-metric-83973a4767ad9add402da691",
+      "diagnostic-metric-22504393bd0a8526f370443a",
+      "diagnostic-metric-5d76fa6b9b3e25465f39debe",
+      "diagnostic-metric-bf488f9c353c07e7f680c9ed",
+      "diagnostic-metric-e6dc3ff5d8e21f7b76cfe1c8",
+      "diagnostic-metric-546e948602fc9d875bc85567",
+      "diagnostic-metric-075dfa26c3f58c8f5f675cd9",
+      "diagnostic-metric-3becab1b714da06ddb101fbc",
+      "diagnostic-metric-42de3f63ec782d97b7960888",
+      "diagnostic-metric-944ccd5b54b8fa946a3ccae5",
+      "diagnostic-metric-6bb992507aaeeb65eb028624",
+      "diagnostic-metric-b0c21aa998c91c53545eb15b",
+      "diagnostic-metric-f54ca48d790903238561ebc2"
+    ],
+    "finding_ids": [
+      "diagnostic-finding-045046369df55d4de2073f30",
+      "diagnostic-finding-0bdf4855d66112c05e508a25",
+      "diagnostic-finding-152557a40f9aa3ef1c420115",
+      "diagnostic-finding-29a86156d193b85420de57a3",
+      "diagnostic-finding-2bb9a096ee99fb39fa6b74bd",
+      "diagnostic-finding-393b712441c752297a51aba8",
+      "diagnostic-finding-42bf29d1147d43a168f63f20",
+      "diagnostic-finding-498c485dd34d911c625f61a4",
+      "diagnostic-finding-62842bfd1ba51919ffd81e5d",
+      "diagnostic-finding-6e512808d71c09d0222499e8",
+      "diagnostic-finding-7c0c1e0cd51d23b23cca696c",
+      "diagnostic-finding-816a3f8fe93766a646a258e2",
+      "diagnostic-finding-89688d7925a59d5d3a74ea61",
+      "diagnostic-finding-941b44935558601776f65eed",
+      "diagnostic-finding-9547ac160b486c0da06822bc",
+      "diagnostic-finding-9de01ff923b9d3184b30a276",
+      "diagnostic-finding-9e8cb30147bf5c5a42e5d160",
+      "diagnostic-finding-9f60429eade1ee8b2e6d21ad",
+      "diagnostic-finding-a97c8f402d0d584798b9f8f3",
+      "diagnostic-finding-baa5b47f50eef852edf8ec81",
+      "diagnostic-finding-c67dbac04424ea195fb9d519",
+      "diagnostic-finding-c869e209cf41caad80943f61",
+      "diagnostic-finding-e86b9788e2065da1afa775b8",
+      "diagnostic-finding-f01241d868f8244077bc70a9",
+      "diagnostic-finding-f20c2a668ebe150746e817de",
+      "diagnostic-finding-03cdcc874d05d0ec2db8f15a",
+      "diagnostic-finding-0bbed8d1322c021192103a4e",
+      "diagnostic-finding-0db35d63e9b56f9690aa2e25",
+      "diagnostic-finding-17be2c253e134aa0790a5b82",
+      "diagnostic-finding-24672daae45422a25dc74ac5",
+      "diagnostic-finding-28fb0dc863341b36244b92b6",
+      "diagnostic-finding-2e09712d76087305c8570cb2",
+      "diagnostic-finding-33a2a7b68232d8c9f1b8afd8",
+      "diagnostic-finding-379e9d5151d0cd24f3e8b4b0",
+      "diagnostic-finding-41115b48f4b93d7b5ad778a3",
+      "diagnostic-finding-4797360cdb1b8e4a02ce82bf",
+      "diagnostic-finding-55852680f2f6ed1b2e8aefc7",
+      "diagnostic-finding-577bb2a327723bff69149937",
+      "diagnostic-finding-5a51f44aba4e8ba9be485cd1",
+      "diagnostic-finding-6017c16ba4effffc78d20cc2",
+      "diagnostic-finding-611c53c78cac86019ca4e481",
+      "diagnostic-finding-691533a02cd1a7056c69f83b",
+      "diagnostic-finding-70b0291c76ecabc2f4e3799b",
+      "diagnostic-finding-73d0cbe8703caeb926049803",
+      "diagnostic-finding-91e0bd2f41c5e985405af351",
+      "diagnostic-finding-928a666f50cfce5cd871baa0",
+      "diagnostic-finding-95b8b56d663082073d9a19d2",
+      "diagnostic-finding-9afba24d376e4ec3731aa287",
+      "diagnostic-finding-9e1d6cdc453cb84c416cad36",
+      "diagnostic-finding-a095b286d5c8cba9a81de90e",
+      "diagnostic-finding-a760239e05653ab1d10a9191",
+      "diagnostic-finding-a9172e0a77c650e3945e5786",
+      "diagnostic-finding-ac03acdecadaa46fefa12bdb",
+      "diagnostic-finding-b57550f713eb92330831d8b4",
+      "diagnostic-finding-c610bb8c99e38c6fec577321",
+      "diagnostic-finding-c90f2daec6979785b82853bc",
+      "diagnostic-finding-cbc8ebe47568adacfc2af345",
+      "diagnostic-finding-d62f8ca9aaaaff362263c614",
+      "diagnostic-finding-d83fa688fc088996402c30f3",
+      "diagnostic-finding-db4c8400447e19d5b4168109",
+      "diagnostic-finding-dc61297677f5d48958e723ec",
+      "diagnostic-finding-ddefdcb13ce90f2d902e70ca",
+      "diagnostic-finding-dff154f82c27151e4527a1ce",
+      "diagnostic-finding-e7ca237e63c8d8a70a4bbccf",
+      "diagnostic-finding-eac18f55839825a0c60c3971",
+      "diagnostic-finding-f7146671bba2dc21e130463f",
+      "diagnostic-finding-fb074766177d3a9d3726425b",
+      "diagnostic-finding-fe5c087157257258baebce9f"
+    ],
+    "reproduction_manifest_id": "reproduction-manifest-1323b0170c81d669164f12d0"
+  },
+  "feature_interfaces": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1"
+  ],
+  "recovery": {
+    "application_reopen_preserved_exact_identities": true,
+    "durable_identity_graph": [
+      "050a9075e86bc002f0689cf7492956a82460ecf5512a1e0dc7773b75ed649e9c",
+      "516d3691b18c419ef7e08b662cf96e95067ce765706f0a77bcec9b698bb06144",
+      "52756d5f1fc32afc4dece33d36d9999dfcc79e153e9d01d151fd7d89b0d7d6fc",
+      "5337d48c8ca4039c6ddf3f2d7184675c6b5ef2d357ad6a4beefbba5bc1ee6d44",
+      "6a6b0f2347b30a5a3405f4e7272f29bea7665344f2189013e13cb84239e36c2f",
+      "6a9efd15e3c8f00a04d021c43002c8e8cfa0cbb76fc61ad36d96bcd9b367678b",
+      "70681d690c18c3cd77ad3df823bf5fa2d6aaf8686d97ea3237e70fe86ce0a9f8",
+      "7a7c53af9e44ff3cf4c18698364a064d646f893cebf43659e79286d796a50280",
+      "8d936ef60e2e22dd1bd499d43842cc21b5b8cef115b400ec60305f816e4cffc8",
+      "92b1acfec4744aab8edc49c25f1000cd45e7d28a50e65db717db78c66c5119b2",
+      "b2e78eaa66bbfa48d47982b80321012528043ff7ffc67a8549212cbb59cfd8ef",
+      "c833a218217fec69cc710bcc8414105c79bcd78935a973d07545a4684acea0b4",
+      "campaign-case-4b46f5be59f0bc87e6525b9a",
+      "campaign-case-508cf07c8c60085b86507a19",
+      "campaign-case-6d2f627923a5ddbc8a9e273f",
+      "campaign-case-76884402fc40edb9f6cf252c",
+      "campaign-case-81bc20a983002f04ec6096a2",
+      "campaign-case-9506fa8a0daed561a7a580e9",
+      "campaign-case-9add0802be8c00154c023a86",
+      "campaign-case-9dc71fe5a91f62164a89d487",
+      "campaign-case-a2926f1a71549cc3bdc07f0b",
+      "campaign-case-bf1cb44e43ebfb0f132d56f0",
+      "campaign-case-c93a3c69f7443de662a3105f",
+      "campaign-case-cbb582b22bffcc503325657c",
+      "campaign-case-e0a42b9f8b08d6c9d467a815",
+      "campaign-case-e4e29d9892e0e3c79b9af677",
+      "campaign-case-e62df050ddac03f00bf87af0",
+      "d35d0f262bd14f64eb13ca60bdb2acad9589c030af8cf458b107a28e2b5f45cb",
+      "diagnostic-campaign-bbeba406652e274ff8a59014",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-4b46f5be59f0bc87e6525b9a:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-508cf07c8c60085b86507a19:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-6d2f627923a5ddbc8a9e273f:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-76884402fc40edb9f6cf252c:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-81bc20a983002f04ec6096a2:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-9506fa8a0daed561a7a580e9:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-9add0802be8c00154c023a86:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-9dc71fe5a91f62164a89d487:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-a2926f1a71549cc3bdc07f0b",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-a2926f1a71549cc3bdc07f0b:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-a2926f1a71549cc3bdc07f0b:attempt-2",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-bf1cb44e43ebfb0f132d56f0:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-c93a3c69f7443de662a3105f",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-c93a3c69f7443de662a3105f:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-cbb582b22bffcc503325657c:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-e0a42b9f8b08d6c9d467a815:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-e4e29d9892e0e3c79b9af677:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:campaign-case-e62df050ddac03f00bf87af0:attempt-1",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-10e9ffde095aa7679b7e9f6a",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-22b1ebf8646824c6ab16e294",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-272e49cf97087bb7282b9a9d",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-2acd80156c0752bbdbd3b071",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-65edeecb3a6943ec5e0d63c4",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-6c0c8d56ce9384dbd1d34017",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-6f884955e0d653a0fc4ad8cc",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-74fe40bea7272da0abca900f",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-922ee46c477882b10f255534",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-af79aa494a0a9416c43b2cd9",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-d1b776e454cf4adcdb03968a",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-de80996f44c8f96eb4782176",
+      "diagnostic-campaign-bbeba406652e274ff8a59014:sensitivity-case-e8cc66148827a5d1b7fa0aa1",
+      "diagnostic-evidence-90d7212d1471a2aff4608165",
+      "diagnostic-pause-handle-a634f62fba7a7da89e72a6db",
+      "diagnostic-resume-handle-9601168f2ebf9df8349751fc",
+      "diagnostic-task-7ce618ab9ce195f5105ebf0d",
+      "diagnostic-task-campaign-start-handle-e2700b4c71a49c7984342ab5",
+      "diagnostic-task-failed-node-retry-handle-ce8f14e8d7fafc3c7698f786",
+      "diagnostic-task-handle-7ce618ab9ce195f5105ebf0d",
+      "diagnostic-task-validation-handle-76aabe9b49a34dfd02fe9250",
+      "f0d2c0901969e2a249bff1c20c6c1396d7be71ef0def8a1a108fcba5a84957e8",
+      "f8f6c2e8ccf88ca9a3b2f6bd49c340fa1328605710fd7ccb412d8327d917b694",
+      "guardrail-profile-7616a340b156316d79f4b76c",
+      "guardrail-profile-b7b800744246047283b94874",
+      "quentx-5.2.3-scenario-native",
+      "quentx-live-minute-scenario-native",
+      "recipe_version_124a32273cb288dd70ce07a947a58c69d6ae5144b94a5d9c08b113f6a6a56f58",
+      "recipe_version_6111f431b256b82aa687e6c479e859bfcafbd4b2bb5c5b979973efac8a5bde86",
+      "recipe_version_66e84d82b7742e110b6d8857da6216daf734838ca23590d3ff5508bc9774d1ba",
+      "recipe_version_71628f4ca4be700742360fc281a1a6c0072ae3e3dc99d6c41d36f9ec2c1fbf03",
+      "recipe_version_799b7ea8404d726ae536a8ee92102a01eb3ccdda71435d4a490ccda92b27e3e2",
+      "recipe_version_b7e40536e4bc84e03bc3ad4a3c7f6d59cff3c151343cad4a0bdbc71495256e6a",
+      "recipe_version_ca15633bc2cae7c0ce4cb11782347ec9cd1aac10a8a7d1d6c375e965102d5490",
+      "recipe_version_cb88ebc43cfe9c386c683ae6904406c1febe8984e62ff3f5844b6f0cc261f2df",
+      "recipe_version_cc0640360b4e872de1bad99b7d851ab9f0c588f50e684b2a95b845557e663c5a",
+      "recipe_version_d6ba332cafc53e5b24afc0c5b7121d19730eecff76a23402df40eb7bdd0ee317",
+      "recipe_version_eb3c3fc9b3f0401ae7c8f45f88a123a7e388aff4a8607d02638634c077c6db78",
+      "recipe_version_eca074189fefa49a649ee9a353545e196f88d33fa4b3948fa42ab71b97253614",
+      "recipe_version_f19b5a28ea0ff54ca29a10adb01739fd7efc30f6d704344492347d323ddfa3d8",
+      "recipe_version_f38c325733b1bb78fa4a4ca3d6df1e5369d6d816118c493491634fc59ff7b496",
+      "recipe_version_f8b4cc75f601aeaeb079dbd521bc3a2bcd481b4a0909a4560798faf78da153f3",
+      "reproduction-manifest-1323b0170c81d669164f12d0",
+      "reproduction-manifest-149b32fc11535a778ed025f1",
+      "reproduction-manifest-1edf5521286245c1820f171b",
+      "reproduction-manifest-2556e664cf1fa60cb9ea87a9",
+      "reproduction-manifest-2b83762c276e669d520dc369",
+      "reproduction-manifest-2bf5d94e9e432e3d35581116",
+      "reproduction-manifest-37787291e60a07988dddbf4f",
+      "reproduction-manifest-39501ebf181c5da372235afe",
+      "reproduction-manifest-47a0eb79933e03640a8b746c",
+      "reproduction-manifest-50a5577e3781f540a58dc5c3",
+      "reproduction-manifest-530823bb28a8154c36270e72",
+      "reproduction-manifest-5bd3dd9fb375fb0d865f980f",
+      "reproduction-manifest-5d1ef08a826aa091af283b1c",
+      "reproduction-manifest-6c1509f180101b9a8954c485",
+      "reproduction-manifest-7639c90f7b69ab88b2cff2f3",
+      "reproduction-manifest-7743f33bcbbeec8d4c0851b2",
+      "reproduction-manifest-9b06428fc161dfcdb5bdc65f",
+      "reproduction-manifest-a167f61580b49d2bd7db4f40",
+      "reproduction-manifest-ad24350e3e764493fea7e8fa",
+      "reproduction-manifest-b0d31616d7ebd1893bca6c32",
+      "reproduction-manifest-b28db991c0c0c3a140d916b1",
+      "reproduction-manifest-b362c0a3d73a62aaff333720",
+      "reproduction-manifest-b49f07145c28fd781ecf16ac",
+      "reproduction-manifest-cb8b1750763ffb6758d2d920",
+      "reproduction-manifest-cbbb006185741435a37db1b6",
+      "reproduction-manifest-d21db740a0ee0aaa9744e0e4",
+      "reproduction-manifest-d6313813e0902d56d4fc190f",
+      "reproduction-manifest-e0259f29237838c95b73a45e",
+      "reproduction-manifest-f161e6ab1e92c3c7a0d0aa79",
+      "reproduction-manifest-fe45d10e713bf623597dc30b",
+      "sha256:61c4dc9b2a101e453f25596d77523851037966a42a9a6e189a8ccd5cc0c35951",
+      "strategy-run-00f3c344c7a18b3351b07d94",
+      "strategy-run-096860f5137fc814f6e14f94",
+      "strategy-run-096f499b875642b243312f47",
+      "strategy-run-0bb8466e78c2e8d6e0e8a7b7",
+      "strategy-run-23074d51096a8e1287d7b216",
+      "strategy-run-2c401abbb6be15f562b7b539",
+      "strategy-run-2d3284286c6025a837a5f9d1",
+      "strategy-run-2e54c191ea37989be83b5b5b",
+      "strategy-run-35357b0c86f8eeff579f6b7e",
+      "strategy-run-3d202667d30bb4965dca6690",
+      "strategy-run-3e53901534567b02275d60c7",
+      "strategy-run-474126006e642a5d28cc8605",
+      "strategy-run-4b3d151c58a69e28693b347b",
+      "strategy-run-5a806e35d324493810cce0a6",
+      "strategy-run-694d11c4ed7de5a8ee920124",
+      "strategy-run-6f735c717e5ad555a30b76c9",
+      "strategy-run-72cd01c8345d3c9867d63c5b",
+      "strategy-run-77cb0bf8cc97e85a297b3631",
+      "strategy-run-7c363df974f91130e41d9fd6",
+      "strategy-run-8f41a810e2b7f7380afe6540",
+      "strategy-run-94121666a4f24d078d8a7d53",
+      "strategy-run-95e76d2e26a1f67b8a5b3ecb",
+      "strategy-run-9c32ec3d2d6cb80419b71c4c",
+      "strategy-run-a56f73550934cf24d336b05e",
+      "strategy-run-baf1cc79870100d39f976991",
+      "strategy-run-bdafaa87e0065d29c295add4",
+      "strategy-run-c09f110628630dd37d788988",
+      "strategy-run-d162094afec9211c05759d13",
+      "strategy-run-db8021c0ba9e320c10b05acc",
+      "strategy-run-e682e2e9a65ce797a7687c03",
+      "strategy-run-f5bea11e49bbc08ca5e4d981",
+      "strategy-run-f7eba0de892e4630d4fe60fd"
+    ],
+    "market_path_store_reopened_from_files": true,
+    "old_generation_quarantined": true,
+    "remount_preserved_exact_identities": true
+  },
+  "scenario_lab": {
+    "approved_recipe": {
+      "actorId": "journey-workspace-operator",
+      "approvalId": "recipe_approval_9a354c9ad5568eb3842e64a397551f7b86e5789e46a40c82d40c249ceb0e77dd",
+      "approvedAt": "2030-01-01T00:00:00+00:00",
+      "authorId": "journey-workspace-operator",
+      "authorityReasons": [],
+      "authorityState": "current",
+      "basedOnRecipeVersionId": "",
+      "canMaterialize": true,
+      "causalityRules": [
+        "deterministic-no-future-reads",
+        "point-in-time-inputs-only",
+        "private-portfolio-effects-only"
+      ],
+      "compatibilityObservations": [
+        {
+          "explanation": "The exact Historical Market Segment is admitted.",
+          "state": "compatible",
+          "subject": "historical-segment:segment_43d990885762d4da3182"
+        },
+        {
+          "explanation": "The registered implementation and policy are bound.",
+          "state": "compatible",
+          "subject": "transformation:execution-stress.v1"
+        }
+      ],
+      "contentHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "dataPolicy": "point_in_time",
+      "dependencyBindingAvailable": true,
+      "draftId": "recipe_draft_ed19b8311b91070045329fd90a2a639844ad417fdff65561bcba0333eabb75a5",
+      "draftRevision": 1,
+      "historicalSegmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+      "historicalSegmentId": "segment_43d990885762d4da3182",
+      "marketRuleProfileHash": "aef73f46b0bc51df6f91016cd9ab5c159250b3958974b4c183d85756153a7b91",
+      "marketRuleProfileVersion": "a-share-cash-equity.v1",
+      "materializationSeed": 17,
+      "name": "Wave 3 persisted five-Feature tracer recipe",
+      "payloadHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "recipeContentHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "recipeId": "recipe_cf81c676a4bfaa2c4b14ea7a25d7893f117966cf3882bba162ebf7dad4f73db5",
+      "recipeSchemaHash": "d0a87785563d7bef98a90ed77fc307e6b3e0268f0955454034b265ee485b9928",
+      "recipeSchemaIdentity": "https://uti-stocksim.local/schema/scenario-recipe-v1.json",
+      "recipeVersionId": "recipe_version_ca15633bc2cae7c0ce4cb11782347ec9cd1aac10a8a7d1d6c375e965102d5490",
+      "sourceSnapshotContentHash": "642a00f658054b611f9800317f9f80085e9b0c36e7993e56bb8e624bd298cd59",
+      "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+      "transformationCatalogHash": "c0f5696c08b0bb5fb2beefeb0ddd289580f7cf8ec09f5ce582e265f608d70894",
+      "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+      "transformationImplementations": [
+        "execution-stress.v1@execution-stress.v1"
+      ],
+      "transformations": [
+        {
+          "parameters": [
+            {
+              "kind": "choice",
+              "name": "allow_partial_fills",
+              "value": "false"
+            },
+            {
+              "kind": "decimal",
+              "name": "commission_bps",
+              "value": "75"
+            },
+            {
+              "kind": "integer",
+              "name": "latency_nodes",
+              "value": "0"
+            },
+            {
+              "kind": "decimal",
+              "name": "max_fill_fraction",
+              "value": "0.01"
+            },
+            {
+              "kind": "choice",
+              "name": "rejection_mode",
+              "value": "none"
+            },
+            {
+              "kind": "decimal",
+              "name": "slippage_bps",
+              "value": "0"
+            }
+          ],
+          "transformationId": "execution-stress.v1"
+        }
+      ],
+      "validationId": "recipe_validation_ebc89e4eaee8735c91db76b23587c88b2883a7644e4afd988e95770d17270159",
+      "versionNumber": 1
+    },
+    "execution_resolution": {
+      "formalHandoffEligible": true,
+      "resolutionId": "scenario-execution-resolution-05c30c411f74f2b57f7c0938",
+      "scenarioSetId": "formal-scenario-set-3904fe7932d6ff1ff51aa354",
+      "targets": [
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-a2926f1a71549cc3bdc07f0b",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-4b46f5be59f0bc87e6525b9a",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-508cf07c8c60085b86507a19",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "25",
+              "name": "slippage_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-6d2f627923a5ddbc8a9e273f",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-76884402fc40edb9f6cf252c",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-81bc20a983002f04ec6096a2",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-9506fa8a0daed561a7a580e9",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-9add0802be8c00154c023a86",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-9dc71fe5a91f62164a89d487",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-bf1cb44e43ebfb0f132d56f0",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-cbb582b22bffcc503325657c",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "100",
+              "name": "slippage_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-e0a42b9f8b08d6c9d467a815",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-e4e29d9892e0e3c79b9af677",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "false",
+              "name": "allow_partial_fills",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "75",
+              "name": "commission_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "0.01",
+              "name": "max_fill_fraction",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "slippage_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-e62df050ddac03f00bf87af0",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-c93a3c69f7443de662a3105f",
+          "compatibilityManifestHash": "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-b7b800744246047283b94874",
+          "guardrailProfileVersion": "live-minute-capital-preservation.v1",
+          "state": "resolved",
+          "strategyId": "quentx-live-minute-scenario-native",
+          "strategyVersion": "quentx-live-minute-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-a2926f1a71549cc3bdc07f0b",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-4b46f5be59f0bc87e6525b9a",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-508cf07c8c60085b86507a19",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "25",
+              "name": "slippage_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-6d2f627923a5ddbc8a9e273f",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-76884402fc40edb9f6cf252c",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-81bc20a983002f04ec6096a2",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-9506fa8a0daed561a7a580e9",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-9add0802be8c00154c023a86",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-9dc71fe5a91f62164a89d487",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-bf1cb44e43ebfb0f132d56f0",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-cbb582b22bffcc503325657c",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "100",
+              "name": "slippage_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-e0a42b9f8b08d6c9d467a815",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-e4e29d9892e0e3c79b9af677",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "false",
+              "name": "allow_partial_fills",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "75",
+              "name": "commission_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "0.01",
+              "name": "max_fill_fraction",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "slippage_bps",
+              "overrideReason": "scenario execution-stress.v1 override",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-e62df050ddac03f00bf87af0",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        },
+        {
+          "activationPolicy": "first Reference Market Path node strictly later than Decision Time, then effective latency_nodes",
+          "activationTime": "2024-01-02T09:31:00",
+          "afterDecisionTime": "2024-01-02T09:31:00",
+          "campaignCaseId": "campaign-case-c93a3c69f7443de662a3105f",
+          "compatibilityManifestHash": "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+          "conditions": [
+            {
+              "effectiveValue": "true",
+              "name": "allow_partial_fills",
+              "overrideReason": "",
+              "requestedValue": "true"
+            },
+            {
+              "effectiveValue": "3",
+              "name": "commission_bps",
+              "overrideReason": "",
+              "requestedValue": "3"
+            },
+            {
+              "effectiveValue": "0",
+              "name": "latency_nodes",
+              "overrideReason": "",
+              "requestedValue": "0"
+            },
+            {
+              "effectiveValue": "1",
+              "name": "max_fill_fraction",
+              "overrideReason": "",
+              "requestedValue": "1"
+            },
+            {
+              "effectiveValue": "none",
+              "name": "rejection_mode",
+              "overrideReason": "",
+              "requestedValue": "none"
+            },
+            {
+              "effectiveValue": "5",
+              "name": "slippage_bps",
+              "overrideReason": "",
+              "requestedValue": "5"
+            }
+          ],
+          "decisionCadenceMinutes": 30,
+          "decisionGrid": "30-minute simulation-time grid",
+          "decisionTime": "2024-01-02T09:30:30",
+          "executionPolicyVersion": "anchored-standard-execution.v2",
+          "guardrailProfileId": "guardrail-profile-7616a340b156316d79f4b76c",
+          "guardrailProfileVersion": "quentx-balanced-diagnostics.v1",
+          "state": "resolved",
+          "strategyId": "quentx-5.2.3-scenario-native",
+          "strategyVersion": "quentx-5.2.3-scenario-native.v1",
+          "unavailabilityReasons": []
+        }
+      ]
+    },
+    "formal_scenario_set": {
+      "baselineCaseId": "campaign-case-a2926f1a71549cc3bdc07f0b",
+      "caseIds": [
+        "campaign-case-a2926f1a71549cc3bdc07f0b",
+        "campaign-case-4b46f5be59f0bc87e6525b9a",
+        "campaign-case-508cf07c8c60085b86507a19",
+        "campaign-case-6d2f627923a5ddbc8a9e273f",
+        "campaign-case-76884402fc40edb9f6cf252c",
+        "campaign-case-81bc20a983002f04ec6096a2",
+        "campaign-case-9506fa8a0daed561a7a580e9",
+        "campaign-case-9add0802be8c00154c023a86",
+        "campaign-case-9dc71fe5a91f62164a89d487",
+        "campaign-case-bf1cb44e43ebfb0f132d56f0",
+        "campaign-case-cbb582b22bffcc503325657c",
+        "campaign-case-e0a42b9f8b08d6c9d467a815",
+        "campaign-case-e4e29d9892e0e3c79b9af677",
+        "campaign-case-e62df050ddac03f00bf87af0",
+        "campaign-case-c93a3c69f7443de662a3105f"
+      ],
+      "comparisonRelationships": [
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-4b46f5be59f0bc87e6525b9a"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-508cf07c8c60085b86507a19"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-6d2f627923a5ddbc8a9e273f"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-76884402fc40edb9f6cf252c"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-81bc20a983002f04ec6096a2"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-9506fa8a0daed561a7a580e9"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-9add0802be8c00154c023a86"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-9dc71fe5a91f62164a89d487"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-bf1cb44e43ebfb0f132d56f0"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-cbb582b22bffcc503325657c"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-e0a42b9f8b08d6c9d467a815"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-e4e29d9892e0e3c79b9af677"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b"
+          ],
+          "kind": "isolated-vs-baseline",
+          "subjectCaseId": "campaign-case-e62df050ddac03f00bf87af0"
+        },
+        {
+          "controlCaseIds": [
+            "campaign-case-a2926f1a71549cc3bdc07f0b",
+            "campaign-case-6d2f627923a5ddbc8a9e273f",
+            "campaign-case-bf1cb44e43ebfb0f132d56f0",
+            "campaign-case-e0a42b9f8b08d6c9d467a815",
+            "campaign-case-e62df050ddac03f00bf87af0"
+          ],
+          "kind": "compound-vs-baseline-and-isolated",
+          "subjectCaseId": "campaign-case-c93a3c69f7443de662a3105f"
+        }
+      ],
+      "compoundCaseIds": [
+        "campaign-case-c93a3c69f7443de662a3105f"
+      ],
+      "eligibility": "formal_campaign_eligible",
+      "formalHandoffEligible": true,
+      "isolatedCaseIds": [
+        "campaign-case-4b46f5be59f0bc87e6525b9a",
+        "campaign-case-508cf07c8c60085b86507a19",
+        "campaign-case-6d2f627923a5ddbc8a9e273f",
+        "campaign-case-76884402fc40edb9f6cf252c",
+        "campaign-case-81bc20a983002f04ec6096a2",
+        "campaign-case-9506fa8a0daed561a7a580e9",
+        "campaign-case-9add0802be8c00154c023a86",
+        "campaign-case-9dc71fe5a91f62164a89d487",
+        "campaign-case-bf1cb44e43ebfb0f132d56f0",
+        "campaign-case-cbb582b22bffcc503325657c",
+        "campaign-case-e0a42b9f8b08d6c9d467a815",
+        "campaign-case-e4e29d9892e0e3c79b9af677",
+        "campaign-case-e62df050ddac03f00bf87af0"
+      ],
+      "missingRequirements": [],
+      "scenarioSetId": "formal-scenario-set-3904fe7932d6ff1ff51aa354"
+    },
+    "historical_segment": {
+      "admissionState": "admitted",
+      "barCount": 56,
+      "contentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+      "dataset": "workspace-fixture",
+      "eligibleInstrumentCount": 4,
+      "endDate": "2024-01-02",
+      "label": "Visible diagnostic interval",
+      "market": "mainland-a-share",
+      "provider": "BaoStock",
+      "qualityState": "passed",
+      "recommendationTags": [],
+      "segmentId": "segment_43d990885762d4da3182",
+      "sourceSnapshotContentHash": "642a00f658054b611f9800317f9f80085e9b0c36e7993e56bb8e624bd298cd59",
+      "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+      "sourceVersion": "v1",
+      "startDate": "2024-01-02",
+      "tradingDayCount": 1,
+      "unavailabilityReasons": []
+    },
+    "materialization_task_handle": {
+      "attemptId": "scenario_materialization_attempt_4b2fb00293b29062088a78cc7c70e160bc5f1bea8ecf2c355d981c18b1b87fc8",
+      "cancelable": false,
+      "errorCode": "",
+      "errorMessage": "",
+      "errorRetryable": false,
+      "operation": "materialize_reference_path",
+      "phase": "completed",
+      "predecessorTaskHandleId": "",
+      "progress": 1.0,
+      "progressPercent": 100,
+      "resultIdentity": "6a6b0f2347b30a5a3405f4e7272f29bea7665344f2189013e13cb84239e36c2f",
+      "resultKind": "reference_market_path",
+      "retryable": false,
+      "targetIdentity": "recipe_version_ca15633bc2cae7c0ce4cb11782347ec9cd1aac10a8a7d1d6c375e965102d5490",
+      "targetKind": "approved_recipe_version",
+      "taskHandleId": "scenario_task_handle_4b2fb00293b29062088a78cc7c70e160bc5f1bea8ecf2c355d981c18b1b87fc8",
+      "terminal": true
+    },
+    "materialized_case": {
+      "baselineScenarioId": "campaign-case-a2926f1a71549cc3bdc07f0b",
+      "comparisonRole": "compare_to_baseline",
+      "compatibility": "compatible",
+      "decisionCadenceMinutes": 30,
+      "executionResolution": "not_yet_resolved",
+      "layer": "isolated_sensitivity",
+      "marketRuleProfileVersion": "a-share-cash-equity.v1",
+      "pathId": "6a6b0f2347b30a5a3405f4e7272f29bea7665344f2189013e13cb84239e36c2f",
+      "recipeContentHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "recipeVersionId": "recipe_version_ca15633bc2cae7c0ce4cb11782347ec9cd1aac10a8a7d1d6c375e965102d5490",
+      "reproducibility": "reproducible",
+      "requestedExecutionAssumptions": {
+        "allowPartialFills": true,
+        "commissionBps": "3",
+        "latencyNodes": 0,
+        "maxFillFraction": "1",
+        "slippageBps": "5"
+      },
+      "scenarioId": "campaign-case-e4e29d9892e0e3c79b9af677",
+      "seed": 17,
+      "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+      "segmentId": "segment_43d990885762d4da3182",
+      "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+      "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+      "transformations": [
+        {
+          "family": "execution-stress",
+          "implementationVersion": "execution-stress.v1",
+          "parameters": [
+            {
+              "name": "allow_partial_fills",
+              "value": "false"
+            },
+            {
+              "name": "commission_bps",
+              "value": "75"
+            },
+            {
+              "name": "latency_nodes",
+              "value": "0"
+            },
+            {
+              "name": "max_fill_fraction",
+              "value": "0.01"
+            },
+            {
+              "name": "rejection_mode",
+              "value": "none"
+            },
+            {
+              "name": "slippage_bps",
+              "value": "0"
+            }
+          ],
+          "transformationId": "execution-stress.v1"
+        }
+      ],
+      "unavailabilityReasons": []
+    },
+    "recipe_draft": {
+      "assistantAttemptId": "",
+      "authorId": "journey-workspace-operator",
+      "authoringMode": "manual",
+      "basedOnRecipeVersionId": "",
+      "createdAt": "2030-01-01T00:00:00+00:00",
+      "dataPolicy": "point_in_time",
+      "decisionCadenceMinutes": 30,
+      "draftId": "recipe_draft_ed19b8311b91070045329fd90a2a639844ad417fdff65561bcba0333eabb75a5",
+      "historicalSegmentId": "segment_43d990885762d4da3182",
+      "marketRuleProfileVersion": "a-share-cash-equity.v1",
+      "materializationSeed": 17,
+      "name": "Wave 3 persisted five-Feature tracer recipe",
+      "payloadHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "predecessorDraftId": "",
+      "recipeId": "recipe_cf81c676a4bfaa2c4b14ea7a25d7893f117966cf3882bba162ebf7dad4f73db5",
+      "requestedExecutionAssumptions": {
+        "allowPartialFills": true,
+        "commissionBps": "3",
+        "latencyNodes": 0,
+        "maxFillFraction": "1",
+        "slippageBps": "5"
+      },
+      "revision": 1,
+      "transformations": [
+        {
+          "implementationVersion": "draft-selection",
+          "parameters": [
+            {
+              "kind": "choice",
+              "name": "allow_partial_fills",
+              "value": "false"
+            },
+            {
+              "kind": "decimal",
+              "name": "commission_bps",
+              "value": "75"
+            },
+            {
+              "kind": "integer",
+              "name": "latency_nodes",
+              "value": "0"
+            },
+            {
+              "kind": "decimal",
+              "name": "max_fill_fraction",
+              "value": "0.01"
+            },
+            {
+              "kind": "choice",
+              "name": "rejection_mode",
+              "value": "none"
+            },
+            {
+              "kind": "decimal",
+              "name": "slippage_bps",
+              "value": "0"
+            }
+          ],
+          "transformationId": "execution-stress.v1"
+        }
+      ]
+    },
+    "recipe_validation": {
+      "dependencies": {
+        "causalityRules": [
+          "deterministic-no-future-reads",
+          "point-in-time-inputs-only",
+          "private-portfolio-effects-only"
+        ],
+        "compatibilityObservations": [
+          {
+            "explanation": "The exact Historical Market Segment is admitted.",
+            "state": "compatible",
+            "subject": "historical-segment:segment_43d990885762d4da3182"
+          },
+          {
+            "explanation": "The registered implementation and policy are bound.",
+            "state": "compatible",
+            "subject": "transformation:execution-stress.v1"
+          }
+        ],
+        "dataPolicy": "point_in_time",
+        "historicalSegmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+        "historicalSegmentId": "segment_43d990885762d4da3182",
+        "marketRuleProfileHash": "aef73f46b0bc51df6f91016cd9ab5c159250b3958974b4c183d85756153a7b91",
+        "marketRuleProfileVersion": "a-share-cash-equity.v1",
+        "recipeSchemaHash": "d0a87785563d7bef98a90ed77fc307e6b3e0268f0955454034b265ee485b9928",
+        "recipeSchemaIdentity": "https://uti-stocksim.local/schema/scenario-recipe-v1.json",
+        "sourceSnapshotContentHash": "642a00f658054b611f9800317f9f80085e9b0c36e7993e56bb8e624bd298cd59",
+        "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+        "transformationCatalogHash": "c0f5696c08b0bb5fb2beefeb0ddd289580f7cf8ec09f5ce582e265f608d70894",
+        "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+        "transformationImplementations": [
+          "execution-stress.v1@execution-stress.v1"
+        ]
+      },
+      "draftId": "recipe_draft_ed19b8311b91070045329fd90a2a639844ad417fdff65561bcba0333eabb75a5",
+      "draftRevision": 1,
+      "findings": [],
+      "payloadHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "recipeContentHash": "7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+      "valid": true,
+      "validatedAt": "2030-01-01T00:00:00+00:00",
+      "validationId": "recipe_validation_ebc89e4eaee8735c91db76b23587c88b2883a7644e4afd988e95770d17270159"
+    },
+    "selection_context": {
+      "caseBindings": [
+        {
+          "caseId": "campaign-case-a2926f1a71549cc3bdc07f0b",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": []
+        },
+        {
+          "caseId": "campaign-case-4b46f5be59f0bc87e6525b9a",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "market-structure.v1@market-structure.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-508cf07c8c60085b86507a19",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "execution-stress.v1@execution-stress.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-6d2f627923a5ddbc8a9e273f",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "trend-regime.v1@trend-regime.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-76884402fc40edb9f6cf252c",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "liquidity-stress.v1@liquidity-stress.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-81bc20a983002f04ec6096a2",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "liquidity-stress.v1@liquidity-stress.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-9506fa8a0daed561a7a580e9",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "market-structure.v1@market-structure.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-9add0802be8c00154c023a86",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "shock-recovery.v1@shock-recovery.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-9dc71fe5a91f62164a89d487",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "shock-recovery.v1@shock-recovery.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-bf1cb44e43ebfb0f132d56f0",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "volatility-scaling.v1@volatility-scaling.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-cbb582b22bffcc503325657c",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "execution-stress.v1@execution-stress.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-e0a42b9f8b08d6c9d467a815",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "trend-regime.v1@trend-regime.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-e4e29d9892e0e3c79b9af677",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "execution-stress.v1@execution-stress.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-e62df050ddac03f00bf87af0",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "volatility-scaling.v1@volatility-scaling.v1"
+          ]
+        },
+        {
+          "caseId": "campaign-case-c93a3c69f7443de662a3105f",
+          "marketRuleProfileVersion": "a-share-cash-equity.v1",
+          "seed": 17,
+          "segmentContentHash": "43d990885762d4da3182ece5af01326c34706bb121e08fdae5db77ed68a09ecb",
+          "segmentId": "segment_43d990885762d4da3182",
+          "sourceSnapshotId": "snapshot_642a00f658054b611f98",
+          "transformationCatalogVersion": "scenario-transformation-catalog.v1",
+          "transformations": [
+            "trend-regime.v1@trend-regime.v1",
+            "volatility-scaling.v1@volatility-scaling.v1"
+          ]
+        }
+      ],
+      "caseIds": [
+        "campaign-case-a2926f1a71549cc3bdc07f0b",
+        "campaign-case-4b46f5be59f0bc87e6525b9a",
+        "campaign-case-508cf07c8c60085b86507a19",
+        "campaign-case-6d2f627923a5ddbc8a9e273f",
+        "campaign-case-76884402fc40edb9f6cf252c",
+        "campaign-case-81bc20a983002f04ec6096a2",
+        "campaign-case-9506fa8a0daed561a7a580e9",
+        "campaign-case-9add0802be8c00154c023a86",
+        "campaign-case-9dc71fe5a91f62164a89d487",
+        "campaign-case-bf1cb44e43ebfb0f132d56f0",
+        "campaign-case-cbb582b22bffcc503325657c",
+        "campaign-case-e0a42b9f8b08d6c9d467a815",
+        "campaign-case-e4e29d9892e0e3c79b9af677",
+        "campaign-case-e62df050ddac03f00bf87af0",
+        "campaign-case-c93a3c69f7443de662a3105f"
+      ],
+      "exactPathBindings": [
+        "f8f6c2e8ccf88ca9a3b2f6bd49c340fa1328605710fd7ccb412d8327d917b694 / f8f6c2e8ccf88ca9a3b2f6bd49c340fa1328605710fd7ccb412d8327d917b694",
+        "5337d48c8ca4039c6ddf3f2d7184675c6b5ef2d357ad6a4beefbba5bc1ee6d44 / 5337d48c8ca4039c6ddf3f2d7184675c6b5ef2d357ad6a4beefbba5bc1ee6d44",
+        "70681d690c18c3cd77ad3df823bf5fa2d6aaf8686d97ea3237e70fe86ce0a9f8 / 70681d690c18c3cd77ad3df823bf5fa2d6aaf8686d97ea3237e70fe86ce0a9f8",
+        "b2e78eaa66bbfa48d47982b80321012528043ff7ffc67a8549212cbb59cfd8ef / b2e78eaa66bbfa48d47982b80321012528043ff7ffc67a8549212cbb59cfd8ef",
+        "8d936ef60e2e22dd1bd499d43842cc21b5b8cef115b400ec60305f816e4cffc8 / 8d936ef60e2e22dd1bd499d43842cc21b5b8cef115b400ec60305f816e4cffc8",
+        "c833a218217fec69cc710bcc8414105c79bcd78935a973d07545a4684acea0b4 / c833a218217fec69cc710bcc8414105c79bcd78935a973d07545a4684acea0b4",
+        "7a7c53af9e44ff3cf4c18698364a064d646f893cebf43659e79286d796a50280 / 7a7c53af9e44ff3cf4c18698364a064d646f893cebf43659e79286d796a50280",
+        "d35d0f262bd14f64eb13ca60bdb2acad9589c030af8cf458b107a28e2b5f45cb / d35d0f262bd14f64eb13ca60bdb2acad9589c030af8cf458b107a28e2b5f45cb",
+        "516d3691b18c419ef7e08b662cf96e95067ce765706f0a77bcec9b698bb06144 / 516d3691b18c419ef7e08b662cf96e95067ce765706f0a77bcec9b698bb06144",
+        "6a9efd15e3c8f00a04d021c43002c8e8cfa0cbb76fc61ad36d96bcd9b367678b / 6a9efd15e3c8f00a04d021c43002c8e8cfa0cbb76fc61ad36d96bcd9b367678b",
+        "f0d2c0901969e2a249bff1c20c6c1396d7be71ef0def8a1a108fcba5a84957e8 / f0d2c0901969e2a249bff1c20c6c1396d7be71ef0def8a1a108fcba5a84957e8",
+        "52756d5f1fc32afc4dece33d36d9999dfcc79e153e9d01d151fd7d89b0d7d6fc / 52756d5f1fc32afc4dece33d36d9999dfcc79e153e9d01d151fd7d89b0d7d6fc",
+        "6a6b0f2347b30a5a3405f4e7272f29bea7665344f2189013e13cb84239e36c2f / 6a6b0f2347b30a5a3405f4e7272f29bea7665344f2189013e13cb84239e36c2f",
+        "92b1acfec4744aab8edc49c25f1000cd45e7d28a50e65db717db78c66c5119b2 / 92b1acfec4744aab8edc49c25f1000cd45e7d28a50e65db717db78c66c5119b2",
+        "050a9075e86bc002f0689cf7492956a82460ecf5512a1e0dc7773b75ed649e9c / 050a9075e86bc002f0689cf7492956a82460ecf5512a1e0dc7773b75ed649e9c"
+      ],
+      "exactRecipeBindings": [
+        "recipe_version_6111f431b256b82aa687e6c479e859bfcafbd4b2bb5c5b979973efac8a5bde86 / 143dfed08363df6dff744e722d7a59e13d27c189478cc72f3a92a9020a6457b6",
+        "recipe_version_71628f4ca4be700742360fc281a1a6c0072ae3e3dc99d6c41d36f9ec2c1fbf03 / 81051eeb73997b026408908103eb8217e771bcee7feb268be2c92e2478b7435a",
+        "recipe_version_eb3c3fc9b3f0401ae7c8f45f88a123a7e388aff4a8607d02638634c077c6db78 / 4bb42838d5bd021ec55814a4ae59b96cfe800a9c3df3b641169c58eb043c9cb8",
+        "recipe_version_d6ba332cafc53e5b24afc0c5b7121d19730eecff76a23402df40eb7bdd0ee317 / 64c7c54ef4bdb4d5db223718278e7836bd29e95df4f46e95e4c49a50c9f3b335",
+        "recipe_version_eca074189fefa49a649ee9a353545e196f88d33fa4b3948fa42ab71b97253614 / 0e97d629727506d7c9609215597b554ca7d3d739a2b05e6a16087deba437a807",
+        "recipe_version_cc0640360b4e872de1bad99b7d851ab9f0c588f50e684b2a95b845557e663c5a / f845bf70f83aab025bf6d4f00fb7bbe18bef0940c3589a2130d66d2629067252",
+        "recipe_version_f19b5a28ea0ff54ca29a10adb01739fd7efc30f6d704344492347d323ddfa3d8 / d537ca36f493682373867a17a91f5a81ce3f839cb3177c0a2fe7a74f4bf13a66",
+        "recipe_version_f38c325733b1bb78fa4a4ca3d6df1e5369d6d816118c493491634fc59ff7b496 / 4cac6b4c3514b468be7447ad3660bda677aeb90ea0d617f20f50cfc9e081e8ef",
+        "recipe_version_66e84d82b7742e110b6d8857da6216daf734838ca23590d3ff5508bc9774d1ba / 7c631a6e01c146ff89cc843da691f5667c47a9b29f9de0daebc2aec2a8be60ce",
+        "recipe_version_799b7ea8404d726ae536a8ee92102a01eb3ccdda71435d4a490ccda92b27e3e2 / c8c6ab183eede0f487c9a4acddf60b66a6ed58d95f405340f5cf03aa29400932",
+        "recipe_version_b7e40536e4bc84e03bc3ad4a3c7f6d59cff3c151343cad4a0bdbc71495256e6a / eca8cb683e733503d13a1b4a8f19da975648d1e39cf730b7580d4336557049ba",
+        "recipe_version_cb88ebc43cfe9c386c683ae6904406c1febe8984e62ff3f5844b6f0cc261f2df / 8c970cb560fc7b1bf8a984f00434724b36ae59d9b0ed1fc99b0568093b941552",
+        "recipe_version_ca15633bc2cae7c0ce4cb11782347ec9cd1aac10a8a7d1d6c375e965102d5490 / 7997ce8ae90e5b7b12b63de4884e6a5f4122034064661b1431ab7bbe90c30026",
+        "recipe_version_124a32273cb288dd70ce07a947a58c69d6ae5144b94a5d9c08b113f6a6a56f58 / 054e4bee9194e5e2ec20a6772fd8df26fd945c38383288fd00c8ece99c4088c6",
+        "recipe_version_f8b4cc75f601aeaeb079dbd521bc3a2bcd481b4a0909a4560798faf78da153f3 / e408cff28c637429a4b13c22bc5143e6647420867568867634fcf30221aff8d5"
+      ],
+      "exactStrategyBindings": [
+        "quentx-5.2.3-scenario-native@quentx-5.2.3-scenario-native.v1 / manifest 0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46 / Guardrail guardrail-profile-7616a340b156316d79f4b76c@quentx-balanced-diagnostics.v1 / execution anchored-standard-execution.v2",
+        "quentx-live-minute-scenario-native@quentx-live-minute-scenario-native.v1 / manifest eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe / Guardrail guardrail-profile-b7b800744246047283b94874@live-minute-capital-preservation.v1 / execution anchored-standard-execution.v2"
+      ],
+      "executionResolutionId": "scenario-execution-resolution-05c30c411f74f2b57f7c0938",
+      "executionResolutionProjectionRevision": 1,
+      "formalHandoffEligible": true,
+      "originatingViewRevision": 9,
+      "scenarioSetId": "formal-scenario-set-3904fe7932d6ff1ff51aa354",
+      "scenarioSetProjectionRevision": 1,
+      "selectionContextId": "scenario-selection-context-0794144c81ed40e0592092cd",
+      "selectionRevision": 1,
+      "sourceGeneration": 1,
+      "sourceRevision": "88eeb0ebf476158c4e1c69c701303b3d546d21ab1e792e06543575c8643679b9",
+      "status": "current"
+    }
+  },
+  "schema_version": 1,
+  "strategy_library": {
+    "entries": [
+      [
+        "quentx-5.2.3-scenario-native",
+        "quentx-5.2.3-scenario-native.v1",
+        "0a83bfe947d47a2385a3aaa3a8b3b8f195f6770e3895fde6b1a8341005d81e46",
+        "guardrail-profile-7616a340b156316d79f4b76c",
+        "quentx-balanced-diagnostics.v1"
+      ],
+      [
+        "quentx-live-minute-scenario-native",
+        "quentx-live-minute-scenario-native.v1",
+        "eae6e80b70698b1744ddf3ca40f74b557306a31fe2ef54d8c49b562a7896e0fe",
+        "guardrail-profile-b7b800744246047283b94874",
+        "live-minute-capital-preservation.v1"
+      ]
+    ],
+    "selection_context_id": "fee45e523365603b065a7ec5c14d95b7ee6c892d66eba686d882152a2fc3e39d"
+  }
+}

@@ -1,0 +1,61 @@
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+..............                                                           [100%]
+============================== warnings summary ===============================
+tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_compiled_smoke_retains_production_mount_owners_until_process_exit
+  F:\PythonProjects\stock_sim\.venv\Lib\site-packages\_pytest\threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-480 (_readerthread)
+  
+  Traceback (most recent call last):
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+      self.run()
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+      self._target(*self._args, **self._kwargs)
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\subprocess.py", line 1599, in _readerthread
+      buffer.append(fh.read())
+                    ^^^^^^^^^
+    File "<frozen codecs>", line 322, in decode
+  UnicodeDecodeError: 'utf-8' codec can't decode byte 0xbe in position 742: invalid start byte
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_release_smoke_repeats_real_qt_journey_in_one_process
+  F:\PythonProjects\stock_sim\.venv\Lib\site-packages\_pytest\threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-482 (_readerthread)
+  
+  Traceback (most recent call last):
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+      self.run()
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+      self._target(*self._args, **self._kwargs)
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\subprocess.py", line 1599, in _readerthread
+      buffer.append(fh.read())
+                    ^^^^^^^^^
+    File "<frozen codecs>", line 322, in decode
+  UnicodeDecodeError: 'utf-8' codec can't decode byte 0xbe in position 742: invalid start byte
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_release_smoke_main_shuts_down_its_owned_qapplication
+  F:\PythonProjects\stock_sim\.venv\Lib\site-packages\_pytest\threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-486 (_readerthread)
+  
+  Traceback (most recent call last):
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045, in _bootstrap_inner
+      self.run()
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 982, in run
+      self._target(*self._args, **self._kwargs)
+    File "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\Lib\subprocess.py", line 1599, in _readerthread
+      buffer.append(fh.read())
+                    ^^^^^^^^^
+    File "<frozen codecs>", line 322, in decode
+  UnicodeDecodeError: 'utf-8' codec can't decode byte 0xbe in position 742: invalid start byte
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: F:\CodexWorktrees\UTI-STOCKSIM-wave3\stock_sim\docs\testing\frontend\evidence\issue-87\8810171aae77f88e64dfae1da3fffdf196529a95\groups\frontend-v2-performance-packaging-contract\junit.xml -
+158 passed, 3 warnings in 721.48s (0:12:01)
