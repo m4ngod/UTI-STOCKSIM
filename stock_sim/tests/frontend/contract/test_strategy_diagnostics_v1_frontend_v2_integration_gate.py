@@ -431,6 +431,7 @@ def _complete_identity_ledger(source_commit: str) -> dict[str, object]:
             "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
+            "SystemHealthFeature/1.0",
         ],
         "strategy_library": {
             "selection_context_id": "strategy-selection-1",
@@ -606,6 +607,7 @@ def test_full_green_gate_writes_one_source_bound_candidate_evidence_set(
         "DiagnosticTasksFeature/1.0",
         "RunMonitoringFeature/1.2",
         "EvidenceAndFindingsFeature/1.1",
+        "SystemHealthFeature/1.0",
     ]
     assert summary["application_interfaces"] == [
         "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",

@@ -44,6 +44,7 @@ EVIDENCE_AND_FINDINGS_INTERFACE_VERSION = FeatureInterfaceVersion(
 DIAGNOSTIC_TASKS_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=0)
 STRATEGY_LIBRARY_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=0)
 SCENARIO_LAB_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=0)
+SYSTEM_HEALTH_INTERFACE_VERSION = FeatureInterfaceVersion(major=1, minor=0)
 
 ACTIVE_FEATURE_INTERFACES = (
     FeatureInterfaceDescriptor(
@@ -66,6 +67,10 @@ ACTIVE_FEATURE_INTERFACES = (
         name=FeatureModuleName.EVIDENCE_AND_FINDINGS,
         version=EVIDENCE_AND_FINDINGS_INTERFACE_VERSION,
     ),
+    FeatureInterfaceDescriptor(
+        name=FeatureModuleName.SYSTEM_HEALTH,
+        version=SYSTEM_HEALTH_INTERFACE_VERSION,
+    ),
 )
 
 
@@ -76,6 +81,7 @@ __all__ = [
     "RUN_MONITORING_INTERFACE_VERSION",
     "SCENARIO_LAB_INTERFACE_VERSION",
     "STRATEGY_LIBRARY_INTERFACE_VERSION",
+    "SYSTEM_HEALTH_INTERFACE_VERSION",
     "FeatureInterfaceDescriptor",
     "FeatureInterfaceVersion",
     "FeatureModuleName",

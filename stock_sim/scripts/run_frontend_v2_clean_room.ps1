@@ -904,7 +904,7 @@ if ($installSucceeded) {
                 [string]$smoke.application_read_model_interface -eq
                     "StrategyDiagnosticsV1ApplicationReadModel/1.0" -and
                 ($activeFeatureInterfaces -join "|") -eq
-                    "StrategyLibraryFeature/1.0|ScenarioLabFeature/1.0|DiagnosticTasksFeature/1.0|RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1" -and
+                    "StrategyLibraryFeature/1.0|ScenarioLabFeature/1.0|DiagnosticTasksFeature/1.0|RunMonitoringFeature/1.2|EvidenceAndFindingsFeature/1.1|SystemHealthFeature/1.0" -and
                 [string]$smoke.campaign_status -eq "completed" -and
                 [string]$smoke.run_status -eq "completed" -and
                 [string]$smoke.evidence_status -eq "sealed" -and

@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from ._diagnostics_application_access import (
     shared_diagnostics_application_access_gate,
 )
+from .diagnostics_application_ownership import (
+    DiagnosticsApplicationIdentity,
+    diagnostics_application_identity,
+)
 from .evidence_and_findings import DiagnosticEvidencePackageId
 from .run_monitoring import (
     DiagnosticTaskId,
@@ -916,6 +920,10 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
     @property
     def interface_version(self) -> DiagnosticTasksApplicationVersion:
         return DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        return diagnostics_application_identity(self._application)
 
     def read_inventory(self) -> DiagnosticTasksApplicationInventoryResult:
         observed_at = datetime.now(timezone.utc)

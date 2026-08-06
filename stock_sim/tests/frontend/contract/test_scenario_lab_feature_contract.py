@@ -40,6 +40,7 @@ def test_scenario_lab_1_0_activates_complete_five_feature_registry() -> None:
         (FeatureModuleName.DIAGNOSTIC_TASKS, "1.0"),
         (FeatureModuleName.RUN_MONITORING, "1.2"),
         (FeatureModuleName.EVIDENCE_AND_FINDINGS, "1.1"),
+        (FeatureModuleName.SYSTEM_HEALTH, "1.0"),
     )
     operations = {
         name

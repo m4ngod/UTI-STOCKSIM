@@ -30,6 +30,10 @@ from strategy_diagnostics.strategy_runs import StrategyRunSnapshot
 from ._diagnostics_application_access import (
     shared_diagnostics_application_access_gate,
 )
+from .diagnostics_application_ownership import (
+    DiagnosticsApplicationIdentity,
+    diagnostics_application_identity,
+)
 from .evidence_and_findings import (
     ApprovedScenarioRecipeId,
     CandidateEvidence,
@@ -295,6 +299,10 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
     @property
     def interface_version(self) -> ApplicationReadModelVersion:
         return self._provider_version
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        return diagnostics_application_identity(self._application)
 
     def resolve_journey(
         self,

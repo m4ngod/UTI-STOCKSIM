@@ -83,6 +83,9 @@ from app.features import (
     StrategySelectionBookmark,
     StrategyUnderTestId,
     Subscription,
+    SystemHealthContext,
+    SystemHealthFeature,
+    SystemHealthViewState,
     ValidateDiagnosticTaskConfiguration,
     compose_diagnostic_setup_selection_context,
 )
@@ -5883,6 +5886,171 @@ def _chart_viewport(intent: str) -> EvidenceChartViewport:
     return viewports.get(intent, viewports["overview"])
 
 
+class SystemHealthQtAdapter(QObject):
+    """Qt-only read projection of the typed System Health Interface."""
+
+    stateChanged = Signal()
+    deliveryRequested = Signal(int, object)
+
+    def __init__(
+        self,
+        feature: SystemHealthFeature,
+        *,
+        context: SystemHealthContext | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._feature = feature
+        self._context = context or SystemHealthContext()
+        self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._route_active = True
+        self._closed = False
+        self.deliveryRequested.connect(
+            self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subscription: Subscription | None = feature.subscribe(
+            self._context,
+            self._queue_state,
+        )
+
+    def _queue_state(self, state: SystemHealthViewState) -> None:
+        if self._closed or not self._route_active:
+            return
+        self.deliveryRequested.emit(self._mount_generation.value, state)
+
+    @Slot(int, object)
+    def _accept_state(
+        self,
+        mount_generation: int,
+        state: SystemHealthViewState,
+    ) -> None:
+        if (
+            self._closed
+            or mount_generation != self._mount_generation.value
+            or state.context != self._context
+            or state.revision <= self._state.revision
+        ):
+            return
+        self._state = state
+        self.stateChanged.emit()
+
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        if active:
+            self._state = self._feature.snapshot(self._context)
+            self._subscription = self._feature.subscribe(
+                self._context,
+                self._queue_state,
+            )
+            self.stateChanged.emit()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def presentationState(self) -> str:  # noqa: N802
+        return self._state.presentation.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def phase(self) -> str:
+        return self._state.phase.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshness(self) -> str:
+        return self._state.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def completeness(self) -> str:
+        return self._state.completeness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def recoveryPhase(self) -> str:  # noqa: N802
+        return self._state.recovery_phase.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusText(self) -> str:  # noqa: N802
+        error = self._state.error
+        details = (
+            f"{self.presentationState} · {self.freshness} · "
+            f"{self.completeness}"
+        )
+        if error is None:
+            return details
+        return f"{details} · {error.code.value} · {error.explanation}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def componentClassification(self) -> str:  # noqa: N802
+        if not self._state.components:
+            return "unknown"
+        return self._state.components[0].classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def componentExplanation(self) -> str:  # noqa: N802
+        if not self._state.components:
+            return "No authoritative Runtime Health observation is available."
+        return self._state.components[0].explanation
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def ageText(self) -> str:  # noqa: N802
+        return f"{self._state.age.total_seconds():.1f}s"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshnessThresholdText(self) -> str:  # noqa: N802
+        return f"{self._state.freshness_threshold.total_seconds():.1f}s"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def revisionText(self) -> str:  # noqa: N802
+        return f"r{self._state.revision}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def observedAtText(self) -> str:  # noqa: N802
+        return self._state.observed_at.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceIdentity(self) -> str:  # noqa: N802
+        return self._state.source.identity
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGenerationText(self) -> str:  # noqa: N802
+        return f"g{self._state.source.generation.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def lastReliableText(self) -> str:  # noqa: N802
+        if self._state.last_reliable_at is None:
+            return "Unavailable"
+        return self._state.last_reliable_at.isoformat()
+
+    @Slot()
+    def refresh(self) -> None:
+        if self._closed or not self._route_active:
+            return
+        state = self._feature.snapshot(self._context)
+        if state.revision > self._state.revision:
+            self._state = state
+            self.stateChanged.emit()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._route_active = False
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        try:
+            self.deliveryRequested.disconnect(self._accept_state)
+        except (RuntimeError, TypeError):
+            pass
+
+
 class JourneyWorkspaceHost(QQuickWidget):
     """Exactly one route-level QML host mounted by the Widgets MainWindow."""
 
@@ -5909,6 +6077,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         ) = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
         evidence_context: EvidenceAndFindingsContext | None = None,
+        system_health_feature: SystemHealthFeature | None = None,
+        system_health_context: SystemHealthContext | None = None,
         accessibility_preferences: AccessibilityPreferences | None = None,
         parent: QWidget | None = None,
         initial_route: str = "diagnostic_tasks",
@@ -5920,6 +6090,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
+            "system_health",
         }:
             raise ValueError(
                 f"Unsupported Journey Workspace route: {initial_route!r}"
@@ -6061,6 +6232,19 @@ class JourneyWorkspaceHost(QQuickWidget):
             "evidenceAndFindings",
             self._evidence_and_findings,
         )
+        self._system_health = (
+            SystemHealthQtAdapter(
+                system_health_feature,
+                context=system_health_context,
+                parent=self,
+            )
+            if system_health_feature is not None
+            else None
+        )
+        self.rootContext().setContextProperty(
+            "systemHealth",
+            self._system_health,
+        )
         if (
             self._diagnostic_tasks is not None
             and self._evidence_and_findings is not None
@@ -6182,6 +6366,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._evidence_and_findings.set_route_active(
                 route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
             )
+        if self._system_health is not None:
+            self._system_health.set_route_active(
+                route is JourneyWorkspaceRoute.SYSTEM_HEALTH
+            )
 
     @Slot(object)
     def _select_run_monitoring_handoff(
@@ -6236,6 +6424,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
+        if self._system_health is not None:
+            self._system_health.close()
         if unload_qml:
             self.setSource(QUrl())
 
@@ -6247,4 +6437,5 @@ __all__ = [
     "RunMonitoringQtAdapter",
     "ScenarioLabQtAdapter",
     "StrategyLibraryQtAdapter",
+    "SystemHealthQtAdapter",
 ]

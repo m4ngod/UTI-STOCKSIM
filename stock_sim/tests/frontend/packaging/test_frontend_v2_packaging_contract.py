@@ -422,6 +422,7 @@ def _clean_room_lane(root, lane, graphics_api):
             "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
+            "SystemHealthFeature/1.0",
         ],
         "campaign_status": "completed",
         "run_status": "completed",
@@ -1705,6 +1706,7 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "DiagnosticTasksFeature/1.0",
                         "RunMonitoringFeature/1.2",
                         "EvidenceAndFindingsFeature/1.1",
+                        "SystemHealthFeature/1.0",
                     ],
                     "campaign_status": "completed",
                     "run_status": "completed",
@@ -2641,7 +2643,8 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
         "ScenarioLabFeature/1.0|"
         "DiagnosticTasksFeature/1.0|"
         "RunMonitoringFeature/1.2|"
-        "EvidenceAndFindingsFeature/1.1"
+        "EvidenceAndFindingsFeature/1.1|"
+        "SystemHealthFeature/1.0"
         in script
     )
     assert "$smoke.persistence_reopened -is [bool]" in script

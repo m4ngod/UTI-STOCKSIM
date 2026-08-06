@@ -1,6 +1,6 @@
 """Mandatory Frontend V2 no-manual-trading release gate.
 
-The gate is deliberately stricter than a text search. It reflects the three
+The gate is deliberately stricter than a text search. It reflects the six
 active Feature Interfaces, parses QML Adapter slots and Journey source,
 inspects live/fake Adapter surfaces and runtime calls, and records immutable
 evidence that packaging certification can require.
@@ -95,6 +95,14 @@ ACTIVE_FEATURE_INTERFACE_ALLOWLIST: Mapping[str, frozenset[str]] = (
                     "close",
                 }
             ),
+            "SystemHealthFeature": frozenset(
+                {
+                    "interface_version",
+                    "snapshot",
+                    "subscribe",
+                    "close",
+                }
+            ),
         }
     )
 )
@@ -182,6 +190,7 @@ QML_ADAPTER_SLOT_ALLOWLIST: Mapping[str, frozenset[str]] = MappingProxyType(
                 "setViewportIntent",
             }
         ),
+        "SystemHealthQtAdapter": frozenset({"refresh"}),
     }
 )
 
@@ -192,6 +201,7 @@ JOURNEY_ROUTE_ALLOWLIST = frozenset(
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
+        "system_health",
     }
 )
 JOURNEY_SHORTCUT_KEY_ALLOWLIST = frozenset(
@@ -203,6 +213,8 @@ JOURNEY_SHORTCUT_KEY_ALLOWLIST = frozenset(
         "Right",
         "Home",
         "End",
+        "Backtab",
+        "Escape",
     }
 )
 
@@ -1070,6 +1082,9 @@ def audit_no_manual_trading_gate(
             / "features"
             / "live_evidence_and_findings.py"
         ),
+        "LiveSystemHealthAdapter": (
+            project_root / "app" / "features" / "live_system_health.py"
+        ),
     }
     telemetry_sources = (
         qt_adapter_source,
@@ -1083,6 +1098,7 @@ def audit_no_manual_trading_gate(
         DeterministicFakeRunMonitoringAdapter,
         DeterministicFakeScenarioLabAdapter,
         DeterministicFakeStrategyLibraryAdapter,
+        DeterministicFakeSystemHealthAdapter,
         DiagnosticTasksFeature,
         EvidenceAndFindingsFeature,
         FillEvidenceTrace,
@@ -1091,6 +1107,7 @@ def audit_no_manual_trading_gate(
         LiveRunMonitoringAdapter,
         LiveScenarioLabAdapter,
         LiveStrategyLibraryAdapter,
+        LiveSystemHealthAdapter,
         OrderEvidenceTrace,
         ReadOnlyDiagnosticContext,
         ReadOnlyEvidenceContext,
@@ -1103,6 +1120,7 @@ def audit_no_manual_trading_gate(
         StrategyLibraryEntry,
         StrategyLibraryFeature,
         StrategyLibraryViewState,
+        SystemHealthFeature,
     )
     from app.features.run_monitoring import _diagnostic_task_transition
 
@@ -1112,6 +1130,7 @@ def audit_no_manual_trading_gate(
         "DiagnosticTasksFeature": DiagnosticTasksFeature,
         "RunMonitoringFeature": RunMonitoringFeature,
         "EvidenceAndFindingsFeature": EvidenceAndFindingsFeature,
+        "SystemHealthFeature": SystemHealthFeature,
     }
     findings: list[str] = []
     feature_members = {
@@ -1235,6 +1254,8 @@ def audit_no_manual_trading_gate(
         LiveRunMonitoringAdapter,
         DeterministicFakeEvidenceAndFindingsAdapter,
         LiveEvidenceAndFindingsAdapter,
+        DeterministicFakeSystemHealthAdapter,
+        LiveSystemHealthAdapter,
     )
     for adapter_type in adapter_types:
         for member in sorted(_FORBIDDEN_RUNTIME_MEMBERS):

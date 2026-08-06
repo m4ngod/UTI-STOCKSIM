@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from threading import Event, Thread, current_thread
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -56,6 +57,7 @@ from app.features import (
     StrategyDiagnosticsV1DiagnosticTasksApplication,
     TaskPhase,
     ValidateDiagnosticTaskConfiguration,
+    diagnostics_application_identity,
 )
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
@@ -1142,9 +1144,14 @@ def test_production_composition_uses_only_the_live_diagnostic_tasks_adapter(
         settings_path=str(tmp_path / "settings.json"),
         run_monitoring_mode="live",
         event_bridge=EventBridge(subscribe_backend=False),
+        strategy_diagnostics_application=application,
         strategy_diagnostics_read_model=cast(
             StrategyDiagnosticsV1ApplicationReadModel,
-            object(),
+            SimpleNamespace(
+                application_identity=diagnostics_application_identity(
+                    application
+                )
+            ),
         ),
         strategy_diagnostics_tasks_application=application_adapter,
     )
@@ -1178,9 +1185,14 @@ def test_live_diagnostic_tasks_reconnects_with_a_new_generation_only_after_rerea
         settings_path=str(tmp_path / "settings.json"),
         run_monitoring_mode="live",
         event_bridge=bridge,
+        strategy_diagnostics_application=application,
         strategy_diagnostics_read_model=cast(
             StrategyDiagnosticsV1ApplicationReadModel,
-            object(),
+            SimpleNamespace(
+                application_identity=diagnostics_application_identity(
+                    application
+                )
+            ),
         ),
         strategy_diagnostics_tasks_application=application_adapter,
     )

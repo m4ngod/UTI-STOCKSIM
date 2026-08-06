@@ -139,6 +139,13 @@ def _start_frontend(*, headless: bool):
         )
         if evidence_feature is not None:
             app.aboutToQuit.connect(evidence_feature.close)  # type: ignore[attr-defined]
+        system_health_feature = getattr(
+            context,
+            "system_health_feature",
+            None,
+        )
+        if system_health_feature is not None:
+            app.aboutToQuit.connect(system_health_feature.close)  # type: ignore[attr-defined]
     except Exception:
         pass
     mw = MainWindow(
@@ -204,6 +211,16 @@ def _start_frontend(*, headless: bool):
         evidence_and_findings_context=getattr(
             context,
             "evidence_and_findings_context",
+            None,
+        ),
+        system_health_feature=getattr(
+            context,
+            "system_health_feature",
+            None,
+        ),
+        system_health_context=getattr(
+            context,
+            "system_health_context",
             None,
         ),
     )

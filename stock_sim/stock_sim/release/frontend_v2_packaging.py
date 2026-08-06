@@ -283,6 +283,7 @@ _EXPECTED_ACTIVE_FEATURE_INTERFACES = (
     "DiagnosticTasksFeature/1.0",
     "RunMonitoringFeature/1.2",
     "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0",
 )
 REAL_V1_IDENTITY_FIELDS = (
     "campaign_identity",

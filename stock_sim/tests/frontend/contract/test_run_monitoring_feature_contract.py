@@ -14,6 +14,7 @@ from app.features import (
     FormalDiagnosticCampaignId,
     Freshness,
     RUN_MONITORING_INTERFACE_VERSION,
+    SYSTEM_HEALTH_INTERFACE_VERSION,
     RunMonitoringContext,
     RunMonitoringFeature,
     RunMonitoringPresentationState,
@@ -42,6 +43,7 @@ def test_wave_three_entry_activates_strategy_library_before_inherited_interfaces
         FeatureModuleName.DIAGNOSTIC_TASKS,
         FeatureModuleName.RUN_MONITORING,
         FeatureModuleName.EVIDENCE_AND_FINDINGS,
+        FeatureModuleName.SYSTEM_HEALTH,
     )
     assert (
         ACTIVE_FEATURE_INTERFACES[0].version
@@ -61,11 +63,13 @@ def test_wave_three_entry_activates_strategy_library_before_inherited_interfaces
         ACTIVE_FEATURE_INTERFACES[4].version
         == EVIDENCE_AND_FINDINGS_INTERFACE_VERSION
     )
+    assert ACTIVE_FEATURE_INTERFACES[5].version == SYSTEM_HEALTH_INTERFACE_VERSION
     assert STRATEGY_LIBRARY_INTERFACE_VERSION.render() == "1.0"
     assert SCENARIO_LAB_INTERFACE_VERSION.render() == "1.0"
     assert DIAGNOSTIC_TASKS_INTERFACE_VERSION.render() == "1.0"
     assert RUN_MONITORING_INTERFACE_VERSION.render() == "1.2"
     assert EVIDENCE_AND_FINDINGS_INTERFACE_VERSION.render() == "1.1"
+    assert SYSTEM_HEALTH_INTERFACE_VERSION.render() == "1.0"
 
 
 def test_fake_snapshot_starts_as_typed_loading_state():

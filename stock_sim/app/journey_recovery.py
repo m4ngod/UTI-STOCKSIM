@@ -1,4 +1,4 @@
-"""Typed presentation bookmark for reopening the five-Feature Journey Workspace."""
+"""Typed presentation bookmark for reopening the six-Feature Journey Workspace."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ class JourneyWorkspaceRoute(str, Enum):
     DIAGNOSTIC_TASKS = "diagnostic_tasks"
     RUN_MONITORING = "run_monitoring"
     EVIDENCE_AND_FINDINGS = "evidence_and_findings"
+    SYSTEM_HEALTH = "system_health"
 
 
 @dataclass(frozen=True, slots=True)

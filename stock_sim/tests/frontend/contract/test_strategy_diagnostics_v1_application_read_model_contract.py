@@ -75,6 +75,7 @@ def test_application_read_model_contract_is_exact_typed_and_frozen() -> None:
         "DiagnosticTasksFeature",
         "RunMonitoringFeature",
         "EvidenceAndFindingsFeature",
+        "SystemHealthFeature",
     )
 
     selector = V1JourneySelector(

@@ -24,6 +24,7 @@ from app.features import (
     ReadOnlyDiagnosticContext,
     ReadOnlyEvidenceContext,
     RunMonitoringFeature,
+    SystemHealthFeature,
 )
 from stock_sim.release.no_manual_trading_gate import (
     ACTIVE_FEATURE_INTERFACE_ALLOWLIST,
@@ -136,6 +137,11 @@ def test_public_feature_reflection_is_exact_and_generic_dispatch_is_rejected():
         ACTIVE_FEATURE_INTERFACE_ALLOWLIST[
             "EvidenceAndFindingsFeature"
         ],
+    ) == ()
+    assert audit_feature_interface(
+        "SystemHealthFeature",
+        SystemHealthFeature,
+        ACTIVE_FEATURE_INTERFACE_ALLOWLIST["SystemHealthFeature"],
     ) == ()
 
     class CompromisedRunMonitoringFeature:

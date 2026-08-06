@@ -661,6 +661,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         "DiagnosticTasksFeature",
         "RunMonitoringFeature",
         "EvidenceAndFindingsFeature",
+        "SystemHealthFeature",
     )
     actual_interfaces = tuple(
         interface.name.value for interface in ACTIVE_FEATURE_INTERFACES
@@ -899,10 +900,11 @@ def _validate_identity_ledger(
         "DiagnosticTasksFeature/1.0",
         "RunMonitoringFeature/1.2",
         "EvidenceAndFindingsFeature/1.1",
+        "SystemHealthFeature/1.0",
     ]
     if ledger.get("feature_interfaces") != expected_registry:
         raise ValueError(
-            "identity ledger does not contain the exact five-Feature registry"
+            "identity ledger does not contain the exact six-Feature registry"
         )
 
     required_sections = {
@@ -1083,7 +1085,7 @@ def write_source_candidate_evidence(
 
     identity_ledger_path = candidate_root / "identity-ledger.json"
     if not identity_ledger_path.is_file():
-        raise ValueError("persisted five-Feature identity ledger is unavailable")
+        raise ValueError("persisted six-Feature identity ledger is unavailable")
     identity_ledger = _validate_identity_ledger(json.loads(
         identity_ledger_path.read_text(encoding="utf-8")
     ), source_commit=source_commit)
@@ -1195,7 +1197,7 @@ def write_source_candidate_evidence(
                 f"Candidate source: `{source_commit}`",
                 "",
                 "All ten source integration Gate groups passed and are bound",
-                "to the JUnit/raw reports and persisted five-Feature identity",
+                "to the JUnit/raw reports and persisted six-Feature identity",
                 "ledger in this directory.",
                 "",
                 "This is source-level evidence only. Issue #88 owns installed",
