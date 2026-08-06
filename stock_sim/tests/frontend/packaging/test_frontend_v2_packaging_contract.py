@@ -1982,6 +1982,7 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
         <nuitka-compilation-report mode="standalone" completion="yes">
           <module name="app.app_context" />
           <module name="app.i18n.loader" />
+          <module name="app.journey_recovery" />
           <module name="app.state.app_state" />
           <module name="app.state.layout_persistence" />
           <module name="app.state.settings_state" />
