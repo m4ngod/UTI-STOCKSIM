@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
+
+import pytest
 
 from strategy_diagnostics import (
     FormalStrategySelectionCandidate,
@@ -12,15 +16,53 @@ from strategy_diagnostics import (
     StrategyInventoryReasonCode,
     create_diagnostics_application,
 )
-from strategy_diagnostics.strategy_inventory import (
-    build_strategy_under_test_inventory,
-    validate_formal_strategy_set,
+from strategy_diagnostics.formal_strategy_sources import (
+    FORMAL_STRATEGY_SOURCE_BINDINGS,
 )
 from strategy_diagnostics.ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
     QUENTX_SCENARIO_NATIVE_STRATEGY_ID,
     REFERENCE_PTRADE_STRATEGY_ID,
 )
+from strategy_diagnostics.strategy_inventory import (
+    build_strategy_under_test_inventory,
+    validate_formal_strategy_set,
+)
+
+
+def _stage_installed_formal_strategy_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    from strategy_diagnostics import strategy_inventory as inventory_module
+
+    project_root = Path(__file__).resolve().parents[2]
+    distribution_root = tmp_path / "frontend_v2_package_entry.dist"
+    for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values():
+        retained_source = distribution_root / binding.packaged_relative_path
+        retained_source.parent.mkdir(parents=True, exist_ok=True)
+        retained_source.write_text(
+            (project_root / binding.source_relative_path).read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        inventory_module,
+        "__file__",
+        str(
+            tmp_path
+            / "compiled"
+            / "strategy_diagnostics"
+            / "strategy_inventory.py"
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(distribution_root / "UTI-Frontend-V2.exe")],
+    )
+    return distribution_root
 
 
 def test_formal_selection_validation_dtos_are_public_package_types() -> None:
@@ -80,6 +122,58 @@ def test_public_application_inventory_exposes_only_formal_v1_strategies() -> Non
     assert "replay_scenario_lab_projection_command" in surface.application_commands
     assert surface.unclassified_commands == ()
     assert surface.status == "verified"
+
+
+def test_installed_inventory_verifies_retained_formal_strategy_sources(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _stage_installed_formal_strategy_sources(tmp_path, monkeypatch)
+
+    application = create_diagnostics_application()
+    application.start()
+    inventory = application.read_strategy_under_test_inventory()
+
+    assert len(inventory.entries) == 2
+    assert all(entry.formal_campaign_eligible for entry in inventory.entries)
+    assert all(
+        entry.availability == "formal_campaign_ready"
+        for entry in inventory.entries
+    )
+
+
+def test_installed_inventory_rejects_tampered_retained_formal_strategy_source(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    distribution_root = _stage_installed_formal_strategy_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    strategy_module, binding = next(
+        iter(FORMAL_STRATEGY_SOURCE_BINDINGS.items())
+    )
+    retained_source = distribution_root / binding.packaged_relative_path
+    retained_source.write_text(
+        retained_source.read_text(encoding="utf-8") + "\n# tampered\n",
+        encoding="utf-8",
+    )
+
+    application = create_diagnostics_application()
+    application.start()
+    inventory = application.read_strategy_under_test_inventory()
+    tampered_entry = next(
+        entry
+        for entry in inventory.entries
+        if entry.source.module == strategy_module
+    )
+
+    assert not tampered_entry.formal_campaign_eligible
+    assert tampered_entry.availability is StrategyInventoryAvailability.INCOMPATIBLE
+    assert any(
+        reason.code is StrategyInventoryReasonCode.SOURCE_CONTENT_MISMATCH
+        for reason in tampered_entry.availability_reasons
+    )
 
 
 def test_missing_guardrail_profiles_remain_visible_without_fabricated_identity() -> None:

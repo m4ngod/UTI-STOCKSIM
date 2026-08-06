@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -452,13 +453,18 @@ def _declared_source_hash(manifest: PTradeCompatibilityManifest) -> str:
     if binding is None:
         return ""
     project_root = Path(__file__).resolve().parent.parent
-    try:
-        source = (project_root / binding.source_relative_path).read_text(
-            encoding="utf-8"
-        )
-    except (OSError, UnicodeError):
-        return ""
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+    executable = Path(sys.argv[0] if sys.argv else sys.executable)
+    candidates = (
+        project_root / binding.source_relative_path,
+        executable.resolve().parent / binding.packaged_relative_path,
+    )
+    for candidate in dict.fromkeys(candidates):
+        try:
+            source = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        return hashlib.sha256(source.encode("utf-8")).hexdigest()
+    return ""
 
 
 def _compatibility(
