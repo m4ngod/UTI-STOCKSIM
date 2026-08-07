@@ -6026,14 +6026,82 @@ class SystemHealthQtAdapter(QObject):
             return "Unavailable"
         return self._state.last_reliable_at.isoformat()
 
-    @Slot()
-    def refresh(self) -> None:
-        if self._closed or not self._route_active:
-            return
-        state = self._feature.snapshot(self._context)
-        if state.revision > self._state.revision:
-            self._state = state
-            self.stateChanged.emit()
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceClassification(self) -> str:  # noqa: N802
+        return self._state.diagnostic_data_source.classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceConnection(self) -> str:  # noqa: N802
+        return self._state.diagnostic_data_source.connection.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceFallback(self) -> str:  # noqa: N802
+        return self._state.diagnostic_data_source.fallback.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceRecoveryPhase(self) -> str:  # noqa: N802
+        return self._state.diagnostic_data_source.recovery_phase.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceFreshness(self) -> str:  # noqa: N802
+        return self._state.diagnostic_data_source.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceExplanation(self) -> str:  # noqa: N802
+        source = self._state.diagnostic_data_source
+        if source.error is None:
+            return source.explanation
+        return (
+            f"{source.explanation} · {source.error.code.value} · "
+            f"{source.error.explanation}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceIdentityText(self) -> str:  # noqa: N802
+        observation = (
+            self._state.diagnostic_data_source.last_reliable_observation
+        )
+        if observation is None:
+            return "Unavailable"
+        identity = observation.identity
+        return (
+            f"{identity.public_id} · {identity.provider} · "
+            f"{identity.dataset} · {identity.version}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceRevisionText(self) -> str:  # noqa: N802
+        revision = self._state.diagnostic_data_source.accepted_revision
+        if revision is None:
+            return "Unavailable"
+        return f"r{revision.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceGenerationText(self) -> str:  # noqa: N802
+        generation = self._state.diagnostic_data_source.accepted_generation
+        return f"g{generation.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceCurrentGenerationText(self) -> str:  # noqa: N802
+        return f"g{self._state.source.generation.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceAgeText(self) -> str:  # noqa: N802
+        return f"{self._state.diagnostic_data_source.age.total_seconds():.1f}s"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceLastReliableText(self) -> str:  # noqa: N802
+        observation = (
+            self._state.diagnostic_data_source.last_reliable_observation
+        )
+        if observation is None:
+            return "Unavailable"
+        return observation.observed_at.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceAffectedScopeText(self) -> str:  # noqa: N802
+        scope = self._state.diagnostic_data_source.affected_scope
+        return " · ".join(item.value.replace("_", " ") for item in scope)
 
     def close(self) -> None:
         if self._closed:

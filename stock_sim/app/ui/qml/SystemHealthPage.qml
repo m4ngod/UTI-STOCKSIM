@@ -8,6 +8,7 @@ FocusScope {
     property var tokens
     property var leaveFocusTarget: null
     readonly property bool hasMeaningfulFocus: statusSummary.activeFocus
+        || dataSourceStatus.activeFocus
 
     function restoreFocus() {
         statusSummary.forceActiveFocus()
@@ -43,7 +44,7 @@ FocusScope {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "Runtime Health"
+                    text: "System Health"
                     color: tokens.textPrimary
                     font.pixelSize: 28
                     font.bold: true
@@ -62,7 +63,7 @@ FocusScope {
                     id: statusSummary
                     objectName: "systemHealthAccessibleStatus"
                     property string accessibleName: (
-                        "Runtime Health " + adapter.presentationState
+                        "System Health " + adapter.presentationState
                         + ", freshness " + adapter.freshness
                         + ", completeness " + adapter.completeness
                     )
@@ -220,6 +221,188 @@ FocusScope {
                                 text: "Source · " + adapter.sourceIdentity
                                     + " · " + adapter.sourceGenerationText
                                 color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: dataSourceStatus
+                    objectName: "dataSourceAccessibleStatus"
+                    property string accessibleName: (
+                        "Diagnostic Data Source "
+                        + adapter.dataSourceClassification
+                        + ", connection " + adapter.dataSourceConnection
+                        + ", fallback " + adapter.dataSourceFallback
+                        + ", recovery " + adapter.dataSourceRecoveryPhase
+                        + ", freshness " + adapter.dataSourceFreshness
+                    )
+                    activeFocusOnTab: true
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.max(
+                        116,
+                        dataSourceStatusColumn.implicitHeight + tokens.spaceMd * 2
+                    )
+                    radius: tokens.radiusMd
+                    color: tokens.surfaceRaised
+                    border.color: activeFocus ? tokens.focus : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: accessibleName
+                    Accessible.description: adapter.dataSourceExplanation
+                    Accessible.focusable: true
+                    Accessible.focused: activeFocus
+                    Keys.onEscapePressed: function(event) {
+                        if (page.leaveFocusTarget !== null)
+                            page.leaveFocusTarget.forceActiveFocus()
+                        event.accepted = true
+                    }
+                    Keys.onBacktabPressed: function(event) {
+                        statusSummary.forceActiveFocus()
+                        event.accepted = true
+                    }
+
+                    ColumnLayout {
+                        id: dataSourceStatusColumn
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceMd
+                        spacing: tokens.spaceXs
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "DIAGNOSTIC DATA SOURCE · "
+                                + adapter.dataSourceClassification.toUpperCase()
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.bodySize
+                            font.bold: true
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Connection · " + adapter.dataSourceConnection
+                                + " · fallback " + adapter.dataSourceFallback
+                                + " · recovery "
+                                + adapter.dataSourceRecoveryPhase
+                            color: tokens.textMuted
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: adapter.dataSourceExplanation
+                            color: tokens.textMuted
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                        }
+                    }
+                }
+
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: tokens.textScale >= 1.75 ? 1 : 2
+                    columnSpacing: tokens.spaceMd
+                    rowSpacing: tokens.spaceMd
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(
+                            190,
+                            dataSourceIdentityColumn.implicitHeight
+                                + tokens.spaceMd * 2
+                        )
+                        radius: tokens.radiusMd
+                        color: tokens.surface
+                        border.color: tokens.border
+
+                        ColumnLayout {
+                            id: dataSourceIdentityColumn
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceMd
+                            spacing: tokens.spaceXs
+
+                            Text {
+                                text: "SAFE SOURCE IDENTITY"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+                            Text {
+                                objectName: "dataSourceIdentityText"
+                                Layout.fillWidth: true
+                                text: adapter.dataSourceIdentityText
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Affected scope · "
+                                    + adapter.dataSourceAffectedScopeText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(
+                            190,
+                            dataSourceObservationColumn.implicitHeight
+                                + tokens.spaceMd * 2
+                        )
+                        radius: tokens.radiusMd
+                        color: tokens.surface
+                        border.color: tokens.border
+
+                        ColumnLayout {
+                            id: dataSourceObservationColumn
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceMd
+                            spacing: tokens.spaceXs
+
+                            Text {
+                                text: "SOURCE OBSERVATION"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+                            Text {
+                                objectName: "dataSourceRevisionText"
+                                Layout.fillWidth: true
+                                text: "Accepted · "
+                                    + adapter.dataSourceRevisionText
+                                    + " · " + adapter.dataSourceGenerationText
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Current transport generation · "
+                                    + adapter.dataSourceCurrentGenerationText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Freshness · " + adapter.dataSourceFreshness
+                                    + " · age " + adapter.dataSourceAgeText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Last reliable · "
+                                    + adapter.dataSourceLastReliableText
+                                color: tokens.textMuted
                                 font.pixelSize: tokens.labelSize
                                 wrapMode: Text.WrapAnywhere
                             }

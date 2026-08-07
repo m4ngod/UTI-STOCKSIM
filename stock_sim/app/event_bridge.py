@@ -53,6 +53,11 @@ class EventBridgeConnectionPhase(str, Enum):
     DISCONNECTED = "disconnected"
 
 
+class EventBridgeSourceMode(str, Enum):
+    PRIMARY = "primary"
+    FALLBACK = "fallback"
+
+
 @dataclass(frozen=True, slots=True)
 class EventBridgeConnectionSequence:
     value: int
@@ -73,6 +78,7 @@ class EventBridgeConnectionState:
     generation: EventBridgeGenerationId
     sequence: EventBridgeConnectionSequence
     phase: EventBridgeConnectionPhase
+    source_mode: EventBridgeSourceMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +186,7 @@ class EventBridge:
         self._connection_generation = EventBridgeGenerationId(1)
         self._connection_sequence = EventBridgeConnectionSequence(1)
         self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+        self._source_mode = EventBridgeSourceMode.PRIMARY
         self._connection_observers: dict[
             int,
             Callable[[EventBridgeConnectionState], None],
@@ -307,6 +314,27 @@ class EventBridge:
                 self._connection_generation.value + 1
             )
             self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+            self._source_mode = EventBridgeSourceMode.PRIMARY
+            self._advance_connection_sequence_locked()
+            state = self._connection_state_locked()
+            observers = tuple(self._connection_observers.values())
+        self._notify_connection_observers(observers, state)
+        return state
+
+    def mark_fallback_active(self) -> EventBridgeConnectionState:
+        """Expose a safe source-mode transition for live Adapter recovery."""
+
+        with self._lock:
+            if (
+                self._connection_phase is EventBridgeConnectionPhase.CONNECTED
+                and self._source_mode is EventBridgeSourceMode.FALLBACK
+            ):
+                return self._connection_state_locked()
+            self._connection_generation = EventBridgeGenerationId(
+                self._connection_generation.value + 1
+            )
+            self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+            self._source_mode = EventBridgeSourceMode.FALLBACK
             self._advance_connection_sequence_locked()
             state = self._connection_state_locked()
             observers = tuple(self._connection_observers.values())
@@ -465,6 +493,7 @@ class EventBridge:
                 self._connection_generation.value + 1
             )
             self._connection_phase = EventBridgeConnectionPhase.CONNECTED
+            self._source_mode = EventBridgeSourceMode.FALLBACK
             self._advance_connection_sequence_locked()
             state = self._connection_state_locked()
             observers = tuple(self._connection_observers.values())
@@ -476,6 +505,7 @@ class EventBridge:
             generation=self._connection_generation,
             sequence=self._connection_sequence,
             phase=self._connection_phase,
+            source_mode=self._source_mode,
         )
 
     def _advance_connection_sequence_locked(self) -> None:

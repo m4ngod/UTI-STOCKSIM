@@ -5,6 +5,8 @@ from app.core_dto import SnapshotDTO
 from app.event_bridge import (
     BACKEND_RUNTIME_SNAPSHOT_TOPIC,
     EventBridge,
+    EventBridgeConnectionPhase,
+    EventBridgeSourceMode,
     FRONTEND_SNAPSHOT_BATCH_TOPIC,
     get_frontend_bridge,
     start_frontend_bridge,
@@ -113,3 +115,47 @@ def test_start_frontend_bridge_returns_singleton():
         assert get_frontend_bridge() is bridge1
     finally:
         stop_frontend_bridge()
+
+
+def test_event_bridge_exposes_monotonic_generation_and_fallback_source_mode():
+    bridge = EventBridge(subscribe_backend=False)
+    observed = []
+    dispose = bridge.subscribe_connection_state(
+        observed.append,
+        replay_current=True,
+    )
+    try:
+        assert observed[-1].phase is EventBridgeConnectionPhase.CONNECTED
+        assert observed[-1].source_mode is EventBridgeSourceMode.PRIMARY
+        assert observed[-1].generation.value == 1
+
+        bridge.mark_disconnected()
+        fallback = bridge.mark_fallback_active()
+
+        assert fallback.phase is EventBridgeConnectionPhase.CONNECTED
+        assert fallback.source_mode is EventBridgeSourceMode.FALLBACK
+        assert fallback.generation.value == 2
+        assert [state.sequence.value for state in observed] == sorted(
+            {state.sequence.value for state in observed}
+        )
+    finally:
+        dispose()
+
+
+def test_event_bridge_keeps_delivery_generations_separate_within_one_flush():
+    bridge = EventBridge(subscribe_backend=False)
+    batches = []
+    dispose = bridge.subscribe_batches(batches.append)
+    try:
+        bridge.on_snapshot({"source_revision": 99}, generation=1)
+        bridge.mark_disconnected()
+        bridge.mark_fallback_active()
+        bridge.on_snapshot({"source_revision": 2})
+        bridge.flush(force=True)
+
+        assert tuple(batch.generation.value for batch in batches) == (1, 2)
+        assert tuple(
+            batch.snapshots[0]["source_revision"] for batch in batches
+        ) == (99, 2)
+    finally:
+        dispose()
