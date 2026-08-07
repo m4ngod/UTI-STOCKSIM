@@ -43,7 +43,7 @@ FocusScope {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "Runtime Health"
+                    text: "Diagnostic System Health"
                     color: tokens.textPrimary
                     font.pixelSize: 28
                     font.bold: true
@@ -52,7 +52,7 @@ FocusScope {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "A read-only view of the diagnostics application runtime."
+                    text: "A read-only view of runtime, diagnostic queue, and diagnostic cache health."
                     color: tokens.textMuted
                     font.pixelSize: tokens.bodySize
                     wrapMode: Text.WordWrap
@@ -157,6 +157,180 @@ FocusScope {
                                 Layout.fillWidth: true
                                 text: adapter.componentExplanation
                                 color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: queueCard
+                        objectName: "diagnosticQueueHealthCard"
+                        property string accessibleName: (
+                            "Diagnostic queue " + adapter.queueClassification
+                            + ", pending " + adapter.queuePendingCount
+                            + ", running " + adapter.queueRunningCount
+                            + ", blocked " + adapter.queueBlockedCount
+                        )
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(
+                            224,
+                            queueColumn.implicitHeight + tokens.spaceMd * 2
+                        )
+                        radius: tokens.radiusMd
+                        color: tokens.surface
+                        border.color: tokens.border
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: accessibleName
+                        Accessible.description: adapter.queueExplanation
+
+                        ColumnLayout {
+                            id: queueColumn
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceMd
+                            spacing: tokens.spaceXs
+
+                            Text {
+                                text: "DIAGNOSTIC QUEUE"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Diagnostic queue · "
+                                    + adapter.queueClassification
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.bodySize
+                                font.bold: true
+                                wrapMode: Text.WordWrap
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Pending " + adapter.queuePendingCount
+                                    + " · running " + adapter.queueRunningCount
+                                    + " · blocked " + adapter.queueBlockedCount
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Oldest pending · "
+                                    + adapter.queueOldestPendingAgeText
+                                    + " · consumer "
+                                    + adapter.queueConsumerAvailability
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Blockage · " + adapter.queueBlockageReason
+                                    + " · freshness " + adapter.queueFreshness
+                                    + " · recovery " + adapter.queueRecoveryPhase
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Affected scope · "
+                                    + adapter.queueAffectedScope
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: adapter.queueExplanation
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: cacheCard
+                        objectName: "diagnosticCacheHealthCard"
+                        property string accessibleName: (
+                            "Diagnostic cache " + adapter.cacheClassification
+                            + ", fallback " + adapter.cacheFallback
+                            + ", compatibility " + adapter.cacheCompatibility
+                        )
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(
+                            224,
+                            cacheColumn.implicitHeight + tokens.spaceMd * 2
+                        )
+                        radius: tokens.radiusMd
+                        color: tokens.surface
+                        border.color: tokens.border
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: accessibleName
+                        Accessible.description: adapter.cacheExplanation
+
+                        ColumnLayout {
+                            id: cacheColumn
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceMd
+                            spacing: tokens.spaceXs
+
+                            Text {
+                                text: "DIAGNOSTIC CACHE"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Diagnostic cache · "
+                                    + adapter.cacheClassification
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.bodySize
+                                font.bold: true
+                                wrapMode: Text.WordWrap
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Freshness " + adapter.cacheFreshness
+                                    + " · age " + adapter.cacheAgeText
+                                    + " · generation "
+                                    + adapter.cacheGenerationText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Fallback " + adapter.cacheFallback
+                                    + " · refresh "
+                                    + adapter.cacheLastRefreshResult
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Compatibility " + adapter.cacheCompatibility
+                                    + " · recovery " + adapter.cacheRecoveryPhase
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Affected scope · "
+                                    + adapter.cacheAffectedScope
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: adapter.cacheExplanation
+                                color: tokens.textQuiet
                                 font.pixelSize: tokens.labelSize
                                 wrapMode: Text.WrapAnywhere
                             }

@@ -32,6 +32,11 @@ from strategy_diagnostics import (
     SourceProvenance,
     create_diagnostics_application,
 )
+from strategy_diagnostics.market_paths import (
+    MarketPathCacheCompatibility,
+    MarketPathCacheFallbackState,
+    MarketPathCacheRefreshResult,
+)
 
 
 _REQUIRED_CHECKS = (
@@ -585,6 +590,27 @@ def test_baseline_materialization_is_reconstructed_reaggregatable_and_stable() -
     )
 
 
+def test_cache_generation_changes_on_publication_not_on_supported_reads() -> None:
+    store = InMemoryMarketPathArtifactStore()
+    materializer = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_world(),)),
+        artifact_store=store,
+    )
+
+    first = materializer.materialize_baseline(_segment(), seed=17)
+    first_generation = store.diagnostic_cache_health().generation
+
+    assert first_generation == 1
+    assert store.get(first.artifact_hash) == first
+    assert store.get_verified(first.artifact_hash) == first
+    assert store.list_paths() == (first,)
+    assert materializer.materialize_baseline(_segment(), seed=17) == first
+    assert store.diagnostic_cache_health().generation == first_generation
+
+    materializer.materialize_baseline(_segment(), seed=18)
+    assert store.diagnostic_cache_health().generation == first_generation + 1
+
+
 def test_scenario_market_view_refuses_every_kind_of_future_data() -> None:
     segment = _segment()
     materializer = ScenarioMaterializer(
@@ -1001,6 +1027,10 @@ def test_verified_cache_rejects_same_metadata_manifest_tampering(
         match="persisted Materialized Market Path changed after verification",
     ):
         reopened_store.get_verified(materialized.artifact_hash)
+    health = reopened_store.diagnostic_cache_health()
+    assert health.compatibility is MarketPathCacheCompatibility.INCOMPATIBLE
+    assert health.fallback is MarketPathCacheFallbackState.UNAVAILABLE
+    assert health.last_refresh_result is MarketPathCacheRefreshResult.FAILED
 
 
 def test_verified_cache_rejects_same_metadata_parquet_tampering(
@@ -1049,13 +1079,16 @@ def test_verified_cache_rejects_same_metadata_parquet_tampering(
         "connect",
         fail_native_reread,
     )
+    verifying_store = ParquetMarketPathArtifactStore(root)
     with pytest.raises(
         ValueError,
         match="persisted Materialized Market Path changed after verification",
     ):
-        ParquetMarketPathArtifactStore(root).get_verified(
-            materialized.artifact_hash
-        )
+        verifying_store.get_verified(materialized.artifact_hash)
+    health = verifying_store.diagnostic_cache_health()
+    assert health.compatibility is MarketPathCacheCompatibility.INCOMPATIBLE
+    assert health.fallback is MarketPathCacheFallbackState.UNAVAILABLE
+    assert health.last_refresh_result is MarketPathCacheRefreshResult.FAILED
 
 
 def test_process_verified_cache_enforces_estimated_byte_budget(
@@ -1262,10 +1295,15 @@ def test_legacy_cache_publish_failure_does_not_block_authoritative_path(
 
     monkeypatch.setattr(Path, "replace", fail_cache_replace)
 
-    assert (
-        ParquetMarketPathArtifactStore(root).get(materialized.artifact_hash)
-        == materialized
-    )
+    store = ParquetMarketPathArtifactStore(root)
+    assert store.get(materialized.artifact_hash) == materialized
+    first_generation = store.diagnostic_cache_health().generation
+    with market_paths_module._PROCESS_VERIFIED_MARKET_PATHS_LOCK:
+        market_paths_module._PROCESS_VERIFIED_MARKET_PATHS.clear()
+        market_paths_module._PROCESS_VERIFIED_MARKET_PATHS_ESTIMATED_BYTES = 0
+        market_paths_module._PROCESS_VERIFIED_OVERSIZED_MARKET_PATH = None
+    assert store.get(materialized.artifact_hash) == materialized
+    assert store.diagnostic_cache_health().generation == first_generation
     assert not cache_path.exists()
     assert tuple(artifact_directory.glob(".verified-read-cache-*.tmp")) == ()
 

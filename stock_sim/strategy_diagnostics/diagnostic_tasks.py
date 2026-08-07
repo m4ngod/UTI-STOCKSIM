@@ -930,12 +930,30 @@ class DiagnosticLifecycleTargetSnapshot:
     task_id: str
     revision: int
     lifecycle: DiagnosticTaskLifecycle
+    updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.target_id.strip() or not self.task_id.strip():
             raise ValueError("Diagnostic lifecycle target identities are required")
         if self.revision < 1:
             raise ValueError("Diagnostic lifecycle target revision must be positive")
+        if self.updated_at is not None:
+            _aware(self.updated_at)
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticLifecycleHealthRecord:
+    """Bounded active-target projection for read-only queue health."""
+
+    target_kind: DiagnosticLifecycleTargetKind
+    lifecycle: DiagnosticTaskLifecycle
+    revision: int
+    transitioned_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.revision < 1:
+            raise ValueError("Diagnostic lifecycle health revision must be positive")
+        _aware(self.transitioned_at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1067,6 +1085,10 @@ class DiagnosticTaskRepository(Protocol):
     def get_task(self, task_id: str) -> DiagnosticTaskSnapshot | None: ...
 
     def latest_task(self) -> DiagnosticTaskSnapshot | None: ...
+
+    def active_lifecycle_health(
+        self,
+    ) -> tuple[DiagnosticLifecycleHealthRecord, ...]: ...
 
     def complete_creation(self, task_id: str, updated_at: datetime) -> None: ...
 
@@ -1352,6 +1374,48 @@ class InMemoryDiagnosticTaskRepository:
         if not self._tasks:
             return None
         return self._with_lifecycle_targets(tuple(self._tasks.values())[-1])
+
+    def active_lifecycle_health(
+        self,
+    ) -> tuple[DiagnosticLifecycleHealthRecord, ...]:
+        active = {
+            DiagnosticTaskLifecycle.CREATING,
+            DiagnosticTaskLifecycle.QUEUED,
+            DiagnosticTaskLifecycle.RESUMING,
+            DiagnosticTaskLifecycle.CANCELING,
+            DiagnosticTaskLifecycle.RUNNING,
+            DiagnosticTaskLifecycle.PAUSED,
+        }
+        records = [
+            DiagnosticLifecycleHealthRecord(
+                target_kind=target.target_kind,
+                lifecycle=target.lifecycle,
+                revision=target.revision,
+                transitioned_at=(
+                    target.updated_at
+                    or self._tasks[target.task_id].updated_at
+                ),
+            )
+            for target in self._lifecycle_targets.values()
+            if target.lifecycle in active and target.task_id in self._tasks
+        ]
+        task_targets = {
+            target.task_id
+            for target in self._lifecycle_targets.values()
+            if target.target_kind
+            is DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK
+        }
+        records.extend(
+            DiagnosticLifecycleHealthRecord(
+                target_kind=DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,
+                lifecycle=task.lifecycle,
+                revision=task.revision,
+                transitioned_at=task.updated_at,
+            )
+            for task in self._tasks.values()
+            if task.lifecycle in active and task.task_id not in task_targets
+        )
+        return tuple(records)
 
     def complete_creation(self, task_id: str, updated_at: datetime) -> None:
         current = self._tasks.get(task_id)
@@ -1931,6 +1995,7 @@ class InMemoryDiagnosticTaskRepository:
             expected_node,
             revision=queued_node.revision,
             lifecycle=DiagnosticTaskLifecycle.QUEUED,
+            updated_at=queued_handle.updated_at,
         )
         self._lifecycle_targets[
             (
@@ -1941,6 +2006,7 @@ class InMemoryDiagnosticTaskRepository:
             task_parent,
             revision=task.revision,
             lifecycle=DiagnosticTaskLifecycle.RUNNING,
+            updated_at=queued_handle.updated_at,
         )
         self._lifecycle_targets[
             (
@@ -1951,6 +2017,7 @@ class InMemoryDiagnosticTaskRepository:
             campaign_parent,
             revision=queued_handoff.campaign_revision,
             lifecycle=DiagnosticTaskLifecycle.RUNNING,
+            updated_at=queued_handle.updated_at,
         )
         self._store_mutation(record)
         self._pending_retry_requests[queued_handle.task_handle_id] = pending_request
@@ -2032,7 +2099,7 @@ class InMemoryDiagnosticTaskRepository:
             for _before, after in reconciliation.target_updates:
                 self._lifecycle_targets[
                     (after.target_kind, after.target_id)
-                ] = after
+                ] = replace(after, updated_at=updated_at)
             self._pending_retry_requests.pop(task_handle_id, None)
             self._start_continuation_claims.pop(task_handle_id, None)
             return
@@ -2073,6 +2140,7 @@ class InMemoryDiagnosticTaskRepository:
             target,
             revision=target.revision + 1,
             lifecycle=accepted_lifecycle,
+            updated_at=task_handle.updated_at,
         )
         self._lifecycle_targets[
             (target.target_kind, target.target_id)
@@ -2081,6 +2149,7 @@ class InMemoryDiagnosticTaskRepository:
             accepted_target,
             lifecycle=accepted_lifecycle,
             increment_revision=True,
+            updated_at=task_handle.updated_at,
         )
         task_lifecycle = (
             accepted_lifecycle
@@ -2163,6 +2232,7 @@ class InMemoryDiagnosticTaskRepository:
         completed_target = replace(
             current_target,
             lifecycle=final_lifecycle,
+            updated_at=updated_at,
         )
         self._lifecycle_targets[
             (target.target_kind, target.target_id)
@@ -2171,6 +2241,7 @@ class InMemoryDiagnosticTaskRepository:
             completed_target,
             lifecycle=final_lifecycle,
             increment_revision=False,
+            updated_at=updated_at,
         )
         if (
             operation is DiagnosticLifecycleOperation.CANCEL
@@ -2180,7 +2251,7 @@ class InMemoryDiagnosticTaskRepository:
                 DiagnosticLifecycleTargetKind.FORMAL_DIAGNOSTIC_CAMPAIGN,
             }
         ):
-            self._cancel_child_nodes(target.task_id)
+            self._cancel_child_nodes(target.task_id, updated_at=updated_at)
         completed_handle = replace(
             handle,
             phase=DiagnosticTaskHandlePhase.COMPLETED,
@@ -2246,7 +2317,10 @@ class InMemoryDiagnosticTaskRepository:
                 raise ValueError(
                     "Diagnostic lifecycle target changed concurrently"
                 )
-            self._lifecycle_targets[key] = after
+            self._lifecycle_targets[key] = replace(
+                after,
+                updated_at=updated_at,
+            )
         self._tasks[task.task_id] = replace(
             task,
             revision=task.revision + 1,
@@ -2313,6 +2387,7 @@ class InMemoryDiagnosticTaskRepository:
                 task_id=task_id,
                 revision=task.revision,
                 lifecycle=DiagnosticTaskLifecycle.RUNNING,
+                updated_at=updated_at,
             )
             campaign_target = DiagnosticLifecycleTargetSnapshot(
                 target_kind=(
@@ -2322,6 +2397,7 @@ class InMemoryDiagnosticTaskRepository:
                 task_id=task_id,
                 revision=handoff.campaign_revision,
                 lifecycle=handoff.campaign_lifecycle,
+                updated_at=updated_at,
             )
             self._lifecycle_targets[
                 (task_target.target_kind, task_target.target_id)
@@ -2336,6 +2412,7 @@ class InMemoryDiagnosticTaskRepository:
                     task_id=task_id,
                     revision=node.revision,
                     lifecycle=node.lifecycle,
+                    updated_at=updated_at,
                 )
                 self._lifecycle_targets[
                     (node_target.target_kind, node_target.target_id)
@@ -2404,6 +2481,7 @@ class InMemoryDiagnosticTaskRepository:
         *,
         lifecycle: DiagnosticTaskLifecycle,
         increment_revision: bool,
+        updated_at: datetime,
     ) -> None:
         if target.target_kind is DiagnosticLifecycleTargetKind.CAMPAIGN_NODE:
             if increment_revision:
@@ -2424,6 +2502,7 @@ class InMemoryDiagnosticTaskRepository:
                         self._lifecycle_targets[key] = replace(
                             parent,
                             revision=parent.revision + 1,
+                            updated_at=updated_at,
                         )
             return
         mirror_kind = (
@@ -2454,9 +2533,10 @@ class InMemoryDiagnosticTaskRepository:
                 else mirror.revision
             ),
             lifecycle=lifecycle,
+            updated_at=updated_at,
         )
 
-    def _cancel_child_nodes(self, task_id: str) -> None:
+    def _cancel_child_nodes(self, task_id: str, *, updated_at: datetime) -> None:
         for key, target in tuple(self._lifecycle_targets.items()):
             if (
                 target.task_id == task_id
@@ -2473,6 +2553,7 @@ class InMemoryDiagnosticTaskRepository:
                     target,
                     revision=target.revision + 1,
                     lifecycle=DiagnosticTaskLifecycle.CANCELED,
+                    updated_at=updated_at,
                 )
 
     def _with_superseded_lifecycle_handles(
@@ -2801,6 +2882,54 @@ class SqlDiagnosticTaskRepository:
             ).scalar_one_or_none()
         return None if task_id is None else self.get_task(str(task_id))
 
+    def active_lifecycle_health(
+        self,
+    ) -> tuple[DiagnosticLifecycleHealthRecord, ...]:
+        active_values = {
+            "creating": DiagnosticTaskLifecycle.CREATING.value,
+            "queued": DiagnosticTaskLifecycle.QUEUED.value,
+            "resuming": DiagnosticTaskLifecycle.RESUMING.value,
+            "canceling": DiagnosticTaskLifecycle.CANCELING.value,
+            "running": DiagnosticTaskLifecycle.RUNNING.value,
+            "paused": DiagnosticTaskLifecycle.PAUSED.value,
+        }
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT target_kind, lifecycle, revision, updated_at_utc "
+                    "FROM diagnostic_lifecycle_targets "
+                    "WHERE lifecycle IN (:creating, :queued, :resuming, "
+                    ":canceling, :running, :paused) "
+                    "UNION ALL "
+                    "SELECT :task_kind AS target_kind, t.lifecycle, "
+                    "t.revision, t.updated_at_utc FROM diagnostic_tasks t "
+                    "WHERE t.lifecycle IN (:creating, :queued, :resuming, "
+                    ":canceling, :running, :paused) AND NOT EXISTS ("
+                    "SELECT 1 FROM diagnostic_lifecycle_targets d "
+                    "WHERE d.task_id = t.task_id "
+                    "AND d.target_kind = :task_kind)"
+                ),
+                {
+                    **active_values,
+                    "task_kind": (
+                        DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK.value
+                    ),
+                },
+            ).mappings()
+            return tuple(
+                DiagnosticLifecycleHealthRecord(
+                    target_kind=DiagnosticLifecycleTargetKind(
+                        str(row["target_kind"])
+                    ),
+                    lifecycle=DiagnosticTaskLifecycle(str(row["lifecycle"])),
+                    revision=int(cast(str | int, row["revision"])),
+                    transitioned_at=datetime.fromisoformat(
+                        str(row["updated_at_utc"])
+                    ),
+                )
+                for row in rows
+            )
+
     def complete_creation(self, task_id: str, updated_at: datetime) -> None:
         with self._engine.begin() as connection:
             row = connection.execute(
@@ -3023,7 +3152,7 @@ class SqlDiagnosticTaskRepository:
             row = connection.execute(
                 text(
                     "SELECT target_kind, target_id, task_id, revision, "
-                    "lifecycle FROM diagnostic_lifecycle_targets "
+                    "lifecycle, updated_at_utc FROM diagnostic_lifecycle_targets "
                     "WHERE target_kind = :target_kind "
                     "AND target_id = :target_id"
                 ),
@@ -5222,6 +5351,13 @@ class DiagnosticTaskService:
                 ),
             )
         )
+
+    def active_lifecycle_health(
+        self,
+    ) -> tuple[DiagnosticLifecycleHealthRecord, ...]:
+        """Read bounded active target state without lifecycle mutation."""
+
+        return self._repository.active_lifecycle_health()
 
     def active_dependency_binding(
         self,
@@ -8410,6 +8546,11 @@ def _lifecycle_target_from_row(
         task_id=str(row["task_id"]),
         revision=int(cast(str | int, row["revision"])),
         lifecycle=DiagnosticTaskLifecycle(str(row["lifecycle"])),
+        updated_at=(
+            None
+            if "updated_at_utc" not in row
+            else datetime.fromisoformat(str(row["updated_at_utc"]))
+        ),
     )
 
 
