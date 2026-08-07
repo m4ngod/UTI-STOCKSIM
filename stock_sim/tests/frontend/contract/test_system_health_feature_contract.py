@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -144,8 +144,8 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         identity=DiagnosticDataSourceIdentity(
             public_id="admitted-source-0123456789abcdef",
             provider="BaoStock",
-            dataset="local-a-share-fixture",
-            version="fixture-1",
+            dataset="Dataset 01234567",
+            version="Version 89abcdef",
         ),
         revision=source_revision,
         generation=SourceGenerationId(1),
@@ -200,6 +200,13 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
     assert state.components == (component,)
     assert isinstance(state.components, tuple)
     assert state.diagnostic_data_source is data_source
+    with pytest.raises(ValueError, match="healthy.*contradictory"):
+        replace(
+            data_source,
+            connection=DiagnosticDataSourceConnectionState.DISCONNECTED,
+        )
+    with pytest.raises(ValueError, match="jointly present"):
+        replace(data_source, accepted_revision=None)
     with pytest.raises(FrozenInstanceError):
         component.explanation = "mutable"  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):

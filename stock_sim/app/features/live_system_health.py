@@ -7,7 +7,7 @@ from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from threading import RLock
+from threading import RLock, Timer
 
 from app.event_bridge import (
     EventBridge,
@@ -143,6 +143,7 @@ class _SystemHealthProjection:
         self._context = SystemHealthContext()
         self._generation = SourceGenerationId(1)
         self._connected = True
+        self._fallback_active = False
         self._revision = 0
         self._state: SystemHealthViewState | None = None
         self._last_reliable: RuntimeHealthComponent | None = None
@@ -272,6 +273,7 @@ class _SystemHealthProjection:
                 ):
                     return
                 self._connected = True
+                self._fallback_active = fallback
                 self._generation = SourceGenerationId(
                     generation
                     if generation is not None
@@ -331,7 +333,11 @@ class _SystemHealthProjection:
                 self._data_source_highest_seen_revision = revision
                 current = self._data_source_component
                 fallback = (
-                    DiagnosticDataSourceFallbackState.PRIMARY
+                    (
+                        DiagnosticDataSourceFallbackState.ACTIVE
+                        if self._fallback_active
+                        else DiagnosticDataSourceFallbackState.PRIMARY
+                    )
                     if current is None
                     or current.fallback
                     is DiagnosticDataSourceFallbackState.UNAVAILABLE
@@ -405,11 +411,12 @@ class _SystemHealthProjection:
             self._data_source_component = component
         self._store_and_deliver(state, notify=True)
 
-    def set_generation(self, generation: int) -> None:
+    def set_generation(self, generation: int, *, fallback: bool = False) -> None:
         with self._transition_lock:
             with self._lock:
                 if not self._closed:
                     self._generation = SourceGenerationId(generation)
+                    self._fallback_active = fallback
 
     def is_current_generation(self, generation: int) -> bool:
         with self._lock:
@@ -422,6 +429,46 @@ class _SystemHealthProjection:
     def current_generation(self) -> int:
         with self._lock:
             return self._generation.value
+
+    def data_source_freshness_delay(self) -> float | None:
+        with self._lock:
+            if self._closed or self._data_source_component is None:
+                return None
+            component = self._data_source_component
+        reliable = component.last_reliable_observation
+        if reliable is None or component.freshness is Freshness.STALE:
+            return None
+        age = max(_aware(self._clock()) - reliable.observed_at, timedelta(0))
+        return max(
+            (component.freshness_threshold - age).total_seconds(),
+            0.0,
+        )
+
+    def publish_data_source_freshness(self) -> None:
+        with self._transition_lock:
+            with self._lock:
+                if self._closed or self._state is None:
+                    return
+                current = self._data_source_component
+                if current is None:
+                    return
+                now = _aware(self._clock())
+                aged = _age_data_source_component(current, observed_at=now)
+                if aged == current:
+                    return
+                revision = self._next_revision_locked()
+                state = replace(
+                    self._state,
+                    revision=revision,
+                    observed_at=now,
+                    source=replace(
+                        self._state.source,
+                        generation=self._generation,
+                    ),
+                    diagnostic_data_source=aged,
+                )
+                self._data_source_component = aged
+            self._store_and_deliver(_with_data_source_aggregate(state))
 
     def _refresh(
         self,
@@ -469,6 +516,7 @@ class _SystemHealthProjection:
                 data_source_result,
                 revision=max(self._data_source_revision, 1),
                 generation=generation,
+                fallback_active=self._fallback_active,
                 freshness_threshold=self._freshness_threshold,
             )
 
@@ -634,7 +682,10 @@ class _SystemHealthProjection:
             recovery_phase=recovery_phase,
             error=error,
         )
-        return self._store_and_deliver(state, notify=notify)
+        return self._store_and_deliver(
+            _with_data_source_aggregate(state),
+            notify=notify,
+        )
 
     def _retained_state(
         self,
@@ -695,7 +746,7 @@ class _SystemHealthProjection:
             )
 
         age = max(observed_at - reliable.observed_at, timedelta(0))
-        is_stale = age > self._freshness_threshold
+        is_stale = age >= self._freshness_threshold
         classification = (
             RuntimeHealthClassification.STALE
             if is_stale
@@ -765,42 +816,61 @@ class _SystemHealthProjection:
                 return state
             with self._lock:
                 revision = self._next_revision_locked()
-            return replace(
-                state,
-                revision=revision,
-                observed_at=now,
-                diagnostic_data_source=data_source,
+            return _with_data_source_aggregate(
+                replace(
+                    state,
+                    revision=revision,
+                    observed_at=now,
+                    diagnostic_data_source=data_source,
+                )
             )
         age = max(now - reliable.observed_at, timedelta(0))
-        if age == state.age and data_source is state.diagnostic_data_source:
+        runtime_is_stale = bool(
+            state.components
+            and state.components[0].classification
+            is RuntimeHealthClassification.STALE
+        )
+        runtime_should_be_stale = age >= self._freshness_threshold
+        overall_age = max(age, data_source.age)
+        if (
+            data_source is state.diagnostic_data_source
+            and runtime_is_stale is runtime_should_be_stale
+            and overall_age == state.age
+        ):
             return state
         with self._lock:
             revision = self._next_revision_locked()
             generation = self._generation
-        if age <= self._freshness_threshold:
-            return replace(
-                state,
+        if age < self._freshness_threshold:
+            return _with_data_source_aggregate(
+                replace(
+                    state,
+                    revision=revision,
+                    observed_at=now,
+                    age=age,
+                    source=replace(state.source, generation=generation),
+                    diagnostic_data_source=data_source,
+                )
+            )
+        if runtime_is_stale:
+            return _with_data_source_aggregate(
+                replace(
+                    state,
+                    revision=revision,
+                    observed_at=now,
+                    age=age,
+                    source=replace(state.source, generation=generation),
+                    diagnostic_data_source=data_source,
+                )
+            )
+        return _with_data_source_aggregate(
+            self._retained_state(
                 revision=revision,
                 observed_at=now,
-                age=age,
-                source=replace(state.source, generation=generation),
-                diagnostic_data_source=data_source,
+                generation=generation,
+                recovery_phase=state.recovery_phase,
+                error=state.error,
             )
-        if state.presentation is SystemHealthPresentationState.STALE:
-            return replace(
-                state,
-                revision=revision,
-                observed_at=now,
-                age=age,
-                source=replace(state.source, generation=generation),
-                diagnostic_data_source=data_source,
-            )
-        return self._retained_state(
-            revision=revision,
-            observed_at=now,
-            generation=generation,
-            recovery_phase=state.recovery_phase,
-            error=state.error,
         )
 
     def _store_and_deliver(
@@ -875,6 +945,8 @@ class LiveSystemHealthAdapter:
         self._pending_data_source_delivery: tuple[int, int] | None = None
         self._data_source_refresh_scheduled = False
         self._highest_enqueued_revision = 0
+        self._freshness_timer: Timer | None = None
+        self._freshness_timer_sequence = 0
         self._dispose_connection_subscription: Callable[[], None] = lambda: None
         self._dispose_batch_subscription: Callable[[], None] = lambda: None
         self._projection = _SystemHealthProjection(
@@ -902,14 +974,18 @@ class LiveSystemHealthAdapter:
         return self._projection.interface_version
 
     def snapshot(self, context: SystemHealthContext) -> SystemHealthViewState:
-        return self._projection.snapshot(context)
+        state = self._projection.snapshot(context)
+        self._schedule_freshness_deadline()
+        return state
 
     def subscribe(
         self,
         context: SystemHealthContext,
         observer: SystemHealthObserver,
     ) -> Subscription:
-        return self._projection.subscribe(context, observer)
+        subscription = self._projection.subscribe(context, observer)
+        self._schedule_freshness_deadline()
+        return subscription
 
     def close(self) -> None:
         with self._lock:
@@ -922,6 +998,11 @@ class LiveSystemHealthAdapter:
             self._dispose_connection_subscription = lambda: None
             self._pending_data_source_delivery = None
             self._data_source_refresh_scheduled = False
+            freshness_timer = self._freshness_timer
+            self._freshness_timer = None
+            self._freshness_timer_sequence += 1
+        if freshness_timer is not None:
+            freshness_timer.cancel()
         dispose_batches()
         dispose_connection()
         self._projection.close()
@@ -996,6 +1077,7 @@ class LiveSystemHealthAdapter:
                 revision,
                 generation=generation,
             )
+            self._schedule_freshness_deadline()
 
     def _on_connection_state(self, state: EventBridgeConnectionState) -> None:
         with self._lock:
@@ -1010,12 +1092,47 @@ class LiveSystemHealthAdapter:
         if state.phase is EventBridgeConnectionPhase.DISCONNECTED:
             self._projection.mark_disconnected(generation=state.generation.value)
         elif first_observation:
-            self._projection.set_generation(state.generation.value)
+            self._projection.set_generation(
+                state.generation.value,
+                fallback=(state.source_mode is EventBridgeSourceMode.FALLBACK),
+            )
         else:
             self._projection.mark_reconnected_with_source_mode(
                 generation=state.generation.value,
                 fallback=(state.source_mode is EventBridgeSourceMode.FALLBACK),
             )
+        self._schedule_freshness_deadline()
+
+    def _schedule_freshness_deadline(self) -> None:
+        delay = self._projection.data_source_freshness_delay()
+        with self._lock:
+            if self._closed:
+                return
+            previous = self._freshness_timer
+            self._freshness_timer = None
+            self._freshness_timer_sequence += 1
+            sequence = self._freshness_timer_sequence
+            if delay is None:
+                timer = None
+            else:
+                timer = Timer(
+                    max(delay, 0.001),
+                    lambda: self._on_freshness_deadline(sequence),
+                )
+                timer.daemon = True
+                self._freshness_timer = timer
+        if previous is not None:
+            previous.cancel()
+        if timer is not None:
+            timer.start()
+
+    def _on_freshness_deadline(self, sequence: int) -> None:
+        with self._lock:
+            if self._closed or sequence != self._freshness_timer_sequence:
+                return
+            self._freshness_timer = None
+        self._projection.publish_data_source_freshness()
+        self._schedule_freshness_deadline()
 
 
 class DeterministicFakeSystemHealthAdapter:
@@ -1104,6 +1221,7 @@ class DeterministicFakeSystemHealthAdapter:
         if delta < timedelta(0):
             raise ValueError("Deterministic System Health clock cannot go backwards")
         self._now += delta
+        self._projection.publish_data_source_freshness()
 
     def _clock(self) -> datetime:
         if self._external_clock is not None:
@@ -1198,9 +1316,9 @@ class DeterministicFakeSystemHealthAdapter:
             observation=DiagnosticDataSourceApplicationObservation(
                 identity=DiagnosticDataSourceIdentity(
                     public_id=f"admitted-source-{token[:16]}",
-                    provider="Deterministic provider",
-                    dataset="diagnostic-source-fixture",
-                    version="1.0",
+                    provider=f"Provider {token[:8]}",
+                    dataset=f"Dataset {token[8:16]}",
+                    version=f"Version {token[16:24]}",
                 ),
                 observed_at=observed_at,
                 affected_scope=(
@@ -1245,6 +1363,7 @@ def _initial_data_source_component(
     *,
     revision: int,
     generation: SourceGenerationId,
+    fallback_active: bool,
     freshness_threshold: timedelta,
 ) -> DiagnosticDataSourceHealthComponent:
     if (
@@ -1255,13 +1374,36 @@ def _initial_data_source_component(
             result,
             revision=revision,
             generation=generation,
-            fallback=DiagnosticDataSourceFallbackState.PRIMARY,
-            recovery_phase=DiagnosticDataSourceRecoveryPhase.IDLE,
+            fallback=(
+                DiagnosticDataSourceFallbackState.ACTIVE
+                if fallback_active
+                else DiagnosticDataSourceFallbackState.PRIMARY
+            ),
+            recovery_phase=(
+                DiagnosticDataSourceRecoveryPhase.RECOVERED
+                if fallback_active
+                else DiagnosticDataSourceRecoveryPhase.IDLE
+            ),
             freshness_threshold=freshness_threshold,
         )
     return _unavailable_data_source_component(
         observed_at=result.observed_at,
         generation=generation,
+        connection=(
+            DiagnosticDataSourceConnectionState.RECONNECTING
+            if fallback_active
+            else DiagnosticDataSourceConnectionState.UNAVAILABLE
+        ),
+        fallback=(
+            DiagnosticDataSourceFallbackState.ACTIVE
+            if fallback_active
+            else DiagnosticDataSourceFallbackState.UNAVAILABLE
+        ),
+        recovery_phase=(
+            DiagnosticDataSourceRecoveryPhase.FALLBACK
+            if fallback_active
+            else DiagnosticDataSourceRecoveryPhase.IDLE
+        ),
         freshness_threshold=freshness_threshold,
     )
 
@@ -1279,30 +1421,44 @@ def _accepted_data_source_component(
     if observation_result is None:
         raise ValueError("Accepted Data Source Health requires an observation")
     accepted_revision = DiagnosticDataSourceRevision(revision)
+    age = max(
+        result.observed_at - observation_result.observed_at,
+        timedelta(0),
+    )
+    stale = age >= freshness_threshold
     observation = DiagnosticDataSourceObservation(
         identity=observation_result.identity,
         revision=accepted_revision,
         generation=generation,
-        observed_at=result.observed_at,
+        observed_at=observation_result.observed_at,
     )
     return DiagnosticDataSourceHealthComponent(
         identity=(
             DiagnosticDataSourceComponentIdentity.ADMITTED_HISTORICAL_MARKET_DATA
         ),
-        classification=DiagnosticDataSourceHealthClassification.HEALTHY,
+        classification=(
+            DiagnosticDataSourceHealthClassification.STALE
+            if stale
+            else DiagnosticDataSourceHealthClassification.HEALTHY
+        ),
         connection=DiagnosticDataSourceConnectionState.CONNECTED,
         fallback=fallback,
         accepted_revision=accepted_revision,
         accepted_generation=generation,
         observed_at=result.observed_at,
-        freshness=Freshness.FRESH,
-        age=timedelta(0),
+        freshness=Freshness.STALE if stale else Freshness.FRESH,
+        age=age,
         freshness_threshold=freshness_threshold,
         last_reliable_observation=observation,
         affected_scope=observation_result.affected_scope,
         recovery_phase=recovery_phase,
         explanation=(
-            "The admitted diagnostic data source recovered through fallback."
+            "The authoritative diagnostic data-source reread succeeded, but the source observation remains stale."
+            if stale
+            and recovery_phase is DiagnosticDataSourceRecoveryPhase.RECOVERED
+            else "The admitted diagnostic data source is stale."
+            if stale
+            else "The admitted diagnostic data source recovered through fallback."
             if fallback is DiagnosticDataSourceFallbackState.ACTIVE
             and recovery_phase is DiagnosticDataSourceRecoveryPhase.RECOVERED
             else "The admitted diagnostic data source is fresh."
@@ -1315,6 +1471,15 @@ def _unavailable_data_source_component(
     *,
     observed_at: datetime,
     generation: SourceGenerationId,
+    connection: DiagnosticDataSourceConnectionState = (
+        DiagnosticDataSourceConnectionState.UNAVAILABLE
+    ),
+    fallback: DiagnosticDataSourceFallbackState = (
+        DiagnosticDataSourceFallbackState.UNAVAILABLE
+    ),
+    recovery_phase: DiagnosticDataSourceRecoveryPhase = (
+        DiagnosticDataSourceRecoveryPhase.IDLE
+    ),
     freshness_threshold: timedelta,
 ) -> DiagnosticDataSourceHealthComponent:
     return DiagnosticDataSourceHealthComponent(
@@ -1322,10 +1487,10 @@ def _unavailable_data_source_component(
             DiagnosticDataSourceComponentIdentity.ADMITTED_HISTORICAL_MARKET_DATA
         ),
         classification=DiagnosticDataSourceHealthClassification.UNAVAILABLE,
-        connection=DiagnosticDataSourceConnectionState.UNAVAILABLE,
-        fallback=DiagnosticDataSourceFallbackState.UNAVAILABLE,
+        connection=connection,
+        fallback=fallback,
         accepted_revision=None,
-        accepted_generation=generation,
+        accepted_generation=None,
         observed_at=observed_at,
         freshness=Freshness.AWAITING_FIRST_STATE,
         age=timedelta(0),
@@ -1335,7 +1500,7 @@ def _unavailable_data_source_component(
             DiagnosticDataSourceScope.SCENARIO_INPUTS,
             DiagnosticDataSourceScope.DIAGNOSTIC_EVIDENCE_INTERPRETATION,
         ),
-        recovery_phase=DiagnosticDataSourceRecoveryPhase.IDLE,
+        recovery_phase=recovery_phase,
         explanation="No admitted diagnostic data source is available.",
         error=SystemHealthError(
             code=SystemHealthErrorCode.DATA_SOURCE_UNAVAILABLE,
@@ -1366,7 +1531,7 @@ def _retained_data_source_component(
             connection=connection,
             fallback=fallback,
             accepted_revision=None,
-            accepted_generation=generation,
+            accepted_generation=None,
             observed_at=observed_at,
             freshness=(
                 Freshness.DISCONNECTED
@@ -1385,7 +1550,7 @@ def _retained_data_source_component(
             error=error,
         )
     age = max(observed_at - reliable.observed_at, timedelta(0))
-    stale = age > freshness_threshold
+    stale = age >= freshness_threshold
     recovering = recovery_phase in {
         DiagnosticDataSourceRecoveryPhase.FALLBACK,
         DiagnosticDataSourceRecoveryPhase.RECONNECTING,
@@ -1439,7 +1604,7 @@ def _age_data_source_component(
     age = max(observed_at - reliable.observed_at, timedelta(0))
     if age == component.age:
         return component
-    if age <= component.freshness_threshold:
+    if age < component.freshness_threshold:
         return replace(component, observed_at=observed_at, age=age)
     return replace(
         component,
@@ -1475,20 +1640,25 @@ def _with_data_source_aggregate(
 ) -> SystemHealthViewState:
     """Prevent Runtime Health from masking an unhealthy diagnostic source."""
 
+    source = state.diagnostic_data_source
+    aggregate = replace(
+        state,
+        freshness=_least_fresh(state.freshness, source.freshness),
+        age=max(state.age, source.age),
+    )
     if not state.components:
-        return state
+        return aggregate
     runtime_presentation = _presentation_for(state.components[0].classification)
     if runtime_presentation is not SystemHealthPresentationState.HEALTHY:
-        return state
+        return aggregate
 
-    source = state.diagnostic_data_source
     if (
         source.classification is DiagnosticDataSourceHealthClassification.HEALTHY
         and source.connection is DiagnosticDataSourceConnectionState.CONNECTED
         and source.fallback is DiagnosticDataSourceFallbackState.PRIMARY
     ):
         return replace(
-            state,
+            aggregate,
             phase=ViewPhase.READY,
             presentation=SystemHealthPresentationState.HEALTHY,
             completeness=Completeness.COMPLETE,
@@ -1499,24 +1669,37 @@ def _with_data_source_aggregate(
         and source.last_reliable_observation is None
     ):
         return replace(
-            state,
+            aggregate,
             phase=ViewPhase.FAILED,
             presentation=SystemHealthPresentationState.UNAVAILABLE,
             completeness=Completeness.PARTIAL,
         )
     if source.classification is DiagnosticDataSourceHealthClassification.STALE:
         return replace(
-            state,
+            aggregate,
             phase=ViewPhase.DEGRADED,
             presentation=SystemHealthPresentationState.STALE,
             completeness=Completeness.PARTIAL,
         )
     return replace(
-        state,
+        aggregate,
         phase=ViewPhase.DEGRADED,
         presentation=SystemHealthPresentationState.DEGRADED,
         completeness=Completeness.PARTIAL,
     )
+
+
+def _least_fresh(left: Freshness, right: Freshness) -> Freshness:
+    """Return the finite overall freshness without hiding either component."""
+
+    values = (left, right)
+    if Freshness.AWAITING_FIRST_STATE in values:
+        return Freshness.AWAITING_FIRST_STATE
+    if Freshness.DISCONNECTED in values:
+        return Freshness.DISCONNECTED
+    if Freshness.STALE in values:
+        return Freshness.STALE
+    return Freshness.FRESH
 
 
 def _feature_error(

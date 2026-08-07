@@ -374,9 +374,12 @@ FocusScope {
                             Text {
                                 objectName: "dataSourceRevisionText"
                                 Layout.fillWidth: true
-                                text: "Accepted · "
-                                    + adapter.dataSourceRevisionText
-                                    + " · " + adapter.dataSourceGenerationText
+                                text: adapter.dataSourceRevisionText === "Unavailable"
+                                    ? "Accepted · Unavailable"
+                                    : "Accepted · "
+                                        + adapter.dataSourceRevisionText
+                                        + " · "
+                                        + adapter.dataSourceGenerationText
                                 color: tokens.textPrimary
                                 font.pixelSize: tokens.labelSize
                                 font.bold: true

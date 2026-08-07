@@ -34,6 +34,7 @@ from app.features import (
     RuntimeHealthRecoveryPhase,
     SourceRevisionToken,
     SystemHealthContext,
+    SystemHealthErrorCode,
     SystemHealthFeature,
     SystemHealthPresentationState,
 )
@@ -66,7 +67,11 @@ _SOURCE_CHECKS = (
 )
 
 
-def _application_with_admitted_source(*, started: bool):
+def _application_with_admitted_source(
+    *,
+    started: bool,
+    source_observed_at: datetime | None = None,
+):
     selection = HistoricalSegmentSelection(
         market="mainland-a-share",
         start_date=date(2024, 1, 2),
@@ -79,7 +84,10 @@ def _application_with_admitted_source(*, started: bool):
             provider="BaoStock",
             dataset="local-a-share-fixture",
             version="fixture-2026-07-21",
-            observed_at=datetime(2026, 7, 21, 23, 0, tzinfo=timezone.utc),
+            observed_at=(
+                source_observed_at
+                or datetime(2030, 1, 1, tzinfo=timezone.utc)
+            ),
         ),
         artifacts=(
             SourceArtifact(
@@ -106,6 +114,74 @@ def _application_with_admitted_source(*, started: bool):
     return application
 
 
+def _application_with_malformed_recovery_source():
+    reliable_selection = HistoricalSegmentSelection(
+        market="mainland-a-share",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+    )
+    malformed_selection = HistoricalSegmentSelection(
+        market="mainland-a-share",
+        start_date=date(2024, 1, 4),
+        end_date=date(2024, 1, 5),
+    )
+
+    def inspection(
+        selection: HistoricalSegmentSelection,
+        *,
+        provider: object,
+        observed_at: datetime,
+        digest_character: str,
+    ) -> HistoricalSourceInspection:
+        return HistoricalSourceInspection(
+            selection=selection,
+            label="A-share diagnostic interval",
+            provenance=SourceProvenance(
+                provider=provider,  # type: ignore[arg-type]
+                dataset="local-a-share-fixture",
+                version="fixture-2026-07-21",
+                observed_at=observed_at,
+            ),
+            artifacts=(
+                SourceArtifact(
+                    name="daily-unadjusted",
+                    content_hash=digest_character * 64,
+                    row_count=60,
+                ),
+            ),
+            eligible_instrument_count=120,
+            trading_day_count=2,
+            bar_count=60,
+            checks=tuple(
+                AdmissionCheck(code=code, passed=True, summary=f"{code} passed.")
+                for code in _SOURCE_CHECKS
+            ),
+        )
+
+    application = create_diagnostics_application(
+        historical_source=InMemoryHistoricalSource(
+            (
+                inspection(
+                    reliable_selection,
+                    provider="BaoStock",
+                    observed_at=datetime(2029, 12, 31, tzinfo=timezone.utc),
+                    digest_character="1",
+                ),
+                inspection(
+                    malformed_selection,
+                    provider=123,
+                    observed_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                    digest_character="2",
+                ),
+            )
+        )
+    )
+    application.start()
+    admission = application.admit_historical_segment(reliable_selection)
+    assert admission.status == "admitted"
+    return application, malformed_selection
+
+
 def _ready_data_source_result(now: datetime) -> DiagnosticDataSourceApplicationResult:
     token = SourceRevisionToken("d" * 64)
     return DiagnosticDataSourceApplicationResult(
@@ -114,8 +190,8 @@ def _ready_data_source_result(now: datetime) -> DiagnosticDataSourceApplicationR
             identity=DiagnosticDataSourceIdentity(
                 public_id="admitted-source-dddddddddddddddd",
                 provider="BaoStock",
-                dataset="local-a-share-fixture",
-                version="fixture-2026-07-21",
+                dataset="Dataset 01234567",
+                version="Version 89abcdef",
             ),
             observed_at=now,
             affected_scope=(
@@ -364,6 +440,8 @@ def test_unknown_is_never_presented_as_healthy(
         assert state.last_reliable_payload is None
         assert state.completeness is Completeness.UNKNOWN
         assert state.error is not None
+        assert state.diagnostic_data_source.accepted_revision is None
+        assert state.diagnostic_data_source.accepted_generation is None
     finally:
         harness.feature.close()
 
@@ -392,6 +470,7 @@ def test_connected_snapshot_rereads_the_real_diagnostics_application() -> None:
         assert healthy.diagnostic_data_source.classification is (
             DiagnosticDataSourceHealthClassification.UNAVAILABLE
         )
+        assert healthy.diagnostic_data_source.accepted_generation is None
         assert healthy.revision > unavailable.revision
         assert healthy.last_reliable_payload is not None
     finally:
@@ -436,6 +515,175 @@ def test_disconnect_staleness_and_reconnect_retain_last_reliable_state(
     finally:
         subscription.dispose()
         harness.feature.close()
+
+
+def test_live_freshness_uses_authoritative_source_observation_time_on_recovery() -> None:
+    clock = _Clock()
+    application = _application_with_admitted_source(
+        started=True,
+        source_observed_at=clock() - timedelta(seconds=6),
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                application,
+                clock=clock,
+            )
+        ),
+        event_bridge=bridge,
+        clock=clock,
+        freshness_threshold=timedelta(seconds=5),
+    )
+    observed: list = []
+    terminal_recovered = Event()
+
+    def observe(state) -> None:
+        observed.append(state)
+        if state.diagnostic_data_source.recovery_phase is (
+            DiagnosticDataSourceRecoveryPhase.RECOVERED
+        ):
+            terminal_recovered.set()
+
+    subscription = feature.subscribe(SystemHealthContext(), observe)
+    try:
+        initial = observed[-1].diagnostic_data_source
+        assert initial.classification is DiagnosticDataSourceHealthClassification.STALE
+        assert initial.freshness is Freshness.STALE
+        assert observed[-1].freshness is Freshness.STALE
+        assert initial.age == timedelta(seconds=6)
+        assert initial.last_reliable_observation is not None
+        assert initial.last_reliable_observation.observed_at == (
+            clock() - timedelta(seconds=6)
+        )
+
+        bridge.mark_disconnected()
+        bridge.mark_fallback_active()
+        bridge.on_snapshot(
+            {
+                "feature": "system_health",
+                "component": "diagnostic_data_source",
+                "source_revision": 2,
+            }
+        )
+        bridge.flush(force=True)
+        assert terminal_recovered.wait(timeout=5)
+        terminal = observed[-1].diagnostic_data_source
+        assert terminal.recovery_phase is DiagnosticDataSourceRecoveryPhase.RECOVERED
+        assert terminal.classification is DiagnosticDataSourceHealthClassification.STALE
+        assert terminal.age == timedelta(seconds=6)
+    finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_live_adapter_publishes_one_shot_freshness_deadline_without_qml_polling() -> None:
+    source_observed_at = datetime.now(timezone.utc)
+    stale_visible = Event()
+
+    class _ApplicationHealth:
+        def read_runtime_health(self) -> RuntimeHealthApplicationResult:
+            observed_at = datetime.now(timezone.utc)
+            return RuntimeHealthApplicationResult(
+                availability=RuntimeHealthApplicationAvailability.READY,
+                observation=RuntimeHealthApplicationObservation(
+                    classification=RuntimeHealthClassification.HEALTHY,
+                    observed_at=observed_at,
+                    explanation="The application runtime is available.",
+                ),
+                source_token=SourceRevisionToken("a" * 64),
+                observed_at=observed_at,
+                error=None,
+            )
+
+        def read_diagnostic_data_source_health(
+            self,
+        ) -> DiagnosticDataSourceApplicationResult:
+            return _ready_data_source_result(source_observed_at)
+
+    feature = LiveSystemHealthAdapter(
+        application_health=_ApplicationHealth(),  # type: ignore[arg-type]
+        event_bridge=EventBridge(subscribe_backend=False),
+        freshness_threshold=timedelta(milliseconds=50),
+    )
+
+    def observe(state) -> None:
+        if state.diagnostic_data_source.freshness is Freshness.STALE:
+            stale_visible.set()
+
+    subscription = feature.subscribe(SystemHealthContext(), observe)
+    try:
+        assert stale_visible.wait(timeout=2)
+        state = feature.snapshot(SystemHealthContext())
+        assert state.diagnostic_data_source.freshness is Freshness.STALE
+        assert state.freshness is Freshness.STALE
+        assert state.presentation is SystemHealthPresentationState.STALE
+    finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_malformed_real_provenance_recovery_fails_safely_and_retains_history() -> None:
+    clock = _Clock()
+    application, malformed_selection = _application_with_malformed_recovery_source()
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                application,
+                clock=clock,
+            )
+        ),
+        event_bridge=bridge,
+        clock=clock,
+    )
+    observed: list = []
+    failed_recovery = Event()
+
+    def observe(state) -> None:
+        observed.append(state)
+        if state.diagnostic_data_source.recovery_phase is (
+            DiagnosticDataSourceRecoveryPhase.FAILED_RECOVERY
+        ):
+            failed_recovery.set()
+
+    subscription = feature.subscribe(SystemHealthContext(), observe)
+    try:
+        reliable = observed[-1].diagnostic_data_source.last_reliable_observation
+        assert reliable is not None
+
+        admission = application.admit_historical_segment(malformed_selection)
+        assert admission.status == "admitted"
+        bridge.mark_disconnected()
+        generation = bridge.mark_fallback_active().generation.value
+        bridge.on_snapshot(
+            {
+                "feature": "system_health",
+                "component": "diagnostic_data_source",
+                "source_revision": 2,
+            },
+            generation=generation,
+        )
+        bridge.flush(force=True)
+
+        assert failed_recovery.wait(timeout=5)
+        state = observed[-1]
+        source = state.diagnostic_data_source
+        assert source.recovery_phase is (
+            DiagnosticDataSourceRecoveryPhase.FAILED_RECOVERY
+        )
+        assert source.last_reliable_observation == reliable
+        assert source.accepted_revision == reliable.revision
+        assert source.accepted_generation == reliable.generation
+        assert source.error is not None
+        assert source.error.code is SystemHealthErrorCode.DATA_SOURCE_REREAD_FAILED
+        assert source.error.explanation == (
+            "The authoritative diagnostic data-source reread failed safely."
+        )
+        assert "123" not in repr(state)
+    finally:
+        subscription.dispose()
+        feature.close()
 
 
 def test_first_revision_is_accepted_after_initially_unavailable_source() -> None:
@@ -494,9 +742,9 @@ def test_first_revision_is_accepted_after_initially_unavailable_source() -> None
         ),
     )
     try:
-        assert feature.snapshot(
-            SystemHealthContext()
-        ).diagnostic_data_source.accepted_revision is None
+        unavailable = feature.snapshot(SystemHealthContext())
+        assert unavailable.diagnostic_data_source.accepted_revision is None
+        assert unavailable.freshness is Freshness.AWAITING_FIRST_STATE
         source_available = True
         bridge.on_snapshot(
             {
@@ -529,18 +777,22 @@ def test_data_source_disconnect_and_staleness_retain_last_reliable_observation(
         assert reliable is not None
 
         harness.disconnect()
-        disconnected = observed[-1].diagnostic_data_source
+        disconnected_state = observed[-1]
+        disconnected = disconnected_state.diagnostic_data_source
         assert disconnected.connection is DiagnosticDataSourceConnectionState.DISCONNECTED
         assert disconnected.classification is DiagnosticDataSourceHealthClassification.DEGRADED
         assert disconnected.freshness is Freshness.DISCONNECTED
         assert disconnected.last_reliable_observation == reliable
         assert disconnected.recovery_phase is DiagnosticDataSourceRecoveryPhase.DISCONNECTED
+        assert disconnected_state.freshness is Freshness.DISCONNECTED
 
         harness.advance(timedelta(seconds=6))
-        stale = harness.feature.snapshot(SystemHealthContext()).diagnostic_data_source
+        stale_state = harness.feature.snapshot(SystemHealthContext())
+        stale = stale_state.diagnostic_data_source
         assert stale.classification is DiagnosticDataSourceHealthClassification.STALE
         assert stale.freshness is Freshness.STALE
         assert stale.last_reliable_observation == reliable
+        assert stale_state.freshness is Freshness.STALE
     finally:
         subscription.dispose()
         harness.feature.close()
@@ -562,6 +814,7 @@ def test_connected_data_source_becomes_stale_without_wall_clock_sleep(
         assert source.classification is DiagnosticDataSourceHealthClassification.STALE
         assert source.freshness is Freshness.STALE
         assert source.last_reliable_observation == reliable
+        assert state.freshness is Freshness.STALE
         assert state.presentation is SystemHealthPresentationState.STALE
     finally:
         harness.feature.close()
@@ -1182,6 +1435,37 @@ def test_live_adapter_replays_a_disconnect_during_construction() -> None:
         assert state.recovery_phase is RuntimeHealthRecoveryPhase.DISCONNECTED
         assert state.freshness is Freshness.DISCONNECTED
         assert state.presentation is SystemHealthPresentationState.UNAVAILABLE
+    finally:
+        feature.close()
+
+
+def test_live_adapter_replays_an_active_fallback_during_construction() -> None:
+    clock = _Clock()
+    application = _application_with_admitted_source(started=True)
+    bridge = EventBridge(subscribe_backend=False)
+    fallback_state = bridge.mark_fallback_active()
+    feature = LiveSystemHealthAdapter(
+        application_health=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                application,
+                clock=clock,
+            )
+        ),
+        event_bridge=bridge,
+        clock=clock,
+    )
+    try:
+        state = feature.snapshot(SystemHealthContext())
+        source = state.diagnostic_data_source
+
+        assert fallback_state.generation.value == 2
+        assert state.source.generation.value == 2
+        assert source.fallback is DiagnosticDataSourceFallbackState.ACTIVE
+        assert source.connection is DiagnosticDataSourceConnectionState.CONNECTED
+        assert source.recovery_phase is DiagnosticDataSourceRecoveryPhase.RECOVERED
+        assert source.accepted_generation is not None
+        assert source.accepted_generation.value == 2
+        assert state.presentation is SystemHealthPresentationState.DEGRADED
     finally:
         feature.close()
 

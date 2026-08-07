@@ -62,7 +62,6 @@ class DiagnosticDataSourceApplicationAvailability(str, Enum):
 class DiagnosticDataSourceApplicationErrorCode(str, Enum):
     NO_ADMITTED_SOURCE = "diagnostic_data_source_not_admitted"
     READ_FAILED = "diagnostic_data_source_read_failed"
-    UNSAFE_IDENTITY = "diagnostic_data_source_identity_rejected"
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,48 +311,50 @@ class LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter:
                 retryable=True,
             )
 
-        provenance = max(
-            (segment.source_provenance for segment in segments),
-            key=lambda item: item.observed_at,
-        )
-        token = hashlib.sha256(
-            "|".join(
-                sorted(
-                    f"{segment.segment_id}:{segment.content_hash}:"
-                    f"{segment.source_snapshot_id}"
-                    for segment in segments
-                )
-            ).encode("utf-8")
-        ).hexdigest()
         try:
+            provenance = max(
+                (segment.source_provenance for segment in segments),
+                key=lambda item: item.observed_at,
+            )
+            token = hashlib.sha256(
+                "|".join(
+                    sorted(
+                        f"{segment.segment_id}:{segment.content_hash}:"
+                        f"{segment.source_snapshot_id}"
+                        for segment in segments
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
             identity = DiagnosticDataSourceIdentity(
                 public_id=f"admitted-source-{token[:16]}",
-                provider=provenance.provider,
-                dataset=provenance.dataset,
-                version=provenance.version,
+                provider=_safe_provider_label(provenance.provider),
+                dataset=_opaque_source_label("Dataset", provenance.dataset),
+                version=_opaque_source_label("Version", provenance.version),
             )
-        except (TypeError, ValueError):
+            return DiagnosticDataSourceApplicationResult(
+                availability=DiagnosticDataSourceApplicationAvailability.READY,
+                observation=DiagnosticDataSourceApplicationObservation(
+                    identity=identity,
+                    observed_at=provenance.observed_at,
+                    affected_scope=(
+                        DiagnosticDataSourceScope.SCENARIO_INPUTS,
+                        DiagnosticDataSourceScope.DIAGNOSTIC_EVIDENCE_INTERPRETATION,
+                    ),
+                ),
+                source_token=SourceRevisionToken(token),
+                observed_at=read_at,
+                error=None,
+            )
+        except Exception:  # noqa: BLE001 - redact malformed source metadata
             return _data_source_failure(
                 observed_at=read_at,
                 availability=DiagnosticDataSourceApplicationAvailability.FAILED,
-                code=DiagnosticDataSourceApplicationErrorCode.UNSAFE_IDENTITY,
-                explanation="The diagnostic data-source identity was rejected safely.",
-                retryable=False,
-            )
-        return DiagnosticDataSourceApplicationResult(
-            availability=DiagnosticDataSourceApplicationAvailability.READY,
-            observation=DiagnosticDataSourceApplicationObservation(
-                identity=identity,
-                observed_at=provenance.observed_at,
-                affected_scope=(
-                    DiagnosticDataSourceScope.SCENARIO_INPUTS,
-                    DiagnosticDataSourceScope.DIAGNOSTIC_EVIDENCE_INTERPRETATION,
+                code=DiagnosticDataSourceApplicationErrorCode.READ_FAILED,
+                explanation=(
+                    "The authoritative diagnostic data-source read failed safely."
                 ),
-            ),
-            source_token=SourceRevisionToken(token),
-            observed_at=read_at,
-            error=None,
-        )
+                retryable=True,
+            )
 
 
 def _application_failure(
@@ -396,6 +397,19 @@ def _data_source_failure(
             retryable=retryable,
         ),
     )
+
+
+def _safe_provider_label(value: str) -> str:
+    if value.strip().casefold() == "baostock":
+        return "BaoStock"
+    return _opaque_source_label("Provider", value)
+
+
+def _opaque_source_label(prefix: str, value: str) -> str:
+    digest = hashlib.sha256(
+        f"diagnostic-source-label|{prefix}|{value}".encode("utf-8")
+    ).hexdigest()
+    return f"{prefix} {digest[:8]}"
 
 
 def _require_aware(value: datetime) -> None:

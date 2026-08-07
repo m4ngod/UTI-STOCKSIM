@@ -8,6 +8,7 @@ import pytest
 
 from app.features import (
     DiagnosticDataSourceApplicationAvailability,
+    DiagnosticDataSourceApplicationErrorCode,
     DiagnosticDataSourceScope,
     RUNTIME_HEALTH_APPLICATION_INTERFACE_VERSION,
     LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
@@ -45,7 +46,12 @@ REQUIRED_SOURCE_CHECKS = (
 )
 
 
-def _application_with_admitted_source():
+def _application_with_admitted_source(
+    *,
+    provider: object = "BaoStock",
+    dataset: object = "local-a-share-fixture",
+    version: object = "fixture-2026-07-21",
+):
     selection = HistoricalSegmentSelection(
         market="mainland-a-share",
         start_date=date(2024, 1, 2),
@@ -55,9 +61,9 @@ def _application_with_admitted_source():
         selection=selection,
         label="A-share diagnostic interval",
         provenance=SourceProvenance(
-            provider="BaoStock",
-            dataset="local-a-share-fixture",
-            version="fixture-2026-07-21",
+            provider=provider,  # type: ignore[arg-type]
+            dataset=dataset,  # type: ignore[arg-type]
+            version=version,  # type: ignore[arg-type]
             observed_at=datetime(2026, 7, 21, 23, 0, tzinfo=timezone.utc),
         ),
         artifacts=(
@@ -131,8 +137,8 @@ def test_system_health_application_reads_a_safe_admitted_data_source() -> None:
     assert result.availability is DiagnosticDataSourceApplicationAvailability.READY
     assert result.observation is not None
     assert result.observation.identity.provider == "BaoStock"
-    assert result.observation.identity.dataset == "local-a-share-fixture"
-    assert result.observation.identity.version == "fixture-2026-07-21"
+    assert result.observation.identity.dataset.startswith("Dataset ")
+    assert result.observation.identity.version.startswith("Version ")
     assert result.observation.identity.public_id.startswith("admitted-source-")
     assert result.observation.affected_scope == (
         DiagnosticDataSourceScope.SCENARIO_INPUTS,
@@ -204,3 +210,54 @@ def test_data_source_application_redacts_raw_failure_details() -> None:
         "market_payload",
     ):
         assert forbidden not in exposed
+
+
+def test_data_source_application_opaque_projects_untrusted_provenance() -> None:
+    adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        _application_with_admitted_source(
+            provider="Authorization: Bearer sk-live-provider-secret",
+            dataset="api_key=dataset-secret@example.test:6379",
+            version="<script>cookie=version-secret</script>",
+        ),
+        clock=lambda: NOW,
+    )
+
+    result = adapter.read_diagnostic_data_source_health()
+
+    assert result.availability is DiagnosticDataSourceApplicationAvailability.READY
+    assert result.observation is not None
+    identity = result.observation.identity
+    assert identity.provider.startswith("Provider ")
+    assert identity.dataset.startswith("Dataset ")
+    assert identity.version.startswith("Version ")
+    exposed = repr(result).casefold()
+    for forbidden in (
+        "authorization",
+        "bearer",
+        "sk-live",
+        "api_key",
+        "dataset-secret",
+        "example.test",
+        "script",
+        "cookie",
+        "version-secret",
+    ):
+        assert forbidden not in exposed
+
+
+def test_data_source_application_fails_safely_for_malformed_provenance() -> None:
+    adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        _application_with_admitted_source(provider=123),
+        clock=lambda: NOW,
+    )
+
+    result = adapter.read_diagnostic_data_source_health()
+
+    assert result.availability is DiagnosticDataSourceApplicationAvailability.FAILED
+    assert result.observation is None
+    assert result.source_token is None
+    assert result.error is not None
+    assert result.error.code is DiagnosticDataSourceApplicationErrorCode.READ_FAILED
+    assert result.error.explanation == (
+        "The authoritative diagnostic data-source read failed safely."
+    )

@@ -142,7 +142,7 @@ class DiagnosticDataSourceHealthComponent:
     connection: DiagnosticDataSourceConnectionState
     fallback: DiagnosticDataSourceFallbackState
     accepted_revision: DiagnosticDataSourceRevision | None
-    accepted_generation: SourceGenerationId
+    accepted_generation: SourceGenerationId | None
     observed_at: datetime
     freshness: Freshness
     age: timedelta
@@ -170,8 +170,15 @@ class DiagnosticDataSourceHealthComponent:
             DiagnosticDataSourceRevision,
         ):
             raise TypeError("accepted_revision must be a Data Source revision")
-        if not isinstance(self.accepted_generation, SourceGenerationId):
+        if self.accepted_generation is not None and not isinstance(
+            self.accepted_generation,
+            SourceGenerationId,
+        ):
             raise TypeError("accepted_generation must be a SourceGenerationId")
+        if (self.accepted_revision is None) is not (
+            self.accepted_generation is None
+        ):
+            raise ValueError("accepted revision and generation must be jointly present")
         if not isinstance(self.freshness, Freshness):
             raise TypeError("freshness must be a Freshness")
         if not isinstance(self.recovery_phase, DiagnosticDataSourceRecoveryPhase):
@@ -200,6 +207,54 @@ class DiagnosticDataSourceHealthComponent:
                 raise ValueError("accepted revision must match last reliable state")
             if self.accepted_generation != self.last_reliable_observation.generation:
                 raise ValueError("accepted generation must match last reliable state")
+        elif self.accepted_revision is not None:
+            raise ValueError("accepted state requires a last reliable observation")
+        if (
+            self.classification
+            is DiagnosticDataSourceHealthClassification.UNAVAILABLE
+            and self.last_reliable_observation is not None
+        ):
+            raise ValueError("unavailable Data Source Health cannot be reliable")
+        if self.classification is DiagnosticDataSourceHealthClassification.HEALTHY:
+            if (
+                self.connection is not DiagnosticDataSourceConnectionState.CONNECTED
+                or self.last_reliable_observation is None
+                or self.freshness is not Freshness.FRESH
+                or self.error is not None
+            ):
+                raise ValueError("healthy Data Source Health is contradictory")
+        if self.classification is DiagnosticDataSourceHealthClassification.STALE:
+            if (
+                self.last_reliable_observation is None
+                or self.freshness is not Freshness.STALE
+            ):
+                raise ValueError("stale Data Source Health requires stale history")
+        if (
+            self.classification
+            is DiagnosticDataSourceHealthClassification.RECOVERING
+            and (
+                self.connection
+                is not DiagnosticDataSourceConnectionState.RECONNECTING
+                or self.last_reliable_observation is None
+            )
+        ):
+            raise ValueError("recovering Data Source Health is contradictory")
+        if self.recovery_phase is DiagnosticDataSourceRecoveryPhase.DISCONNECTED:
+            if self.connection is not DiagnosticDataSourceConnectionState.DISCONNECTED:
+                raise ValueError("disconnected recovery requires disconnection")
+        if self.recovery_phase in {
+            DiagnosticDataSourceRecoveryPhase.FALLBACK,
+            DiagnosticDataSourceRecoveryPhase.RECONNECTING,
+            DiagnosticDataSourceRecoveryPhase.REREADING,
+            DiagnosticDataSourceRecoveryPhase.FAILED_RECOVERY,
+        } and self.connection is not DiagnosticDataSourceConnectionState.RECONNECTING:
+            raise ValueError("active recovery requires a reconnecting source")
+        if self.recovery_phase is DiagnosticDataSourceRecoveryPhase.RECOVERED:
+            if (
+                self.connection is not DiagnosticDataSourceConnectionState.CONNECTED
+                or self.last_reliable_observation is None
+            ):
+                raise ValueError("recovered Data Source Health requires reliable state")
         _require_safe_text(self.explanation, "Data Source Health explanation")
 
 
@@ -344,19 +399,18 @@ def _require_safe_text(value: str, label: str) -> None:
 
 def _require_safe_source_label(value: str, label: str) -> None:
     _require_safe_text(value, f"Data Source {label}")
-    normalized = value.casefold()
-    forbidden = (
-        "://",
-        "\\",
-        "/",
-        "token",
-        "cookie",
-        "secret",
-        "credential",
-        "password",
-        "connection string",
-    )
-    if any(marker in normalized for marker in forbidden):
+    if label == "provider" and value == "BaoStock":
+        return
+    prefixes = {
+        "provider": "Provider ",
+        "dataset": "Dataset ",
+        "version": "Version ",
+    }
+    prefix = prefixes[label]
+    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
+    if len(suffix) != 8 or any(
+        character not in "0123456789abcdef" for character in suffix
+    ):
         raise ValueError(f"Data Source {label} is not safe for presentation")
 
 

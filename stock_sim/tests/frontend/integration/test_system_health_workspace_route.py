@@ -43,6 +43,8 @@ from strategy_diagnostics import (
     SourceProvenance,
 )
 
+SOURCE_HEALTH_NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
@@ -79,7 +81,13 @@ def _process_until(app: QApplication, predicate, *, timeout: float = 5.0) -> Non
     raise AssertionError("Timed out waiting for the externally visible QML state")
 
 
-def _application_with_admitted_source():
+def _application_with_admitted_source(
+    *,
+    provider: str = "BaoStock",
+    dataset: str = "local-a-share-fixture",
+    version: str = "fixture-2026-07-21",
+    source_observed_at: datetime | None = None,
+):
     selection = HistoricalSegmentSelection(
         market="mainland-a-share",
         start_date=date(2024, 1, 2),
@@ -104,10 +112,13 @@ def _application_with_admitted_source():
         selection=selection,
         label="A-share diagnostic interval",
         provenance=SourceProvenance(
-            provider="BaoStock",
-            dataset="local-a-share-fixture",
-            version="fixture-2026-07-21",
-            observed_at=datetime(2026, 7, 21, 23, 0, tzinfo=timezone.utc),
+            provider=provider,
+            dataset=dataset,
+            version=version,
+            observed_at=(
+                source_observed_at
+                or SOURCE_HEALTH_NOW - timedelta(seconds=1)
+            ),
         ),
         artifacts=(
             SourceArtifact(
@@ -217,12 +228,17 @@ def test_live_app_context_uses_one_diagnostics_application_for_every_adapter(
         assert root.findChild(QObject, "systemHealthPage") is not None
         status = root.findChild(QObject, "systemHealthAccessibleStatus")
         assert status is not None
-        assert "unavailable" in str(status.property("accessibleName")).casefold()
+        overall_accessible = str(status.property("accessibleName")).casefold()
+        assert "unavailable" in overall_accessible
+        assert "freshness awaiting_first_state" in overall_accessible
         source_status = root.findChild(QObject, "dataSourceAccessibleStatus")
         assert source_status is not None
         assert "unavailable" in str(
             source_status.property("accessibleName")
         ).casefold()
+        source_revision = root.findChild(QObject, "dataSourceRevisionText")
+        assert source_revision is not None
+        assert source_revision.property("text") == "Accepted · Unavailable"
         assert "Application runtime" in visible
         assert "No infrastructure controls" in visible
     finally:
@@ -377,15 +393,21 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
     ui_thread = get_ident()
     qt_delivery_threads: list[int] = []
     run_feature = DeterministicFakeRunMonitoringAdapter()
-    diagnostics_application = _application_with_admitted_source()
+    diagnostics_application = _application_with_admitted_source(
+        provider="Authorization: Bearer sk-live-provider-secret",
+        dataset="api_key=dataset-secret@example.test:6379",
+        version="<script>cookie=version-secret</script>",
+    )
     bridge = EventBridge(subscribe_backend=False)
     health_feature = LiveSystemHealthAdapter(
         application_health=(
             LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
-                diagnostics_application
+                diagnostics_application,
+                clock=lambda: SOURCE_HEALTH_NOW,
             )
         ),
         event_bridge=bridge,
+        clock=lambda: SOURCE_HEALTH_NOW,
     )
     window = MainWindow(
         run_monitoring_feature=run_feature,
@@ -405,9 +427,11 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
         )
         root = host.rootObject()
         source_status = root.findChild(QObject, "dataSourceAccessibleStatus")
+        overall_status = root.findChild(QObject, "systemHealthAccessibleStatus")
         source_revision = root.findChild(QObject, "dataSourceRevisionText")
         source_identity = root.findChild(QObject, "dataSourceIdentityText")
         assert source_status is not None
+        assert overall_status is not None
         assert source_revision is not None
         assert source_identity is not None
         assert "connected" in str(source_status.property("accessibleName"))
@@ -424,6 +448,9 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
         )
         assert "last reliable" in _visible_text(root).casefold()
         assert source_identity.property("text") == reliable_identity
+        assert "freshness disconnected" in str(
+            overall_status.property("accessibleName")
+        ).casefold()
 
         bridge.mark_fallback_active()
         _process_until(
@@ -521,10 +548,66 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
             "never-render-this",
             "cookie",
             "connection string",
+            "authorization",
+            "bearer",
+            "sk-live",
+            "api_key",
+            "dataset-secret",
+            "example.test",
+            "script",
+            "version-secret",
         ):
             assert forbidden not in exposed
         assert qt_delivery_threads
         assert set(qt_delivery_threads) == {ui_thread}
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+
+
+def test_real_source_freshness_deadline_reaches_qml_without_polling() -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    diagnostics_application = _application_with_admitted_source(
+        source_observed_at=datetime.now(timezone.utc),
+    )
+    health_feature = LiveSystemHealthAdapter(
+        application_health=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                diagnostics_application
+            )
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+        freshness_threshold=timedelta(milliseconds=50),
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        app.processEvents()
+        root = window.centralWidget().rootObject()
+        source_status = root.findChild(QObject, "dataSourceAccessibleStatus")
+        assert source_status is not None
+
+        _process_until(
+            app,
+            lambda: "freshness stale"
+            in str(source_status.property("accessibleName")),
+            timeout=2,
+        )
+
+        assert "connection connected" in str(
+            source_status.property("accessibleName")
+        )
+        assert "STALE" in _visible_text(root)
     finally:
         window.close()
         run_feature.close()
@@ -626,6 +709,9 @@ def test_stale_failed_recovery_is_accessible_and_keyboard_focusable() -> None:
         assert "fallback active" in accessible
         assert "failed_recovery" in accessible
         assert "partial" in str(runtime_status.property("accessibleName"))
+        assert "freshness stale" in str(
+            runtime_status.property("accessibleName")
+        ).casefold()
 
         assert runtime_status.property("activeFocus") is True
         QTest.keyClick(host, Qt.Key.Key_Tab)

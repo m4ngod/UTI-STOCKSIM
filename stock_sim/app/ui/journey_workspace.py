@@ -5936,6 +5936,17 @@ class SystemHealthQtAdapter(QObject):
         self._state = state
         self.stateChanged.emit()
 
+    @Slot()
+    def refresh(self) -> None:
+        """Refresh the read-only snapshot without controlling infrastructure."""
+
+        if self._closed or not self._route_active:
+            return
+        state = self._feature.snapshot(self._context)
+        if state.revision > self._state.revision:
+            self._state = state
+            self.stateChanged.emit()
+
     def set_route_active(self, active: bool) -> None:
         if self._closed or active is self._route_active:
             return
@@ -6079,6 +6090,8 @@ class SystemHealthQtAdapter(QObject):
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def dataSourceGenerationText(self) -> str:  # noqa: N802
         generation = self._state.diagnostic_data_source.accepted_generation
+        if generation is None:
+            return "Unavailable"
         return f"g{generation.value}"
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
