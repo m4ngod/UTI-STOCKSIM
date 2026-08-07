@@ -43,7 +43,7 @@ FocusScope {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "Runtime Health"
+                    text: "System Reliability & Compatibility"
                     color: tokens.textPrimary
                     font.pixelSize: 28
                     font.bold: true
@@ -52,7 +52,7 @@ FocusScope {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "A read-only view of the diagnostics application runtime."
+                    text: "A read-only view of runtime, durable persistence, and version compatibility facts."
                     color: tokens.textMuted
                     font.pixelSize: tokens.bodySize
                     wrapMode: Text.WordWrap
@@ -62,7 +62,16 @@ FocusScope {
                     id: statusSummary
                     objectName: "systemHealthAccessibleStatus"
                     property string accessibleName: (
-                        "Runtime Health " + adapter.presentationState
+                        "System Health " + adapter.presentationState
+                        + ", Runtime Health " + adapter.componentClassification
+                        + ", Persistence Health " + adapter.persistenceClassification
+                        + ", availability " + adapter.persistenceAvailability
+                        + ", schema " + adapter.persistenceSchemaCompatibility
+                        + ", Release binding "
+                        + adapter.releaseManifestCompatibility
+                        + ", Version Health " + adapter.versionClassification
+                        + ", Reproduction Manifest "
+                        + adapter.manifestCompatibility
                         + ", freshness " + adapter.freshness
                         + ", completeness " + adapter.completeness
                     )
@@ -121,6 +130,184 @@ FocusScope {
                     columns: tokens.textScale >= 1.75 ? 1 : 2
                     columnSpacing: tokens.spaceMd
                     rowSpacing: tokens.spaceMd
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(
+                            244,
+                            persistenceColumn.implicitHeight + tokens.spaceMd * 2
+                        )
+                        radius: tokens.radiusMd
+                        color: tokens.surface
+                        border.color: tokens.border
+
+                        ColumnLayout {
+                            id: persistenceColumn
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceMd
+                            spacing: tokens.spaceXs
+
+                            Text {
+                                text: "DIAGNOSTIC PERSISTENCE"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Persistence Health · "
+                                    + adapter.persistenceClassification
+                                    + " · availability "
+                                    + adapter.persistenceAvailability
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.bodySize
+                                font.bold: true
+                                wrapMode: Text.WordWrap
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Persistence freshness · "
+                                    + adapter.persistenceFreshness
+                                    + " · age " + adapter.persistenceAgeText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Schema compatibility · "
+                                    + adapter.persistenceSchemaCompatibility
+                                    + " · head " + adapter.persistenceSchemaHead
+                                    + " · supported "
+                                    + adapter.persistenceSupportedSchemaHead
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Durable read · "
+                                    + adapter.persistenceDurableReadText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Durable write · "
+                                    + adapter.persistenceDurableWriteText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Reopen verification · "
+                                    + adapter.persistenceReopenVerification
+                                    + " · recovery "
+                                    + adapter.persistenceRecoveryState
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Affected scope · "
+                                    + adapter.persistenceAffectedScope
+                                    + " · " + adapter.persistenceExplanation
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(
+                            278,
+                            versionColumn.implicitHeight + tokens.spaceMd * 2
+                        )
+                        radius: tokens.radiusMd
+                        color: tokens.surface
+                        border.color: tokens.border
+
+                        ColumnLayout {
+                            id: versionColumn
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceMd
+                            spacing: tokens.spaceXs
+
+                            Text {
+                                text: "VERSION COMPATIBILITY"
+                                color: tokens.accent
+                                font.pixelSize: tokens.labelSize
+                                font.bold: true
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Version Health · "
+                                    + adapter.versionClassification
+                                    + " · Release binding "
+                                    + adapter.releaseManifestCompatibility
+                                    + " · Reproduction Manifest "
+                                    + adapter.manifestCompatibility
+                                color: tokens.textPrimary
+                                font.pixelSize: tokens.bodySize
+                                font.bold: true
+                                wrapMode: Text.WordWrap
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Product build · " + adapter.productBuild
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Feature registry · "
+                                    + adapter.featureRegistryText
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Dependency lock · "
+                                    + adapter.dependencyLockIdentity
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Runner · " + adapter.runnerVersion
+                                    + " · schema "
+                                    + adapter.diagnosticSchemaVersion
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Evidence · "
+                                    + adapter.evidenceFormatVersion
+                                    + " · Manifest · "
+                                    + adapter.manifestFormatVersion
+                                color: tokens.textMuted
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: adapter.versionExplanation
+                                color: tokens.textQuiet
+                                font.pixelSize: tokens.labelSize
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
+                    }
 
                     Rectangle {
                         Layout.fillWidth: true

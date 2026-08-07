@@ -65,6 +65,9 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "degraded",
         "stale",
         "unavailable",
+        "incompatible",
+        "recovering",
+        "recovered",
         "unknown",
     }
     assert {item.value for item in SystemHealthPresentationState} == {
@@ -72,6 +75,9 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "degraded",
         "stale",
         "unavailable",
+        "incompatible",
+        "recovering",
+        "recovered",
         "unknown",
     }
     assert {field.name for field in fields(SystemHealthViewState)} == {
@@ -119,7 +125,7 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         presentation=SystemHealthPresentationState.HEALTHY,
         completeness=Completeness.COMPLETE,
         components=(component,),
-        last_reliable_payload=component,
+        last_reliable_payload=(component,),
         recovery_phase=RuntimeHealthRecoveryPhase.IDLE,
         error=None,
     )

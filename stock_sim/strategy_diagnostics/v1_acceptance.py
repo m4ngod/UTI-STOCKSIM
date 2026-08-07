@@ -125,6 +125,8 @@ V1_ALLOWED_APPLICATION_COMMANDS = (
     "plan_isolated_sensitivity_set",
     "preview_reference_market_path",
     "read_diagnostic_campaign_case_inventory",
+    "read_diagnostic_persistence_health",
+    "read_reproduction_manifest_format_identity",
     "read_strategy_under_test_inventory",
     "replay_scenario_lab_authoring_command",
     "replay_scenario_lab_projection_command",

@@ -149,6 +149,28 @@ class SqlReproductionRepository:
             ).scalars().all()
         return tuple(self.get_manifest(str(value)) for value in ids)
 
+    def manifest_format_identity(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> str | None:
+        """Read the format column without parsing a possibly future payload."""
+
+        with self._engine.connect() as connection:
+            value = connection.execute(
+                text(
+                    "SELECT schema_version "
+                    "FROM diagnostic_reproduction_manifests "
+                    "WHERE manifest_id = :manifest_id "
+                    "AND evidence_package_id = :evidence_package_id"
+                ),
+                {
+                    "manifest_id": manifest_id,
+                    "evidence_package_id": evidence_package_id,
+                },
+            ).scalar_one_or_none()
+        return None if value is None else str(value)
+
     def save_report(self, report: ReproductionReport) -> None:
         manifest = self.get_manifest(report.manifest_id)
         _validate_report_against_manifest(report, manifest)

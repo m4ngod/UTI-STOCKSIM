@@ -25,6 +25,7 @@ from strategy_diagnostics.formal_diagnostic_campaigns import (
     DiagnosticCampaignSnapshot,
 )
 from strategy_diagnostics.reproduction import ReproductionManifest
+from strategy_diagnostics.versioning import STRATEGY_DIAGNOSTICS_RUNNER_VERSION
 from strategy_diagnostics.strategy_runs import StrategyRunSnapshot
 
 from ._diagnostics_application_access import (
@@ -1328,7 +1329,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                     f"sha256:{value}" for value in sorted(artifact_hashes)
                 ),
                 source_run_ids=run_ids,
-                runner_version="strategy-diagnostics-v1",
+                runner_version=STRATEGY_DIAGNOSTICS_RUNNER_VERSION,
                 build_version=(relevant_manifests[0].specification.code_identity),
                 dependencies=tuple(
                     DependencyProvenance(

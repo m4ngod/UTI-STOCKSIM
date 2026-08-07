@@ -63,6 +63,7 @@ from app.features import (
     MarketScenarioId,
     PauseDiagnosticTarget,
     PauseDiagnosticTask,
+    PersistenceHealthComponent,
     ResumeDiagnosticTarget,
     ResumeDiagnosticTask,
     RetryFailedCampaignNode,
@@ -84,8 +85,11 @@ from app.features import (
     StrategyUnderTestId,
     Subscription,
     SystemHealthContext,
+    SystemHealthComponentIdentity,
+    SystemHealthComponent,
     SystemHealthFeature,
     SystemHealthViewState,
+    VersionHealthComponent,
     ValidateDiagnosticTaskConfiguration,
     compose_diagnostic_setup_selection_context,
 )
@@ -5982,19 +5986,236 @@ class SystemHealthQtAdapter(QObject):
         )
         if error is None:
             return details
-        return f"{details} · {error.code.value} · {error.explanation}"
+        correlation = (
+            ""
+            if error.correlation_identity is None
+            else f" · correlation {error.correlation_identity}"
+        )
+        return (
+            f"{details} · {error.code.value} · {error.explanation} · "
+            f"affected {error.affected_scope.value} · "
+            f"recovery {error.recovery_expectation.value}{correlation}"
+        )
+
+    def _component(
+        self,
+        identity: SystemHealthComponentIdentity,
+    ) -> SystemHealthComponent | None:
+        return next(
+            (item for item in self._state.components if item.identity is identity),
+            None,
+        )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def componentClassification(self) -> str:  # noqa: N802
-        if not self._state.components:
+        component = self._component(
+            SystemHealthComponentIdentity.APPLICATION_RUNTIME
+        )
+        if component is None:
             return "unknown"
-        return self._state.components[0].classification.value
+        return component.classification.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def componentExplanation(self) -> str:  # noqa: N802
-        if not self._state.components:
+        component = self._component(
+            SystemHealthComponentIdentity.APPLICATION_RUNTIME
+        )
+        if component is None:
             return "No authoritative Runtime Health observation is available."
-        return self._state.components[0].explanation
+        return component.explanation
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceClassification(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "unknown" if component is None else component.classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceAvailability(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "unknown" if component is None else component.availability.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceFreshness(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "unknown" if component is None else component.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceAgeText(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "Unavailable"
+            if component is None
+            else f"{component.age.total_seconds():.1f}s"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceSchemaCompatibility(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "unknown"
+            if component is None
+            else component.schema_compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceSchemaHead(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "Unavailable"
+            if component is None or component.schema_head is None
+            else component.schema_head
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceSupportedSchemaHead(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "Unavailable" if component is None else component.supported_schema_head
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceDurableReadText(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        value = (
+            None
+            if component is None
+            else component.last_successful_durable_read_at
+        )
+        return "Unavailable" if value is None else value.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceDurableWriteText(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        value = (
+            None
+            if component is None
+            else component.last_successful_durable_write_at
+        )
+        return "Unavailable" if value is None else value.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceReopenVerification(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "unknown"
+            if component is None
+            else component.reopen_verification.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceAffectedScope(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "diagnostic_persistence"
+            if component is None
+            else component.affected_scope.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceRecoveryState(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            self._state.recovery_phase.value
+            if component is None
+            else component.recovery_phase.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceExplanation(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "No authoritative Diagnostic Persistence observation is available."
+            if component is None
+            else component.explanation
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def versionClassification(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "unknown" if component is None else component.classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def productBuild(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.product_build
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def featureRegistryText(self) -> str:  # noqa: N802
+        component = self._version_component()
+        if component is None:
+            return "Unavailable"
+        return " · ".join(
+            f"{item.name.value} {item.version.render()}"
+            for item in component.feature_interfaces
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dependencyLockIdentity(self) -> str:  # noqa: N802
+        component = self._version_component()
+        if component is None or component.dependency_lock_identity is None:
+            return "Unavailable"
+        return component.dependency_lock_identity
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def releaseManifestCompatibility(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return (
+            "unknown"
+            if component is None
+            else component.release_manifest_compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def runnerVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.runner_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticSchemaVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.schema_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def evidenceFormatVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.evidence_format_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def manifestFormatVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.manifest_format_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def manifestCompatibility(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return (
+            "unknown"
+            if component is None
+            else component.reproduction_manifest_compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def versionExplanation(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return (
+            "No authoritative Version Health observation is available."
+            if component is None
+            else component.explanation
+        )
+
+    def _persistence_component(self) -> PersistenceHealthComponent | None:
+        component = self._component(
+            SystemHealthComponentIdentity.DIAGNOSTIC_PERSISTENCE
+        )
+        return (
+            component
+            if isinstance(component, PersistenceHealthComponent)
+            else None
+        )
+
+    def _version_component(self) -> VersionHealthComponent | None:
+        component = self._component(
+            SystemHealthComponentIdentity.VERSION_COMPATIBILITY
+        )
+        return component if isinstance(component, VersionHealthComponent) else None
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def ageText(self) -> str:  # noqa: N802

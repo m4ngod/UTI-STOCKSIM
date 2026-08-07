@@ -13,6 +13,7 @@ from stock_sim.release.frontend_v2_packaging import (
     EXPECTED_TOOLCHAIN,
     PROJECT_QML_ROOT,
     PROJECT_ROOT,
+    TOOLCHAIN_LOCK_PATH,
     AccessibilityGateEvidence,
     LockedPlatform,
     MandatoryReleaseGateEvidence,
@@ -775,6 +776,10 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
         "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
         "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
         "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
+        (
+            f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
+            "stock_sim/release/frontend_v2_toolchain.lock.json"
+        ),
         (
             "--include-data-files="
             f"{PROJECT_ROOT / 'strategy_diagnostics' / 'quentx_scenario_native_strategy.py'}"
