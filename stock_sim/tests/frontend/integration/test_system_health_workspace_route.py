@@ -1030,6 +1030,12 @@ def test_app_context_copied_persistence_failure_reaches_qml_safely(
         accessible = root.findChild(QObject, "systemHealthAccessibleStatus")
 
         assert accessible is not None
+        _wait_until(
+            app,
+            lambda: f"system health {expected_presentation}"
+            in str(accessible.property("accessibleName")).casefold(),
+        )
+        visible = _visible_text(root)
         narrator = str(accessible.property("accessibleName")).casefold()
         assert f"system health {expected_presentation}" in narrator
         assert f"persistence health {expected_presentation}" in narrator

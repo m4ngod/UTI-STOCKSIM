@@ -1724,6 +1724,9 @@ class DeterministicFakeSystemHealthAdapter:
     def advance_context_to_incompatible(self) -> None:
         self._set_diagnostic_context_mode(SystemHealthContextResolution.INCOMPATIBLE)
 
+    def advance_context_to_unavailable(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.UNAVAILABLE)
+
     def advance_context_to_failed(self) -> None:
         self._set_diagnostic_context_mode(SystemHealthContextResolution.FAILED)
 
@@ -1773,6 +1776,9 @@ class DeterministicFakeSystemHealthAdapter:
             ),
             SystemHealthContextResolution.INCOMPATIBLE: (
                 "The requested typed diagnostic identity is incompatible."
+            ),
+            SystemHealthContextResolution.UNAVAILABLE: (
+                "The requested typed diagnostic identity is unavailable."
             ),
             SystemHealthContextResolution.FAILED: (
                 "The selected diagnostic has failed."

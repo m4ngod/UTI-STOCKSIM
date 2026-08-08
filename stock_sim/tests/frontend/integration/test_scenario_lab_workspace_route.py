@@ -35,6 +35,7 @@ from app.features import (
     ScenarioReproducibilityState,
 )
 from app.journey_recovery import (
+    JourneyPresentationSelection,
     JourneyWorkspaceBookmark,
     JourneyWorkspaceRoute,
 )
@@ -974,6 +975,9 @@ def test_workspace_persists_and_restores_typed_route_focus_and_task_bookmark(
         diagnostic_task_id=task_id,
         scenario_focus_target=ScenarioLabFocusTarget.REFERENCE_PATH,
         scenario_focus_identity=path_identity,
+        presentation=JourneyPresentationSelection(
+            selected_identity=path_identity,
+        ),
     )
     first.close_adapter()
     first_scenario.close()

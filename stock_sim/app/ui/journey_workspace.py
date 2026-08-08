@@ -10,7 +10,7 @@ from math import ceil
 from pathlib import Path
 from threading import Lock, Thread
 from time import monotonic_ns
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 from uuid import uuid4
 
 from PySide6.QtCore import (
@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QWidget
 
@@ -85,6 +86,8 @@ from app.features import (
     StrategyUnderTestId,
     Subscription,
     SystemHealthContext,
+    SystemHealthContextResolution,
+    SystemHealthDiagnosticContext,
     SystemHealthComponentIdentity,
     SystemHealthComponent,
     SystemHealthFeature,
@@ -152,8 +155,29 @@ from app.features.diagnostic_setup import (
     StartFormalDiagnosticCampaignFromSetup,
     ValidateDiagnosticTaskConfigurationFromSetup,
 )
-from app.features.run_monitoring import SourceGenerationId, TaskHandleId, TaskPhase
+from app.features.run_monitoring import (
+    SourceGenerationId,
+    StrategyRunId,
+    TaskHandleId,
+    TaskPhase,
+)
 from app.journey_recovery import (
+    JOURNEY_DESTINATIONS,
+    JourneyApprovedRecipeReference,
+    JourneyContext,
+    JourneyDestination,
+    JourneyDiagnosticSelection,
+    JourneyEvidenceSelection,
+    JourneyFocusReturnToken,
+    JourneyPresentationSelection,
+    JourneyRecoveryReason,
+    JourneyRecoveryState,
+    JourneyRecipeDraftReference,
+    JourneyScenarioSelection,
+    JourneySourceIdentity,
+    JourneyStrategyReference,
+    JourneyStrategySelection,
+    JourneyViewMode,
     JourneyWorkspaceBookmark,
     JourneyWorkspaceRoute,
 )
@@ -178,6 +202,7 @@ from .evidence_chart import (
 _QML_ROOT = Path(__file__).resolve().parent / "qml"
 _MOUNT_GENERATIONS = count(1)
 _MOUNT_GENERATION_LOCK = Lock()
+_JourneySelectionT = TypeVar("_JourneySelectionT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +219,44 @@ def _next_mount_generation() -> ViewMountGenerationId:
         return ViewMountGenerationId(next(_MOUNT_GENERATIONS))
 
 
+def _journey_source_identity_from_state(
+    state: object | None,
+) -> JourneySourceIdentity | None:
+    if state is None:
+        return None
+    source = getattr(state, "source", None)
+    generation = getattr(source, "generation", None)
+    identity = getattr(source, "identity", None)
+    if not isinstance(identity, str) or not isinstance(
+        generation, SourceGenerationId
+    ):
+        return None
+    source_revision = getattr(state, "source_revision", None)
+    revision = getattr(source_revision, "value", None)
+    if not isinstance(revision, str):
+        view_revision = getattr(state, "revision", None)
+        if not isinstance(view_revision, int) or isinstance(view_revision, bool):
+            return None
+        revision = f"view-r{view_revision}"
+    return JourneySourceIdentity(identity, revision, generation)
+
+
+def _journey_state_unavailable(state: object | None) -> bool:
+    if state is None:
+        return True
+    freshness = getattr(getattr(state, "freshness", None), "value", None)
+    presentation = getattr(
+        getattr(state, "presentation", None),
+        "value",
+        None,
+    )
+    return bool(
+        freshness != "fresh"
+        or presentation in {"loading", "disconnected", "failed"}
+        or getattr(state, "error", None) is not None
+    )
+
+
 class StrategyLibraryQtAdapter(QObject):
     """Qt-only projection of the typed Strategy Library Feature Interface."""
 
@@ -206,6 +269,7 @@ class StrategyLibraryQtAdapter(QObject):
         *,
         context: StrategyLibraryContext | None = None,
         bookmark_sink: Callable[[StrategySelectionBookmark], None] | None = None,
+        route_active: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -219,15 +283,16 @@ class StrategyLibraryQtAdapter(QObject):
             "Compare the backend-declared formal set before selecting it."
         )
         self._mount_generation = _next_mount_generation()
-        self._route_active = True
+        self._route_active = route_active
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._subscription: Subscription | None = feature.subscribe(
-            self._context,
-            self._queue_state,
+        self._subscription: Subscription | None = (
+            feature.subscribe(self._context, self._queue_state)
+            if route_active
+            else None
         )
 
     def _queue_state(self, state: StrategyLibraryViewState) -> None:
@@ -362,6 +427,22 @@ class StrategyLibraryQtAdapter(QObject):
         ):
             return None
         return selection
+
+    def journey_selection(self) -> JourneyStrategySelection | None:
+        selection = self.current_formal_strategy_selection()
+        if selection is None or not selection.selections:
+            return None
+        references = tuple(
+            JourneyStrategyReference(item.strategy_id, item.strategy_version)
+            for item in selection.selections
+        )
+        return JourneyStrategySelection(references[0], references[1:])
+
+    def journey_source_identity(self) -> JourneySourceIdentity | None:
+        return _journey_source_identity_from_state(self._state)
+
+    def journey_context_unavailable(self) -> bool:
+        return _journey_state_unavailable(self._state)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def commandMessage(self) -> str:  # noqa: N802
@@ -691,6 +772,7 @@ class ScenarioLabQtAdapter(QObject):
         formal_strategy_selection_provider: (
             Callable[[], tuple[StrategyUnderTestId, ...]] | None
         ) = None,
+        route_active: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -708,15 +790,16 @@ class ScenarioLabQtAdapter(QObject):
             "produces an audited typed Draft."
         )
         self._mount_generation = _next_mount_generation()
-        self._route_active = True
+        self._route_active = route_active
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._subscription: Subscription | None = feature.subscribe(
-            self._context,
-            self._queue_state,
+        self._subscription: Subscription | None = (
+            feature.subscribe(self._context, self._queue_state)
+            if route_active
+            else None
         )
 
     def _queue_state(self, state: ScenarioLabViewState) -> None:
@@ -996,6 +1079,95 @@ class ScenarioLabQtAdapter(QObject):
             scenario_set=scenario_set,
             market_scenarios=scenarios,
             execution_resolution=resolution,
+        )
+
+    def journey_selection(self) -> JourneyScenarioSelection | None:
+        selection = self.current_diagnostic_selection()
+        if selection is None:
+            return None
+        bindings = selection.context.case_bindings
+        reference_paths = tuple(
+            dict.fromkeys(item.reference_path_id for item in bindings)
+        )
+        recipe_versions = tuple(
+            dict.fromkeys(item.recipe_version_id for item in bindings)
+        )
+        recipe_projections = tuple(
+            item
+            for recipe_version_id in recipe_versions
+            for item in self._state.approved_recipe_versions
+            if item.recipe_version_id == recipe_version_id
+        )
+        return JourneyScenarioSelection(
+            reference_market_path_ids=reference_paths,
+            recipe_drafts=tuple(
+                JourneyRecipeDraftReference(
+                    item.approval.draft_id,
+                    item.approval.draft_revision,
+                )
+                for item in recipe_projections
+                if item.approval.draft_revision is not None
+            ),
+            approved_recipe_versions=tuple(
+                JourneyApprovedRecipeReference(
+                    item.recipe_version_id,
+                    item.version_number,
+                )
+                for item in recipe_projections
+            ),
+            materialized_scenario_set_id=selection.scenario_set.scenario_set_id,
+        )
+
+    def journey_source_identity(self) -> JourneySourceIdentity | None:
+        return _journey_source_identity_from_state(self._state)
+
+    def journey_context_unavailable(self) -> bool:
+        return _journey_state_unavailable(self._state)
+
+    def resolve_journey_focus_identity(
+        self,
+        target: ScenarioLabFocusTarget,
+        identity: str | None,
+    ) -> bool | None:
+        """Resolve one durable focus identity from authoritative Scenario data.
+
+        ``None`` means the Feature cannot currently answer authoritatively;
+        ``False`` means it answered and the exact identity is absent.
+        """
+
+        if self.journey_context_unavailable():
+            return None
+        if target is ScenarioLabFocusTarget.SEARCH:
+            return identity is None
+        if identity is None:
+            return False
+        if target is ScenarioLabFocusTarget.HISTORICAL_SEGMENT:
+            return any(
+                item.segment_id.value == identity
+                for item in self._state.historical_segments
+            )
+        if target is ScenarioLabFocusTarget.REFERENCE_PATH:
+            return any(
+                item.path_id.value == identity
+                for item in self._state.reference_paths
+            )
+        if target is ScenarioLabFocusTarget.MARKET_SCENARIO:
+            return any(
+                item.scenario_id.value == identity
+                for item in self._state.market_scenarios
+            )
+        if target is ScenarioLabFocusTarget.TRANSFORMATION_CATALOG:
+            catalog = self._state.transformation_catalog
+            return catalog is not None and any(
+                identity in {item.transformation_id, item.family}
+                for item in catalog.entries
+            )
+        return any(
+            item.draft_id.value == identity
+            for item in self._state.recipe_drafts
+        ) or any(
+            item.recipe_version_id.value == identity
+            for item in self._state.approved_recipe_versions
         )
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
@@ -2833,6 +3005,7 @@ class DiagnosticTasksQtAdapter(QObject):
         setup_selection_coordinator: (
             DiagnosticSetupSelectionCoordinator | None
         ) = None,
+        route_active: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -2851,7 +3024,7 @@ class DiagnosticTasksQtAdapter(QObject):
             else self._state.source.generation.value
         )
         self._mount_generation = _next_mount_generation()
-        self._route_active = True
+        self._route_active = route_active
         self._campaign_navigation_pending = False
         self._last_emitted_monitoring_selection: tuple[str, str] | None = None
         self._last_emitted_evidence_selection: (
@@ -2875,9 +3048,10 @@ class DiagnosticTasksQtAdapter(QObject):
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._subscription: Subscription | None = feature.subscribe(
-            self._context,
-            self._queue_state,
+        self._subscription: Subscription | None = (
+            feature.subscribe(self._context, self._queue_state)
+            if route_active
+            else None
         )
 
     def _queue_state(self, state: DiagnosticTasksViewState) -> None:
@@ -4213,6 +4387,42 @@ class DiagnosticTasksQtAdapter(QObject):
         task = self._state.task
         return self._context.task_id if task is None else task.task_id
 
+    def journey_selection(self) -> JourneyDiagnosticSelection | None:
+        task = self._state.task
+        if task is None:
+            return None
+        handoff = task.handoff
+        task_handle_id = next(
+            (
+                item.identity
+                for item in reversed(task.task_handles)
+                if item.target_id == task.task_id
+            ),
+            None,
+        )
+        monitoring_context = self.monitoring_context()
+        run_id = (
+            None
+            if monitoring_context is None
+            or monitoring_context.selection is None
+            else monitoring_context.selection.run_id
+        )
+        return JourneyDiagnosticSelection(
+            task_id=task.task_id,
+            task_revision=task.revision,
+            configuration_content_id=task.configuration.content_identity,
+            task_handle_id=task_handle_id,
+            campaign_id=handoff.campaign_id,
+            campaign_revision=handoff.campaign_revision,
+            run_id=run_id,
+        )
+
+    def journey_source_identity(self) -> JourneySourceIdentity | None:
+        return _journey_source_identity_from_state(self._state)
+
+    def journey_context_unavailable(self) -> bool:
+        return _journey_state_unavailable(self._state)
+
     def evidence_context(self) -> EvidenceAndFindingsContext | None:
         task = self._state.task
         if task is None or not task.handoff.ready_for_evidence_and_findings:
@@ -4500,11 +4710,22 @@ class RunMonitoringQtAdapter(QObject):
     commandChanged = Signal()
     deliveryRequested = Signal(int, object)
 
+    def journey_selected_run_id(self) -> StrategyRunId | None:
+        selection = self._context.selection
+        return None if selection is None else selection.run_id
+
+    def journey_source_identity(self) -> JourneySourceIdentity | None:
+        return _journey_source_identity_from_state(self._state)
+
+    def journey_context_unavailable(self) -> bool:
+        return _journey_state_unavailable(self._state)
+
     def __init__(
         self,
         feature: RunMonitoringFeature,
         *,
         context: RunMonitoringContext | None = None,
+        route_active: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -4512,15 +4733,16 @@ class RunMonitoringQtAdapter(QObject):
         self._context = context or RunMonitoringContext.no_selection()
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
-        self._route_active = True
+        self._route_active = route_active
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._subscription: Subscription | None = feature.subscribe(
-            self._context,
-            self._queue_state,
+        self._subscription: Subscription | None = (
+            feature.subscribe(self._context, self._queue_state)
+            if route_active
+            else None
         )
 
     def _queue_state(self, state: RunMonitoringViewState) -> None:
@@ -4908,6 +5130,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         *,
         context: EvidenceAndFindingsContext | None = None,
         chart_clock: Callable[[], int] = monotonic_ns,
+        route_active: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -4915,7 +5138,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self._context = context or EvidenceAndFindingsContext.no_selection()
         self._state = feature.snapshot(self._context)
         self._mount_generation = _next_mount_generation()
-        self._route_active = True
+        self._route_active = route_active
         self._closed = False
         self._selected_candidate = ""
         self._selected_finding = ""
@@ -4955,10 +5178,9 @@ class EvidenceAndFindingsQtAdapter(QObject):
             Qt.ConnectionType.QueuedConnection,
         )
         self._subscription: EvidenceAndFindingsSubscription | None = (
-            feature.subscribe(
-                self._context,
-                self._queue_state,
-            )
+            feature.subscribe(self._context, self._queue_state)
+            if route_active
+            else None
         )
 
     def _queue_state(self, state: EvidenceAndFindingsViewState) -> None:
@@ -5130,6 +5352,157 @@ class EvidenceAndFindingsQtAdapter(QObject):
             ),
             None,
         )
+
+    def journey_selection(
+        self,
+        previous: JourneyEvidenceSelection | None,
+    ) -> JourneyEvidenceSelection | None:
+        data = self._state.last_reliable_data
+        if data is None:
+            return None
+        finding = next(
+            (
+                item
+                for candidate in data.candidates
+                for item in candidate.findings
+                if item.identity.value == self._selected_finding
+            ),
+            None,
+        )
+        sensitivity_breakpoint = next(
+            (
+                breakpoint
+                for breakpoint in (
+                    () if finding is None else finding.sensitivity_breakpoints
+                )
+                if breakpoint.identity.value == self._selected_breakpoint
+            ),
+            None,
+        )
+        evidence_ids = {
+            item.identity
+            for candidate in data.candidates
+            for item in candidate.evidence
+        }
+        comparison_ids = {
+            item.identity
+            for candidate in data.candidates
+            for item in candidate.comparisons
+        }
+        return JourneyEvidenceSelection(
+            evidence_package_id=data.evidence_package_id,
+            evidence_id=(
+                previous.evidence_id
+                if previous is not None
+                and previous.evidence_id in evidence_ids
+                else None
+            ),
+            comparison_id=(
+                previous.comparison_id
+                if previous is not None
+                and previous.comparison_id in comparison_ids
+                else None
+            ),
+            finding_id=None if finding is None else finding.identity,
+            sensitivity_breakpoint_id=(
+                None
+                if sensitivity_breakpoint is None
+                else sensitivity_breakpoint.identity
+            ),
+            reproduction_manifest_id=data.selection.reproduction_manifest_id,
+        )
+
+    def journey_presentation(self) -> tuple[str | None, JourneyViewMode]:
+        return (
+            self._selected_finding or self._selected_candidate or None,
+            (
+                JourneyViewMode.FINDINGS
+                if self._active_tab == "findings"
+                else JourneyViewMode.DETAILS
+            ),
+        )
+
+    def restore_journey_selection(
+        self,
+        selection: JourneyEvidenceSelection,
+    ) -> None:
+        data = self._state.last_reliable_data
+        if data is None:
+            return
+        selected = None
+        if selection.finding_id is not None:
+            selected = next(
+                (
+                    (candidate, finding)
+                    for candidate in data.candidates
+                    for finding in candidate.findings
+                    if finding.identity == selection.finding_id
+                ),
+                None,
+            )
+            if selected is not None:
+                candidate, finding = selected
+                self._selected_candidate = candidate.identity.value
+                self._selected_finding = finding.identity.value
+        if selection.sensitivity_breakpoint_id is not None and any(
+            breakpoint.identity == selection.sensitivity_breakpoint_id
+            for breakpoint in (
+                () if selected is None else selected[1].sensitivity_breakpoints
+            )
+        ):
+            self._selected_breakpoint = selection.sensitivity_breakpoint_id.value
+
+    def journey_selection_is_compatible(
+        self,
+        selection: JourneyEvidenceSelection,
+    ) -> bool | None:
+        """Check cross-identity relations against authoritative Evidence data."""
+
+        data = self._state.last_reliable_data
+        if data is None:
+            return None
+        if (
+            selection.finding_id is None
+            or selection.sensitivity_breakpoint_id is None
+        ):
+            return True
+        selected_finding = next(
+            (
+                finding
+                for candidate in data.candidates
+                for finding in candidate.findings
+                if finding.identity == selection.finding_id
+            ),
+            None,
+        )
+        if selected_finding is None:
+            return True
+        if any(
+            item.identity == selection.sensitivity_breakpoint_id
+            for item in selected_finding.sensitivity_breakpoints
+        ):
+            return True
+        return not any(
+            breakpoint.identity == selection.sensitivity_breakpoint_id
+            for candidate in data.candidates
+            for finding in candidate.findings
+            for breakpoint in finding.sensitivity_breakpoints
+        )
+
+    def restore_journey_presentation(
+        self,
+        presentation: JourneyPresentationSelection,
+    ) -> None:
+        if presentation.view_mode is JourneyViewMode.FINDINGS:
+            self._active_tab = "findings"
+        elif presentation.view_mode is JourneyViewMode.DETAILS:
+            self._active_tab = "assumptions"
+
+    def journey_source_identity(self) -> JourneySourceIdentity | None:
+        return _journey_source_identity_from_state(self._state)
+
+    def journey_context_unavailable(self) -> bool:
+        return _journey_state_unavailable(self._state)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
@@ -5901,6 +6274,7 @@ class SystemHealthQtAdapter(QObject):
         feature: SystemHealthFeature,
         *,
         context: SystemHealthContext | None = None,
+        route_active: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -5908,7 +6282,7 @@ class SystemHealthQtAdapter(QObject):
         self._context = context or SystemHealthContext()
         self._state: SystemHealthViewState | None = None
         self._mount_generation = _next_mount_generation()
-        self._route_active = True
+        self._route_active = route_active
         self._closed = False
         self._subscription_lock = Lock()
         self.deliveryRequested.connect(
@@ -5916,7 +6290,8 @@ class SystemHealthQtAdapter(QObject):
             Qt.ConnectionType.QueuedConnection,
         )
         self._subscription: Subscription | None = None
-        self._start_subscription()
+        if route_active:
+            self._start_subscription()
 
     def _queue_state(
         self,
@@ -6186,7 +6561,11 @@ class SystemHealthQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def diagnosticContextAccessibleText(self) -> str:  # noqa: N802
-        resolution = self.diagnosticContextResolution.replace("_", " ")
+        resolution = (
+            "no current task"
+            if self._state is None
+            else self._state.diagnostic_context.resolution.value.replace("_", " ")
+        )
         terminal = "terminal" if self.diagnosticContextTerminal else "non-terminal"
         return (
             f"Diagnostic context {resolution}, {terminal}, "
@@ -6205,6 +6584,17 @@ class SystemHealthQtAdapter(QObject):
             (item for item in self._state.components if item.identity is identity),
             None,
         )
+
+    def journey_context_resolution(
+        self,
+    ) -> tuple[SystemHealthContextResolution, str] | None:
+        if self._state is None:
+            return None
+        diagnostic_context = self._state.diagnostic_context
+        return diagnostic_context.resolution, diagnostic_context.explanation
+
+    def journey_source_identity(self) -> JourneySourceIdentity | None:
+        return _journey_source_identity_from_state(self._state)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def componentClassification(self) -> str:  # noqa: N802
@@ -6770,6 +7160,7 @@ class JourneyWorkspaceHost(QQuickWidget):
         journey_workspace_bookmark_sink: (
             Callable[[JourneyWorkspaceBookmark], None] | None
         ) = None,
+        initial_recovery_state: JourneyRecoveryState | None = None,
         scenario_lab_feature: ScenarioLabFeature | None = None,
         scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
@@ -6786,18 +7177,52 @@ class JourneyWorkspaceHost(QQuickWidget):
         initial_route: str = "diagnostic_tasks",
     ) -> None:
         super().__init__(parent)
-        if initial_route not in {
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-            "system_health",
-        }:
+        try:
+            requested_initial_route = JourneyWorkspaceRoute(initial_route)
+        except ValueError:
             raise ValueError(
                 f"Unsupported Journey Workspace route: {initial_route!r}"
+            ) from None
+        self._route_availability = {
+            JourneyWorkspaceRoute.STRATEGY_LIBRARY: (
+                strategy_library_feature is not None
+            ),
+            JourneyWorkspaceRoute.SCENARIO_LAB: scenario_lab_feature is not None,
+            JourneyWorkspaceRoute.DIAGNOSTIC_TASKS: (
+                diagnostic_tasks_feature is not None
+            ),
+            JourneyWorkspaceRoute.RUN_MONITORING: True,
+            JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS: (
+                evidence_feature is not None
+            ),
+            JourneyWorkspaceRoute.SYSTEM_HEALTH: system_health_feature is not None,
+        }
+        initial_route_identity = self._safe_route(requested_initial_route)
+        if (
+            initial_route_identity is requested_initial_route
+            and initial_recovery_state is not None
+        ):
+            self._recovery_state = initial_recovery_state
+        elif initial_route_identity is requested_initial_route:
+            self._recovery_state = JourneyRecoveryState(
+                JourneyRecoveryReason.EXACT,
+                initial_route_identity,
+                "The requested Journey route is available.",
             )
-        initial_route_identity = JourneyWorkspaceRoute(initial_route)
+        else:
+            self._recovery_state = JourneyRecoveryState(
+                JourneyRecoveryReason.UNAVAILABLE_ROUTE,
+                initial_route_identity,
+                (
+                    f"{requested_initial_route.value} is unavailable. "
+                    f"{initial_route_identity.value} was opened safely."
+                ),
+            )
+        self._preserve_explicit_recovery = self._recovery_state.reason in {
+            JourneyRecoveryReason.INVALID_BOOKMARK,
+            JourneyRecoveryReason.INVALID_ROUTE,
+            JourneyRecoveryReason.UNAVAILABLE_ROUTE,
+        }
         self._journey_workspace_bookmark = replace(
             journey_workspace_bookmark or JourneyWorkspaceBookmark(),
             last_route=initial_route_identity,
@@ -6805,7 +7230,65 @@ class JourneyWorkspaceHost(QQuickWidget):
         self._journey_workspace_bookmark_sink = (
             journey_workspace_bookmark_sink
         )
+        initial_focus_token = (
+            self._journey_workspace_bookmark.presentation.focus_return_token
+        )
+        self._focus_return_tokens: dict[
+            JourneyWorkspaceRoute,
+            JourneyFocusReturnToken,
+        ] = (
+            {}
+            if initial_focus_token is None
+            else {initial_focus_token.route: initial_focus_token}
+        )
+        if (
+            initial_focus_token is not None
+            and initial_focus_token.identity is not None
+            and initial_focus_token.identity not in initial_focus_token.control
+        ):
+            self._focus_return_tokens.clear()
+            self._recovery_state = JourneyRecoveryState(
+                JourneyRecoveryReason.INCOMPATIBLE_IDENTITY,
+                initial_route_identity,
+                "The focus-return identity is incompatible with its control.",
+            )
+            self._preserve_explicit_recovery = True
+        self._pending_identity_validation: set[JourneyWorkspaceRoute] = set()
+        if self._journey_workspace_bookmark.strategy_selection is not None:
+            self._pending_identity_validation.add(
+                JourneyWorkspaceRoute.STRATEGY_LIBRARY
+            )
+        if (
+            self._journey_workspace_bookmark.scenario_selection is not None
+            or self._journey_workspace_bookmark.scenario_focus_identity
+            is not None
+        ):
+            self._pending_identity_validation.add(JourneyWorkspaceRoute.SCENARIO_LAB)
+        if self._journey_workspace_bookmark.diagnostic_selection is not None:
+            self._pending_identity_validation.add(
+                JourneyWorkspaceRoute.DIAGNOSTIC_TASKS
+            )
+            self._pending_identity_validation.add(
+                JourneyWorkspaceRoute.RUN_MONITORING
+            )
+        if self._journey_workspace_bookmark.evidence_selection is not None:
+            self._pending_identity_validation.add(
+                JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            )
         self._active_route = initial_route_identity
+        self._journey_context_revision = 1
+        self._journey_context = JourneyContext(
+            context_revision=self._journey_context_revision,
+            route=initial_route_identity,
+            strategy_selection=self._journey_workspace_bookmark.strategy_selection,
+            scenario_selection=self._journey_workspace_bookmark.scenario_selection,
+            diagnostic_selection=(
+                self._journey_workspace_bookmark.diagnostic_selection
+            ),
+            evidence_selection=self._journey_workspace_bookmark.evidence_selection,
+            presentation=self._journey_workspace_bookmark.presentation,
+            recovery=self._recovery_state,
+        )
         self.setObjectName("journeyWorkspaceHost")
         self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self._workspace_closed = False
@@ -6819,13 +7302,42 @@ class JourneyWorkspaceHost(QQuickWidget):
         )
         self.rootContext().setContextProperty(
             "initialJourneyRoute",
-            initial_route,
+            initial_route_identity.value,
+        )
+        self.rootContext().setContextProperty(
+            "initialJourneyRecoveryReason",
+            self._recovery_state.reason.value,
+        )
+        self.rootContext().setContextProperty(
+            "initialJourneyRecoveryMessage",
+            self._recovery_state.explanation,
+        )
+        focus_token = self._focus_return_tokens.get(initial_route_identity)
+        self.rootContext().setContextProperty(
+            "initialJourneyFocusRoute",
+            "" if focus_token is None else focus_token.route.value,
+        )
+        self.rootContext().setContextProperty(
+            "initialJourneyFocusControl",
+            "" if focus_token is None else focus_token.control,
+        )
+        self.rootContext().setContextProperty(
+            "initialJourneyFocusIdentity",
+            (
+                ""
+                if focus_token is None or focus_token.identity is None
+                else focus_token.identity
+            ),
         )
         self._strategy_library = (
             StrategyLibraryQtAdapter(
                 strategy_library_feature,
                 context=strategy_library_context,
                 bookmark_sink=strategy_library_bookmark_sink,
+                route_active=(
+                    initial_route_identity
+                    is JourneyWorkspaceRoute.STRATEGY_LIBRARY
+                ),
                 parent=self,
             )
             if strategy_library_feature is not None
@@ -6835,14 +7347,28 @@ class JourneyWorkspaceHost(QQuickWidget):
             "strategyLibrary",
             self._strategy_library,
         )
+        initial_scenario_context = scenario_lab_context
+        if self._journey_workspace_bookmark.scenario_focus_identity is not None:
+            initial_scenario_context = replace(
+                scenario_lab_context or ScenarioLabContext(),
+                focus_target=(
+                    self._journey_workspace_bookmark.scenario_focus_target
+                ),
+                focus_identity=(
+                    self._journey_workspace_bookmark.scenario_focus_identity
+                ),
+            )
         self._scenario_lab = (
             ScenarioLabQtAdapter(
                 scenario_lab_feature,
-                context=scenario_lab_context,
+                context=initial_scenario_context,
                 formal_strategy_selection_provider=(
                     (lambda: ())
                     if self._strategy_library is None
                     else self._strategy_library.current_formal_strategy_ids
+                ),
+                route_active=(
+                    initial_route_identity is JourneyWorkspaceRoute.SCENARIO_LAB
                 ),
                 parent=self,
             )
@@ -6863,7 +7389,11 @@ class JourneyWorkspaceHost(QQuickWidget):
             )
         if self._scenario_lab is not None:
             self._scenario_lab.stateChanged.connect(
-                self._persist_journey_workspace_bookmark
+                self._refresh_journey_context
+            )
+        if self._strategy_library is not None:
+            self._strategy_library.stateChanged.connect(
+                self._refresh_journey_context
             )
         self._diagnostic_tasks = (
             DiagnosticTasksQtAdapter(
@@ -6883,6 +7413,10 @@ class JourneyWorkspaceHost(QQuickWidget):
                 ),
                 setup_selection_coordinator=(
                     diagnostic_setup_selection_coordinator
+                ),
+                route_active=(
+                    initial_route_identity
+                    is JourneyWorkspaceRoute.DIAGNOSTIC_TASKS
                 ),
                 parent=self,
             )
@@ -6905,6 +7439,9 @@ class JourneyWorkspaceHost(QQuickWidget):
         self._run_monitoring = RunMonitoringQtAdapter(
             feature,
             context=context,
+            route_active=(
+                initial_route_identity is JourneyWorkspaceRoute.RUN_MONITORING
+            ),
             parent=self,
         )
         if self._diagnostic_tasks is not None:
@@ -6915,7 +7452,7 @@ class JourneyWorkspaceHost(QQuickWidget):
                 self._open_run_monitoring_handoff
             )
             self._diagnostic_tasks.stateChanged.connect(
-                self._persist_journey_workspace_bookmark
+                self._refresh_journey_context
             )
         self.rootContext().setContextProperty(
             "runMonitoring",
@@ -6925,6 +7462,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             EvidenceAndFindingsQtAdapter(
                 evidence_feature,
                 context=evidence_context,
+                route_active=(
+                    initial_route_identity
+                    is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+                ),
                 parent=self,
             )
             if evidence_feature is not None
@@ -6934,10 +7475,28 @@ class JourneyWorkspaceHost(QQuickWidget):
             "evidenceAndFindings",
             self._evidence_and_findings,
         )
+        if self._evidence_and_findings is not None:
+            restored_evidence = (
+                self._journey_workspace_bookmark.evidence_selection
+            )
+            if restored_evidence is not None:
+                self._evidence_and_findings.restore_journey_selection(
+                    restored_evidence
+                )
+            if (
+                initial_route_identity
+                is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            ):
+                self._evidence_and_findings.restore_journey_presentation(
+                    self._journey_workspace_bookmark.presentation
+                )
         self._system_health = (
             SystemHealthQtAdapter(
                 system_health_feature,
                 context=system_health_context,
+                route_active=(
+                    initial_route_identity is JourneyWorkspaceRoute.SYSTEM_HEALTH
+                ),
                 parent=self,
             )
             if system_health_feature is not None
@@ -6947,6 +7506,15 @@ class JourneyWorkspaceHost(QQuickWidget):
             "systemHealth",
             self._system_health,
         )
+        self._run_monitoring.stateChanged.connect(self._refresh_journey_context)
+        if self._evidence_and_findings is not None:
+            self._evidence_and_findings.stateChanged.connect(
+                self._refresh_journey_context
+            )
+        if self._system_health is not None:
+            self._system_health.stateChanged.connect(
+                self._refresh_journey_context
+            )
         if (
             self._diagnostic_tasks is not None
             and self._evidence_and_findings is not None
@@ -6960,7 +7528,17 @@ class JourneyWorkspaceHost(QQuickWidget):
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
         root = self.rootObject()
         if root is not None:
-            root.activeRouteChanged.connect(self._active_route_changed)
+            route_signal = getattr(root, "activeRouteChanged", None)
+            if route_signal is not None:
+                route_signal.connect(self._active_route_changed)
+            route_request_signal = getattr(
+                root,
+                "routeActivationRequested",
+                None,
+            )
+            if route_request_signal is not None:
+                route_request_signal.connect(self._route_activation_requested)
+            self._publish_recovery_state()
             self._active_route_changed()
         if self._diagnostic_tasks is not None:
             if (
@@ -6975,6 +7553,189 @@ class JourneyWorkspaceHost(QQuickWidget):
             if evidence_context is not None:
                 if self._evidence_and_findings is not None:
                     self._evidence_and_findings.select_context(evidence_context)
+        self._refresh_journey_context()
+
+    @property
+    def destinations(self) -> tuple[JourneyDestination, ...]:
+        """The complete, fixed Journey Rail registry in keyboard order."""
+
+        return JOURNEY_DESTINATIONS
+
+    @property
+    def route_order(self) -> tuple[JourneyWorkspaceRoute, ...]:
+        return tuple(item.route for item in JOURNEY_DESTINATIONS)
+
+    @property
+    def active_route(self) -> JourneyWorkspaceRoute:
+        return self._active_route
+
+    @property
+    def recovery_state(self) -> JourneyRecoveryState:
+        return self._recovery_state
+
+    @property
+    def journey_context(self) -> JourneyContext:
+        return self._journey_context
+
+    def activate_route(self, route: JourneyWorkspaceRoute) -> bool:
+        """Activate one typed destination; unavailable routes fail safely."""
+
+        if not isinstance(route, JourneyWorkspaceRoute):
+            raise TypeError("route must be a JourneyWorkspaceRoute")
+        if self._workspace_closed:
+            return False
+        if not self._route_availability[route]:
+            self._preserve_explicit_recovery = True
+            self._set_recovery_state(
+                JourneyRecoveryState(
+                    JourneyRecoveryReason.UNAVAILABLE_ROUTE,
+                    self._active_route,
+                    (
+                        f"{route.value} is unavailable. "
+                        f"{self._active_route.value} remains active."
+                    ),
+                )
+            )
+            return False
+        self._preserve_explicit_recovery = False
+        root = self.rootObject()
+        if root is None:
+            return False
+        if route is self._active_route:
+            self._apply_route_activation(route)
+            self._publish_focus_return_token(route)
+            root.setProperty("authoritativeFocusPendingRoute", route.value)
+            return True
+        self._capture_focus_return_token(self._active_route)
+        self._publish_focus_return_token(route)
+        root.setProperty("activeRoute", route.value)
+        return self._active_route is route
+
+    @Slot(str)
+    def _route_activation_requested(self, route_value: str) -> None:
+        try:
+            route = JourneyWorkspaceRoute(route_value)
+        except ValueError:
+            self._set_recovery_state(
+                JourneyRecoveryState(
+                    JourneyRecoveryReason.INVALID_ROUTE,
+                    self._active_route,
+                    "The requested route is invalid. The current route was retained.",
+                )
+            )
+            return
+        self.activate_route(route)
+
+    def _capture_focus_return_token(
+        self,
+        route: JourneyWorkspaceRoute,
+    ) -> None:
+        presentation = self._current_journey_presentation()
+        root = self.rootObject()
+        quick_window = self.quickWindow()
+        focus_object = (
+            quick_window.activeFocusItem()
+            if quick_window is not None
+            else QGuiApplication.focusObject()
+        )
+        if (
+            root is None
+            or str(root.property("activeRoute")) != route.value
+            or focus_object is None
+        ):
+            self._journey_workspace_bookmark = replace(
+                self._journey_workspace_bookmark,
+                presentation=presentation,
+            )
+            return
+        item: QObject | None = focus_object
+        named_item: QObject | None = None
+        while item is not None and item is not root:
+            if named_item is None and item.objectName():
+                named_item = item
+            parent_item = getattr(item, "parentItem", None)
+            visual_parent = parent_item() if callable(parent_item) else None
+            item = visual_parent if visual_parent is not None else item.parent()
+        if item is None:
+            self._journey_workspace_bookmark = replace(
+                self._journey_workspace_bookmark,
+                presentation=presentation,
+            )
+            return
+        if named_item is None and focus_object.objectName():
+            named_item = focus_object
+        control = "" if named_item is None else named_item.objectName()
+        if not control:
+            self._journey_workspace_bookmark = replace(
+                self._journey_workspace_bookmark,
+                presentation=presentation,
+            )
+            return
+        if control.endswith("RouteNavigation"):
+            self._journey_workspace_bookmark = replace(
+                self._journey_workspace_bookmark,
+                presentation=presentation,
+            )
+            return
+        selected_identity = presentation.selected_identity
+        token_identity = (
+            selected_identity
+            if selected_identity is not None and selected_identity in control
+            else None
+        )
+        try:
+            token = JourneyFocusReturnToken(route, control, token_identity)
+        except ValueError:
+            return
+        self._focus_return_tokens[route] = token
+        self._journey_workspace_bookmark = replace(
+            self._journey_workspace_bookmark,
+            presentation=replace(
+                presentation,
+                focus_return_token=token,
+            ),
+        )
+
+    def _publish_focus_return_token(
+        self,
+        route: JourneyWorkspaceRoute,
+    ) -> None:
+        root = self.rootObject()
+        if root is None:
+            return
+        token = self._focus_return_tokens.get(route)
+        self._journey_workspace_bookmark = replace(
+            self._journey_workspace_bookmark,
+            presentation=replace(
+                self._journey_workspace_bookmark.presentation,
+                focus_return_token=token,
+            ),
+        )
+        root.setProperty(
+            "requestedFocusRoute",
+            "" if token is None else token.route.value,
+        )
+        root.setProperty(
+            "requestedFocusControl",
+            "" if token is None else token.control,
+        )
+        root.setProperty(
+            "requestedFocusIdentity",
+            "" if token is None or token.identity is None else token.identity,
+        )
+        root.setProperty("focusReturnConsumed", False)
+
+    def _safe_route(
+        self,
+        requested: JourneyWorkspaceRoute,
+    ) -> JourneyWorkspaceRoute:
+        if self._route_availability[requested]:
+            return requested
+        return next(
+            item.route
+            for item in JOURNEY_DESTINATIONS
+            if self._route_availability[item.route]
+        )
 
     @Slot()
     def _active_route_changed(self) -> None:
@@ -6984,17 +7745,613 @@ class JourneyWorkspaceHost(QQuickWidget):
         try:
             route = JourneyWorkspaceRoute(str(root.property("activeRoute")))
         except ValueError:
+            self._set_recovery_state(
+                JourneyRecoveryState(
+                    JourneyRecoveryReason.INVALID_ROUTE,
+                    self._active_route,
+                    "The requested route is invalid. The current route was retained.",
+                )
+            )
+            root.setProperty("activeRoute", self._active_route.value)
             return
-        self._apply_route_activation(route)
+        if not self._route_availability[route]:
+            self._set_recovery_state(
+                JourneyRecoveryState(
+                    JourneyRecoveryReason.UNAVAILABLE_ROUTE,
+                    self._active_route,
+                    (
+                        f"{route.value} is unavailable. "
+                        f"{self._active_route.value} was retained safely."
+                    ),
+                )
+            )
+            root.setProperty("activeRoute", self._active_route.value)
+            return
         if route is self._active_route:
+            self._apply_route_activation(route)
             return
+        self._capture_focus_return_token(self._active_route)
+        self._publish_focus_return_token(route)
+        self._preserve_explicit_recovery = False
         self._active_route = route
+        self._set_recovery_state(
+            JourneyRecoveryState(
+                JourneyRecoveryReason.EXACT,
+                route,
+                "The requested Journey route is available.",
+            ),
+            recompose=False,
+        )
+        self._apply_route_activation(route)
+        self._recompose_journey_context()
         self._persist_journey_workspace_bookmark()
+
+    def _set_recovery_state(
+        self,
+        state: JourneyRecoveryState,
+        *,
+        recompose: bool = True,
+    ) -> None:
+        if state == self._recovery_state:
+            return
+        self._recovery_state = state
+        self._publish_recovery_state()
+        if recompose:
+            self._recompose_journey_context()
+
+    def _publish_recovery_state(self) -> None:
+        root = self.rootObject()
+        if root is None:
+            return
+        root.setProperty("routeRecoveryReason", self._recovery_state.reason.value)
+        root.setProperty("routeRecoveryMessage", self._recovery_state.explanation)
+
+    def _recompose_journey_context(self) -> None:
+        self._journey_context_revision += 1
+        self._journey_context = JourneyContext(
+            context_revision=self._journey_context_revision,
+            route=self._active_route,
+            strategy_selection=self._journey_workspace_bookmark.strategy_selection,
+            scenario_selection=self._journey_workspace_bookmark.scenario_selection,
+            diagnostic_selection=(
+                self._journey_workspace_bookmark.diagnostic_selection
+            ),
+            evidence_selection=self._journey_workspace_bookmark.evidence_selection,
+            presentation=self._journey_workspace_bookmark.presentation,
+            source_identities=self._current_journey_sources(),
+            recovery=self._recovery_state,
+        )
+
+    @Slot()
+    def _refresh_journey_context(self) -> None:
+        """Compose identity-only context from authoritative Feature states."""
+
+        if self._workspace_closed:
+            return
+        strategy_selection = self._current_journey_strategy_selection()
+        scenario_selection = self._current_journey_scenario_selection()
+        diagnostic_selection = self._current_journey_diagnostic_selection()
+        evidence_selection = self._current_journey_evidence_selection()
+        if diagnostic_selection is not None and self._system_health is not None:
+            system_context = SystemHealthContext(
+                diagnostic=SystemHealthDiagnosticContext(
+                    task_id=diagnostic_selection.task_id,
+                    task_revision=diagnostic_selection.task_revision,
+                    configuration_content_id=(
+                        diagnostic_selection.configuration_content_id
+                    ),
+                    task_handle_id=diagnostic_selection.task_handle_id,
+                    campaign_id=diagnostic_selection.campaign_id,
+                    campaign_revision=diagnostic_selection.campaign_revision,
+                    run_id=diagnostic_selection.run_id,
+                    evidence_package_id=(
+                        None
+                        if evidence_selection is None
+                        else evidence_selection.evidence_package_id
+                    ),
+                    finding_id=(
+                        None
+                        if evidence_selection is None
+                        else evidence_selection.finding_id
+                    ),
+                    sensitivity_breakpoint_id=(
+                        None
+                        if evidence_selection is None
+                        else evidence_selection.sensitivity_breakpoint_id
+                    ),
+                    reproduction_manifest_id=(
+                        None
+                        if evidence_selection is None
+                        else evidence_selection.reproduction_manifest_id
+                    ),
+                    approved_recipe_version_ids=(
+                        ()
+                        if scenario_selection is None
+                        else tuple(
+                            item.recipe_version_id
+                            for item in (
+                                scenario_selection.approved_recipe_versions
+                            )
+                        )
+                    ),
+                )
+            )
+            self._system_health.set_context(system_context)
+        self._update_context_recovery(
+            strategy_selection,
+            scenario_selection,
+            diagnostic_selection,
+            evidence_selection,
+        )
+        scenario_context = (
+            None
+            if self._scenario_lab is None
+            else self._scenario_lab.recovery_context()
+        )
+        task_id = (
+            diagnostic_selection.task_id
+            if diagnostic_selection is not None
+            else self._journey_workspace_bookmark.diagnostic_task_id
+        )
+        presentation = self._current_journey_presentation()
+        candidate = JourneyWorkspaceBookmark(
+            last_route=self._active_route,
+            diagnostic_task_id=task_id,
+            scenario_focus_target=(
+                self._journey_workspace_bookmark.scenario_focus_target
+                if scenario_context is None
+                else scenario_context.focus_target
+            ),
+            scenario_focus_identity=(
+                self._journey_workspace_bookmark.scenario_focus_identity
+                if scenario_context is None
+                else scenario_context.focus_identity
+            ),
+            strategy_selection=self._resolved_journey_selection(
+                JourneyWorkspaceRoute.STRATEGY_LIBRARY,
+                strategy_selection,
+                self._journey_workspace_bookmark.strategy_selection,
+            ),
+            scenario_selection=self._resolved_journey_selection(
+                JourneyWorkspaceRoute.SCENARIO_LAB,
+                scenario_selection,
+                self._journey_workspace_bookmark.scenario_selection,
+            ),
+            diagnostic_selection=self._resolved_journey_selection(
+                JourneyWorkspaceRoute.DIAGNOSTIC_TASKS,
+                diagnostic_selection,
+                self._journey_workspace_bookmark.diagnostic_selection,
+            ),
+            evidence_selection=self._resolved_journey_selection(
+                JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+                evidence_selection,
+                self._journey_workspace_bookmark.evidence_selection,
+            ),
+            presentation=presentation,
+        )
+        changed = candidate != self._journey_workspace_bookmark
+        self._journey_workspace_bookmark = candidate
+        self._journey_context_revision += 1
+        self._journey_context = JourneyContext(
+            context_revision=self._journey_context_revision,
+            route=self._active_route,
+            strategy_selection=candidate.strategy_selection,
+            scenario_selection=candidate.scenario_selection,
+            diagnostic_selection=candidate.diagnostic_selection,
+            evidence_selection=candidate.evidence_selection,
+            presentation=candidate.presentation,
+            source_identities=self._current_journey_sources(),
+            recovery=self._recovery_state,
+        )
+        if changed and self._journey_workspace_bookmark_sink is not None:
+            self._journey_workspace_bookmark_sink(candidate)
+
+    def _current_journey_strategy_selection(
+        self,
+    ) -> JourneyStrategySelection | None:
+        return (
+            None
+            if self._strategy_library is None
+            else self._strategy_library.journey_selection()
+        )
+
+    def _current_journey_scenario_selection(
+        self,
+    ) -> JourneyScenarioSelection | None:
+        return (
+            None
+            if self._scenario_lab is None
+            else self._scenario_lab.journey_selection()
+        )
+
+    def _current_journey_diagnostic_selection(
+        self,
+    ) -> JourneyDiagnosticSelection | None:
+        return (
+            None
+            if self._diagnostic_tasks is None
+            else self._diagnostic_tasks.journey_selection()
+        )
+
+    def _current_journey_evidence_selection(
+        self,
+    ) -> JourneyEvidenceSelection | None:
+        adapter = self._evidence_and_findings
+        if adapter is None:
+            return None
+        durable = self._journey_workspace_bookmark.evidence_selection
+        if (
+            durable is not None
+            and JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            in self._pending_identity_validation
+        ):
+            adapter.restore_journey_selection(durable)
+        return adapter.journey_selection(durable)
+
+    def _current_journey_presentation(self) -> JourneyPresentationSelection:
+        selected_identity: str | None = None
+        view_mode = JourneyViewMode.OVERVIEW
+        if self._active_route is JourneyWorkspaceRoute.SCENARIO_LAB:
+            context = (
+                None
+                if self._scenario_lab is None
+                else self._scenario_lab.recovery_context()
+            )
+            selected_identity = None if context is None else context.focus_identity
+        elif self._active_route is JourneyWorkspaceRoute.DIAGNOSTIC_TASKS:
+            diagnostic = self._current_journey_diagnostic_selection()
+            selected_identity = (
+                None if diagnostic is None else diagnostic.task_id.value
+            )
+        elif self._active_route is JourneyWorkspaceRoute.RUN_MONITORING:
+            run_id = self._run_monitoring.journey_selected_run_id()
+            selected_identity = (
+                self._journey_workspace_bookmark.presentation.selected_identity
+                if run_id is None
+                else run_id.value
+            )
+        elif (
+            self._active_route
+            is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            and self._evidence_and_findings is not None
+        ):
+            (
+                selected_identity,
+                view_mode,
+            ) = self._evidence_and_findings.journey_presentation()
+        elif self._active_route is JourneyWorkspaceRoute.SYSTEM_HEALTH:
+            diagnostic = self._current_journey_diagnostic_selection()
+            selected_identity = (
+                None if diagnostic is None else diagnostic.task_id.value
+            )
+            view_mode = JourneyViewMode.HEALTH
+        focus_token = self._journey_workspace_bookmark.presentation.focus_return_token
+        return JourneyPresentationSelection(
+            selected_identity=selected_identity,
+            view_mode=view_mode,
+            focus_return_token=focus_token,
+        )
+
+    def _current_journey_sources(self) -> tuple[JourneySourceIdentity, ...]:
+        identities: list[JourneySourceIdentity] = []
+        for adapter in (
+            self._strategy_library,
+            self._scenario_lab,
+            self._diagnostic_tasks,
+            self._run_monitoring,
+            self._evidence_and_findings,
+            self._system_health,
+        ):
+            candidate = (
+                None if adapter is None else adapter.journey_source_identity()
+            )
+            if candidate is None:
+                continue
+            if candidate not in identities:
+                identities.append(candidate)
+        return tuple(identities)
+
+    def _resolved_journey_selection(
+        self,
+        route: JourneyWorkspaceRoute,
+        current: _JourneySelectionT | None,
+        durable: _JourneySelectionT | None,
+    ) -> _JourneySelectionT | None:
+        if (
+            route is self._active_route
+            and route in self._pending_identity_validation
+        ):
+            return durable
+        return current if current is not None else durable
+
+    def _update_context_recovery(
+        self,
+        strategy: JourneyStrategySelection | None,
+        scenario: JourneyScenarioSelection | None,
+        diagnostic: JourneyDiagnosticSelection | None,
+        evidence: JourneyEvidenceSelection | None,
+    ) -> None:
+        route = self._active_route
+        if route is JourneyWorkspaceRoute.SYSTEM_HEALTH:
+            self._update_context_recovery_from_system_health()
+            return
+        if self._preserve_explicit_recovery:
+            return
+        durable: object | None
+        current: object | None
+        unavailable = False
+        if route is JourneyWorkspaceRoute.STRATEGY_LIBRARY:
+            durable = self._journey_workspace_bookmark.strategy_selection
+            current = strategy
+            unavailable = bool(
+                self._strategy_library is None
+                or self._strategy_library.journey_context_unavailable()
+            )
+        elif route is JourneyWorkspaceRoute.SCENARIO_LAB:
+            durable = self._journey_workspace_bookmark.scenario_selection
+            current = scenario
+            unavailable = bool(
+                self._scenario_lab is None
+                or self._scenario_lab.journey_context_unavailable()
+            )
+            focus_identity = (
+                self._journey_workspace_bookmark.scenario_focus_identity
+            )
+            if focus_identity is not None:
+                focus_resolution = (
+                    None
+                    if self._scenario_lab is None
+                    else self._scenario_lab.resolve_journey_focus_identity(
+                        self._journey_workspace_bookmark.scenario_focus_target,
+                        focus_identity,
+                    )
+                )
+                if focus_resolution is not True:
+                    reason = (
+                        JourneyRecoveryReason.UNAVAILABLE_IDENTITY
+                        if focus_resolution is None
+                        else JourneyRecoveryReason.MISSING_IDENTITY
+                    )
+                    self._set_recovery_state(
+                        JourneyRecoveryState(
+                            reason,
+                            route,
+                            (
+                                "The restored Scenario focus identity is "
+                                f"{reason.value}."
+                            ),
+                        ),
+                        recompose=False,
+                    )
+                    return
+        elif route is JourneyWorkspaceRoute.DIAGNOSTIC_TASKS:
+            durable = self._journey_workspace_bookmark.diagnostic_selection
+            current = diagnostic
+            unavailable = bool(
+                self._diagnostic_tasks is None
+                or self._diagnostic_tasks.journey_context_unavailable()
+            )
+        elif route is JourneyWorkspaceRoute.RUN_MONITORING:
+            durable_selection = self._journey_workspace_bookmark.diagnostic_selection
+            durable = (
+                None if durable_selection is None else durable_selection.run_id
+            )
+            current = self._run_monitoring.journey_selected_run_id()
+            unavailable = self._run_monitoring.journey_context_unavailable()
+        else:
+            durable = self._journey_workspace_bookmark.evidence_selection
+            current = evidence
+            unavailable = bool(
+                self._evidence_and_findings is None
+                or self._evidence_and_findings.journey_context_unavailable()
+            )
+        if (
+            route not in self._pending_identity_validation
+            and (durable is None or current is not None)
+        ):
+            self._set_recovery_state(
+                JourneyRecoveryState(
+                    JourneyRecoveryReason.EXACT,
+                    route,
+                    "The active Feature context is authoritative.",
+                ),
+                recompose=False,
+            )
+            return
+        reason = self._compare_restored_identity(
+            route,
+            durable,
+            current,
+            unavailable=unavailable,
+        )
+        if (
+            route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            and isinstance(durable, JourneyEvidenceSelection)
+            and self._evidence_and_findings is not None
+            and self._evidence_and_findings.journey_selection_is_compatible(
+                durable
+            )
+            is False
+        ):
+            reason = JourneyRecoveryReason.INCOMPATIBLE_IDENTITY
+        if (
+            reason is JourneyRecoveryReason.EXACT
+            and route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            and self._evidence_and_findings is not None
+        ):
+            durable_presentation = self._journey_workspace_bookmark.presentation
+            selected_identity, view_mode = (
+                self._evidence_and_findings.journey_presentation()
+            )
+            if (
+                durable_presentation.selected_identity is not None
+                and durable_presentation.selected_identity != selected_identity
+            ):
+                reason = JourneyRecoveryReason.MISSING_IDENTITY
+            elif (
+                durable_presentation.view_mode
+                in {JourneyViewMode.FINDINGS, JourneyViewMode.DETAILS}
+                and durable_presentation.view_mode is not view_mode
+            ):
+                reason = JourneyRecoveryReason.INCOMPATIBLE_IDENTITY
+        if reason is JourneyRecoveryReason.EXACT:
+            self._pending_identity_validation.discard(route)
+        self._set_recovery_state(
+            JourneyRecoveryState(
+                reason,
+                route,
+                (
+                    "The restored identity was resolved exactly."
+                    if reason is JourneyRecoveryReason.EXACT
+                    else f"The restored {route.value} identity is {reason.value}."
+                ),
+            ),
+            recompose=False,
+        )
+
+    @staticmethod
+    def _compare_restored_identity(
+        route: JourneyWorkspaceRoute,
+        durable: object | None,
+        current: object | None,
+        *,
+        unavailable: bool,
+    ) -> JourneyRecoveryReason:
+        if durable is None:
+            return JourneyRecoveryReason.EXACT
+        if current is None:
+            return (
+                JourneyRecoveryReason.UNAVAILABLE_IDENTITY
+                if unavailable
+                else JourneyRecoveryReason.MISSING_IDENTITY
+            )
+        if route is JourneyWorkspaceRoute.DIAGNOSTIC_TASKS:
+            assert isinstance(durable, JourneyDiagnosticSelection)
+            assert isinstance(current, JourneyDiagnosticSelection)
+            if durable.task_id != current.task_id:
+                return JourneyRecoveryReason.MISSING_IDENTITY
+            if durable.task_revision != current.task_revision:
+                return JourneyRecoveryReason.SUPERSEDED_IDENTITY
+            if durable.configuration_content_id != current.configuration_content_id:
+                return JourneyRecoveryReason.INCOMPATIBLE_IDENTITY
+            return JourneyRecoveryReason.EXACT
+        if route is JourneyWorkspaceRoute.RUN_MONITORING:
+            return (
+                JourneyRecoveryReason.EXACT
+                if durable == current
+                else JourneyRecoveryReason.INCOMPATIBLE_IDENTITY
+            )
+        if route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS:
+            assert isinstance(durable, JourneyEvidenceSelection)
+            assert isinstance(current, JourneyEvidenceSelection)
+            if (
+                durable.evidence_package_id != current.evidence_package_id
+                or durable.reproduction_manifest_id
+                != current.reproduction_manifest_id
+            ):
+                return JourneyRecoveryReason.INCOMPATIBLE_IDENTITY
+            if (
+                durable.evidence_id is not None
+                and durable.evidence_id != current.evidence_id
+            ) or (
+                durable.comparison_id is not None
+                and durable.comparison_id != current.comparison_id
+            ):
+                return JourneyRecoveryReason.MISSING_IDENTITY
+            if (
+                durable.finding_id is not None
+                and durable.finding_id != current.finding_id
+            ) or (
+                durable.sensitivity_breakpoint_id is not None
+                and durable.sensitivity_breakpoint_id
+                != current.sensitivity_breakpoint_id
+            ):
+                return JourneyRecoveryReason.MISSING_IDENTITY
+            return JourneyRecoveryReason.EXACT
+        if route is JourneyWorkspaceRoute.STRATEGY_LIBRARY:
+            assert isinstance(durable, JourneyStrategySelection)
+            assert isinstance(current, JourneyStrategySelection)
+            durable_ids = (
+                durable.strategy_under_test.strategy_id,
+                *(item.strategy_id for item in durable.comparison_strategies),
+            )
+            current_ids = (
+                current.strategy_under_test.strategy_id,
+                *(item.strategy_id for item in current.comparison_strategies),
+            )
+            if durable_ids != current_ids:
+                return JourneyRecoveryReason.MISSING_IDENTITY
+            return (
+                JourneyRecoveryReason.EXACT
+                if durable == current
+                else JourneyRecoveryReason.SUPERSEDED_IDENTITY
+            )
+        assert isinstance(durable, JourneyScenarioSelection)
+        assert isinstance(current, JourneyScenarioSelection)
+        durable_scenario_ids = (
+            durable.reference_market_path_ids,
+            tuple(item.recipe_draft_id for item in durable.recipe_drafts),
+            tuple(
+                item.recipe_version_id
+                for item in durable.approved_recipe_versions
+            ),
+            durable.materialized_scenario_set_id,
+        )
+        current_scenario_ids = (
+            current.reference_market_path_ids,
+            tuple(item.recipe_draft_id for item in current.recipe_drafts),
+            tuple(
+                item.recipe_version_id
+                for item in current.approved_recipe_versions
+            ),
+            current.materialized_scenario_set_id,
+        )
+        if durable_scenario_ids != current_scenario_ids:
+            return JourneyRecoveryReason.MISSING_IDENTITY
+        return (
+            JourneyRecoveryReason.EXACT
+            if durable == current
+            else JourneyRecoveryReason.SUPERSEDED_IDENTITY
+        )
+
+    def _update_context_recovery_from_system_health(self) -> None:
+        if self._system_health is None:
+            return
+        resolution = self._system_health.journey_context_resolution()
+        if resolution is None:
+            return
+        state, explanation = resolution
+        mapping = {
+            SystemHealthContextResolution.NO_CURRENT_TASK: (
+                JourneyRecoveryReason.NO_CURRENT_TASK
+            ),
+            SystemHealthContextResolution.MISSING: (
+                JourneyRecoveryReason.MISSING_IDENTITY
+            ),
+            SystemHealthContextResolution.SUPERSEDED: (
+                JourneyRecoveryReason.SUPERSEDED_IDENTITY
+            ),
+            SystemHealthContextResolution.INCOMPATIBLE: (
+                JourneyRecoveryReason.INCOMPATIBLE_IDENTITY
+            ),
+            SystemHealthContextResolution.UNAVAILABLE: (
+                JourneyRecoveryReason.UNAVAILABLE_IDENTITY
+            ),
+        }
+        reason = mapping.get(state, JourneyRecoveryReason.EXACT)
+        self._set_recovery_state(
+            JourneyRecoveryState(
+                reason,
+                self._active_route,
+                explanation,
+            ),
+            recompose=False,
+        )
 
     @Slot()
     def _persist_journey_workspace_bookmark(self) -> None:
         sink = self._journey_workspace_bookmark_sink
-        if self._workspace_closed or sink is None:
+        if self._workspace_closed:
             return
         scenario_context = (
             None
@@ -7006,7 +8363,8 @@ class JourneyWorkspaceHost(QQuickWidget):
             recovered_task_id = self._diagnostic_tasks.recovery_task_id()
             if recovered_task_id is not None:
                 task_id = recovered_task_id
-        candidate = JourneyWorkspaceBookmark(
+        candidate = replace(
+            self._journey_workspace_bookmark,
             last_route=self._active_route,
             diagnostic_task_id=task_id,
             scenario_focus_target=(
@@ -7023,7 +8381,9 @@ class JourneyWorkspaceHost(QQuickWidget):
         if candidate == self._journey_workspace_bookmark:
             return
         self._journey_workspace_bookmark = candidate
-        sink(candidate)
+        self._recompose_journey_context()
+        if sink is not None:
+            sink(candidate)
 
     def _current_diagnostic_setup_selection(
         self,
@@ -7110,11 +8470,28 @@ class JourneyWorkspaceHost(QQuickWidget):
     def close_adapter(self, *, unload_qml: bool = True) -> None:
         if self._workspace_closed:
             return
+        self._capture_focus_return_token(self._active_route)
+        self._persist_journey_workspace_bookmark()
+        if self._journey_workspace_bookmark_sink is not None:
+            self._journey_workspace_bookmark_sink(
+                self._journey_workspace_bookmark
+            )
         self._workspace_closed = True
         root = self.rootObject()
         if root is not None:
             try:
-                root.activeRouteChanged.disconnect(self._active_route_changed)
+                route_signal = getattr(root, "activeRouteChanged", None)
+                if route_signal is not None:
+                    route_signal.disconnect(self._active_route_changed)
+                route_request_signal = getattr(
+                    root,
+                    "routeActivationRequested",
+                    None,
+                )
+                if route_request_signal is not None:
+                    route_request_signal.disconnect(
+                        self._route_activation_requested
+                    )
             except (RuntimeError, TypeError):
                 pass
         if self._strategy_library is not None:

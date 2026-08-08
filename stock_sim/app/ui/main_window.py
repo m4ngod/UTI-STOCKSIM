@@ -38,7 +38,10 @@ if TYPE_CHECKING:
         SystemHealthContext,
         SystemHealthFeature,
     )
-    from app.journey_recovery import JourneyWorkspaceBookmark
+    from app.journey_recovery import (
+        JourneyRecoveryState,
+        JourneyWorkspaceBookmark,
+    )
 
 try:  # PySide6 可选
     from PySide6.QtCore import Qt  # type: ignore
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         journey_workspace_bookmark_sink: (
             Callable[[JourneyWorkspaceBookmark], None] | None
         ) = None,
+        journey_workspace_recovery: JourneyRecoveryState | None = None,
         scenario_lab_feature: ScenarioLabFeature | None = None,
         scenario_lab_context: ScenarioLabContext | None = None,
         diagnostic_tasks_feature: DiagnosticTasksFeature | None = None,
@@ -161,6 +165,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._journey_workspace_bookmark_sink = (
             journey_workspace_bookmark_sink
         )
+        self._journey_workspace_recovery = journey_workspace_recovery
         self._scenario_lab_feature = scenario_lab_feature
         self._scenario_lab_context = scenario_lab_context
         self._diagnostic_tasks_feature = diagnostic_tasks_feature
@@ -243,6 +248,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             journey_workspace_bookmark_sink=(
                 self._persist_journey_workspace_bookmark
             ),
+            initial_recovery_state=self._journey_workspace_recovery,
             scenario_lab_feature=self._scenario_lab_feature,
             scenario_lab_context=self._scenario_lab_context,
             diagnostic_tasks_feature=self._diagnostic_tasks_feature,

@@ -31,11 +31,22 @@ def test_workspace_bookmark_codec_is_strict_typed_and_immutable() -> None:
 
     assert decode_journey_workspace_bookmark(encoded) == bookmark
     assert json.loads(encoded) == {
+        "diagnostic": None,
         "diagnostic_task_id": "diagnostic-task-85",
+        "evidence": None,
         "last_route": "evidence_and_findings",
-        "scenario_focus_identity": "reference-path-85",
-        "scenario_focus_target": "reference_path",
-        "schema_version": "1.0",
+        "presentation": {
+            "focus_return_token": None,
+            "selected_identity": None,
+            "view_mode": "overview",
+        },
+        "scenario": None,
+        "scenario_focus": {
+            "identity": "reference-path-85",
+            "target": "reference_path",
+        },
+        "schema_version": "2.0",
+        "strategy": None,
     }
     with pytest.raises(AttributeError):
         bookmark.last_route = JourneyWorkspaceRoute.SCENARIO_LAB  # type: ignore[misc]
