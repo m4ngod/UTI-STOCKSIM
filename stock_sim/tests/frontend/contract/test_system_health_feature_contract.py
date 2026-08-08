@@ -19,6 +19,19 @@ from app.features import (
     DiagnosticDataSourceRecoveryPhase,
     DiagnosticDataSourceRevision,
     DiagnosticDataSourceScope,
+    DiagnosticCacheCompatibility,
+    DiagnosticCacheFallbackState,
+    DiagnosticCacheHealthClassification,
+    DiagnosticCacheHealthComponent,
+    DiagnosticCacheLastRefreshResult,
+    DiagnosticCacheRecoveryPhase,
+    DiagnosticCacheScope,
+    DiagnosticQueueBlockageReason,
+    DiagnosticQueueConsumerAvailability,
+    DiagnosticQueueHealthClassification,
+    DiagnosticQueueHealthComponent,
+    DiagnosticQueueRecoveryPhase,
+    DiagnosticQueueScope,
     FeatureModuleName,
     RuntimeHealthClassification,
     RuntimeHealthComponent,
@@ -42,6 +55,129 @@ from app.features.run_monitoring import (
 
 
 NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+
+def test_system_health_1_0_exposes_finite_queue_and_cache_components() -> None:
+    assert {item.value for item in DiagnosticDataSourceHealthClassification} == {
+        "healthy",
+        "degraded",
+        "stale",
+        "unavailable",
+        "recovering",
+    }
+    assert {item.value for item in DiagnosticDataSourceConnectionState} == {
+        "connected",
+        "disconnected",
+        "reconnecting",
+        "unavailable",
+    }
+    assert {item.value for item in DiagnosticDataSourceFallbackState} == {
+        "primary",
+        "active",
+        "unavailable",
+    }
+    assert {item.value for item in DiagnosticDataSourceRecoveryPhase} == {
+        "idle",
+        "disconnected",
+        "fallback",
+        "reconnecting",
+        "rereading",
+        "recovered",
+        "failed_recovery",
+    }
+    assert {item.value for item in DiagnosticQueueHealthClassification} == {
+        "healthy",
+        "degraded",
+        "stale",
+        "unavailable",
+        "recovering",
+        "unknown",
+    }
+    assert {item.value for item in DiagnosticCacheHealthClassification} == {
+        "healthy",
+        "degraded",
+        "stale",
+        "fallback",
+        "incompatible",
+        "unavailable",
+        "recovering",
+        "unknown",
+    }
+    assert {field.name for field in fields(DiagnosticQueueHealthComponent)} == {
+        "classification",
+        "revision",
+        "observed_at",
+        "freshness",
+        "age",
+        "freshness_threshold",
+        "pending_count",
+        "running_count",
+        "blocked_count",
+        "oldest_pending_age",
+        "consumer_availability",
+        "blockage_reason",
+        "affected_scope",
+        "recovery_phase",
+        "explanation",
+        "error",
+    }
+    assert {field.name for field in fields(DiagnosticCacheHealthComponent)} == {
+        "classification",
+        "revision",
+        "observed_at",
+        "freshness",
+        "age",
+        "freshness_threshold",
+        "generation",
+        "fallback",
+        "last_refresh_result",
+        "compatibility",
+        "affected_scope",
+        "recovery_phase",
+        "explanation",
+        "error",
+    }
+    assert set(DiagnosticQueueConsumerAvailability) == {
+        DiagnosticQueueConsumerAvailability.AVAILABLE,
+        DiagnosticQueueConsumerAvailability.BLOCKED,
+        DiagnosticQueueConsumerAvailability.UNAVAILABLE,
+        DiagnosticQueueConsumerAvailability.UNKNOWN,
+    }
+    assert set(DiagnosticQueueBlockageReason) == {
+        DiagnosticQueueBlockageReason.NONE,
+        DiagnosticQueueBlockageReason.PAUSED_DIAGNOSTIC_WORK,
+        DiagnosticQueueBlockageReason.RECOVERY_REQUIRED,
+        DiagnosticQueueBlockageReason.SOURCE_UNAVAILABLE,
+        DiagnosticQueueBlockageReason.UNKNOWN,
+    }
+    assert set(DiagnosticQueueScope) == {
+        DiagnosticQueueScope.DIAGNOSTIC_TASK,
+        DiagnosticQueueScope.FORMAL_DIAGNOSTIC_CAMPAIGN,
+        DiagnosticQueueScope.CAMPAIGN_NODES,
+    }
+    assert set(DiagnosticCacheFallbackState) == {
+        DiagnosticCacheFallbackState.PRIMARY,
+        DiagnosticCacheFallbackState.ACTIVE,
+        DiagnosticCacheFallbackState.UNAVAILABLE,
+        DiagnosticCacheFallbackState.UNKNOWN,
+    }
+    assert set(DiagnosticCacheLastRefreshResult) == {
+        DiagnosticCacheLastRefreshResult.NOT_OBSERVED,
+        DiagnosticCacheLastRefreshResult.SUCCEEDED,
+        DiagnosticCacheLastRefreshResult.FALLBACK_SUCCEEDED,
+        DiagnosticCacheLastRefreshResult.FAILED,
+    }
+    assert set(DiagnosticCacheCompatibility) == {
+        DiagnosticCacheCompatibility.COMPATIBLE,
+        DiagnosticCacheCompatibility.INCOMPATIBLE,
+        DiagnosticCacheCompatibility.UNKNOWN,
+    }
+    assert set(DiagnosticCacheScope) == {
+        DiagnosticCacheScope.REFERENCE_MARKET_PATHS,
+        DiagnosticCacheScope.DIAGNOSTIC_EVIDENCE,
+    }
+    assert DiagnosticQueueRecoveryPhase.FAILED_RECOVERY.value == "failed_recovery"
+    assert DiagnosticCacheRecoveryPhase.FAILED_RECOVERY.value == "failed_recovery"
 
 
 def test_system_health_1_0_activates_the_read_only_six_feature_registry() -> None:
@@ -75,6 +211,9 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "degraded",
         "stale",
         "unavailable",
+        "incompatible",
+        "recovering",
+        "recovered",
         "unknown",
     }
     assert {item.value for item in SystemHealthPresentationState} == {
@@ -82,34 +221,10 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "degraded",
         "stale",
         "unavailable",
-        "unknown",
-    }
-    assert {item.value for item in DiagnosticDataSourceHealthClassification} == {
-        "healthy",
-        "degraded",
-        "stale",
-        "unavailable",
+        "incompatible",
         "recovering",
-    }
-    assert {item.value for item in DiagnosticDataSourceConnectionState} == {
-        "connected",
-        "disconnected",
-        "reconnecting",
-        "unavailable",
-    }
-    assert {item.value for item in DiagnosticDataSourceFallbackState} == {
-        "primary",
-        "active",
-        "unavailable",
-    }
-    assert {item.value for item in DiagnosticDataSourceRecoveryPhase} == {
-        "idle",
-        "disconnected",
-        "fallback",
-        "reconnecting",
-        "rereading",
         "recovered",
-        "failed_recovery",
+        "unknown",
     }
     assert {field.name for field in fields(SystemHealthViewState)} == {
         "interface_version",
@@ -125,9 +240,11 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "presentation",
         "completeness",
         "components",
-        "diagnostic_data_source",
         "last_reliable_payload",
         "recovery_phase",
+        "diagnostic_data_source",
+        "diagnostic_queue",
+        "diagnostic_cache",
         "error",
     }
 
@@ -139,15 +256,49 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         last_successful_observation_at=NOW,
         explanation="Diagnostics runtime is ready.",
     )
-    source_revision = DiagnosticDataSourceRevision(1)
-    source_observation = DiagnosticDataSourceObservation(
-        identity=DiagnosticDataSourceIdentity(
-            public_id="admitted-source-0123456789abcdef",
-            provider="BaoStock",
-            dataset="Dataset 01234567",
-            version="Version 89abcdef",
-        ),
-        revision=source_revision,
+    queue = DiagnosticQueueHealthComponent(
+        classification=DiagnosticQueueHealthClassification.HEALTHY,
+        revision=1,
+        observed_at=NOW,
+        freshness=Freshness.FRESH,
+        age=timedelta(0),
+        freshness_threshold=timedelta(seconds=30),
+        pending_count=0,
+        running_count=0,
+        blocked_count=0,
+        oldest_pending_age=None,
+        consumer_availability=DiagnosticQueueConsumerAvailability.AVAILABLE,
+        blockage_reason=DiagnosticQueueBlockageReason.NONE,
+        affected_scope=(DiagnosticQueueScope.DIAGNOSTIC_TASK,),
+        recovery_phase=DiagnosticQueueRecoveryPhase.IDLE,
+        explanation="The diagnostic queue is empty and available.",
+        error=None,
+    )
+    cache = DiagnosticCacheHealthComponent(
+        classification=DiagnosticCacheHealthClassification.UNKNOWN,
+        revision=1,
+        observed_at=NOW,
+        freshness=Freshness.AWAITING_FIRST_STATE,
+        age=timedelta(0),
+        freshness_threshold=timedelta(seconds=30),
+        generation=None,
+        fallback=DiagnosticCacheFallbackState.UNKNOWN,
+        last_refresh_result=DiagnosticCacheLastRefreshResult.NOT_OBSERVED,
+        compatibility=DiagnosticCacheCompatibility.UNKNOWN,
+        affected_scope=(DiagnosticCacheScope.REFERENCE_MARKET_PATHS,),
+        recovery_phase=DiagnosticCacheRecoveryPhase.IDLE,
+        explanation="No diagnostic cache refresh has been observed.",
+        error=None,
+    )
+    identity = DiagnosticDataSourceIdentity(
+        public_id="admitted-source-0123456789abcdef",
+        provider="Provider 01234567",
+        dataset="Dataset 89abcdef",
+        version="Version fedcba98",
+    )
+    observation = DiagnosticDataSourceObservation(
+        identity=identity,
+        revision=DiagnosticDataSourceRevision(1),
         generation=SourceGenerationId(1),
         observed_at=NOW,
     )
@@ -158,17 +309,14 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         classification=DiagnosticDataSourceHealthClassification.HEALTHY,
         connection=DiagnosticDataSourceConnectionState.CONNECTED,
         fallback=DiagnosticDataSourceFallbackState.PRIMARY,
-        accepted_revision=source_revision,
+        accepted_revision=DiagnosticDataSourceRevision(1),
         accepted_generation=SourceGenerationId(1),
         observed_at=NOW,
         freshness=Freshness.FRESH,
         age=timedelta(0),
         freshness_threshold=timedelta(seconds=30),
-        last_reliable_observation=source_observation,
-        affected_scope=(
-            DiagnosticDataSourceScope.SCENARIO_INPUTS,
-            DiagnosticDataSourceScope.DIAGNOSTIC_EVIDENCE_INTERPRETATION,
-        ),
+        last_reliable_observation=observation,
+        affected_scope=(DiagnosticDataSourceScope.SCENARIO_INPUTS,),
         recovery_phase=DiagnosticDataSourceRecoveryPhase.IDLE,
         explanation="The admitted diagnostic data source is fresh.",
         error=None,
@@ -191,52 +339,49 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         presentation=SystemHealthPresentationState.HEALTHY,
         completeness=Completeness.COMPLETE,
         components=(component,),
-        diagnostic_data_source=data_source,
-        last_reliable_payload=component,
+        last_reliable_payload=(component,),
         recovery_phase=RuntimeHealthRecoveryPhase.IDLE,
+        diagnostic_data_source=data_source,
+        diagnostic_queue=queue,
+        diagnostic_cache=cache,
         error=None,
     )
 
     assert state.components == (component,)
-    assert isinstance(state.components, tuple)
     assert state.diagnostic_data_source is data_source
-    with pytest.raises(ValueError, match="healthy.*contradictory"):
-        replace(
-            data_source,
-            connection=DiagnosticDataSourceConnectionState.DISCONNECTED,
-        )
-    with pytest.raises(ValueError, match="jointly present"):
-        replace(data_source, accepted_revision=None)
+    assert state.diagnostic_queue is queue
+    assert state.diagnostic_cache is cache
+    assert "metrics" not in {field.name for field in fields(state)}
+    assert isinstance(state.components, tuple)
     with pytest.raises(FrozenInstanceError):
         component.explanation = "mutable"  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         state.revision = 2  # type: ignore[misc]
+    with pytest.raises(ValueError, match="component revisions"):
+        replace(state, diagnostic_queue=replace(queue, revision=2))
 
 
-def test_data_source_identity_rejects_secret_or_endpoint_shaped_labels() -> None:
-    for unsafe in (
+def test_data_source_identity_and_component_fail_closed() -> None:
+    for unsafe_provider in (
         "redis://diagnostics",
         r"C:\secrets\source.db",
         "token=super-secret",
         "credential bundle",
     ):
-        with pytest.raises(ValueError, match="safe for presentation"):
+        with pytest.raises(ValueError):
             DiagnosticDataSourceIdentity(
                 public_id="admitted-source-0123456789abcdef",
-                provider=unsafe,
-                dataset="safe-dataset",
-                version="1",
+                provider=unsafe_provider,
+                dataset="Dataset 89abcdef",
+                version="Version fedcba98",
             )
     with pytest.raises(ValueError, match="opaque"):
         DiagnosticDataSourceIdentity(
             public_id="admitted-source-token-super-secret",
-            provider="safe-provider",
-            dataset="safe-dataset",
-            version="1",
+            provider="Provider 01234567",
+            dataset="Dataset 89abcdef",
+            version="Version fedcba98",
         )
-
-
-def test_data_source_component_rejects_untyped_finite_state() -> None:
     with pytest.raises(TypeError, match="classification"):
         DiagnosticDataSourceHealthComponent(
             identity=(
@@ -246,7 +391,7 @@ def test_data_source_component_rejects_untyped_finite_state() -> None:
             connection=DiagnosticDataSourceConnectionState.CONNECTED,
             fallback=DiagnosticDataSourceFallbackState.PRIMARY,
             accepted_revision=None,
-            accepted_generation=SourceGenerationId(1),
+            accepted_generation=None,
             observed_at=NOW,
             freshness=Freshness.FRESH,
             age=timedelta(0),

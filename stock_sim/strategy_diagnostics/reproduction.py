@@ -568,6 +568,12 @@ class ReproductionRepository(Protocol):
         evidence_package_id: str,
     ) -> tuple[ReproductionManifest, ...]: ...
 
+    def manifest_format_identity(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> str | None: ...
+
     def save_report(self, report: ReproductionReport) -> None: ...
 
     def latest_report(self, manifest_id: str) -> ReproductionReport | None: ...
@@ -619,6 +625,20 @@ class InMemoryReproductionRepository:
                 key=lambda item: item.manifest_id,
             )
         )
+
+    def manifest_format_identity(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> str | None:
+        manifest = self._manifests.get(manifest_id)
+        if (
+            manifest is None
+            or manifest.evidence_package_id != evidence_package_id
+        ):
+            return None
+        value = manifest.to_dict().get("schema_version")
+        return str(value) if value is not None else None
 
     def save_report(self, report: ReproductionReport) -> None:
         manifest = self.get_manifest(report.manifest_id)
@@ -782,6 +802,18 @@ class ReproductionService:
         evidence_package_id: str,
     ) -> tuple[ReproductionManifest, ...]:
         return self._repository.list_manifests(evidence_package_id)
+
+    def manifest_format_identity(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> str | None:
+        """Read only the stored format identity without model deserialization."""
+
+        return self._repository.manifest_format_identity(
+            evidence_package_id,
+            manifest_id,
+        )
 
     def latest_report(
         self,

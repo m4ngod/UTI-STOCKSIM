@@ -971,6 +971,10 @@ def create_package_build_plans(
         extra_arguments=(
             f"--include-data-dir={PROJECT_QML_ROOT}=app/ui/qml",
             (
+                f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
+                "stock_sim/release/frontend_v2_toolchain.lock.json"
+            ),
+            (
                 "--include-module=stock_sim.release."
                 "strategy_diagnostics_v1_release_fixture"
             ),

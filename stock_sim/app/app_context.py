@@ -680,8 +680,14 @@ def _complete_strategy_diagnostics_adapters(
                 "DiagnosticsApplication"
             )
     application.start()
+    persistence_commands_available = _persistence_commands_are_available(
+        application
+    )
     if read_model is None:
-        application.initialize_persistence(engine)
+        persistence_commands_available = _initialize_diagnostics_persistence(
+            application,
+            engine,
+        )
         read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
             application,
             engine,
@@ -691,6 +697,7 @@ def _complete_strategy_diagnostics_adapters(
             LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
                 application,
                 setup_selection_provider=setup_coordinator.current,
+                commands_available=persistence_commands_available,
             )
         )
     if library_application is None:
@@ -701,7 +708,10 @@ def _complete_strategy_diagnostics_adapters(
         )
     if scenario_lab_application is None:
         scenario_lab_application = (
-            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application)
+            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+                application,
+                commands_available=persistence_commands_available,
+            )
         )
     if system_health_application is None:
         system_health_application = (
@@ -733,17 +743,69 @@ def _build_strategy_diagnostics_adapters(
 
     application = application or create_diagnostics_application()
     application.start()
-    application.initialize_persistence(engine)
+    persistence_commands_available = _initialize_diagnostics_persistence(
+        application,
+        engine,
+    )
     return (
         application,
         LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
             application,
             setup_selection_provider=setup_coordinator.current,
+            commands_available=persistence_commands_available,
         ),
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(application),
-        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application),
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application,
+            commands_available=persistence_commands_available,
+        ),
         LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(application),
+    )
+
+
+def _initialize_diagnostics_persistence(
+    application: DiagnosticsApplication,
+    engine: Any,
+) -> bool:
+    """Continue only for migration/open failures System Health can reobserve."""
+
+    try:
+        application.initialize_persistence(engine)
+    except Exception:  # noqa: BLE001 - re-raise non-observable partial init
+        from strategy_diagnostics.persistence import (
+            DiagnosticPersistenceAvailability,
+            DiagnosticPersistenceCompatibility,
+        )
+
+        observation = application.read_diagnostic_persistence_health()
+        if (
+            observation.availability
+            is DiagnosticPersistenceAvailability.UNAVAILABLE
+            or observation.compatibility
+            is DiagnosticPersistenceCompatibility.INCOMPATIBLE
+        ):
+            return False
+        raise
+    return True
+
+
+def _persistence_commands_are_available(
+    application: DiagnosticsApplication,
+) -> bool:
+    from strategy_diagnostics.persistence import (
+        DiagnosticPersistenceAvailability,
+        DiagnosticPersistenceCompatibility,
+    )
+
+    try:
+        observation = application.read_diagnostic_persistence_health()
+    except Exception:  # noqa: BLE001 - fail closed for command composition
+        return False
+    return (
+        observation.availability is DiagnosticPersistenceAvailability.AVAILABLE
+        and observation.compatibility
+        is DiagnosticPersistenceCompatibility.COMPATIBLE
     )
 
 

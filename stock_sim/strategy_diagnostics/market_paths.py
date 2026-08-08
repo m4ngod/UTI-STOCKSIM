@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from enum import Enum
 import errno
 import gzip
 import hashlib
@@ -16,7 +17,7 @@ import shutil
 import tempfile
 from threading import RLock
 from time import sleep
-from typing import Iterable, Mapping, Protocol, cast
+from typing import Callable, Iterable, Mapping, Protocol, cast
 
 from .historical_segments import HistoricalMarketSegment
 from .market_rules import (
@@ -413,33 +414,147 @@ class MarketPathArtifactStore(Protocol):
     def list_paths(self) -> tuple[MaterializedMarketPath, ...]: ...
 
 
+class MarketPathCacheFallbackState(str, Enum):
+    PRIMARY = "primary"
+    ACTIVE = "active"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
+class MarketPathCacheRefreshResult(str, Enum):
+    NOT_OBSERVED = "not_observed"
+    SUCCEEDED = "succeeded"
+    FALLBACK_SUCCEEDED = "fallback_succeeded"
+    FAILED = "failed"
+
+
+class MarketPathCacheCompatibility(str, Enum):
+    COMPATIBLE = "compatible"
+    INCOMPATIBLE = "incompatible"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class MarketPathCacheHealthSnapshot:
+    generation: int
+    observed_at: datetime | None
+    fallback: MarketPathCacheFallbackState
+    last_refresh_result: MarketPathCacheRefreshResult
+    compatibility: MarketPathCacheCompatibility
+    affected_artifact_count: int
+
+    def __post_init__(self) -> None:
+        if self.generation < 0:
+            raise ValueError("cache generation cannot be negative")
+        if self.observed_at is not None and (
+            self.observed_at.tzinfo is None
+            or self.observed_at.utcoffset() is None
+        ):
+            raise ValueError("cache observation time must be timezone-aware")
+        if self.affected_artifact_count < 0:
+            raise ValueError("affected artifact count cannot be negative")
+
+
+def unobserved_market_path_cache_health() -> MarketPathCacheHealthSnapshot:
+    return MarketPathCacheHealthSnapshot(
+        generation=0,
+        observed_at=None,
+        fallback=MarketPathCacheFallbackState.UNKNOWN,
+        last_refresh_result=MarketPathCacheRefreshResult.NOT_OBSERVED,
+        compatibility=MarketPathCacheCompatibility.UNKNOWN,
+        affected_artifact_count=0,
+    )
+
+
 class InMemoryMarketPathArtifactStore:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._paths: dict[str, MaterializedMarketPath] = {}
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._lock = RLock()
+        self._cache_health = unobserved_market_path_cache_health()
 
     def put(self, path: MaterializedMarketPath) -> MaterializedMarketPath:
-        existing = self._paths.get(path.artifact_hash)
-        if existing is not None and existing != path:
-            raise ValueError("immutable Materialized Market Path identity collision")
-        self._paths[path.artifact_hash] = path
-        return self._paths[path.artifact_hash]
+        with self._lock:
+            existing = self._paths.get(path.artifact_hash)
+            if existing is not None and existing != path:
+                self._record_cache_failure(
+                    compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                )
+                raise ValueError("immutable Materialized Market Path identity collision")
+            self._paths[path.artifact_hash] = path
+            self._record_cache_success(generation_changed=existing is None)
+            return self._paths[path.artifact_hash]
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath:
-        try:
-            return self._paths[artifact_hash]
-        except KeyError as exc:
-            raise KeyError("unknown Materialized Market Path artifact") from exc
+        with self._lock:
+            try:
+                path = self._paths[artifact_hash]
+            except KeyError as exc:
+                self._record_cache_failure()
+                raise KeyError("unknown Materialized Market Path artifact") from exc
+            self._record_cache_success()
+            return path
 
     def get_verified(self, artifact_hash: str) -> MaterializedMarketPath:
         return self.get(artifact_hash)
 
     def list_paths(self) -> tuple[MaterializedMarketPath, ...]:
-        return tuple(
-            sorted(
-                self._paths.values(),
-                key=lambda item: item.artifact_hash,
+        with self._lock:
+            paths = tuple(
+                sorted(
+                    self._paths.values(),
+                    key=lambda item: item.artifact_hash,
+                )
             )
+            self._record_cache_success()
+            return paths
+
+    def diagnostic_cache_health(self) -> MarketPathCacheHealthSnapshot:
+        """Return metadata only; observing health cannot touch cache content."""
+
+        with self._lock:
+            return self._cache_health
+
+    def _record_cache_success(self, *, generation_changed: bool = False) -> None:
+        generation = self._cache_health.generation
+        if generation == 0:
+            generation = 1
+        elif generation_changed:
+            generation += 1
+        self._cache_health = MarketPathCacheHealthSnapshot(
+            generation=generation,
+            observed_at=_aware_cache_time(self._clock()),
+            fallback=MarketPathCacheFallbackState.PRIMARY,
+            last_refresh_result=MarketPathCacheRefreshResult.SUCCEEDED,
+            compatibility=MarketPathCacheCompatibility.COMPATIBLE,
+            affected_artifact_count=len(self._paths),
         )
+
+    def _record_cache_failure(
+        self,
+        *,
+        compatibility: MarketPathCacheCompatibility = (
+            MarketPathCacheCompatibility.COMPATIBLE
+        ),
+    ) -> None:
+        self._cache_health = MarketPathCacheHealthSnapshot(
+            generation=self._cache_health.generation,
+            observed_at=_aware_cache_time(self._clock()),
+            fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+            last_refresh_result=MarketPathCacheRefreshResult.FAILED,
+            compatibility=compatibility,
+            affected_artifact_count=len(self._paths),
+        )
+
+
+def _aware_cache_time(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("cache observation time must be timezone-aware")
+    return value
 
 
 _MarketPathFingerprint = tuple[tuple[int, int, str], ...]
@@ -573,8 +688,15 @@ def _publish_staging_directory(staging: Path, destination: Path) -> None:
 class ParquetMarketPathArtifactStore:
     """Content-addressed local Parquet adapter hidden behind the store port."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._root = root
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._cache_health = unobserved_market_path_cache_health()
         self._cache_root = os.path.normcase(
             str(root.resolve(strict=False))
         )
@@ -602,12 +724,24 @@ class ParquetMarketPathArtifactStore:
     def put(self, path: MaterializedMarketPath) -> MaterializedMarketPath:
         with self._lock:
             if _canonical_hash(_materialized_content(path)) != path.artifact_hash:
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                    refresh_result=MarketPathCacheRefreshResult.FAILED,
+                    compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                    successful=False,
+                )
                 raise ValueError("Materialized Market Path content hash is invalid")
             self._root.mkdir(parents=True, exist_ok=True)
             destination = self._artifact_directory(path.artifact_hash)
             if destination.is_dir():
                 existing = self.get(path.artifact_hash)
                 if _materialized_content(existing) != _materialized_content(path):
+                    self._record_cache_health(
+                        fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                        refresh_result=MarketPathCacheRefreshResult.FAILED,
+                        compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                        successful=False,
+                    )
                     raise ValueError(
                         "immutable Materialized Market Path identity collision"
                     )
@@ -634,6 +768,12 @@ class ParquetMarketPathArtifactStore:
             finally:
                 if staging.exists():
                     shutil.rmtree(staging)
+            self._record_cache_health(
+                fallback=MarketPathCacheFallbackState.PRIMARY,
+                refresh_result=MarketPathCacheRefreshResult.SUCCEEDED,
+                compatibility=MarketPathCacheCompatibility.COMPATIBLE,
+                generation_changed=True,
+            )
             return self.get(path.artifact_hash)
 
     def get(self, artifact_hash: str) -> MaterializedMarketPath:
@@ -659,6 +799,11 @@ class ParquetMarketPathArtifactStore:
                 and trusted_fingerprint == cached[1]
             ):
                 self._trusted_fingerprints.move_to_end(artifact_hash)
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.PRIMARY,
+                    refresh_result=MarketPathCacheRefreshResult.SUCCEEDED,
+                    compatibility=MarketPathCacheCompatibility.COMPATIBLE,
+                )
                 return cached[0]
             fingerprint = self._artifact_fingerprint(artifact_directory)
             if cached is not None and fingerprint and cached[1] == fingerprint:
@@ -666,11 +811,22 @@ class ParquetMarketPathArtifactStore:
                     artifact_hash,
                     fingerprint,
                 )
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.PRIMARY,
+                    refresh_result=MarketPathCacheRefreshResult.SUCCEEDED,
+                    compatibility=MarketPathCacheCompatibility.COMPATIBLE,
+                )
                 return cached[0]
             if cached is not None:
                 _discard_process_verified_path(cache_key)
                 self._trusted_fingerprints.pop(artifact_hash, None)
                 if verify_persisted:
+                    self._record_cache_health(
+                        fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                        refresh_result=MarketPathCacheRefreshResult.FAILED,
+                        compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                        successful=False,
+                    )
                     raise ValueError(
                         "persisted Materialized Market Path changed after "
                         "verification"
@@ -681,25 +837,50 @@ class ParquetMarketPathArtifactStore:
                 and trusted_fingerprint != fingerprint
             ):
                 self._trusted_fingerprints.pop(artifact_hash, None)
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                    refresh_result=MarketPathCacheRefreshResult.FAILED,
+                    compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                    successful=False,
+                )
                 raise ValueError(
                     "persisted Materialized Market Path changed after "
                     "verification"
                 )
-            path = self._load_verified_read_cache(
-                artifact_hash,
-                artifact_directory,
-                fingerprint,
-                require_matching_seal=verify_persisted,
-            )
-            loaded_from_native_parquet = path is None
-            if path is None:
-                path = self._load_verified_path(
+            try:
+                path = self._load_verified_read_cache(
                     artifact_hash,
                     artifact_directory,
+                    fingerprint,
+                    require_matching_seal=verify_persisted,
                 )
+            except ValueError:
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                    refresh_result=MarketPathCacheRefreshResult.FAILED,
+                    compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                    successful=False,
+                )
+                raise
+            loaded_from_native_parquet = path is None
+            if path is None:
+                try:
+                    path = self._load_verified_path(
+                        artifact_hash,
+                        artifact_directory,
+                    )
+                except (KeyError, OSError, TypeError, ValueError):
+                    self._record_cache_health(
+                        fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                        refresh_result=MarketPathCacheRefreshResult.FAILED,
+                        compatibility=MarketPathCacheCompatibility.UNKNOWN,
+                        successful=False,
+                    )
+                    raise
             verified_fingerprint = self._artifact_fingerprint(
                 artifact_directory
             )
+            derived_cache_published = False
             if fingerprint and verified_fingerprint == fingerprint:
                 if loaded_from_native_parquet:
                     try:
@@ -708,6 +889,7 @@ class ParquetMarketPathArtifactStore:
                             artifact_directory,
                             fingerprint,
                         )
+                        derived_cache_published = True
                     except OSError:
                         # The derived cache must never make verified
                         # authoritative Parquet unavailable. The process cache
@@ -723,11 +905,64 @@ class ParquetMarketPathArtifactStore:
                     fingerprint,
                 )
             elif verify_persisted:
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.UNAVAILABLE,
+                    refresh_result=MarketPathCacheRefreshResult.FAILED,
+                    compatibility=MarketPathCacheCompatibility.INCOMPATIBLE,
+                    successful=False,
+                )
                 raise ValueError(
                     "persisted Materialized Market Path changed while it "
                     "was being verified"
                 )
+            self._record_cache_health(
+                fallback=(
+                    MarketPathCacheFallbackState.ACTIVE
+                    if loaded_from_native_parquet
+                    else MarketPathCacheFallbackState.PRIMARY
+                ),
+                refresh_result=(
+                    MarketPathCacheRefreshResult.FALLBACK_SUCCEEDED
+                    if loaded_from_native_parquet
+                    else MarketPathCacheRefreshResult.SUCCEEDED
+                ),
+                compatibility=MarketPathCacheCompatibility.COMPATIBLE,
+                generation_changed=derived_cache_published,
+            )
             return path
+
+    def diagnostic_cache_health(self) -> MarketPathCacheHealthSnapshot:
+        """Return bounded metadata without opening cache or artifact files."""
+
+        with self._lock:
+            return self._cache_health
+
+    def _record_cache_health(
+        self,
+        *,
+        fallback: MarketPathCacheFallbackState,
+        refresh_result: MarketPathCacheRefreshResult,
+        compatibility: MarketPathCacheCompatibility,
+        successful: bool = True,
+        generation_changed: bool = False,
+    ) -> None:
+        generation = self._cache_health.generation
+        if successful:
+            if generation == 0:
+                generation = 1
+            elif generation_changed:
+                generation += 1
+        self._cache_health = MarketPathCacheHealthSnapshot(
+            generation=generation,
+            observed_at=_aware_cache_time(self._clock()),
+            fallback=fallback,
+            last_refresh_result=refresh_result,
+            compatibility=compatibility,
+            affected_artifact_count=max(
+                self._cache_health.affected_artifact_count,
+                1,
+            ),
+        )
 
     def _remember_trusted_fingerprint(
         self,
@@ -887,7 +1122,14 @@ class ParquetMarketPathArtifactStore:
                     )
                 )
             )
-            return tuple(self.get(artifact_hash) for artifact_hash in hashes)
+            paths = tuple(self.get(artifact_hash) for artifact_hash in hashes)
+            if not paths:
+                self._record_cache_health(
+                    fallback=MarketPathCacheFallbackState.PRIMARY,
+                    refresh_result=MarketPathCacheRefreshResult.SUCCEEDED,
+                    compatibility=MarketPathCacheCompatibility.COMPATIBLE,
+                )
+            return paths
 
     def _artifact_directory(self, artifact_hash: str) -> Path:
         if len(artifact_hash) != 64 or any(
@@ -2028,6 +2270,15 @@ class ScenarioMaterializer:
     def list_materialized_paths(self) -> tuple[MaterializedMarketPath, ...]:
         return self._artifact_store.list_paths()
 
+    def diagnostic_cache_health(self) -> MarketPathCacheHealthSnapshot:
+        observer = getattr(self._artifact_store, "diagnostic_cache_health", None)
+        if not callable(observer):
+            return unobserved_market_path_cache_health()
+        snapshot = observer()
+        if not isinstance(snapshot, MarketPathCacheHealthSnapshot):
+            raise TypeError("diagnostic cache health observation must be typed")
+        return snapshot
+
 
 __all__ = [
     "AppliedTransformation",
@@ -2039,6 +2290,10 @@ __all__ = [
     "InMemoryMarketPathArtifactStore",
     "InstrumentState",
     "MarketPathArtifactStore",
+    "MarketPathCacheCompatibility",
+    "MarketPathCacheFallbackState",
+    "MarketPathCacheHealthSnapshot",
+    "MarketPathCacheRefreshResult",
     "MarketPathNode",
     "MaterializedMarketPath",
     "ParquetMarketPathArtifactStore",
@@ -2047,4 +2302,5 @@ __all__ = [
     "ScenarioMarketSnapshot",
     "ScenarioMarketView",
     "ScenarioMaterializer",
+    "unobserved_market_path_cache_health",
 ]

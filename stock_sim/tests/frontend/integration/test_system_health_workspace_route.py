@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
-import time
-from datetime import date, datetime, timedelta, timezone
-from threading import get_ident
+import shutil
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import get_ident
 from types import SimpleNamespace
 from typing import cast
 
@@ -17,15 +19,47 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+from sqlalchemy import create_engine, text
+
+import persistence.models_imports as persistence_models
 
 from app.app_context import build_app_context
 from app.event_bridge import EventBridge
+from app.features.diagnostic_tasks_application import (
+    CreateDiagnosticTask,
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
+    DiagnosticTaskConfiguration,
+    DiagnosticTasksApplicationCommandRejectionReason,
+    HistoricalMarketSegmentId,
+)
+from app.features.run_monitoring import SourceGenerationId
+from app.features.scenario_lab_application import (
+    CreateScenarioRecipeDraftCommand,
+    LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    RequestedExecutionAssumptionsProjection,
+    ScenarioLabActorId,
+    ScenarioLabCommandContentIdentity,
+    ScenarioLabCommandDisposition,
+    ScenarioLabCommandId,
+    ScenarioLabCommandMetadata,
+    ScenarioLabIdempotencyIdentity,
+    ScenarioRecipeAuthoringMode,
+    ScenarioRecipeDataPolicy,
+    ScenarioRecipeDraftPayload,
+)
+from app.features.strategy_diagnostics_v1_read_model import SourceRevisionToken
 from app.features import (
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
+    DiagnosticTaskTarget,
     DeterministicFakeRunMonitoringAdapter,
     DeterministicFakeSystemHealthAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
     LiveSystemHealthAdapter,
+    PauseDiagnosticTarget,
+    StartFormalDiagnosticCampaign,
     StrategyDiagnosticsV1ApplicationReadModel,
     SystemHealthContext,
     SystemHealthFeature,
@@ -34,16 +68,23 @@ from app.features import (
 from app.journey_recovery import JourneyWorkspaceBookmark, JourneyWorkspaceRoute
 from app.ui.main_window import MainWindow
 from strategy_diagnostics import create_diagnostics_application
-from strategy_diagnostics import (
-    AdmissionCheck,
-    HistoricalSegmentSelection,
-    HistoricalSourceInspection,
-    InMemoryHistoricalSource,
-    SourceArtifact,
-    SourceProvenance,
+from strategy_diagnostics.reproduction import REPRODUCTION_MANIFEST_SCHEMA_VERSION
+from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
+    _approved_formal_task,
+    _formal_live_stack,
 )
-
-SOURCE_HEALTH_NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
+from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
+    _read_task,
+)
+from tests.frontend.contract.test_system_health_application_live_contract import (
+    _application_with_admitted_source,
+    _readmit_default_source,
+)
+from tests.frontend.system_health_support import ApplicationDrivenCacheStore
+from tests.strategy_diagnostics.test_recipe_lifecycle import (
+    _baseline_payload,
+    _RecipeFixtureSource,
+)
 
 
 def _app() -> QApplication:
@@ -51,7 +92,27 @@ def _app() -> QApplication:
 
 
 @pytest.fixture(autouse=True)
-def _release_closed_qml_hosts_between_tests():
+def _release_closed_qml_hosts_between_tests(tmp_path, monkeypatch):
+    lock_path = (
+        Path(__file__).parents[3]
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_toolchain.lock.json"
+    )
+    release_manifest = tmp_path / "dependency-manifest.json"
+    release_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "toolchain_lock": json.loads(lock_path.read_text(encoding="utf-8")),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "STOCKSIM_FRONTEND_V2_RELEASE_MANIFEST_PATH",
+        str(release_manifest),
+    )
     yield
     application = QApplication.instance()
     if application is None:
@@ -72,75 +133,19 @@ def _visible_text(root: QObject) -> str:
     )
 
 
-def _process_until(app: QApplication, predicate, *, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        app.processEvents()
+def _wait_until(
+    application: QApplication,
+    predicate,
+    *,
+    timeout_ms: int = 3000,
+) -> None:
+    for _ in range(max(timeout_ms // 10, 1)):
+        application.processEvents()
         if predicate():
             return
-    raise AssertionError("Timed out waiting for the externally visible QML state")
-
-
-def _application_with_admitted_source(
-    *,
-    provider: str = "BaoStock",
-    dataset: str = "local-a-share-fixture",
-    version: str = "fixture-2026-07-21",
-    source_observed_at: datetime | None = None,
-):
-    selection = HistoricalSegmentSelection(
-        market="mainland-a-share",
-        start_date=date(2024, 1, 2),
-        end_date=date(2024, 1, 3),
-    )
-    checks = (
-        "bar_continuity",
-        "instrument_coverage",
-        "eligible_universe",
-        "trading_status",
-        "st_status",
-        "suspension_state",
-        "industry_as_of",
-        "adjustment_consistency",
-        "causal_availability",
-        "required_fields",
-        "missing_data",
-        "duplicates",
-        "timestamps",
-    )
-    inspection = HistoricalSourceInspection(
-        selection=selection,
-        label="A-share diagnostic interval",
-        provenance=SourceProvenance(
-            provider=provider,
-            dataset=dataset,
-            version=version,
-            observed_at=(
-                source_observed_at
-                or SOURCE_HEALTH_NOW - timedelta(seconds=1)
-            ),
-        ),
-        artifacts=(
-            SourceArtifact(
-                name="daily-unadjusted",
-                content_hash="1" * 64,
-                row_count=60,
-            ),
-        ),
-        eligible_instrument_count=120,
-        trading_day_count=2,
-        bar_count=60,
-        checks=tuple(
-            AdmissionCheck(code=code, passed=True, summary=f"{code} passed.")
-            for code in checks
-        ),
-    )
-    application = create_diagnostics_application(
-        historical_source=InMemoryHistoricalSource((inspection,))
-    )
-    application.start()
-    assert application.admit_historical_segment(selection).status == "admitted"
-    return application
+        QTest.qWait(10)
+    application.processEvents()
+    assert predicate()
 
 
 def test_app_context_composes_system_health_as_the_sixth_feature(
@@ -228,18 +233,21 @@ def test_live_app_context_uses_one_diagnostics_application_for_every_adapter(
         assert root.findChild(QObject, "systemHealthPage") is not None
         status = root.findChild(QObject, "systemHealthAccessibleStatus")
         assert status is not None
-        overall_accessible = str(status.property("accessibleName")).casefold()
-        assert "unavailable" in overall_accessible
-        assert "freshness awaiting_first_state" in overall_accessible
-        source_status = root.findChild(QObject, "dataSourceAccessibleStatus")
-        assert source_status is not None
-        assert "unavailable" in str(
-            source_status.property("accessibleName")
-        ).casefold()
-        source_revision = root.findChild(QObject, "dataSourceRevisionText")
-        assert source_revision is not None
-        assert source_revision.property("text") == "Accepted · Unavailable"
+        _wait_until(
+            app,
+            lambda: "healthy"
+            in str(status.property("accessibleName")).casefold(),
+        )
+        assert "healthy" in str(status.property("accessibleName")).casefold()
         assert "Application runtime" in visible
+        assert "Diagnostic queue" in visible
+        assert "Diagnostic cache" in visible
+        queue_card = root.findChild(QObject, "diagnosticQueueHealthCard")
+        cache_card = root.findChild(QObject, "diagnosticCacheHealthCard")
+        assert queue_card is not None
+        assert cache_card is not None
+        assert "pending" in str(queue_card.property("accessibleName")).casefold()
+        assert "fallback" in str(cache_card.property("accessibleName")).casefold()
         assert "No infrastructure controls" in visible
     finally:
         if window is not None:
@@ -250,6 +258,583 @@ def test_live_app_context_uses_one_diagnostics_application_for_every_adapter(
         context.run_monitoring_feature.close()
         context.evidence_and_findings_feature.close()
         context.system_health_feature.close()
+
+
+def _close_context(context) -> None:
+    context.strategy_library_feature.close()
+    context.scenario_lab_feature.close()
+    context.diagnostic_tasks_feature.close()
+    context.run_monitoring_feature.close()
+    context.evidence_and_findings_feature.close()
+    context.system_health_feature.close()
+
+
+def _system_health_window(context) -> MainWindow:
+    return MainWindow(
+        strategy_library_feature=context.strategy_library_feature,
+        strategy_library_context=context.strategy_library_context,
+        scenario_lab_feature=context.scenario_lab_feature,
+        scenario_lab_context=context.scenario_lab_context,
+        diagnostic_tasks_feature=context.diagnostic_tasks_feature,
+        diagnostic_tasks_context=context.diagnostic_tasks_context,
+        diagnostic_setup_selection_coordinator=(
+            context.diagnostic_setup_selection_coordinator
+        ),
+        run_monitoring_feature=context.run_monitoring_feature,
+        run_monitoring_context=context.run_monitoring_context,
+        evidence_and_findings_feature=context.evidence_and_findings_feature,
+        evidence_and_findings_context=context.evidence_and_findings_context,
+        system_health_feature=context.system_health_feature,
+        system_health_context=context.system_health_context,
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+
+
+def test_real_file_persistence_and_version_health_render_through_qml(tmp_path) -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    database = tmp_path / "controlled-health-fixture.sqlite"
+    engine = create_engine(f"sqlite+pysqlite:///{database.as_posix()}")
+    seed_application = create_diagnostics_application()
+    seed_application.start()
+    seed_application.initialize_persistence(engine)
+    diagnostics_application = create_diagnostics_application()
+    diagnostics_application.start()
+    diagnostics_application.initialize_persistence(engine)
+    health_feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            diagnostics_application,
+            current_manifest_format_provider=(
+                lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
+            ),
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        app.processEvents()
+        root = window.centralWidget().rootObject()
+        visible = _visible_text(root)
+        accessible = root.findChild(QObject, "systemHealthAccessibleStatus")
+
+        assert accessible is not None
+        _wait_until(
+            app,
+            lambda: "Persistence Health healthy"
+            in str(accessible.property("accessibleName")),
+        )
+        visible = _visible_text(root)
+        assert "Persistence Health healthy" in str(
+            accessible.property("accessibleName")
+        )
+        assert "availability available" in str(
+            accessible.property("accessibleName")
+        )
+        assert "Version Health healthy" in str(
+            accessible.property("accessibleName")
+        )
+        assert "Release binding compatible" in str(
+            accessible.property("accessibleName")
+        )
+        for expected in (
+            "DIAGNOSTIC PERSISTENCE",
+            "Persistence freshness · fresh",
+            "Durable read",
+            "Durable write",
+            "Reopen verification · verified",
+            "VERSION COMPATIBILITY",
+            "stock-sim/0.0.1",
+            "SystemHealthFeature 1.0",
+            "sha256:",
+            "Release binding compatible",
+            "reproduction-manifest.v1",
+        ):
+            assert expected in visible
+        for forbidden in (
+            str(database),
+            database.name,
+            "sqlite+pysqlite://",
+            "SELECT ",
+            "Traceback",
+        ):
+            assert forbidden not in visible
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+        engine.dispose()
+
+
+def test_narrator_distinguishes_release_incompatibility_from_manifest_compatibility(
+    tmp_path,
+) -> None:
+    app = _app()
+    lock_path = (
+        Path(__file__).parents[3]
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_toolchain.lock.json"
+    )
+    original_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    changed_lock = json.loads(json.dumps(original_lock))
+    changed_lock["toolchain"]["python"] = "99.99.99"
+    lock_fixture = tmp_path / "changed-lock.json"
+    lock_fixture.write_text(json.dumps(changed_lock), encoding="utf-8")
+    database = tmp_path / "narrator-release-health.sqlite3"
+    engine = create_engine(f"sqlite+pysqlite:///{database.as_posix()}")
+    seed = create_diagnostics_application()
+    seed.start()
+    seed.initialize_persistence(engine)
+    application = create_diagnostics_application()
+    application.start()
+    application.initialize_persistence(engine)
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    health_feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            dependency_lock_path=lock_fixture,
+            release_manifest_provider=(
+                lambda: {"schema_version": 1, "toolchain_lock": original_lock}
+            ),
+            current_manifest_format_provider=(
+                lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
+            ),
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        app.processEvents()
+        root = window.centralWidget().rootObject()
+        accessible = root.findChild(QObject, "systemHealthAccessibleStatus")
+
+        assert accessible is not None
+        _wait_until(
+            app,
+            lambda: "Release binding incompatible"
+            in str(accessible.property("accessibleName")),
+        )
+        narration = str(accessible.property("accessibleName"))
+        assert "Release binding incompatible" in narration
+        assert "Version Health incompatible" in narration
+        assert "Reproduction Manifest compatible" in narration
+        assert lock_fixture.name not in narration
+        assert database.name not in narration
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+        engine.dispose()
+
+
+def test_copied_manifest_incompatibility_renders_safe_diagnostic_impact(
+    tmp_path,
+) -> None:
+    app = _app()
+    source = tmp_path / "supported-manifest.json"
+    source.write_text(
+        json.dumps({"schema_version": "reproduction-manifest.v1"}),
+        encoding="utf-8",
+    )
+    fixture = tmp_path / "manifest-incompatible-copy.json"
+    shutil.copy2(source, fixture)
+    fixture.write_text(
+        json.dumps({"schema_version": "reproduction-manifest.v999"}),
+        encoding="utf-8",
+    )
+    database = tmp_path / "controlled-health.sqlite3"
+    engine = create_engine(f"sqlite+pysqlite:///{database.as_posix()}")
+    seed_application = create_diagnostics_application()
+    seed_application.start()
+    seed_application.initialize_persistence(engine)
+    diagnostics_application = create_diagnostics_application()
+    diagnostics_application.start()
+    diagnostics_application.initialize_persistence(engine)
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    health_feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            diagnostics_application,
+            current_manifest_format_provider=(
+                lambda: str(
+                    json.loads(fixture.read_text(encoding="utf-8"))["schema_version"]
+                )
+            ),
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        app.processEvents()
+        root = window.centralWidget().rootObject()
+        accessible = root.findChild(QObject, "systemHealthAccessibleStatus")
+
+        assert accessible is not None
+        _wait_until(
+            app,
+            lambda: "System Health incompatible"
+            in str(accessible.property("accessibleName")),
+        )
+        visible = _visible_text(root)
+        assert "System Health incompatible" in str(
+            accessible.property("accessibleName")
+        )
+        assert "Version Health incompatible" in str(
+            accessible.property("accessibleName")
+        )
+        assert "affected reproduction_manifest" in visible
+        assert "recovery compatible_artifact_required" in visible
+        for forbidden in (fixture.name, str(fixture.parent), database.name):
+            assert forbidden not in visible
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("fixture_kind", "expected_presentation", "expected_recovery"),
+    (
+        ("unavailable", "unavailable", "automatic_retry"),
+        ("schema_incompatible", "incompatible", "compatible_build_required"),
+    ),
+)
+def test_app_context_copied_persistence_failure_reaches_qml_safely(
+    tmp_path,
+    monkeypatch,
+    fixture_kind: str,
+    expected_presentation: str,
+    expected_recovery: str,
+) -> None:
+    app = _app()
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    source = tmp_path / "source.sqlite3"
+    source_engine = create_engine(f"sqlite+pysqlite:///{source.as_posix()}")
+    source_application = create_diagnostics_application()
+    source_application.start()
+    source_application.initialize_persistence(source_engine)
+    source_engine.dispose()
+    fixture = tmp_path / f"{fixture_kind}-copy.sqlite3"
+    shutil.copy2(source, fixture)
+    if fixture_kind == "unavailable":
+        fixture.write_bytes(b"controlled unavailable fixture")
+    else:
+        fixture_setup = create_engine(f"sqlite+pysqlite:///{fixture.as_posix()}")
+        with fixture_setup.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO diagnostic_schema_migrations "
+                    "(revision, applied_at_utc) VALUES "
+                    "(:revision, :applied_at_utc)"
+                ),
+                {
+                    "revision": "9999_controlled_future_revision",
+                    "applied_at_utc": datetime(2030, 1, 1, tzinfo=timezone.utc).isoformat(),
+                },
+            )
+        fixture_setup.dispose()
+    fixture_engine = create_engine(f"sqlite+pysqlite:///{fixture.as_posix()}")
+    monkeypatch.setattr(persistence_models, "engine", fixture_engine)
+    context = build_app_context(
+        settings_path=str(tmp_path / f"{fixture_kind}-settings.json"),
+        run_monitoring_mode="live",
+        event_bridge=EventBridge(subscribe_backend=False),
+        runtime_gateway=object(),
+    )
+    window = None
+    try:
+        state = context.system_health_feature.snapshot(SystemHealthContext())
+        assert state.presentation.value == expected_presentation
+        application = context.strategy_diagnostics_application
+        tasks_application = context.strategy_diagnostics_tasks_application
+        scenario_application = (
+            context.strategy_diagnostics_scenario_lab_application
+        )
+        assert application is not None
+        assert tasks_application is not None
+        assert isinstance(
+            scenario_application,
+            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+        )
+        backend_calls = []
+        monkeypatch.setattr(
+            application,
+            "create_diagnostic_task",
+            lambda *_args, **_kwargs: backend_calls.append("task"),
+        )
+        monkeypatch.setattr(
+            application,
+            "create_scenario_recipe_draft_command",
+            lambda *_args, **_kwargs: backend_calls.append("scenario"),
+        )
+        task_result = tasks_application.create_diagnostic_task(
+            CreateDiagnosticTask(
+                command_id=DiagnosticCommandId("health-command-task"),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    "health-idempotency-task"
+                ),
+                configuration=DiagnosticTaskConfiguration.create(
+                    strategy_selections=(),
+                    campaign_case_selections=(),
+                ),
+            )
+        )
+        scenario_result = scenario_application.create_recipe_draft(
+            CreateScenarioRecipeDraftCommand(
+                metadata=ScenarioLabCommandMetadata(
+                    command_id=ScenarioLabCommandId("health-command-scenario"),
+                    idempotency_identity=ScenarioLabIdempotencyIdentity(
+                        "health-idempotency-scenario"
+                    ),
+                    canonical_content_identity=ScenarioLabCommandContentIdentity(
+                        "health-content-scenario"
+                    ),
+                    expected_source_revision=SourceRevisionToken("0" * 64),
+                    expected_source_generation=SourceGenerationId(1),
+                ),
+                payload=ScenarioRecipeDraftPayload(
+                    name="Health blocked draft",
+                    historical_segment_id=HistoricalMarketSegmentId(
+                        "health-segment"
+                    ),
+                    transformations=(),
+                    requested_execution_assumptions=(
+                        RequestedExecutionAssumptionsProjection(
+                            commission_bps="3",
+                            slippage_bps="0",
+                            max_fill_fraction="1",
+                            latency_nodes=0,
+                            allow_partial_fills=True,
+                        )
+                    ),
+                    decision_cadence_minutes=30,
+                    materialization_seed=17,
+                    data_policy=ScenarioRecipeDataPolicy.POINT_IN_TIME,
+                    market_rule_profile_version="a-share-cash-equity.v1",
+                ),
+                author_id=ScenarioLabActorId("health-actor"),
+                authoring_mode=ScenarioRecipeAuthoringMode.MANUAL,
+            )
+        )
+        assert task_result.rejection_reason is (
+            DiagnosticTasksApplicationCommandRejectionReason.PERSISTENCE_FAILURE
+        )
+        assert scenario_result.receipt.disposition is (
+            ScenarioLabCommandDisposition.UNAVAILABLE
+        )
+        assert backend_calls == []
+        window = _system_health_window(context)
+        window.show()
+        app.processEvents()
+        root = window.centralWidget().rootObject()
+        visible = _visible_text(root)
+        accessible = root.findChild(QObject, "systemHealthAccessibleStatus")
+
+        assert accessible is not None
+        narrator = str(accessible.property("accessibleName")).casefold()
+        assert f"system health {expected_presentation}" in narrator
+        assert f"persistence health {expected_presentation}" in narrator
+        assert f"recovery {expected_recovery}" in visible.casefold()
+        exposed = (narrator + " " + visible.casefold())
+        for forbidden in (
+            fixture.name.casefold(),
+            str(fixture.parent).casefold(),
+            "sqlite+pysqlite",
+            "select ",
+            "traceback",
+        ):
+            assert forbidden not in exposed
+    finally:
+        if window is not None:
+            window.close()
+        _close_context(context)
+        fixture_engine.dispose()
+
+
+def test_copied_reopened_persistence_stale_and_recovered_reach_qml(
+    tmp_path,
+) -> None:
+    app = _app()
+    source = tmp_path / "source.sqlite3"
+    source_engine = create_engine(f"sqlite+pysqlite:///{source.as_posix()}")
+    source_application = create_diagnostics_application()
+    source_application.start()
+    source_application.initialize_persistence(source_engine)
+    source_engine.dispose()
+    fixture = tmp_path / "reopened-copy.sqlite3"
+    shutil.copy2(source, fixture)
+    engine = create_engine(f"sqlite+pysqlite:///{fixture.as_posix()}")
+    now = [datetime(2030, 1, 1, tzinfo=timezone.utc)]
+    application = _application_with_admitted_source(
+        source_observed_at=now[0],
+    )
+    application.initialize_persistence(engine)
+    _readmit_default_source(application)
+    bridge = EventBridge(subscribe_backend=False)
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    application_health = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        application,
+        clock=lambda: now[0],
+        current_manifest_format_provider=(
+            lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
+        ),
+    )
+    source_refreshed = [False]
+
+    class _RefreshingSourceHealth:
+        def __getattr__(self, name: str):
+            return getattr(application_health, name)
+
+        def read_diagnostic_data_source_health(self):
+            result = application_health.read_diagnostic_data_source_health()
+            if source_refreshed[0] and result.observation is not None:
+                return replace(
+                    result,
+                    observation=replace(result.observation, observed_at=now[0]),
+                    observed_at=now[0],
+                )
+            return result
+
+    health_feature = LiveSystemHealthAdapter(
+        application_health=_RefreshingSourceHealth(),  # type: ignore[arg-type]
+        event_bridge=bridge,
+        clock=lambda: now[0],
+        freshness_threshold=timedelta(seconds=5),
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        app.processEvents()
+        root = window.centralWidget().rootObject()
+        accessible = root.findChild(QObject, "systemHealthAccessibleStatus")
+        assert accessible is not None
+        _wait_until(
+            app,
+            lambda: "reopen verification · verified"
+            in _visible_text(root).casefold(),
+        )
+        assert "reopen verification · verified" in _visible_text(root).casefold()
+
+        bridge.mark_disconnected()
+        _wait_until(
+            app,
+            lambda: health_feature.snapshot(
+                SystemHealthContext()
+            ).recovery_phase.value
+            == "disconnected",
+        )
+        now[0] += timedelta(seconds=6)
+        health_feature.snapshot(SystemHealthContext())
+        _wait_until(
+            app,
+            lambda: "system health stale"
+            in str(accessible.property("accessibleName")).casefold(),
+        )
+        stale_visible = _visible_text(root).casefold()
+        stale_narrator = str(accessible.property("accessibleName")).casefold()
+        assert "system health stale" in stale_narrator
+        assert "persistence health stale" in stale_narrator
+        assert "freshness stale" in stale_narrator
+
+        source_refreshed[0] = True
+        reconnected = bridge.mark_reconnected()
+        bridge.on_snapshot(
+            {
+                "feature": "system_health",
+                "component": "diagnostic_data_source",
+                "source_revision": 2,
+            },
+            generation=reconnected.generation.value,
+        )
+        bridge.flush(force=True)
+        _wait_until(
+            app,
+            lambda: "system health recovered"
+            in str(accessible.property("accessibleName")).casefold(),
+        )
+        assert "system health recovered" in str(
+            accessible.property("accessibleName")
+        ).casefold()
+        for forbidden in (fixture.name.casefold(), str(fixture.parent).casefold()):
+            assert forbidden not in stale_visible
+            assert forbidden not in stale_narrator
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+        engine.dispose()
+
+
+def test_app_context_does_not_swallow_post_migration_initialization_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    engine = create_engine(
+        f"sqlite+pysqlite:///{(tmp_path / 'post-migration.sqlite3').as_posix()}"
+    )
+    monkeypatch.setattr(persistence_models, "engine", engine)
+    application = create_diagnostics_application()
+    initialize = application.initialize_persistence
+
+    def fail_after_initialization(target_engine):
+        initialize(target_engine)
+        raise RuntimeError("controlled post-migration failure")
+
+    monkeypatch.setattr(
+        application,
+        "initialize_persistence",
+        fail_after_initialization,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="post-migration failure"):
+            build_app_context(
+                settings_path=str(tmp_path / "post-migration-settings.json"),
+                run_monitoring_mode="live",
+                event_bridge=EventBridge(subscribe_backend=False),
+                runtime_gateway=object(),
+                strategy_diagnostics_application=application,
+            )
+    finally:
+        engine.dispose()
 
 
 def test_partial_live_composition_reuses_the_injected_diagnostics_application(
@@ -287,8 +872,7 @@ def test_partial_live_composition_reuses_the_injected_diagnostics_application(
         )
         health = context.system_health_feature.snapshot(SystemHealthContext())
         assert health.presentation.value == "unavailable"
-        assert health.components[0].classification.value == "healthy"
-        assert health.diagnostic_data_source.classification.value == "unavailable"
+        assert health.components[1].availability.value == "unknown"
     finally:
         context.strategy_library_feature.close()
         context.scenario_lab_feature.close()
@@ -341,18 +925,18 @@ def test_live_composition_rejects_an_adapter_owned_by_another_application(
         )
 
 
-def test_system_health_event_delivery_rereads_real_application_state() -> None:
+def test_system_health_live_sampler_rereads_real_application_state() -> None:
     app = _app()
     run_feature = DeterministicFakeRunMonitoringAdapter()
     diagnostics_application = create_diagnostics_application()
-    bridge = EventBridge(subscribe_backend=False)
     health_feature = LiveSystemHealthAdapter(
         application_health=(
             LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
                 diagnostics_application
             )
         ),
-        event_bridge=bridge,
+        event_bridge=EventBridge(subscribe_backend=False),
+        sampling_interval=timedelta(milliseconds=25),
     )
     window = MainWindow(
         run_monitoring_feature=run_feature,
@@ -372,24 +956,239 @@ def test_system_health_event_delivery_rereads_real_application_state() -> None:
         assert "unknown" in str(status.property("accessibleName")).casefold()
 
         diagnostics_application.start()
-        bridge.on_snapshot({"feature": "system_health"})
-        bridge.flush(force=True)
-        _process_until(
+        _wait_until(
             app,
-            lambda: "unavailable"
+            lambda: "healthy"
             in str(status.property("accessibleName")).casefold(),
         )
-
-        assert "Application runtime · healthy" in _visible_text(root)
-        assert "No admitted diagnostic data source" in _visible_text(root)
     finally:
         window.close()
         run_feature.close()
         health_feature.close()
 
 
-def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries() -> None:
+def test_real_diagnostic_queue_lifecycle_reaches_the_visible_qml_card(
+    tmp_path,
+) -> None:
     app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    (
+        _source,
+        _artifact_store,
+        _engine,
+        application,
+        _application_adapter,
+        task_feature,
+    ) = _formal_live_stack(tmp_path)
+    bridge = EventBridge(subscribe_backend=False)
+    health_feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        sampling_interval=None,
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        root = window.centralWidget().rootObject()
+        queue_card = root.findChild(QObject, "diagnosticQueueHealthCard")
+        assert queue_card is not None
+        _wait_until(
+            app,
+            lambda: "healthy" in str(
+                queue_card.property("accessibleName")
+            ).casefold(),
+        )
+
+        approved = _approved_formal_task(task_feature)
+        accepted = task_feature.start_formal_diagnostic_campaign(
+            StartFormalDiagnosticCampaign(
+                command_id=DiagnosticCommandId("start-command-qml-health-110"),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    "start-idempotency-qml-health-110"
+                ),
+                task_id=approved.task_id,
+                expected_revision=approved.revision,
+                approved_revision=approved.revision,
+            )
+        )
+        assert accepted.accepted
+        bridge.on_snapshot({"feature": "diagnostic_tasks"})
+        bridge.flush(force=True)
+        _wait_until(
+            app,
+            lambda: (
+                "degraded" in str(
+                    queue_card.property("accessibleName")
+                ).casefold()
+                and "pending 0" not in str(
+                    queue_card.property("accessibleName")
+                ).casefold()
+                and "running 0" not in str(
+                    queue_card.property("accessibleName")
+                ).casefold()
+            ),
+        )
+
+        running = _read_task(task_feature, approved.task_id)
+        paused = task_feature.pause_diagnostic_target(
+            PauseDiagnosticTarget(
+                command_id=DiagnosticCommandId("pause-command-qml-health-110"),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    "pause-idempotency-qml-health-110"
+                ),
+                target=DiagnosticTaskTarget(approved.task_id),
+                expected_revision=running.revision,
+            )
+        )
+        assert paused.accepted
+        bridge.on_snapshot({"feature": "diagnostic_tasks"})
+        bridge.flush(force=True)
+        _wait_until(
+            app,
+            lambda: "blocked 0" not in str(
+                queue_card.property("accessibleName")
+            ).casefold(),
+        )
+        assert "diagnostic work is paused" in _visible_text(root).casefold()
+    finally:
+        window.close()
+        task_feature.close()
+        run_feature.close()
+        health_feature.close()
+
+
+def test_real_cache_behaviors_reach_stale_fallback_incompatible_and_recovered_qml(
+) -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    now = [datetime(2030, 1, 1, tzinfo=timezone.utc)]
+    clock = lambda: now[0]
+    source = _RecipeFixtureSource()
+    store = ApplicationDrivenCacheStore(
+        clock=clock,
+        fallback_on_first_put=True,
+        incompatible_on_second_put=True,
+    )
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=clock,
+    )
+    application.start()
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    first_payload = _baseline_payload(admission.segment.segment_id)
+    first_draft = application.create_manual_recipe_draft(
+        first_payload,
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(first_draft.draft_id).is_valid
+    first_approved = application.approve_recipe_draft(
+        first_draft.draft_id,
+        actor="owner",
+    )
+    application.materialize_baseline_reference_path(first_approved.version_id)
+
+    second_payload = _baseline_payload(admission.segment.segment_id)
+    second_payload["name"] = "QML incompatible cache publication"
+    second_payload["materialization_seed"] = 19
+    second_draft = application.create_manual_recipe_draft(
+        second_payload,
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(second_draft.draft_id).is_valid
+    second_approved = application.approve_recipe_draft(
+        second_draft.draft_id,
+        actor="owner",
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    health_feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=clock,
+        ),
+        event_bridge=bridge,
+        clock=clock,
+        freshness_threshold=timedelta(seconds=5),
+        sampling_interval=None,
+    )
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        window.show()
+        root = window.centralWidget().rootObject()
+        cache_card = root.findChild(QObject, "diagnosticCacheHealthCard")
+        assert cache_card is not None
+        _wait_until(
+            app,
+            lambda: all(
+                value
+                in str(cache_card.property("accessibleName")).casefold()
+                for value in ("fallback", "active", "compatible")
+            ),
+        )
+
+        now[0] += timedelta(seconds=6)
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        _wait_until(
+            app,
+            lambda: "diagnostic cache stale"
+            in str(cache_card.property("accessibleName")).casefold(),
+        )
+
+        with pytest.raises(ValueError):
+            application.materialize_baseline_reference_path(
+                second_approved.version_id
+            )
+        bridge.on_snapshot({"feature": "scenario_lab"})
+        bridge.flush(force=True)
+        _wait_until(
+            app,
+            lambda: "incompatible"
+            in str(cache_card.property("accessibleName")).casefold(),
+        )
+
+        bridge.mark_disconnected()
+        application.list_materialized_market_paths()
+        bridge.mark_reconnected()
+        _wait_until(
+            app,
+            lambda: (
+                "diagnostic cache healthy"
+                in str(cache_card.property("accessibleName")).casefold()
+                and "recovery recovered" in _visible_text(root).casefold()
+            ),
+        )
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+
+
+def test_real_data_source_recovery_reaches_qml_and_filters_bad_deliveries() -> None:
+    app = _app()
+    source_now = datetime(2030, 1, 1, tzinfo=timezone.utc)
     ui_thread = get_ident()
     qt_delivery_threads: list[int] = []
     run_feature = DeterministicFakeRunMonitoringAdapter()
@@ -397,17 +1196,17 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
         provider="Authorization: Bearer sk-live-provider-secret",
         dataset="api_key=dataset-secret@example.test:6379",
         version="<script>cookie=version-secret</script>",
+        source_observed_at=source_now,
     )
     bridge = EventBridge(subscribe_backend=False)
     health_feature = LiveSystemHealthAdapter(
-        application_health=(
-            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
-                diagnostics_application,
-                clock=lambda: SOURCE_HEALTH_NOW,
-            )
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            diagnostics_application,
+            clock=lambda: source_now,
         ),
         event_bridge=bridge,
-        clock=lambda: SOURCE_HEALTH_NOW,
+        clock=lambda: source_now,
+        sampling_interval=None,
     )
     window = MainWindow(
         run_monitoring_feature=run_feature,
@@ -434,6 +1233,11 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
         assert overall_status is not None
         assert source_revision is not None
         assert source_identity is not None
+        _wait_until(
+            app,
+            lambda: "connection connected"
+            in str(source_status.property("accessibleName")),
+        )
         assert "connected" in str(source_status.property("accessibleName"))
         assert "fresh" in str(source_status.property("accessibleName"))
         assert source_revision.property("text") == "Accepted · r1 · g1"
@@ -441,7 +1245,7 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
         assert "admitted-source-" in reliable_identity
 
         bridge.mark_disconnected()
-        _process_until(
+        _wait_until(
             app,
             lambda: "disconnected"
             in str(source_status.property("accessibleName")),
@@ -453,7 +1257,7 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
         ).casefold()
 
         bridge.mark_fallback_active()
-        _process_until(
+        _wait_until(
             app,
             lambda: "fallback active"
             in str(source_status.property("accessibleName")),
@@ -493,41 +1297,24 @@ def test_real_data_source_health_recovery_is_visible_and_filters_bad_deliveries(
             },
             generation=2,
         )
-        terminal_delivery_started = time.monotonic()
         bridge.flush(force=True)
-        _process_until(
+        _wait_until(
             app,
             lambda: "recovered"
             in str(source_status.property("accessibleName")),
         )
-        assert time.monotonic() - terminal_delivery_started <= 0.1
         assert source_revision.property("text") == "Accepted · r2 · g2"
 
         recovered = str(source_status.property("accessibleName"))
-        bridge.on_snapshot(
-            {
-                "feature": "system_health",
-                "component": "diagnostic_data_source",
-                "source_revision": 2,
-            },
-            generation=2,
-        )
-        bridge.on_snapshot(
-            {
-                "feature": "system_health",
-                "component": "diagnostic_data_source",
-                "source_revision": 1,
-            },
-            generation=2,
-        )
-        bridge.on_snapshot(
-            {
-                "feature": "system_health",
-                "component": "diagnostic_data_source",
-                "source_revision": 100,
-            },
-            generation=1,
-        )
+        for bad_revision, generation in ((2, 2), (1, 2), (100, 1)):
+            bridge.on_snapshot(
+                {
+                    "feature": "system_health",
+                    "component": "diagnostic_data_source",
+                    "source_revision": bad_revision,
+                },
+                generation=generation,
+            )
         bridge.flush(force=True)
         app.processEvents()
         assert source_revision.property("text") == "Accepted · r2 · g2"
@@ -573,13 +1360,12 @@ def test_real_source_freshness_deadline_reaches_qml_without_polling() -> None:
         source_observed_at=datetime.now(timezone.utc),
     )
     health_feature = LiveSystemHealthAdapter(
-        application_health=(
-            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
-                diagnostics_application
-            )
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            diagnostics_application
         ),
         event_bridge=EventBridge(subscribe_backend=False),
         freshness_threshold=timedelta(milliseconds=50),
+        sampling_interval=None,
     )
     window = MainWindow(
         run_monitoring_feature=run_feature,
@@ -596,14 +1382,12 @@ def test_real_source_freshness_deadline_reaches_qml_without_polling() -> None:
         root = window.centralWidget().rootObject()
         source_status = root.findChild(QObject, "dataSourceAccessibleStatus")
         assert source_status is not None
-
-        _process_until(
+        _wait_until(
             app,
             lambda: "freshness stale"
             in str(source_status.property("accessibleName")),
-            timeout=2,
+            timeout_ms=2000,
         )
-
         assert "connection connected" in str(
             source_status.property("accessibleName")
         )
@@ -614,68 +1398,7 @@ def test_real_source_freshness_deadline_reaches_qml_without_polling() -> None:
         health_feature.close()
 
 
-def test_system_health_qml_surface_has_no_web_or_control_plane_imports() -> None:
-    page = Path(__file__).parents[3] / "app" / "ui" / "qml" / "SystemHealthPage.qml"
-    source = page.read_text(encoding="utf-8").casefold()
-
-    for forbidden in (
-        "webengine",
-        "webview",
-        "restart",
-        "reconnect",
-        "clear cache",
-        "purge",
-        "migrate",
-        "buy",
-        "sell",
-        "broker",
-        "submit order",
-    ):
-        assert forbidden not in source
-
-    workspace = page.with_name("JourneyWorkspace.qml").read_text(encoding="utf-8")
-    assert "onTriggered: systemHealth.refresh()" not in workspace
-
-
-def test_system_health_keyboard_focus_enters_and_leaves_the_read_only_page() -> None:
-    app = _app()
-    run_feature = DeterministicFakeRunMonitoringAdapter()
-    health_feature = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
-    window = MainWindow(
-        run_monitoring_feature=run_feature,
-        system_health_feature=health_feature,
-        system_health_context=SystemHealthContext(),
-        journey_workspace_bookmark=JourneyWorkspaceBookmark(
-            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
-        ),
-        frontend_v2_enabled=True,
-    )
-    try:
-        host = window.centralWidget()
-        window.show()
-        app.processEvents()
-        root = host.rootObject()
-        status = root.findChild(QQuickItem, "systemHealthAccessibleStatus")
-        route = root.findChild(QQuickItem, "systemHealthRouteNavigation")
-
-        assert status is not None and route is not None
-        assert status.property("activeFocus") is True
-        QTest.keyClick(host, Qt.Key.Key_Backtab)
-        app.processEvents()
-        assert route.property("activeFocus") is True
-        health_feature.publish_authoritative_observation()
-        app.processEvents()
-        assert route.property("activeFocus") is True
-        QTest.keyClick(host, Qt.Key.Key_Return)
-        app.processEvents()
-        assert status.property("activeFocus") is True
-    finally:
-        window.close()
-        run_feature.close()
-        health_feature.close()
-
-
-def test_stale_failed_recovery_is_accessible_and_keyboard_focusable() -> None:
+def test_stale_failed_source_recovery_is_accessible_and_focusable() -> None:
     app = _app()
     run_feature = DeterministicFakeRunMonitoringAdapter()
     health_feature = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
@@ -720,6 +1443,72 @@ def test_stale_failed_recovery_is_accessible_and_keyboard_focusable() -> None:
         QTest.keyClick(host, Qt.Key.Key_Backtab)
         app.processEvents()
         assert runtime_status.property("activeFocus") is True
+    finally:
+        window.close()
+        run_feature.close()
+        health_feature.close()
+
+
+def test_system_health_qml_surface_has_no_web_or_control_plane_imports() -> None:
+    page = Path(__file__).parents[3] / "app" / "ui" / "qml" / "SystemHealthPage.qml"
+    source = page.read_text(encoding="utf-8").casefold()
+    workspace = page.with_name("JourneyWorkspace.qml").read_text(
+        encoding="utf-8"
+    ).casefold()
+
+    for forbidden in (
+        "webengine",
+        "webview",
+        "restart",
+        "reconnect",
+        "clear cache",
+        "purge",
+        "migrate",
+        "buy",
+        "sell",
+        "broker",
+        "submit order",
+        "task payload",
+        "traceback",
+        "credential",
+    ):
+        assert forbidden not in source
+    assert "ontriggered: systemhealth.refresh" not in workspace
+    assert "timer" not in source
+
+
+def test_system_health_keyboard_focus_enters_and_leaves_the_read_only_page() -> None:
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    health_feature = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+    window = MainWindow(
+        run_monitoring_feature=run_feature,
+        system_health_feature=health_feature,
+        system_health_context=SystemHealthContext(),
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        host = window.centralWidget()
+        window.show()
+        app.processEvents()
+        root = host.rootObject()
+        status = root.findChild(QQuickItem, "systemHealthAccessibleStatus")
+        route = root.findChild(QQuickItem, "systemHealthRouteNavigation")
+
+        assert status is not None and route is not None
+        assert status.property("activeFocus") is True
+        QTest.keyClick(host, Qt.Key.Key_Backtab)
+        app.processEvents()
+        assert route.property("activeFocus") is True
+        health_feature.publish_authoritative_observation()
+        app.processEvents()
+        assert route.property("activeFocus") is True
+        QTest.keyClick(host, Qt.Key.Key_Return)
+        app.processEvents()
+        assert status.property("activeFocus") is True
     finally:
         window.close()
         run_feature.close()

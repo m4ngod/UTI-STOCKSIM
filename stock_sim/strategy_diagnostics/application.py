@@ -106,6 +106,7 @@ from .isolated_sensitivity_sets import (
 from .market_paths import (
     HistoricalMarketDataSource,
     MarketPathArtifactStore,
+    MarketPathCacheHealthSnapshot,
     MaterializedMarketPath,
     ParquetMarketPathArtifactStore,
     ScenarioMarketView,
@@ -114,9 +115,11 @@ from .market_paths import (
 from .persistence import (
     DIAGNOSTIC_SCHEMA_REVISION,
     DiagnosticMigrationReport,
+    DiagnosticPersistenceHealthObservation,
     SqlHistoricalSegmentCatalog,
     SqlScenarioRecipeRepository,
     initialize_diagnostic_persistence,
+    read_diagnostic_persistence_health,
 )
 from .ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
@@ -231,6 +234,36 @@ class DiagnosticCampaignCaseInventory:
     case_assessments: tuple["ScenarioLabCampaignCaseAssessment", ...]
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticTaskQueueHealthSnapshot:
+    revision: int
+    pending_count: int
+    running_count: int
+    blocked_count: int
+    oldest_pending_at: datetime | None
+    affected_target_kinds: tuple[DiagnosticLifecycleTargetKind, ...]
+
+    def __post_init__(self) -> None:
+        if self.revision < 0:
+            raise ValueError("Diagnostic Queue revision cannot be negative")
+        if any(
+            value < 0
+            for value in (
+                self.pending_count,
+                self.running_count,
+                self.blocked_count,
+            )
+        ):
+            raise ValueError("Diagnostic Queue counts cannot be negative")
+        if self.oldest_pending_at is not None and (
+            self.oldest_pending_at.tzinfo is None
+            or self.oldest_pending_at.utcoffset() is None
+        ):
+            raise ValueError("oldest pending time must be timezone-aware")
+        if not self.affected_target_kinds:
+            raise ValueError("Diagnostic Queue affected target kinds cannot be empty")
+
+
 class ScenarioLabIntegrityAssessment(str, Enum):
     VERIFIED = "verified"
     FAILED = "failed"
@@ -324,6 +357,8 @@ class DiagnosticsApplication:
         ) = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
+        self._persistence_engine: Engine | None = None
+        self._persistence_reopen_observed = False
         source = historical_source or BaoStockHistoricalSource()
         self._transformation_catalog = create_initial_transformation_catalog()
         self._historical_segments = HistoricalSegmentAdmissionService(
@@ -428,7 +463,11 @@ class DiagnosticsApplication:
         return self._state
 
     def initialize_persistence(self, engine: Engine) -> DiagnosticMigrationReport:
+        first_persistence_open = self._persistence_engine is None
+        self._persistence_engine = engine
         report = initialize_diagnostic_persistence(engine)
+        if first_persistence_open:
+            self._persistence_reopen_observed = not report.applied_revisions
         self._historical_segments.replace_catalog(SqlHistoricalSegmentCatalog(engine))
         recipe_repository = SqlScenarioRecipeRepository(engine)
         self._recipe_workbench.replace_repository(recipe_repository)
@@ -473,6 +512,17 @@ class DiagnosticsApplication:
             self._change_diagnostic_lifecycle(lifecycle_request)
         return report
 
+    def read_diagnostic_persistence_health(
+        self,
+    ) -> DiagnosticPersistenceHealthObservation:
+        """Read safe persistence facts without applying or ensuring schema."""
+
+        self.status()
+        return read_diagnostic_persistence_health(
+            self._persistence_engine,
+            reopen_observed=self._persistence_reopen_observed,
+        )
+
     def status(self) -> DiagnosticsApplicationState:
         if self._state is None:
             raise RuntimeError("Diagnostics application has not been started")
@@ -514,6 +564,14 @@ class DiagnosticsApplication:
             tuple[MaterializedMarketPath, ...],
             self._scenario_materializer.list_materialized_paths(),
         )
+
+    def diagnostic_cache_health(self) -> MarketPathCacheHealthSnapshot | None:
+        """Observe bounded cache metadata without reading or changing cache content."""
+
+        self.status()
+        if self._scenario_materializer is None:
+            return None
+        return self._scenario_materializer.diagnostic_cache_health()
 
     def list_available_diagnostic_campaign_cases(
         self,
@@ -815,6 +873,59 @@ class DiagnosticsApplication:
         if task_id is None:
             return self._diagnostic_tasks.latest()
         return self._diagnostic_tasks.get(task_id)
+
+    def diagnostic_task_queue_health(self) -> DiagnosticTaskQueueHealthSnapshot:
+        """Aggregate every persisted active lifecycle target without mutating it."""
+
+        self.status()
+        pending_lifecycles = {
+            DiagnosticTaskLifecycle.CREATING,
+            DiagnosticTaskLifecycle.QUEUED,
+            DiagnosticTaskLifecycle.RESUMING,
+            DiagnosticTaskLifecycle.CANCELING,
+        }
+        targets = self._diagnostic_tasks.active_lifecycle_health()
+        pending = tuple(
+            item for item in targets if item.lifecycle in pending_lifecycles
+        )
+        running_count = sum(
+            item.lifecycle is DiagnosticTaskLifecycle.RUNNING
+            for item in targets
+        )
+        blocked_count = sum(
+            item.lifecycle is DiagnosticTaskLifecycle.PAUSED
+            for item in targets
+        )
+        active_kinds = tuple(
+            sorted(
+                {
+                    item.target_kind
+                    for item in targets
+                    if item.lifecycle in pending_lifecycles
+                    or item.lifecycle
+                    in {
+                        DiagnosticTaskLifecycle.RUNNING,
+                        DiagnosticTaskLifecycle.PAUSED,
+                    }
+                },
+                key=lambda item: item.value,
+            )
+        )
+        return DiagnosticTaskQueueHealthSnapshot(
+            revision=max((item.revision for item in targets), default=0),
+            pending_count=len(pending),
+            running_count=running_count,
+            blocked_count=blocked_count,
+            oldest_pending_at=min(
+                (item.transitioned_at for item in pending),
+                default=None,
+            ),
+            affected_target_kinds=(
+                active_kinds
+                if active_kinds
+                else (DiagnosticLifecycleTargetKind.DIAGNOSTIC_TASK,)
+            ),
+        )
 
     def revise_diagnostic_task_configuration(
         self,
@@ -2886,6 +2997,19 @@ class DiagnosticsApplication:
         return cast(
             tuple[ReproductionManifest, ...],
             self._reproduction.manifests_for(evidence_package_id),
+        )
+
+    def read_reproduction_manifest_format_identity(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> str | None:
+        """Read a selected Manifest format without deserializing its payload."""
+
+        self.status()
+        return self._reproduction.manifest_format_identity(
+            evidence_package_id,
+            manifest_id,
         )
 
     def reproduce_strategy_run(
