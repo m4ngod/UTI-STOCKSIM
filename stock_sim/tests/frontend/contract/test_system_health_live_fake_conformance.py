@@ -5,7 +5,8 @@ from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
+from time import monotonic
 
 import pytest
 from sqlalchemy import create_engine
@@ -14,10 +15,30 @@ from sqlalchemy.pool import StaticPool
 from app.event_bridge import EventBridge
 from app.features import (
     ACTIVE_FEATURE_INTERFACES,
+    DiagnosticCacheCompatibility,
+    DiagnosticCacheApplicationAvailability,
+    DiagnosticCacheApplicationObservation,
+    DiagnosticCacheApplicationResult,
+    DiagnosticCacheFallbackState,
+    DiagnosticCacheHealthClassification,
+    DiagnosticCacheLastRefreshResult,
+    DiagnosticCacheRecoveryPhase,
+    DiagnosticCacheScope,
+    DiagnosticCommandId,
+    DiagnosticCommandIdempotencyKey,
+    DiagnosticQueueBlockageReason,
+    DiagnosticQueueApplicationAvailability,
+    DiagnosticQueueApplicationObservation,
+    DiagnosticQueueApplicationResult,
+    DiagnosticQueueConsumerAvailability,
+    DiagnosticQueueHealthClassification,
+    DiagnosticQueueScope,
+    DiagnosticTaskTarget,
     DeterministicFakeSystemHealthAdapter,
     HealthCompatibilityState,
     LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
     LiveSystemHealthAdapter,
+    PauseDiagnosticTarget,
     RuntimeHealthClassification,
     RuntimeHealthApplicationAvailability,
     RuntimeHealthApplicationError,
@@ -33,10 +54,23 @@ from app.features import (
     SystemHealthContext,
     SystemHealthFeature,
     SystemHealthPresentationState,
+    StartFormalDiagnosticCampaign,
     VersionHealthApplicationObservation,
 )
 from app.features.run_monitoring import Completeness, Freshness, ViewPhase
 from strategy_diagnostics import create_diagnostics_application
+from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
+    _approved_formal_task,
+    _formal_live_stack,
+)
+from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
+    _read_task,
+)
+from tests.frontend.system_health_support import ApplicationDrivenCacheStore
+from tests.strategy_diagnostics.test_recipe_lifecycle import (
+    _baseline_payload,
+    _RecipeFixtureSource,
+)
 from strategy_diagnostics.diagnostic_evidence import DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION
 from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
 from strategy_diagnostics.reproduction import REPRODUCTION_MANIFEST_SCHEMA_VERSION
@@ -76,6 +110,15 @@ class _Clock:
 
     def advance(self, delta: timedelta) -> None:
         self.now += delta
+
+
+def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
+    deadline = monotonic() + timeout
+    wake = Event()
+    while not predicate():
+        remaining = deadline - monotonic()
+        assert remaining > 0
+        wake.wait(min(remaining, 0.01))
 
 
 @dataclass
@@ -135,6 +178,32 @@ def _healthy_runtime(now: datetime) -> RuntimeHealthApplicationResult:
         observed_at=now,
         error=None,
     )
+
+
+@dataclass
+class _QueueHarness:
+    feature: SystemHealthFeature
+    create_backlog: Callable[[], None]
+    block: Callable[[], None]
+    close: Callable[[], None]
+
+
+@dataclass
+class _CacheHarness:
+    feature: SystemHealthFeature
+    fail: Callable[[], None]
+    recover: Callable[[], None]
+    disconnect: Callable[[], None]
+    reconnect: Callable[[], None]
+    advance: Callable[[timedelta], None]
+    close: Callable[[], None]
+
+
+@dataclass
+class _CacheCompatibilityHarness:
+    feature: SystemHealthFeature
+    make_incompatible: Callable[[], None]
+    close: Callable[[], None]
 
 
 def _live_harness(*, initially_healthy: bool) -> _Harness:
@@ -254,11 +323,18 @@ def _live_harness(*, initially_healthy: bool) -> _Harness:
                 )
             return result
 
+        def read_diagnostic_queue_health(self):
+            return application_health.read_diagnostic_queue_health()
+
+        def read_diagnostic_cache_health(self):
+            return application_health.read_diagnostic_cache_health()
+
     feature = LiveSystemHealthAdapter(
         application_health=_ControllableHealth(),
         event_bridge=bridge,
         clock=clock,
         freshness_threshold=timedelta(seconds=5),
+        sampling_interval=None,
     )
 
     def become_healthy() -> None:
@@ -349,6 +425,453 @@ def _fake_harness(*, initially_healthy: bool) -> _Harness:
 @pytest.fixture(params=(_live_harness, _fake_harness), ids=("live", "fake"))
 def harness_factory(request: pytest.FixtureRequest) -> Callable[..., _Harness]:
     return request.param
+
+
+@pytest.fixture(params=("live", "fake"))
+def queue_harness(request: pytest.FixtureRequest, tmp_path) -> _QueueHarness:
+    if request.param == "fake":
+        feature = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+        return _QueueHarness(
+            feature=feature,
+            create_backlog=feature.advance_queue_to_backlog,
+            block=feature.advance_queue_to_blocked,
+            close=feature.close,
+        )
+
+    (
+        _source,
+        _artifact_store,
+        _engine,
+        application,
+        _application_adapter,
+        task_feature,
+    ) = _formal_live_stack(tmp_path)
+    health = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+        clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        sampling_interval=None,
+    )
+    task_id: str | None = None
+
+    def create_backlog() -> None:
+        nonlocal task_id
+        approved = _approved_formal_task(task_feature)
+        task_id = approved.task_id
+        accepted = task_feature.start_formal_diagnostic_campaign(
+            StartFormalDiagnosticCampaign(
+                command_id=DiagnosticCommandId("start-command-health-110"),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    "start-idempotency-health-110"
+                ),
+                task_id=approved.task_id,
+                expected_revision=approved.revision,
+                approved_revision=approved.revision,
+            )
+        )
+        assert accepted.accepted
+
+    def block() -> None:
+        assert task_id is not None
+        running = _read_task(task_feature, task_id)
+        paused = task_feature.pause_diagnostic_target(
+            PauseDiagnosticTarget(
+                command_id=DiagnosticCommandId("pause-command-health-110"),
+                idempotency_key=DiagnosticCommandIdempotencyKey(
+                    "pause-idempotency-health-110"
+                ),
+                target=DiagnosticTaskTarget(task_id),
+                expected_revision=running.revision,
+            )
+        )
+        assert paused.accepted
+
+    def close() -> None:
+        health.close()
+        task_feature.close()
+
+    return _QueueHarness(
+        feature=health,
+        create_backlog=create_backlog,
+        block=block,
+        close=close,
+    )
+
+
+@pytest.fixture(params=("live", "fake"))
+def unavailable_queue_feature(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SystemHealthFeature:
+    if request.param == "fake":
+        feature = DeterministicFakeSystemHealthAdapter(initially_healthy=False)
+        feature.advance_queue_to_unavailable()
+        yield feature
+        feature.close()
+        return
+
+    application = create_diagnostics_application()
+    application.start()
+
+    def fail_queue_read(*_args, **_kwargs):
+        raise OSError(r"C:\private\queue.db --credential hidden traceback")
+
+    monkeypatch.setattr(
+        application,
+        "diagnostic_task_queue_health",
+        fail_queue_read,
+    )
+    feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+        sampling_interval=None,
+    )
+    yield feature
+    feature.close()
+
+
+@pytest.fixture(params=("live", "fake"))
+def cache_harness(request: pytest.FixtureRequest) -> _CacheHarness:
+    if request.param == "fake":
+        feature = DeterministicFakeSystemHealthAdapter(
+            initially_healthy=True,
+            freshness_threshold=timedelta(seconds=5),
+        )
+        return _CacheHarness(
+            feature=feature,
+            fail=feature.advance_cache_to_unavailable,
+            recover=feature.advance_cache_to_healthy,
+            disconnect=feature.advance_to_disconnected,
+            reconnect=feature.advance_to_reconnected,
+            advance=feature.advance_clock,
+            close=feature.close,
+        )
+
+    clock = _Clock()
+    source = _RecipeFixtureSource()
+    store = ApplicationDrivenCacheStore(clock=clock)
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=clock,
+    )
+    application.start()
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    draft = application.create_manual_recipe_draft(
+        _baseline_payload(admission.segment.segment_id),
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(draft.draft_id).is_valid
+    approved = application.approve_recipe_draft(draft.draft_id, actor="owner")
+    application.materialize_baseline_reference_path(approved.version_id)
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=clock,
+        ),
+        event_bridge=bridge,
+        clock=clock,
+        freshness_threshold=timedelta(seconds=5),
+        sampling_interval=None,
+    )
+
+    def fail() -> None:
+        store.fail_next_application_list()
+        with pytest.raises(OSError):
+            application.list_materialized_market_paths()
+
+    def recover() -> None:
+        application.list_materialized_market_paths()
+
+    return _CacheHarness(
+        feature=feature,
+        fail=fail,
+        recover=recover,
+        disconnect=bridge.mark_disconnected,
+        reconnect=bridge.mark_reconnected,
+        advance=clock.advance,
+        close=feature.close,
+    )
+
+
+@pytest.fixture(params=("live", "fake"))
+def cache_compatibility_harness(
+    request: pytest.FixtureRequest,
+) -> _CacheCompatibilityHarness:
+    if request.param == "fake":
+        feature = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+        feature.advance_cache_to_fallback()
+        return _CacheCompatibilityHarness(
+            feature=feature,
+            make_incompatible=feature.advance_cache_to_incompatible,
+            close=feature.close,
+        )
+
+    clock = _Clock()
+    source = _RecipeFixtureSource()
+    store = ApplicationDrivenCacheStore(
+        clock=clock,
+        fallback_on_first_put=True,
+        incompatible_on_second_put=True,
+    )
+    application = create_diagnostics_application(
+        historical_source=source,
+        market_data_source=source,
+        artifact_store=store,
+        recipe_clock=clock,
+    )
+    application.start()
+    admission = application.admit_historical_segment(source.selection)
+    assert admission.segment is not None
+    draft = application.create_manual_recipe_draft(
+        _baseline_payload(admission.segment.segment_id),
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(draft.draft_id).is_valid
+    approved = application.approve_recipe_draft(draft.draft_id, actor="owner")
+    application.materialize_baseline_reference_path(
+        approved.version_id
+    )
+    incompatible_payload = _baseline_payload(admission.segment.segment_id)
+    incompatible_payload["name"] = "Incompatible cache publication"
+    incompatible_payload["materialization_seed"] = 19
+    incompatible_draft = application.create_manual_recipe_draft(
+        incompatible_payload,
+        author="researcher",
+    )
+    assert application.validate_recipe_draft(incompatible_draft.draft_id).is_valid
+    incompatible_approved = application.approve_recipe_draft(
+        incompatible_draft.draft_id,
+        actor="owner",
+    )
+    feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=clock,
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+        clock=clock,
+        sampling_interval=None,
+    )
+
+    def make_incompatible() -> None:
+        with pytest.raises(ValueError):
+            application.materialize_baseline_reference_path(
+                incompatible_approved.version_id
+            )
+
+    return _CacheCompatibilityHarness(
+        feature=feature,
+        make_incompatible=make_incompatible,
+        close=feature.close,
+    )
+
+
+def test_live_and_fake_share_queue_normal_backlog_and_blocked_contract(
+    queue_harness: _QueueHarness,
+) -> None:
+    try:
+        normal = queue_harness.feature.snapshot(SystemHealthContext())
+        assert normal.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.HEALTHY
+        )
+        assert (
+            normal.diagnostic_queue.pending_count,
+            normal.diagnostic_queue.running_count,
+            normal.diagnostic_queue.blocked_count,
+        ) == (0, 0, 0)
+
+        queue_harness.create_backlog()
+        backlog = queue_harness.feature.snapshot(SystemHealthContext())
+        assert backlog.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.DEGRADED
+        )
+        assert backlog.diagnostic_queue.pending_count > 0
+        assert backlog.diagnostic_queue.running_count > 0
+        assert backlog.diagnostic_queue.oldest_pending_age is not None
+        assert backlog.diagnostic_queue.consumer_availability is (
+            DiagnosticQueueConsumerAvailability.AVAILABLE
+        )
+        assert DiagnosticQueueScope.CAMPAIGN_NODES in (
+            backlog.diagnostic_queue.affected_scope
+        )
+
+        queue_harness.block()
+        blocked = queue_harness.feature.snapshot(SystemHealthContext())
+        assert blocked.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.DEGRADED
+        )
+        assert blocked.diagnostic_queue.blocked_count > 0
+        assert blocked.diagnostic_queue.consumer_availability is (
+            DiagnosticQueueConsumerAvailability.BLOCKED
+        )
+        assert blocked.diagnostic_queue.blockage_reason is (
+            DiagnosticQueueBlockageReason.PAUSED_DIAGNOSTIC_WORK
+        )
+        assert [normal.revision, backlog.revision, blocked.revision] == sorted(
+            {normal.revision, backlog.revision, blocked.revision}
+        )
+        assert all(
+            state.diagnostic_queue.revision == state.revision
+            and state.diagnostic_cache.revision == state.revision
+            for state in (normal, backlog, blocked)
+        )
+    finally:
+        queue_harness.close()
+
+
+def test_live_and_fake_never_present_unavailable_queue_as_healthy(
+    unavailable_queue_feature: SystemHealthFeature,
+) -> None:
+    state = unavailable_queue_feature.snapshot(SystemHealthContext())
+    queue = state.diagnostic_queue
+    assert queue.classification is DiagnosticQueueHealthClassification.UNAVAILABLE
+    assert queue.consumer_availability is (
+        DiagnosticQueueConsumerAvailability.UNAVAILABLE
+    )
+    assert queue.blockage_reason is (
+        DiagnosticQueueBlockageReason.SOURCE_UNAVAILABLE
+    )
+    assert queue.error is not None
+    exposed = f"{queue.explanation} {queue.error.explanation}".casefold()
+    for forbidden in ("c:\\", "queue.db", "credential", "traceback"):
+        assert forbidden not in exposed
+
+
+def test_live_and_fake_share_cache_fresh_stale_and_recovery_contract(
+    cache_harness: _CacheHarness,
+) -> None:
+    observed: list = []
+    subscription = cache_harness.feature.subscribe(
+        SystemHealthContext(),
+        observed.append,
+    )
+    try:
+        fresh = observed[-1]
+        assert fresh.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.HEALTHY
+        )
+        assert fresh.diagnostic_cache.fallback is (
+            DiagnosticCacheFallbackState.PRIMARY
+        )
+        assert fresh.diagnostic_cache.last_refresh_result is (
+            DiagnosticCacheLastRefreshResult.SUCCEEDED
+        )
+        assert fresh.diagnostic_cache.compatibility is (
+            DiagnosticCacheCompatibility.COMPATIBLE
+        )
+        reliable_generation = fresh.diagnostic_cache.generation
+
+        cache_harness.advance(timedelta(seconds=6))
+        stale = cache_harness.feature.snapshot(SystemHealthContext())
+        assert stale.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.STALE
+        )
+        assert stale.diagnostic_cache.freshness is Freshness.STALE
+        assert stale.diagnostic_cache.generation == reliable_generation
+
+        cache_harness.recover()
+        recovered_fresh = cache_harness.feature.snapshot(SystemHealthContext())
+        assert recovered_fresh.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.HEALTHY
+        )
+
+        cache_harness.fail()
+        unavailable = cache_harness.feature.snapshot(SystemHealthContext())
+        assert unavailable.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.UNAVAILABLE
+        )
+        assert unavailable.diagnostic_cache.last_refresh_result is (
+            DiagnosticCacheLastRefreshResult.FAILED
+        )
+        assert unavailable.diagnostic_cache.generation == (
+            recovered_fresh.diagnostic_cache.generation
+        )
+
+        cache_harness.disconnect()
+        cache_harness.reconnect()
+        _wait_until(
+            lambda: observed[-1].diagnostic_cache.recovery_phase
+            is DiagnosticCacheRecoveryPhase.FAILED_RECOVERY
+        )
+        failed_recovery = observed[-1]
+        assert failed_recovery.diagnostic_cache.recovery_phase is (
+            DiagnosticCacheRecoveryPhase.FAILED_RECOVERY
+        )
+        assert any(
+            state.diagnostic_cache.recovery_phase
+            is DiagnosticCacheRecoveryPhase.RECOVERING
+            for state in observed
+        )
+
+        cache_harness.disconnect()
+        cache_harness.recover()
+        cache_harness.reconnect()
+        _wait_until(
+            lambda: observed[-1].diagnostic_cache.recovery_phase
+            is DiagnosticCacheRecoveryPhase.RECOVERED
+        )
+        recovered = observed[-1]
+        assert recovered.diagnostic_cache.recovery_phase is (
+            DiagnosticCacheRecoveryPhase.RECOVERED
+        )
+        assert recovered.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.HEALTHY
+        )
+        revisions = [state.revision for state in observed]
+        assert revisions == sorted(set(revisions))
+    finally:
+        subscription.dispose()
+        cache_harness.close()
+
+
+def test_live_and_fake_share_cache_fallback_and_incompatible_contract(
+    cache_compatibility_harness: _CacheCompatibilityHarness,
+) -> None:
+    try:
+        fallback = cache_compatibility_harness.feature.snapshot(
+            SystemHealthContext()
+        )
+        assert fallback.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.FALLBACK
+        )
+        assert fallback.diagnostic_cache.fallback is (
+            DiagnosticCacheFallbackState.ACTIVE
+        )
+        assert fallback.diagnostic_cache.last_refresh_result is (
+            DiagnosticCacheLastRefreshResult.FALLBACK_SUCCEEDED
+        )
+        assert fallback.diagnostic_cache.compatibility is (
+            DiagnosticCacheCompatibility.COMPATIBLE
+        )
+
+        cache_compatibility_harness.make_incompatible()
+        incompatible = cache_compatibility_harness.feature.snapshot(
+            SystemHealthContext()
+        )
+        assert incompatible.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.INCOMPATIBLE
+        )
+        assert incompatible.diagnostic_cache.compatibility is (
+            DiagnosticCacheCompatibility.INCOMPATIBLE
+        )
+        assert incompatible.diagnostic_cache.last_refresh_result is (
+            DiagnosticCacheLastRefreshResult.FAILED
+        )
+        assert incompatible.diagnostic_cache.fallback is (
+            DiagnosticCacheFallbackState.UNAVAILABLE
+        )
+        assert incompatible.revision > fallback.revision
+    finally:
+        cache_compatibility_harness.close()
 
 
 def test_live_and_fake_share_the_initial_authoritative_health_contract(
@@ -448,6 +971,12 @@ def test_unknown_is_never_presented_as_healthy(
         ) == (SystemHealthComponentIdentity.VERSION_COMPATIBILITY,)
         assert state.completeness is Completeness.UNKNOWN
         assert state.error is not None
+        assert state.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.UNKNOWN
+        )
+        assert state.diagnostic_cache.classification is (
+            DiagnosticCacheHealthClassification.UNKNOWN
+        )
     finally:
         harness.feature.close()
 
@@ -610,6 +1139,12 @@ def test_snapshot_aging_updates_persistence_component_before_and_after_threshold
     try:
         initial = harness.feature.snapshot(SystemHealthContext())
         harness.disconnect()
+        _wait_until(
+            lambda: harness.feature.snapshot(
+                SystemHealthContext()
+            ).recovery_phase
+            is RuntimeHealthRecoveryPhase.DISCONNECTED
+        )
         harness.advance(timedelta(seconds=2))
         fresh = harness.feature.snapshot(SystemHealthContext())
 
@@ -671,6 +1206,10 @@ def test_failed_reconnect_marks_the_failed_component_not_recovered() -> None:
         source.persistence_unavailable = True
         bridge.mark_disconnected()
         bridge.mark_reconnected()
+        _wait_until(
+            lambda: observed[-1].recovery_phase
+            is RuntimeHealthRecoveryPhase.FAILED
+        )
         failed = observed[-1]
 
         assert failed.recovery_phase is RuntimeHealthRecoveryPhase.FAILED
@@ -795,6 +1334,7 @@ def test_connected_snapshot_rereads_the_real_diagnostics_application() -> None:
         ),
         event_bridge=EventBridge(subscribe_backend=False),
         clock=clock,
+        sampling_interval=None,
     )
     try:
         unavailable = feature.snapshot(SystemHealthContext())
@@ -826,19 +1366,39 @@ def test_disconnect_staleness_and_reconnect_retain_last_reliable_state(
     subscription = harness.feature.subscribe(SystemHealthContext(), observed.append)
     try:
         reliable = observed[-1].last_reliable_payload
+        reliable_queue = observed[-1].diagnostic_queue
         harness.disconnect()
+        _wait_until(
+            lambda: observed[-1].recovery_phase
+            is RuntimeHealthRecoveryPhase.DISCONNECTED
+        )
         degraded = observed[-1]
         assert degraded.presentation is SystemHealthPresentationState.DEGRADED
         assert degraded.recovery_phase is RuntimeHealthRecoveryPhase.DISCONNECTED
         assert degraded.last_reliable_payload == reliable
+        assert degraded.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.DEGRADED
+        )
+        assert degraded.diagnostic_queue.freshness is Freshness.DISCONNECTED
+        assert degraded.diagnostic_queue.pending_count == (
+            reliable_queue.pending_count
+        )
 
         harness.advance(timedelta(seconds=6))
         stale = harness.feature.snapshot(SystemHealthContext())
         assert stale.presentation is SystemHealthPresentationState.STALE
         assert stale.freshness is Freshness.STALE
         assert stale.last_reliable_payload == reliable
+        assert stale.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.STALE
+        )
+        assert stale.diagnostic_queue.freshness is Freshness.STALE
 
         harness.reconnect()
+        _wait_until(
+            lambda: observed[-1].recovery_phase
+            is RuntimeHealthRecoveryPhase.RECOVERED
+        )
         recovered = observed[-1]
         assert any(
             state.recovery_phase is RuntimeHealthRecoveryPhase.REREADING
@@ -848,6 +1408,10 @@ def test_disconnect_staleness_and_reconnect_retain_last_reliable_state(
         assert recovered.recovery_phase is RuntimeHealthRecoveryPhase.RECOVERED
         assert recovered.presentation is SystemHealthPresentationState.RECOVERED
         assert recovered.last_reliable_payload is not None
+        assert recovered.diagnostic_queue.recovery_phase.value == "recovered"
+        assert recovered.diagnostic_queue.classification is (
+            DiagnosticQueueHealthClassification.HEALTHY
+        )
         assert [state.revision for state in observed] == sorted(
             {state.revision for state in observed}
         )
@@ -884,6 +1448,10 @@ def test_read_failure_retains_safe_degraded_then_stale_last_reliable_state(
     try:
         reliable = observed[-1].last_reliable_payload
         harness.fail()
+        _wait_until(
+            lambda: observed[-1].presentation
+            is SystemHealthPresentationState.DEGRADED
+        )
         failed = observed[-1]
 
         assert failed.presentation is SystemHealthPresentationState.DEGRADED
@@ -931,12 +1499,14 @@ def test_live_adapter_rejects_batches_from_an_old_connection_generation() -> Non
         ),
         event_bridge=bridge,
         clock=clock,
+        sampling_interval=None,
     )
     observed: list = []
     subscription = feature.subscribe(SystemHealthContext(), observed.append)
     try:
         bridge.mark_disconnected()
         bridge.mark_reconnected()
+        _wait_until(lambda: observed[-1].source.generation.value == 2)
         delivered = tuple(state.revision for state in observed)
 
         bridge.on_snapshot({"feature": "run_monitoring"})
@@ -953,6 +1523,354 @@ def test_live_adapter_rejects_batches_from_an_old_connection_generation() -> Non
         assert tuple(state.revision for state in observed) == delivered
         assert observed[-1].source.generation.value == 2
     finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_live_adapter_coalesces_related_snapshots_once_per_event_bridge_batch() -> None:
+    clock = _Clock()
+    application = create_diagnostics_application()
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=clock,
+        ),
+        event_bridge=bridge,
+        clock=clock,
+        sampling_interval=None,
+    )
+    observed: list = []
+    subscription = feature.subscribe(SystemHealthContext(), observed.append)
+    try:
+        delivered = len(observed)
+        application.start()
+        bridge.on_snapshot({"feature": "diagnostic_tasks"})
+        bridge.on_snapshot({"feature": "scenario_lab"})
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        _wait_until(lambda: len(observed) == delivered + 1)
+        assert len(observed) == delivered + 1
+
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        assert len(observed) == delivered + 1
+
+        bridge.on_snapshot({"feature": "run_monitoring"})
+        bridge.flush(force=True)
+        assert len(observed) == delivered + 1
+    finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_event_delivery_is_not_suppressed_by_a_prior_non_notifying_snapshot() -> None:
+    clock = _Clock()
+    application = create_diagnostics_application()
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=clock,
+        ),
+        event_bridge=bridge,
+        clock=clock,
+        sampling_interval=None,
+    )
+    observed: list = []
+    subscription = feature.subscribe(SystemHealthContext(), observed.append)
+    try:
+        delivered = len(observed)
+        application.start()
+        ready_snapshot = feature.snapshot(SystemHealthContext())
+        assert ready_snapshot.components[0].classification is (
+            RuntimeHealthClassification.HEALTHY
+        )
+        assert len(observed) == delivered
+
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        _wait_until(lambda: len(observed) == delivered + 1)
+
+        assert len(observed) == delivered + 1
+        assert observed[-1].components[0].classification is (
+            RuntimeHealthClassification.HEALTHY
+        )
+        assert observed[-1].revision > ready_snapshot.revision
+    finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_live_adapter_samples_off_the_ui_thread_without_a_qml_poll() -> None:
+    application = create_diagnostics_application()
+    became_healthy = Event()
+    feature = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application
+        ),
+        event_bridge=EventBridge(subscribe_backend=False),
+        sampling_interval=timedelta(milliseconds=10),
+    )
+
+    def observe(state) -> None:
+        if any(
+            component.identity
+            is SystemHealthComponentIdentity.APPLICATION_RUNTIME
+            and component.classification
+            is RuntimeHealthClassification.HEALTHY
+            for component in state.components
+        ):
+            became_healthy.set()
+
+    subscription = feature.subscribe(SystemHealthContext(), observe)
+    try:
+        application.start()
+        assert became_healthy.wait(timeout=2)
+    finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_unchanged_tokens_advance_visible_backlog_and_cache_age_buckets() -> None:
+    clock = _Clock()
+    started_at = clock()
+    cache_read_completed = Event()
+
+    class _StaticHealth:
+        def read_runtime_health(self) -> RuntimeHealthApplicationResult:
+            observed_at = clock()
+            return RuntimeHealthApplicationResult(
+                availability=RuntimeHealthApplicationAvailability.READY,
+                observation=RuntimeHealthApplicationObservation(
+                    classification=RuntimeHealthClassification.HEALTHY,
+                    observed_at=observed_at,
+                    explanation="The application runtime is available.",
+                ),
+                source_token=SourceRevisionToken("a" * 64),
+                observed_at=observed_at,
+                error=None,
+            )
+
+        def read_diagnostic_queue_health(
+            self,
+        ) -> DiagnosticQueueApplicationResult:
+            observed_at = clock()
+            return DiagnosticQueueApplicationResult(
+                availability=DiagnosticQueueApplicationAvailability.READY,
+                observation=DiagnosticQueueApplicationObservation(
+                    pending_count=2,
+                    running_count=1,
+                    blocked_count=0,
+                    oldest_pending_at=started_at,
+                    consumer_availability=(
+                        DiagnosticQueueConsumerAvailability.AVAILABLE
+                    ),
+                    blockage_reason=DiagnosticQueueBlockageReason.NONE,
+                    affected_scope=(DiagnosticQueueScope.DIAGNOSTIC_TASK,),
+                    observed_at=observed_at,
+                    explanation="Diagnostic work is being consumed.",
+                ),
+                source_token=SourceRevisionToken("b" * 64),
+                observed_at=observed_at,
+                error=None,
+            )
+
+        def read_diagnostic_cache_health(
+            self,
+        ) -> DiagnosticCacheApplicationResult:
+            observed_at = clock()
+            result = DiagnosticCacheApplicationResult(
+                availability=DiagnosticCacheApplicationAvailability.READY,
+                observation=DiagnosticCacheApplicationObservation(
+                    generation=1,
+                    fallback=DiagnosticCacheFallbackState.PRIMARY,
+                    last_refresh_result=(
+                        DiagnosticCacheLastRefreshResult.SUCCEEDED
+                    ),
+                    compatibility=DiagnosticCacheCompatibility.COMPATIBLE,
+                    affected_scope=(DiagnosticCacheScope.REFERENCE_MARKET_PATHS,),
+                    last_refresh_at=started_at,
+                    observed_at=observed_at,
+                    explanation="The Diagnostic Cache refresh succeeded.",
+                ),
+                source_token=SourceRevisionToken("c" * 64),
+                observed_at=observed_at,
+                error=None,
+            )
+            cache_read_completed.set()
+            return result
+
+        def read_persistence_health(
+            self,
+        ) -> PersistenceHealthApplicationObservation:
+            return _compatible_persistence(clock())
+
+        def read_version_health(self) -> VersionHealthApplicationObservation:
+            return _compatible_version(clock())
+
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=_StaticHealth(),  # type: ignore[arg-type]
+        event_bridge=bridge,
+        clock=clock,
+        freshness_threshold=timedelta(seconds=2),
+        sampling_interval=None,
+    )
+    observed: list = []
+    subscription = feature.subscribe(SystemHealthContext(), observed.append)
+    try:
+        delivered = len(observed)
+        cache_read_completed.clear()
+        clock.advance(timedelta(milliseconds=900))
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        assert cache_read_completed.wait(timeout=1)
+        assert len(observed) == delivered
+
+        cache_read_completed.clear()
+        clock.advance(timedelta(milliseconds=200))
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        _wait_until(lambda: len(observed) == delivered + 1)
+        advanced = observed[-1]
+        assert advanced.diagnostic_queue.oldest_pending_age is not None
+        assert advanced.diagnostic_queue.oldest_pending_age >= timedelta(seconds=1)
+        assert advanced.diagnostic_cache.age >= timedelta(seconds=1)
+
+        clock.advance(timedelta(seconds=1))
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        _wait_until(
+            lambda: observed[-1].diagnostic_cache.classification
+            is DiagnosticCacheHealthClassification.STALE
+        )
+        assert observed[-1].diagnostic_cache.age > timedelta(seconds=2)
+    finally:
+        subscription.dispose()
+        feature.close()
+
+
+def test_event_bridge_callback_only_signals_the_worker_for_authoritative_reads() -> None:
+    now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    worker_read_entered = Event()
+    release_worker_read = Event()
+    flush_returned = Event()
+    healthy = RuntimeHealthApplicationResult(
+        availability=RuntimeHealthApplicationAvailability.READY,
+        observation=RuntimeHealthApplicationObservation(
+            classification=RuntimeHealthClassification.HEALTHY,
+            observed_at=now,
+            explanation="The application runtime is available.",
+        ),
+        source_token=SourceRevisionToken("d" * 64),
+        observed_at=now,
+        error=None,
+    )
+
+    class _WorkerBlockingHealth:
+        def read_runtime_health(self) -> RuntimeHealthApplicationResult:
+            if current_thread().name == "system-health-worker":
+                worker_read_entered.set()
+                release_worker_read.wait(timeout=5)
+            return healthy
+
+        def read_persistence_health(
+            self,
+        ) -> PersistenceHealthApplicationObservation:
+            return _compatible_persistence(now)
+
+        def read_version_health(self) -> VersionHealthApplicationObservation:
+            return _compatible_version(now)
+
+    bridge = EventBridge(subscribe_backend=False)
+    feature = LiveSystemHealthAdapter(
+        application_health=_WorkerBlockingHealth(),  # type: ignore[arg-type]
+        event_bridge=bridge,
+        clock=lambda: now,
+        sampling_interval=None,
+    )
+    feature.snapshot(SystemHealthContext())
+
+    def flush_from_ui_caller() -> None:
+        bridge.on_snapshot({"feature": "system_health"})
+        bridge.flush(force=True)
+        flush_returned.set()
+
+    flush_thread = Thread(target=flush_from_ui_caller, name="simulated-ui-thread")
+    try:
+        flush_thread.start()
+        assert flush_returned.wait(timeout=1)
+        assert worker_read_entered.wait(timeout=1)
+    finally:
+        release_worker_read.set()
+        flush_thread.join(timeout=2)
+        feature.close()
+
+
+def test_close_suppresses_a_late_sampler_callback_without_waiting_for_its_read() -> None:
+    now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    sampler_read_entered = Event()
+    release_sampler_read = Event()
+    sampler_read_finished = Event()
+    close_returned = Event()
+    healthy_result = RuntimeHealthApplicationResult(
+        availability=RuntimeHealthApplicationAvailability.READY,
+        observation=RuntimeHealthApplicationObservation(
+            classification=RuntimeHealthClassification.HEALTHY,
+            observed_at=now,
+            explanation="The application runtime is available.",
+        ),
+        source_token=SourceRevisionToken("c" * 64),
+        observed_at=now,
+        error=None,
+    )
+
+    class _BlockingSamplerHealth:
+        def read_runtime_health(self) -> RuntimeHealthApplicationResult:
+            if current_thread().name == "system-health-worker":
+                sampler_read_entered.set()
+                try:
+                    release_sampler_read.wait(timeout=5)
+                finally:
+                    sampler_read_finished.set()
+            return healthy_result
+
+        def read_persistence_health(
+            self,
+        ) -> PersistenceHealthApplicationObservation:
+            return _compatible_persistence(now)
+
+        def read_version_health(self) -> VersionHealthApplicationObservation:
+            return _compatible_version(now)
+
+    feature = LiveSystemHealthAdapter(
+        application_health=_BlockingSamplerHealth(),  # type: ignore[arg-type]
+        event_bridge=EventBridge(subscribe_backend=False),
+        clock=lambda: now,
+        sampling_interval=timedelta(milliseconds=1),
+    )
+    observed: list = []
+    subscription = feature.subscribe(SystemHealthContext(), observed.append)
+    delivered = len(observed)
+
+    def close() -> None:
+        feature.close()
+        close_returned.set()
+
+    close_thread = Thread(target=close)
+    try:
+        assert sampler_read_entered.wait(timeout=2)
+        close_thread.start()
+        assert close_returned.wait(timeout=1)
+        assert len(observed) == delivered
+        release_sampler_read.set()
+        assert sampler_read_finished.wait(timeout=2)
+        assert len(observed) == delivered
+    finally:
+        release_sampler_read.set()
+        if close_thread.ident is not None:
+            close_thread.join(timeout=2)
         subscription.dispose()
         feature.close()
 
@@ -987,6 +1905,7 @@ def test_live_adapter_replays_a_disconnect_during_construction() -> None:
         ),
         event_bridge=bridge,
         clock=clock,
+        sampling_interval=None,
     )
     try:
         state = feature.snapshot(SystemHealthContext())
@@ -1050,6 +1969,7 @@ def test_concurrent_healthy_then_failed_reads_preserve_last_reliable_state() -> 
         application_health=_ApplicationHealth(),  # type: ignore[arg-type]
         event_bridge=EventBridge(subscribe_backend=False),
         clock=lambda: now,
+        sampling_interval=None,
     )
     states = []
     errors: list[BaseException] = []
@@ -1136,6 +2056,7 @@ def test_disconnect_waits_for_an_inflight_read_and_remains_degraded() -> None:
         application_health=_SlowApplicationHealth(),  # type: ignore[arg-type]
         event_bridge=bridge,
         clock=lambda: now,
+        sampling_interval=None,
     )
     feature.snapshot(SystemHealthContext())
     reread_states = []
@@ -1167,6 +2088,12 @@ def test_disconnect_waits_for_an_inflight_read_and_remains_degraded() -> None:
         assert not disconnect_thread.is_alive()
         assert errors == []
 
+        _wait_until(
+            lambda: (
+                feature.snapshot(SystemHealthContext()).presentation
+                is SystemHealthPresentationState.DEGRADED
+            )
+        )
         disconnected = feature.snapshot(SystemHealthContext())
         assert reread_states[0].presentation is (
             SystemHealthPresentationState.HEALTHY

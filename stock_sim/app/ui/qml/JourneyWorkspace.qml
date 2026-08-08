@@ -227,14 +227,6 @@ Rectangle {
         onTriggered: runMonitoring.refresh()
     }
 
-    Timer {
-        interval: 1000
-        repeat: true
-        running: workspace.systemHealthAvailable
-            && workspace.activeRoute === "system_health"
-        onTriggered: systemHealth.refresh()
-    }
-
     Connections {
         target: strategyLibrary
         enabled: workspace.strategyLibraryAvailable

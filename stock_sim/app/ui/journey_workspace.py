@@ -8,7 +8,7 @@ from decimal import Decimal
 from itertools import count
 from math import ceil
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from time import monotonic_ns
 from typing import Protocol, cast
 from uuid import uuid4
@@ -5906,23 +5906,64 @@ class SystemHealthQtAdapter(QObject):
         super().__init__(parent)
         self._feature = feature
         self._context = context or SystemHealthContext()
-        self._state = feature.snapshot(self._context)
+        self._state: SystemHealthViewState | None = None
         self._mount_generation = _next_mount_generation()
         self._route_active = True
         self._closed = False
+        self._subscription_lock = Lock()
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._subscription: Subscription | None = feature.subscribe(
-            self._context,
-            self._queue_state,
-        )
+        self._subscription: Subscription | None = None
+        self._start_subscription()
 
-    def _queue_state(self, state: SystemHealthViewState) -> None:
-        if self._closed or not self._route_active:
+    def _queue_state(
+        self,
+        mount_generation: int,
+        state: SystemHealthViewState,
+    ) -> None:
+        if (
+            self._closed
+            or not self._route_active
+            or mount_generation != self._mount_generation.value
+        ):
             return
-        self.deliveryRequested.emit(self._mount_generation.value, state)
+        self.deliveryRequested.emit(mount_generation, state)
+
+    def _start_subscription(self) -> None:
+        mount_generation = self._mount_generation.value
+        Thread(
+            target=self._subscribe_worker,
+            args=(mount_generation,),
+            name="system-health-qt-subscription",
+            daemon=True,
+        ).start()
+
+    def _subscribe_worker(self, mount_generation: int) -> None:
+        try:
+            subscription = self._feature.subscribe(
+                self._context,
+                lambda state: self._queue_state(mount_generation, state),
+            )
+        except RuntimeError:
+            return
+        previous: Subscription | None = None
+        with self._subscription_lock:
+            if (
+                self._closed
+                or not self._route_active
+                or mount_generation != self._mount_generation.value
+            ):
+                dispose = True
+            else:
+                previous = self._subscription
+                self._subscription = subscription
+                dispose = False
+        if dispose:
+            subscription.dispose()
+        elif previous is not None:
+            previous.dispose()
 
     @Slot(int, object)
     def _accept_state(
@@ -5934,7 +5975,10 @@ class SystemHealthQtAdapter(QObject):
             self._closed
             or mount_generation != self._mount_generation.value
             or state.context != self._context
-            or state.revision <= self._state.revision
+            or (
+                self._state is not None
+                and state.revision <= self._state.revision
+            )
         ):
             return
         self._state = state
@@ -5945,41 +5989,41 @@ class SystemHealthQtAdapter(QObject):
             return
         self._route_active = active
         self._mount_generation = _next_mount_generation()
-        subscription = self._subscription
-        self._subscription = None
+        with self._subscription_lock:
+            subscription = self._subscription
+            self._subscription = None
         if subscription is not None:
             subscription.dispose()
         if active:
-            self._state = self._feature.snapshot(self._context)
-            self._subscription = self._feature.subscribe(
-                self._context,
-                self._queue_state,
-            )
-            self.stateChanged.emit()
+            self._start_subscription()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
-        return self._state.presentation.value
+        return "unknown" if self._state is None else self._state.presentation.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def phase(self) -> str:
-        return self._state.phase.value
+        return "loading" if self._state is None else self._state.phase.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def freshness(self) -> str:
-        return self._state.freshness.value
+        return (
+            "awaiting_first_state"
+            if self._state is None
+            else self._state.freshness.value
+        )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def completeness(self) -> str:
-        return self._state.completeness.value
+        return "unknown" if self._state is None else self._state.completeness.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def recoveryPhase(self) -> str:  # noqa: N802
-        return self._state.recovery_phase.value
+        return "idle" if self._state is None else self._state.recovery_phase.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def statusText(self) -> str:  # noqa: N802
-        error = self._state.error
+        error = None if self._state is None else self._state.error
         details = (
             f"{self.presentationState} · {self.freshness} · "
             f"{self.completeness}"
@@ -6001,6 +6045,8 @@ class SystemHealthQtAdapter(QObject):
         self,
         identity: SystemHealthComponentIdentity,
     ) -> SystemHealthComponent | None:
+        if self._state is None:
+            return None
         return next(
             (item for item in self._state.components if item.identity is identity),
             None,
@@ -6112,6 +6158,8 @@ class SystemHealthQtAdapter(QObject):
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def persistenceRecoveryState(self) -> str:  # noqa: N802
         component = self._persistence_component()
+        if self._state is None:
+            return "idle"
         return (
             self._state.recovery_phase.value
             if component is None
@@ -6218,43 +6266,202 @@ class SystemHealthQtAdapter(QObject):
         return component if isinstance(component, VersionHealthComponent) else None
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueClassification(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.diagnostic_queue.classification.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueFreshness(self) -> str:  # noqa: N802
+        return (
+            "awaiting_first_state"
+            if self._state is None
+            else self._state.diagnostic_queue.freshness.value
+        )
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def queuePendingCount(self) -> int:  # noqa: N802
+        return 0 if self._state is None else self._state.diagnostic_queue.pending_count
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def queueRunningCount(self) -> int:  # noqa: N802
+        return 0 if self._state is None else self._state.diagnostic_queue.running_count
+
+    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
+    def queueBlockedCount(self) -> int:  # noqa: N802
+        return 0 if self._state is None else self._state.diagnostic_queue.blocked_count
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueOldestPendingAgeText(self) -> str:  # noqa: N802
+        age = (
+            None
+            if self._state is None
+            else self._state.diagnostic_queue.oldest_pending_age
+        )
+        return "None" if age is None else f"{age.total_seconds():.1f}s"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueConsumerAvailability(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.diagnostic_queue.consumer_availability.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueBlockageReason(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.diagnostic_queue.blockage_reason.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueAffectedScope(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "diagnostic task"
+        return ", ".join(
+            item.value.replace("_", " ")
+            for item in self._state.diagnostic_queue.affected_scope
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueRecoveryPhase(self) -> str:  # noqa: N802
+        return (
+            "idle"
+            if self._state is None
+            else self._state.diagnostic_queue.recovery_phase.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def queueExplanation(self) -> str:  # noqa: N802
+        return (
+            "Awaiting the first Diagnostic Queue observation."
+            if self._state is None
+            else self._state.diagnostic_queue.explanation
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheClassification(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.diagnostic_cache.classification.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheFreshness(self) -> str:  # noqa: N802
+        return (
+            "awaiting_first_state"
+            if self._state is None
+            else self._state.diagnostic_cache.freshness.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheAgeText(self) -> str:  # noqa: N802
+        return (
+            "0.0s"
+            if self._state is None
+            else f"{self._state.diagnostic_cache.age.total_seconds():.1f}s"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheGenerationText(self) -> str:  # noqa: N802
+        generation = (
+            None
+            if self._state is None
+            else self._state.diagnostic_cache.generation
+        )
+        return "Unavailable" if generation is None else f"g{generation.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheFallback(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.diagnostic_cache.fallback.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheLastRefreshResult(self) -> str:  # noqa: N802
+        return (
+            "not_observed"
+            if self._state is None
+            else self._state.diagnostic_cache.last_refresh_result.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheCompatibility(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.diagnostic_cache.compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheAffectedScope(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "reference market paths"
+        return ", ".join(
+            item.value.replace("_", " ")
+            for item in self._state.diagnostic_cache.affected_scope
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheRecoveryPhase(self) -> str:  # noqa: N802
+        return (
+            "idle"
+            if self._state is None
+            else self._state.diagnostic_cache.recovery_phase.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def cacheExplanation(self) -> str:  # noqa: N802
+        return (
+            "Awaiting the first Diagnostic Cache observation."
+            if self._state is None
+            else self._state.diagnostic_cache.explanation
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def ageText(self) -> str:  # noqa: N802
-        return f"{self._state.age.total_seconds():.1f}s"
+        return "0.0s" if self._state is None else f"{self._state.age.total_seconds():.1f}s"
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def freshnessThresholdText(self) -> str:  # noqa: N802
-        return f"{self._state.freshness_threshold.total_seconds():.1f}s"
+        return (
+            "Unavailable"
+            if self._state is None
+            else f"{self._state.freshness_threshold.total_seconds():.1f}s"
+        )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def revisionText(self) -> str:  # noqa: N802
-        return f"r{self._state.revision}"
+        return "Unavailable" if self._state is None else f"r{self._state.revision}"
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def observedAtText(self) -> str:  # noqa: N802
-        return self._state.observed_at.isoformat()
+        return "Unavailable" if self._state is None else self._state.observed_at.isoformat()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def sourceIdentity(self) -> str:  # noqa: N802
-        return self._state.source.identity
+        return "Unavailable" if self._state is None else self._state.source.identity
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def sourceGenerationText(self) -> str:  # noqa: N802
-        return f"g{self._state.source.generation.value}"
+        return (
+            "Unavailable"
+            if self._state is None
+            else f"g{self._state.source.generation.value}"
+        )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def lastReliableText(self) -> str:  # noqa: N802
-        if self._state.last_reliable_at is None:
+        if self._state is None or self._state.last_reliable_at is None:
             return "Unavailable"
         return self._state.last_reliable_at.isoformat()
-
-    @Slot()
-    def refresh(self) -> None:
-        if self._closed or not self._route_active:
-            return
-        state = self._feature.snapshot(self._context)
-        if state.revision > self._state.revision:
-            self._state = state
-            self.stateChanged.emit()
 
     def close(self) -> None:
         if self._closed:
@@ -6262,8 +6469,9 @@ class SystemHealthQtAdapter(QObject):
         self._closed = True
         self._route_active = False
         self._mount_generation = _next_mount_generation()
-        subscription = self._subscription
-        self._subscription = None
+        with self._subscription_lock:
+            subscription = self._subscription
+            self._subscription = None
         if subscription is not None:
             subscription.dispose()
         try:
