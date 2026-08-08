@@ -5940,6 +5940,27 @@ class SystemHealthQtAdapter(QObject):
             daemon=True,
         ).start()
 
+    @Slot()
+    def refresh(self) -> None:
+        """Queue a read-only snapshot without blocking the Qt UI thread."""
+
+        if self._closed or not self._route_active:
+            return
+        mount_generation = self._mount_generation.value
+        Thread(
+            target=self._refresh_worker,
+            args=(mount_generation,),
+            name="system-health-qt-refresh",
+            daemon=True,
+        ).start()
+
+    def _refresh_worker(self, mount_generation: int) -> None:
+        try:
+            state = self._feature.snapshot(self._context)
+        except RuntimeError:
+            return
+        self._queue_state(mount_generation, state)
+
     def _subscribe_worker(self, mount_generation: int) -> None:
         try:
             subscription = self._feature.subscribe(
@@ -6069,6 +6090,125 @@ class SystemHealthQtAdapter(QObject):
         if component is None:
             return "No authoritative Runtime Health observation is available."
         return component.explanation
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceClassification(self) -> str:  # noqa: N802
+        return (
+            "unavailable"
+            if self._state is None
+            else self._state.diagnostic_data_source.classification.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceConnection(self) -> str:  # noqa: N802
+        return (
+            "unavailable"
+            if self._state is None
+            else self._state.diagnostic_data_source.connection.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceFallback(self) -> str:  # noqa: N802
+        return (
+            "unavailable"
+            if self._state is None
+            else self._state.diagnostic_data_source.fallback.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceRecoveryPhase(self) -> str:  # noqa: N802
+        return (
+            "idle"
+            if self._state is None
+            else self._state.diagnostic_data_source.recovery_phase.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceFreshness(self) -> str:  # noqa: N802
+        return (
+            "awaiting_first_state"
+            if self._state is None
+            else self._state.diagnostic_data_source.freshness.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceExplanation(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "No admitted diagnostic data source is available."
+        source = self._state.diagnostic_data_source
+        if source.error is None:
+            return source.explanation
+        return (
+            f"{source.explanation} · {source.error.code.value} · "
+            f"{source.error.explanation}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceIdentityText(self) -> str:  # noqa: N802
+        observation = (
+            None
+            if self._state is None
+            else self._state.diagnostic_data_source.last_reliable_observation
+        )
+        if observation is None:
+            return "Unavailable"
+        identity = observation.identity
+        return (
+            f"{identity.public_id} · {identity.provider} · "
+            f"{identity.dataset} · {identity.version}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceRevisionText(self) -> str:  # noqa: N802
+        revision = (
+            None
+            if self._state is None
+            else self._state.diagnostic_data_source.accepted_revision
+        )
+        return "Unavailable" if revision is None else f"r{revision.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceGenerationText(self) -> str:  # noqa: N802
+        generation = (
+            None
+            if self._state is None
+            else self._state.diagnostic_data_source.accepted_generation
+        )
+        return "Unavailable" if generation is None else f"g{generation.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceCurrentGenerationText(self) -> str:  # noqa: N802
+        return (
+            "Unavailable"
+            if self._state is None
+            else f"g{self._state.source.generation.value}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceAgeText(self) -> str:  # noqa: N802
+        return (
+            "Unavailable"
+            if self._state is None
+            else f"{self._state.diagnostic_data_source.age.total_seconds():.1f}s"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceLastReliableText(self) -> str:  # noqa: N802
+        observation = (
+            None
+            if self._state is None
+            else self._state.diagnostic_data_source.last_reliable_observation
+        )
+        return "Unavailable" if observation is None else observation.observed_at.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dataSourceAffectedScopeText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "scenario inputs · diagnostic evidence interpretation"
+        return " · ".join(
+            item.value.replace("_", " ")
+            for item in self._state.diagnostic_data_source.affected_scope
+        )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def persistenceClassification(self) -> str:  # noqa: N802

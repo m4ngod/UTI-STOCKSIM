@@ -28,6 +28,8 @@ from .system_health import (
     DiagnosticQueueBlockageReason,
     DiagnosticQueueConsumerAvailability,
     DiagnosticQueueScope,
+    DiagnosticDataSourceIdentity,
+    DiagnosticDataSourceScope,
     RuntimeHealthClassification,
     HealthCompatibilityState,
     PersistenceAvailability,
@@ -107,6 +109,70 @@ class DiagnosticCacheApplicationAvailability(str, Enum):
 class DiagnosticCacheApplicationErrorCode(str, Enum):
     NO_AUTHORITATIVE_OBSERVATION = "diagnostic_cache_no_authoritative_observation"
     READ_FAILED = "diagnostic_cache_read_failed"
+
+
+class DiagnosticDataSourceApplicationAvailability(str, Enum):
+    READY = "ready"
+    NO_ADMITTED_SOURCE = "no_admitted_source"
+    FAILED = "failed"
+
+
+class DiagnosticDataSourceApplicationErrorCode(str, Enum):
+    NO_ADMITTED_SOURCE = "diagnostic_data_source_no_admitted_source"
+    READ_FAILED = "diagnostic_data_source_read_failed"
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceApplicationError:
+    code: DiagnosticDataSourceApplicationErrorCode
+    explanation: str
+    retryable: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.code, DiagnosticDataSourceApplicationErrorCode):
+            raise TypeError("code must be a Data Source application error code")
+        _require_safe_text(self.explanation, "Diagnostic Data Source error")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceApplicationObservation:
+    identity: DiagnosticDataSourceIdentity
+    observed_at: datetime
+    affected_scope: tuple[DiagnosticDataSourceScope, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, DiagnosticDataSourceIdentity):
+            raise TypeError("identity must be a Data Source identity")
+        _require_aware(self.observed_at)
+        if (
+            not isinstance(self.affected_scope, tuple)
+            or not self.affected_scope
+            or not all(
+                isinstance(item, DiagnosticDataSourceScope)
+                for item in self.affected_scope
+            )
+        ):
+            raise TypeError("affected_scope must be immutable and typed")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceApplicationResult:
+    availability: DiagnosticDataSourceApplicationAvailability
+    observation: DiagnosticDataSourceApplicationObservation | None
+    source_token: SourceRevisionToken | None
+    observed_at: datetime
+    error: DiagnosticDataSourceApplicationError | None
+
+    def __post_init__(self) -> None:
+        _validate_application_result(
+            self.availability,
+            DiagnosticDataSourceApplicationAvailability.READY,
+            self.observation,
+            self.source_token,
+            self.error,
+            "Diagnostic Data Source",
+        )
+        _require_aware(self.observed_at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +419,10 @@ class StrategyDiagnosticsV1SystemHealthApplication(Protocol):
 
     def read_runtime_health(self) -> RuntimeHealthApplicationResult: ...
 
+    def read_diagnostic_data_source_health(
+        self,
+    ) -> DiagnosticDataSourceApplicationResult: ...
+
     def read_diagnostic_queue_health(
         self,
     ) -> DiagnosticQueueApplicationResult: ...
@@ -469,6 +539,85 @@ class LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter:
             observed_at=observed_at,
             error=None,
         )
+
+    def read_diagnostic_data_source_health(
+        self,
+    ) -> DiagnosticDataSourceApplicationResult:
+        read_at = self._clock()
+        _require_aware(read_at)
+        try:
+            with self._application_access_gate:
+                segments = tuple(self._application.list_historical_segments())
+        except RuntimeError:
+            return _data_source_application_failure(
+                observed_at=read_at,
+                availability=(
+                    DiagnosticDataSourceApplicationAvailability.NO_ADMITTED_SOURCE
+                ),
+                code=DiagnosticDataSourceApplicationErrorCode.NO_ADMITTED_SOURCE,
+                explanation="No admitted diagnostic data source is available.",
+            )
+        except Exception:  # noqa: BLE001 - redact backend failures at the seam
+            return _data_source_application_failure(
+                observed_at=read_at,
+                availability=DiagnosticDataSourceApplicationAvailability.FAILED,
+                code=DiagnosticDataSourceApplicationErrorCode.READ_FAILED,
+                explanation=(
+                    "The authoritative diagnostic data-source read failed safely."
+                ),
+            )
+        if not segments:
+            return _data_source_application_failure(
+                observed_at=read_at,
+                availability=(
+                    DiagnosticDataSourceApplicationAvailability.NO_ADMITTED_SOURCE
+                ),
+                code=DiagnosticDataSourceApplicationErrorCode.NO_ADMITTED_SOURCE,
+                explanation="No admitted diagnostic data source is available.",
+            )
+        try:
+            provenance = max(
+                (segment.source_provenance for segment in segments),
+                key=lambda item: item.observed_at,
+            )
+            token = hashlib.sha256(
+                "|".join(
+                    sorted(
+                        f"{segment.segment_id}:{segment.content_hash}:"
+                        f"{segment.source_snapshot_id}"
+                        for segment in segments
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+            identity = DiagnosticDataSourceIdentity(
+                public_id=f"admitted-source-{token[:16]}",
+                provider=_safe_provider_label(provenance.provider),
+                dataset=_opaque_source_label("Dataset", provenance.dataset),
+                version=_opaque_source_label("Version", provenance.version),
+            )
+            return DiagnosticDataSourceApplicationResult(
+                availability=DiagnosticDataSourceApplicationAvailability.READY,
+                observation=DiagnosticDataSourceApplicationObservation(
+                    identity=identity,
+                    observed_at=provenance.observed_at,
+                    affected_scope=(
+                        DiagnosticDataSourceScope.SCENARIO_INPUTS,
+                        DiagnosticDataSourceScope.DIAGNOSTIC_EVIDENCE_INTERPRETATION,
+                    ),
+                ),
+                source_token=SourceRevisionToken(token),
+                observed_at=read_at,
+                error=None,
+            )
+        except Exception:  # noqa: BLE001 - redact malformed source metadata
+            return _data_source_application_failure(
+                observed_at=read_at,
+                availability=DiagnosticDataSourceApplicationAvailability.FAILED,
+                code=DiagnosticDataSourceApplicationErrorCode.READ_FAILED,
+                explanation=(
+                    "The authoritative diagnostic data-source read failed safely."
+                ),
+            )
 
     def read_diagnostic_queue_health(self) -> DiagnosticQueueApplicationResult:
         observed_at = self._clock()
@@ -886,6 +1035,26 @@ def _queue_application_failure(
     )
 
 
+def _data_source_application_failure(
+    *,
+    observed_at: datetime,
+    availability: DiagnosticDataSourceApplicationAvailability,
+    code: DiagnosticDataSourceApplicationErrorCode,
+    explanation: str,
+) -> DiagnosticDataSourceApplicationResult:
+    return DiagnosticDataSourceApplicationResult(
+        availability=availability,
+        observation=None,
+        source_token=None,
+        observed_at=observed_at,
+        error=DiagnosticDataSourceApplicationError(
+            code=code,
+            explanation=explanation,
+            retryable=True,
+        ),
+    )
+
+
 def _persistence_application_failure(
     *,
     observed_at: datetime,
@@ -996,6 +1165,19 @@ def _require_safe_text(value: str, label: str) -> None:
         raise ValueError(f"{label} explanation must be bounded")
 
 
+def _safe_provider_label(value: str) -> str:
+    if value.strip().casefold() == "baostock":
+        return "BaoStock"
+    return _opaque_source_label("Provider", value)
+
+
+def _opaque_source_label(prefix: str, value: str) -> str:
+    digest = hashlib.sha256(
+        f"diagnostic-source-label|{prefix}|{value}".encode("utf-8")
+    ).hexdigest()
+    return f"{prefix} {digest[:8]}"
+
+
 def _installed_product_build() -> str:
     return f"stock-sim/{STOCK_SIM_VERSION}"
 
@@ -1043,6 +1225,11 @@ __all__ = [
     "DiagnosticCacheApplicationErrorCode",
     "DiagnosticCacheApplicationObservation",
     "DiagnosticCacheApplicationResult",
+    "DiagnosticDataSourceApplicationAvailability",
+    "DiagnosticDataSourceApplicationError",
+    "DiagnosticDataSourceApplicationErrorCode",
+    "DiagnosticDataSourceApplicationObservation",
+    "DiagnosticDataSourceApplicationResult",
     "DiagnosticQueueApplicationAvailability",
     "DiagnosticQueueApplicationError",
     "DiagnosticQueueApplicationErrorCode",

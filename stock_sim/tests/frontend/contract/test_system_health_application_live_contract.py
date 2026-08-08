@@ -6,7 +6,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from threading import Event
 from time import monotonic
 
@@ -16,6 +16,9 @@ from sqlalchemy.exc import DatabaseError
 
 from app.event_bridge import EventBridge
 from app.features import (
+    DiagnosticDataSourceApplicationAvailability,
+    DiagnosticDataSourceApplicationErrorCode,
+    DiagnosticDataSourceScope,
     DiagnosticCacheApplicationAvailability,
     DiagnosticCacheCompatibility,
     DiagnosticCacheFallbackState,
@@ -44,7 +47,15 @@ from app.features import (
     SystemHealthPresentationState,
     SystemHealthRecoveryExpectation,
 )
-from strategy_diagnostics import create_diagnostics_application
+from strategy_diagnostics import (
+    AdmissionCheck,
+    HistoricalSegmentSelection,
+    HistoricalSourceInspection,
+    InMemoryHistoricalSource,
+    SourceArtifact,
+    SourceProvenance,
+    create_diagnostics_application,
+)
 from strategy_diagnostics.market_paths import InMemoryMarketPathArtifactStore
 from tests.frontend.system_health_support import ApplicationDrivenCacheStore
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
@@ -59,6 +70,156 @@ from strategy_diagnostics.reproduction import REPRODUCTION_MANIFEST_SCHEMA_VERSI
 
 
 NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
+REQUIRED_SOURCE_CHECKS = (
+    "bar_continuity",
+    "instrument_coverage",
+    "eligible_universe",
+    "trading_status",
+    "st_status",
+    "suspension_state",
+    "industry_as_of",
+    "adjustment_consistency",
+    "causal_availability",
+    "required_fields",
+    "missing_data",
+    "duplicates",
+    "timestamps",
+)
+
+
+def _application_with_admitted_source(
+    *,
+    provider: object = "BaoStock",
+    dataset: object = "local-a-share-fixture",
+    version: object = "fixture-2026-07-21",
+    source_observed_at: datetime | None = None,
+):
+    selection = HistoricalSegmentSelection(
+        market="mainland-a-share",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+    )
+    inspection = HistoricalSourceInspection(
+        selection=selection,
+        label="A-share diagnostic interval",
+        provenance=SourceProvenance(
+            provider=provider,  # type: ignore[arg-type]
+            dataset=dataset,  # type: ignore[arg-type]
+            version=version,  # type: ignore[arg-type]
+            observed_at=(
+                source_observed_at
+                or datetime(2026, 7, 21, 23, 0, tzinfo=timezone.utc)
+            ),
+        ),
+        artifacts=(
+            SourceArtifact(
+                name="daily-unadjusted",
+                content_hash="1" * 64,
+                row_count=60,
+            ),
+        ),
+        eligible_instrument_count=120,
+        trading_day_count=2,
+        bar_count=60,
+        checks=tuple(
+            AdmissionCheck(
+                code=code,
+                passed=True,
+                summary=f"{code} passed.",
+            )
+            for code in REQUIRED_SOURCE_CHECKS
+        ),
+    )
+    application = create_diagnostics_application(
+        historical_source=InMemoryHistoricalSource((inspection,))
+    )
+    application.start()
+    admission = application.admit_historical_segment(selection)
+    assert admission.status == "admitted"
+    return application
+
+
+def _readmit_default_source(application) -> None:
+    admission = application.admit_historical_segment(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 3),
+        )
+    )
+    assert admission.status == "admitted"
+
+
+def _application_with_malformed_recovery_source():
+    reliable_selection = HistoricalSegmentSelection(
+        market="mainland-a-share",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+    )
+    malformed_selection = HistoricalSegmentSelection(
+        market="mainland-a-share",
+        start_date=date(2024, 1, 4),
+        end_date=date(2024, 1, 5),
+    )
+
+    def inspection(
+        selection: HistoricalSegmentSelection,
+        *,
+        provider: object,
+        observed_at: datetime,
+        digest_character: str,
+    ) -> HistoricalSourceInspection:
+        return HistoricalSourceInspection(
+            selection=selection,
+            label="A-share diagnostic interval",
+            provenance=SourceProvenance(
+                provider=provider,  # type: ignore[arg-type]
+                dataset="local-a-share-fixture",
+                version="fixture-2026-07-21",
+                observed_at=observed_at,
+            ),
+            artifacts=(
+                SourceArtifact(
+                    name="daily-unadjusted",
+                    content_hash=digest_character * 64,
+                    row_count=60,
+                ),
+            ),
+            eligible_instrument_count=120,
+            trading_day_count=2,
+            bar_count=60,
+            checks=tuple(
+                AdmissionCheck(
+                    code=code,
+                    passed=True,
+                    summary=f"{code} passed.",
+                )
+                for code in REQUIRED_SOURCE_CHECKS
+            ),
+        )
+
+    application = create_diagnostics_application(
+        historical_source=InMemoryHistoricalSource(
+            (
+                inspection(
+                    reliable_selection,
+                    provider="BaoStock",
+                    observed_at=datetime(2029, 12, 31, tzinfo=timezone.utc),
+                    digest_character="1",
+                ),
+                inspection(
+                    malformed_selection,
+                    provider=123,
+                    observed_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                    digest_character="2",
+                ),
+            )
+        )
+    )
+    application.start()
+    admission = application.admit_historical_segment(reliable_selection)
+    assert admission.status == "admitted"
+    return application, malformed_selection
 
 
 def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
@@ -137,12 +298,114 @@ def test_runtime_health_application_interface_is_small_and_read_only() -> None:
         if not name.startswith("_")
     }
     assert operations == {
+        "read_diagnostic_data_source_health",
         "read_runtime_health",
         "read_diagnostic_queue_health",
         "read_diagnostic_cache_health",
         "read_persistence_health",
         "read_version_health",
     }
+
+
+def test_system_health_application_reads_a_safe_admitted_data_source() -> None:
+    adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        _application_with_admitted_source(),
+        clock=lambda: NOW,
+    )
+
+    result = adapter.read_diagnostic_data_source_health()
+
+    assert result.availability is DiagnosticDataSourceApplicationAvailability.READY
+    assert result.observation is not None
+    assert result.observation.identity.provider == "BaoStock"
+    assert result.observation.identity.dataset.startswith("Dataset ")
+    assert result.observation.identity.version.startswith("Version ")
+    assert result.observation.identity.public_id.startswith("admitted-source-")
+    assert result.observation.affected_scope == (
+        DiagnosticDataSourceScope.SCENARIO_INPUTS,
+        DiagnosticDataSourceScope.DIAGNOSTIC_EVIDENCE_INTERPRETATION,
+    )
+    assert result.source_token is not None
+    assert result.error is None
+    with pytest.raises(FrozenInstanceError):
+        result.observation.identity.provider = "mutable"  # type: ignore[misc]
+
+
+def test_data_source_application_redacts_raw_failure_details() -> None:
+    class _ThrowingApplication:
+        def list_historical_segments(self) -> object:
+            raise OSError(
+                r"C:\secrets\source.db?token=super-secret SELECT market_payload"
+            )
+
+    result = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        _ThrowingApplication(),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    ).read_diagnostic_data_source_health()
+
+    assert result.availability is DiagnosticDataSourceApplicationAvailability.FAILED
+    assert result.error is not None
+    exposed = result.error.explanation.casefold()
+    for forbidden in (
+        "c:\\",
+        "source.db",
+        "token",
+        "secret",
+        "select",
+        "market_payload",
+    ):
+        assert forbidden not in exposed
+
+
+def test_data_source_application_projects_untrusted_provenance_opaquely() -> None:
+    adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        _application_with_admitted_source(
+            provider="Authorization: Bearer sk-live-provider-secret",
+            dataset="api_key=dataset-secret@example.test:6379",
+            version="<script>cookie=version-secret</script>",
+        ),
+        clock=lambda: NOW,
+    )
+
+    result = adapter.read_diagnostic_data_source_health()
+
+    assert result.availability is DiagnosticDataSourceApplicationAvailability.READY
+    assert result.observation is not None
+    identity = result.observation.identity
+    assert identity.provider.startswith("Provider ")
+    assert identity.dataset.startswith("Dataset ")
+    assert identity.version.startswith("Version ")
+    exposed = repr(result).casefold()
+    for forbidden in (
+        "authorization",
+        "bearer",
+        "sk-live",
+        "api_key",
+        "dataset-secret",
+        "example.test",
+        "script",
+        "cookie",
+        "version-secret",
+    ):
+        assert forbidden not in exposed
+
+
+def test_data_source_application_fails_safely_for_malformed_provenance() -> None:
+    adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+        _application_with_admitted_source(provider=123),
+        clock=lambda: NOW,
+    )
+
+    result = adapter.read_diagnostic_data_source_health()
+
+    assert result.availability is DiagnosticDataSourceApplicationAvailability.FAILED
+    assert result.observation is None
+    assert result.source_token is None
+    assert result.error is not None
+    assert result.error.code is DiagnosticDataSourceApplicationErrorCode.READ_FAILED
+    assert result.error.explanation == (
+        "The authoritative diagnostic data-source read failed safely."
+    )
 
 
 def test_queue_and_cache_health_read_only_seam_uses_supported_application_behavior() -> None:
@@ -424,8 +687,7 @@ def test_persistence_health_observes_real_durable_read_write_and_reopen(
 
 
 def test_version_health_reads_the_exact_registry_lock_and_format_identities() -> None:
-    application = create_diagnostics_application()
-    application.start()
+    application = _application_with_admitted_source(source_observed_at=NOW)
     version = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
         application,
         clock=lambda: NOW,
@@ -478,8 +740,7 @@ def test_version_health_rejects_a_readable_lock_that_breaks_release_binding(
     changed_lock["toolchain"]["python"] = "99.99.99"
     lock_fixture = tmp_path / "readable-mutated-lock.json"
     lock_fixture.write_text(json.dumps(changed_lock), encoding="utf-8")
-    application = create_diagnostics_application()
-    application.start()
+    application = _application_with_admitted_source(source_observed_at=NOW)
 
     version = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
         application,
@@ -507,12 +768,12 @@ def test_version_health_rejects_a_readable_lock_that_breaks_release_binding(
 def test_version_health_without_release_binding_is_unknown_not_healthy(
     tmp_path,
 ) -> None:
-    application = create_diagnostics_application()
-    application.start()
+    application = _application_with_admitted_source(source_observed_at=NOW)
     engine = create_engine(
         f"sqlite+pysqlite:///{tmp_path / 'release-binding-missing.sqlite3'}"
     )
     application.initialize_persistence(engine)
+    _readmit_default_source(application)
     adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
         application,
         clock=lambda: NOW,
@@ -567,9 +828,9 @@ def test_version_health_without_a_selected_manifest_is_unknown_not_healthy(
     seed = create_diagnostics_application()
     seed.start()
     seed.initialize_persistence(engine)
-    application = create_diagnostics_application()
-    application.start()
+    application = _application_with_admitted_source(source_observed_at=NOW)
     application.initialize_persistence(engine)
+    _readmit_default_source(application)
     adapter = LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
         application,
         clock=lambda: NOW,
@@ -888,9 +1149,9 @@ def test_copied_file_fixture_flows_through_live_feature_stale_and_recovery(
     fixture = tmp_path / "reopen-copy.sqlite3"
     shutil.copy2(source, fixture)
     engine = create_engine(f"sqlite+pysqlite:///{fixture}")
-    application = create_diagnostics_application()
-    application.start()
+    application = _application_with_admitted_source(source_observed_at=NOW)
     report = application.initialize_persistence(engine)
+    _readmit_default_source(application)
     now = [NOW]
     bridge = EventBridge(subscribe_backend=False)
     feature = LiveSystemHealthAdapter(
@@ -933,7 +1194,20 @@ def test_copied_file_fixture_flows_through_live_feature_stale_and_recovery(
             state.presentation is SystemHealthPresentationState.RECOVERING
             for state in observed
         )
-        assert observed[-1].presentation is SystemHealthPresentationState.RECOVERED
+        bridge.on_snapshot(
+            {
+                "feature": "system_health",
+                "component": "diagnostic_data_source",
+                "source_revision": 2,
+            },
+            generation=2,
+        )
+        bridge.flush(force=True)
+        _wait_until(
+            lambda: observed[-1].diagnostic_data_source.recovery_phase.value
+            == "recovered"
+        )
+        assert observed[-1].presentation is SystemHealthPresentationState.STALE
     finally:
         subscription.dispose()
         feature.close()

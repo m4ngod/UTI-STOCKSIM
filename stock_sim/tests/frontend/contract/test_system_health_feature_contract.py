@@ -9,6 +9,16 @@ import pytest
 from app.features import (
     ACTIVE_FEATURE_INTERFACES,
     SYSTEM_HEALTH_INTERFACE_VERSION,
+    DiagnosticDataSourceComponentIdentity,
+    DiagnosticDataSourceConnectionState,
+    DiagnosticDataSourceFallbackState,
+    DiagnosticDataSourceHealthClassification,
+    DiagnosticDataSourceHealthComponent,
+    DiagnosticDataSourceIdentity,
+    DiagnosticDataSourceObservation,
+    DiagnosticDataSourceRecoveryPhase,
+    DiagnosticDataSourceRevision,
+    DiagnosticDataSourceScope,
     DiagnosticCacheCompatibility,
     DiagnosticCacheFallbackState,
     DiagnosticCacheHealthClassification,
@@ -48,6 +58,33 @@ NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
 
 
 def test_system_health_1_0_exposes_finite_queue_and_cache_components() -> None:
+    assert {item.value for item in DiagnosticDataSourceHealthClassification} == {
+        "healthy",
+        "degraded",
+        "stale",
+        "unavailable",
+        "recovering",
+    }
+    assert {item.value for item in DiagnosticDataSourceConnectionState} == {
+        "connected",
+        "disconnected",
+        "reconnecting",
+        "unavailable",
+    }
+    assert {item.value for item in DiagnosticDataSourceFallbackState} == {
+        "primary",
+        "active",
+        "unavailable",
+    }
+    assert {item.value for item in DiagnosticDataSourceRecoveryPhase} == {
+        "idle",
+        "disconnected",
+        "fallback",
+        "reconnecting",
+        "rereading",
+        "recovered",
+        "failed_recovery",
+    }
     assert {item.value for item in DiagnosticQueueHealthClassification} == {
         "healthy",
         "degraded",
@@ -205,6 +242,7 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "components",
         "last_reliable_payload",
         "recovery_phase",
+        "diagnostic_data_source",
         "diagnostic_queue",
         "diagnostic_cache",
         "error",
@@ -252,6 +290,37 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         explanation="No diagnostic cache refresh has been observed.",
         error=None,
     )
+    identity = DiagnosticDataSourceIdentity(
+        public_id="admitted-source-0123456789abcdef",
+        provider="Provider 01234567",
+        dataset="Dataset 89abcdef",
+        version="Version fedcba98",
+    )
+    observation = DiagnosticDataSourceObservation(
+        identity=identity,
+        revision=DiagnosticDataSourceRevision(1),
+        generation=SourceGenerationId(1),
+        observed_at=NOW,
+    )
+    data_source = DiagnosticDataSourceHealthComponent(
+        identity=(
+            DiagnosticDataSourceComponentIdentity.ADMITTED_HISTORICAL_MARKET_DATA
+        ),
+        classification=DiagnosticDataSourceHealthClassification.HEALTHY,
+        connection=DiagnosticDataSourceConnectionState.CONNECTED,
+        fallback=DiagnosticDataSourceFallbackState.PRIMARY,
+        accepted_revision=DiagnosticDataSourceRevision(1),
+        accepted_generation=SourceGenerationId(1),
+        observed_at=NOW,
+        freshness=Freshness.FRESH,
+        age=timedelta(0),
+        freshness_threshold=timedelta(seconds=30),
+        last_reliable_observation=observation,
+        affected_scope=(DiagnosticDataSourceScope.SCENARIO_INPUTS,),
+        recovery_phase=DiagnosticDataSourceRecoveryPhase.IDLE,
+        explanation="The admitted diagnostic data source is fresh.",
+        error=None,
+    )
     state = SystemHealthViewState(
         interface_version=SYSTEM_HEALTH_INTERFACE_VERSION,
         revision=1,
@@ -272,12 +341,14 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         components=(component,),
         last_reliable_payload=(component,),
         recovery_phase=RuntimeHealthRecoveryPhase.IDLE,
+        diagnostic_data_source=data_source,
         diagnostic_queue=queue,
         diagnostic_cache=cache,
         error=None,
     )
 
     assert state.components == (component,)
+    assert state.diagnostic_data_source is data_source
     assert state.diagnostic_queue is queue
     assert state.diagnostic_cache is cache
     assert "metrics" not in {field.name for field in fields(state)}
@@ -288,6 +359,49 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         state.revision = 2  # type: ignore[misc]
     with pytest.raises(ValueError, match="component revisions"):
         replace(state, diagnostic_queue=replace(queue, revision=2))
+
+
+def test_data_source_identity_and_component_fail_closed() -> None:
+    for unsafe_provider in (
+        "redis://diagnostics",
+        r"C:\secrets\source.db",
+        "token=super-secret",
+        "credential bundle",
+    ):
+        with pytest.raises(ValueError):
+            DiagnosticDataSourceIdentity(
+                public_id="admitted-source-0123456789abcdef",
+                provider=unsafe_provider,
+                dataset="Dataset 89abcdef",
+                version="Version fedcba98",
+            )
+    with pytest.raises(ValueError, match="opaque"):
+        DiagnosticDataSourceIdentity(
+            public_id="admitted-source-token-super-secret",
+            provider="Provider 01234567",
+            dataset="Dataset 89abcdef",
+            version="Version fedcba98",
+        )
+    with pytest.raises(TypeError, match="classification"):
+        DiagnosticDataSourceHealthComponent(
+            identity=(
+                DiagnosticDataSourceComponentIdentity.ADMITTED_HISTORICAL_MARKET_DATA
+            ),
+            classification="healthy",  # type: ignore[arg-type]
+            connection=DiagnosticDataSourceConnectionState.CONNECTED,
+            fallback=DiagnosticDataSourceFallbackState.PRIMARY,
+            accepted_revision=None,
+            accepted_generation=None,
+            observed_at=NOW,
+            freshness=Freshness.FRESH,
+            age=timedelta(0),
+            freshness_threshold=timedelta(seconds=30),
+            last_reliable_observation=None,
+            affected_scope=(DiagnosticDataSourceScope.SCENARIO_INPUTS,),
+            recovery_phase=DiagnosticDataSourceRecoveryPhase.IDLE,
+            explanation="A typed state is required.",
+            error=None,
+        )
 
 
 def test_system_health_error_is_typed_safe_and_runtime_scoped() -> None:

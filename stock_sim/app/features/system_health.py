@@ -87,6 +87,225 @@ class RuntimeHealthRecoveryPhase(str, Enum):
     FAILED = "failed"
 
 
+class DiagnosticDataSourceComponentIdentity(str, Enum):
+    ADMITTED_HISTORICAL_MARKET_DATA = "admitted_historical_market_data"
+
+
+class DiagnosticDataSourceHealthClassification(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+    RECOVERING = "recovering"
+
+
+class DiagnosticDataSourceConnectionState(str, Enum):
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    RECONNECTING = "reconnecting"
+    UNAVAILABLE = "unavailable"
+
+
+class DiagnosticDataSourceFallbackState(str, Enum):
+    PRIMARY = "primary"
+    ACTIVE = "active"
+    UNAVAILABLE = "unavailable"
+
+
+class DiagnosticDataSourceRecoveryPhase(str, Enum):
+    IDLE = "idle"
+    DISCONNECTED = "disconnected"
+    FALLBACK = "fallback"
+    RECONNECTING = "reconnecting"
+    REREADING = "rereading"
+    RECOVERED = "recovered"
+    FAILED_RECOVERY = "failed_recovery"
+
+
+class DiagnosticDataSourceScope(str, Enum):
+    SCENARIO_INPUTS = "scenario_inputs"
+    DIAGNOSTIC_EVIDENCE_INTERPRETATION = "diagnostic_evidence_interpretation"
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceIdentity:
+    public_id: str
+    provider: str
+    dataset: str
+    version: str
+
+    def __post_init__(self) -> None:
+        prefix = "admitted-source-"
+        if not isinstance(self.public_id, str) or not self.public_id.startswith(
+            prefix
+        ):
+            raise ValueError("Data Source public identity must be opaque")
+        opaque_suffix = self.public_id[len(prefix) :]
+        if not 16 <= len(opaque_suffix) <= 64 or any(
+            character not in "0123456789abcdef" for character in opaque_suffix
+        ):
+            raise ValueError("Data Source public identity must be opaque")
+        for label, value in (
+            ("provider", self.provider),
+            ("dataset", self.dataset),
+            ("version", self.version),
+        ):
+            _require_safe_source_label(value, label)
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceRevision:
+    value: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.value, int)
+            or isinstance(self.value, bool)
+            or self.value < 1
+        ):
+            raise ValueError("Data Source revision must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceObservation:
+    identity: DiagnosticDataSourceIdentity
+    revision: DiagnosticDataSourceRevision
+    generation: SourceGenerationId
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, DiagnosticDataSourceIdentity):
+            raise TypeError("identity must be a Data Source identity")
+        if not isinstance(self.revision, DiagnosticDataSourceRevision):
+            raise TypeError("revision must be a Data Source revision")
+        if not isinstance(self.generation, SourceGenerationId):
+            raise TypeError("generation must be a SourceGenerationId")
+        _require_aware(self.observed_at, "Data Source observation time")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDataSourceHealthComponent:
+    identity: DiagnosticDataSourceComponentIdentity
+    classification: DiagnosticDataSourceHealthClassification
+    connection: DiagnosticDataSourceConnectionState
+    fallback: DiagnosticDataSourceFallbackState
+    accepted_revision: DiagnosticDataSourceRevision | None
+    accepted_generation: SourceGenerationId | None
+    observed_at: datetime
+    freshness: Freshness
+    age: timedelta
+    freshness_threshold: timedelta
+    last_reliable_observation: DiagnosticDataSourceObservation | None
+    affected_scope: tuple[DiagnosticDataSourceScope, ...]
+    recovery_phase: DiagnosticDataSourceRecoveryPhase
+    explanation: str
+    error: SystemHealthError | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, DiagnosticDataSourceComponentIdentity):
+            raise TypeError("identity must be a Data Source component identity")
+        if not isinstance(
+            self.classification,
+            DiagnosticDataSourceHealthClassification,
+        ):
+            raise TypeError("classification must be a Data Source classification")
+        if not isinstance(self.connection, DiagnosticDataSourceConnectionState):
+            raise TypeError("connection must be a Data Source connection state")
+        if not isinstance(self.fallback, DiagnosticDataSourceFallbackState):
+            raise TypeError("fallback must be a Data Source fallback state")
+        if self.accepted_revision is not None and not isinstance(
+            self.accepted_revision,
+            DiagnosticDataSourceRevision,
+        ):
+            raise TypeError("accepted_revision must be a Data Source revision")
+        if self.accepted_generation is not None and not isinstance(
+            self.accepted_generation,
+            SourceGenerationId,
+        ):
+            raise TypeError("accepted_generation must be a SourceGenerationId")
+        if (self.accepted_revision is None) is not (
+            self.accepted_generation is None
+        ):
+            raise ValueError("accepted revision and generation must be jointly present")
+        if not isinstance(self.freshness, Freshness):
+            raise TypeError("freshness must be a Freshness")
+        if not isinstance(self.recovery_phase, DiagnosticDataSourceRecoveryPhase):
+            raise TypeError("recovery_phase must be a Data Source recovery phase")
+        _require_aware(self.observed_at, "Data Source Health observation time")
+        _require_freshness_window(
+            self.age,
+            self.freshness_threshold,
+            "Data Source Health",
+        )
+        _require_typed_scope(
+            self.affected_scope,
+            DiagnosticDataSourceScope,
+            "Data Source",
+        )
+        if self.error is not None and not isinstance(self.error, SystemHealthError):
+            raise TypeError("Data Source error must be a SystemHealthError")
+        if self.last_reliable_observation is not None:
+            if not isinstance(
+                self.last_reliable_observation,
+                DiagnosticDataSourceObservation,
+            ):
+                raise TypeError("last reliable observation must be typed")
+            if self.accepted_revision != self.last_reliable_observation.revision:
+                raise ValueError("accepted revision must match last reliable state")
+            if self.accepted_generation != self.last_reliable_observation.generation:
+                raise ValueError("accepted generation must match last reliable state")
+        elif self.accepted_revision is not None:
+            raise ValueError("accepted state requires a last reliable observation")
+        if (
+            self.classification
+            is DiagnosticDataSourceHealthClassification.UNAVAILABLE
+            and self.last_reliable_observation is not None
+        ):
+            raise ValueError("unavailable Data Source Health cannot be reliable")
+        if self.classification is DiagnosticDataSourceHealthClassification.HEALTHY:
+            if (
+                self.connection is not DiagnosticDataSourceConnectionState.CONNECTED
+                or self.last_reliable_observation is None
+                or self.freshness is not Freshness.FRESH
+                or self.error is not None
+            ):
+                raise ValueError("healthy Data Source Health is contradictory")
+        if self.classification is DiagnosticDataSourceHealthClassification.STALE:
+            if (
+                self.last_reliable_observation is None
+                or self.freshness is not Freshness.STALE
+            ):
+                raise ValueError("stale Data Source Health requires stale history")
+        if (
+            self.classification is DiagnosticDataSourceHealthClassification.RECOVERING
+            and (
+                self.connection is not DiagnosticDataSourceConnectionState.RECONNECTING
+                or self.last_reliable_observation is None
+            )
+        ):
+            raise ValueError("recovering Data Source Health is contradictory")
+        if self.recovery_phase is DiagnosticDataSourceRecoveryPhase.DISCONNECTED:
+            if self.connection is not DiagnosticDataSourceConnectionState.DISCONNECTED:
+                raise ValueError("disconnected recovery requires disconnection")
+        if self.recovery_phase in {
+            DiagnosticDataSourceRecoveryPhase.FALLBACK,
+            DiagnosticDataSourceRecoveryPhase.RECONNECTING,
+            DiagnosticDataSourceRecoveryPhase.REREADING,
+            DiagnosticDataSourceRecoveryPhase.FAILED_RECOVERY,
+        } and self.connection is not DiagnosticDataSourceConnectionState.RECONNECTING:
+            raise ValueError("active recovery requires a reconnecting source")
+        if self.recovery_phase is DiagnosticDataSourceRecoveryPhase.RECOVERED:
+            if (
+                self.connection is not DiagnosticDataSourceConnectionState.CONNECTED
+                or self.last_reliable_observation is None
+            ):
+                raise ValueError("recovered Data Source Health requires reliable state")
+        _require_safe_diagnostic_text(
+            self.explanation,
+            "Data Source Health explanation",
+        )
+
+
 class DiagnosticQueueHealthClassification(str, Enum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
@@ -183,6 +402,9 @@ class SystemHealthErrorCode(str, Enum):
     OBSERVATION_FAILED = "runtime_health_observation_failed"
     SOURCE_DISCONNECTED = "runtime_health_source_disconnected"
     AUTHORITATIVE_REREAD_FAILED = "runtime_health_authoritative_reread_failed"
+    DATA_SOURCE_UNAVAILABLE = "diagnostic_data_source_unavailable"
+    DATA_SOURCE_DISCONNECTED = "diagnostic_data_source_disconnected"
+    DATA_SOURCE_REREAD_FAILED = "diagnostic_data_source_reread_failed"
     DIAGNOSTIC_QUEUE_NO_AUTHORITATIVE_OBSERVATION = (
         "diagnostic_queue_no_authoritative_observation"
     )
@@ -540,6 +762,7 @@ class SystemHealthViewState:
     components: tuple[SystemHealthComponent, ...]
     last_reliable_payload: tuple[SystemHealthComponent, ...] | None
     recovery_phase: RuntimeHealthRecoveryPhase
+    diagnostic_data_source: DiagnosticDataSourceHealthComponent
     diagnostic_queue: DiagnosticQueueHealthComponent
     diagnostic_cache: DiagnosticCacheHealthComponent
     error: SystemHealthError | None
@@ -595,6 +818,11 @@ class SystemHealthViewState:
                 raise ValueError("last reliable payload must use the finite order")
         if not isinstance(self.diagnostic_queue, DiagnosticQueueHealthComponent):
             raise TypeError("diagnostic_queue must be typed")
+        if not isinstance(
+            self.diagnostic_data_source,
+            DiagnosticDataSourceHealthComponent,
+        ):
+            raise TypeError("diagnostic_data_source must be typed")
         if not isinstance(self.diagnostic_cache, DiagnosticCacheHealthComponent):
             raise TypeError("diagnostic_cache must be typed")
         if (
@@ -710,6 +938,21 @@ def _require_safe_diagnostic_text(value: str, label: str) -> None:
         raise ValueError(f"{label} must be a safe redacted explanation")
 
 
+def _require_safe_source_label(value: str, label: str) -> None:
+    if not isinstance(value, str) or not value.strip() or len(value) > 96:
+        raise ValueError(f"Data Source {label} must be a safe public label")
+    if label == "provider" and value == "BaoStock":
+        return
+    prefix = label.title() + " "
+    if not value.startswith(prefix):
+        raise ValueError(f"Data Source {label} must be opaque")
+    suffix = value[len(prefix) :]
+    if len(suffix) != 8 or any(
+        character not in "0123456789abcdef" for character in suffix
+    ):
+        raise ValueError(f"Data Source {label} must be opaque")
+
+
 SystemHealthObserver = Callable[[SystemHealthViewState], None]
 
 
@@ -733,6 +976,16 @@ class SystemHealthFeature(Protocol):
 
 
 __all__ = [
+    "DiagnosticDataSourceComponentIdentity",
+    "DiagnosticDataSourceConnectionState",
+    "DiagnosticDataSourceFallbackState",
+    "DiagnosticDataSourceHealthClassification",
+    "DiagnosticDataSourceHealthComponent",
+    "DiagnosticDataSourceIdentity",
+    "DiagnosticDataSourceObservation",
+    "DiagnosticDataSourceRecoveryPhase",
+    "DiagnosticDataSourceRevision",
+    "DiagnosticDataSourceScope",
     "DiagnosticCacheCompatibility",
     "DiagnosticCacheFallbackState",
     "DiagnosticCacheHealthClassification",
