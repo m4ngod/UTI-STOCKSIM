@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from ._diagnostics_application_access import (
     shared_diagnostics_application_access_gate,
 )
+from .diagnostics_application_ownership import (
+    DiagnosticsApplicationIdentity,
+    diagnostics_application_identity,
+)
 from .diagnostic_tasks_application import (
     ApprovedScenarioRecipeVersionId,
     CampaignCaseId,
@@ -1370,8 +1374,14 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
 
     _PREVIEW_NODE_LIMIT = 24
 
-    def __init__(self, application: DiagnosticsApplication) -> None:
+    def __init__(
+        self,
+        application: DiagnosticsApplication,
+        *,
+        commands_available: bool = True,
+    ) -> None:
         self._application = application
+        self._commands_available = commands_available
         self._application_access_gate = (
             shared_diagnostics_application_access_gate(application)
         )
@@ -1379,6 +1389,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
     @property
     def interface_version(self) -> ScenarioLabApplicationVersion:
         return SCENARIO_LAB_APPLICATION_INTERFACE_VERSION
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        return diagnostics_application_identity(self._application)
 
     def read_inventory(self) -> ScenarioLabApplicationInventoryResult:
         observed_at = datetime.now(timezone.utc)
@@ -1590,6 +1604,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: CreateScenarioRecipeDraftCommand
     ) -> CreateScenarioRecipeDraftResult:
         operation = ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT
+        if not self._commands_available:
+            return CreateScenarioRecipeDraftResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return CreateScenarioRecipeDraftResult(receipt=rejection)
@@ -1644,6 +1662,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         command: CreateAiAssistedScenarioRecipeDraftCommand,
     ) -> CreateScenarioRecipeDraftResult:
         operation = ScenarioLabTaskOperation.CREATE_RECIPE_DRAFT
+        if not self._commands_available:
+            return CreateScenarioRecipeDraftResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return CreateScenarioRecipeDraftResult(receipt=rejection)
@@ -1700,6 +1722,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: ReviseScenarioRecipeDraftCommand
     ) -> ReviseScenarioRecipeDraftResult:
         operation = ScenarioLabTaskOperation.REVISE_RECIPE_DRAFT
+        if not self._commands_available:
+            return ReviseScenarioRecipeDraftResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return ReviseScenarioRecipeDraftResult(receipt=rejection)
@@ -1761,6 +1787,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: ValidateScenarioRecipeDraftCommand
     ) -> ValidateScenarioRecipeDraftResult:
         operation = ScenarioLabTaskOperation.VALIDATE_RECIPE_DRAFT
+        if not self._commands_available:
+            return ValidateScenarioRecipeDraftResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return ValidateScenarioRecipeDraftResult(receipt=rejection)
@@ -1884,6 +1914,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: ApproveScenarioRecipeCommand
     ) -> ApproveScenarioRecipeResult:
         operation = ScenarioLabTaskOperation.APPROVE_RECIPE
+        if not self._commands_available:
+            return ApproveScenarioRecipeResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return ApproveScenarioRecipeResult(receipt=rejection)
@@ -1940,6 +1974,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: MaterializeApprovedScenarioRecipeCommand
     ) -> MaterializeApprovedScenarioRecipeResult:
         operation = ScenarioLabTaskOperation.MATERIALIZE_REFERENCE_PATH
+        if not self._commands_available:
+            return MaterializeApprovedScenarioRecipeResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return MaterializeApprovedScenarioRecipeResult(receipt=rejection)
@@ -1974,6 +2012,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: RetryScenarioMaterializationCommand
     ) -> RetryScenarioMaterializationResult:
         operation = ScenarioLabTaskOperation.RETRY_MATERIALIZATION
+        if not self._commands_available:
+            return RetryScenarioMaterializationResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return RetryScenarioMaterializationResult(receipt=rejection)
@@ -2030,6 +2072,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: ComposeFormalScenarioSetCommand
     ) -> ComposeFormalScenarioSetResult:
         operation = ScenarioLabTaskOperation.COMPOSE_SCENARIO_SET
+        if not self._commands_available:
+            return ComposeFormalScenarioSetResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return ComposeFormalScenarioSetResult(receipt=rejection)
@@ -2088,6 +2134,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: ResolveScenarioExecutionAssumptionsCommand
     ) -> ResolveScenarioExecutionAssumptionsResult:
         operation = ScenarioLabTaskOperation.RESOLVE_EXECUTION_ASSUMPTIONS
+        if not self._commands_available:
+            return ResolveScenarioExecutionAssumptionsResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return ResolveScenarioExecutionAssumptionsResult(receipt=rejection)
@@ -2166,6 +2216,10 @@ class LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter:
         self, command: SelectFormalScenarioSetCommand
     ) -> SelectFormalScenarioSetResult:
         operation = ScenarioLabTaskOperation.SELECT_FORMAL_SCENARIO_SET
+        if not self._commands_available:
+            return SelectFormalScenarioSetResult(
+                receipt=_persistence_unavailable_receipt(command.metadata, operation)
+            )
         rejection = self._content_identity_rejection(command, operation)
         if rejection is not None:
             return SelectFormalScenarioSetResult(receipt=rejection)
@@ -3198,6 +3252,17 @@ def _unavailable_receipt(
         message=message,
         authoritative_revision=None,
         task_handle=None,
+    )
+
+
+def _persistence_unavailable_receipt(
+    metadata: ScenarioLabCommandMetadata,
+    operation: ScenarioLabTaskOperation,
+) -> ScenarioLabCommandReceipt:
+    return _unavailable_receipt(
+        metadata,
+        operation,
+        "Diagnostic Persistence is unavailable; no command was applied.",
     )
 
 

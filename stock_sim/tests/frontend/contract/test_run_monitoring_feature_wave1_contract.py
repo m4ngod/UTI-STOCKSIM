@@ -33,6 +33,7 @@ from app.features import (
     StrategyRunId,
     TaskPhase,
     ViewPhase,
+    diagnostics_application_identity,
 )
 from app.runtime_gateway import RuntimeGateway
 from app.services.training_arena_service import (
@@ -44,6 +45,7 @@ from stock_sim.services import runtime_query_service
 from tests.frontend.strategy_diagnostics_v1_test_support import (
     DictionaryFixtureApplicationReadModel,
 )
+from strategy_diagnostics import create_diagnostics_application
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 2, 12, 0, tzinfo=UTC)
@@ -879,6 +881,8 @@ def test_app_context_selects_live_or_fake_and_preserves_existing_route_identity(
         "RUN-001",
     )
     bridge = EventBridge(subscribe_backend=False)
+    diagnostics_application = create_diagnostics_application()
+    diagnostics_application.start()
 
     fake_context = build_app_context(
         settings_path=str(tmp_path / "fake-settings.json"),
@@ -889,8 +893,14 @@ def test_app_context_selects_live_or_fake_and_preserves_existing_route_identity(
         settings_path=str(tmp_path / "live-settings.json"),
         run_monitoring_mode="live",
         event_bridge=bridge,
+        strategy_diagnostics_application=diagnostics_application,
         strategy_diagnostics_read_model=(
-            DictionaryFixtureApplicationReadModel(_RunQueries())
+            DictionaryFixtureApplicationReadModel(
+                _RunQueries(),
+                application_identity=diagnostics_application_identity(
+                    diagnostics_application
+                ),
+            )
         ),
     )
 

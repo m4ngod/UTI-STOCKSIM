@@ -892,6 +892,8 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
+        "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+        "LiveSystemHealthAdapter",
         "JourneyWorkspaceHost",
     )
     assert tuple(
@@ -925,6 +927,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "DiagnosticTasksFeature/1.0",
         "RunMonitoringFeature/1.2",
         "EvidenceAndFindingsFeature/1.1",
+        "SystemHealthFeature/1.0",
     )
     assert result.campaign_status == "completed"
     assert result.run_status == "completed"
@@ -1155,6 +1158,8 @@ assert result.production_path == (
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
+    "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+    "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
 )
 assert result.manual_trading_action_count == 0
@@ -1403,6 +1408,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "DiagnosticTasksFeature/1.0",
                 "RunMonitoringFeature/1.2",
                 "EvidenceAndFindingsFeature/1.1",
+                "SystemHealthFeature/1.0",
             ],
             "campaign_status": "completed",
             "run_status": "completed",
@@ -2214,10 +2220,10 @@ def test_packaged_accessible_names_have_one_authoritative_qml_source():
     assert "_PACKAGED_ACCESSIBLE_NAME_BY_OBJECT_NAME" not in entry_source
     assert journey_source.count(
         "Accessible.name: accessibleName"
-    ) == 5
+    ) == 6
     assert journey_source.count(
         "Accessible.description: accessibleDescription"
-    ) == 5
+    ) == 6
     assert "Accessible.name: accessibleName" in chart_source
     assert "Accessible.description: accessibleDescription" in chart_source
 

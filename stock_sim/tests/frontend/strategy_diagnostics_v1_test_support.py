@@ -38,6 +38,7 @@ from app.features import (
     TerminalOutcome,
     V1JourneySelector,
     WallTime,
+    DiagnosticsApplicationIdentity,
 )
 from app.features.live_evidence_and_findings import (
     _candidate_rows,
@@ -62,8 +63,10 @@ class DictionaryFixtureApplicationReadModel:
         queries: object | None,
         *,
         evidence_context: EvidenceAndFindingsContext | None = None,
+        application_identity: DiagnosticsApplicationIdentity | None = None,
     ) -> None:
         self._queries = queries
+        self._application_identity = application_identity
         self._evidence_context = (
             evidence_context or EvidenceAndFindingsContext.no_selection()
         )
@@ -71,6 +74,14 @@ class DictionaryFixtureApplicationReadModel:
     @property
     def interface_version(self) -> ApplicationReadModelVersion:
         return APPLICATION_READ_MODEL_INTERFACE_VERSION
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        if self._application_identity is None:
+            raise RuntimeError(
+                "Fixture ownership identity is required for AppContext injection"
+            )
+        return self._application_identity
 
     def resolve_journey(
         self,

@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from ._diagnostics_application_access import (
     shared_diagnostics_application_access_gate,
 )
+from .diagnostics_application_ownership import (
+    DiagnosticsApplicationIdentity,
+    diagnostics_application_identity,
+)
 from .evidence_and_findings import DiagnosticEvidencePackageId
 from .run_monitoring import (
     DiagnosticTaskId,
@@ -906,9 +910,11 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         setup_selection_provider: (
             Callable[[], DiagnosticSetupSelectionContext | None] | None
         ) = None,
+        commands_available: bool = True,
     ) -> None:
         self._application = application
         self._setup_selection_provider = setup_selection_provider
+        self._commands_available = commands_available
         self._application_access_gate = (
             shared_diagnostics_application_access_gate(application)
         )
@@ -916,6 +922,10 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
     @property
     def interface_version(self) -> DiagnosticTasksApplicationVersion:
         return DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        return diagnostics_application_identity(self._application)
 
     def read_inventory(self) -> DiagnosticTasksApplicationInventoryResult:
         observed_at = datetime.now(timezone.utc)
@@ -1033,6 +1043,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: CreateDiagnosticTask,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         setup = _setup_selection_from_command(command)
         from strategy_diagnostics.diagnostic_tasks import (
             CreateDiagnosticTaskRequest as BackendCreateDiagnosticTaskRequest,
@@ -1080,6 +1093,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: ReviseDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         setup = _setup_selection_from_command(command)
         from strategy_diagnostics.diagnostic_tasks import (
             ReviseDiagnosticTaskConfigurationRequest,
@@ -1111,6 +1127,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: ValidateDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         setup = _setup_selection_from_command(command)
         setup_observed = setup is not None
         from strategy_diagnostics.diagnostic_tasks import (
@@ -1143,6 +1162,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: ApproveDiagnosticTaskConfiguration,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         setup = _setup_selection_from_command(command)
         setup_observed = setup is not None
         from strategy_diagnostics.diagnostic_tasks import (
@@ -1182,6 +1204,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: StartFormalDiagnosticCampaign,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         setup = _setup_selection_from_command(command)
         setup_observed = setup is not None
         from strategy_diagnostics.diagnostic_tasks import (
@@ -1215,6 +1240,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: PauseDiagnosticTarget,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         from strategy_diagnostics.diagnostic_tasks import (
             ChangeDiagnosticLifecycleRequest,
         )
@@ -1248,6 +1276,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: ResumeDiagnosticTarget,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         from strategy_diagnostics.diagnostic_tasks import (
             ChangeDiagnosticLifecycleRequest,
         )
@@ -1281,6 +1312,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: CancelDiagnosticTarget,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         from strategy_diagnostics.diagnostic_tasks import (
             ChangeDiagnosticLifecycleRequest,
         )
@@ -1314,6 +1348,9 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
         self,
         command: RetryFailedCampaignNode,
     ) -> DiagnosticTasksApplicationCommandResult:
+        unavailable = self._persistence_unavailable(command)
+        if unavailable is not None:
+            return unavailable
         from strategy_diagnostics.diagnostic_tasks import (
             RetryFailedCampaignNodeRequest,
         )
@@ -1354,6 +1391,31 @@ class LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
             affected_campaign_id=None,
             affected_campaign_node_id=None,
             retryable=False,
+            correlation_id=None,
+        )
+
+    def _persistence_unavailable(
+        self,
+        command: DiagnosticTasksApplicationCommand,
+    ) -> DiagnosticTasksApplicationCommandResult | None:
+        if self._commands_available:
+            return None
+        return DiagnosticTasksApplicationCommandResult(
+            disposition=DiagnosticTasksCommandDisposition.REJECTED,
+            command_id=command.command_id,
+            idempotency_key=command.idempotency_key,
+            message=(
+                "Diagnostic Persistence is unavailable; no command was applied."
+            ),
+            rejection_reason=(
+                DiagnosticTasksApplicationCommandRejectionReason.PERSISTENCE_FAILURE
+            ),
+            task_handle=None,
+            current_revision=None,
+            affected_task_id=None,
+            affected_campaign_id=None,
+            affected_campaign_node_id=None,
+            retryable=True,
             correlation_id=None,
         )
 

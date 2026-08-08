@@ -101,6 +101,7 @@ APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Start Formal Diagnostic Campaign|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
+    r"Open System Health|"
     r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
     r"(?:Pause|Resume|Cancel) Formal Diagnostic Campaign lifecycle|"
     r"(?:Pause|Resume|Cancel) Campaign node lifecycle|"
@@ -558,6 +559,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
         "diagnosticTasksRouteNavigation",
         "runMonitoringRouteNavigation",
         "evidenceAndFindingsRouteNavigation",
+        "systemHealthRouteNavigation",
     }
     assert root.property("activeRoute") == "evidence_and_findings"
     assert window.menuBar().actions() == []

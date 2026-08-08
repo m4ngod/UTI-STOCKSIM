@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Final, Literal, cast
 
 from sqlalchemy import inspect, text
@@ -99,6 +100,142 @@ _MIGRATION_REVISIONS: Final = (
 class DiagnosticMigrationReport:
     current_revision: str
     applied_revisions: tuple[str, ...]
+
+
+class DiagnosticPersistenceAvailability(str, Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    NOT_INITIALIZED = "not_initialized"
+
+
+class DiagnosticPersistenceCompatibility(str, Enum):
+    COMPATIBLE = "compatible"
+    INCOMPATIBLE = "incompatible"
+    UNKNOWN = "unknown"
+
+
+class DiagnosticPersistenceReopenState(str, Enum):
+    VERIFIED = "verified"
+    NOT_YET_VERIFIED = "not_yet_verified"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPersistenceHealthObservation:
+    """Read-only persistence facts; never contains location or SQL details."""
+
+    availability: DiagnosticPersistenceAvailability
+    compatibility: DiagnosticPersistenceCompatibility
+    schema_head: str | None
+    supported_schema_head: str
+    last_successful_durable_read_at: datetime | None
+    last_successful_durable_write_at: datetime | None
+    reopen_state: DiagnosticPersistenceReopenState
+    observed_at: datetime
+
+
+def read_diagnostic_persistence_health(
+    engine: Engine | None,
+    *,
+    reopen_observed: bool,
+) -> DiagnosticPersistenceHealthObservation:
+    """Observe the existing migration ledger without migrating or ensuring schema."""
+
+    observed_at = datetime.now(timezone.utc)
+    if engine is None:
+        return DiagnosticPersistenceHealthObservation(
+            availability=DiagnosticPersistenceAvailability.NOT_INITIALIZED,
+            compatibility=DiagnosticPersistenceCompatibility.UNKNOWN,
+            schema_head=None,
+            supported_schema_head=DIAGNOSTIC_SCHEMA_REVISION,
+            last_successful_durable_read_at=None,
+            last_successful_durable_write_at=None,
+            reopen_state=DiagnosticPersistenceReopenState.UNKNOWN,
+            observed_at=observed_at,
+        )
+    try:
+        with engine.connect() as connection:
+            if not inspect(connection).has_table(_MIGRATION_TABLE):
+                return DiagnosticPersistenceHealthObservation(
+                    availability=DiagnosticPersistenceAvailability.AVAILABLE,
+                    compatibility=DiagnosticPersistenceCompatibility.UNKNOWN,
+                    schema_head=None,
+                    supported_schema_head=DIAGNOSTIC_SCHEMA_REVISION,
+                    last_successful_durable_read_at=observed_at,
+                    last_successful_durable_write_at=None,
+                    reopen_state=DiagnosticPersistenceReopenState.UNKNOWN,
+                    observed_at=observed_at,
+                )
+            rows = tuple(
+                connection.execute(
+                    text(
+                        f"SELECT revision, applied_at_utc FROM {_MIGRATION_TABLE}"
+                    )
+                ).mappings()
+            )
+    except Exception:  # noqa: BLE001 - the result deliberately discards raw errors
+        return DiagnosticPersistenceHealthObservation(
+            availability=DiagnosticPersistenceAvailability.UNAVAILABLE,
+            compatibility=DiagnosticPersistenceCompatibility.UNKNOWN,
+            schema_head=None,
+            supported_schema_head=DIAGNOSTIC_SCHEMA_REVISION,
+            last_successful_durable_read_at=None,
+            last_successful_durable_write_at=None,
+            reopen_state=(
+                DiagnosticPersistenceReopenState.FAILED
+                if reopen_observed
+                else DiagnosticPersistenceReopenState.UNKNOWN
+            ),
+            observed_at=observed_at,
+        )
+
+    revisions = {str(row["revision"]) for row in rows}
+    expected = set(_MIGRATION_REVISIONS)
+    compatible = revisions == expected
+    has_unknown_revision = bool(revisions - expected)
+    known_revisions = tuple(
+        revision for revision in _MIGRATION_REVISIONS if revision in revisions
+    )
+    schema_head = (
+        None
+        if has_unknown_revision
+        else known_revisions[-1]
+        if known_revisions
+        else None
+    )
+    durable_writes: list[datetime] = []
+    for row in rows:
+        if str(row["revision"]) not in expected:
+            continue
+        try:
+            value = datetime.fromisoformat(str(row["applied_at_utc"]))
+        except (TypeError, ValueError):
+            continue
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            durable_writes.append(value)
+    return DiagnosticPersistenceHealthObservation(
+        availability=DiagnosticPersistenceAvailability.AVAILABLE,
+        compatibility=(
+            DiagnosticPersistenceCompatibility.COMPATIBLE
+            if compatible
+            else DiagnosticPersistenceCompatibility.INCOMPATIBLE
+        ),
+        schema_head=schema_head,
+        supported_schema_head=DIAGNOSTIC_SCHEMA_REVISION,
+        last_successful_durable_read_at=observed_at,
+        last_successful_durable_write_at=(
+            max(durable_writes) if durable_writes else None
+        ),
+        reopen_state=(
+            DiagnosticPersistenceReopenState.VERIFIED
+            if compatible and reopen_observed
+            else DiagnosticPersistenceReopenState.NOT_YET_VERIFIED
+            if compatible
+            else DiagnosticPersistenceReopenState.FAILED
+        ),
+        observed_at=observed_at,
+    )
 
 
 def initialize_diagnostic_persistence(engine: Engine) -> DiagnosticMigrationReport:

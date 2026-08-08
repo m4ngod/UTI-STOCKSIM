@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from ._diagnostics_application_access import (
     shared_diagnostics_application_access_gate,
 )
+from .diagnostics_application_ownership import (
+    DiagnosticsApplicationIdentity,
+    diagnostics_application_identity,
+)
 from .diagnostic_tasks_application import GuardrailProfileId
 from .run_monitoring import StrategyUnderTestId
 from .strategy_diagnostics_v1_read_model import SourceRevisionToken
@@ -262,6 +266,10 @@ class LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter:
     @property
     def interface_version(self) -> StrategyLibraryApplicationVersion:
         return STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        return diagnostics_application_identity(self._application)
 
     def read_inventory(self) -> StrategyLibraryApplicationInventoryResult:
         observed_at = datetime.now(timezone.utc)

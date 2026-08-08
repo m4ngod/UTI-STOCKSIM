@@ -66,6 +66,7 @@ def test_diagnostic_tasks_feature_activates_the_exact_versioned_operation_surfac
         (FeatureModuleName.DIAGNOSTIC_TASKS, "1.0"),
         (FeatureModuleName.RUN_MONITORING, "1.2"),
         (FeatureModuleName.EVIDENCE_AND_FINDINGS, "1.1"),
+        (FeatureModuleName.SYSTEM_HEALTH, "1.0"),
     )
 
     operations = {

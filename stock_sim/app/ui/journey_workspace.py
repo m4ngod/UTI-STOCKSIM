@@ -63,6 +63,7 @@ from app.features import (
     MarketScenarioId,
     PauseDiagnosticTarget,
     PauseDiagnosticTask,
+    PersistenceHealthComponent,
     ResumeDiagnosticTarget,
     ResumeDiagnosticTask,
     RetryFailedCampaignNode,
@@ -83,6 +84,12 @@ from app.features import (
     StrategySelectionBookmark,
     StrategyUnderTestId,
     Subscription,
+    SystemHealthContext,
+    SystemHealthComponentIdentity,
+    SystemHealthComponent,
+    SystemHealthFeature,
+    SystemHealthViewState,
+    VersionHealthComponent,
     ValidateDiagnosticTaskConfiguration,
     compose_diagnostic_setup_selection_context,
 )
@@ -5883,6 +5890,388 @@ def _chart_viewport(intent: str) -> EvidenceChartViewport:
     return viewports.get(intent, viewports["overview"])
 
 
+class SystemHealthQtAdapter(QObject):
+    """Qt-only read projection of the typed System Health Interface."""
+
+    stateChanged = Signal()
+    deliveryRequested = Signal(int, object)
+
+    def __init__(
+        self,
+        feature: SystemHealthFeature,
+        *,
+        context: SystemHealthContext | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._feature = feature
+        self._context = context or SystemHealthContext()
+        self._state = feature.snapshot(self._context)
+        self._mount_generation = _next_mount_generation()
+        self._route_active = True
+        self._closed = False
+        self.deliveryRequested.connect(
+            self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subscription: Subscription | None = feature.subscribe(
+            self._context,
+            self._queue_state,
+        )
+
+    def _queue_state(self, state: SystemHealthViewState) -> None:
+        if self._closed or not self._route_active:
+            return
+        self.deliveryRequested.emit(self._mount_generation.value, state)
+
+    @Slot(int, object)
+    def _accept_state(
+        self,
+        mount_generation: int,
+        state: SystemHealthViewState,
+    ) -> None:
+        if (
+            self._closed
+            or mount_generation != self._mount_generation.value
+            or state.context != self._context
+            or state.revision <= self._state.revision
+        ):
+            return
+        self._state = state
+        self.stateChanged.emit()
+
+    def set_route_active(self, active: bool) -> None:
+        if self._closed or active is self._route_active:
+            return
+        self._route_active = active
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        if active:
+            self._state = self._feature.snapshot(self._context)
+            self._subscription = self._feature.subscribe(
+                self._context,
+                self._queue_state,
+            )
+            self.stateChanged.emit()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def presentationState(self) -> str:  # noqa: N802
+        return self._state.presentation.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def phase(self) -> str:
+        return self._state.phase.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshness(self) -> str:
+        return self._state.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def completeness(self) -> str:
+        return self._state.completeness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def recoveryPhase(self) -> str:  # noqa: N802
+        return self._state.recovery_phase.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def statusText(self) -> str:  # noqa: N802
+        error = self._state.error
+        details = (
+            f"{self.presentationState} · {self.freshness} · "
+            f"{self.completeness}"
+        )
+        if error is None:
+            return details
+        correlation = (
+            ""
+            if error.correlation_identity is None
+            else f" · correlation {error.correlation_identity}"
+        )
+        return (
+            f"{details} · {error.code.value} · {error.explanation} · "
+            f"affected {error.affected_scope.value} · "
+            f"recovery {error.recovery_expectation.value}{correlation}"
+        )
+
+    def _component(
+        self,
+        identity: SystemHealthComponentIdentity,
+    ) -> SystemHealthComponent | None:
+        return next(
+            (item for item in self._state.components if item.identity is identity),
+            None,
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def componentClassification(self) -> str:  # noqa: N802
+        component = self._component(
+            SystemHealthComponentIdentity.APPLICATION_RUNTIME
+        )
+        if component is None:
+            return "unknown"
+        return component.classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def componentExplanation(self) -> str:  # noqa: N802
+        component = self._component(
+            SystemHealthComponentIdentity.APPLICATION_RUNTIME
+        )
+        if component is None:
+            return "No authoritative Runtime Health observation is available."
+        return component.explanation
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceClassification(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "unknown" if component is None else component.classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceAvailability(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "unknown" if component is None else component.availability.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceFreshness(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "unknown" if component is None else component.freshness.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceAgeText(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "Unavailable"
+            if component is None
+            else f"{component.age.total_seconds():.1f}s"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceSchemaCompatibility(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "unknown"
+            if component is None
+            else component.schema_compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceSchemaHead(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "Unavailable"
+            if component is None or component.schema_head is None
+            else component.schema_head
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceSupportedSchemaHead(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return "Unavailable" if component is None else component.supported_schema_head
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceDurableReadText(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        value = (
+            None
+            if component is None
+            else component.last_successful_durable_read_at
+        )
+        return "Unavailable" if value is None else value.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceDurableWriteText(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        value = (
+            None
+            if component is None
+            else component.last_successful_durable_write_at
+        )
+        return "Unavailable" if value is None else value.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceReopenVerification(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "unknown"
+            if component is None
+            else component.reopen_verification.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceAffectedScope(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "diagnostic_persistence"
+            if component is None
+            else component.affected_scope.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceRecoveryState(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            self._state.recovery_phase.value
+            if component is None
+            else component.recovery_phase.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def persistenceExplanation(self) -> str:  # noqa: N802
+        component = self._persistence_component()
+        return (
+            "No authoritative Diagnostic Persistence observation is available."
+            if component is None
+            else component.explanation
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def versionClassification(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "unknown" if component is None else component.classification.value
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def productBuild(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.product_build
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def featureRegistryText(self) -> str:  # noqa: N802
+        component = self._version_component()
+        if component is None:
+            return "Unavailable"
+        return " · ".join(
+            f"{item.name.value} {item.version.render()}"
+            for item in component.feature_interfaces
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def dependencyLockIdentity(self) -> str:  # noqa: N802
+        component = self._version_component()
+        if component is None or component.dependency_lock_identity is None:
+            return "Unavailable"
+        return component.dependency_lock_identity
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def releaseManifestCompatibility(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return (
+            "unknown"
+            if component is None
+            else component.release_manifest_compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def runnerVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.runner_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticSchemaVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.schema_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def evidenceFormatVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.evidence_format_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def manifestFormatVersion(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return "Unavailable" if component is None else component.manifest_format_version
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def manifestCompatibility(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return (
+            "unknown"
+            if component is None
+            else component.reproduction_manifest_compatibility.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def versionExplanation(self) -> str:  # noqa: N802
+        component = self._version_component()
+        return (
+            "No authoritative Version Health observation is available."
+            if component is None
+            else component.explanation
+        )
+
+    def _persistence_component(self) -> PersistenceHealthComponent | None:
+        component = self._component(
+            SystemHealthComponentIdentity.DIAGNOSTIC_PERSISTENCE
+        )
+        return (
+            component
+            if isinstance(component, PersistenceHealthComponent)
+            else None
+        )
+
+    def _version_component(self) -> VersionHealthComponent | None:
+        component = self._component(
+            SystemHealthComponentIdentity.VERSION_COMPATIBILITY
+        )
+        return component if isinstance(component, VersionHealthComponent) else None
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def ageText(self) -> str:  # noqa: N802
+        return f"{self._state.age.total_seconds():.1f}s"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def freshnessThresholdText(self) -> str:  # noqa: N802
+        return f"{self._state.freshness_threshold.total_seconds():.1f}s"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def revisionText(self) -> str:  # noqa: N802
+        return f"r{self._state.revision}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def observedAtText(self) -> str:  # noqa: N802
+        return self._state.observed_at.isoformat()
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceIdentity(self) -> str:  # noqa: N802
+        return self._state.source.identity
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGenerationText(self) -> str:  # noqa: N802
+        return f"g{self._state.source.generation.value}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def lastReliableText(self) -> str:  # noqa: N802
+        if self._state.last_reliable_at is None:
+            return "Unavailable"
+        return self._state.last_reliable_at.isoformat()
+
+    @Slot()
+    def refresh(self) -> None:
+        if self._closed or not self._route_active:
+            return
+        state = self._feature.snapshot(self._context)
+        if state.revision > self._state.revision:
+            self._state = state
+            self.stateChanged.emit()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._route_active = False
+        self._mount_generation = _next_mount_generation()
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        try:
+            self.deliveryRequested.disconnect(self._accept_state)
+        except (RuntimeError, TypeError):
+            pass
+
+
 class JourneyWorkspaceHost(QQuickWidget):
     """Exactly one route-level QML host mounted by the Widgets MainWindow."""
 
@@ -5909,6 +6298,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         ) = None,
         evidence_feature: EvidenceAndFindingsFeature | None = None,
         evidence_context: EvidenceAndFindingsContext | None = None,
+        system_health_feature: SystemHealthFeature | None = None,
+        system_health_context: SystemHealthContext | None = None,
         accessibility_preferences: AccessibilityPreferences | None = None,
         parent: QWidget | None = None,
         initial_route: str = "diagnostic_tasks",
@@ -5920,6 +6311,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
+            "system_health",
         }:
             raise ValueError(
                 f"Unsupported Journey Workspace route: {initial_route!r}"
@@ -6061,6 +6453,19 @@ class JourneyWorkspaceHost(QQuickWidget):
             "evidenceAndFindings",
             self._evidence_and_findings,
         )
+        self._system_health = (
+            SystemHealthQtAdapter(
+                system_health_feature,
+                context=system_health_context,
+                parent=self,
+            )
+            if system_health_feature is not None
+            else None
+        )
+        self.rootContext().setContextProperty(
+            "systemHealth",
+            self._system_health,
+        )
         if (
             self._diagnostic_tasks is not None
             and self._evidence_and_findings is not None
@@ -6182,6 +6587,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._evidence_and_findings.set_route_active(
                 route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
             )
+        if self._system_health is not None:
+            self._system_health.set_route_active(
+                route is JourneyWorkspaceRoute.SYSTEM_HEALTH
+            )
 
     @Slot(object)
     def _select_run_monitoring_handoff(
@@ -6236,6 +6645,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         self._run_monitoring.close()
         if self._evidence_and_findings is not None:
             self._evidence_and_findings.close()
+        if self._system_health is not None:
+            self._system_health.close()
         if unload_qml:
             self.setSource(QUrl())
 
@@ -6247,4 +6658,5 @@ __all__ = [
     "RunMonitoringQtAdapter",
     "ScenarioLabQtAdapter",
     "StrategyLibraryQtAdapter",
+    "SystemHealthQtAdapter",
 ]

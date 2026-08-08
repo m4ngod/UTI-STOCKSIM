@@ -13,6 +13,7 @@ from stock_sim.release.frontend_v2_packaging import (
     EXPECTED_TOOLCHAIN,
     PROJECT_QML_ROOT,
     PROJECT_ROOT,
+    TOOLCHAIN_LOCK_PATH,
     AccessibilityGateEvidence,
     LockedPlatform,
     MandatoryReleaseGateEvidence,
@@ -422,6 +423,7 @@ def _clean_room_lane(root, lane, graphics_api):
             "DiagnosticTasksFeature/1.0",
             "RunMonitoringFeature/1.2",
             "EvidenceAndFindingsFeature/1.1",
+            "SystemHealthFeature/1.0",
         ],
         "campaign_status": "completed",
         "run_status": "completed",
@@ -774,6 +776,10 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
         "--include-module=strategy_diagnostics.diagnostic_evidence_storage",
         "--include-module=strategy_diagnostics.quentx_scenario_native_strategy",
         "--include-module=strategy_diagnostics.live_minute_scenario_native_strategy",
+        (
+            f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
+            "stock_sim/release/frontend_v2_toolchain.lock.json"
+        ),
         (
             "--include-data-files="
             f"{PROJECT_ROOT / 'strategy_diagnostics' / 'quentx_scenario_native_strategy.py'}"
@@ -1705,6 +1711,7 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "DiagnosticTasksFeature/1.0",
                         "RunMonitoringFeature/1.2",
                         "EvidenceAndFindingsFeature/1.1",
+                        "SystemHealthFeature/1.0",
                     ],
                     "campaign_status": "completed",
                     "run_status": "completed",
@@ -2641,7 +2648,8 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
         "ScenarioLabFeature/1.0|"
         "DiagnosticTasksFeature/1.0|"
         "RunMonitoringFeature/1.2|"
-        "EvidenceAndFindingsFeature/1.1"
+        "EvidenceAndFindingsFeature/1.1|"
+        "SystemHealthFeature/1.0"
         in script
     )
     assert "$smoke.persistence_reopened -is [bool]" in script

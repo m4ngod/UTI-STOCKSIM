@@ -114,9 +114,11 @@ from .market_paths import (
 from .persistence import (
     DIAGNOSTIC_SCHEMA_REVISION,
     DiagnosticMigrationReport,
+    DiagnosticPersistenceHealthObservation,
     SqlHistoricalSegmentCatalog,
     SqlScenarioRecipeRepository,
     initialize_diagnostic_persistence,
+    read_diagnostic_persistence_health,
 )
 from .ptrade_host import (
     LIVE_MINUTE_SCENARIO_NATIVE_STRATEGY_ID,
@@ -324,6 +326,8 @@ class DiagnosticsApplication:
         ) = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
+        self._persistence_engine: Engine | None = None
+        self._persistence_reopen_observed = False
         source = historical_source or BaoStockHistoricalSource()
         self._transformation_catalog = create_initial_transformation_catalog()
         self._historical_segments = HistoricalSegmentAdmissionService(
@@ -428,7 +432,11 @@ class DiagnosticsApplication:
         return self._state
 
     def initialize_persistence(self, engine: Engine) -> DiagnosticMigrationReport:
+        first_persistence_open = self._persistence_engine is None
+        self._persistence_engine = engine
         report = initialize_diagnostic_persistence(engine)
+        if first_persistence_open:
+            self._persistence_reopen_observed = not report.applied_revisions
         self._historical_segments.replace_catalog(SqlHistoricalSegmentCatalog(engine))
         recipe_repository = SqlScenarioRecipeRepository(engine)
         self._recipe_workbench.replace_repository(recipe_repository)
@@ -472,6 +480,17 @@ class DiagnosticsApplication:
         ):
             self._change_diagnostic_lifecycle(lifecycle_request)
         return report
+
+    def read_diagnostic_persistence_health(
+        self,
+    ) -> DiagnosticPersistenceHealthObservation:
+        """Read safe persistence facts without applying or ensuring schema."""
+
+        self.status()
+        return read_diagnostic_persistence_health(
+            self._persistence_engine,
+            reopen_observed=self._persistence_reopen_observed,
+        )
 
     def status(self) -> DiagnosticsApplicationState:
         if self._state is None:
@@ -2886,6 +2905,19 @@ class DiagnosticsApplication:
         return cast(
             tuple[ReproductionManifest, ...],
             self._reproduction.manifests_for(evidence_package_id),
+        )
+
+    def read_reproduction_manifest_format_identity(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> str | None:
+        """Read a selected Manifest format without deserializing its payload."""
+
+        self.status()
+        return self._reproduction.manifest_format_identity(
+            evidence_package_id,
+            manifest_id,
         )
 
     def reproduce_strategy_run(

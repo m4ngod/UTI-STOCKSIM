@@ -1515,6 +1515,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
                 "DiagnosticTasksFeature/1.0",
                 "RunMonitoringFeature/1.2",
                 "EvidenceAndFindingsFeature/1.1",
+                "SystemHealthFeature/1.0",
             ],
             "strategy_library": {
                 "selection_context_id": strategy_selection.context_identity,

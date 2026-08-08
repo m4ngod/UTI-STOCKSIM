@@ -25,10 +25,15 @@ from strategy_diagnostics.formal_diagnostic_campaigns import (
     DiagnosticCampaignSnapshot,
 )
 from strategy_diagnostics.reproduction import ReproductionManifest
+from strategy_diagnostics.versioning import STRATEGY_DIAGNOSTICS_RUNNER_VERSION
 from strategy_diagnostics.strategy_runs import StrategyRunSnapshot
 
 from ._diagnostics_application_access import (
     shared_diagnostics_application_access_gate,
+)
+from .diagnostics_application_ownership import (
+    DiagnosticsApplicationIdentity,
+    diagnostics_application_identity,
 )
 from .evidence_and_findings import (
     ApprovedScenarioRecipeId,
@@ -295,6 +300,10 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
     @property
     def interface_version(self) -> ApplicationReadModelVersion:
         return self._provider_version
+
+    @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        return diagnostics_application_identity(self._application)
 
     def resolve_journey(
         self,
@@ -1320,7 +1329,7 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
                     f"sha256:{value}" for value in sorted(artifact_hashes)
                 ),
                 source_run_ids=run_ids,
-                runner_version="strategy-diagnostics-v1",
+                runner_version=STRATEGY_DIAGNOSTICS_RUNNER_VERSION,
                 build_version=(relevant_manifests[0].specification.code_identity),
                 dependencies=tuple(
                     DependencyProvenance(

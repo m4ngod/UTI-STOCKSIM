@@ -32,6 +32,8 @@ PRODUCTION_PATH = (
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
+    "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+    "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
 )
 WAVE2_ACCEPTED_COMMAND_KINDS = (
@@ -207,6 +209,7 @@ _APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Open Diagnostic Tasks|"
     r"Open Run Monitoring|"
     r"Open Evidence and Findings|"
+    r"Open System Health|"
     r"Create Diagnostic Task|"
     r"Correct Configuration|"
     r"Validate Configuration|"
@@ -246,6 +249,7 @@ _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
         "scenarioLabCompatibilityFilter",
         "scenarioLabReproducibilityFilter",
         "scenarioLabReconstructionFilter",
+        "systemHealthAccessibleStatus",
     }
 )
 _PACKAGED_NON_ACTION_FOCUS_PARENT_OBJECT_NAMES = frozenset(
@@ -474,10 +478,12 @@ def _create_production_window(
     event_bridge: Any,
     settings_path: Path,
     runtime_gateway: Any | None = None,
+    strategy_diagnostics_application: Any | None = None,
     strategy_diagnostics_read_model: Any | None = None,
     strategy_diagnostics_tasks_application: Any | None = None,
     strategy_diagnostics_library_application: Any | None = None,
     strategy_diagnostics_scenario_lab_application: Any | None = None,
+    strategy_diagnostics_system_health_application: Any | None = None,
     diagnostic_setup_selection_coordinator: Any | None = None,
 ) -> tuple[Any, Any, Any]:
     from app.app_context import build_app_context
@@ -488,6 +494,7 @@ def _create_production_window(
         run_monitoring_mode="live",
         event_bridge=event_bridge,
         runtime_gateway=runtime_gateway,
+        strategy_diagnostics_application=strategy_diagnostics_application,
         strategy_diagnostics_read_model=strategy_diagnostics_read_model,
         strategy_diagnostics_tasks_application=(
             strategy_diagnostics_tasks_application
@@ -497,6 +504,9 @@ def _create_production_window(
         ),
         strategy_diagnostics_scenario_lab_application=(
             strategy_diagnostics_scenario_lab_application
+        ),
+        strategy_diagnostics_system_health_application=(
+            strategy_diagnostics_system_health_application
         ),
         diagnostic_setup_selection_coordinator=(
             diagnostic_setup_selection_coordinator
@@ -543,6 +553,16 @@ def _create_production_window(
             evidence_and_findings_context=(
                 context.evidence_and_findings_context
             ),
+            system_health_feature=getattr(
+                context,
+                "system_health_feature",
+                None,
+            ),
+            system_health_context=getattr(
+                context,
+                "system_health_context",
+                None,
+            ),
             frontend_v2_enabled=True,
         )
         if not window.journey_workspace_active:
@@ -575,6 +595,11 @@ def _create_production_window(
             context.diagnostic_tasks_feature.close,
             context.run_monitoring_feature.close,
             context.evidence_and_findings_feature.close,
+            (
+                context.system_health_feature.close
+                if hasattr(context, "system_health_feature")
+                else None
+            ),
         )
         for action in cleanup_actions:
             if action is None:
@@ -2108,6 +2133,7 @@ def _run_smoke_journey(
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
         LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+        LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
     )
     from app.features.diagnostic_setup import (
         DiagnosticSetupSelectionCoordinator,
@@ -2236,6 +2262,11 @@ def _run_smoke_journey(
     )
     scenario_lab_application = (
         LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            fixture.application
+        )
+    )
+    system_health_application = (
+        LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
             fixture.application
         )
     )
@@ -2388,10 +2419,14 @@ def _run_smoke_journey(
 
     context, window, host = _create_production_window(
         event_bridge=bridge,
+        strategy_diagnostics_application=fixture.application,
         strategy_diagnostics_read_model=read_model,
         strategy_diagnostics_tasks_application=diagnostic_tasks_application,
         strategy_diagnostics_library_application=strategy_library_application,
         strategy_diagnostics_scenario_lab_application=scenario_lab_application,
+        strategy_diagnostics_system_health_application=(
+            system_health_application
+        ),
         diagnostic_setup_selection_coordinator=setup_coordinator,
         settings_path=report_dir / "frontend-v2-settings.json",
     )
@@ -2762,8 +2797,14 @@ def _run_smoke_journey(
                 fixture.application
             )
         )
+        system_health_application = (
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                fixture.application
+            )
+        )
         context, window, host = _create_production_window(
             event_bridge=bridge,
+            strategy_diagnostics_application=fixture.application,
             strategy_diagnostics_read_model=read_model,
             strategy_diagnostics_tasks_application=(
                 diagnostic_tasks_application
@@ -2773,6 +2814,9 @@ def _run_smoke_journey(
             ),
             strategy_diagnostics_scenario_lab_application=(
                 scenario_lab_application
+            ),
+            strategy_diagnostics_system_health_application=(
+                system_health_application
             ),
             diagnostic_setup_selection_coordinator=setup_coordinator,
             settings_path=report_dir / "frontend-v2-settings.json",
@@ -3435,6 +3479,7 @@ def _run_smoke_journey(
         )
         context, window, host = _create_production_window(
             event_bridge=bridge,
+            strategy_diagnostics_application=fixture.application,
             strategy_diagnostics_read_model=read_model,
             strategy_diagnostics_tasks_application=(
                 diagnostic_tasks_application
@@ -3444,6 +3489,9 @@ def _run_smoke_journey(
             ),
             strategy_diagnostics_scenario_lab_application=(
                 scenario_lab_application
+            ),
+            strategy_diagnostics_system_health_application=(
+                system_health_application
             ),
             diagnostic_setup_selection_coordinator=setup_coordinator,
             settings_path=report_dir / "frontend-v2-settings.json",
@@ -4166,6 +4214,7 @@ def _run_interactive() -> int:
     app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
     app.aboutToQuit.connect(context.run_monitoring_feature.close)
     app.aboutToQuit.connect(context.evidence_and_findings_feature.close)
+    app.aboutToQuit.connect(context.system_health_feature.close)
     app.aboutToQuit.connect(stop_frontend_bridge)
     window.show()
     return int(app.exec())

@@ -283,6 +283,7 @@ _EXPECTED_ACTIVE_FEATURE_INTERFACES = (
     "DiagnosticTasksFeature/1.0",
     "RunMonitoringFeature/1.2",
     "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0",
 )
 REAL_V1_IDENTITY_FIELDS = (
     "campaign_identity",
@@ -969,6 +970,10 @@ def create_package_build_plans(
         resolved_qml_dependencies=resolved_dependencies,
         extra_arguments=(
             f"--include-data-dir={PROJECT_QML_ROOT}=app/ui/qml",
+            (
+                f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
+                "stock_sim/release/frontend_v2_toolchain.lock.json"
+            ),
             (
                 "--include-module=stock_sim.release."
                 "strategy_diagnostics_v1_release_fixture"

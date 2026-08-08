@@ -14,6 +14,7 @@ Rectangle {
         initialJourneyRoute === "diagnostic_tasks"
     )
     property bool evidenceAvailable: evidenceAndFindings !== null
+    property bool systemHealthAvailable: systemHealth !== null
     property string diagnosticTasksInventoryState: (
         diagnosticTasksAvailable
             ? diagnosticTasks.presentationState
@@ -126,6 +127,7 @@ Rectangle {
         if (diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
+                || systemHealthRouteNavigation.activeFocus
                 || (pauseDiagnosticTask.activeFocus
                     && pauseDiagnosticTask.enabled)
                 || (resumeDiagnosticTask.activeFocus
@@ -140,6 +142,7 @@ Rectangle {
         if (diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
+                || systemHealthRouteNavigation.activeFocus
                 || (evidencePageLoader.item !== null
                     && evidencePageLoader.item.hasMeaningfulFocus))
             return
@@ -150,6 +153,7 @@ Rectangle {
         if (diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
+                || systemHealthRouteNavigation.activeFocus
                 || (diagnosticTasksPageLoader.item !== null
                     && diagnosticTasksPageLoader.item.hasMeaningfulFocus))
             return
@@ -174,6 +178,11 @@ Rectangle {
             if (diagnosticTasksPageLoader.item === null
                     || !diagnosticTasksPageLoader.item.restoreFocus())
                 diagnosticTasksRouteNavigation.forceActiveFocus()
+        }
+        else if (activeRoute === "system_health") {
+            if (systemHealthPageLoader.item === null
+                    || !systemHealthPageLoader.item.restoreFocus())
+                systemHealthRouteNavigation.forceActiveFocus()
         }
         else
             restoreRunFocus()
@@ -201,6 +210,8 @@ Rectangle {
                 ? "diagnostic_tasks" : "run_monitoring"
         else if (!diagnosticTasksAvailable && activeRoute === "diagnostic_tasks")
             activeRoute = "run_monitoring"
+        else if (!systemHealthAvailable && activeRoute === "system_health")
+            activeRoute = "run_monitoring"
         Qt.callLater(restoreActiveRouteFocus)
     }
 
@@ -214,6 +225,14 @@ Rectangle {
         repeat: true
         running: workspace.screenState === "active"
         onTriggered: runMonitoring.refresh()
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: workspace.systemHealthAvailable
+            && workspace.activeRoute === "system_health"
+        onTriggered: systemHealth.refresh()
     }
 
     Connections {
@@ -660,6 +679,64 @@ Rectangle {
                         font.pixelSize: tokens.labelSize
                         font.bold: true
                         wrapMode: Text.WrapAnywhere
+                    }
+                }
+
+                Rectangle {
+                    id: systemHealthRouteNavigation
+                    objectName: "systemHealthRouteNavigation"
+                    property string accessibleName: "Open System Health"
+                    property string accessibleDescription: (
+                        "Navigate to read-only diagnostics Runtime Health"
+                    )
+                    readonly property bool focusVisible: activeFocus
+                    activeFocusOnTab: true
+                    visible: workspace.systemHealthAvailable
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: Math.max(
+                        44,
+                        tokens.bodySize + tokens.spaceSm * 2
+                    )
+                    radius: tokens.radiusSm
+                    color: workspace.activeRoute === "system_health"
+                        ? tokens.surfaceRaised : "transparent"
+                    border.color: workspace.activeRoute === "system_health"
+                        ? tokens.accent : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.name: accessibleName
+                    Accessible.description: accessibleDescription
+                    Accessible.role: Accessible.Button
+                    Accessible.focusable: true
+                    Accessible.focused: activeFocus
+                    Accessible.selectable: true
+                    Accessible.selected: workspace.activeRoute === "system_health"
+                    Accessible.onPressAction: workspace.openRoute("system_health")
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: tokens.spaceMd
+                        anchors.rightMargin: tokens.spaceSm
+                        verticalAlignment: Text.AlignVCenter
+                        text: "System Health"
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: workspace.openRoute("system_health")
+                    }
+                    Keys.onReturnPressed: function(event) {
+                        workspace.openRoute("system_health")
+                        event.accepted = true
+                    }
+                    Keys.onSpacePressed: function(event) {
+                        workspace.openRoute("system_health")
+                        event.accepted = true
                     }
                 }
 
@@ -1274,6 +1351,22 @@ Rectangle {
                     EvidenceAndFindingsPage {
                         adapter: evidenceAndFindings
                         tokens: workspace.designSystem
+                    }
+                }
+            }
+
+            Loader {
+                id: systemHealthPageLoader
+                objectName: "systemHealthPageLoader"
+                anchors.fill: parent
+                active: workspace.systemHealthAvailable
+                    && workspace.activeRoute === "system_health"
+                visible: workspace.activeRoute === "system_health"
+                sourceComponent: Component {
+                    SystemHealthPage {
+                        adapter: systemHealth
+                        tokens: workspace.designSystem
+                        leaveFocusTarget: systemHealthRouteNavigation
                     }
                 }
             }

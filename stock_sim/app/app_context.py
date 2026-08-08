@@ -15,7 +15,9 @@ from app.features import (
     DeterministicFakeRunMonitoringAdapter,
     DeterministicFakeScenarioLabAdapter,
     DeterministicFakeStrategyLibraryAdapter,
+    DeterministicFakeSystemHealthAdapter,
     DiagnosticEvidencePackageId,
+    DiagnosticsApplicationOwned,
     DiagnosticTasksContext,
     DiagnosticTasksFeature,
     EvidenceAndFindingsContext,
@@ -28,7 +30,9 @@ from app.features import (
     LiveScenarioLabAdapter,
     LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
     LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
     LiveStrategyLibraryAdapter,
+    LiveSystemHealthAdapter,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     MarketScenarioId,
@@ -42,12 +46,16 @@ from app.features import (
     StrategyDiagnosticsV1DiagnosticTasksApplication,
     StrategyDiagnosticsV1StrategyLibraryApplication,
     StrategyDiagnosticsV1ScenarioLabApplication,
+    StrategyDiagnosticsV1SystemHealthApplication,
     StrategyLibraryContext,
     StrategyLibraryFeature,
+    SystemHealthContext,
+    SystemHealthFeature,
     StrategySelectionBookmark,
     StrategyRunId,
     StrategyUnderTestId,
     V1JourneySelector,
+    diagnostics_application_identity,
     decode_strategy_selection_bookmark,
     encode_strategy_selection_bookmark,
 )
@@ -75,6 +83,7 @@ if TYPE_CHECKING:
     from app.services.rollback_service import RollbackService
     from app.services.trading_service import TradingService
     from app.services.training_arena_service import TrainingArenaService
+    from strategy_diagnostics.application import DiagnosticsApplication
 
 
 @dataclass
@@ -104,6 +113,7 @@ class AppContext:
 
     training_arena_service: TrainingArenaService | None
     arena_experiment_runner: ArenaExperimentRunner | None
+    strategy_diagnostics_application: DiagnosticsApplication | None
     strategy_diagnostics_read_model: StrategyDiagnosticsV1ApplicationReadModel | None
     strategy_diagnostics_tasks_application: (
         StrategyDiagnosticsV1DiagnosticTasksApplication | None
@@ -113,6 +123,9 @@ class AppContext:
     )
     strategy_diagnostics_scenario_lab_application: (
         StrategyDiagnosticsV1ScenarioLabApplication | None
+    )
+    strategy_diagnostics_system_health_application: (
+        StrategyDiagnosticsV1SystemHealthApplication | None
     )
     diagnostic_setup_selection_coordinator: (
         DiagnosticSetupSelectionCoordinator
@@ -127,6 +140,8 @@ class AppContext:
     run_monitoring_context: RunMonitoringContext
     evidence_and_findings_feature: EvidenceAndFindingsFeature
     evidence_and_findings_context: EvidenceAndFindingsContext
+    system_health_feature: SystemHealthFeature
+    system_health_context: SystemHealthContext
     _journey_workspace_bookmark_lock: RLock = field(
         default_factory=RLock,
         init=False,
@@ -168,6 +183,7 @@ def build_app_context(
     run_monitoring_mode: str | None = None,
     event_bridge: EventBridge | None = None,
     runtime_gateway: Any | None = None,
+    strategy_diagnostics_application: DiagnosticsApplication | None = None,
     strategy_diagnostics_read_model: (
         StrategyDiagnosticsV1ApplicationReadModel | None
     ) = None,
@@ -179,6 +195,9 @@ def build_app_context(
     ) = None,
     strategy_diagnostics_scenario_lab_application: (
         StrategyDiagnosticsV1ScenarioLabApplication | None
+    ) = None,
+    strategy_diagnostics_system_health_application: (
+        StrategyDiagnosticsV1SystemHealthApplication | None
     ) = None,
     diagnostic_setup_selection_coordinator: (
         DiagnosticSetupSelectionCoordinator | None
@@ -270,6 +289,7 @@ def build_app_context(
         focus_target=journey_workspace_bookmark.scenario_focus_target,
         focus_identity=journey_workspace_bookmark.scenario_focus_identity,
     )
+    system_health_context = SystemHealthContext()
     if resolved_mode == "fake":
         strategy_library_feature: StrategyLibraryFeature = (
             DeterministicFakeStrategyLibraryAdapter()
@@ -288,6 +308,9 @@ def build_app_context(
         evidence_and_findings_feature: EvidenceAndFindingsFeature = (
             DeterministicFakeEvidenceAndFindingsAdapter()
         )
+        system_health_feature: SystemHealthFeature = (
+            DeterministicFakeSystemHealthAdapter()
+        )
     else:
         live_bridge = event_bridge or start_frontend_bridge()
         if (
@@ -295,32 +318,44 @@ def build_app_context(
             and strategy_diagnostics_tasks_application is None
             and strategy_diagnostics_library_application is None
             and strategy_diagnostics_scenario_lab_application is None
+            and strategy_diagnostics_system_health_application is None
         ):
+            (
+                strategy_diagnostics_application,
+                strategy_diagnostics_read_model,
+                strategy_diagnostics_tasks_application,
+                strategy_diagnostics_library_application,
+                strategy_diagnostics_scenario_lab_application,
+                strategy_diagnostics_system_health_application,
+            ) = _build_strategy_diagnostics_adapters(
+                setup_coordinator,
+                application=strategy_diagnostics_application,
+            )
+        else:
+            if strategy_diagnostics_application is None:
+                raise ValueError(
+                    "Injected Strategy Diagnostics interfaces require an "
+                    "explicit shared DiagnosticsApplication"
+                )
             (
                 strategy_diagnostics_read_model,
                 strategy_diagnostics_tasks_application,
                 strategy_diagnostics_library_application,
                 strategy_diagnostics_scenario_lab_application,
-            ) = _build_strategy_diagnostics_adapters(setup_coordinator)
-        else:
-            if strategy_diagnostics_read_model is None:
-                strategy_diagnostics_read_model = (
-                    _build_strategy_diagnostics_read_model()
-                )
-            if strategy_diagnostics_tasks_application is None:
-                strategy_diagnostics_tasks_application = (
-                    _build_strategy_diagnostics_tasks_application(
-                        setup_coordinator
-                    )
-                )
-            if strategy_diagnostics_library_application is None:
-                strategy_diagnostics_library_application = (
-                    _build_strategy_diagnostics_library_application()
-                )
-            if strategy_diagnostics_scenario_lab_application is None:
-                strategy_diagnostics_scenario_lab_application = (
-                    _build_strategy_diagnostics_scenario_lab_application()
-                )
+                strategy_diagnostics_system_health_application,
+            ) = _complete_strategy_diagnostics_adapters(
+                setup_coordinator=setup_coordinator,
+                application=strategy_diagnostics_application,
+                read_model=strategy_diagnostics_read_model,
+                tasks_application=strategy_diagnostics_tasks_application,
+                library_application=strategy_diagnostics_library_application,
+                scenario_lab_application=(
+                    strategy_diagnostics_scenario_lab_application
+                ),
+                system_health_application=(
+                    strategy_diagnostics_system_health_application
+                ),
+            )
         strategy_library_feature = LiveStrategyLibraryAdapter(
             application=strategy_diagnostics_library_application,
             event_bridge=live_bridge,
@@ -346,6 +381,12 @@ def build_app_context(
             event_bridge=live_bridge,
             journey_selector=journey_selector,
         )
+        system_health_feature = LiveSystemHealthAdapter(
+            application_health=(
+                strategy_diagnostics_system_health_application
+            ),
+            event_bridge=live_bridge,
+        )
     evidence_and_findings_context = _evidence_and_findings_context_from_environment(
         run_monitoring_context,
     )
@@ -369,6 +410,7 @@ def build_app_context(
         leaderboard_controller=leaderboard_controller,
         training_arena_service=training_arena_service,
         arena_experiment_runner=arena_experiment_runner,
+        strategy_diagnostics_application=strategy_diagnostics_application,
         strategy_diagnostics_read_model=strategy_diagnostics_read_model,
         strategy_diagnostics_tasks_application=(
             strategy_diagnostics_tasks_application
@@ -378,6 +420,9 @@ def build_app_context(
         ),
         strategy_diagnostics_scenario_lab_application=(
             strategy_diagnostics_scenario_lab_application
+        ),
+        strategy_diagnostics_system_health_application=(
+            strategy_diagnostics_system_health_application
         ),
         diagnostic_setup_selection_coordinator=setup_coordinator,
         strategy_library_feature=strategy_library_feature,
@@ -390,6 +435,8 @@ def build_app_context(
         run_monitoring_context=run_monitoring_context,
         evidence_and_findings_feature=evidence_and_findings_feature,
         evidence_and_findings_context=evidence_and_findings_context,
+        system_health_feature=system_health_feature,
+        system_health_context=system_health_context,
     )
 
 
@@ -411,6 +458,7 @@ def reset_app_context(
     run_monitoring_mode: str | None = None,
     event_bridge: EventBridge | None = None,
     runtime_gateway: Any | None = None,
+    strategy_diagnostics_application: DiagnosticsApplication | None = None,
     strategy_diagnostics_read_model: (
         StrategyDiagnosticsV1ApplicationReadModel | None
     ) = None,
@@ -423,6 +471,9 @@ def reset_app_context(
     strategy_diagnostics_scenario_lab_application: (
         StrategyDiagnosticsV1ScenarioLabApplication | None
     ) = None,
+    strategy_diagnostics_system_health_application: (
+        StrategyDiagnosticsV1SystemHealthApplication | None
+    ) = None,
     legacy_read_only: bool = False,
 ) -> AppContext:
     global _app_context
@@ -433,6 +484,7 @@ def reset_app_context(
             run_monitoring_mode=run_monitoring_mode,
             event_bridge=event_bridge,
             runtime_gateway=runtime_gateway,
+            strategy_diagnostics_application=strategy_diagnostics_application,
             strategy_diagnostics_read_model=strategy_diagnostics_read_model,
             strategy_diagnostics_tasks_application=(
                 strategy_diagnostics_tasks_application
@@ -443,6 +495,9 @@ def reset_app_context(
             strategy_diagnostics_scenario_lab_application=(
                 strategy_diagnostics_scenario_lab_application
             ),
+            strategy_diagnostics_system_health_application=(
+                strategy_diagnostics_system_health_application
+            ),
             legacy_read_only=legacy_read_only,
         )
         if previous is not None:
@@ -451,6 +506,7 @@ def reset_app_context(
             previous.diagnostic_tasks_feature.close()
             previous.run_monitoring_feature.close()
             previous.evidence_and_findings_feature.close()
+            previous.system_health_feature.close()
         return _app_context
 
 
@@ -584,77 +640,172 @@ def _start_market_persistence_services() -> None:
         return
 
 
-def _build_strategy_diagnostics_read_model() -> (
-    LiveStrategyDiagnosticsV1ApplicationAdapter
-):
-    from persistence.models_imports import engine
-    from strategy_diagnostics import create_diagnostics_application
-
-    application = create_diagnostics_application()
-    application.start()
-    application.initialize_persistence(engine)
-    return LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine)
-
-
-def _build_strategy_diagnostics_tasks_application(
+def _complete_strategy_diagnostics_adapters(
+    *,
     setup_coordinator: DiagnosticSetupSelectionCoordinator,
-) -> (
-    LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter
-):
-    from strategy_diagnostics import create_diagnostics_application
+    application: DiagnosticsApplication,
+    read_model: StrategyDiagnosticsV1ApplicationReadModel | None,
+    tasks_application: StrategyDiagnosticsV1DiagnosticTasksApplication | None,
+    library_application: StrategyDiagnosticsV1StrategyLibraryApplication | None,
+    scenario_lab_application: StrategyDiagnosticsV1ScenarioLabApplication | None,
+    system_health_application: StrategyDiagnosticsV1SystemHealthApplication | None,
+) -> tuple[
+    StrategyDiagnosticsV1ApplicationReadModel,
+    StrategyDiagnosticsV1DiagnosticTasksApplication,
+    StrategyDiagnosticsV1StrategyLibraryApplication,
+    StrategyDiagnosticsV1ScenarioLabApplication,
+    StrategyDiagnosticsV1SystemHealthApplication,
+]:
+    """Fill partial injection from the explicit canonical application."""
 
-    application = create_diagnostics_application()
+    from persistence.models_imports import engine
+
+    expected_identity = diagnostics_application_identity(application)
+    injected = {
+        "read_model": read_model,
+        "tasks_application": tasks_application,
+        "library_application": library_application,
+        "scenario_lab_application": scenario_lab_application,
+        "system_health_application": system_health_application,
+    }
+    for name, adapter in injected.items():
+        if adapter is None:
+            continue
+        if (
+            not isinstance(adapter, DiagnosticsApplicationOwned)
+            or adapter.application_identity != expected_identity
+        ):
+            raise ValueError(
+                f"Injected {name} does not belong to the explicit shared "
+                "DiagnosticsApplication"
+            )
     application.start()
-    return LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-        application,
-        setup_selection_provider=setup_coordinator.current,
-    )
-
-
-def _build_strategy_diagnostics_library_application() -> (
-    LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter
-):
-    from strategy_diagnostics import create_diagnostics_application
-
-    application = create_diagnostics_application()
-    application.start()
-    return LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+    persistence_commands_available = _persistence_commands_are_available(
         application
     )
-
-
-def _build_strategy_diagnostics_scenario_lab_application() -> (
-    LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter
-):
-    from strategy_diagnostics import create_diagnostics_application
-
-    application = create_diagnostics_application()
-    application.start()
-    return LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application)
+    if read_model is None:
+        persistence_commands_available = _initialize_diagnostics_persistence(
+            application,
+            engine,
+        )
+        read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
+            application,
+            engine,
+        )
+    if tasks_application is None:
+        tasks_application = (
+            LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+                application,
+                setup_selection_provider=setup_coordinator.current,
+                commands_available=persistence_commands_available,
+            )
+        )
+    if library_application is None:
+        library_application = (
+            LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+                application
+            )
+        )
+    if scenario_lab_application is None:
+        scenario_lab_application = (
+            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+                application,
+                commands_available=persistence_commands_available,
+            )
+        )
+    if system_health_application is None:
+        system_health_application = (
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(application)
+        )
+    return (
+        read_model,
+        tasks_application,
+        library_application,
+        scenario_lab_application,
+        system_health_application,
+    )
 
 
 def _build_strategy_diagnostics_adapters(
     setup_coordinator: DiagnosticSetupSelectionCoordinator,
+    *,
+    application: DiagnosticsApplication | None = None,
 ) -> tuple[
+    DiagnosticsApplication,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
     LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
 ]:
     from persistence.models_imports import engine
     from strategy_diagnostics import create_diagnostics_application
 
-    application = create_diagnostics_application()
+    application = application or create_diagnostics_application()
     application.start()
-    application.initialize_persistence(engine)
+    persistence_commands_available = _initialize_diagnostics_persistence(
+        application,
+        engine,
+    )
     return (
+        application,
         LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
             application,
             setup_selection_provider=setup_coordinator.current,
+            commands_available=persistence_commands_available,
         ),
         LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(application),
-        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(application),
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            application,
+            commands_available=persistence_commands_available,
+        ),
+        LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(application),
+    )
+
+
+def _initialize_diagnostics_persistence(
+    application: DiagnosticsApplication,
+    engine: Any,
+) -> bool:
+    """Continue only for migration/open failures System Health can reobserve."""
+
+    try:
+        application.initialize_persistence(engine)
+    except Exception:  # noqa: BLE001 - re-raise non-observable partial init
+        from strategy_diagnostics.persistence import (
+            DiagnosticPersistenceAvailability,
+            DiagnosticPersistenceCompatibility,
+        )
+
+        observation = application.read_diagnostic_persistence_health()
+        if (
+            observation.availability
+            is DiagnosticPersistenceAvailability.UNAVAILABLE
+            or observation.compatibility
+            is DiagnosticPersistenceCompatibility.INCOMPATIBLE
+        ):
+            return False
+        raise
+    return True
+
+
+def _persistence_commands_are_available(
+    application: DiagnosticsApplication,
+) -> bool:
+    from strategy_diagnostics.persistence import (
+        DiagnosticPersistenceAvailability,
+        DiagnosticPersistenceCompatibility,
+    )
+
+    try:
+        observation = application.read_diagnostic_persistence_health()
+    except Exception:  # noqa: BLE001 - fail closed for command composition
+        return False
+    return (
+        observation.availability is DiagnosticPersistenceAvailability.AVAILABLE
+        and observation.compatibility
+        is DiagnosticPersistenceCompatibility.COMPATIBLE
     )
 
 

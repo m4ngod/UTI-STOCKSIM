@@ -35,6 +35,8 @@ if TYPE_CHECKING:
         StrategyLibraryContext,
         StrategyLibraryFeature,
         StrategySelectionBookmark,
+        SystemHealthContext,
+        SystemHealthFeature,
     )
     from app.journey_recovery import JourneyWorkspaceBookmark
 
@@ -107,6 +109,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         run_monitoring_context: RunMonitoringContext | None = None,
         evidence_and_findings_feature: EvidenceAndFindingsFeature | None = None,
         evidence_and_findings_context: EvidenceAndFindingsContext | None = None,
+        system_health_feature: SystemHealthFeature | None = None,
+        system_health_context: SystemHealthContext | None = None,
         frontend_v2_enabled: bool | None = None,
         rollback_read_only: bool = False,
         layout_path: str = "layout_main.json",
@@ -168,6 +172,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._run_monitoring_context = run_monitoring_context
         self._evidence_and_findings_feature = evidence_and_findings_feature
         self._evidence_and_findings_context = evidence_and_findings_context
+        self._system_health_feature = system_health_feature
+        self._system_health_context = system_health_context
         self._journey_workspace: Any = None
         self._dock = DockManager(self)
         self._layout_store = layout_store
@@ -246,6 +252,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             ),
             evidence_feature=self._evidence_and_findings_feature,
             evidence_context=self._evidence_and_findings_context,
+            system_health_feature=self._system_health_feature,
+            system_health_context=self._system_health_context,
             initial_route=(
                 self._journey_workspace_bookmark.last_route.value
                 if self._journey_workspace_bookmark is not None
