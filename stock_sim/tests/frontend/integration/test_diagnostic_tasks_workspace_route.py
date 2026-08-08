@@ -39,6 +39,8 @@ from app.features import (
     LiveRunMonitoringAdapter,
     LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+    LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
+    LiveSystemHealthAdapter,
     MarketScenarioId,
     ReviseDiagnosticTaskConfiguration,
     RunMonitoringContext,
@@ -46,6 +48,11 @@ from app.features import (
     ScenarioLabContext,
     StartFormalDiagnosticCampaign,
     StrategyUnderTestId,
+    SystemHealthContext,
+    SystemHealthContextResolution,
+    SystemHealthDiagnosticContext,
+    SystemHealthDiagnosticScope,
+    SystemHealthImpactComponentIdentity,
 )
 from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
 from app.features.live_scenario_lab import LiveScenarioLabAdapter
@@ -68,6 +75,9 @@ from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
+from strategy_diagnostics.diagnostic_evidence import (
+    DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION,
+)
 from strategy_diagnostics.market_paths import (
     InMemoryMarketPathArtifactStore,
     ParquetMarketPathArtifactStore,
@@ -77,6 +87,7 @@ from strategy_diagnostics.ptrade_host import (
     PTradeHostResult,
     PTradeOrderRequest,
 )
+from strategy_diagnostics.reproduction import REPRODUCTION_MANIFEST_SCHEMA_VERSION
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
     _approved_formal_task,
     _formal_live_stack,
@@ -562,7 +573,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         returned_artifact_store,
         engine,
         application,
-        _diagnostic_application,
+        diagnostic_application,
         initial_diagnostic_tasks,
     ) = _formal_live_stack(
         tmp_path,
@@ -1189,6 +1200,131 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert finding_ids
     assert breakpoint_ids
     assert breakpoint_finding_edges
+
+    finding_with_breakpoint = next(
+        finding
+        for candidate in evidence_data.candidates
+        for finding in candidate.findings
+        if finding.sensitivity_breakpoints
+    )
+    selected_breakpoint = finding_with_breakpoint.sensitivity_breakpoints[0]
+    assert completed_task.task_handles
+    selected_task_handle = completed_task.task_handles[-1]
+    system_health_context = SystemHealthContext(
+        diagnostic=SystemHealthDiagnosticContext(
+            task_id=completed_task.task_id,
+            task_revision=completed_task.revision,
+            configuration_content_id=completed_task.configuration.content_identity,
+            task_handle_id=selected_task_handle.identity,
+            campaign_id=campaign_id,
+            campaign_revision=completed_task.handoff.campaign_revision,
+            run_id=accepted_run.run_id,
+            evidence_package_id=completed_task.handoff.evidence_package_id,
+            finding_id=finding_with_breakpoint.identity,
+            sensitivity_breakpoint_id=selected_breakpoint.identity,
+            reproduction_manifest_id=manifest_id,
+            approved_recipe_version_ids=tuple(
+                item.recipe_version_id
+                for item in completed_task.configuration.campaign_case_selections
+            ),
+            evidence_format_version=DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION,
+            manifest_format_version=REPRODUCTION_MANIFEST_SCHEMA_VERSION,
+        )
+    )
+    system_health = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            current_manifest_format_provider=(
+                lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
+            ),
+        ),
+        diagnostic_tasks_application=diagnostic_application,
+        application_read_model=read_model,
+        event_bridge=bridge,
+        sampling_interval=None,
+    )
+    system_health_projection = system_health.snapshot(system_health_context)
+    assert (
+        system_health_projection.diagnostic_context.resolution
+        is SystemHealthContextResolution.COMPLETED
+    ), (
+        system_health_projection.diagnostic_context.resolution,
+        system_health_projection.diagnostic_context.explanation,
+    )
+    assert tuple(
+        impact.component for impact in system_health_projection.component_impacts
+    ) == tuple(SystemHealthImpactComponentIdentity)
+    assert all(
+        impact.revision == system_health_projection.revision
+        for impact in system_health_projection.component_impacts
+    )
+    persistence_impact = next(
+        impact
+        for impact in system_health_projection.component_impacts
+        if impact.component
+        is SystemHealthImpactComponentIdentity.DIAGNOSTIC_PERSISTENCE
+    )
+    assert set(persistence_impact.affected_scope) == set(SystemHealthDiagnosticScope)
+    system_health_run_monitoring = LiveRunMonitoringAdapter(
+        application_read_model=read_model,
+        event_bridge=bridge,
+        executor=_DirectExecutor(),
+    )
+    system_health_window = MainWindow(
+        run_monitoring_feature=system_health_run_monitoring,
+        system_health_feature=system_health,
+        system_health_context=system_health_context,
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
+        ),
+        frontend_v2_enabled=True,
+    )
+    try:
+        system_health_window.show()
+        settle()
+        system_health_root = system_health_window.centralWidget().rootObject()
+        system_health_status = system_health_root.findChild(
+            QObject,
+            "diagnosticContextAccessibleStatus",
+        )
+        assert system_health_status is not None
+        for _ in range(2_000):
+            settle()
+            system_health_accessible = str(
+                system_health_status.property("accessibleName")
+            )
+            if "diagnostic context completed" in system_health_accessible.casefold():
+                break
+            QTest.qWait(5)
+        else:
+            raise AssertionError(
+                "System Health did not render the exact graph: "
+                f"{system_health_accessible}"
+            )
+        for identity in (
+            completed_task.task_id.value,
+            selected_task_handle.identity.value,
+            campaign_id.value,
+            accepted_run.run_id.value,
+            completed_task.handoff.evidence_package_id.value,
+            finding_with_breakpoint.identity.value,
+            selected_breakpoint.identity.value,
+            manifest_id.value,
+        ):
+            assert identity in system_health_accessible
+        for component in SystemHealthImpactComponentIdentity:
+            assert component.value.replace("_", " ") in (
+                system_health_accessible.casefold()
+            )
+        for scope in SystemHealthDiagnosticScope:
+            assert scope.value.replace("_", " ") in (
+                system_health_accessible.casefold()
+            )
+        assert "overall diagnostic_completed" in system_health_accessible.casefold()
+    finally:
+        system_health_window.close()
+        system_health_run_monitoring.close()
+        system_health.close()
 
     expected_identity_text = (
         f"Campaign · {campaign_id.value}",

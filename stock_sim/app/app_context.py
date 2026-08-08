@@ -385,6 +385,8 @@ def build_app_context(
             application_health=(
                 strategy_diagnostics_system_health_application
             ),
+            diagnostic_tasks_application=strategy_diagnostics_tasks_application,
+            application_read_model=strategy_diagnostics_read_model,
             event_bridge=live_bridge,
         )
     evidence_and_findings_context = _evidence_and_findings_context_from_environment(

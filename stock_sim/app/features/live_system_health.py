@@ -16,6 +16,9 @@ from app.event_bridge import (
     EventBridgeSourceMode,
 )
 
+from .diagnostic_tasks_application import (
+    StrategyDiagnosticsV1DiagnosticTasksApplication,
+)
 from .run_monitoring import (
     Completeness,
     Freshness,
@@ -24,8 +27,12 @@ from .run_monitoring import (
     Subscription,
     ViewPhase,
 )
-from .strategy_diagnostics_v1_read_model import SourceRevisionToken
+from .strategy_diagnostics_v1_read_model import (
+    SourceRevisionToken,
+    StrategyDiagnosticsV1ApplicationReadModel,
+)
 from .system_health import (
+    SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION,
     DiagnosticCacheCompatibility,
     DiagnosticCacheFallbackState,
     DiagnosticCacheHealthClassification,
@@ -58,11 +65,19 @@ from .system_health import (
     RuntimeHealthRecoveryPhase,
     SystemHealthAffectedScope,
     SystemHealthComponent,
+    SystemHealthComponentImpact,
+    SystemHealthComponentImpactClassification,
     SystemHealthComponentIdentity,
     SystemHealthContext,
+    SystemHealthContextResolution,
+    SystemHealthDiagnosticContext,
+    SystemHealthDiagnosticContextState,
+    SystemHealthDiagnosticScope,
     SystemHealthError,
     SystemHealthErrorCode,
     SystemHealthObserver,
+    SystemHealthOverallClassification,
+    SystemHealthImpactComponentIdentity,
     SystemHealthPresentationState,
     SystemHealthRecoveryExpectation,
     SystemHealthSource,
@@ -93,6 +108,9 @@ from .system_health_application import (
     RuntimeHealthApplicationResult,
     StrategyDiagnosticsV1SystemHealthApplication,
     VersionHealthApplicationObservation,
+)
+from .system_health_diagnostic_context import (
+    LiveSystemHealthDiagnosticContextReader,
 )
 from .versioning import ACTIVE_FEATURE_INTERFACES
 from strategy_diagnostics.diagnostic_evidence import DIAGNOSTIC_EVIDENCE_SCHEMA_VERSION
@@ -172,6 +190,9 @@ class _SystemHealthProjection:
         ],
         read_persistence_health: Callable[[], PersistenceHealthApplicationObservation],
         read_version_health: Callable[[], VersionHealthApplicationObservation],
+        read_diagnostic_context: Callable[
+            [SystemHealthContext], SystemHealthDiagnosticContextState
+        ],
         source_kind: SourceKind,
         source_identity: str,
         clock: Callable[[], datetime],
@@ -187,11 +208,13 @@ class _SystemHealthProjection:
         self._read_diagnostic_cache_health = read_diagnostic_cache_health
         self._read_persistence_health = read_persistence_health
         self._read_version_health = read_version_health
+        self._read_diagnostic_context = read_diagnostic_context
         self._source_kind = source_kind
         self._source_identity = source_identity
         self._clock = clock
         self._freshness_threshold = freshness_threshold
         self._context = SystemHealthContext()
+        self._diagnostic_context_state = _no_current_context_state()
         self._generation = SourceGenerationId(1)
         self._connected = True
         self._revision = 0
@@ -207,7 +230,11 @@ class _SystemHealthProjection:
         self._last_notified_authoritative_key: tuple[str, ...] | None = None
         self._subscriptions: dict[
             int,
-            tuple[SystemHealthObserver, _SystemHealthSubscription],
+            tuple[
+                SystemHealthContext,
+                SystemHealthObserver,
+                _SystemHealthSubscription,
+            ],
         ] = {}
         self._next_subscription_id = 1
         self._closed = False
@@ -221,6 +248,13 @@ class _SystemHealthProjection:
     def snapshot(self, context: SystemHealthContext) -> SystemHealthViewState:
         self._require_context(context)
         with self._transition_lock:
+            if context != self._context:
+                with self._lock:
+                    self._ensure_open()
+                    self._context = context
+                    self._current_authoritative_key = None
+                    self._last_notified_authoritative_key = None
+                self._diagnostic_context_state = self._read_diagnostic_context(context)
             return self._snapshot_transition()
 
     def _snapshot_transition(self) -> SystemHealthViewState:
@@ -258,8 +292,13 @@ class _SystemHealthProjection:
             subscription = _SystemHealthSubscription(
                 lambda: self._remove_subscription(subscription_id)
             )
-            self._subscriptions[subscription_id] = (observer, subscription)
-            state = self._state or state
+            self._subscriptions[subscription_id] = (
+                context,
+                observer,
+                subscription,
+            )
+            if self._state is not None and self._state.context == context:
+                state = self._state
             self._last_notified_authoritative_key = (
                 self._current_authoritative_key
             )
@@ -276,7 +315,7 @@ class _SystemHealthProjection:
             self._closed = True
             subscriptions = tuple(
                 subscription
-                for _, subscription in self._subscriptions.values()
+                for _, _, subscription in self._subscriptions.values()
             )
             self._subscriptions.clear()
         for subscription in subscriptions:
@@ -502,6 +541,7 @@ class _SystemHealthProjection:
                 self._state,
                 revision=revision,
                 observed_at=_aware(self._clock()),
+                component_impacts=(),
                 source=replace(self._state.source, generation=self._generation),
                 diagnostic_data_source=component,
                 diagnostic_queue=replace(
@@ -540,7 +580,12 @@ class _SystemHealthProjection:
                     ),
                 )
             self._data_source_component = component
-        self._store_and_deliver(_with_data_source_aggregate(state))
+        self._store_and_deliver(
+            _with_contextual_aggregate(
+                _with_data_source_aggregate(state),
+                state.diagnostic_context,
+            )
+        )
 
     def _refresh(
         self,
@@ -573,12 +618,20 @@ class _SystemHealthProjection:
         cache_result = self._read_diagnostic_cache_health()
         persistence_result = self._read_persistence_health()
         version_result = self._read_version_health()
-        authoritative_key = _authoritative_result_key(
-            runtime_result,
-            queue_result,
-            cache_result,
-            persistence_result,
+        diagnostic_context_state = _apply_context_format_compatibility(
+            self._read_diagnostic_context(self._context),
             version_result,
+        )
+        self._diagnostic_context_state = diagnostic_context_state
+        authoritative_key = (
+            *_authoritative_result_key(
+                runtime_result,
+                queue_result,
+                cache_result,
+                persistence_result,
+                version_result,
+            ),
+            *_diagnostic_context_result_key(diagnostic_context_state),
         )
         now = _aware(self._clock())
         if notify and not reread and recovery_phase is RuntimeHealthRecoveryPhase.IDLE:
@@ -837,7 +890,10 @@ class _SystemHealthProjection:
             if notify:
                 self._last_notified_authoritative_key = authoritative_key
         return self._store_and_deliver(
-            _with_data_source_aggregate(state),
+            _with_contextual_aggregate(
+                _with_data_source_aggregate(state),
+                diagnostic_context_state,
+            ),
             notify=notify,
         )
 
@@ -874,7 +930,10 @@ class _SystemHealthProjection:
             error=error,
         )
         return self._store_and_deliver(
-            _with_data_source_aggregate(state),
+            _with_contextual_aggregate(
+                _with_data_source_aggregate(state),
+                self._diagnostic_context_state,
+            ),
             notify=notify,
         )
 
@@ -1101,49 +1160,60 @@ class _SystemHealthProjection:
             recovery_phase=state.recovery_phase,
         )
         if age <= self._freshness_threshold:
-            return _with_data_source_aggregate(
-                replace(
-                    state,
-                    revision=revision,
-                    observed_at=now,
-                    age=age,
-                    components=_age_components(
-                        state.components,
+            return _with_contextual_aggregate(
+                _with_data_source_aggregate(
+                    replace(
+                        state,
+                        revision=revision,
                         observed_at=now,
-                        freshness_threshold=self._freshness_threshold,
-                    ),
-                    source=replace(state.source, generation=generation),
-                    diagnostic_data_source=data_source_component,
-                    diagnostic_queue=queue_component,
-                    diagnostic_cache=cache_component,
-                )
+                        component_impacts=(),
+                        age=age,
+                        components=_age_components(
+                            state.components,
+                            observed_at=now,
+                            freshness_threshold=self._freshness_threshold,
+                        ),
+                        source=replace(state.source, generation=generation),
+                        diagnostic_data_source=data_source_component,
+                        diagnostic_queue=queue_component,
+                        diagnostic_cache=cache_component,
+                    )
+                ),
+                state.diagnostic_context,
             )
         if state.presentation is SystemHealthPresentationState.STALE:
-            return _with_data_source_aggregate(
-                replace(
-                    state,
+            return _with_contextual_aggregate(
+                _with_data_source_aggregate(
+                    replace(
+                        state,
+                        revision=revision,
+                        observed_at=now,
+                        component_impacts=(),
+                        age=age,
+                        components=_age_components(
+                            state.components,
+                            observed_at=now,
+                            freshness_threshold=self._freshness_threshold,
+                        ),
+                        source=replace(state.source, generation=generation),
+                        diagnostic_data_source=data_source_component,
+                        diagnostic_queue=queue_component,
+                        diagnostic_cache=cache_component,
+                    )
+                ),
+                state.diagnostic_context,
+            )
+        return _with_contextual_aggregate(
+            _with_data_source_aggregate(
+                self._retained_state(
                     revision=revision,
                     observed_at=now,
-                    age=age,
-                    components=_age_components(
-                        state.components,
-                        observed_at=now,
-                        freshness_threshold=self._freshness_threshold,
-                    ),
-                    source=replace(state.source, generation=generation),
-                    diagnostic_data_source=data_source_component,
-                    diagnostic_queue=queue_component,
-                    diagnostic_cache=cache_component,
+                    generation=generation,
+                    recovery_phase=state.recovery_phase,
+                    error=state.error,
                 )
-            )
-        return _with_data_source_aggregate(
-            self._retained_state(
-                revision=revision,
-                observed_at=now,
-                generation=generation,
-                recovery_phase=state.recovery_phase,
-                error=state.error,
-            )
+            ),
+            state.diagnostic_context,
         )
 
     def _store_and_deliver(
@@ -1172,8 +1242,9 @@ class _SystemHealthProjection:
             }:
                 self._last_reliable_cache = state.diagnostic_cache
             deliveries = tuple(self._subscriptions.values()) if notify else ()
-        for observer, subscription in deliveries:
-            subscription.deliver(observer, state)
+        for context, observer, subscription in deliveries:
+            if context == state.context:
+                subscription.deliver(observer, state)
         return state
 
     def _remove_subscription(self, subscription_id: int) -> None:
@@ -1215,12 +1286,20 @@ class LiveSystemHealthAdapter:
         *,
         application_health: StrategyDiagnosticsV1SystemHealthApplication,
         event_bridge: EventBridge,
+        diagnostic_tasks_application: (
+            StrategyDiagnosticsV1DiagnosticTasksApplication | None
+        ) = None,
+        application_read_model: StrategyDiagnosticsV1ApplicationReadModel | None = None,
         clock: Callable[[], datetime] | None = None,
         freshness_threshold: timedelta = timedelta(seconds=30),
         sampling_interval: timedelta | None = timedelta(seconds=1),
     ) -> None:
         if sampling_interval is not None and sampling_interval <= timedelta(0):
             raise ValueError("System Health sampling interval must be positive")
+        if (diagnostic_tasks_application is None) != (application_read_model is None):
+            raise ValueError(
+                "System Health diagnostic context requires both public read seams"
+            )
         self._event_bridge = event_bridge
         initial_connection = event_bridge.connection_state
         self._closed = False
@@ -1241,6 +1320,14 @@ class LiveSystemHealthAdapter:
         self._freshness_timer: Timer | None = None
         self._freshness_timer_sequence = 0
         active_clock = clock or _default_live_clock
+        diagnostic_context_reader = (
+            _unavailable_context_state
+            if diagnostic_tasks_application is None or application_read_model is None
+            else LiveSystemHealthDiagnosticContextReader(
+                diagnostic_tasks_application=diagnostic_tasks_application,
+                application_read_model=application_read_model,
+            )
+        )
         data_source_reader = getattr(
             application_health,
             "read_diagnostic_data_source_health",
@@ -1275,6 +1362,7 @@ class LiveSystemHealthAdapter:
             ),
             read_persistence_health=application_health.read_persistence_health,
             read_version_health=application_health.read_version_health,
+            read_diagnostic_context=diagnostic_context_reader,
             source_kind=SourceKind.LIVE_RUNTIME,
             source_identity="diagnostics_application",
             clock=active_clock,
@@ -1535,6 +1623,7 @@ class DeterministicFakeSystemHealthAdapter:
         self._cache_last_refresh_at = self._now
         self._cache_generation = 1
         self._source_revision = 0
+        self._diagnostic_context_mode = SystemHealthContextResolution.EXACT_MATCH
         self._projection = _SystemHealthProjection(
             read_runtime_health=self._read_runtime_health,
             read_diagnostic_data_source_health=(
@@ -1544,6 +1633,7 @@ class DeterministicFakeSystemHealthAdapter:
             read_diagnostic_cache_health=self._read_diagnostic_cache_health,
             read_persistence_health=self._read_persistence_health,
             read_version_health=self._read_version_health,
+            read_diagnostic_context=self._read_diagnostic_context,
             source_kind=SourceKind.DETERMINISTIC_FAKE,
             source_identity="deterministic_system_health",
             clock=self._clock,
@@ -1621,6 +1711,89 @@ class DeterministicFakeSystemHealthAdapter:
         self._queue_mode = "unavailable"
         self._cache_mode = "unavailable"
         self.publish_authoritative_observation()
+
+    def advance_context_to_exact(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.EXACT_MATCH)
+
+    def advance_context_to_missing(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.MISSING)
+
+    def advance_context_to_superseded(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.SUPERSEDED)
+
+    def advance_context_to_incompatible(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.INCOMPATIBLE)
+
+    def advance_context_to_failed(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.FAILED)
+
+    def advance_context_to_completed(self) -> None:
+        self._set_diagnostic_context_mode(SystemHealthContextResolution.COMPLETED)
+
+    def _set_diagnostic_context_mode(
+        self,
+        resolution: SystemHealthContextResolution,
+    ) -> None:
+        self._diagnostic_context_mode = resolution
+        self.publish_authoritative_observation()
+
+    def _read_diagnostic_context(
+        self,
+        context: SystemHealthContext,
+    ) -> SystemHealthDiagnosticContextState:
+        requested = context.diagnostic
+        if (
+            context.version != SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION
+            or (
+                requested is not None
+                and requested.version != SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION
+            )
+        ):
+            return SystemHealthDiagnosticContextState(
+                resolution=SystemHealthContextResolution.INCOMPATIBLE,
+                requested=requested,
+                observed_task_revision=None,
+                observed_campaign_revision=None,
+                terminal=False,
+                source_revision="f" * 64,
+                explanation="The System Health diagnostic context version is incompatible.",
+            )
+        if requested is None:
+            return _no_current_context_state()
+        resolution = self._diagnostic_context_mode
+        explanation = {
+            SystemHealthContextResolution.EXACT_MATCH: (
+                "The exact typed diagnostic identity graph is current."
+            ),
+            SystemHealthContextResolution.MISSING: (
+                "The requested typed diagnostic identity is missing."
+            ),
+            SystemHealthContextResolution.SUPERSEDED: (
+                "The requested typed diagnostic identity is superseded."
+            ),
+            SystemHealthContextResolution.INCOMPATIBLE: (
+                "The requested typed diagnostic identity is incompatible."
+            ),
+            SystemHealthContextResolution.FAILED: (
+                "The selected diagnostic has failed."
+            ),
+            SystemHealthContextResolution.COMPLETED: (
+                "The selected diagnostic is complete."
+            ),
+        }[resolution]
+        return SystemHealthDiagnosticContextState(
+            resolution=resolution,
+            requested=requested,
+            observed_task_revision=requested.task_revision,
+            observed_campaign_revision=requested.campaign_revision,
+            terminal=resolution
+            in {
+                SystemHealthContextResolution.FAILED,
+                SystemHealthContextResolution.COMPLETED,
+            },
+            source_revision="f" * 64,
+            explanation=explanation,
+        )
 
     def advance_queue_to_backlog(self, *, pending_count: int = 2) -> None:
         if pending_count < 1:
@@ -2082,6 +2255,76 @@ def _source_revision(snapshot: dict[str, object]) -> int | None:
     except (TypeError, ValueError):
         return None
     return revision if revision > 0 else None
+
+
+def _no_current_context_state() -> SystemHealthDiagnosticContextState:
+    return SystemHealthDiagnosticContextState(
+        resolution=SystemHealthContextResolution.NO_CURRENT_TASK,
+        requested=None,
+        observed_task_revision=None,
+        observed_campaign_revision=None,
+        terminal=False,
+        source_revision=None,
+        explanation="No current Diagnostic Task is selected.",
+    )
+
+
+def _unavailable_context_state(
+    context: SystemHealthContext,
+) -> SystemHealthDiagnosticContextState:
+    if context.diagnostic is None:
+        return _no_current_context_state()
+    return SystemHealthDiagnosticContextState(
+        resolution=SystemHealthContextResolution.UNAVAILABLE,
+        requested=context.diagnostic,
+        observed_task_revision=None,
+        observed_campaign_revision=None,
+        terminal=False,
+        source_revision=None,
+        explanation="The typed diagnostic context reader is unavailable.",
+    )
+
+
+def _diagnostic_context_result_key(
+    state: SystemHealthDiagnosticContextState,
+) -> tuple[str, ...]:
+    return (
+        state.resolution.value,
+        "none" if state.requested is None else repr(state.requested),
+        str(state.observed_task_revision),
+        str(state.observed_campaign_revision),
+        str(state.source_revision),
+    )
+
+
+def _apply_context_format_compatibility(
+    state: SystemHealthDiagnosticContextState,
+    version: VersionHealthApplicationObservation,
+) -> SystemHealthDiagnosticContextState:
+    requested = state.requested
+    if (
+        requested is None
+        or state.resolution is not SystemHealthContextResolution.EXACT_MATCH
+    ):
+        return state
+    incompatible = (
+        requested.evidence_format_version is not None
+        and requested.evidence_format_version != version.evidence_format_version
+    ) or (
+        requested.manifest_format_version is not None
+        and requested.manifest_format_version != version.manifest_format_version
+    )
+    if not incompatible:
+        return state
+    return SystemHealthDiagnosticContextState(
+        resolution=SystemHealthContextResolution.INCOMPATIBLE,
+        requested=requested,
+        observed_task_revision=state.observed_task_revision,
+        observed_campaign_revision=state.observed_campaign_revision,
+        terminal=False,
+        source_revision=state.source_revision,
+        explanation="The requested diagnostic artifact format is incompatible.",
+    )
 
 
 def _authoritative_result_key(
@@ -3007,6 +3250,202 @@ def _with_data_source_aggregate(
         presentation=presentation,
         completeness=Completeness.PARTIAL,
     )
+
+
+def _with_contextual_aggregate(
+    state: SystemHealthViewState,
+    diagnostic_context: SystemHealthDiagnosticContextState,
+) -> SystemHealthViewState:
+    requested = diagnostic_context.requested
+    scopes = _diagnostic_scopes(requested)
+    components_by_identity = {
+        component.identity: component for component in state.components
+    }
+    raw_classifications = (
+        _impact_classification(
+            getattr(
+                components_by_identity.get(
+                    SystemHealthComponentIdentity.APPLICATION_RUNTIME
+                ),
+                "classification",
+                None,
+            )
+        ),
+        _impact_classification(state.diagnostic_data_source.classification),
+        _impact_classification(state.diagnostic_queue.classification),
+        _impact_classification(state.diagnostic_cache.classification),
+        _impact_classification(
+            getattr(
+                components_by_identity.get(
+                    SystemHealthComponentIdentity.DIAGNOSTIC_PERSISTENCE
+                ),
+                "classification",
+                None,
+            )
+        ),
+        _impact_classification(
+            getattr(
+                components_by_identity.get(
+                    SystemHealthComponentIdentity.VERSION_COMPATIBILITY
+                ),
+                "classification",
+                None,
+            )
+        ),
+    )
+    impacts = tuple(
+        SystemHealthComponentImpact(
+            component=component,
+            classification=(
+                SystemHealthComponentImpactClassification.NOT_APPLICABLE
+                if requested is None
+                else classification
+            ),
+            affected_scope=(
+                ()
+                if requested is None
+                else _scopes_for_component(component, scopes)
+            ),
+            revision=state.revision,
+        )
+        for component, classification in zip(
+            SystemHealthImpactComponentIdentity,
+            raw_classifications,
+            strict=True,
+        )
+    )
+    return replace(
+        state,
+        diagnostic_context=diagnostic_context,
+        overall_classification=_contextual_overall(
+            diagnostic_context,
+            raw_classifications,
+        ),
+        component_impacts=impacts,
+    )
+
+
+def _impact_classification(
+    classification: object,
+) -> SystemHealthComponentImpactClassification:
+    value = getattr(classification, "value", None)
+    if value in {"healthy", "recovered"}:
+        return SystemHealthComponentImpactClassification.HEALTHY
+    if value in {"degraded", "recovering", "fallback"}:
+        return SystemHealthComponentImpactClassification.DEGRADED
+    if value == "stale":
+        return SystemHealthComponentImpactClassification.STALE
+    if value == "unavailable":
+        return SystemHealthComponentImpactClassification.UNAVAILABLE
+    if value == "incompatible":
+        return SystemHealthComponentImpactClassification.INCOMPATIBLE
+    return SystemHealthComponentImpactClassification.UNKNOWN
+
+
+def _contextual_overall(
+    context: SystemHealthDiagnosticContextState,
+    components: tuple[SystemHealthComponentImpactClassification, ...],
+) -> SystemHealthOverallClassification:
+    contextual = {
+        SystemHealthContextResolution.MISSING: (
+            SystemHealthOverallClassification.CONTEXT_MISSING
+        ),
+        SystemHealthContextResolution.SUPERSEDED: (
+            SystemHealthOverallClassification.CONTEXT_SUPERSEDED
+        ),
+        SystemHealthContextResolution.INCOMPATIBLE: (
+            SystemHealthOverallClassification.CONTEXT_INCOMPATIBLE
+        ),
+        SystemHealthContextResolution.UNAVAILABLE: (
+            SystemHealthOverallClassification.CONTEXT_UNAVAILABLE
+        ),
+        SystemHealthContextResolution.FAILED: (
+            SystemHealthOverallClassification.DIAGNOSTIC_FAILED
+        ),
+        SystemHealthContextResolution.COMPLETED: (
+            SystemHealthOverallClassification.DIAGNOSTIC_COMPLETED
+        ),
+    }
+    if context.resolution in contextual:
+        return contextual[context.resolution]
+    for component, overall in (
+        (
+            SystemHealthComponentImpactClassification.INCOMPATIBLE,
+            SystemHealthOverallClassification.INCOMPATIBLE,
+        ),
+        (
+            SystemHealthComponentImpactClassification.UNAVAILABLE,
+            SystemHealthOverallClassification.UNAVAILABLE,
+        ),
+        (
+            SystemHealthComponentImpactClassification.STALE,
+            SystemHealthOverallClassification.STALE,
+        ),
+        (
+            SystemHealthComponentImpactClassification.DEGRADED,
+            SystemHealthOverallClassification.DEGRADED,
+        ),
+        (
+            SystemHealthComponentImpactClassification.UNKNOWN,
+            SystemHealthOverallClassification.UNKNOWN,
+        ),
+    ):
+        if component in components:
+            return overall
+    return SystemHealthOverallClassification.HEALTHY
+
+
+def _diagnostic_scopes(
+    context: SystemHealthDiagnosticContext | None,
+) -> tuple[SystemHealthDiagnosticScope, ...]:
+    if context is None:
+        return ()
+    present = [SystemHealthDiagnosticScope.DIAGNOSTIC_TASK]
+    for value, scope in (
+        (context.task_handle_id, SystemHealthDiagnosticScope.TASK_HANDLE),
+        (context.campaign_id, SystemHealthDiagnosticScope.FORMAL_CAMPAIGN),
+        (context.run_id, SystemHealthDiagnosticScope.STRATEGY_RUN),
+        (
+            context.evidence_package_id,
+            SystemHealthDiagnosticScope.DIAGNOSTIC_EVIDENCE,
+        ),
+        (context.finding_id, SystemHealthDiagnosticScope.DIAGNOSTIC_FINDING),
+        (
+            context.sensitivity_breakpoint_id,
+            SystemHealthDiagnosticScope.SENSITIVITY_BREAKPOINT,
+        ),
+        (
+            context.reproduction_manifest_id,
+            SystemHealthDiagnosticScope.REPRODUCTION_MANIFEST,
+        ),
+    ):
+        if value is not None:
+            present.append(scope)
+    return tuple(present)
+
+
+def _scopes_for_component(
+    component: SystemHealthImpactComponentIdentity,
+    scopes: tuple[SystemHealthDiagnosticScope, ...],
+) -> tuple[SystemHealthDiagnosticScope, ...]:
+    exclusions = {
+        SystemHealthImpactComponentIdentity.DIAGNOSTIC_DATA_SOURCE: {
+            SystemHealthDiagnosticScope.TASK_HANDLE,
+        },
+        SystemHealthImpactComponentIdentity.DIAGNOSTIC_QUEUE: {
+            SystemHealthDiagnosticScope.DIAGNOSTIC_EVIDENCE,
+            SystemHealthDiagnosticScope.DIAGNOSTIC_FINDING,
+            SystemHealthDiagnosticScope.SENSITIVITY_BREAKPOINT,
+            SystemHealthDiagnosticScope.REPRODUCTION_MANIFEST,
+        },
+        SystemHealthImpactComponentIdentity.DIAGNOSTIC_CACHE: {
+            SystemHealthDiagnosticScope.TASK_HANDLE,
+        },
+        SystemHealthImpactComponentIdentity.VERSION_COMPATIBILITY: {
+            SystemHealthDiagnosticScope.TASK_HANDLE,
+        },
+    }.get(component, set())
+    return tuple(scope for scope in scopes if scope not in exclusions)
 
 
 def _least_fresh(left: Freshness, right: Freshness) -> Freshness:

@@ -3,17 +3,32 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Protocol, runtime_checkable
+import json
+from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 
+from .diagnostic_tasks_application import (
+    ApprovedScenarioRecipeVersionId,
+    DiagnosticTaskConfigurationContentId,
+)
+from .evidence_and_findings import (
+    DiagnosticEvidencePackageId,
+    FindingId,
+    SensitivityBreakpointId,
+)
 from .run_monitoring import (
     Completeness,
+    DiagnosticTaskId,
+    FormalDiagnosticCampaignId,
     Freshness,
+    ReproductionManifestId,
     SourceGenerationId,
     SourceKind,
+    StrategyRunId,
     Subscription,
+    TaskHandleId,
     ViewPhase,
 )
 from .versioning import FeatureInterfaceDescriptor, FeatureInterfaceVersion
@@ -741,8 +756,471 @@ class SystemHealthSource:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemHealthDiagnosticContextVersion:
+    major: int
+    minor: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.major, int)
+            or isinstance(self.major, bool)
+            or not isinstance(self.minor, int)
+            or isinstance(self.minor, bool)
+            or self.major < 0
+            or self.minor < 0
+        ):
+            raise ValueError("System Health diagnostic context version is invalid")
+
+
+SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION = SystemHealthDiagnosticContextVersion(1, 0)
+
+
+class SystemHealthContextResolution(str, Enum):
+    NO_CURRENT_TASK = "no_current_task"
+    EXACT_MATCH = "exact_match"
+    MISSING = "missing"
+    SUPERSEDED = "superseded"
+    INCOMPATIBLE = "incompatible"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+    COMPLETED = "completed"
+
+
+class SystemHealthOverallClassification(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+    INCOMPATIBLE = "incompatible"
+    UNKNOWN = "unknown"
+    CONTEXT_MISSING = "context_missing"
+    CONTEXT_SUPERSEDED = "context_superseded"
+    CONTEXT_INCOMPATIBLE = "context_incompatible"
+    CONTEXT_UNAVAILABLE = "context_unavailable"
+    DIAGNOSTIC_FAILED = "diagnostic_failed"
+    DIAGNOSTIC_COMPLETED = "diagnostic_completed"
+
+
+class SystemHealthImpactComponentIdentity(str, Enum):
+    APPLICATION_RUNTIME = "application_runtime"
+    DIAGNOSTIC_DATA_SOURCE = "diagnostic_data_source"
+    DIAGNOSTIC_QUEUE = "diagnostic_queue"
+    DIAGNOSTIC_CACHE = "diagnostic_cache"
+    DIAGNOSTIC_PERSISTENCE = "diagnostic_persistence"
+    VERSION_COMPATIBILITY = "version_compatibility"
+
+
+class SystemHealthComponentImpactClassification(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+    INCOMPATIBLE = "incompatible"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class SystemHealthDiagnosticScope(str, Enum):
+    DIAGNOSTIC_TASK = "diagnostic_task"
+    TASK_HANDLE = "task_handle"
+    FORMAL_CAMPAIGN = "formal_diagnostic_campaign"
+    STRATEGY_RUN = "strategy_run"
+    DIAGNOSTIC_EVIDENCE = "diagnostic_evidence"
+    DIAGNOSTIC_FINDING = "diagnostic_finding"
+    SENSITIVITY_BREAKPOINT = "sensitivity_breakpoint"
+    REPRODUCTION_MANIFEST = "reproduction_manifest"
+
+
+@dataclass(frozen=True, slots=True)
+class SystemHealthDiagnosticContext:
+    """Exact immutable correlation graph requested by the System Health surface."""
+
+    task_id: DiagnosticTaskId
+    task_revision: int
+    configuration_content_id: DiagnosticTaskConfigurationContentId
+    version: SystemHealthDiagnosticContextVersion = (
+        SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION
+    )
+    task_handle_id: TaskHandleId | None = None
+    campaign_id: FormalDiagnosticCampaignId | None = None
+    campaign_revision: int | None = None
+    run_id: StrategyRunId | None = None
+    evidence_package_id: DiagnosticEvidencePackageId | None = None
+    finding_id: FindingId | None = None
+    sensitivity_breakpoint_id: SensitivityBreakpointId | None = None
+    reproduction_manifest_id: ReproductionManifestId | None = None
+    approved_recipe_version_ids: tuple[ApprovedScenarioRecipeVersionId, ...] = ()
+    evidence_format_version: str | None = None
+    manifest_format_version: str | None = None
+
+    def __post_init__(self) -> None:
+        expected = (
+            ("task_id", self.task_id, DiagnosticTaskId),
+            (
+                "configuration_content_id",
+                self.configuration_content_id,
+                DiagnosticTaskConfigurationContentId,
+            ),
+            ("version", self.version, SystemHealthDiagnosticContextVersion),
+            ("task_handle_id", self.task_handle_id, TaskHandleId),
+            ("campaign_id", self.campaign_id, FormalDiagnosticCampaignId),
+            ("run_id", self.run_id, StrategyRunId),
+            (
+                "evidence_package_id",
+                self.evidence_package_id,
+                DiagnosticEvidencePackageId,
+            ),
+            ("finding_id", self.finding_id, FindingId),
+            (
+                "sensitivity_breakpoint_id",
+                self.sensitivity_breakpoint_id,
+                SensitivityBreakpointId,
+            ),
+            (
+                "reproduction_manifest_id",
+                self.reproduction_manifest_id,
+                ReproductionManifestId,
+            ),
+        )
+        for name, value, value_type in expected:
+            if value is not None and not isinstance(value, value_type):
+                raise TypeError(f"{name} must be a {value_type.__name__}")
+        if (
+            not isinstance(self.task_revision, int)
+            or isinstance(self.task_revision, bool)
+            or self.task_revision < 1
+        ):
+            raise ValueError("task_revision must be positive")
+        if (self.campaign_id is None) != (self.campaign_revision is None):
+            raise ValueError(
+                "campaign_id and campaign_revision must be provided together"
+            )
+        if self.campaign_revision is not None and (
+            not isinstance(self.campaign_revision, int)
+            or isinstance(self.campaign_revision, bool)
+            or self.campaign_revision < 1
+        ):
+            raise ValueError("campaign_revision must be positive")
+        if self.run_id is not None and self.campaign_id is None:
+            raise ValueError("run_id requires campaign_id")
+        if self.evidence_package_id is not None and self.run_id is None:
+            raise ValueError("evidence_package_id requires run_id")
+        if self.reproduction_manifest_id is not None and self.run_id is None:
+            raise ValueError("reproduction_manifest_id requires run_id")
+        if self.finding_id is not None and self.evidence_package_id is None:
+            raise ValueError("finding_id requires evidence_package_id")
+        if self.sensitivity_breakpoint_id is not None and self.finding_id is None:
+            raise ValueError("sensitivity_breakpoint_id requires finding_id")
+        if not isinstance(self.approved_recipe_version_ids, tuple) or any(
+            not isinstance(item, ApprovedScenarioRecipeVersionId)
+            for item in self.approved_recipe_version_ids
+        ):
+            raise TypeError(
+                "approved_recipe_version_ids must be an immutable typed tuple"
+            )
+        if len(set(self.approved_recipe_version_ids)) != len(
+            self.approved_recipe_version_ids
+        ):
+            raise ValueError("approved_recipe_version_ids must be unique")
+        identities: list[tuple[str, str]] = [
+            ("task_id", self.task_id.value),
+            ("configuration_content_id", self.configuration_content_id.value),
+        ]
+        for label, item in (
+            ("task_handle_id", self.task_handle_id),
+            ("campaign_id", self.campaign_id),
+            ("run_id", self.run_id),
+            ("evidence_package_id", self.evidence_package_id),
+            ("finding_id", self.finding_id),
+            ("sensitivity_breakpoint_id", self.sensitivity_breakpoint_id),
+            ("reproduction_manifest_id", self.reproduction_manifest_id),
+        ):
+            if item is not None:
+                identities.append((label, item.value))
+        for identity_label, identity_value in identities:
+            _require_safe_diagnostic_identity(
+                identity_value,
+                f"diagnostic context {identity_label}",
+            )
+        for recipe_version_id in self.approved_recipe_version_ids:
+            _require_safe_diagnostic_identity(
+                recipe_version_id.value,
+                "diagnostic context approved_recipe_version_id",
+            )
+        for format_label, format_value in (
+            ("evidence_format_version", self.evidence_format_version),
+            ("manifest_format_version", self.manifest_format_version),
+        ):
+            if format_value is not None:
+                _require_safe_diagnostic_identity(
+                    format_value,
+                    f"diagnostic context {format_label}",
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class SystemHealthDiagnosticContextState:
+    resolution: SystemHealthContextResolution
+    requested: SystemHealthDiagnosticContext | None
+    observed_task_revision: int | None
+    observed_campaign_revision: int | None
+    terminal: bool
+    source_revision: str | None
+    explanation: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.resolution, SystemHealthContextResolution):
+            raise TypeError("resolution must be a SystemHealthContextResolution")
+        if self.requested is not None and not isinstance(
+            self.requested,
+            SystemHealthDiagnosticContext,
+        ):
+            raise TypeError("requested must be a SystemHealthDiagnosticContext")
+        if (
+            self.resolution is SystemHealthContextResolution.NO_CURRENT_TASK
+        ) != (self.requested is None):
+            if not (
+                self.resolution is SystemHealthContextResolution.INCOMPATIBLE
+                and self.requested is None
+            ):
+                raise ValueError("no-current-task must be represented explicitly")
+        for label, value in (
+            ("observed_task_revision", self.observed_task_revision),
+            ("observed_campaign_revision", self.observed_campaign_revision),
+        ):
+            if value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+            ):
+                raise ValueError(f"{label} must be positive")
+        expected_terminal = self.resolution in {
+            SystemHealthContextResolution.FAILED,
+            SystemHealthContextResolution.COMPLETED,
+        }
+        if not isinstance(self.terminal, bool) or self.terminal is not expected_terminal:
+            raise ValueError("terminal must match failed/completed diagnostic state")
+        if self.source_revision is not None:
+            if (
+                not isinstance(self.source_revision, str)
+                or len(self.source_revision) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in self.source_revision
+                )
+            ):
+                raise ValueError("source_revision must be a lowercase SHA-256")
+        _require_safe_diagnostic_text(
+            self.explanation,
+            "System Health diagnostic context explanation",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SystemHealthComponentImpact:
+    component: SystemHealthImpactComponentIdentity
+    classification: SystemHealthComponentImpactClassification
+    affected_scope: tuple[SystemHealthDiagnosticScope, ...]
+    revision: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.component, SystemHealthImpactComponentIdentity):
+            raise TypeError("component must be a SystemHealthImpactComponentIdentity")
+        if not isinstance(
+            self.classification,
+            SystemHealthComponentImpactClassification,
+        ):
+            raise TypeError("classification must be a typed component impact")
+        if not isinstance(self.affected_scope, tuple) or any(
+            not isinstance(item, SystemHealthDiagnosticScope)
+            for item in self.affected_scope
+        ):
+            raise TypeError("affected_scope must be an immutable typed tuple")
+        if len(set(self.affected_scope)) != len(self.affected_scope):
+            raise ValueError("affected_scope must be unique")
+        _require_component_revision(self.revision, "component impact")
+
+
+def _default_no_current_diagnostic_context() -> SystemHealthDiagnosticContextState:
+    return SystemHealthDiagnosticContextState(
+        resolution=SystemHealthContextResolution.NO_CURRENT_TASK,
+        requested=None,
+        observed_task_revision=None,
+        observed_campaign_revision=None,
+        terminal=False,
+        source_revision=None,
+        explanation="No current Diagnostic Task is selected.",
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class SystemHealthContext:
-    """The read-only 1.0 context; diagnostic identity graph is deferred."""
+    """Optional typed diagnostic selection; ``None`` is no-current-task."""
+
+    version: SystemHealthDiagnosticContextVersion = (
+        SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION
+    )
+    diagnostic: SystemHealthDiagnosticContext | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.version, SystemHealthDiagnosticContextVersion):
+            raise TypeError("version must be a SystemHealthDiagnosticContextVersion")
+        if self.diagnostic is not None and not isinstance(
+            self.diagnostic,
+            SystemHealthDiagnosticContext,
+        ):
+            raise TypeError("diagnostic must be a SystemHealthDiagnosticContext")
+
+
+_DIAGNOSTIC_CONTEXT_WIRE_KEYS = frozenset(
+    {
+        "version",
+        "task_id",
+        "task_revision",
+        "configuration_content_id",
+        "task_handle_id",
+        "campaign_id",
+        "campaign_revision",
+        "run_id",
+        "evidence_package_id",
+        "finding_id",
+        "sensitivity_breakpoint_id",
+        "reproduction_manifest_id",
+        "approved_recipe_version_ids",
+        "evidence_format_version",
+        "manifest_format_version",
+    }
+)
+
+_DiagnosticIdentity: TypeAlias = (
+    TaskHandleId
+    | FormalDiagnosticCampaignId
+    | StrategyRunId
+    | DiagnosticEvidencePackageId
+    | FindingId
+    | SensitivityBreakpointId
+    | ReproductionManifestId
+)
+_DiagnosticIdentityT = TypeVar(
+    "_DiagnosticIdentityT",
+    TaskHandleId,
+    FormalDiagnosticCampaignId,
+    StrategyRunId,
+    DiagnosticEvidencePackageId,
+    FindingId,
+    SensitivityBreakpointId,
+    ReproductionManifestId,
+)
+
+
+def encode_system_health_diagnostic_context(
+    context: SystemHealthDiagnosticContext,
+) -> str:
+    if not isinstance(context, SystemHealthDiagnosticContext):
+        raise TypeError("context must be a SystemHealthDiagnosticContext")
+
+    def optional_value(value: _DiagnosticIdentity | None) -> str | None:
+        return None if value is None else value.value
+
+    payload = {
+        "version": {"major": context.version.major, "minor": context.version.minor},
+        "task_id": context.task_id.value,
+        "task_revision": context.task_revision,
+        "configuration_content_id": context.configuration_content_id.value,
+        "task_handle_id": optional_value(context.task_handle_id),
+        "campaign_id": optional_value(context.campaign_id),
+        "campaign_revision": context.campaign_revision,
+        "run_id": optional_value(context.run_id),
+        "evidence_package_id": optional_value(context.evidence_package_id),
+        "finding_id": optional_value(context.finding_id),
+        "sensitivity_breakpoint_id": optional_value(
+            context.sensitivity_breakpoint_id
+        ),
+        "reproduction_manifest_id": optional_value(
+            context.reproduction_manifest_id
+        ),
+        "approved_recipe_version_ids": [
+            item.value for item in context.approved_recipe_version_ids
+        ],
+        "evidence_format_version": context.evidence_format_version,
+        "manifest_format_version": context.manifest_format_version,
+    }
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def decode_system_health_diagnostic_context(
+    payload: str,
+) -> SystemHealthDiagnosticContext:
+    if not isinstance(payload, str) or not payload or len(payload) > 8192:
+        raise ValueError("diagnostic context payload must be bounded JSON text")
+    try:
+        raw = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("diagnostic context payload must be valid JSON") from exc
+    if not isinstance(raw, dict) or frozenset(raw) != _DIAGNOSTIC_CONTEXT_WIRE_KEYS:
+        raise ValueError("diagnostic context payload has an invalid schema")
+    version = raw["version"]
+    if not isinstance(version, dict) or frozenset(version) != {"major", "minor"}:
+        raise ValueError("diagnostic context version has an invalid schema")
+    typed_version = SystemHealthDiagnosticContextVersion(
+        major=version["major"],
+        minor=version["minor"],
+    )
+    if typed_version != SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION:
+        raise ValueError("diagnostic context version is incompatible")
+
+    def required_text(name: str) -> str:
+        value = raw[name]
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be text")
+        return value
+
+    def optional_identity(
+        name: str,
+        value_type: type[_DiagnosticIdentityT],
+    ) -> _DiagnosticIdentityT | None:
+        value = raw[name]
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be text or null")
+        return value_type(value)
+
+    recipe_versions = raw["approved_recipe_version_ids"]
+    if not isinstance(recipe_versions, list) or any(
+        not isinstance(item, str) for item in recipe_versions
+    ):
+        raise TypeError("approved_recipe_version_ids must be a JSON array of text")
+    for name in ("evidence_format_version", "manifest_format_version"):
+        if raw[name] is not None and not isinstance(raw[name], str):
+            raise TypeError(f"{name} must be text or null")
+    return SystemHealthDiagnosticContext(
+        task_id=DiagnosticTaskId(required_text("task_id")),
+        task_revision=raw["task_revision"],
+        configuration_content_id=DiagnosticTaskConfigurationContentId(
+            required_text("configuration_content_id")
+        ),
+        version=typed_version,
+        task_handle_id=optional_identity("task_handle_id", TaskHandleId),
+        campaign_id=optional_identity("campaign_id", FormalDiagnosticCampaignId),
+        campaign_revision=raw["campaign_revision"],
+        run_id=optional_identity("run_id", StrategyRunId),
+        evidence_package_id=optional_identity(
+            "evidence_package_id", DiagnosticEvidencePackageId
+        ),
+        finding_id=optional_identity("finding_id", FindingId),
+        sensitivity_breakpoint_id=optional_identity(
+            "sensitivity_breakpoint_id", SensitivityBreakpointId
+        ),
+        reproduction_manifest_id=optional_identity(
+            "reproduction_manifest_id", ReproductionManifestId
+        ),
+        approved_recipe_version_ids=tuple(
+            ApprovedScenarioRecipeVersionId(item) for item in recipe_versions
+        ),
+        evidence_format_version=raw["evidence_format_version"],
+        manifest_format_version=raw["manifest_format_version"],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -766,6 +1244,13 @@ class SystemHealthViewState:
     diagnostic_queue: DiagnosticQueueHealthComponent
     diagnostic_cache: DiagnosticCacheHealthComponent
     error: SystemHealthError | None
+    diagnostic_context: SystemHealthDiagnosticContextState = field(
+        default_factory=_default_no_current_diagnostic_context
+    )
+    overall_classification: SystemHealthOverallClassification = (
+        SystemHealthOverallClassification.UNKNOWN
+    )
+    component_impacts: tuple[SystemHealthComponentImpact, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.revision, int) or self.revision < 1:
@@ -825,6 +1310,30 @@ class SystemHealthViewState:
             raise TypeError("diagnostic_data_source must be typed")
         if not isinstance(self.diagnostic_cache, DiagnosticCacheHealthComponent):
             raise TypeError("diagnostic_cache must be typed")
+        if not isinstance(
+            self.diagnostic_context,
+            SystemHealthDiagnosticContextState,
+        ):
+            raise TypeError("diagnostic_context must be typed")
+        if not isinstance(
+            self.overall_classification,
+            SystemHealthOverallClassification,
+        ):
+            raise TypeError("overall_classification must be typed")
+        if not isinstance(self.component_impacts, tuple) or any(
+            not isinstance(item, SystemHealthComponentImpact)
+            for item in self.component_impacts
+        ):
+            raise TypeError("component_impacts must be an immutable typed tuple")
+        if self.component_impacts:
+            if tuple(item.component for item in self.component_impacts) != tuple(
+                SystemHealthImpactComponentIdentity
+            ):
+                raise ValueError("component_impacts must use the finite component order")
+            if any(item.revision != self.revision for item in self.component_impacts):
+                raise ValueError(
+                    "component impact revisions must compose the System Health revision"
+                )
         if (
             self.diagnostic_queue.revision != self.revision
             or self.diagnostic_cache.revision != self.revision
@@ -878,6 +1387,35 @@ def _require_safe_identity(value: str, label: str) -> None:
         or "\n" in value
         or "\r" in value
         or any(marker in lowered for marker in ("token=", "password=", "secret="))
+    ):
+        raise ValueError(f"{label} must be a safe redacted identity")
+
+
+def _require_safe_diagnostic_identity(value: str, label: str) -> None:
+    _require_safe_identity(value, label)
+    lowered = value.casefold()
+    if (
+        not value.isascii()
+        or "/" in value
+        or any(
+            not (character.isalnum() or character in "-_.:")
+            for character in value
+        )
+        or any(
+            marker in lowered
+            for marker in (
+                "sqlite",
+                "authorization",
+                "bearer",
+                "api_key",
+                "apikey",
+                "credential",
+                "cookie",
+                "password",
+                "secret",
+                "token",
+            )
+        )
     ):
         raise ValueError(f"{label} must be a safe redacted identity")
 
@@ -1010,14 +1548,26 @@ __all__ = [
     "SystemHealthAffectedScope",
     "SystemHealthComponentIdentity",
     "SystemHealthComponent",
+    "SystemHealthComponentImpact",
+    "SystemHealthComponentImpactClassification",
     "SystemHealthContext",
+    "SystemHealthContextResolution",
+    "SYSTEM_HEALTH_DIAGNOSTIC_CONTEXT_VERSION",
+    "SystemHealthDiagnosticContext",
+    "SystemHealthDiagnosticContextState",
+    "SystemHealthDiagnosticContextVersion",
+    "SystemHealthDiagnosticScope",
     "SystemHealthError",
     "SystemHealthErrorCode",
     "SystemHealthFeature",
     "SystemHealthObserver",
     "SystemHealthPresentationState",
     "SystemHealthRecoveryExpectation",
+    "SystemHealthImpactComponentIdentity",
+    "SystemHealthOverallClassification",
     "SystemHealthSource",
     "SystemHealthViewState",
     "VersionHealthComponent",
+    "decode_system_health_diagnostic_context",
+    "encode_system_health_diagnostic_context",
 ]
