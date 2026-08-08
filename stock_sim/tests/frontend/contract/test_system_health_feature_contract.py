@@ -246,6 +246,9 @@ def test_system_health_1_0_freezes_the_runtime_health_view_state() -> None:
         "diagnostic_queue",
         "diagnostic_cache",
         "error",
+        "diagnostic_context",
+        "overall_classification",
+        "component_impacts",
     }
 
     component = RuntimeHealthComponent(

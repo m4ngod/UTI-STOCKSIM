@@ -50,23 +50,29 @@ from app.features.scenario_lab_application import (
 )
 from app.features.strategy_diagnostics_v1_read_model import SourceRevisionToken
 from app.features import (
+    ApprovedScenarioRecipeVersionId,
     DiagnosticCommandId,
     DiagnosticCommandIdempotencyKey,
     DiagnosticTaskTarget,
     DeterministicFakeRunMonitoringAdapter,
     DeterministicFakeSystemHealthAdapter,
+    LiveStrategyDiagnosticsV1ApplicationAdapter,
     LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
     LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
     LiveSystemHealthAdapter,
     PauseDiagnosticTarget,
     StartFormalDiagnosticCampaign,
+    StrategyRunId,
     StrategyDiagnosticsV1ApplicationReadModel,
     SystemHealthContext,
+    SystemHealthDiagnosticContext,
+    SystemHealthDiagnosticContextVersion,
     SystemHealthFeature,
     diagnostics_application_identity,
 )
 from app.journey_recovery import JourneyWorkspaceBookmark, JourneyWorkspaceRoute
 from app.ui.main_window import MainWindow
+from app.ui.journey_workspace import SystemHealthQtAdapter
 from strategy_diagnostics import create_diagnostics_application
 from strategy_diagnostics.reproduction import REPRODUCTION_MANIFEST_SCHEMA_VERSION
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
@@ -76,9 +82,15 @@ from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract i
 from tests.frontend.contract.test_diagnostic_task_revision_approval_live_contract import (
     _read_task,
 )
+from tests.frontend.contract.test_diagnostic_task_failed_node_retry_live_contract import (
+    _FailFirstDecisionPTradeHost,
+)
 from tests.frontend.contract.test_system_health_application_live_contract import (
     _application_with_admitted_source,
     _readmit_default_source,
+)
+from tests.frontend.contract.test_system_health_diagnostic_context_contract import (
+    _exact_context,
 )
 from tests.frontend.system_health_support import ApplicationDrivenCacheStore
 from tests.strategy_diagnostics.test_recipe_lifecycle import (
@@ -169,6 +181,363 @@ def test_app_context_composes_system_health_as_the_sixth_feature(
         context.run_monitoring_feature.close()
         context.evidence_and_findings_feature.close()
         context.system_health_feature.close()
+
+
+def test_typed_diagnostic_context_and_component_impact_render_through_qml(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = _app()
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    context = build_app_context(
+        settings_path=str(tmp_path / "context-settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    context.system_health_context = SystemHealthContext(diagnostic=_exact_context())
+    context.system_health_feature.advance_to_healthy()
+    window = None
+    try:
+        window = _system_health_window(context)
+        root = window.centralWidget().rootObject()
+        context_status = root.findChild(QObject, "diagnosticContextAccessibleStatus")
+        assert context_status is not None
+        _wait_until(
+            app,
+            lambda: "exact match"
+            in str(context_status.property("accessibleName")).casefold(),
+        )
+        accessible = str(context_status.property("accessibleName"))
+        visible = _visible_text(root)
+
+        assert "diagnostic-task-112" in accessible
+        assert "task-handle-112" in accessible
+        assert "campaign-112" in accessible
+        assert "run-112" in accessible
+        assert "evidence-112" in accessible
+        assert "finding-112" in accessible
+        assert "breakpoint-112" in accessible
+        assert "manifest-112" in accessible
+        assert "overall healthy" in accessible.casefold()
+        assert "diagnostic persistence" in visible.casefold()
+        assert "component impact" in visible.casefold()
+    finally:
+        if window is not None:
+            window.close()
+        _close_context(context)
+
+
+def test_qt_adapter_switches_typed_context_and_disposes_previous_subscription() -> None:
+    app = _app()
+    feature = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+    adapter = SystemHealthQtAdapter(
+        feature,
+        context=SystemHealthContext(diagnostic=_exact_context()),
+    )
+    try:
+        _wait_until(app, lambda: adapter.diagnosticContextResolution == "exact_match")
+        assert "diagnostic-task-112" in adapter.diagnosticIdentityText
+
+        adapter.set_context(SystemHealthContext())
+        _wait_until(
+            app,
+            lambda: adapter.diagnosticContextResolution == "no_current_task",
+        )
+
+        assert adapter.diagnosticIdentityText == "No current Diagnostic Task"
+        assert adapter.diagnosticContextTerminal is False
+    finally:
+        adapter.close()
+        feature.close()
+
+
+def test_real_live_context_states_render_through_qml_without_identity_substitution(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = _app()
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    (
+        _source,
+        _artifact_store,
+        engine,
+        application,
+        diagnostic_tasks_application,
+        task_feature,
+    ) = _formal_live_stack(tmp_path)
+    approved = _approved_formal_task(task_feature)
+    accepted = task_feature.start_formal_diagnostic_campaign(
+        StartFormalDiagnosticCampaign(
+            command_id=DiagnosticCommandId("qml-context-start-112"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "qml-context-idempotency-112"
+            ),
+            task_id=approved.task_id,
+            expected_revision=approved.revision,
+            approved_revision=approved.revision,
+        )
+    )
+    assert accepted.task_handle is not None
+    assert accepted.affected_campaign_id is not None
+    running = _read_task(task_feature, approved.task_id)
+    run_id = next(
+        run.run_id
+        for node in running.handoff.campaign_nodes
+        for attempt in node.attempts
+        for run in attempt.runs
+    )
+    exact = SystemHealthDiagnosticContext(
+        task_id=running.task_id,
+        task_revision=running.revision,
+        configuration_content_id=running.configuration.content_identity,
+        task_handle_id=accepted.task_handle.identity,
+        campaign_id=running.handoff.campaign_id,
+        campaign_revision=running.handoff.campaign_revision,
+        run_id=run_id,
+        approved_recipe_version_ids=tuple(
+            item.recipe_version_id
+            for item in running.configuration.campaign_case_selections
+        ),
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    live_health = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        ),
+        diagnostic_tasks_application=diagnostic_tasks_application,
+        application_read_model=LiveStrategyDiagnosticsV1ApplicationAdapter(
+            application,
+            engine,
+            clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        sampling_interval=None,
+    )
+    context = build_app_context(
+        settings_path=str(tmp_path / "qml-real-context-settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    context.system_health_feature.close()
+    context.system_health_feature = live_health
+    cases = (
+        (SystemHealthContext(), "no current task"),
+        (SystemHealthContext(diagnostic=exact), "exact match"),
+        (
+            SystemHealthContext(
+                diagnostic=replace(
+                    exact,
+                    run_id=StrategyRunId("missing-qml-run-112"),
+                )
+            ),
+            "missing",
+        ),
+        (
+            SystemHealthContext(
+                diagnostic=replace(
+                    exact,
+                    approved_recipe_version_ids=(
+                        ApprovedScenarioRecipeVersionId(
+                            "superseded-qml-recipe-112"
+                        ),
+                    ),
+                )
+            ),
+            "superseded",
+        ),
+        (
+            SystemHealthContext(
+                diagnostic=replace(
+                    exact,
+                    version=SystemHealthDiagnosticContextVersion(2, 0),
+                )
+            ),
+            "incompatible",
+        ),
+    )
+    try:
+        for selected_context, expected in cases:
+            context.system_health_context = selected_context
+            window = _system_health_window(context)
+            try:
+                root = window.centralWidget().rootObject()
+                status = root.findChild(
+                    QObject,
+                    "diagnosticContextAccessibleStatus",
+                )
+                assert status is not None
+                _wait_until(
+                    app,
+                    lambda: expected
+                    in str(status.property("accessibleName")).casefold(),
+                )
+                accessible = str(status.property("accessibleName"))
+                assert expected in accessible.casefold()
+                if selected_context.diagnostic is not None:
+                    assert selected_context.diagnostic.task_id.value in accessible
+                if expected == "missing":
+                    assert "missing-qml-run-112" in accessible
+                    assert exact.run_id.value not in accessible
+            finally:
+                window.close()
+                app.processEvents()
+
+        application.resume_diagnostic_campaign(accepted.affected_campaign_id.value)
+        completed_result = diagnostic_tasks_application.read_diagnostic_task(
+            approved.task_id
+        )
+        assert completed_result.task is not None
+        completed = completed_result.task
+        assert completed.campaign_handoff is not None
+        completed_handoff = completed.campaign_handoff
+        completed_run = next(
+            run
+            for node in completed_handoff.campaign_nodes
+            for attempt in node.attempts
+            for run in attempt.runs
+        )
+        completed_context = SystemHealthContext(
+            diagnostic=SystemHealthDiagnosticContext(
+                task_id=completed.task_id,
+                task_revision=completed.revision,
+                configuration_content_id=completed.configuration.content_identity,
+                task_handle_id=accepted.task_handle.identity,
+                campaign_id=completed_handoff.campaign_id,
+                campaign_revision=completed_handoff.campaign_revision,
+                run_id=completed_run.run_id,
+                approved_recipe_version_ids=tuple(
+                    item.recipe_version_id
+                    for item in completed.configuration.campaign_case_selections
+                ),
+            )
+        )
+        context.system_health_context = completed_context
+        window = _system_health_window(context)
+        try:
+            root = window.centralWidget().rootObject()
+            status = root.findChild(QObject, "diagnosticContextAccessibleStatus")
+            assert status is not None
+            _wait_until(
+                app,
+                lambda: "completed"
+                in str(status.property("accessibleName")).casefold(),
+            )
+            accessible = str(status.property("accessibleName")).casefold()
+            assert "terminal" in accessible
+            assert "overall diagnostic_completed" in accessible
+            assert completed.task_id.value.casefold() in accessible
+        finally:
+            window.close()
+            app.processEvents()
+    finally:
+        _close_context(context)
+        task_feature.close()
+        bridge.stop()
+        engine.dispose()
+
+
+def test_real_failed_campaign_node_renders_as_diagnostic_failure_through_qml(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = _app()
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    (
+        _source,
+        _artifact_store,
+        engine,
+        application,
+        diagnostic_tasks_application,
+        task_feature,
+    ) = _formal_live_stack(
+        tmp_path,
+        ptrade_host=_FailFirstDecisionPTradeHost(),
+    )
+    approved = _approved_formal_task(task_feature)
+    accepted = task_feature.start_formal_diagnostic_campaign(
+        StartFormalDiagnosticCampaign(
+            command_id=DiagnosticCommandId("qml-failed-start-112"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "qml-failed-idempotency-112"
+            ),
+            task_id=approved.task_id,
+            expected_revision=approved.revision,
+            approved_revision=approved.revision,
+        )
+    )
+    assert accepted.task_handle is not None
+    failed_result = diagnostic_tasks_application.read_diagnostic_task(approved.task_id)
+    assert failed_result.task is not None
+    failed = failed_result.task
+    assert failed.campaign_handoff is not None
+    handoff = failed.campaign_handoff
+    failed_attempt = next(
+        attempt
+        for node in handoff.campaign_nodes
+        for attempt in node.attempts
+        if attempt.failure is not None
+    )
+    diagnostic_context = SystemHealthDiagnosticContext(
+        task_id=failed.task_id,
+        task_revision=failed.revision,
+        configuration_content_id=failed.configuration.content_identity,
+        task_handle_id=accepted.task_handle.identity,
+        campaign_id=handoff.campaign_id,
+        campaign_revision=handoff.campaign_revision,
+        run_id=failed_attempt.runs[0].run_id,
+        approved_recipe_version_ids=tuple(
+            item.recipe_version_id
+            for item in failed.configuration.campaign_case_selections
+        ),
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    live_health = LiveSystemHealthAdapter(
+        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            application,
+            clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        ),
+        diagnostic_tasks_application=diagnostic_tasks_application,
+        application_read_model=LiveStrategyDiagnosticsV1ApplicationAdapter(
+            application,
+            engine,
+            clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 2, tzinfo=timezone.utc),
+        sampling_interval=None,
+    )
+    context = build_app_context(
+        settings_path=str(tmp_path / "qml-failed-context-settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    context.system_health_feature.close()
+    context.system_health_feature = live_health
+    context.system_health_context = SystemHealthContext(diagnostic=diagnostic_context)
+    window = None
+    try:
+        window = _system_health_window(context)
+        root = window.centralWidget().rootObject()
+        status = root.findChild(QObject, "diagnosticContextAccessibleStatus")
+        assert status is not None
+        _wait_until(
+            app,
+            lambda: "failed" in str(status.property("accessibleName")).casefold(),
+        )
+        accessible = str(status.property("accessibleName")).casefold()
+        assert "terminal" in accessible
+        assert "overall diagnostic_failed" in accessible
+        assert failed.task_id.value.casefold() in accessible
+        assert "overall degraded" not in accessible
+    finally:
+        if window is not None:
+            window.close()
+        _close_context(context)
+        task_feature.close()
+        bridge.stop()
+        engine.dispose()
 
 
 def test_live_app_context_uses_one_diagnostics_application_for_every_adapter(
@@ -1439,7 +1808,18 @@ def test_stale_failed_source_recovery_is_accessible_and_focusable() -> None:
         assert runtime_status.property("activeFocus") is True
         QTest.keyClick(host, Qt.Key.Key_Tab)
         app.processEvents()
+        context_status = root.findChild(
+            QQuickItem,
+            "diagnosticContextAccessibleStatus",
+        )
+        assert context_status is not None
+        assert context_status.property("activeFocus") is True
+        QTest.keyClick(host, Qt.Key.Key_Tab)
+        app.processEvents()
         assert source_status.property("activeFocus") is True
+        QTest.keyClick(host, Qt.Key.Key_Backtab)
+        app.processEvents()
+        assert context_status.property("activeFocus") is True
         QTest.keyClick(host, Qt.Key.Key_Backtab)
         app.processEvents()
         assert runtime_status.property("activeFocus") is True

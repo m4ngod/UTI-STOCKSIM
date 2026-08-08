@@ -8,6 +8,7 @@ FocusScope {
     property var tokens
     property var leaveFocusTarget: null
     readonly property bool hasMeaningfulFocus: statusSummary.activeFocus
+        || diagnosticContextStatus.activeFocus
         || dataSourceStatus.activeFocus
 
     function restoreFocus() {
@@ -138,6 +139,75 @@ FocusScope {
                 }
 
                 Rectangle {
+                    id: diagnosticContextStatus
+                    objectName: "diagnosticContextAccessibleStatus"
+                    property string accessibleName: adapter.diagnosticContextAccessibleText
+                    activeFocusOnTab: true
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.max(
+                        176,
+                        diagnosticContextColumn.implicitHeight + tokens.spaceMd * 2
+                    )
+                    radius: tokens.radiusMd
+                    color: tokens.surfaceRaised
+                    border.color: activeFocus ? tokens.focus : tokens.border
+                    border.width: activeFocus ? tokens.focusWidth : 1
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: accessibleName
+                    Accessible.description: adapter.diagnosticContextExplanation
+                    Accessible.focusable: true
+                    Accessible.focused: activeFocus
+                    Keys.onEscapePressed: function(event) {
+                        if (page.leaveFocusTarget !== null)
+                            page.leaveFocusTarget.forceActiveFocus()
+                        event.accepted = true
+                    }
+                    Keys.onBacktabPressed: function(event) {
+                        statusSummary.forceActiveFocus()
+                        event.accepted = true
+                    }
+
+                    ColumnLayout {
+                        id: diagnosticContextColumn
+                        anchors.fill: parent
+                        anchors.margins: tokens.spaceMd
+                        spacing: tokens.spaceXs
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "DIAGNOSTIC CONTEXT · "
+                                + adapter.diagnosticContextResolution.toUpperCase()
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.bodySize
+                            font.bold: true
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Overall · " + adapter.overallClassification
+                                + " · " + adapter.diagnosticContextVersionText
+                            color: tokens.textMuted
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: adapter.diagnosticIdentityText
+                            color: tokens.textMuted
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Component impact · " + adapter.componentImpactText
+                            color: tokens.textMuted
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                        }
+                    }
+                }
+
+                Rectangle {
                     id: dataSourceStatus
                     objectName: "dataSourceAccessibleStatus"
                     property string accessibleName: (
@@ -169,7 +239,7 @@ FocusScope {
                         event.accepted = true
                     }
                     Keys.onBacktabPressed: function(event) {
-                        statusSummary.forceActiveFocus()
+                        diagnosticContextStatus.forceActiveFocus()
                         event.accepted = true
                     }
 

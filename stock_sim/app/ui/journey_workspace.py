@@ -6018,6 +6018,25 @@ class SystemHealthQtAdapter(QObject):
         if active:
             self._start_subscription()
 
+    def set_context(self, context: SystemHealthContext) -> None:
+        """Switch one immutable typed context and quarantine prior deliveries."""
+
+        if not isinstance(context, SystemHealthContext):
+            raise TypeError("context must be a SystemHealthContext")
+        if self._closed or context == self._context:
+            return
+        self._mount_generation = _next_mount_generation()
+        with self._subscription_lock:
+            subscription = self._subscription
+            self._subscription = None
+        if subscription is not None:
+            subscription.dispose()
+        self._context = context
+        self._state = None
+        self.stateChanged.emit()
+        if self._route_active:
+            self._start_subscription()
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
         return "unknown" if self._state is None else self._state.presentation.value
@@ -6046,8 +6065,9 @@ class SystemHealthQtAdapter(QObject):
     def statusText(self) -> str:  # noqa: N802
         error = None if self._state is None else self._state.error
         details = (
-            f"{self.presentationState} · {self.freshness} · "
-            f"{self.completeness}"
+            f"overall {self.overallClassification} · "
+            f"context {self.diagnosticContextResolution} · "
+            f"{self.presentationState} · {self.freshness} · {self.completeness}"
         )
         if error is None:
             return details
@@ -6060,6 +6080,119 @@ class SystemHealthQtAdapter(QObject):
             f"{details} · {error.code.value} · {error.explanation} · "
             f"affected {error.affected_scope.value} · "
             f"recovery {error.recovery_expectation.value}{correlation}"
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def overallClassification(self) -> str:  # noqa: N802
+        return (
+            "unknown"
+            if self._state is None
+            else self._state.overall_classification.value
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticContextResolution(self) -> str:  # noqa: N802
+        return (
+            "no_current_task"
+            if self._state is None
+            else self._state.diagnostic_context.resolution.value
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticContextTerminal(self) -> bool:  # noqa: N802
+        return (
+            False
+            if self._state is None
+            else self._state.diagnostic_context.terminal
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticContextVersionText(self) -> str:  # noqa: N802
+        requested = (
+            None
+            if self._state is None
+            else self._state.diagnostic_context.requested
+        )
+        if requested is None:
+            return "No current Diagnostic Task"
+        return f"v{requested.version.major}.{requested.version.minor}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticContextExplanation(self) -> str:  # noqa: N802
+        return (
+            "No current Diagnostic Task is selected."
+            if self._state is None
+            else self._state.diagnostic_context.explanation
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticIdentityText(self) -> str:  # noqa: N802
+        requested = (
+            None
+            if self._state is None
+            else self._state.diagnostic_context.requested
+        )
+        if requested is None:
+            return "No current Diagnostic Task"
+        facts = [
+            f"Task {requested.task_id.value} (r{requested.task_revision})",
+            f"Configuration {requested.configuration_content_id.value}",
+        ]
+        for label, identity in (
+            ("TaskHandle", requested.task_handle_id),
+            ("Campaign", requested.campaign_id),
+            ("Run", requested.run_id),
+            ("Evidence", requested.evidence_package_id),
+            ("Finding", requested.finding_id),
+            ("Breakpoint", requested.sensitivity_breakpoint_id),
+            ("Manifest", requested.reproduction_manifest_id),
+        ):
+            if identity is not None:
+                facts.append(f"{label} {identity.value}")
+        if requested.campaign_revision is not None:
+            facts.append(f"Campaign revision r{requested.campaign_revision}")
+        if requested.approved_recipe_version_ids:
+            facts.append(
+                "Recipe versions "
+                + ", ".join(
+                    item.value for item in requested.approved_recipe_version_ids
+                )
+            )
+        if requested.evidence_format_version is not None:
+            facts.append(f"Evidence format {requested.evidence_format_version}")
+        if requested.manifest_format_version is not None:
+            facts.append(f"Manifest format {requested.manifest_format_version}")
+        return " · ".join(facts)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def componentImpactText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Component impact is awaiting the first observation."
+        return " · ".join(
+            (
+                f"{item.component.value.replace('_', ' ')} "
+                f"{item.classification.value} → "
+                + (
+                    ", ".join(
+                        scope.value.replace("_", " ")
+                        for scope in item.affected_scope
+                    )
+                    if item.affected_scope
+                    else "no current diagnostic scope"
+                )
+            )
+            for item in self._state.component_impacts
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticContextAccessibleText(self) -> str:  # noqa: N802
+        resolution = self.diagnosticContextResolution.replace("_", " ")
+        terminal = "terminal" if self.diagnosticContextTerminal else "non-terminal"
+        return (
+            f"Diagnostic context {resolution}, {terminal}, "
+            f"overall {self.overallClassification}. "
+            f"{self.diagnosticIdentityText}. Component impact: "
+            f"{self.componentImpactText}"
         )
 
     def _component(
