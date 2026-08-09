@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from app.event_bridge import EventBridge, start_frontend_bridge
 from app.features import (
     ApprovedScenarioRecipeId,
+    ApprovedScenarioRecipeVersionId,
     DeterministicFakeDiagnosticTasksAdapter,
     DeterministicFakeEvidenceAndFindingsAdapter,
     DeterministicFakeRunMonitoringAdapter,
@@ -50,6 +51,7 @@ from app.features import (
     StrategyLibraryContext,
     StrategyLibraryFeature,
     SystemHealthContext,
+    SystemHealthDiagnosticContext,
     SystemHealthFeature,
     StrategySelectionBookmark,
     StrategyRunId,
@@ -61,9 +63,11 @@ from app.features import (
 )
 from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
 from app.journey_recovery import (
+    JourneyBookmarkRestore,
+    JourneyRecoveryReason,
     JourneyWorkspaceBookmark,
-    decode_journey_workspace_bookmark,
     encode_journey_workspace_bookmark,
+    restore_journey_workspace_bookmark,
 )
 from app.state.settings_store import SettingsStore
 
@@ -91,6 +95,7 @@ class AppContext:
     settings_store: SettingsStore
     runtime_gateway: Any
     journey_workspace_bookmark: JourneyWorkspaceBookmark
+    journey_workspace_restore: JourneyBookmarkRestore
 
     market_data_service: MarketDataService | None
     market_controller: MarketController | None
@@ -265,12 +270,23 @@ def build_app_context(
         arena_experiment_runner = legacy_context.arena_experiment_runner
     run_monitoring_context = _run_monitoring_context_from_environment()
     resolved_mode = _run_monitoring_mode(run_monitoring_mode)
-    journey_workspace_bookmark = (
-        decode_journey_workspace_bookmark(
-            settings_store.get_state().journey_workspace_bookmark_json
-        )
-        or JourneyWorkspaceBookmark()
+    bookmark_payload = settings_store.get_state().journey_workspace_bookmark_json
+    journey_workspace_restore = restore_journey_workspace_bookmark(
+        bookmark_payload
+        or encode_journey_workspace_bookmark(JourneyWorkspaceBookmark())
     )
+    journey_workspace_bookmark = journey_workspace_restore.bookmark
+    if bookmark_payload and (
+        journey_workspace_restore.migrated
+        or journey_workspace_restore.recovery.reason
+        is JourneyRecoveryReason.INVALID_BOOKMARK
+    ):
+        settings_store.update(
+            journey_workspace_bookmark_json=(
+                journey_workspace_restore.canonical_payload
+            )
+        )
+        settings_store.get_state().save()
     diagnostic_tasks_context = DiagnosticTasksContext(
         task_id=journey_workspace_bookmark.diagnostic_task_id
     )
@@ -279,7 +295,13 @@ def build_app_context(
     )
     strategy_library_context = StrategyLibraryContext(
         focus_strategy_id=(
-            None
+            (
+                journey_workspace_bookmark.strategy_selection
+                .strategy_under_test.strategy_id
+                if strategy_library_bookmark is None
+                and journey_workspace_bookmark.strategy_selection is not None
+                else None
+            )
             if strategy_library_bookmark is None
             else strategy_library_bookmark.focus_strategy_id
         ),
@@ -289,7 +311,66 @@ def build_app_context(
         focus_target=journey_workspace_bookmark.scenario_focus_target,
         focus_identity=journey_workspace_bookmark.scenario_focus_identity,
     )
-    system_health_context = SystemHealthContext()
+    diagnostic_selection = journey_workspace_bookmark.diagnostic_selection
+    evidence_selection = journey_workspace_bookmark.evidence_selection
+    scenario_selection = journey_workspace_bookmark.scenario_selection
+    if (
+        diagnostic_selection is not None
+        and diagnostic_selection.campaign_id is not None
+    ):
+        run_monitoring_context = RunMonitoringContext(
+            selection=RunMonitoringSelection(
+                campaign_id=diagnostic_selection.campaign_id,
+                run_id=diagnostic_selection.run_id,
+            )
+        )
+    system_health_context = SystemHealthContext(
+        diagnostic=(
+            None
+            if diagnostic_selection is None
+            else SystemHealthDiagnosticContext(
+                task_id=diagnostic_selection.task_id,
+                task_revision=diagnostic_selection.task_revision,
+                configuration_content_id=(
+                    diagnostic_selection.configuration_content_id
+                ),
+                task_handle_id=diagnostic_selection.task_handle_id,
+                campaign_id=diagnostic_selection.campaign_id,
+                campaign_revision=diagnostic_selection.campaign_revision,
+                run_id=diagnostic_selection.run_id,
+                evidence_package_id=(
+                    None
+                    if evidence_selection is None
+                    else evidence_selection.evidence_package_id
+                ),
+                finding_id=(
+                    None
+                    if evidence_selection is None
+                    else evidence_selection.finding_id
+                ),
+                sensitivity_breakpoint_id=(
+                    None
+                    if evidence_selection is None
+                    else evidence_selection.sensitivity_breakpoint_id
+                ),
+                reproduction_manifest_id=(
+                    None
+                    if evidence_selection is None
+                    else evidence_selection.reproduction_manifest_id
+                ),
+                approved_recipe_version_ids=(
+                    ()
+                    if scenario_selection is None
+                    else tuple(
+                        ApprovedScenarioRecipeVersionId(
+                            item.recipe_version_id.value
+                        )
+                        for item in scenario_selection.approved_recipe_versions
+                    )
+                ),
+            )
+        )
+    )
     if resolved_mode == "fake":
         strategy_library_feature: StrategyLibraryFeature = (
             DeterministicFakeStrategyLibraryAdapter()
@@ -392,11 +473,44 @@ def build_app_context(
     evidence_and_findings_context = _evidence_and_findings_context_from_environment(
         run_monitoring_context,
     )
+    if (
+        diagnostic_selection is not None
+        and diagnostic_selection.campaign_id is not None
+        and diagnostic_selection.run_id is not None
+        and evidence_selection is not None
+    ):
+        strategy_selection = journey_workspace_bookmark.strategy_selection
+        evidence_and_findings_context = EvidenceAndFindingsContext.for_selection(
+            EvidenceAndFindingsSelection(
+                campaign_id=diagnostic_selection.campaign_id,
+                run_id=diagnostic_selection.run_id,
+                strategy_id=(
+                    None
+                    if strategy_selection is None
+                    else strategy_selection.strategy_under_test.strategy_id
+                ),
+                market_scenario_id=None,
+                approved_recipe_id=(
+                    None
+                    if scenario_selection is None
+                    or len(scenario_selection.approved_recipe_versions) != 1
+                    else ApprovedScenarioRecipeId(
+                        scenario_selection.approved_recipe_versions[
+                            0
+                        ].recipe_version_id.value
+                    )
+                ),
+                reproduction_manifest_id=(
+                    evidence_selection.reproduction_manifest_id
+                ),
+            )
+        )
 
     return AppContext(
         settings_store=settings_store,
         runtime_gateway=runtime_gateway,
         journey_workspace_bookmark=journey_workspace_bookmark,
+        journey_workspace_restore=journey_workspace_restore,
         market_data_service=market_data_service,
         market_controller=market_controller,
         account_service=account_service,

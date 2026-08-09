@@ -172,6 +172,11 @@ def _start_frontend(*, headless: bool):
             "persist_journey_workspace_bookmark",
             None,
         ),
+        journey_workspace_recovery=getattr(
+            getattr(context, "journey_workspace_restore", None),
+            "recovery",
+            None,
+        ),
         scenario_lab_feature=getattr(
             context,
             "scenario_lab_feature",

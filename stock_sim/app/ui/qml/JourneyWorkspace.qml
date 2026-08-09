@@ -10,6 +10,13 @@ Rectangle {
     property bool scenarioLabAvailable: scenarioLab !== null
     property bool diagnosticTasksAvailable: diagnosticTasks !== null
     property string activeRoute: "diagnostic_tasks"
+    property string routeRecoveryReason: initialJourneyRecoveryReason
+    property string routeRecoveryMessage: initialJourneyRecoveryMessage
+    property string requestedFocusRoute: initialJourneyFocusRoute
+    property string requestedFocusControl: initialJourneyFocusControl
+    property string requestedFocusIdentity: initialJourneyFocusIdentity
+    property bool focusReturnConsumed: false
+    property string authoritativeFocusPendingRoute: ""
     property bool diagnosticTasksPageActivated: (
         initialJourneyRoute === "diagnostic_tasks"
     )
@@ -78,6 +85,7 @@ Rectangle {
                 ? "Observe pinned diagnostic identities, progress, timing, execution assumptions, and read-only runtime context."
                 : "Open an existing Formal Diagnostic Campaign or Strategy Run to monitor it here."
     property var lastRunFocus: null
+    signal routeActivationRequested(string route)
 
     function rememberRunFocus(item) {
         lastRunFocus = item
@@ -124,7 +132,9 @@ Rectangle {
     }
 
     function repairRunFocus() {
-        if (diagnosticTasksRouteNavigation.activeFocus
+        if (strategyLibraryRouteNavigation.activeFocus
+                || scenarioLabRouteNavigation.activeFocus
+                || diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
                 || systemHealthRouteNavigation.activeFocus
@@ -139,7 +149,9 @@ Rectangle {
     }
 
     function repairEvidenceFocus() {
-        if (diagnosticTasksRouteNavigation.activeFocus
+        if (strategyLibraryRouteNavigation.activeFocus
+                || scenarioLabRouteNavigation.activeFocus
+                || diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
                 || systemHealthRouteNavigation.activeFocus
@@ -150,7 +162,9 @@ Rectangle {
     }
 
     function repairDiagnosticTasksFocus() {
-        if (diagnosticTasksRouteNavigation.activeFocus
+        if (strategyLibraryRouteNavigation.activeFocus
+                || scenarioLabRouteNavigation.activeFocus
+                || diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
                 || systemHealthRouteNavigation.activeFocus
@@ -161,6 +175,8 @@ Rectangle {
     }
 
     function restoreActiveRouteFocus() {
+        if (restoreFocusReturnToken())
+            return
         if (activeRoute === "strategy_library") {
             if (strategyLibraryPageLoader.item === null
                     || !strategyLibraryPageLoader.item.restoreFocus())
@@ -188,31 +204,79 @@ Rectangle {
             restoreRunFocus()
     }
 
+    function findNamedItem(parentItem, objectName) {
+        if (parentItem === null)
+            return null
+        if (parentItem.objectName === objectName)
+            return parentItem
+        var childItems = parentItem.children
+        for (var index = 0; index < childItems.length; ++index) {
+            var match = findNamedItem(childItems[index], objectName)
+            if (match !== null)
+                return match
+        }
+        return null
+    }
+
+    function restoreFocusReturnToken() {
+        if (focusReturnConsumed
+                || requestedFocusRoute !== activeRoute
+                || requestedFocusControl.length === 0)
+            return false
+        var target = findNamedItem(workspace, requestedFocusControl)
+        if (target === null || !target.visible || !target.enabled)
+            return false
+        if (requestedFocusIdentity.length > 0
+                && target.objectName.indexOf(requestedFocusIdentity) < 0)
+            return false
+        target.forceActiveFocus()
+        if (!target.activeFocus)
+            return false
+        focusReturnConsumed = true
+        return true
+    }
+
     function openRoute(route) {
-        activeRoute = route
-        Qt.callLater(restoreActiveRouteFocus)
+        if (!routeAvailable(route))
+            return
+        if (activeRoute === route) {
+            Qt.callLater(restoreActiveRouteFocus)
+            return
+        }
+        routeActivationRequested(route)
+    }
+
+    function routeAvailable(route) {
+        if (route === "strategy_library")
+            return strategyLibraryAvailable
+        if (route === "scenario_lab")
+            return scenarioLabAvailable
+        if (route === "diagnostic_tasks")
+            return diagnosticTasksAvailable
+        if (route === "run_monitoring")
+            return true
+        if (route === "evidence_and_findings")
+            return evidenceAvailable
+        if (route === "system_health")
+            return systemHealthAvailable
+        return false
     }
 
     onActiveRouteChanged: {
         if (activeRoute === "diagnostic_tasks")
             diagnosticTasksPageActivated = true
-        Qt.callLater(restoreActiveRouteFocus)
+        authoritativeFocusPendingRoute = activeRoute
     }
     Component.onCompleted: {
         activeRoute = initialJourneyRoute
-        if (activeRoute === "strategy_library" && !strategyLibraryAvailable)
-            activeRoute = scenarioLabAvailable
-                ? "scenario_lab"
-                : diagnosticTasksAvailable
-                    ? "diagnostic_tasks" : "run_monitoring"
-        else if (activeRoute === "scenario_lab" && !scenarioLabAvailable)
-            activeRoute = diagnosticTasksAvailable
-                ? "diagnostic_tasks" : "run_monitoring"
-        else if (!diagnosticTasksAvailable && activeRoute === "diagnostic_tasks")
-            activeRoute = "run_monitoring"
-        else if (!systemHealthAvailable && activeRoute === "system_health")
-            activeRoute = "run_monitoring"
-        Qt.callLater(restoreActiveRouteFocus)
+        Qt.callLater(function() {
+            if (activeRoute === "system_health")
+                systemHealthRouteNavigation.forceActiveFocus()
+            else {
+                restoreActiveRouteFocus()
+                authoritativeFocusPendingRoute = ""
+            }
+        })
     }
 
     DesignTokens {
@@ -233,7 +297,7 @@ Rectangle {
         function onStateChanged() {
             if (workspace.activeRoute === "strategy_library"
                     && strategyLibraryPageLoader.item !== null)
-                Qt.callLater(strategyLibraryPageLoader.item.restoreFocus)
+                Qt.callLater(workspace.restoreActiveRouteFocus)
         }
     }
 
@@ -243,7 +307,7 @@ Rectangle {
         function onStateChanged() {
             if (workspace.activeRoute === "scenario_lab"
                     && scenarioLabPageLoader.item !== null)
-                Qt.callLater(scenarioLabPageLoader.item.restoreFocus)
+                Qt.callLater(workspace.restoreActiveRouteFocus)
         }
     }
 
@@ -251,7 +315,18 @@ Rectangle {
         target: diagnosticTasks
         enabled: workspace.diagnosticTasksAvailable
         function onStateChanged() {
-            if (workspace.activeRoute === "diagnostic_tasks")
+            if (workspace.activeRoute !== "diagnostic_tasks")
+                return
+            if (workspace.authoritativeFocusPendingRoute
+                    === "diagnostic_tasks"
+                    || (!workspace.focusReturnConsumed
+                        && workspace.requestedFocusRoute
+                            === "diagnostic_tasks"
+                        && workspace.requestedFocusControl.length > 0)) {
+                workspace.authoritativeFocusPendingRoute = ""
+                Qt.callLater(workspace.restoreActiveRouteFocus)
+            }
+            else
                 Qt.callLater(workspace.repairDiagnosticTasksFocus)
         }
     }
@@ -259,7 +334,17 @@ Rectangle {
     Connections {
         target: runMonitoring
         function onStateChanged() {
-            if (workspace.activeRoute === "run_monitoring")
+            if (workspace.activeRoute !== "run_monitoring")
+                return
+            if (workspace.authoritativeFocusPendingRoute
+                    === "run_monitoring"
+                    || (!workspace.focusReturnConsumed
+                        && workspace.requestedFocusRoute === "run_monitoring"
+                        && workspace.requestedFocusControl.length > 0)) {
+                workspace.authoritativeFocusPendingRoute = ""
+                Qt.callLater(workspace.restoreActiveRouteFocus)
+            }
+            else
                 Qt.callLater(workspace.repairRunFocus)
         }
     }
@@ -268,8 +353,38 @@ Rectangle {
         target: evidenceAndFindings
         enabled: workspace.evidenceAvailable
         function onStateChanged() {
-            if (workspace.activeRoute === "evidence_and_findings")
+            if (workspace.activeRoute !== "evidence_and_findings")
+                return
+            if (workspace.authoritativeFocusPendingRoute
+                    === "evidence_and_findings"
+                    || (!workspace.focusReturnConsumed
+                        && workspace.requestedFocusRoute
+                            === "evidence_and_findings"
+                        && workspace.requestedFocusControl.length > 0)) {
+                workspace.authoritativeFocusPendingRoute = ""
+                Qt.callLater(workspace.restoreActiveRouteFocus)
+            }
+            else
                 Qt.callLater(workspace.repairEvidenceFocus)
+        }
+    }
+
+    Connections {
+        target: systemHealth
+        enabled: workspace.systemHealthAvailable
+        function onStateChanged() {
+            if (workspace.activeRoute === "system_health"
+                    && (workspace.authoritativeFocusPendingRoute
+                            === "system_health"
+                        || (!workspace.focusReturnConsumed
+                            && workspace.requestedFocusRoute
+                                === "system_health"
+                            && workspace.requestedFocusControl.length > 0))
+                    && systemHealthPageLoader.item !== null)
+            {
+                workspace.authoritativeFocusPendingRoute = ""
+                Qt.callLater(workspace.restoreActiveRouteFocus)
+            }
         }
     }
 
@@ -325,7 +440,9 @@ Rectangle {
                     )
                     readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
-                    visible: workspace.strategyLibraryAvailable
+                    visible: true
+                    enabled: workspace.strategyLibraryAvailable
+                    opacity: enabled ? 1.0 : 0.55
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Layout.maximumWidth: parent.width
@@ -342,11 +459,13 @@ Rectangle {
                     Accessible.name: accessibleName
                     Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
-                    Accessible.focusable: true
+                    Accessible.focusable: enabled
                     Accessible.focused: activeFocus
                     Accessible.selectable: true
                     Accessible.selected: workspace.activeRoute === "strategy_library"
                     Accessible.onPressAction: workspace.openRoute("strategy_library")
+                    KeyNavigation.down: scenarioLabRouteNavigation
+                    KeyNavigation.up: systemHealthRouteNavigation
 
                     Text {
                         anchors.fill: parent
@@ -361,6 +480,7 @@ Rectangle {
                     }
                     MouseArea {
                         anchors.fill: parent
+                        enabled: strategyLibraryRouteNavigation.enabled
                         cursorShape: Qt.PointingHandCursor
                         onClicked: workspace.openRoute("strategy_library")
                     }
@@ -383,7 +503,9 @@ Rectangle {
                     )
                     readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
-                    visible: workspace.scenarioLabAvailable
+                    visible: true
+                    enabled: workspace.scenarioLabAvailable
+                    opacity: enabled ? 1.0 : 0.55
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Layout.maximumWidth: parent.width
@@ -400,11 +522,13 @@ Rectangle {
                     Accessible.name: accessibleName
                     Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
-                    Accessible.focusable: true
+                    Accessible.focusable: enabled
                     Accessible.focused: activeFocus
                     Accessible.selectable: true
                     Accessible.selected: workspace.activeRoute === "scenario_lab"
                     Accessible.onPressAction: workspace.openRoute("scenario_lab")
+                    KeyNavigation.down: diagnosticTasksRouteNavigation
+                    KeyNavigation.up: strategyLibraryRouteNavigation
 
                     Text {
                         anchors.fill: parent
@@ -419,6 +543,7 @@ Rectangle {
                     }
                     MouseArea {
                         anchors.fill: parent
+                        enabled: scenarioLabRouteNavigation.enabled
                         cursorShape: Qt.PointingHandCursor
                         onClicked: workspace.openRoute("scenario_lab")
                     }
@@ -443,7 +568,9 @@ Rectangle {
                     )
                     readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
-                    visible: workspace.diagnosticTasksAvailable
+                    visible: true
+                    enabled: workspace.diagnosticTasksAvailable
+                    opacity: enabled ? 1.0 : 0.55
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Layout.maximumWidth: parent.width
@@ -460,7 +587,7 @@ Rectangle {
                     Accessible.name: accessibleName
                     Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
-                    Accessible.focusable: true
+                    Accessible.focusable: enabled
                     Accessible.focused: activeFocus
                     Accessible.selectable: true
                     Accessible.selected: (
@@ -469,6 +596,8 @@ Rectangle {
                     Accessible.onPressAction: (
                         workspace.openRoute("diagnostic_tasks")
                     )
+                    KeyNavigation.down: runMonitoringRouteNavigation
+                    KeyNavigation.up: scenarioLabRouteNavigation
 
                     Text {
                         anchors.fill: parent
@@ -483,6 +612,7 @@ Rectangle {
                     }
                     MouseArea {
                         anchors.fill: parent
+                        enabled: diagnosticTasksRouteNavigation.enabled
                         cursorShape: Qt.PointingHandCursor
                         onClicked: workspace.openRoute("diagnostic_tasks")
                     }
@@ -530,6 +660,8 @@ Rectangle {
                     Accessible.onPressAction: (
                         workspace.openRoute("run_monitoring")
                     )
+                    KeyNavigation.down: evidenceAndFindingsRouteNavigation
+                    KeyNavigation.up: diagnosticTasksRouteNavigation
 
                     Text {
                         anchors.fill: parent
@@ -568,7 +700,9 @@ Rectangle {
                     )
                     readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
-                    visible: workspace.evidenceAvailable
+                    visible: true
+                    enabled: workspace.evidenceAvailable
+                    opacity: enabled ? 1.0 : 0.55
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Layout.maximumWidth: parent.width
@@ -586,7 +720,7 @@ Rectangle {
                     Accessible.name: accessibleName
                     Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
-                    Accessible.focusable: true
+                    Accessible.focusable: enabled
                     Accessible.focused: activeFocus
                     Accessible.selectable: true
                     Accessible.selected: (
@@ -595,6 +729,8 @@ Rectangle {
                     Accessible.onPressAction: (
                         workspace.openRoute("evidence_and_findings")
                     )
+                    KeyNavigation.down: systemHealthRouteNavigation
+                    KeyNavigation.up: runMonitoringRouteNavigation
 
                     Text {
                         id: evidenceRouteNavigationLabel
@@ -610,6 +746,7 @@ Rectangle {
                     }
                     MouseArea {
                         anchors.fill: parent
+                        enabled: evidenceAndFindingsRouteNavigation.enabled
                         cursorShape: Qt.PointingHandCursor
                         onClicked: (
                             workspace.openRoute("evidence_and_findings")
@@ -683,7 +820,9 @@ Rectangle {
                     )
                     readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
-                    visible: workspace.systemHealthAvailable
+                    visible: true
+                    enabled: workspace.systemHealthAvailable
+                    opacity: enabled ? 1.0 : 0.55
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Layout.maximumWidth: parent.width
@@ -700,11 +839,13 @@ Rectangle {
                     Accessible.name: accessibleName
                     Accessible.description: accessibleDescription
                     Accessible.role: Accessible.Button
-                    Accessible.focusable: true
+                    Accessible.focusable: enabled
                     Accessible.focused: activeFocus
                     Accessible.selectable: true
                     Accessible.selected: workspace.activeRoute === "system_health"
                     Accessible.onPressAction: workspace.openRoute("system_health")
+                    KeyNavigation.down: strategyLibraryRouteNavigation
+                    KeyNavigation.up: evidenceAndFindingsRouteNavigation
 
                     Text {
                         anchors.fill: parent
@@ -719,6 +860,7 @@ Rectangle {
                     }
                     MouseArea {
                         anchors.fill: parent
+                        enabled: systemHealthRouteNavigation.enabled
                         cursorShape: Qt.PointingHandCursor
                         onClicked: workspace.openRoute("system_health")
                     }
@@ -730,6 +872,19 @@ Rectangle {
                         workspace.openRoute("system_health")
                         event.accepted = true
                     }
+                }
+
+                Text {
+                    objectName: "journeyRecoveryStatus"
+                    visible: workspace.routeRecoveryReason !== "exact"
+                    Layout.fillWidth: true
+                    text: workspace.routeRecoveryMessage
+                    color: tokens.focus
+                    font.pixelSize: tokens.labelSize
+                    wrapMode: Text.WordWrap
+                    Accessible.role: Accessible.StatusBar
+                    Accessible.name: "Journey recovery"
+                    Accessible.description: text
                 }
 
                 Item {
