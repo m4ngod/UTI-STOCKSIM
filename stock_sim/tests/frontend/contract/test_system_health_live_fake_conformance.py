@@ -2265,6 +2265,67 @@ def test_live_adapter_replays_a_disconnect_during_construction() -> None:
         feature.close()
 
 
+def test_latest_disconnect_quarantines_a_queued_reconnect_action() -> None:
+    class _PausedWorkerAdapter(LiveSystemHealthAdapter):
+        def __init__(self, **kwargs: object) -> None:
+            self.worker_started = Event()
+            self.release_worker = Event()
+            self.worker_inspected = Event()
+            self.pending_actions_on_resume: int | None = None
+            super().__init__(**kwargs)  # type: ignore[arg-type]
+
+        def _worker_loop(self) -> None:
+            self.worker_started.set()
+            self.release_worker.wait(timeout=5)
+            with self._lock:
+                self.pending_actions_on_resume = len(
+                    self._pending_connection_actions
+                )
+            self.worker_inspected.set()
+            super()._worker_loop()
+
+    clock = _Clock()
+    application = create_diagnostics_application()
+    application.start()
+    bridge = EventBridge(subscribe_backend=False)
+    feature = _PausedWorkerAdapter(
+        application_health=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                application,
+                clock=clock,
+            )
+        ),
+        event_bridge=bridge,
+        clock=clock,
+        sampling_interval=None,
+    )
+    context = SystemHealthContext()
+    try:
+        assert feature.worker_started.wait(timeout=1)
+        feature.snapshot(context)
+        bridge.mark_disconnected()
+        bridge.mark_reconnected()
+        bridge.mark_disconnected()
+
+        latest = feature.snapshot(context)
+        assert latest.recovery_phase is RuntimeHealthRecoveryPhase.DISCONNECTED
+        assert latest.freshness is Freshness.DISCONNECTED
+        assert latest.presentation not in {
+            SystemHealthPresentationState.HEALTHY,
+            SystemHealthPresentationState.RECOVERED,
+        }
+
+        feature.release_worker.set()
+        assert feature.worker_inspected.wait(timeout=1)
+        assert feature.pending_actions_on_resume == 0
+        assert feature.snapshot(context).recovery_phase is (
+            RuntimeHealthRecoveryPhase.DISCONNECTED
+        )
+    finally:
+        feature.release_worker.set()
+        feature.close()
+
+
 def test_concurrent_healthy_then_failed_reads_preserve_last_reliable_state() -> None:
     now = datetime(2030, 1, 1, tzinfo=timezone.utc)
     first_read_entered = Event()

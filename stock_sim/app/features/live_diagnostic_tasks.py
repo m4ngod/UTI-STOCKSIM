@@ -265,6 +265,7 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
             DiagnosticTasksContext,
             SourceRevisionToken,
         ] = {}
+        self._accepted_task_revisions: dict[str, int] = {}
         self._subscriptions: dict[
             int,
             tuple[
@@ -396,6 +397,12 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
             self._states[context] = state
             if result.source_token is not None and result.error is None:
                 self._source_tokens[context] = result.source_token
+            if state.task is not None:
+                task_identity = state.task.task_id.value
+                self._accepted_task_revisions[task_identity] = max(
+                    state.task.revision,
+                    self._accepted_task_revisions.get(task_identity, 0),
+                )
             observers = tuple(
                 (observer, subscription)
                 for subscribed_context, observer, subscription in (
@@ -591,6 +598,8 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 or connection.sequence.value <= self._connection_sequence
             ):
                 return
+            if generation != self._connection_generation:
+                self._accepted_task_revisions.clear()
             self._connection_generation = generation
             self._connection_sequence = connection.sequence.value
             self._connection_phase = connection.phase
@@ -640,10 +649,6 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
 
     def _on_snapshot_batch(self, batch: EventBridgeBatch) -> None:
         generation = SourceGenerationId(batch.generation.value)
-        diagnostic_invalidation = any(
-            _is_diagnostic_tasks_invalidation(snapshot)
-            for snapshot in batch.snapshots
-        )
         batch_run_ids = {
             str(snapshot.get("run_id") or "").strip()
             for snapshot in batch.snapshots
@@ -657,6 +662,12 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 is not EventBridgeConnectionPhase.CONNECTED
             ):
                 return
+            diagnostic_invalidation = False
+            for snapshot in batch.snapshots:
+                if not _is_diagnostic_tasks_invalidation(snapshot):
+                    continue
+                accepted = self._accept_diagnostic_invalidation(snapshot)
+                diagnostic_invalidation = accepted or diagnostic_invalidation
             contexts = tuple(
                 context
                 for context, state in self._states.items()
@@ -672,6 +683,26 @@ class LiveDiagnosticTasksAdapter(_UnavailableDiagnosticTasksCommands):
                 if self._closed:
                     return
             self.snapshot(context)
+
+    def _accept_diagnostic_invalidation(
+        self,
+        snapshot: dict[str, object],
+    ) -> bool:
+        """Accept only strictly newer typed Task revisions per generation."""
+
+        if str(snapshot.get("kind") or "").strip().lower() != "diagnostic-task":
+            return True
+        task_identity = str(snapshot.get("diagnostic_task_id") or "").strip()
+        revision = snapshot.get("revision")
+        if not task_identity or isinstance(revision, bool) or not isinstance(
+            revision,
+            int,
+        ):
+            return True
+        accepted = self._accepted_task_revisions.get(task_identity)
+        if accepted is not None and revision <= accepted:
+            return False
+        return True
 
     def _remove_subscription(self, subscription_id: int) -> None:
         with self._lock:

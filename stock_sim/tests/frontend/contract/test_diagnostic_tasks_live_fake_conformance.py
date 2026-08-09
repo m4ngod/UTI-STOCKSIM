@@ -183,6 +183,27 @@ class _BlockingInventoryApplication:
         return getattr(self._delegate, name)
 
 
+class _CountingReadsApplication:
+    def __init__(
+        self,
+        delegate: StrategyDiagnosticsV1DiagnosticTasksApplication,
+    ) -> None:
+        self._delegate = delegate
+        self.inventory_reads = 0
+        self.task_reads = 0
+
+    def read_inventory(self):
+        self.inventory_reads += 1
+        return self._delegate.read_inventory()
+
+    def read_diagnostic_task(self, task_id):
+        self.task_reads += 1
+        return self._delegate.read_diagnostic_task(task_id)
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
 class _BlockingTaskReadApplication:
     def __init__(
         self,
@@ -1725,6 +1746,71 @@ def test_live_adapter_ignores_old_generation_batches_but_rereads_current() -> (
 
     assert observed[-1].task is not None
     assert observed[-1].task.task_id == accepted.affected_task_id
+    subscription.dispose()
+    feature.close()
+
+
+def test_live_adapter_quarantines_duplicate_and_lower_task_revisions() -> None:
+    bridge = EventBridge(subscribe_backend=False)
+    application = _CountingReadsApplication(_live_application_adapter())
+    feature = LiveDiagnosticTasksAdapter(
+        application=cast(
+            StrategyDiagnosticsV1DiagnosticTasksApplication,
+            application,
+        ),
+        event_bridge=bridge,
+        clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    workspace = DiagnosticTasksContext.workspace()
+    feature.snapshot(workspace)
+    reliable = feature.snapshot(workspace)
+    assert reliable.last_reliable_inventory is not None
+    accepted = feature.create_diagnostic_task(
+        _unavailable_commands(reliable.last_reliable_inventory)[0]
+    )
+    assert accepted.accepted
+    authoritative = feature.snapshot(workspace)
+    assert authoritative.task is not None
+    observed = []
+    subscription = feature.subscribe(workspace, observed.append)
+    reads_before_quarantine = (
+        application.inventory_reads,
+        application.task_reads,
+    )
+    deliveries_before_quarantine = len(observed)
+
+    for revision in (
+        authoritative.task.revision,
+        authoritative.task.revision - 1,
+    ):
+        bridge.on_snapshot(
+            {
+                "kind": "diagnostic-task",
+                "diagnostic_task_id": authoritative.task.task_id.value,
+                "revision": revision,
+            },
+            generation=bridge.connection_generation,
+        )
+    bridge.flush(force=True)
+
+    assert (
+        application.inventory_reads,
+        application.task_reads,
+    ) == reads_before_quarantine
+    assert len(observed) == deliveries_before_quarantine
+
+    bridge.on_snapshot(
+        {
+            "kind": "diagnostic-task",
+            "diagnostic_task_id": authoritative.task.task_id.value,
+            "revision": authoritative.task.revision + 1,
+        },
+        generation=bridge.connection_generation,
+    )
+    bridge.flush(force=True)
+
+    assert application.inventory_reads == reads_before_quarantine[0] + 1
+    assert application.task_reads == reads_before_quarantine[1] + 1
     subscription.dispose()
     feature.close()
 
