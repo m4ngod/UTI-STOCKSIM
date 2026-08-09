@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
@@ -230,6 +232,8 @@ def build_app_context(
     diagnostic_setup_selection_coordinator: (
         DiagnosticSetupSelectionCoordinator | None
     ) = None,
+    system_health_clock: Callable[[], datetime] | None = None,
+    system_health_sampling_interval: timedelta | None = timedelta(seconds=1),
     legacy_read_only: bool = False,
 ) -> AppContext:
     setup_coordinator = (
@@ -492,6 +496,8 @@ def build_app_context(
             diagnostic_tasks_application=strategy_diagnostics_tasks_application,
             application_read_model=strategy_diagnostics_read_model,
             event_bridge=live_bridge,
+            clock=system_health_clock,
+            sampling_interval=system_health_sampling_interval,
         )
     evidence_and_findings_context = _evidence_and_findings_context_from_environment(
         run_monitoring_context,

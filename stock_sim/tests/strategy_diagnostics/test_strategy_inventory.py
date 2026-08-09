@@ -120,6 +120,8 @@ def test_public_application_inventory_exposes_only_formal_v1_strategies() -> Non
     assert "scenario_lab_execution_resolutions" in surface.application_commands
     assert "scenario_lab_selection_contexts" in surface.application_commands
     assert "replay_scenario_lab_projection_command" in surface.application_commands
+    assert "diagnostic_task_queue_health" in surface.application_commands
+    assert "diagnostic_cache_health" in surface.application_commands
     assert surface.unclassified_commands == ()
     assert surface.status == "verified"
 

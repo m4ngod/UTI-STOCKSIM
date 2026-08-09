@@ -148,6 +148,7 @@ class _Harness:
     unavailable: Callable[[], None]
     schema_incompatible: Callable[[], None]
     manifest_incompatible: Callable[[], None]
+    deliver_data_source_revision: Callable[[int, int], None]
 
 
 def _compatible_persistence(now: datetime) -> PersistenceHealthApplicationObservation:
@@ -454,6 +455,17 @@ def _live_harness(*, initially_healthy: bool) -> _Harness:
         )
         bridge.flush(force=True)
 
+    def deliver_data_source_revision(revision: int, generation: int) -> None:
+        bridge.on_snapshot(
+            {
+                "feature": "system_health",
+                "component": "diagnostic_data_source",
+                "source_revision": revision,
+            },
+            generation=generation,
+        )
+        bridge.flush(force=True)
+
     return _Harness(
         feature=feature,
         become_healthy=become_healthy,
@@ -466,6 +478,7 @@ def _live_harness(*, initially_healthy: bool) -> _Harness:
         unavailable=unavailable,
         schema_incompatible=schema_incompatible,
         manifest_incompatible=manifest_incompatible,
+        deliver_data_source_revision=deliver_data_source_revision,
     )
 
 
@@ -490,12 +503,170 @@ def _fake_harness(*, initially_healthy: bool) -> _Harness:
         unavailable=feature.advance_to_unavailable,
         schema_incompatible=feature.advance_to_schema_incompatible,
         manifest_incompatible=feature.advance_to_manifest_incompatible,
+        deliver_data_source_revision=(
+            lambda revision, generation: feature.deliver_data_source_revision(
+                revision,
+                generation=generation,
+            )
+        ),
     )
 
 
 @pytest.fixture(params=(_live_harness, _fake_harness), ids=("live", "fake"))
 def harness_factory(request: pytest.FixtureRequest) -> Callable[..., _Harness]:
     return request.param
+
+
+def _assert_system_health_feature_1_0_contract(
+    factory: Callable[..., _Harness],
+) -> None:
+    """One public contract body executed unchanged for live and deterministic fake."""
+
+    healthy_harness = factory(initially_healthy=True)
+    context = SystemHealthContext()
+    observed: list = []
+    subscription = healthy_harness.feature.subscribe(context, observed.append)
+    try:
+        healthy = observed[-1]
+        assert healthy.interface_version.render() == "1.0"
+        assert healthy.context == context
+        assert healthy.presentation is SystemHealthPresentationState.HEALTHY
+        assert healthy.phase is ViewPhase.READY
+        assert healthy.freshness is Freshness.FRESH
+        assert healthy.completeness is Completeness.COMPLETE
+        assert healthy.observed_at.tzinfo is not None
+        assert healthy.age >= timedelta(0)
+        assert healthy.freshness_threshold == timedelta(seconds=5)
+        assert isinstance(healthy.components, tuple)
+        assert healthy.last_reliable_payload is healthy.components
+        assert tuple(item.identity for item in healthy.components) == (
+            SystemHealthComponentIdentity.APPLICATION_RUNTIME,
+            SystemHealthComponentIdentity.DIAGNOSTIC_PERSISTENCE,
+            SystemHealthComponentIdentity.VERSION_COMPATIBILITY,
+        )
+        with pytest.raises(FrozenInstanceError):
+            healthy.revision = 99  # type: ignore[misc]
+
+        healthy_harness.degrade()
+        degraded = healthy_harness.feature.snapshot(context)
+        assert degraded.presentation is SystemHealthPresentationState.DEGRADED
+        assert degraded.revision > healthy.revision
+        assert degraded.last_reliable_payload is not None
+
+        healthy_harness.fail()
+        failed = healthy_harness.feature.snapshot(context)
+        assert failed.revision > degraded.revision
+        assert failed.last_reliable_payload is not None
+        assert failed.error is not None
+        assert failed.error.code.value == "runtime_health_observation_failed"
+        exposed = repr(failed).casefold()
+        for forbidden in (
+            "c:\\secrets",
+            "runtime.exe",
+            "super-secret",
+            "select users",
+            "traceback",
+        ):
+            assert forbidden not in exposed
+    finally:
+        subscription.dispose()
+        subscription.dispose()
+        delivered = len(observed)
+        healthy_harness.publish_change()
+        assert len(observed) == delivered
+        healthy_harness.feature.close()
+        healthy_harness.feature.close()
+        healthy_harness.publish_change()
+        assert len(observed) == delivered
+
+    recovery_harness = factory(initially_healthy=True)
+    recovered_states: list = []
+    recovery_subscription = recovery_harness.feature.subscribe(
+        context,
+        recovered_states.append,
+    )
+    try:
+        reliable = recovered_states[-1]
+        reliable_payload = reliable.last_reliable_payload
+        recovery_harness.disconnect()
+        _wait_until(
+            lambda: recovered_states[-1].recovery_phase
+            is RuntimeHealthRecoveryPhase.DISCONNECTED
+        )
+        disconnected = recovered_states[-1]
+        assert disconnected.last_reliable_payload == reliable_payload
+        assert disconnected.freshness is Freshness.DISCONNECTED
+
+        recovery_harness.advance(timedelta(seconds=6))
+        stale = recovery_harness.feature.snapshot(context)
+        assert stale.presentation is SystemHealthPresentationState.STALE
+        assert stale.last_reliable_payload == reliable_payload
+
+        recovery_harness.reconnect()
+        _wait_until(
+            lambda: recovered_states[-1].recovery_phase
+            is RuntimeHealthRecoveryPhase.RECOVERED
+        )
+        recovered = recovered_states[-1]
+        assert any(
+            state.recovery_phase is RuntimeHealthRecoveryPhase.REREADING
+            and state.presentation is SystemHealthPresentationState.RECOVERING
+            and state.phase is ViewPhase.LOADING
+            for state in recovered_states
+        )
+        assert recovered.diagnostic_data_source.accepted_revision is not None
+        assert recovered.diagnostic_data_source.accepted_revision.value == 2
+        assert recovered.diagnostic_data_source.accepted_generation is not None
+        assert recovered.diagnostic_data_source.accepted_generation.value == 2
+        accepted_revisions = tuple(state.revision for state in recovered_states)
+        assert list(accepted_revisions) == sorted(set(accepted_revisions))
+
+        delivered = len(recovered_states)
+        recovery_harness.deliver_data_source_revision(99, 1)
+        recovery_harness.deliver_data_source_revision(2, 2)
+        recovery_harness.deliver_data_source_revision(1, 2)
+        assert len(recovered_states) == delivered
+        assert recovery_harness.feature.snapshot(
+            context
+        ).diagnostic_data_source.accepted_revision.value == 2
+    finally:
+        recovery_subscription.dispose()
+        recovery_harness.feature.close()
+
+    incompatible_harness = factory(initially_healthy=True)
+    try:
+        incompatible_harness.schema_incompatible()
+        schema_incompatible = incompatible_harness.feature.snapshot(context)
+        assert schema_incompatible.presentation is (
+            SystemHealthPresentationState.INCOMPATIBLE
+        )
+        incompatible_harness.manifest_incompatible()
+        manifest_incompatible = incompatible_harness.feature.snapshot(context)
+        assert manifest_incompatible.presentation is (
+            SystemHealthPresentationState.INCOMPATIBLE
+        )
+        assert manifest_incompatible.error is not None
+        assert manifest_incompatible.error.affected_scope.value == (
+            "reproduction_manifest"
+        )
+    finally:
+        incompatible_harness.feature.close()
+
+    empty_harness = factory(initially_healthy=False)
+    try:
+        empty = empty_harness.feature.snapshot(context)
+        assert empty.presentation is SystemHealthPresentationState.UNAVAILABLE
+        assert empty.completeness is Completeness.PARTIAL
+        assert empty.components[0].classification is RuntimeHealthClassification.UNKNOWN
+        assert empty.diagnostic_context.resolution.value == "no_current_task"
+    finally:
+        empty_harness.feature.close()
+
+
+def test_system_health_feature_1_0_live_and_fake_share_one_contract_body(
+    harness_factory: Callable[..., _Harness],
+) -> None:
+    _assert_system_health_feature_1_0_contract(harness_factory)
 
 
 @pytest.fixture(params=("live", "fake"))

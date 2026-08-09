@@ -1,9 +1,9 @@
-# Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook
+# Strategy Diagnostics V1 + Frontend V2 Wave 4 six-Feature integration runbook
 
-This runbook reproduces the complete Wave 3 source-level integration gate,
-including Issues #77–#87 and the inherited Wave 2 union. It includes Issue
-#86 source-level T08/T09/T10 preflight, but is not the Issue #88 installed
-offline black-box release-certification procedure.
+This runbook reproduces the complete Wave 4 six-Feature source-level integration
+gate, including Issues #108–#116 and the inherited Wave 1–3 union. It is not the
+installed-package, offline, formal-performance or remote-release certification
+procedure owned by Issues #118 and #119.
 
 ## Preconditions
 
@@ -29,14 +29,16 @@ This validates the checked-in union manifest, both contract documents, the
 `StrategyLibraryFeature` 1.0, `ScenarioLabFeature` 1.0,
 `DiagnosticTasksFeature` 1.0,
 `RunMonitoringFeature` 1.2, and
-`EvidenceAndFindingsFeature` 1.1. It also rejects forbidden types and
+`EvidenceAndFindingsFeature` 1.1, and `SystemHealthFeature` 1.0. The application
+registry includes `StrategyDiagnosticsV1ApplicationReadModel` 1.0 and
+`StrategyDiagnosticsV1SystemHealthApplication` 1.0. It also rejects forbidden types and
 substitutes across the exact persisted product tracer.
 For Issue #78 it also binds public formal-set validation, explicit comparison
 dimensions, exact immutable selection references, durable bookmark reread,
 typed stale/conflict/unavailable recovery, and focus restoration.
 For Issue #79 it binds admitted Historical Segment, immutable Reference Path,
 Campaign Case, Transformation Catalog, bounded preview, reconstruction honesty,
-typed unavailable write capability, and the exact five-Feature registry.
+typed unavailable write capability, and the exact six-Feature registry.
 For Issue #84 it also binds the exact independent Strategy/Scenario setup
 selection, unchanged Diagnostic Tasks 1.0 configuration, migration 0021,
 validation/approval dependency hashes, successor invalidation, and start
@@ -80,7 +82,10 @@ The gate deliberately uses separate pytest processes for:
 1. Seam 2, including unchanged-body Strategy Library conformance in
    `test_strategy_library_live_fake_conformance.py`, unchanged-body Scenario
    Lab conformance in `test_scenario_lab_live_fake_conformance.py`, inherited Diagnostic Tasks
-   conformance in `test_diagnostic_tasks_live_fake_conformance.py`, and static
+   conformance in `test_diagnostic_tasks_live_fake_conformance.py`, the one-body
+   System Health live/fake contract in
+   `test_system_health_live_fake_conformance.py`, the exact contextual graph in
+   `test_system_health_live_diagnostic_context_contract.py`, and static
    architecture. The Strategy Library body includes exact comparison/selection,
    idempotency, source conflict, bookmark reopen, and capability truth;
 2. Seam 1, the source-bound file-backed tracer suite whose primary
@@ -95,7 +100,9 @@ The gate deliberately uses separate pytest processes for:
    Strategy + Scenario selection → task validation/approval → successor
    invalidation and start rejection, and
    exact live targets for input/revision, command/idempotency, lifecycle/retry,
-   connection-generation, disposal, and no-late-callback edges;
+   connection-generation, disposal, no-late-callback, contextual degradation,
+   authoritative recovery, terminal completion, six-route keyboard navigation,
+   accessibility, redaction and no-trading edges;
 3. Strategy Diagnostics V1 regression under the pinned interpreter;
 4. root-package lazy-import isolation under a clean system Python 3.11;
 5. Frontend V2 contract;
@@ -109,7 +116,7 @@ The gate deliberately uses separate pytest processes for:
     identity binding, plus the inherited typed Diagnostic Tasks command and
     persistent `TaskHandle` observation load.
 
-## Issue #87 immutable source candidate
+## Issue #116 six-Feature source candidate
 
 First run the complete Gate normally and complete both the Standards and Spec
 reviews. Commit the resulting product source and record its full lowercase Git
@@ -122,35 +129,42 @@ directory and rerun the complete Gate in source-binding mode:
 ```powershell
 python -m stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate `
   --temporary-parent C:\Temp `
-  --evidence-root docs/testing/frontend/evidence/issue-87/<candidate-sha> `
+  --evidence-root docs/testing/frontend/evidence/issue-116/<candidate-sha> `
   --source-commit <candidate-sha>
 ```
 
 The runner rejects a short or different SHA, a dirty candidate, a non-empty
 evidence directory, and any `--group` subset. Each of the ten groups emits
 JUnit XML plus raw stdout and stderr. The persisted tracer additionally writes
-`identity-ledger.json`, bound to the candidate SHA, with the five Feature
+`identity-ledger.json`, bound to the candidate SHA, with the six Feature
 Interfaces and exact Strategy, Recipe, path, Scenario Set, selection, task,
 campaign, run, Evidence, Finding, non-empty Finding-to-Breakpoint provenance,
-Manifest and recovery identities. It proves file-backed path recovery with a
+Manifest, System Health contextual degradation/recovery/completion revisions,
+and recovery identities. It proves file-backed path recovery with a
 new `ParquetMarketPathArtifactStore` instance over the original files. The
+runner writes `gate-result.json` after every complete-Gate attempt. On a
+fail-fast stop it records the failed group, the unreached groups, the
+candidate source identity, active registry, fixture, `result=failed`, and a
+non-`none` failure classification; it never emits a misleading passed summary.
+On success the same file records `result=passed` and
+`failure_classification=none`. The
 runner verifies the source and tracked tree again after every group is green,
 allowing only the configured untracked evidence directory, then validates the
 complete ledger and writes `source-candidate-summary.json`,
 `evidence-summary.md`, and `SHA256SUMS.txt` over the complete retained set.
 
 Commit only those generated evidence files in a separate evidence commit. The
-immutable candidate source SHA remains the product source consumed by Issue
-#88; the evidence commit is its auditable descendant. Do not amend or silently
+immutable candidate source SHA remains the product source consumed by Issues
+#118 and #119; the evidence commit is its auditable descendant. Do not amend or silently
 patch the candidate. If any product defect is found, return to the normal
 Issue/commit/PR flow, freeze a new source candidate, and rerun all affected
 source and installed certification gates. These artifacts close only Seam 1
-and Seam 2. They make no installed-package or Release claim, do not complete
-Seam 3, and do not start Wave 4.
+and Seam 2. They make no installed-package or Release claim and do not complete
+Seam 3.
 
 ## Issue #86 source-level T08/T09/T10 preflight
 
-Run the pointerless five-route, 200% scale, remount/reconnect, semantic-status,
+Run the pointerless six-route, 200% scale, remount/reconnect, semantic-status,
 and dual-renderer T08 probes:
 
 ```powershell
@@ -165,16 +179,24 @@ telemetry, cancel-isolation, AI-boundary, and no-score safety gate:
 python -m pytest tests/frontend/safety -q
 ```
 
-Run the T10 five-Feature performance contract and both renderer smoke lanes:
+Run the T10 six-Feature performance contract and both renderer smoke lanes:
 
 ```powershell
 python -m pytest tests/frontend/performance -q
 ```
 
+The Issue #116 source union retains but explicitly deselects three installed
+package runtime targets from its performance/packaging group:
+`test_installed_smoke_reopens_a_sealed_real_v1_fixture`,
+`test_installed_wave2_smoke_creates_task_and_campaign_after_install`, and
+`test_release_smoke_main_shuts_down_its_owned_qapplication`. They remain
+machine-listed as `pending-issues-118-119`; they are not deleted, renamed, or
+claimed green by this source gate.
+
 Retain the exact source commit and raw reports when evidence directories are
 enabled. These commands are source-level readiness checks. They do not replace
 the installed-package, no-network, clean-machine T08/T09/T10 execution owned
-by Issue #88, and they do not authorize a Wave 3 release claim.
+by Issues #118 and #119, and they do not authorize a release claim.
 
 The gate creates and removes the temporary unit-test databases itself. On
 Windows it uses the `py -3.11` launcher for the lazy-import probe because the
@@ -219,8 +241,8 @@ flake.
   upstream successor, verify the prior validation and approval remain in
   history, the active task returns to Draft, and start fails closed.
 
-Wave 3 Seam 3 remains owned by Issue #88. It must independently rerun and retain
+Wave 4 Seam 3 remains owned by Issues #118 and #119. It must independently rerun and retain
 installed-package T08/T09/T10, same-source QML and Widgets packages, clean-room
 reports, checksums, dependency manifests, screenshots, logs, tag, assets, and
-remote verification before any Wave 3 release certification is claimed. Issue
+remote verification before any release certification is claimed. Issue
 #66 remains the immutable Wave 2 certification baseline.

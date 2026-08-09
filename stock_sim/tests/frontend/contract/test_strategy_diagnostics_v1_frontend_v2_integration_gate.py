@@ -24,7 +24,10 @@ from app.features import (
     RunMonitoringFeature,
     ScenarioLabFeature,
     StrategyLibraryFeature,
+    StrategyDiagnosticsV1ApplicationReadModel,
     StrategyDiagnosticsV1DiagnosticTasksApplication,
+    StrategyDiagnosticsV1SystemHealthApplication,
+    SystemHealthFeature,
 )
 from app.features.strategy_library_application import (
     StrategyDiagnosticsV1StrategyLibraryApplication,
@@ -33,6 +36,7 @@ from app.features.scenario_lab_application import (
     StrategyDiagnosticsV1ScenarioLabApplication,
 )
 from stock_sim.release.strategy_diagnostics_v1_frontend_v2_gate import (
+    DEFERRED_INSTALLED_PACKAGE_TARGETS,
     INTEGRATION_GATE_GROUPS,
     PERSISTED_PRODUCT_TRACER,
     REQUIRED_CONTRACT_DOCUMENTS,
@@ -148,16 +152,19 @@ def _public_type_graph_violations(
     return tuple(violations)
 
 
-def test_all_five_active_features_and_application_interfaces_have_clean_public_type_graphs():
+def test_all_six_active_features_and_application_interfaces_have_clean_public_type_graphs():
     public_graph = _transitive_interface_graph(
         DiagnosticTasksFeature,
         RunMonitoringFeature,
         EvidenceAndFindingsFeature,
         StrategyLibraryFeature,
         ScenarioLabFeature,
+        SystemHealthFeature,
+        StrategyDiagnosticsV1ApplicationReadModel,
         StrategyDiagnosticsV1DiagnosticTasksApplication,
         StrategyDiagnosticsV1StrategyLibraryApplication,
         StrategyDiagnosticsV1ScenarioLabApplication,
+        StrategyDiagnosticsV1SystemHealthApplication,
     )
 
     assert _public_type_graph_violations(public_graph) == ()
@@ -188,7 +195,7 @@ def test_integration_gate_is_complete_and_repository_valid():
 
     assert report.ok, report.errors
     assert tuple(group.name for group in INTEGRATION_GATE_GROUPS) == (
-        "shared-feature-conformance",
+        "six-feature-conformance",
         "persisted-application-qml-tracer",
         "strategy-diagnostics-v1-regression",
         "strategy-diagnostics-v1-lazy-import-isolation",
@@ -204,6 +211,12 @@ def test_integration_gate_is_complete_and_repository_valid():
     assert groups["strategy-diagnostics-v1-lazy-import-isolation"].clean_python
     assert groups["frontend-v2-unit"].fresh_sqlite
     assert groups["frontend-v2-event-bridge"].fresh_sqlite
+    assert tuple(
+        argument.removeprefix("--deselect=")
+        for argument in groups[
+            "frontend-v2-performance-packaging-contract"
+        ].pytest_args
+    ) == DEFERRED_INSTALLED_PACKAGE_TARGETS
     assert (
         groups["persisted-application-qml-tracer"].pytest_targets
         == PERSISTED_PRODUCT_TRACER.pytest_targets
@@ -214,7 +227,7 @@ def test_integration_gate_is_complete_and_repository_valid():
     )
     assert all(
         f"--ignore={target}" in groups["frontend-v2-contract"].pytest_args
-        for target in groups["shared-feature-conformance"].pytest_targets[:-1]
+        for target in groups["six-feature-conformance"].pytest_targets[:-1]
     )
     assert {
         Path(
@@ -237,6 +250,10 @@ def test_integration_gate_is_complete_and_repository_valid():
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",
         "connection-generation-disposal-and-no-late-callback",
+        "system-health-live-fake-contract-and-context",
+        "contextual-health-degradation-recovery-and-terminal",
+        "six-route-keyboard-remount-reopen-clean-exit",
+        "accessibility-redaction-and-no-trading-source-gates",
     )
     assert all(
         category.pytest_targets
@@ -247,7 +264,7 @@ def test_integration_gate_is_complete_and_repository_valid():
     )
 
 
-def test_wave2_gate_freezes_the_complete_product_tracer_and_contract_language():
+def test_wave4_gate_freezes_the_complete_six_feature_product_tracer():
     assert PERSISTED_PRODUCT_TRACER.source_path == Path(
         "tests/frontend/integration/test_diagnostic_tasks_workspace_route.py"
     )
@@ -260,14 +277,25 @@ def test_wave2_gate_freezes_the_complete_product_tracer_and_contract_language():
         "LiveDiagnosticTasksAdapter",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
+        "LiveSystemHealthAdapter",
+        "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
         "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
         "JourneyWorkspaceHost",
-        "createRecipeDraft",
-        "validateRecipeDraft",
-        "approveRecipeValidation",
-        "materializeApprovedRecipeVersion",
+        "strategyLibraryRouteNavigation",
+        "scenarioLabRouteNavigation",
+        "diagnosticTasksRouteNavigation",
+        "runMonitoringRouteNavigation",
+        "evidenceAndFindingsRouteNavigation",
+        "systemHealthRouteNavigation",
+        "strategyLibraryCompareFormalSet",
+        "strategyLibrarySelectFormalSet",
+        "scenarioLabCreateRecipeDraftButton",
+        "scenarioLabValidateRecipeDraft-",
+        "scenarioLabApproveRecipe-",
+        "scenarioLabMaterializeApprovedRecipe-",
         "strategy_run_status",
         "resolved_execution_conditions",
         "STOCKSIM_WAVE3_IDENTITY_LEDGER",
@@ -282,10 +310,22 @@ def test_wave2_gate_freezes_the_complete_product_tracer_and_contract_language():
         "DeterministicFakeDiagnosticTasksAdapter",
         "DeterministicFakeRunMonitoringAdapter",
         "DeterministicFakeEvidenceAndFindingsAdapter",
+        "DeterministicFakeSystemHealthAdapter",
         "DictionaryFixtureApplicationReadModel",
         "_LiveJourneyQueries",
         "Repository",
         "session.execute",
+        ".dispatch(",
+        "FrontendRuntime",
+        "host._strategy_library.compareFormalSet(",
+        "host._strategy_library.selectFormalSet(",
+        "scenario_adapter.createRecipeDraft(",
+        "scenario_adapter.validateRecipeDraft(",
+        "scenario_adapter.approveRecipeValidation(",
+        "scenario_adapter.materializeApprovedRecipeVersion(",
+        "scenario_adapter.composeVisibleScenarioSet(",
+        "scenario_adapter.resolveLatestScenarioSet(",
+        "scenario_adapter.selectLatestFormalScenarioSet(",
     } <= set(PERSISTED_PRODUCT_TRACER.forbidden_markers)
 
     for document, markers in REQUIRED_CONTRACT_MARKERS.items():
@@ -519,6 +559,23 @@ def _complete_identity_ledger(source_commit: str) -> dict[str, object]:
             "old_generation_quarantined": True,
             "durable_identity_graph": ["strategy-1", "run-1"],
         },
+        "system_health": {
+            "task_id": "task-1",
+            "task_handle_id": "task-handle-1",
+            "campaign_id": "campaign-1",
+            "run_id": "run-1",
+            "evidence_package_id": "evidence-package-1",
+            "finding_id": "finding-1",
+            "breakpoint_id": "breakpoint-1",
+            "reproduction_manifest_id": "reproduction-manifest-1",
+            "degraded_revision": 10,
+            "recovered_revision": 11,
+            "final_revision": 12,
+            "old_generation_quarantined": True,
+            "authoritative_reread_before_recovery": True,
+            "final_context_resolution": "completed",
+            "final_overall_classification": "diagnostic_completed",
+        },
     }
 
 
@@ -595,9 +652,19 @@ def test_full_green_gate_writes_one_source_bound_candidate_evidence_set(
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["schema_version"] == 1
     assert summary["candidate_source"] == source_commit
-    assert summary["candidate_kind"] == "immutable-wave3-source"
+    assert summary["candidate_kind"] == "wave4-six-feature-source-gate"
     assert summary["release_claim"] is False
     assert summary["all_groups_passed"] is True
+    assert summary["result"] == "passed"
+    assert summary["failure_classification"] == "none"
+    assert summary["fixture"] == {
+        "id": "wave4-six-feature-persisted-product-v1",
+        "production_qml": True,
+        "single_app_context": True,
+        "shared_diagnostics_application": True,
+        "live_feature_adapter_count": 6,
+        "persistence": "real-writable-files",
+    }
     assert [item["name"] for item in summary["groups"]] == [
         item.name for item in INTEGRATION_GATE_GROUPS
     ]
@@ -613,6 +680,8 @@ def test_full_green_gate_writes_one_source_bound_candidate_evidence_set(
         "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",
         "StrategyDiagnosticsV1ScenarioLabApplication/1.0",
         "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0",
+        "StrategyDiagnosticsV1ApplicationReadModel/1.0",
+        "StrategyDiagnosticsV1SystemHealthApplication/1.0",
     ]
     assert summary["migrations"][-3:] == [
         "0019_scenario_recipe_dependency_bindings",
@@ -620,17 +689,28 @@ def test_full_green_gate_writes_one_source_bound_candidate_evidence_set(
         "0021_diagnostic_selection_dependency_invalidation",
     ]
     assert summary["seams"] == {
-        "seam_1_persisted_five_feature_tracer": "passed",
-        "seam_2_shared_live_fake_conformance": "passed",
-        "seam_3_installed_offline_certification": "pending-issue-88",
+        "seam_1_persisted_six_feature_tracer": "passed",
+        "seam_2_six_feature_live_fake_conformance": "passed",
+        "seam_3_installed_offline_certification": "pending-issues-118-119",
     }
-    assert summary["wave4_started"] is False
+    assert summary["wave4_source_gate"] == "issue-116"
+    assert summary["deferred_installed_package_gates"] == {
+        "status": "pending-issues-118-119",
+        "pytest_targets": list(DEFERRED_INSTALLED_PACKAGE_TARGETS),
+    }
+    gate_result = json.loads(
+        (evidence_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert gate_result["result"] == "passed"
+    assert gate_result["failure_classification"] == "none"
     assert (evidence_root / "evidence-summary.md").is_file()
     checksums = (evidence_root / "SHA256SUMS.txt").read_text(
         encoding="utf-8"
     )
     assert "source-candidate-summary.json" in checksums
     assert "identity-ledger.json" in checksums
+    assert "gate-result.json" in checksums
+    assert not tuple(evidence_root.rglob("*.tmp"))
 
 
 def test_evidence_mode_captures_junit_raw_logs_and_tracer_ledger(
@@ -723,6 +803,73 @@ def test_evidence_mode_captures_junit_raw_logs_and_tracer_ledger(
     assert executions[0].stderr_path is not None
 
 
+def test_evidence_mode_writes_machine_readable_failed_incomplete_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_commit = "c" * 40
+    evidence_root = tmp_path / "evidence"
+    groups = (
+        gate_module.IntegrationGateGroup("passing-group", ("tests/pass.py",)),
+        gate_module.IntegrationGateGroup("failing-group", ("tests/fail.py",)),
+        gate_module.IntegrationGateGroup("unreached-group", ("tests/later.py",)),
+    )
+    monkeypatch.setattr(gate_module, "INTEGRATION_GATE_GROUPS", groups)
+    monkeypatch.setattr(
+        gate_module,
+        "validate_integration_gate",
+        lambda _root: gate_module.IntegrationGateValidation(True, ()),
+    )
+    monkeypatch.setattr(
+        gate_module,
+        "_verify_candidate_source",
+        lambda *_args, **_kwargs: None,
+    )
+    call_count = 0
+
+    def _completed(
+        command,
+        *,
+        cwd,
+        env,
+        check,
+        stdout,
+        stderr,
+        text,
+    ):
+        nonlocal call_count
+        call_count += 1
+        stdout.write("passed\n" if call_count == 1 else "failed\n")
+        stderr.write("" if call_count == 1 else "assertion failed\n")
+        return subprocess.CompletedProcess(command, 0 if call_count == 1 else 1)
+
+    monkeypatch.setattr(subprocess, "run", _completed)
+
+    executions = run_integration_gate(
+        PROJECT_ROOT,
+        temporary_parent=tmp_path,
+        evidence_root=evidence_root,
+        source_commit=source_commit,
+    )
+
+    assert [item.group for item in executions] == [
+        "passing-group",
+        "failing-group",
+    ]
+    result = json.loads(
+        (evidence_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert result["candidate_source"] == source_commit
+    assert result["result"] == "failed"
+    assert result["failure_classification"] == "pytest-failure"
+    assert result["failed_group"] == "failing-group"
+    assert result["completed_group_count"] == 2
+    assert result["expected_group_count"] == 3
+    assert result["unreached_groups"] == ["unreached-group"]
+    assert len(result["active_feature_registry"]) == 6
+    assert result["fixture"]["live_feature_adapter_count"] == 6
+
+
 def test_evidence_mode_rejects_source_drift_before_sealing(
     tmp_path: Path,
     monkeypatch,
@@ -789,6 +936,13 @@ def test_evidence_mode_rejects_source_drift_before_sealing(
 
     assert verification_count == 2
     assert sealed is False
+    gate_result = json.loads(
+        (evidence_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert gate_result["result"] == "failed"
+    assert gate_result["failure_classification"] == (
+        "evidence-validation-failure"
+    )
 
 
 def test_candidate_source_verification_scans_the_git_toplevel(
@@ -848,20 +1002,102 @@ def test_candidate_source_verification_scans_the_git_toplevel(
 def test_evidence_mode_requires_a_full_source_sha_and_complete_gate(
     tmp_path: Path,
 ) -> None:
+    missing_source_root = tmp_path / "missing-source-evidence"
     with pytest.raises(ValueError, match="provided together"):
         run_integration_gate(
             PROJECT_ROOT,
             temporary_parent=tmp_path,
-            evidence_root=tmp_path / "evidence",
+            evidence_root=missing_source_root,
         )
+    missing_source_result = json.loads(
+        (missing_source_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert missing_source_result["result"] == "failed"
+    assert missing_source_result["failure_classification"] == (
+        "argument-validation-failure"
+    )
+    subset_root = tmp_path / "subset-evidence"
     with pytest.raises(ValueError, match="complete Gate"):
         run_integration_gate(
             PROJECT_ROOT,
             temporary_parent=tmp_path,
             group_names=("frontend-v2-event-bridge",),
-            evidence_root=tmp_path / "evidence",
+            evidence_root=subset_root,
             source_commit="c" * 40,
         )
+    subset_result = json.loads(
+        (subset_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert subset_result["failure_classification"] == (
+        "argument-validation-failure"
+    )
+
+
+def test_evidence_mode_writes_source_preflight_failure_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    evidence_root = tmp_path / "source-preflight-evidence"
+    source_commit = "f" * 40
+    monkeypatch.setattr(
+        gate_module,
+        "validate_integration_gate",
+        lambda _root: gate_module.IntegrationGateValidation(True, ()),
+    )
+    monkeypatch.setattr(
+        gate_module,
+        "_verify_candidate_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("candidate source is dirty")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="candidate source is dirty"):
+        run_integration_gate(
+            PROJECT_ROOT,
+            temporary_parent=tmp_path,
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+        )
+
+    result = json.loads(
+        (evidence_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert result["candidate_source"] == source_commit
+    assert result["result"] == "failed"
+    assert result["failure_classification"] == "source-preflight-failure"
+
+
+def test_cli_writes_machine_readable_manifest_validation_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    evidence_root = tmp_path / "manifest-failure-evidence"
+    source_commit = "9" * 40
+    monkeypatch.setattr(
+        gate_module,
+        "validate_integration_gate",
+        lambda _root: gate_module.IntegrationGateValidation(
+            False,
+            ("manifest drift",),
+        ),
+    )
+
+    assert gate_module.main(
+        (
+            "--project-root",
+            str(PROJECT_ROOT),
+            "--evidence-root",
+            str(evidence_root),
+            "--source-commit",
+            source_commit,
+        )
+    ) == 2
+    result = json.loads(
+        (evidence_root / "gate-result.json").read_text(encoding="utf-8")
+    )
+    assert result["result"] == "failed"
+    assert result["failure_classification"] == "gate-validation-failure"
 
 
 def test_cli_routes_candidate_source_and_evidence_root_to_the_gate(
