@@ -6287,6 +6287,7 @@ class SystemHealthQtAdapter(QObject):
     """Qt-only read projection of the typed System Health Interface."""
 
     stateChanged = Signal()
+    announcementChanged = Signal()
     deliveryRequested = Signal(int, object)
 
     def __init__(
@@ -6304,6 +6305,12 @@ class SystemHealthQtAdapter(QObject):
         self._mount_generation = _next_mount_generation()
         self._route_active = route_active
         self._closed = False
+        self._last_accessibility_announcement_key = (
+            self._accessibility_announcement_key()
+        )
+        self.stateChanged.connect(
+            self._emit_accessibility_announcement_if_changed
+        )
         self._subscription_lock = Lock()
         self.deliveryRequested.connect(
             self._accept_state,
@@ -6478,6 +6485,152 @@ class SystemHealthQtAdapter(QObject):
             f"affected {error.affected_scope.value} · "
             f"recovery {error.recovery_expectation.value}{correlation}"
         )
+
+    @Property(str, notify=announcementChanged)  # type: ignore[arg-type]
+    def accessibilityAnnouncementText(self) -> str:  # noqa: N802
+        """Narrator-safe summary of meaningful System Health transitions."""
+
+        error = None if self._state is None else self._state.error
+        data_source_error = (
+            None
+            if self._state is None
+            else self._state.diagnostic_data_source.error
+        )
+        structured_error = (
+            "No structured error."
+            if error is None
+            else (
+                "Structured error "
+                f"{error.code.value.replace('_', ' ')}: "
+                f"{error.explanation}; retryable "
+                f"{str(error.retryable).lower()}; affected "
+                f"{error.affected_scope.value.replace('_', ' ')}; "
+                "recovery "
+                f"{error.recovery_expectation.value.replace('_', ' ')}."
+            )
+        )
+        data_source_structured_error = (
+            "No data-source structured error."
+            if data_source_error is None
+            else (
+                "Data-source structured error "
+                f"{data_source_error.code.value.replace('_', ' ')}: "
+                f"{data_source_error.explanation}; retryable "
+                f"{str(data_source_error.retryable).lower()}; affected "
+                f"{data_source_error.affected_scope.value.replace('_', ' ')}; "
+                "recovery "
+                f"{data_source_error.recovery_expectation.value.replace('_', ' ')}."
+            )
+        )
+        terminal = (
+            "terminal"
+            if self.diagnosticContextTerminal
+            else "non-terminal"
+        )
+        return (
+            "System Health update; "
+            f"overall {self.overallClassification}; "
+            f"presentation {self.presentationState}; "
+            f"freshness {self.freshness}; completeness {self.completeness}; "
+            f"recovery {self.recoveryPhase}; "
+            f"diagnostic context {self.diagnosticContextResolution}, {terminal}; "
+            f"runtime {self.componentClassification}; "
+            f"data source {self.dataSourceClassification}, "
+            f"connection {self.dataSourceConnection}, "
+            f"fallback {self.dataSourceFallback}, "
+            f"freshness {self.dataSourceFreshness}, "
+            f"recovery {self.dataSourceRecoveryPhase}; "
+            f"queue {self.queueClassification}, "
+            f"recovery {self.queueRecoveryPhase}; "
+            f"cache {self.cacheClassification}, "
+            f"fallback {self.cacheFallback}, "
+            f"compatibility {self.cacheCompatibility}, "
+            f"recovery {self.cacheRecoveryPhase}; "
+            f"persistence {self.persistenceClassification}, "
+            f"availability {self.persistenceAvailability}, "
+            f"schema {self.persistenceSchemaCompatibility}, "
+            f"recovery {self.persistenceRecoveryState}; "
+            f"version {self.versionClassification}, "
+            f"release binding {self.releaseManifestCompatibility}, "
+            f"reproduction manifest {self.manifestCompatibility}. "
+            f"{structured_error} {data_source_structured_error}"
+        )
+
+    def _accessibility_announcement_key(self) -> tuple[object, ...]:
+        if self._state is None:
+            return ("awaiting_first_state",)
+        error = self._state.error
+        data_source_error = self._state.diagnostic_data_source.error
+        return (
+            self._state.presentation.value,
+            self._state.freshness.value,
+            self._state.completeness.value,
+            self._state.recovery_phase.value,
+            self._state.overall_classification.value,
+            self._state.diagnostic_context.resolution.value,
+            self._state.diagnostic_context.terminal,
+            self.componentClassification,
+            self.dataSourceClassification,
+            self.dataSourceConnection,
+            self.dataSourceFallback,
+            self.dataSourceRecoveryPhase,
+            self.dataSourceFreshness,
+            self.queueClassification,
+            self.queueRecoveryPhase,
+            self.cacheClassification,
+            self.cacheFallback,
+            self.cacheCompatibility,
+            self.cacheRecoveryPhase,
+            self.persistenceClassification,
+            self.persistenceAvailability,
+            self.persistenceSchemaCompatibility,
+            self.persistenceRecoveryState,
+            self.versionClassification,
+            self.releaseManifestCompatibility,
+            self.manifestCompatibility,
+            None if error is None else error.code.value,
+            None if error is None else error.explanation,
+            None if error is None else error.retryable,
+            None if error is None else error.affected_scope.value,
+            (
+                None
+                if error is None
+                else error.recovery_expectation.value
+            ),
+            (
+                None
+                if data_source_error is None
+                else data_source_error.code.value
+            ),
+            (
+                None
+                if data_source_error is None
+                else data_source_error.explanation
+            ),
+            (
+                None
+                if data_source_error is None
+                else data_source_error.retryable
+            ),
+            (
+                None
+                if data_source_error is None
+                else data_source_error.affected_scope.value
+            ),
+            (
+                None
+                if data_source_error is None
+                else data_source_error.recovery_expectation.value
+            ),
+        )
+
+    @Slot()
+    def _emit_accessibility_announcement_if_changed(self) -> None:
+        key = self._accessibility_announcement_key()
+        if key == self._last_accessibility_announcement_key:
+            return
+        self._last_accessibility_announcement_key = key
+        self.announcementChanged.emit()
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def overallClassification(self) -> str:  # noqa: N802
