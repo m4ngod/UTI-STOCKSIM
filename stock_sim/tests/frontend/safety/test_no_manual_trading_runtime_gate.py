@@ -23,6 +23,7 @@ from app.features import (
     DeterministicFakeRunMonitoringAdapter,
     DeterministicFakeScenarioLabAdapter,
     DeterministicFakeStrategyLibraryAdapter,
+    DeterministicFakeSystemHealthAdapter,
     DiagnosticTaskId,
     DiagnosticTasksContext,
     EvidenceAndFindingsContext,
@@ -41,6 +42,7 @@ from app.features import (
     StrategyRunId,
     StrategyLibraryContext,
     StrategyUnderTestId,
+    SystemHealthContext,
 )
 from app.runtime_gateway import RuntimeGateway
 from app.ui.main_window import MainWindow
@@ -358,6 +360,9 @@ def mounted_v2_mode(request):
     app = QApplication.instance() or QApplication([])
     controller = _DiagnosticTasks()
     diagnostic_feature = DeterministicFakeDiagnosticTasksAdapter()
+    system_health_feature = DeterministicFakeSystemHealthAdapter(
+        initially_healthy=True,
+    )
     bridge = None
     if request.param == "deterministic_fake":
         strategy_feature = DeterministicFakeStrategyLibraryAdapter()
@@ -419,6 +424,8 @@ def mounted_v2_mode(request):
         run_monitoring_context=_run_context(),
         evidence_and_findings_feature=evidence_feature,
         evidence_and_findings_context=_evidence_context(),
+        system_health_feature=system_health_feature,
+        system_health_context=SystemHealthContext(),
         frontend_v2_enabled=True,
     )
     window.resize(1280, 720)
@@ -432,6 +439,7 @@ def mounted_v2_mode(request):
     diagnostic_feature.close()
     run_feature.close()
     evidence_feature.close()
+    system_health_feature.close()
     if bridge is not None:
         bridge.stop()
     app.processEvents()
@@ -498,6 +506,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
         ("scenario_lab", "scenarioLabAccessibleStatus"),
         ("diagnostic_tasks", "diagnosticTasksAccessibleStatus"),
         ("run_monitoring", "runMonitoringAccessibleStatus"),
+        ("system_health", "systemHealthAccessibleStatus"),
         ("evidence_and_findings", "evidenceAccessibleStatus"),
     ):
         root.setProperty("activeRoute", route)
@@ -572,6 +581,7 @@ def test_qml_object_tree_navigation_and_runtime_surface_are_safe(
     for adapter in (
         host._run_monitoring,
         host._evidence_and_findings,
+        host._system_health,
         run_feature,
         evidence_feature,
     ):

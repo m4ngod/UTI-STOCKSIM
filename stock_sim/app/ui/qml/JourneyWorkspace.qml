@@ -49,6 +49,11 @@ Rectangle {
             : scenarioLabPageLoader.item.firstActionControl
     )
     readonly property var runMonitoringInitialFocusItem: runFocusFallback()
+    readonly property var systemHealthInitialFocusItem: (
+        systemHealthPageLoader.item === null
+            ? null
+            : systemHealthPageLoader.item.firstFocusControl
+    )
     readonly property var evidenceSecondCandidateFocusItem: (
         evidencePageLoader.item === null
             ? null
@@ -90,6 +95,23 @@ Rectangle {
     function rememberRunFocus(item) {
         lastRunFocus = item
         ensureRunItemVisible(item)
+    }
+
+    function ensureRailItemVisible(item) {
+        if (item === null || !journeyRailFlickable.visible)
+            return
+        var point = item.mapToItem(journeyRailFlickable.contentItem, 0, 0)
+        var top = point.y - tokens.spaceXs
+        var bottom = point.y + item.height + tokens.spaceXs
+        if (top < journeyRailFlickable.contentY)
+            journeyRailFlickable.contentY = Math.max(0, top)
+        else if (bottom > journeyRailFlickable.contentY
+                + journeyRailFlickable.height)
+            journeyRailFlickable.contentY = Math.min(
+                journeyRailFlickable.contentHeight
+                    - journeyRailFlickable.height,
+                bottom - journeyRailFlickable.height
+            )
     }
 
     function ensureRunItemVisible(item) {
@@ -174,9 +196,28 @@ Rectangle {
         restoreActiveRouteFocus()
     }
 
-    function restoreActiveRouteFocus() {
-        if (restoreFocusReturnToken())
+    function journeyRailHasFocus() {
+        return strategyLibraryRouteNavigation.activeFocus
+            || scenarioLabRouteNavigation.activeFocus
+            || diagnosticTasksRouteNavigation.activeFocus
+            || runMonitoringRouteNavigation.activeFocus
+            || evidenceAndFindingsRouteNavigation.activeFocus
+            || systemHealthRouteNavigation.activeFocus
+    }
+
+    function repairLoadedPageFocus(loader) {
+        if (journeyRailHasFocus()
+                || loader.item === null
+                || loader.item.hasMeaningfulFocus)
             return
+        restoreActiveRouteFocus()
+    }
+
+    function restoreActiveRouteFocus() {
+        if (restoreFocusReturnToken()) {
+            authoritativeFocusPendingRoute = ""
+            return
+        }
         if (activeRoute === "strategy_library") {
             if (strategyLibraryPageLoader.item === null
                     || !strategyLibraryPageLoader.item.restoreFocus())
@@ -295,9 +336,24 @@ Rectangle {
         target: strategyLibrary
         enabled: workspace.strategyLibraryAvailable
         function onStateChanged() {
-            if (workspace.activeRoute === "strategy_library"
-                    && strategyLibraryPageLoader.item !== null)
+            if (workspace.activeRoute !== "strategy_library"
+                    || strategyLibraryPageLoader.item === null)
+                return
+            if (workspace.authoritativeFocusPendingRoute
+                    === "strategy_library"
+                    || (!workspace.focusReturnConsumed
+                        && workspace.requestedFocusRoute
+                            === "strategy_library"
+                        && workspace.requestedFocusControl.length > 0)) {
+                workspace.authoritativeFocusPendingRoute = ""
                 Qt.callLater(workspace.restoreActiveRouteFocus)
+            }
+            else
+                Qt.callLater(function() {
+                    workspace.repairLoadedPageFocus(
+                        strategyLibraryPageLoader
+                    )
+                })
         }
     }
 
@@ -305,9 +361,20 @@ Rectangle {
         target: scenarioLab
         enabled: workspace.scenarioLabAvailable
         function onStateChanged() {
-            if (workspace.activeRoute === "scenario_lab"
-                    && scenarioLabPageLoader.item !== null)
+            if (workspace.activeRoute !== "scenario_lab"
+                    || scenarioLabPageLoader.item === null)
+                return
+            if (workspace.authoritativeFocusPendingRoute === "scenario_lab"
+                    || (!workspace.focusReturnConsumed
+                        && workspace.requestedFocusRoute === "scenario_lab"
+                        && workspace.requestedFocusControl.length > 0)) {
+                workspace.authoritativeFocusPendingRoute = ""
                 Qt.callLater(workspace.restoreActiveRouteFocus)
+            }
+            else
+                Qt.callLater(function() {
+                    workspace.repairLoadedPageFocus(scenarioLabPageLoader)
+                })
         }
     }
 
@@ -385,6 +452,10 @@ Rectangle {
                 workspace.authoritativeFocusPendingRoute = ""
                 Qt.callLater(workspace.restoreActiveRouteFocus)
             }
+            else if (workspace.activeRoute === "system_health")
+                Qt.callLater(function() {
+                    workspace.repairLoadedPageFocus(systemHealthPageLoader)
+                })
         }
     }
 
@@ -392,17 +463,34 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        Rectangle {
+        Flickable {
+            id: journeyRailFlickable
+            objectName: "journeyRailFlickable"
             Layout.preferredWidth: Math.max(
                 220,
                 tokens.bodySize * 10 + tokens.spaceLg * 2
             )
             Layout.fillHeight: true
-            color: tokens.rail
+            contentWidth: width
+            contentHeight: journeyRailContent.implicitHeight
+                + tokens.spaceLg * 2
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            Rectangle {
+                anchors.fill: parent
+                color: tokens.rail
+                z: -1
+            }
 
             ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: tokens.spaceLg
+                id: journeyRailContent
+                x: tokens.spaceLg
+                y: tokens.spaceLg
+                width: Math.max(
+                    0,
+                    journeyRailFlickable.width - tokens.spaceLg * 2
+                )
                 spacing: tokens.spaceLg
 
                 ColumnLayout {
@@ -464,6 +552,10 @@ Rectangle {
                     Accessible.selectable: true
                     Accessible.selected: workspace.activeRoute === "strategy_library"
                     Accessible.onPressAction: workspace.openRoute("strategy_library")
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            workspace.ensureRailItemVisible(this)
+                    }
                     KeyNavigation.down: scenarioLabRouteNavigation
                     KeyNavigation.up: systemHealthRouteNavigation
 
@@ -527,6 +619,10 @@ Rectangle {
                     Accessible.selectable: true
                     Accessible.selected: workspace.activeRoute === "scenario_lab"
                     Accessible.onPressAction: workspace.openRoute("scenario_lab")
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            workspace.ensureRailItemVisible(this)
+                    }
                     KeyNavigation.down: diagnosticTasksRouteNavigation
                     KeyNavigation.up: strategyLibraryRouteNavigation
 
@@ -596,6 +692,10 @@ Rectangle {
                     Accessible.onPressAction: (
                         workspace.openRoute("diagnostic_tasks")
                     )
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            workspace.ensureRailItemVisible(this)
+                    }
                     KeyNavigation.down: runMonitoringRouteNavigation
                     KeyNavigation.up: scenarioLabRouteNavigation
 
@@ -660,6 +760,10 @@ Rectangle {
                     Accessible.onPressAction: (
                         workspace.openRoute("run_monitoring")
                     )
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            workspace.ensureRailItemVisible(this)
+                    }
                     KeyNavigation.down: evidenceAndFindingsRouteNavigation
                     KeyNavigation.up: diagnosticTasksRouteNavigation
 
@@ -729,6 +833,10 @@ Rectangle {
                     Accessible.onPressAction: (
                         workspace.openRoute("evidence_and_findings")
                     )
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            workspace.ensureRailItemVisible(this)
+                    }
                     KeyNavigation.down: systemHealthRouteNavigation
                     KeyNavigation.up: runMonitoringRouteNavigation
 
@@ -844,6 +952,10 @@ Rectangle {
                     Accessible.selectable: true
                     Accessible.selected: workspace.activeRoute === "system_health"
                     Accessible.onPressAction: workspace.openRoute("system_health")
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            workspace.ensureRailItemVisible(this)
+                    }
                     KeyNavigation.down: strategyLibraryRouteNavigation
                     KeyNavigation.up: evidenceAndFindingsRouteNavigation
 
@@ -924,6 +1036,10 @@ Rectangle {
                     }
                 }
                 onActiveChanged: ensureLoaded()
+                onLoaded: {
+                    if (active && workspace.activeRoute === "strategy_library")
+                        strategyLibrary.refresh()
+                }
                 Component.onCompleted: ensureLoaded()
             }
 
@@ -946,6 +1062,10 @@ Rectangle {
                     }
                 }
                 onActiveChanged: ensureLoaded()
+                onLoaded: {
+                    if (active && workspace.activeRoute === "scenario_lab")
+                        scenarioLab.refresh()
+                }
                 Component.onCompleted: ensureLoaded()
             }
 

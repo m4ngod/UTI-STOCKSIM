@@ -8,9 +8,11 @@ import pytest
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt
 from PySide6.QtGui import QAccessible, QAccessibleActionInterface
 from PySide6.QtQuick import QQuickItem
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 
+from app.app_context import build_app_context
+from app.event_bridge import EventBridge
 from app.features import (
     ApprovedScenarioRecipeId,
     DeterministicFakeDiagnosticTasksAdapter,
@@ -18,10 +20,17 @@ from app.features import (
     DeterministicFakeScenarioLabAdapter,
     DeterministicFakeStrategyLibraryAdapter,
     DeterministicFakeRunMonitoringAdapter,
+    DeterministicFakeSystemHealthAdapter,
     DiagnosticTasksContext,
     EvidenceAndFindingsContext,
     EvidenceAndFindingsSelection,
     FormalDiagnosticCampaignId,
+    LiveDiagnosticTasksAdapter,
+    LiveEvidenceAndFindingsAdapter,
+    LiveRunMonitoringAdapter,
+    LiveScenarioLabAdapter,
+    LiveStrategyLibraryAdapter,
+    LiveSystemHealthAdapter,
     MarketScenarioId,
     ReproductionManifestId,
     RunMonitoringContext,
@@ -30,7 +39,9 @@ from app.features import (
     StrategyUnderTestId,
     ScenarioLabContext,
     StrategyLibraryContext,
+    SystemHealthContext,
 )
+from app.journey_recovery import JourneyWorkspaceRoute
 from app.ui.accessibility import AccessibilityPreferences
 from app.ui.journey_workspace import JourneyWorkspaceHost
 
@@ -65,6 +76,7 @@ def _mounted_host(
     *,
     preferences: AccessibilityPreferences | None = None,
     run_context: RunMonitoringContext | None = None,
+    system_health_feature: DeterministicFakeSystemHealthAdapter | None = None,
 ) -> tuple[
     JourneyWorkspaceHost,
     DeterministicFakeRunMonitoringAdapter,
@@ -76,6 +88,10 @@ def _mounted_host(
     strategy_feature = DeterministicFakeStrategyLibraryAdapter()
     scenario_feature = DeterministicFakeScenarioLabAdapter()
     diagnostic_feature = DeterministicFakeDiagnosticTasksAdapter()
+    selected_system_health_feature = (
+        system_health_feature
+        or DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+    )
     selected_run_context = run_context or _run_context()
     if selected_run_context == RunMonitoringContext.no_selection():
         run_feature.advance_to_empty(selected_run_context)
@@ -93,6 +109,8 @@ def _mounted_host(
         diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
         evidence_feature=evidence_feature,
         evidence_context=_evidence_context(),
+        system_health_feature=selected_system_health_feature,
+        system_health_context=SystemHealthContext(),
         accessibility_preferences=preferences,
         initial_route="run_monitoring",
     )
@@ -103,6 +121,7 @@ def _mounted_host(
         strategy_feature,
         scenario_feature,
         diagnostic_feature,
+        selected_system_health_feature,
     )
     return host, run_feature, evidence_feature
 
@@ -209,7 +228,7 @@ def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
     _close(host, run_feature, evidence_feature)
 
 
-def test_five_route_journey_is_keyboard_operable_and_narrator_named():
+def test_six_route_journey_is_keyboard_operable_and_narrator_named():
     app = _app()
     host, run_feature, evidence_feature = _mounted_host()
     root = host.rootObject()
@@ -243,6 +262,12 @@ def test_five_route_journey_is_keyboard_operable_and_narrator_named():
             "evidenceAndFindingsRouteNavigation",
             "evidenceInitialFocusItem",
             "evidenceAccessibleStatus",
+        ),
+        (
+            "system_health",
+            "systemHealthRouteNavigation",
+            "systemHealthInitialFocusItem",
+            "systemHealthAccessibleStatus",
         ),
     )
 
@@ -634,6 +659,8 @@ def test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation(
         diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
         evidence_feature=evidence_feature,
         evidence_context=_evidence_context(),
+        system_health_feature=setup_features[3],
+        system_health_context=SystemHealthContext(),
         initial_route="run_monitoring",
     )
     second._accessibility_feature_owners = setup_features
@@ -678,6 +705,7 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
         QQuickItem,
         "evidenceAndFindingsRouteNavigation",
     )
+    rail_scroll = root.findChild(QQuickItem, "journeyRailFlickable")
 
     def assert_within_viewport(item: QQuickItem) -> None:
         top_left = item.mapToItem(root, QPointF(0, 0))
@@ -689,11 +717,29 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
     assert tokens.property("textScale") == 2.0
     assert tokens.property("bodySize") == 26
     assert tokens.property("durationForMotion") == 0
+    assert rail_scroll is not None
+    assert rail_scroll.property("contentHeight") > rail_scroll.property("height")
     assert run_scroll.property("contentHeight") > run_scroll.property("height")
     assert run_grid.property("columns") == 1
     assert cancel.property("scale") == 1.0
     assert_within_viewport(run_route)
     assert_within_viewport(evidence_route)
+    for route_name in (
+        "strategyLibraryRouteNavigation",
+        "scenarioLabRouteNavigation",
+        "diagnosticTasksRouteNavigation",
+        "runMonitoringRouteNavigation",
+        "evidenceAndFindingsRouteNavigation",
+        "systemHealthRouteNavigation",
+    ):
+        route_item = root.findChild(QQuickItem, route_name)
+        route_item.forceActiveFocus()
+        _settle(app)
+        rail_top = route_item.mapToItem(rail_scroll, QPointF(0, 0)).y()
+        assert rail_top >= 0
+        assert rail_top + route_item.property("height") <= rail_scroll.property(
+            "height"
+        )
     for object_name in (
         "runMonitoringAccessibleStatus",
         "runMonitoringResearchGrid",
@@ -734,6 +780,25 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
         first_candidate.mapToItem(root, QPointF(0, 0)).y()
     )
 
+    root.setProperty("activeRoute", "system_health")
+    _settle(app)
+    health_scroll = root.findChild(QQuickItem, "systemHealthFlickable")
+    health_grid = root.findChild(QObject, "systemHealthComponentGrid")
+    health_source = root.findChild(QQuickItem, "dataSourceAccessibleStatus")
+    assert health_scroll.property("contentHeight") > health_scroll.property(
+        "height"
+    )
+    assert health_grid.property("columns") == 1
+    health_source.forceActiveFocus()
+    _settle(app)
+    assert health_source.property("activeFocus") is True
+    assert health_scroll.property("contentY") > 0
+    health_top = health_source.mapToItem(root, QPointF(0, 0)).y()
+    assert health_top >= 0
+    assert health_top + health_source.property("height") <= root.property(
+        "height"
+    )
+
     root.setProperty("activeRoute", "scenario_lab")
     _settle(app)
     scenario_scroll = root.findChild(QQuickItem, "scenarioLabFlickable")
@@ -757,6 +822,308 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
     assert image.isNull() is False
     assert image.width() > 0
     assert image.height() > 0
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_six_live_feature_adapters_drive_the_public_accessible_journey(
+    tmp_path,
+    monkeypatch,
+):
+    app = _app()
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    bridge = EventBridge(subscribe_backend=False)
+    context = build_app_context(
+        settings_path=str(tmp_path / "live-accessible-settings.json"),
+        run_monitoring_mode="live",
+        event_bridge=bridge,
+        runtime_gateway=object(),
+    )
+    assert isinstance(context.strategy_library_feature, LiveStrategyLibraryAdapter)
+    assert isinstance(context.scenario_lab_feature, LiveScenarioLabAdapter)
+    assert isinstance(context.diagnostic_tasks_feature, LiveDiagnosticTasksAdapter)
+    assert isinstance(context.run_monitoring_feature, LiveRunMonitoringAdapter)
+    assert isinstance(
+        context.evidence_and_findings_feature,
+        LiveEvidenceAndFindingsAdapter,
+    )
+    assert isinstance(context.system_health_feature, LiveSystemHealthAdapter)
+
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        context=context.run_monitoring_context,
+        strategy_library_feature=context.strategy_library_feature,
+        strategy_library_context=context.strategy_library_context,
+        scenario_lab_feature=context.scenario_lab_feature,
+        scenario_lab_context=context.scenario_lab_context,
+        diagnostic_tasks_feature=context.diagnostic_tasks_feature,
+        diagnostic_tasks_context=context.diagnostic_tasks_context,
+        diagnostic_setup_selection_coordinator=(
+            context.diagnostic_setup_selection_coordinator
+        ),
+        evidence_feature=context.evidence_and_findings_feature,
+        evidence_context=context.evidence_and_findings_context,
+        system_health_feature=context.system_health_feature,
+        system_health_context=context.system_health_context,
+        initial_route="strategy_library",
+    )
+    host.resize(1280, 720)
+    host.show()
+    _settle(app)
+    root = host.rootObject()
+    routes = (
+        (
+            "strategy_library",
+            "strategyLibraryRouteNavigation",
+            "strategyLibraryInitialFocusItem",
+            "strategyLibraryAccessibleStatus",
+        ),
+        (
+            "scenario_lab",
+            "scenarioLabRouteNavigation",
+            "scenarioLabInitialFocusItem",
+            "scenarioLabAccessibleStatus",
+        ),
+        (
+            "diagnostic_tasks",
+            "diagnosticTasksRouteNavigation",
+            "diagnosticTasksInitialFocusItem",
+            "diagnosticTasksAccessibleStatus",
+        ),
+        (
+            "run_monitoring",
+            "runMonitoringRouteNavigation",
+            "runMonitoringInitialFocusItem",
+            "runMonitoringAccessibleStatus",
+        ),
+        (
+            "evidence_and_findings",
+            "evidenceAndFindingsRouteNavigation",
+            "evidenceInitialFocusItem",
+            "evidenceAccessibleStatus",
+        ),
+        (
+            "system_health",
+            "systemHealthRouteNavigation",
+            "systemHealthInitialFocusItem",
+            "systemHealthAccessibleStatus",
+        ),
+    )
+    try:
+        for route, navigation_name, focus_property, status_name in routes:
+            navigation = root.findChild(QQuickItem, navigation_name)
+            navigation.forceActiveFocus()
+            QTest.keyClick(host, Qt.Key.Key_Return)
+            _wait_for(
+                lambda: root.property("activeRoute") == route
+                and (
+                    (
+                        root.property(focus_property) is not None
+                        and root.property(focus_property).property("activeFocus")
+                    )
+                    or (
+                        route == "evidence_and_findings"
+                        and navigation.property("activeFocus")
+                    )
+                ),
+                app,
+                f"live {route} did not restore authoritative focus",
+            )
+            focus_item = root.property(focus_property)
+            if focus_item is None or not focus_item.property("activeFocus"):
+                focus_item = navigation
+            assert focus_item.property("focusVisible") is True
+            status = root.findChild(QObject, status_name)
+            status_interface = _interface(status)
+            assert status_interface.role() == QAccessible.Role.StatusBar
+            assert status_interface.text(QAccessible.Text.Name).strip()
+            assert status_interface.text(QAccessible.Text.Description).strip()
+
+        announcement = root.findChild(QQuickItem, "systemHealthAnnouncement")
+        assert announcement is not None
+        assert _interface(announcement).role() == QAccessible.Role.AlertMessage
+        assert "system health update" in _accessible_name(
+            announcement
+        ).casefold()
+    finally:
+        _close_host(host)
+        context.close()
+        bridge.stop()
+
+
+def test_all_six_routes_restore_meaningful_focus_after_authoritative_return():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host()
+    root = host.rootObject()
+    routes = (
+        (
+            JourneyWorkspaceRoute.STRATEGY_LIBRARY,
+            "strategyLibraryInitialFocusItem",
+        ),
+        (JourneyWorkspaceRoute.SCENARIO_LAB, "scenarioLabInitialFocusItem"),
+        (
+            JourneyWorkspaceRoute.DIAGNOSTIC_TASKS,
+            "diagnosticTasksInitialFocusItem",
+        ),
+        (JourneyWorkspaceRoute.RUN_MONITORING, "runMonitoringInitialFocusItem"),
+        (
+            JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+            "evidenceInitialFocusItem",
+        ),
+        (JourneyWorkspaceRoute.SYSTEM_HEALTH, "systemHealthInitialFocusItem"),
+    )
+
+    for index, (route, focus_property) in enumerate(routes):
+        assert host.activate_route(route) is True
+        _wait_for(
+            lambda: root.property("activeRoute") == route.value
+            and root.property(focus_property) is not None
+            and root.property(focus_property).property("activeFocus"),
+            app,
+            f"{route.value} did not receive authoritative entry focus",
+        )
+        initial_focus = root.property(focus_property)
+        initial_object_name = initial_focus.objectName()
+        assert initial_object_name
+        assert initial_focus.property("focusVisible") is True
+
+        alternate_route = routes[(index + 1) % len(routes)][0]
+        assert host.activate_route(alternate_route) is True
+        _wait_for(
+            lambda: root.property("activeRoute") == alternate_route.value,
+            app,
+            f"{alternate_route.value} did not activate",
+        )
+        assert host.activate_route(route) is True
+        _wait_for(
+            lambda: root.property("activeRoute") == route.value
+            and root.property(focus_property) is not None
+            and root.property(focus_property).objectName()
+            == initial_object_name
+            and root.property(focus_property).property("activeFocus"),
+            app,
+            f"{route.value} did not restore meaningful focus after return",
+        )
+        restored = root.property(focus_property)
+        assert restored.property("focusVisible") is True
+        assert restored.property("visible") is True
+        assert restored.property("enabled") is True
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_system_health_announces_semantic_changes_once_with_safe_explanations():
+    app = _app()
+    health_feature = DeterministicFakeSystemHealthAdapter(
+        initially_healthy=True,
+    )
+    host, run_feature, evidence_feature = _mounted_host(
+        system_health_feature=health_feature,
+    )
+    root = host.rootObject()
+    system_route = root.findChild(QQuickItem, "systemHealthRouteNavigation")
+    system_route.forceActiveFocus()
+    QTest.keyClick(host, Qt.Key.Key_Return)
+    _wait_for(
+        lambda: root.property("activeRoute") == "system_health",
+        app,
+        "System Health route did not activate",
+    )
+    announcement = root.findChild(QQuickItem, "systemHealthAnnouncement")
+    assert announcement is not None
+    assert _interface(announcement).role() == QAccessible.Role.AlertMessage
+    changed = QSignalSpy(announcement.textChanged)
+
+    health_feature.advance_to_degraded()
+    _wait_for(
+        lambda: "degraded" in _accessible_name(announcement).casefold(),
+        app,
+        "degraded System Health was not announced",
+    )
+    degraded_count = changed.count()
+    degraded_text = _accessible_name(announcement).casefold()
+    for semantic in (
+        "system health update",
+        "overall degraded",
+        "runtime",
+        "data source",
+        "queue",
+        "cache",
+        "persistence",
+        "version",
+    ):
+        assert semantic in degraded_text
+
+    health_feature.publish_authoritative_observation()
+    _settle(app)
+    assert changed.count() == degraded_count
+
+    health_feature.advance_to_disconnected()
+    _wait_for(
+        lambda: "disconnected" in _accessible_name(announcement).casefold(),
+        app,
+        "disconnected System Health was not announced",
+    )
+    disconnected_text = _accessible_name(announcement).casefold()
+    assert "structured error" in disconnected_text
+    assert "affected" in disconnected_text
+    assert "recovery" in disconnected_text
+    assert "data-source structured error" in disconnected_text
+
+    health_feature.advance_data_source_to_fallback()
+    _wait_for(
+        lambda: "fallback active"
+        in _accessible_name(announcement).casefold(),
+        app,
+        "data-source fallback was not announced",
+    )
+
+    health_feature.advance_to_reconnected()
+    _wait_for(
+        lambda: any(
+            state in _accessible_name(announcement).casefold()
+            for state in ("recovering", "recovered")
+        ),
+        app,
+        "System Health recovery was not announced",
+    )
+
+    before_cache_change = changed.count()
+    health_feature.advance_cache_to_fallback()
+    _wait_for(
+        lambda: changed.count() > before_cache_change
+        and "cache fallback, fallback active"
+        in _accessible_name(announcement).casefold(),
+        app,
+        "cache fallback semantics were not announced",
+    )
+
+    health_feature.advance_to_failed()
+    _wait_for(
+        lambda: "observation failed"
+        in _accessible_name(announcement).casefold(),
+        app,
+        "failed System Health was not announced with a safe explanation",
+    )
+    safe_text = _accessible_name(announcement).casefold()
+    health_status = root.findChild(QQuickItem, "systemHealthAccessibleStatus")
+    assert health_status.property("activeFocus") is True
+    assert health_status.property("focusVisible") is True
+    for forbidden in (
+        "database url",
+        "select ",
+        "traceback",
+        "credential",
+        "token=",
+        "c:\\",
+        "powershell",
+        "python.exe",
+        "object at 0x",
+        "buy",
+        "sell",
+        "restart",
+    ):
+        assert forbidden not in safe_text
 
     _close(host, run_feature, evidence_feature)
 

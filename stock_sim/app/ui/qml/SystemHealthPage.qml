@@ -7,13 +7,32 @@ FocusScope {
     property var adapter
     property var tokens
     property var leaveFocusTarget: null
+    readonly property var firstFocusControl: statusSummary
     readonly property bool hasMeaningfulFocus: statusSummary.activeFocus
         || diagnosticContextStatus.activeFocus
         || dataSourceStatus.activeFocus
 
     function restoreFocus() {
         statusSummary.forceActiveFocus()
+        ensureItemVisible(statusSummary)
         return true
+    }
+
+    function ensureItemVisible(item) {
+        if (item === null || !systemHealthFlickable.visible)
+            return
+        var point = item.mapToItem(systemHealthFlickable.contentItem, 0, 0)
+        var top = point.y - tokens.spaceMd
+        var bottom = point.y + item.height + tokens.spaceMd
+        if (top < systemHealthFlickable.contentY)
+            systemHealthFlickable.contentY = Math.max(0, top)
+        else if (bottom > systemHealthFlickable.contentY
+                + systemHealthFlickable.height)
+            systemHealthFlickable.contentY = Math.min(
+                systemHealthFlickable.contentHeight
+                    - systemHealthFlickable.height,
+                bottom - systemHealthFlickable.height
+            )
     }
 
     Rectangle {
@@ -63,6 +82,7 @@ FocusScope {
                 Rectangle {
                     id: statusSummary
                     objectName: "systemHealthAccessibleStatus"
+                    readonly property bool focusVisible: activeFocus
                     property string accessibleName: (
                         "System Health " + adapter.presentationState
                         + ", Runtime Health " + adapter.componentClassification
@@ -98,11 +118,17 @@ FocusScope {
                     color: tokens.surfaceRaised
                     border.color: activeFocus ? tokens.focus : tokens.border
                     border.width: activeFocus ? tokens.focusWidth : 1
-                    Accessible.role: Accessible.StaticText
+                    Accessible.role: Accessible.StatusBar
                     Accessible.name: accessibleName
                     Accessible.description: adapter.statusText
                     Accessible.focusable: true
                     Accessible.focused: activeFocus
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            Qt.callLater(function() {
+                                page.ensureItemVisible(statusSummary)
+                            })
+                    }
                     Keys.onEscapePressed: function(event) {
                         if (page.leaveFocusTarget !== null)
                             page.leaveFocusTarget.forceActiveFocus()
@@ -135,12 +161,24 @@ FocusScope {
                             font.pixelSize: tokens.labelSize
                             wrapMode: Text.WrapAnywhere
                         }
+                        Text {
+                            id: systemHealthAnnouncement
+                            objectName: "systemHealthAnnouncement"
+                            Layout.fillWidth: true
+                            text: adapter.accessibilityAnnouncementText
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.role: Accessible.AlertMessage
+                            Accessible.name: text
+                        }
                     }
                 }
 
                 Rectangle {
                     id: diagnosticContextStatus
                     objectName: "diagnosticContextAccessibleStatus"
+                    readonly property bool focusVisible: activeFocus
                     property string accessibleName: adapter.diagnosticContextAccessibleText
                     activeFocusOnTab: true
                     Layout.fillWidth: true
@@ -157,6 +195,12 @@ FocusScope {
                     Accessible.description: adapter.diagnosticContextExplanation
                     Accessible.focusable: true
                     Accessible.focused: activeFocus
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            Qt.callLater(function() {
+                                page.ensureItemVisible(diagnosticContextStatus)
+                            })
+                    }
                     Keys.onEscapePressed: function(event) {
                         if (page.leaveFocusTarget !== null)
                             page.leaveFocusTarget.forceActiveFocus()
@@ -210,6 +254,7 @@ FocusScope {
                 Rectangle {
                     id: dataSourceStatus
                     objectName: "dataSourceAccessibleStatus"
+                    readonly property bool focusVisible: activeFocus
                     property string accessibleName: (
                         "Diagnostic Data Source "
                         + adapter.dataSourceClassification
@@ -233,6 +278,12 @@ FocusScope {
                     Accessible.description: adapter.dataSourceExplanation
                     Accessible.focusable: true
                     Accessible.focused: activeFocus
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            Qt.callLater(function() {
+                                page.ensureItemVisible(dataSourceStatus)
+                            })
+                    }
                     Keys.onEscapePressed: function(event) {
                         if (page.leaveFocusTarget !== null)
                             page.leaveFocusTarget.forceActiveFocus()
@@ -279,6 +330,7 @@ FocusScope {
                 }
 
                 GridLayout {
+                    objectName: "systemHealthComponentGrid"
                     Layout.fillWidth: true
                     columns: tokens.textScale >= 1.75 ? 1 : 2
                     columnSpacing: tokens.spaceMd
