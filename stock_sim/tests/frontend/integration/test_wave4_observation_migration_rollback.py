@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -36,8 +37,14 @@ from strategy_diagnostics.persistence import (
 )
 
 
-_SOURCE_COMMIT = "a" * 40
-_DEPENDENCY_LOCK_SHA256 = f"sha256:{'b' * 64}"
+_SOURCE_COMMIT = os.environ.get(
+    "STOCKSIM_ISSUE117_SOURCE_COMMIT",
+    "a" * 40,
+)
+_DEPENDENCY_LOCK_SHA256 = os.environ.get(
+    "STOCKSIM_ISSUE117_DEPENDENCY_LOCK_SHA256",
+    f"sha256:{'b' * 64}",
+)
 
 
 def _tree_sha256(root: Path) -> str:
