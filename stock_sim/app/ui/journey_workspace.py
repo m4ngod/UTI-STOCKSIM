@@ -4388,6 +4388,13 @@ class DiagnosticTasksQtAdapter(QObject):
         return self._context.task_id if task is None else task.task_id
 
     def journey_selection(self) -> JourneyDiagnosticSelection | None:
+        if not self._closed and not self._route_active:
+            authoritative = self._feature.snapshot(self._context)
+            if (
+                authoritative.context == self._context
+                and authoritative.revision > self._state.revision
+            ):
+                self._state = authoritative
         task = self._state.task
         if task is None:
             return None
@@ -4415,6 +4422,19 @@ class DiagnosticTasksQtAdapter(QObject):
             campaign_id=handoff.campaign_id,
             campaign_revision=handoff.campaign_revision,
             run_id=run_id,
+        )
+
+    def journey_approved_recipe_version_ids(
+        self,
+    ) -> tuple[ApprovedScenarioRecipeVersionId, ...]:
+        """Return the recipes bound to the authoritative Diagnostic Task."""
+
+        task = self._state.task
+        if task is None:
+            return ()
+        return tuple(
+            selection.recipe_version_id
+            for selection in task.configuration.campaign_case_selections
         )
 
     def journey_source_identity(self) -> JourneySourceIdentity | None:
@@ -6391,6 +6411,8 @@ class SystemHealthQtAdapter(QObject):
         if subscription is not None:
             subscription.dispose()
         if active:
+            self._state = None
+            self.stateChanged.emit()
             self._start_subscription()
 
     def set_context(self, context: SystemHealthContext) -> None:
@@ -7783,7 +7805,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             recompose=False,
         )
         self._apply_route_activation(route)
-        self._recompose_journey_context()
+        self._refresh_journey_context()
         self._persist_journey_workspace_bookmark()
 
     def _set_recovery_state(
@@ -7866,12 +7888,10 @@ class JourneyWorkspaceHost(QQuickWidget):
                     ),
                     approved_recipe_version_ids=(
                         ()
-                        if scenario_selection is None
-                        else tuple(
-                            item.recipe_version_id
-                            for item in (
-                                scenario_selection.approved_recipe_versions
-                            )
+                        if self._diagnostic_tasks is None
+                        else (
+                            self._diagnostic_tasks
+                            .journey_approved_recipe_version_ids()
                         )
                     ),
                 )

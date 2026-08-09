@@ -152,6 +152,12 @@ class AppContext:
         init=False,
         repr=False,
     )
+    _close_lock: RLock = field(
+        default_factory=RLock,
+        init=False,
+        repr=False,
+    )
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def persist_strategy_library_bookmark(
         self,
@@ -180,6 +186,23 @@ class AppContext:
             )
             self.settings_store.get_state().save()
             self.journey_workspace_bookmark = bookmark
+
+    def close(self) -> None:
+        """Idempotently dispose every live Feature owned by this root."""
+
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        for feature in (
+            self.system_health_feature,
+            self.evidence_and_findings_feature,
+            self.run_monitoring_feature,
+            self.diagnostic_tasks_feature,
+            self.scenario_lab_feature,
+            self.strategy_library_feature,
+        ):
+            feature.close()
 
 
 def build_app_context(
@@ -617,12 +640,7 @@ def reset_app_context(
             legacy_read_only=legacy_read_only,
         )
         if previous is not None:
-            previous.strategy_library_feature.close()
-            previous.scenario_lab_feature.close()
-            previous.diagnostic_tasks_feature.close()
-            previous.run_monitoring_feature.close()
-            previous.evidence_and_findings_feature.close()
-            previous.system_health_feature.close()
+            previous.close()
         return _app_context
 
 

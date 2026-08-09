@@ -1304,6 +1304,7 @@ class LiveSystemHealthAdapter:
         initial_connection = event_bridge.connection_state
         self._closed = False
         self._lock = RLock()
+        self._connection_transition_lock = RLock()
         self._sampling_interval = sampling_interval
         self._worker_wake = Event()
         self._worker_thread: Thread | None = None
@@ -1311,10 +1312,11 @@ class LiveSystemHealthAdapter:
         self._pending_data_source_delivery: tuple[int, int] | None = None
         self._highest_enqueued_revision = 0
         self._pending_connection_actions: list[
-            tuple[EventBridgeConnectionPhase, int, bool, bool]
+            tuple[EventBridgeConnectionPhase, int, int, bool, bool]
         ] = []
         self._connection_sequence = initial_connection.sequence.value
         self._connection_generation = initial_connection.generation.value
+        self._connection_phase = initial_connection.phase
         self._dispose_connection_subscription: Callable[[], None] = lambda: None
         self._dispose_batch_subscription: Callable[[], None] = lambda: None
         self._freshness_timer: Timer | None = None
@@ -1424,6 +1426,7 @@ class LiveSystemHealthAdapter:
             self._dispose_batch_subscription = lambda: None
             self._dispose_connection_subscription = lambda: None
             self._pending_data_source_delivery = None
+            self._pending_connection_actions.clear()
             freshness_timer = self._freshness_timer
             self._freshness_timer = None
             self._freshness_timer_sequence += 1
@@ -1480,24 +1483,44 @@ class LiveSystemHealthAdapter:
             self._worker_wake.set()
 
     def _on_connection_state(self, state: EventBridgeConnectionState) -> None:
-        with self._lock:
-            if self._closed or state.sequence.value <= self._connection_sequence:
-                return
-            first_observation = self._connection_sequence == 0
-            self._connection_sequence = state.sequence.value
-            if state.generation.value != self._connection_generation:
-                self._highest_enqueued_revision = 0
-                self._pending_data_source_delivery = None
-            self._connection_generation = state.generation.value
-            self._pending_connection_actions.append(
-                (
-                    state.phase,
-                    state.generation.value,
-                    first_observation,
-                    state.source_mode is EventBridgeSourceMode.FALLBACK,
-                )
-            )
-            self._worker_wake.set()
+        with self._connection_transition_lock:
+            publish_disconnected = False
+            with self._lock:
+                if (
+                    self._closed
+                    or state.sequence.value <= self._connection_sequence
+                ):
+                    return
+                first_observation = self._connection_sequence == 0
+                self._connection_sequence = state.sequence.value
+                if state.generation.value != self._connection_generation:
+                    self._highest_enqueued_revision = 0
+                    self._pending_data_source_delivery = None
+                self._connection_generation = state.generation.value
+                self._connection_phase = state.phase
+                if state.phase is EventBridgeConnectionPhase.DISCONNECTED:
+                    self._pending_connection_actions.clear()
+                    publish_disconnected = True
+                else:
+                    self._pending_connection_actions.append(
+                        (
+                            state.phase,
+                            state.generation.value,
+                            state.sequence.value,
+                            first_observation,
+                            state.source_mode is EventBridgeSourceMode.FALLBACK,
+                        )
+                    )
+                    self._worker_wake.set()
+            if publish_disconnected:
+                try:
+                    self._projection.mark_disconnected(
+                        generation=state.generation.value
+                    )
+                except RuntimeError:
+                    with self._lock:
+                        if not self._closed:
+                            raise
 
     def _worker_loop(self) -> None:
         interval = self._sampling_interval
@@ -1514,25 +1537,40 @@ class LiveSystemHealthAdapter:
                 self._pending_refresh_generation = None
                 data_source_delivery = self._pending_data_source_delivery
                 self._pending_data_source_delivery = None
-            for phase, generation, first_observation, fallback in connection_actions:
-                try:
-                    if phase is EventBridgeConnectionPhase.DISCONNECTED:
-                        self._projection.mark_disconnected(generation=generation)
-                    elif first_observation:
-                        self._projection.set_generation(
-                            generation,
-                            fallback=fallback,
-                        )
-                    else:
-                        self._projection.mark_reconnected_with_source_mode(
-                            generation=generation,
-                            fallback=fallback,
-                        )
-                except RuntimeError:
+            for (
+                phase,
+                generation,
+                sequence,
+                first_observation,
+                fallback,
+            ) in connection_actions:
+                with self._connection_transition_lock:
                     with self._lock:
-                        if not self._closed:
-                            raise
-                    return
+                        if self._closed:
+                            return
+                        current = (
+                            sequence == self._connection_sequence
+                            and generation == self._connection_generation
+                            and phase is self._connection_phase
+                        )
+                    if not current:
+                        continue
+                    try:
+                        if first_observation:
+                            self._projection.set_generation(
+                                generation,
+                                fallback=fallback,
+                            )
+                        else:
+                            self._projection.mark_reconnected_with_source_mode(
+                                generation=generation,
+                                fallback=fallback,
+                            )
+                    except RuntimeError:
+                        with self._lock:
+                            if not self._closed:
+                                raise
+                        return
             if data_source_delivery is not None:
                 generation, revision = data_source_delivery
                 try:

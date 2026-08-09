@@ -17,6 +17,7 @@ from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 from sqlalchemy import create_engine, text
 
+from app.app_context import build_app_context
 from app.event_bridge import EventBridge
 from app.features import (
     ApprovedScenarioRecipeId,
@@ -28,8 +29,10 @@ from app.features import (
     DiagnosticCampaignRunHandoff,
     DiagnosticCommandId,
     DiagnosticCommandIdempotencyKey,
+    DiagnosticTaskCommandRejectionReason,
     DiagnosticTaskLifecycle,
     DiagnosticTaskPresentation,
+    DiagnosticTasksCommandDisposition,
     DiagnosticTasksContext,
     DiagnosticTasksInventory,
     EvidenceAndFindingsContext,
@@ -43,6 +46,7 @@ from app.features import (
     LiveSystemHealthAdapter,
     MarketScenarioId,
     ReviseDiagnosticTaskConfiguration,
+    RetryFailedCampaignNode,
     RunMonitoringContext,
     RunMonitoringSelection,
     ScenarioLabContext,
@@ -53,6 +57,7 @@ from app.features import (
     SystemHealthDiagnosticContext,
     SystemHealthDiagnosticScope,
     SystemHealthImpactComponentIdentity,
+    diagnostics_application_identity,
 )
 from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
 from app.features.live_scenario_lab import LiveScenarioLabAdapter
@@ -564,6 +569,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     tmp_path,
 ) -> None:
     app = _app()
+    settings_path = tmp_path / "frontend-settings.json"
     evidence_root = tmp_path / "diagnostic-evidence"
     market_path_root = tmp_path / "market-paths"
     artifact_store = ParquetMarketPathArtifactStore(market_path_root)
@@ -573,7 +579,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         returned_artifact_store,
         engine,
         application,
-        diagnostic_application,
+        _initial_diagnostic_application,
         initial_diagnostic_tasks,
     ) = _formal_live_stack(
         tmp_path,
@@ -588,55 +594,91 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert returned_artifact_store is artifact_store
     initial_diagnostic_tasks.close()
     bridge = EventBridge(subscribe_backend=False)
-    strategy_feature, scenario_feature = _live_five_feature_setup_features(
-        application,
-        bridge,
-    )
-    setup_coordinator = DiagnosticSetupSelectionCoordinator()
-    diagnostic_tasks = LiveDiagnosticTasksAdapter(
-        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-            application,
-            setup_selection_provider=setup_coordinator.current,
-        ),
-        event_bridge=bridge,
-    )
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
         application,
         engine,
     )
-    run_monitoring = LiveRunMonitoringAdapter(
-        application_read_model=read_model,
+    context = build_app_context(
+        settings_path=str(settings_path),
+        run_monitoring_mode="live",
         event_bridge=bridge,
-        executor=_DirectExecutor(),
+        runtime_gateway=object(),
+        strategy_diagnostics_application=application,
+        strategy_diagnostics_read_model=read_model,
+        strategy_diagnostics_library_application=(
+            LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+                application
+            )
+        ),
+        strategy_diagnostics_scenario_lab_application=(
+            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+                application
+            )
+        ),
+        strategy_diagnostics_system_health_application=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                application,
+                current_manifest_format_provider=(
+                    lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
+                ),
+            )
+        ),
+        legacy_read_only=True,
     )
-    evidence = LiveEvidenceAndFindingsAdapter(
-        application_read_model=read_model,
-        event_bridge=bridge,
-        executor=_DirectExecutor(),
-    )
-    workspace = DiagnosticTasksContext.workspace()
+    assert context.strategy_diagnostics_application is application
+    expected_application_identity = diagnostics_application_identity(application)
+    assert {
+        adapter.application_identity
+        for adapter in (
+            context.strategy_diagnostics_read_model,
+            context.strategy_diagnostics_tasks_application,
+            context.strategy_diagnostics_library_application,
+            context.strategy_diagnostics_scenario_lab_application,
+            context.strategy_diagnostics_system_health_application,
+        )
+    } == {expected_application_identity}
+    strategy_feature = context.strategy_library_feature
+    scenario_feature = context.scenario_lab_feature
+    setup_coordinator = context.diagnostic_setup_selection_coordinator
+    diagnostic_tasks = context.diagnostic_tasks_feature
+    run_monitoring = context.run_monitoring_feature
+    evidence = context.evidence_and_findings_feature
+    system_health = context.system_health_feature
+    workspace = context.diagnostic_tasks_context
     strategy_bookmarks = []
     journey_bookmarks = []
+
+    def persist_strategy_bookmark(bookmark) -> None:
+        context.persist_strategy_library_bookmark(bookmark)
+        strategy_bookmarks.append(bookmark)
+
+    def persist_journey_bookmark(bookmark) -> None:
+        context.persist_journey_workspace_bookmark(bookmark)
+        journey_bookmarks.append(bookmark)
+
     host = JourneyWorkspaceHost(
         run_monitoring,
-        context=RunMonitoringContext.no_selection(),
+        context=context.run_monitoring_context,
         strategy_library_feature=strategy_feature,
-        strategy_library_context=StrategyLibraryContext(),
-        strategy_library_bookmark_sink=strategy_bookmarks.append,
-        journey_workspace_bookmark_sink=journey_bookmarks.append,
+        strategy_library_context=context.strategy_library_context,
+        strategy_library_bookmark_sink=persist_strategy_bookmark,
+        journey_workspace_bookmark=context.journey_workspace_bookmark,
+        journey_workspace_bookmark_sink=persist_journey_bookmark,
         scenario_lab_feature=scenario_feature,
-        scenario_lab_context=ScenarioLabContext(),
+        scenario_lab_context=context.scenario_lab_context,
         diagnostic_tasks_feature=diagnostic_tasks,
         diagnostic_tasks_context=workspace,
         diagnostic_setup_selection_coordinator=setup_coordinator,
         evidence_feature=evidence,
-        evidence_context=EvidenceAndFindingsContext.no_selection(),
+        evidence_context=context.evidence_and_findings_context,
+        system_health_feature=system_health,
+        system_health_context=context.system_health_context,
         accessibility_preferences=AccessibilityPreferences(
             text_scale=2.0,
             reduced_motion=True,
             high_contrast=True,
         ),
-        initial_route="strategy_library",
+        initial_route=context.journey_workspace_bookmark.last_route.value,
     )
     host.resize(1280, 720)
     host.show()
@@ -858,10 +900,13 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         *,
         backward: bool = False,
     ) -> QQuickItem:
-        target = root.findChild(QQuickItem, object_name)
-        assert target is not None
-        for _ in range(64):
-            if target.property("activeFocus") is True:
+        target = None
+        for _ in range(128):
+            target = root.findChild(QQuickItem, object_name)
+            if (
+                target is not None
+                and target.property("activeFocus") is True
+            ):
                 assert target.property("visible") is True
                 return target
             QTest.keyClick(
@@ -873,6 +918,8 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
                 ),
             )
             settle()
+            QTest.qWait(5)
+        assert target is not None
         raise AssertionError(f"{object_name} is not keyboard reachable")
 
     def activate(object_name: str) -> None:
@@ -885,6 +932,22 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         assert top + item.property("height") <= root.property("height")
         QTest.keyClick(host, Qt.Key.Key_Space)
         settle()
+
+    def traverse_to_accessible_name(accessible_name: str) -> QQuickItem:
+        for _ in range(256):
+            focus_item = host.quickWindow().activeFocusItem()
+            if isinstance(focus_item, QQuickItem):
+                interface = QAccessible.queryAccessibleInterface(focus_item)
+                if (
+                    interface is not None
+                    and interface.text(QAccessible.Text.Name) == accessible_name
+                ):
+                    assert focus_item.property("visible") is True
+                    return focus_item
+            QTest.keyClick(host, Qt.Key.Key_Tab)
+            settle()
+            QTest.qWait(5)
+        raise AssertionError(f"{accessible_name} is not keyboard reachable")
 
     def current_task():
         diagnostic_tasks.snapshot(workspace)
@@ -970,34 +1033,160 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     )
     failed_attempt = failed_node.attempts[-1]
     assert failed_attempt.failure is not None
+    assert failed_attempt.failure.code
+    assert failed_attempt.failure.message
+    assert failed_attempt.failure.retryable is True
+    assert all(
+        unsafe not in failed_attempt.failure.message.casefold()
+        for unsafe in ("traceback", str(tmp_path).casefold(), "password", "token=")
+    )
     assert root.property("activeRoute") == "run_monitoring"
     failed_run = failed_attempt.runs[0]
+    failed_run_snapshot = application.strategy_run_status(
+        failed_run.run_id.value
+    )
+    assert failed_run_snapshot.status == "failed"
+    assert failed_run_snapshot.failure_code == failed_attempt.failure.code
+    assert failed_run_snapshot.failure_message
+    assert failed_run_snapshot.processed_node_count >= 1
+    assert failed_run_snapshot.total_node_count >= (
+        failed_run_snapshot.processed_node_count
+    )
+    assert failed_run_snapshot.specification.run_id == failed_run.run_id.value
+    assert failed_run_snapshot.materialization_hash
+    assert failed_run_snapshot.decision_times == ()
+    assert failed_run_snapshot.orders == ()
+    assert failed_run_snapshot.fills == ()
     assert root.findChild(
         QObject,
         "runMonitoringRunIdentity",
     ).property("text") == f"Run · {failed_run.run_id.value}"
+    assert failed_task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+    running_task_identity = failed_task.task_id
+    running_campaign_identity = failed_task.handoff.campaign_id
+    running_task_handle_identities = tuple(
+        handle.identity for handle in failed_task.task_handles
+    )
+    assert running_campaign_identity is not None
+    assert running_task_handle_identities
+    assert host._diagnostic_tasks._subscription is None
+
+    assert root.setProperty("activeRoute", "system_health")
+    settle()
+    failed_health_status = root.findChild(
+        QObject,
+        "diagnosticContextAccessibleStatus",
+    )
+    assert failed_health_status is not None
+    for _ in range(2_000):
+        settle()
+        failed_health_accessible = str(
+            failed_health_status.property("accessibleName")
+        )
+        if "diagnostic context failed" in failed_health_accessible.casefold():
+            break
+        QTest.qWait(5)
+    else:
+        raise AssertionError(
+            "System Health did not render the controlled failure: "
+            f"{failed_health_accessible}"
+        )
+    assert failed_task.task_id.value in failed_health_accessible
+    assert (
+        failed_node.campaign_node_id.value
+        in diagnostic_projection.failedNodeRetryText
+    )
+    assert failed_attempt.failure.code in diagnostic_projection.failedNodeRetryText
+    assert root.setProperty("activeRoute", "run_monitoring")
+    settle()
+    running_after_remount = current_task()
+    assert running_after_remount.task_id == running_task_identity
+    assert running_after_remount.handoff.campaign_id == running_campaign_identity
+    assert tuple(
+        handle.identity for handle in running_after_remount.task_handles
+    ) == running_task_handle_identities
+    assert running_after_remount.lifecycle is DiagnosticTaskLifecycle.RUNNING
     setup_generation_before_disconnect = (
         setup_selection.strategy_selection.source_generation.value
     )
 
+    diagnostic_states = []
+    diagnostic_probe = diagnostic_tasks.subscribe(
+        workspace,
+        diagnostic_states.append,
+    )
+    old_generation = bridge.connection_generation
     announcements_before_disconnect = announcement_spy.count()
     bridge.mark_disconnected()
     settle()
-    assert diagnostic_projection.freshness == "fresh"
     assert host._diagnostic_tasks._subscription is None
     assert announcement_spy.count() == announcements_before_disconnect
+    assert root.setProperty("activeRoute", "system_health")
+    settle()
+    disconnected_health_status = root.findChild(
+        QObject,
+        "systemHealthAccessibleStatus",
+    )
+    assert disconnected_health_status is not None
+    initial_disconnected_health = str(
+        disconnected_health_status.property("accessibleName")
+    ).casefold()
+    assert "overall healthy" not in initial_disconnected_health
+    assert "overall diagnostic_completed" not in initial_disconnected_health
+    for _ in range(2_000):
+        settle()
+        disconnected_health_status = root.findChild(
+            QObject,
+            "systemHealthAccessibleStatus",
+        )
+        assert disconnected_health_status is not None
+        disconnected_health = str(
+            disconnected_health_status.property("accessibleName")
+        ).casefold()
+        if "disconnected" in disconnected_health:
+            break
+        QTest.qWait(5)
+    else:
+        raise AssertionError(
+            "System Health did not render retained disconnected state: "
+            f"{disconnected_health}"
+        )
+    disconnected_diagnostic_context = root.findChild(
+        QObject,
+        "diagnosticContextAccessibleStatus",
+    )
+    assert disconnected_diagnostic_context is not None
+    assert failed_task.task_id.value.casefold() in str(
+        disconnected_diagnostic_context.property("accessibleName")
+    ).casefold()
+    assert "overall healthy" not in disconnected_health
+    assert "overall diagnostic_completed" not in disconnected_health
     assert root.setProperty("activeRoute", "diagnostic_tasks")
     settle()
     assert diagnostic_projection.freshness == "disconnected"
+    disconnected_task_state = diagnostic_tasks.snapshot(workspace)
+    assert disconnected_task_state.task is not None
+    assert disconnected_task_state.task.task_id == running_task_identity
+    assert disconnected_task_state.last_reliable_inventory is not None
+    assert disconnected_task_state.presentation.value != "empty"
+    assert disconnected_task_state.error is not None
     assert setup_coordinator.current() is None
     assert host._diagnostic_tasks._subscription is not None
     assert announcement_spy.count() == announcements_before_disconnect + 1
     announcements_before_reconnect = announcement_spy.count()
-    bridge.mark_reconnected()
+    reconnected = bridge.mark_reconnected()
+    assert reconnected.generation.value > old_generation.value
     settle()
     diagnostic_projection.refresh()
     settle()
     assert diagnostic_projection.freshness == "fresh"
+    recovered_task_state = diagnostic_tasks.snapshot(workspace)
+    assert recovered_task_state.task is not None
+    assert recovered_task_state.task.task_id == running_task_identity
+    assert recovered_task_state.source.generation.value == (
+        reconnected.generation.value
+    )
+    assert recovered_task_state.presentation.value != "empty"
     recovered_setup = setup_coordinator.current()
     assert recovered_setup is not None
     assert (
@@ -1009,12 +1198,86 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         < announcement_spy.count()
         <= announcements_before_reconnect + 2
     )
+    recovery_revisions = tuple(state.revision for state in diagnostic_states)
+    assert recovery_revisions == tuple(sorted(set(recovery_revisions)))
+    assert all(
+        not (
+            state.freshness.value == "fresh"
+            and (
+                state.task is None
+                or state.presentation.value == "empty"
+            )
+        )
+        for state in diagnostic_states
+    )
 
-    traverse_to("diagnosticTasksRouteNavigation", backward=True)
-    QTest.keyClick(host, Qt.Key.Key_Return)
+    for _ in range(20):
+        QTest.qWait(5)
+        settle()
+    quarantined_source_revision = recovered_task_state.task.revision
+    quarantined_revision_text = diagnostic_projection.revisionText
+    quarantine_delivery_count = len(diagnostic_states)
+    quarantine_announcement_count = announcement_spy.count()
+    for generation, revision in (
+        (old_generation, quarantined_source_revision + 100),
+        (reconnected.generation, quarantined_source_revision),
+        (reconnected.generation, quarantined_source_revision - 1),
+    ):
+        bridge.on_snapshot(
+            {
+                "kind": "diagnostic-task",
+                "diagnostic_task_id": running_task_identity.value,
+                "revision": revision,
+            },
+            generation=generation,
+        )
+    bridge.flush(force=True)
     settle()
-    traverse_to("retryFailedCampaignNodeButton")
-    activate("retryFailedCampaignNodeButton")
+    assert diagnostic_projection.revisionText == quarantined_revision_text
+    assert len(diagnostic_states) == quarantine_delivery_count
+    assert announcement_spy.count() == quarantine_announcement_count
+    diagnostic_probe.dispose()
+    diagnostic_probe.dispose()
+
+    retry_command = RetryFailedCampaignNode(
+        command_id=DiagnosticCommandId("issue-114-retry-command"),
+        idempotency_key=DiagnosticCommandIdempotencyKey(
+            "issue-114-retry-idempotency"
+        ),
+        task_id=failed_task.task_id,
+        campaign_node_id=failed_node.campaign_node_id,
+        failed_attempt_id=failed_attempt.attempt_id,
+        expected_revision=failed_node.revision,
+    )
+    retry_accepted = diagnostic_tasks.retry_failed_campaign_node(
+        retry_command
+    )
+    retry_replay = diagnostic_tasks.retry_failed_campaign_node(
+        replace(
+            retry_command,
+            command_id=DiagnosticCommandId(
+                "issue-114-retry-lost-response"
+            ),
+        )
+    )
+    assert retry_accepted.disposition is (
+        DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+    )
+    assert retry_accepted.task_handle is not None
+    assert retry_replay.disposition is (
+        DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+    )
+    assert retry_replay.task_handle is not None
+    assert (
+        retry_replay.task_handle.identity
+        == retry_accepted.task_handle.identity
+    )
+    assert (
+        retry_replay.affected_campaign_attempt_id
+        == retry_accepted.affected_campaign_attempt_id
+    )
+    diagnostic_projection.refresh()
+    settle()
     retried_task = current_task()
     retried_node = next(
         node
@@ -1032,15 +1295,41 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         is DiagnosticTaskLifecycle.COMPLETED
     )
     retry_run = retried_node.attempts[-1].runs[0]
-    assert root.property("activeRoute") == "run_monitoring"
+    assert retried_task.task_id == running_task_identity
+    assert retried_task.handoff.campaign_id == running_campaign_identity
+    assert len(retried_task.handoff.campaign_nodes) == len(
+        failed_task.handoff.campaign_nodes
+    )
+    assert retried_node.attempts[-1].task_handle_id == (
+        retry_accepted.task_handle.identity
+    )
+    assert root.setProperty("activeRoute", "run_monitoring")
+    settle()
     assert root.findChild(
         QObject,
         "runMonitoringRunIdentity",
     ).property("text") == f"Run · {retry_run.run_id.value}"
 
+    stale_retry = diagnostic_tasks.retry_failed_campaign_node(
+        replace(
+            retry_command,
+            command_id=DiagnosticCommandId("issue-114-retry-stale"),
+            idempotency_key=DiagnosticCommandIdempotencyKey(
+                "issue-114-retry-stale-idempotency"
+            ),
+        )
+    )
+    assert stale_retry.rejection_reason is (
+        DiagnosticTaskCommandRejectionReason.STALE_EXPECTED_REVISION
+    )
+
     traverse_to("diagnosticTasksRouteNavigation", backward=True)
     QTest.keyClick(host, Qt.Key.Key_Return)
     settle()
+    assert host._diagnostic_tasks.canPauseTask, (
+        host._diagnostic_tasks.taskStatusText,
+        host._diagnostic_tasks.capabilitiesText,
+    )
     traverse_to("pauseDiagnosticTaskTargetButton")
     activate("pauseDiagnosticTaskTargetButton")
     assert current_task().lifecycle is DiagnosticTaskLifecycle.PAUSED
@@ -1057,6 +1346,31 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     diagnostic_projection.refresh()
     settle()
     completed_task = current_task()
+    assert completed_task.task_id == running_task_identity
+    assert completed_task.handoff.campaign_id == running_campaign_identity
+    completed_retried_node = next(
+        node
+        for node in completed_task.handoff.campaign_nodes
+        if node.campaign_node_id == failed_node.campaign_node_id
+    )
+    assert completed_retried_node.attempts[0] == failed_attempt
+    assert len(completed_retried_node.attempts) == 2
+    assert completed_retried_node.attempts[-1].attempt_id == (
+        retry_accepted.affected_campaign_attempt_id
+    )
+    assert completed_retried_node.attempts[-1].predecessor_attempt_id == (
+        failed_attempt.attempt_id
+    )
+    assert completed_retried_node.attempts[-1].lifecycle is (
+        DiagnosticTaskLifecycle.COMPLETED
+    )
+    retry_terminal_handle = next(
+        handle
+        for handle in completed_task.task_handles
+        if handle.identity == retry_accepted.task_handle.identity
+    )
+    assert retry_terminal_handle.phase.value == "completed"
+    assert retry_terminal_handle.result == "failed_campaign_node_retry_completed"
     assert (
         completed_task.setup_selection_context_identity
         == expected_setup_identity
@@ -1201,13 +1515,35 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert breakpoint_ids
     assert breakpoint_finding_edges
 
-    finding_with_breakpoint = next(
-        finding
+    candidate_with_breakpoint, finding_with_breakpoint = next(
+        (candidate, finding)
         for candidate in evidence_data.candidates
         for finding in candidate.findings
         if finding.sensitivity_breakpoints
     )
     selected_breakpoint = finding_with_breakpoint.sensitivity_breakpoints[0]
+    traverse_to_accessible_name(
+        f"Select candidate {candidate_with_breakpoint.identity.value}"
+    )
+    QTest.keyClick(host, Qt.Key.Key_Space)
+    settle()
+    traverse_to_accessible_name(
+        f"Select finding {finding_with_breakpoint.identity.value}"
+    )
+    QTest.keyClick(host, Qt.Key.Key_Space)
+    settle()
+    traverse_to_accessible_name(
+        "Select Sensitivity Breakpoint "
+        f"{selected_breakpoint.identity.value}"
+    )
+    QTest.keyClick(host, Qt.Key.Key_Space)
+    settle()
+    assert host._evidence_and_findings.selectedFindingIdentity == (
+        finding_with_breakpoint.identity.value
+    )
+    assert host._evidence_and_findings.selectedChartBreakpointIdentity == (
+        selected_breakpoint.identity.value
+    )
     assert completed_task.task_handles
     selected_task_handle = completed_task.task_handles[-1]
     system_health_context = SystemHealthContext(
@@ -1231,18 +1567,6 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
             manifest_format_version=REPRODUCTION_MANIFEST_SCHEMA_VERSION,
         )
     )
-    system_health = LiveSystemHealthAdapter(
-        application_health=LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
-            application,
-            current_manifest_format_provider=(
-                lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
-            ),
-        ),
-        diagnostic_tasks_application=diagnostic_application,
-        application_read_model=read_model,
-        event_bridge=bridge,
-        sampling_interval=None,
-    )
     system_health_projection = system_health.snapshot(system_health_context)
     assert (
         system_health_projection.diagnostic_context.resolution
@@ -1265,66 +1589,48 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         is SystemHealthImpactComponentIdentity.DIAGNOSTIC_PERSISTENCE
     )
     assert set(persistence_impact.affected_scope) == set(SystemHealthDiagnosticScope)
-    system_health_run_monitoring = LiveRunMonitoringAdapter(
-        application_read_model=read_model,
-        event_bridge=bridge,
-        executor=_DirectExecutor(),
+    assert root.setProperty("activeRoute", "system_health")
+    settle()
+    system_health_status = root.findChild(
+        QObject,
+        "diagnosticContextAccessibleStatus",
     )
-    system_health_window = MainWindow(
-        run_monitoring_feature=system_health_run_monitoring,
-        system_health_feature=system_health,
-        system_health_context=system_health_context,
-        journey_workspace_bookmark=JourneyWorkspaceBookmark(
-            last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH
-        ),
-        frontend_v2_enabled=True,
-    )
-    try:
-        system_health_window.show()
+    assert system_health_status is not None
+    for _ in range(2_000):
         settle()
-        system_health_root = system_health_window.centralWidget().rootObject()
-        system_health_status = system_health_root.findChild(
-            QObject,
-            "diagnosticContextAccessibleStatus",
+        system_health_accessible = str(
+            system_health_status.property("accessibleName")
         )
-        assert system_health_status is not None
-        for _ in range(2_000):
-            settle()
-            system_health_accessible = str(
-                system_health_status.property("accessibleName")
-            )
-            if "diagnostic context completed" in system_health_accessible.casefold():
-                break
-            QTest.qWait(5)
-        else:
-            raise AssertionError(
-                "System Health did not render the exact graph: "
-                f"{system_health_accessible}"
-            )
-        for identity in (
-            completed_task.task_id.value,
-            selected_task_handle.identity.value,
-            campaign_id.value,
-            accepted_run.run_id.value,
-            completed_task.handoff.evidence_package_id.value,
-            finding_with_breakpoint.identity.value,
-            selected_breakpoint.identity.value,
-            manifest_id.value,
-        ):
-            assert identity in system_health_accessible
-        for component in SystemHealthImpactComponentIdentity:
-            assert component.value.replace("_", " ") in (
-                system_health_accessible.casefold()
-            )
-        for scope in SystemHealthDiagnosticScope:
-            assert scope.value.replace("_", " ") in (
-                system_health_accessible.casefold()
-            )
-        assert "overall diagnostic_completed" in system_health_accessible.casefold()
-    finally:
-        system_health_window.close()
-        system_health_run_monitoring.close()
-        system_health.close()
+        if "diagnostic context completed" in system_health_accessible.casefold():
+            break
+        QTest.qWait(5)
+    else:
+        raise AssertionError(
+            "System Health did not render the exact graph: "
+            f"{system_health_accessible}"
+        )
+    for identity in (
+        completed_task.task_id.value,
+        selected_task_handle.identity.value,
+        campaign_id.value,
+        accepted_run.run_id.value,
+        completed_task.handoff.evidence_package_id.value,
+        finding_with_breakpoint.identity.value,
+        selected_breakpoint.identity.value,
+        manifest_id.value,
+    ):
+        assert identity in system_health_accessible
+    for component in SystemHealthImpactComponentIdentity:
+        assert component.value.replace("_", " ") in (
+            system_health_accessible.casefold()
+        )
+    for scope in SystemHealthDiagnosticScope:
+        assert scope.value.replace("_", " ") in (
+            system_health_accessible.casefold()
+        )
+    assert "overall diagnostic_completed" in system_health_accessible.casefold()
+    assert root.setProperty("activeRoute", "evidence_and_findings")
+    settle()
 
     expected_identity_text = (
         f"Campaign · {campaign_id.value}",
@@ -1346,15 +1652,15 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     host.close()
     remounted = JourneyWorkspaceHost(
         run_monitoring,
-        context=RunMonitoringContext.no_selection(),
+        context=context.run_monitoring_context,
         strategy_library_feature=strategy_feature,
         strategy_library_context=StrategyLibraryContext(
             focus_strategy_id=saved_strategy_bookmark.focus_strategy_id,
             selection_bookmark=saved_strategy_bookmark,
         ),
-        strategy_library_bookmark_sink=strategy_bookmarks.append,
+        strategy_library_bookmark_sink=persist_strategy_bookmark,
         journey_workspace_bookmark=saved_journey_bookmark,
-        journey_workspace_bookmark_sink=journey_bookmarks.append,
+        journey_workspace_bookmark_sink=persist_journey_bookmark,
         scenario_lab_feature=scenario_feature,
         scenario_lab_context=ScenarioLabContext(
             focus_target=saved_journey_bookmark.scenario_focus_target,
@@ -1365,6 +1671,8 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         diagnostic_setup_selection_coordinator=setup_coordinator,
         evidence_feature=evidence,
         evidence_context=EvidenceAndFindingsContext.no_selection(),
+        system_health_feature=system_health,
+        system_health_context=system_health_context,
         initial_route=saved_journey_bookmark.last_route.value,
     )
     remounted.resize(1280, 720)
@@ -1417,11 +1725,13 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
 
     remounted.close_adapter()
     remounted.close()
-    diagnostic_tasks.close()
-    run_monitoring.close()
-    evidence.close()
-    strategy_feature.close()
-    scenario_feature.close()
+    durable_journey_bookmark = context.journey_workspace_bookmark
+    assert durable_journey_bookmark.last_route is (
+        JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+    assert durable_journey_bookmark.presentation.focus_return_token is not None
+    context.close()
+    context.close()
     bridge.stop()
     engine.dispose()
 
@@ -1460,69 +1770,120 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     restarted_application.start()
     restarted_application.initialize_persistence(restarted_engine)
     restarted_bridge = EventBridge(subscribe_backend=False)
-    restarted_strategy = LiveStrategyLibraryAdapter(
-        application=LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
-            restarted_application
-        ),
-        event_bridge=restarted_bridge,
-    )
-    restarted_scenario = LiveScenarioLabAdapter(
-        application=LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
-            restarted_application
-        ),
-        event_bridge=restarted_bridge,
-    )
-    restarted_setup_coordinator = DiagnosticSetupSelectionCoordinator()
-    restarted_tasks = LiveDiagnosticTasksAdapter(
-        application=LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
-            restarted_application,
-            setup_selection_provider=restarted_setup_coordinator.current,
-        ),
-        event_bridge=restarted_bridge,
-    )
     restarted_read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
         restarted_application,
         restarted_engine,
     )
-    restarted_monitoring = LiveRunMonitoringAdapter(
-        application_read_model=restarted_read_model,
+    reopened_context = build_app_context(
+        settings_path=str(settings_path),
+        run_monitoring_mode="live",
         event_bridge=restarted_bridge,
-        executor=_DirectExecutor(),
+        runtime_gateway=object(),
+        strategy_diagnostics_application=restarted_application,
+        strategy_diagnostics_read_model=restarted_read_model,
+        strategy_diagnostics_library_application=(
+            LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+                restarted_application
+            )
+        ),
+        strategy_diagnostics_scenario_lab_application=(
+            LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+                restarted_application
+            )
+        ),
+        strategy_diagnostics_system_health_application=(
+            LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+                restarted_application,
+                current_manifest_format_provider=(
+                    lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
+                ),
+            )
+        ),
+        legacy_read_only=True,
     )
-    restarted_evidence = LiveEvidenceAndFindingsAdapter(
-        application_read_model=restarted_read_model,
-        event_bridge=restarted_bridge,
-        executor=_DirectExecutor(),
+    restarted_setup_coordinator = (
+        reopened_context.diagnostic_setup_selection_coordinator
     )
+    restarted_strategy = reopened_context.strategy_library_feature
+    restarted_scenario = reopened_context.scenario_lab_feature
+    restarted_tasks = reopened_context.diagnostic_tasks_feature
+    restarted_monitoring = reopened_context.run_monitoring_feature
+    restarted_evidence = reopened_context.evidence_and_findings_feature
+    restarted_system_health = reopened_context.system_health_feature
+    assert (
+        reopened_context.journey_workspace_bookmark
+        == durable_journey_bookmark
+    )
+    assert {
+        adapter.application_identity
+        for adapter in (
+            reopened_context.strategy_diagnostics_read_model,
+            reopened_context.strategy_diagnostics_tasks_application,
+            reopened_context.strategy_diagnostics_library_application,
+            reopened_context.strategy_diagnostics_scenario_lab_application,
+            reopened_context.strategy_diagnostics_system_health_application,
+        )
+    } == {diagnostics_application_identity(restarted_application)}
+    reopened_workspace = reopened_context.diagnostic_tasks_context
+    assert reopened_workspace.task_id == recovered_workspace.task_id
     reopened = JourneyWorkspaceHost(
         restarted_monitoring,
-        context=RunMonitoringContext.no_selection(),
+        context=reopened_context.run_monitoring_context,
         strategy_library_feature=restarted_strategy,
-        strategy_library_context=StrategyLibraryContext(
-            focus_strategy_id=saved_strategy_bookmark.focus_strategy_id,
-            selection_bookmark=saved_strategy_bookmark,
+        strategy_library_context=reopened_context.strategy_library_context,
+        strategy_library_bookmark_sink=(
+            reopened_context.persist_strategy_library_bookmark
         ),
-        strategy_library_bookmark_sink=strategy_bookmarks.append,
-        journey_workspace_bookmark=saved_journey_bookmark,
-        journey_workspace_bookmark_sink=journey_bookmarks.append,
+        journey_workspace_bookmark=(
+            reopened_context.journey_workspace_bookmark
+        ),
+        journey_workspace_bookmark_sink=(
+            reopened_context.persist_journey_workspace_bookmark
+        ),
         scenario_lab_feature=restarted_scenario,
-        scenario_lab_context=ScenarioLabContext(
-            focus_target=saved_journey_bookmark.scenario_focus_target,
-            focus_identity=saved_journey_bookmark.scenario_focus_identity,
-        ),
+        scenario_lab_context=reopened_context.scenario_lab_context,
         diagnostic_tasks_feature=restarted_tasks,
-        diagnostic_tasks_context=recovered_workspace,
+        diagnostic_tasks_context=reopened_workspace,
         diagnostic_setup_selection_coordinator=restarted_setup_coordinator,
         evidence_feature=restarted_evidence,
-        evidence_context=EvidenceAndFindingsContext.no_selection(),
-        initial_route=saved_journey_bookmark.last_route.value,
+        evidence_context=reopened_context.evidence_and_findings_context,
+        system_health_feature=restarted_system_health,
+        system_health_context=reopened_context.system_health_context,
+        initial_route=(
+            reopened_context.journey_workspace_bookmark.last_route.value
+        ),
     )
     reopened.resize(1280, 720)
     reopened.show()
     settle()
     reopened_root = reopened.rootObject()
-    restarted_tasks.snapshot(recovered_workspace)
-    reopened_task_state = restarted_tasks.snapshot(recovered_workspace)
+    durable_focus_token = (
+        durable_journey_bookmark.presentation.focus_return_token
+    )
+    assert durable_focus_token is not None
+    assert durable_focus_token.route is (
+        JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+    for _ in range(2_000):
+        settle()
+        restored_focus_item = reopened.quickWindow().activeFocusItem()
+        if (
+            isinstance(restored_focus_item, QQuickItem)
+            and restored_focus_item.objectName() == durable_focus_token.control
+            and restored_focus_item.property("activeFocus") is True
+        ):
+            break
+        QTest.qWait(5)
+    else:
+        raise AssertionError(
+            "Durable Evidence focus was not restored: "
+            f"{durable_focus_token.control}; active="
+            f"{None if restored_focus_item is None else restored_focus_item.objectName()}"
+        )
+    assert reopened_root.property("focusReturnConsumed") is True
+    assert reopened_root.property("focusReturnConsumed") is True
+    restarted_tasks.snapshot(reopened_workspace)
+    reopened_task_state = restarted_tasks.snapshot(reopened_workspace)
     assert reopened_task_state.task is not None
     assert (
         durable_identity_graph(reopened_task_state.task)
@@ -1630,6 +1991,59 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         for finding in candidate.findings
         for breakpoint in finding.sensitivity_breakpoints
     ) == breakpoint_finding_edges
+    settle()
+    reopened_journey = reopened.journey_context
+    assert reopened_journey.strategy_selection == (
+        durable_journey_bookmark.strategy_selection
+    )
+    assert reopened_journey.scenario_selection == (
+        durable_journey_bookmark.scenario_selection
+    )
+    assert reopened_journey.diagnostic_selection == (
+        durable_journey_bookmark.diagnostic_selection
+    )
+    assert reopened_journey.evidence_selection == (
+        durable_journey_bookmark.evidence_selection
+    )
+    assert reopened_journey.presentation.selected_identity == (
+        durable_journey_bookmark.presentation.selected_identity
+    )
+
+    assert reopened_root.setProperty("activeRoute", "system_health")
+    for _ in range(2_000):
+        settle()
+        reopened_health_status = reopened_root.findChild(
+            QObject,
+            "diagnosticContextAccessibleStatus",
+        )
+        reopened_health_accessible = (
+            ""
+            if reopened_health_status is None
+            else str(reopened_health_status.property("accessibleName"))
+        )
+        if "diagnostic context completed" in (
+            reopened_health_accessible.casefold()
+        ):
+            break
+        QTest.qWait(5)
+    else:
+        raise AssertionError(
+            "Reopened System Health did not resolve the durable graph: "
+            f"{reopened_health_accessible}"
+        )
+    for identity in (
+        completed_task.task_id.value,
+        selected_task_handle.identity.value,
+        campaign_id.value,
+        accepted_run.run_id.value,
+        completed_task.handoff.evidence_package_id.value,
+        finding_with_breakpoint.identity.value,
+        selected_breakpoint.identity.value,
+        manifest_id.value,
+    ):
+        assert identity in reopened_health_accessible
+    assert reopened_root.setProperty("activeRoute", "evidence_and_findings")
+    settle()
 
     identity_ledger_value = os.environ.get(
         "STOCKSIM_WAVE3_IDENTITY_LEDGER"
@@ -1712,10 +2126,19 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
                 "reproduction_manifest_id": manifest_id.value,
             },
             "recovery": {
+                "single_app_context": True,
+                "single_diagnostics_application": True,
+                "six_live_feature_adapters": True,
                 "remount_preserved_exact_identities": True,
                 "application_reopen_preserved_exact_identities": True,
                 "market_path_store_reopened_from_files": True,
                 "old_generation_quarantined": True,
+                "duplicate_and_lower_revision_quarantined": True,
+                "authoritative_reread_generation": (
+                    reconnected.generation.value
+                ),
+                "retry_idempotent_replay": True,
+                "terminal_history_preserved": True,
                 "durable_identity_graph": expected_durable_identity_graph,
             },
         }
@@ -1732,13 +2155,32 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
             encoding="utf-8",
         )
 
+    late_task_states = []
+    late_task_subscription = restarted_tasks.subscribe(
+        reopened_workspace,
+        late_task_states.append,
+    )
+    reopened.close_adapter()
     reopened.close_adapter()
     reopened.close()
-    restarted_tasks.close()
-    restarted_monitoring.close()
-    restarted_evidence.close()
-    restarted_strategy.close()
-    restarted_scenario.close()
+    reopened_context.close()
+    reopened_context.close()
+    deliveries_at_close = len(late_task_states)
+    restarted_bridge.mark_disconnected()
+    final_connection = restarted_bridge.mark_reconnected()
+    restarted_bridge.on_snapshot(
+        {
+            "kind": "diagnostic-task",
+            "diagnostic_task_id": completed_task.task_id.value,
+            "revision": reopened_task_state.revision + 1,
+        },
+        generation=final_connection.generation,
+    )
+    restarted_bridge.flush(force=True)
+    settle()
+    assert len(late_task_states) == deliveries_at_close
+    late_task_subscription.dispose()
+    late_task_subscription.dispose()
     restarted_bridge.stop()
     restarted_engine.dispose()
 

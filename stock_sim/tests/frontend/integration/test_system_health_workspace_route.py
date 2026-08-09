@@ -7,6 +7,7 @@ import shutil
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import enumerate as enumerate_threads
 from threading import get_ident
 from types import SimpleNamespace
 from typing import cast
@@ -627,6 +628,76 @@ def test_live_app_context_uses_one_diagnostics_application_for_every_adapter(
         context.run_monitoring_feature.close()
         context.evidence_and_findings_feature.close()
         context.system_health_feature.close()
+
+
+def test_live_app_context_close_is_idempotent_and_quarantines_late_delivery(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    baseline_health_workers = sum(
+        thread.name == "system-health-worker"
+        for thread in enumerate_threads()
+    )
+    bridge = EventBridge(subscribe_backend=False)
+    context = build_app_context(
+        settings_path=str(tmp_path / "live-close-settings.json"),
+        run_monitoring_mode="live",
+        event_bridge=bridge,
+        runtime_gateway=object(),
+    )
+    feature_contexts = (
+        (context.strategy_library_feature, context.strategy_library_context),
+        (context.scenario_lab_feature, context.scenario_lab_context),
+        (context.diagnostic_tasks_feature, context.diagnostic_tasks_context),
+        (context.run_monitoring_feature, context.run_monitoring_context),
+        (
+            context.evidence_and_findings_feature,
+            context.evidence_and_findings_context,
+        ),
+        (context.system_health_feature, context.system_health_context),
+    )
+    deliveries: list[list[object]] = [[] for _ in feature_contexts]
+    subscriptions = tuple(
+        feature.subscribe(feature_context, deliveries[index].append)
+        for index, (feature, feature_context) in enumerate(feature_contexts)
+    )
+    bridge.mark_disconnected()
+    bridge.mark_reconnected()
+    for states in deliveries:
+        revisions = tuple(state.revision for state in states)
+        assert revisions == tuple(sorted(set(revisions)))
+    delivered_before_close = tuple(map(len, deliveries))
+    assert all(count >= 1 for count in delivered_before_close)
+    assert sum(
+        thread.name == "system-health-worker"
+        for thread in enumerate_threads()
+    ) == baseline_health_workers + 1
+
+    context.close()
+    context.close()
+    bridge.mark_disconnected()
+    bridge.mark_reconnected()
+
+    assert tuple(map(len, deliveries)) == delivered_before_close
+    for subscription in subscriptions:
+        subscription.dispose()
+        subscription.dispose()
+    for feature, feature_context in feature_contexts:
+        with pytest.raises(RuntimeError, match="closed"):
+            feature.snapshot(feature_context)
+    for _ in range(200):
+        if sum(
+            thread.name == "system-health-worker"
+            for thread in enumerate_threads()
+        ) <= baseline_health_workers:
+            break
+        QTest.qWait(5)
+    assert sum(
+        thread.name == "system-health-worker"
+        for thread in enumerate_threads()
+    ) <= baseline_health_workers
+    bridge.stop()
 
 
 def _close_context(context) -> None:
