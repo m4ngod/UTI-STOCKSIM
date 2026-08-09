@@ -61,7 +61,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--source-commit",
         default="unbound-interactive",
     )
+    parser.add_argument("--supported-data-copy", type=Path)
+    parser.add_argument("--campaign-id")
+    parser.add_argument("--evidence-package-id")
+    parser.add_argument("--selected-manifest-id")
+    parser.add_argument("--diagnostic-task-id")
     arguments = parser.parse_args(argv)
+
+    copy_arguments = (
+        arguments.supported_data_copy,
+        arguments.campaign_id,
+        arguments.evidence_package_id,
+        arguments.selected_manifest_id,
+        arguments.diagnostic_task_id,
+    )
+    if any(value is not None for value in copy_arguments) and not all(
+        value is not None for value in copy_arguments
+    ):
+        parser.error("supported data-copy arguments must be provided together")
 
     from PySide6.QtWidgets import (
         QAbstractButton,
@@ -135,6 +152,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         for button in window.findChildren(QAbstractButton)
         if forbidden_manual_action.fullmatch(button.text().strip())
     )
+    supported_data_copy_report: dict[str, object] = {
+        "supported_data_copy_verified": False,
+    }
+    if arguments.supported_data_copy is not None:
+        from stock_sim.release.wave4_supported_data_copy import (
+            read_supported_data_copy,
+        )
+
+        snapshot = read_supported_data_copy(
+            bundle_root=arguments.supported_data_copy,
+            campaign_id=arguments.campaign_id,
+            evidence_package_id=arguments.evidence_package_id,
+            selected_manifest_id=arguments.selected_manifest_id,
+            diagnostic_task_id=arguments.diagnostic_task_id,
+        )
+        supported_data_copy_report = {
+            "supported_data_copy_verified": True,
+            "durable_identities": snapshot.durable_identities,
+            "task_handle_identities": snapshot.task_handle_identities,
+            "order_state_sha256": snapshot.order_state_sha256,
+            "order_count": snapshot.order_count,
+            "supported_data_copy_clean_exit": snapshot.clean_exit,
+        }
     report = {
         "kind": "widgets-rollback",
         "source_commit": arguments.source_commit,
@@ -150,6 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "manual_trading_action_count": manual_trading_action_count,
         "screenshot": screenshot_path.name,
         "clean_exit": True,
+        **supported_data_copy_report,
     }
     (arguments.smoke_report_dir / "smoke-report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True),

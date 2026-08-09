@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/m4ngod/UTI-STOCKSIM/schemas/wave4_legacy_route_inventory.schema.json",
+  "title": "UTI-STOCKSIM Wave 4 Legacy Route Inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "inventory_id", "source_commit", "captured_at",
+    "legacy_route_count", "widgets_shell_status", "deletion_authorized",
+    "clean_windows_gate_passed", "routes"
+  ],
+  "properties": {
+    "schema_version": {"const": "wave4.legacy-route-inventory.v1"},
+    "inventory_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "captured_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "legacy_route_count": {"const": 8},
+    "widgets_shell_status": {"const": "retained"},
+    "deletion_authorized": {"const": false},
+    "clean_windows_gate_passed": {"type": "boolean"},
+    "routes": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {"$ref": "#/$defs/diagnostics"}, {"$ref": "#/$defs/account"},
+        {"$ref": "#/$defs/market"}, {"$ref": "#/$defs/agents"},
+        {"$ref": "#/$defs/arena"}, {"$ref": "#/$defs/leaderboard"},
+        {"$ref": "#/$defs/clock"}, {"$ref": "#/$defs/orders"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legacy_route_id", "panel_registration", "status",
+        "stakeholder_exit_record_id", "route_rollback_drill_id",
+        "atomic_exit_authorized"
+      ],
+      "properties": {
+        "legacy_route_id": {"type": "string"},
+        "panel_registration": {"type": "string"},
+        "status": {"const": "retained"},
+        "stakeholder_exit_record_id": {"type": "null"},
+        "route_rollback_drill_id": {"type": "null"},
+        "atomic_exit_authorized": {"const": false}
+      }
+    },
+    "diagnostics": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "diagnostics"}, "panel_registration": {"const": "diagnostics"}}},
+    "account": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "account"}, "panel_registration": {"const": "account"}}},
+    "market": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "market"}, "panel_registration": {"const": "market"}}},
+    "agents": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "agents"}, "panel_registration": {"const": "agents"}}},
+    "arena": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "arena"}, "panel_registration": {"const": "arena"}}},
+    "leaderboard": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "leaderboard"}, "panel_registration": {"const": "leaderboard"}}},
+    "clock": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "clock"}, "panel_registration": {"const": "clock"}}},
+    "orders": {"$ref": "#/$defs/route", "properties": {"legacy_route_id": {"const": "orders"}, "panel_registration": {"const": "orders"}}}
+  }
+}
