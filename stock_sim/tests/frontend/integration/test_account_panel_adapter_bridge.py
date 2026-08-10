@@ -1,3 +1,8 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 from app.controllers.account_controller import AccountController
 from app.core_dto.account import AccountDTO, PositionDTO
 from app.panels.account.panel import AccountPanel
@@ -22,6 +27,34 @@ class _StubAccountService:
             snapshot_id="snap-adapter-1",
             sim_day="2026-03-25",
         )
+
+
+def test_account_adapter_promotes_to_real_widget_after_headless_import():
+    project_root = Path(__file__).resolve().parents[3]
+    environment = os.environ.copy()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment.pop("STOCKSIM_ENABLE_REAL_UI", None)
+    program = """
+from app.ui.adapters.account_adapter import AccountPanelAdapter
+from PySide6.QtWidgets import QApplication, QWidget
+
+application = QApplication([])
+widget = AccountPanelAdapter().widget()
+assert isinstance(widget, QWidget), type(widget).__name__
+widget.close()
+application.processEvents()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=project_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_account_panel_adapter_exposes_logic_bridge_methods_headless():
