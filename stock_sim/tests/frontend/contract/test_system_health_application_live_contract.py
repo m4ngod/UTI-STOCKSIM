@@ -711,7 +711,7 @@ def test_version_health_reads_the_exact_registry_lock_and_format_identities() ->
         ("SystemHealthFeature", "1.0"),
     )
     assert version.dependency_lock_identity == (
-        "sha256:f53b1b7245e48a33420ee7a2657c7d7bedc35a61cefbe0fc86ce0a1232bfaf1f"
+        "sha256:6bba2b4bfde411ee2b3abc700a6c887a878c30e2578fd903f66ad103f6897f0d"
     )
     assert version.release_manifest_compatibility is (
         HealthCompatibilityState.COMPATIBLE
