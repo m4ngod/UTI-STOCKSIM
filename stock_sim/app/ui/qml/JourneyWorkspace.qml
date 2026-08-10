@@ -73,6 +73,23 @@ Rectangle {
         ? evidenceAndFindings.presentationState
         : "unavailable"
     property string screenState: runMonitoring.presentationState
+    property int installedAccessibilityCheckpointSequence: 0
+    property string installedAccessibilityCheckpointState: ""
+    property string installedAccessibilityCheckpointRoute: ""
+    property string installedAccessibilityRunRevision: ""
+    property string installedAccessibilityEvidenceRevision: ""
+    property string installedAccessibilityStatusObjectName: ""
+    property string installedAccessibilityStatusSemanticTerm: ""
+    readonly property string installedAccessibilityCheckpointText: (
+        "Installed checkpoint sequence="
+        + installedAccessibilityCheckpointSequence
+        + " state=" + installedAccessibilityCheckpointState
+        + " route=" + installedAccessibilityCheckpointRoute
+        + " run_revision=" + installedAccessibilityRunRevision
+        + " evidence_revision=" + installedAccessibilityEvidenceRevision
+        + " target=" + installedAccessibilityStatusObjectName
+        + " term=" + installedAccessibilityStatusSemanticTerm
+    )
     property string headline: screenState === "loading"
         ? "Preparing Run Monitoring"
         : screenState === "disconnected"
@@ -91,6 +108,40 @@ Rectangle {
                 : "Open an existing Formal Diagnostic Campaign or Strategy Run to monitor it here."
     property var lastRunFocus: null
     signal routeActivationRequested(string route)
+
+    Rectangle {
+        id: installedAccessibilityCheckpointMarker
+        objectName: "installedAccessibilityCheckpointMarker"
+        visible: workspace.installedAccessibilityCheckpointSequence > 0
+        z: 1000
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: tokens.spaceSm
+        width: Math.min(
+            parent.width - tokens.spaceLg * 2,
+            Math.max(520, installedCheckpointText.implicitWidth + tokens.spaceMd)
+        )
+        height: Math.max(
+            tokens.controlHeight,
+            installedCheckpointText.implicitHeight + tokens.spaceSm * 2
+        )
+        radius: tokens.radiusSm
+        color: tokens.surfaceRaised
+        border.color: tokens.border
+        Accessible.role: Accessible.StatusBar
+        Accessible.name: workspace.installedAccessibilityCheckpointText
+
+        Text {
+            id: installedCheckpointText
+            anchors.fill: parent
+            anchors.margins: tokens.spaceSm
+            text: workspace.installedAccessibilityCheckpointText
+            color: tokens.textPrimary
+            font.pixelSize: tokens.labelSize
+            wrapMode: Text.WrapAnywhere
+            Accessible.ignored: true
+        }
+    }
 
     function rememberRunFocus(item) {
         lastRunFocus = item
@@ -704,7 +755,8 @@ Rectangle {
                         anchors.leftMargin: tokens.spaceMd
                         anchors.rightMargin: tokens.spaceSm
                         verticalAlignment: Text.AlignVCenter
-                        text: "Diagnostic Tasks"
+                        text: "Diagnostic Tasks · "
+                            + workspace.diagnosticTasksInventoryState
                         color: tokens.textPrimary
                         font.pixelSize: tokens.bodySize
                         font.bold: true
@@ -732,6 +784,7 @@ Rectangle {
                     property string accessibleName: "Open Run Monitoring"
                     property string accessibleDescription: (
                         "Navigate to the read-only Run Monitoring route"
+                        + ", current state " + workspace.screenState
                     )
                     readonly property bool focusVisible: activeFocus
                     activeFocusOnTab: true
@@ -772,7 +825,7 @@ Rectangle {
                         anchors.leftMargin: tokens.spaceMd
                         anchors.rightMargin: tokens.spaceSm
                         verticalAlignment: Text.AlignVCenter
-                        text: "Run Monitoring"
+                        text: "Run Monitoring · " + workspace.screenState
                         color: tokens.textPrimary
                         font.pixelSize: tokens.bodySize
                         font.bold: true

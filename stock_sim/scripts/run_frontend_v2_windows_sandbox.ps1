@@ -57,22 +57,35 @@ else {
     New-Item -ItemType Directory -Path $resolvedEvidence | Out-Null
 }
 
-$archiveDirectory = Split-Path -Parent $resolvedArchive
 $archiveName = Split-Path -Leaf $resolvedArchive
 if ($archiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
     throw "Package archive name contains unsafe characters."
 }
-$widgetsArchiveDirectory = Split-Path -Parent $resolvedWidgetsArchive
 $widgetsArchiveName = Split-Path -Leaf $resolvedWidgetsArchive
 if ($widgetsArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
     throw "Widgets archive name contains unsafe characters."
 }
-$scriptDirectory = Split-Path -Parent $resolvedCleanRoomScript
+$candidateInputStage = Join-Path $resolvedEvidence "candidate-input"
+$widgetsInputStage = Join-Path $resolvedEvidence "widgets-input"
+New-Item -ItemType Directory -Path $candidateInputStage | Out-Null
+New-Item -ItemType Directory -Path $widgetsInputStage | Out-Null
+Copy-Item `
+    -LiteralPath $resolvedArchive `
+    -Destination (Join-Path $candidateInputStage $archiveName)
+Copy-Item `
+    -LiteralPath $resolvedWidgetsArchive `
+    -Destination (Join-Path $widgetsInputStage $widgetsArchiveName)
+$archiveDirectory = $candidateInputStage
+$widgetsArchiveDirectory = $widgetsInputStage
 $runnerPath = Join-Path $resolvedEvidence "sandbox-runner.ps1"
+$cleanRoomRunnerPath = Join-Path $resolvedEvidence "clean-room-runner.ps1"
 $configurationPath = Join-Path $resolvedEvidence "frontend-v2-offline.wsb"
 $exitCodePath = Join-Path $resolvedEvidence "sandbox-exit-code.txt"
 $reportPath = Join-Path $resolvedEvidence "clean-room-report.json"
 $sandboxErrorPath = Join-Path $resolvedEvidence "sandbox-error.txt"
+Copy-Item `
+    -LiteralPath $resolvedCleanRoomScript `
+    -Destination $cleanRoomRunnerPath
 
 $runner = @'
 $ErrorActionPreference = "Continue"
@@ -85,7 +98,7 @@ try {
         -NoLogo `
         -NoProfile `
         -ExecutionPolicy Bypass `
-        -File "C:\ReleaseScripts\run_frontend_v2_clean_room.ps1" `
+        -File "C:\ReleaseEvidence\clean-room-runner.ps1" `
         -PackageArchive "C:\ReleaseInputQml\__ARCHIVE_NAME__" `
         -ExpectedArchiveSha256 "__ARCHIVE_SHA256__" `
         -WidgetsPackageArchive "C:\ReleaseInputWidgets\__WIDGETS_ARCHIVE_NAME__" `
@@ -140,9 +153,6 @@ $archiveDirectoryXml = [Security.SecurityElement]::Escape(
 $widgetsArchiveDirectoryXml = [Security.SecurityElement]::Escape(
     $widgetsArchiveDirectory
 )
-$scriptDirectoryXml = [Security.SecurityElement]::Escape(
-    $scriptDirectory
-)
 $evidenceDirectoryXml = [Security.SecurityElement]::Escape(
     $resolvedEvidence
 )
@@ -151,6 +161,7 @@ $configuration = @"
   <VGpu>Enable</VGpu>
   <Networking>Disable</Networking>
   <AudioInput>Disable</AudioInput>
+  <AudioOutput>Disable</AudioOutput>
   <VideoInput>Disable</VideoInput>
   <PrinterRedirection>Disable</PrinterRedirection>
   <ClipboardRedirection>Disable</ClipboardRedirection>
@@ -163,11 +174,6 @@ $configuration = @"
     <MappedFolder>
       <HostFolder>$widgetsArchiveDirectoryXml</HostFolder>
       <SandboxFolder>C:\ReleaseInputWidgets</SandboxFolder>
-      <ReadOnly>true</ReadOnly>
-    </MappedFolder>
-    <MappedFolder>
-      <HostFolder>$scriptDirectoryXml</HostFolder>
-      <SandboxFolder>C:\ReleaseScripts</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
     <MappedFolder>

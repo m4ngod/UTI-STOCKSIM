@@ -1044,6 +1044,12 @@ def audit_no_manual_trading_gate(
     qt_adapter_source = project_root / "app" / "ui" / "journey_workspace.py"
     evidence_chart_source = project_root / "app" / "ui" / "evidence_chart.py"
     accessibility_source = project_root / "app" / "ui" / "accessibility.py"
+    runtime_safety_source = (
+        project_root
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_runtime_safety.py"
+    )
     feature_sources = tuple(
         sorted(
             (project_root / "app" / "features").rglob("*.py"),
@@ -1174,6 +1180,7 @@ def audit_no_manual_trading_gate(
         qt_adapter_source,
         evidence_chart_source,
         accessibility_source,
+        runtime_safety_source,
         project_root
         / "stock_sim"
         / "release"
@@ -1315,6 +1322,7 @@ def audit_no_manual_trading_gate(
         qt_adapter_source,
         evidence_chart_source,
         accessibility_source,
+        runtime_safety_source,
         project_root / "app" / "ui" / "main_window.py",
         *qml_sources,
         project_root / "pyproject.toml",

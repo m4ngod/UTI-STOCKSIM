@@ -1498,6 +1498,8 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "compiler_installations": [],
                 "dependency_cache_present": False,
                 "dependency_cache_paths": [],
+                "source_checkout_absent": True,
+                "source_checkout_markers": [],
                 "install_succeeded": True,
                 "renderer_lanes": renderer_lanes,
             }
@@ -2147,6 +2149,12 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "<VGpu>Enable</VGpu>" in script
     assert "<ReadOnly>true</ReadOnly>" in script
     assert "run_frontend_v2_clean_room.ps1" in script
+    assert "clean-room-runner.ps1" in script
+    assert "C:\\ReleaseEvidence\\clean-room-runner.ps1" in script
+    assert "C:\\ReleaseScripts" not in script
+    assert "$candidateInputStage" in script
+    assert "$widgetsInputStage" in script
+    assert script.count("<MappedFolder>") == 3
     assert "WidgetsPackageArchive" in script
     assert "ExpectedWidgetsArchiveSha256" in script
     assert "C:\\ReleaseInputWidgets" in script
@@ -2282,6 +2290,372 @@ def test_packaged_no_trading_inventory_fails_closed_without_semantics():
     assert _unapproved_interactive_action_count(
         Root((approved_action, missing_semantics, known_text_input))
     ) == 1
+
+
+def test_installed_manual_trading_audit_uses_role_and_capability():
+    from stock_sim.release.frontend_v2_runtime_safety import (
+        classify_manual_trading_surface,
+    )
+
+    assert classify_manual_trading_surface(
+        accessible_text="Buy shares",
+        object_name="hiddenBuyAutomationPeer",
+        role="Button",
+        action_patterns=("Invoke",),
+        trigger_sources=("signal:clicked",),
+        focusable=False,
+    ) == "forbidden_manual_trading"
+    assert classify_manual_trading_surface(
+        accessible_text="Buy / Sell diagnostic evidence",
+        object_name="readOnlyExecutionNarrative",
+        role="StaticText",
+        action_patterns=(),
+        trigger_sources=(),
+        focusable=False,
+    ) == "static_read_only_diagnostic"
+    assert classify_manual_trading_surface(
+        accessible_text="Buy / Sell diagnostic evidence",
+        object_name="shortcutBackdoor",
+        role="StaticText",
+        action_patterns=(),
+        trigger_sources=("shortcut:shortcut",),
+        focusable=False,
+    ) == "forbidden_manual_trading"
+    assert classify_manual_trading_surface(
+        accessible_text="Cancel order",
+        object_name="disabledContextMenuPeer",
+        role="MenuItem",
+        action_patterns=(),
+        trigger_sources=("context-menu:MenuItem",),
+        focusable=False,
+    ) == "forbidden_manual_trading"
+
+
+def test_installed_manual_trading_audit_scans_qobject_meta_surface_without_uia(
+    monkeypatch,
+):
+    from PySide6.QtCore import Property, QObject, Signal
+
+    from stock_sim.release import frontend_v2_runtime_safety as runtime_safety
+
+    class HiddenOrderAction(QObject):
+        triggered = Signal()
+
+        @Property(str, constant=True)
+        def commandName(self):
+            return "Buy shares"
+
+        @Property(bool, constant=True)
+        def visible(self):
+            return False
+
+        @Property(bool, constant=True)
+        def enabled(self):
+            return False
+
+    root = QObject()
+    root.setObjectName("journeyRoot")
+    hidden_action = HiddenOrderAction(root)
+    hidden_action.setObjectName("opaqueAutomationPeer")
+    hidden_action.triggered.connect(lambda: None)
+    monkeypatch.setattr(
+        runtime_safety.QAccessible,
+        "queryAccessibleInterface",
+        lambda _item: None,
+    )
+
+    audit = runtime_safety.capture_no_manual_trading_route_audit(
+        root,
+        route="diagnostic_tasks",
+        stage="running",
+    )
+
+    assert audit["forbidden_action_count"] == 1
+    assert audit["hidden_object_count"] >= 1
+    assert audit["disabled_object_count"] >= 1
+    assert audit["forbidden_actions"] == [
+        {
+            "object_name": "opaqueAutomationPeer",
+            "role": "HiddenOrderAction",
+            "accessible_name_classification": "forbidden_manual_trading",
+            "action_patterns": [],
+            "trigger_sources": [
+                "command-binding:commandName",
+                "signal:triggered",
+            ],
+            "enabled": False,
+            "visible": False,
+            "focusable": False,
+        }
+    ]
+
+
+def test_installed_manual_trading_audit_does_not_treat_unbound_text_signal_as_action(
+    monkeypatch,
+):
+    from PySide6.QtCore import Property, QObject, Signal
+
+    from stock_sim.release import frontend_v2_runtime_safety as runtime_safety
+
+    class StaticDiagnosticText(QObject):
+        linkActivated = Signal(str)
+
+        @Property(str, constant=True)
+        def accessibleName(self):
+            return "Buy / Sell diagnostic evidence"
+
+    root = QObject()
+    static_text = StaticDiagnosticText(root)
+    static_text.setObjectName("readOnlyExecutionNarrative")
+    monkeypatch.setattr(
+        runtime_safety.QAccessible,
+        "queryAccessibleInterface",
+        lambda _item: None,
+    )
+
+    audit = runtime_safety.capture_no_manual_trading_route_audit(
+        root,
+        route="evidence_and_findings",
+        stage="running",
+    )
+
+    assert audit["declared_signal_surface_count"] == 1
+    assert audit["signal_surface_count"] == 0
+    assert audit["forbidden_action_count"] == 0
+    assert audit["static_read_only_diagnostics"] == [
+        {
+            "object_name": "readOnlyExecutionNarrative",
+            "role": "StaticDiagnosticText",
+            "accessible_name_classification": "static_read_only_diagnostic",
+            "action_patterns": [],
+            "trigger_sources": [],
+            "enabled": True,
+            "visible": True,
+            "focusable": False,
+        }
+    ]
+
+
+def test_installed_accessibility_rejects_hidden_state_text_and_color_only_cues():
+    from stock_sim.release.frontend_v2_accessibility import (
+        ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        REQUIRED_ACCESSIBILITY_STATES,
+        validate_installed_accessibility_checkpoints,
+    )
+
+    state_terms = {
+        "loading": "loading",
+        "empty": "empty",
+        "stale": "stale",
+        "disconnected": "disconnected",
+        "partial": "partial",
+        "failed": "failed error",
+        "recovering": "recover recovery",
+        "completed": "terminal completed",
+    }
+    checkpoints = []
+    for sequence, state in enumerate(REQUIRED_ACCESSIBILITY_STATES, start=1):
+        status_object_name, status_semantic_term = (
+            ACCESSIBILITY_CHECKPOINT_BINDINGS[state]
+        )
+        checkpoints.append(
+            {
+                "checkpoint": state,
+                "sequence": sequence,
+                "snapshot_identity": (
+                    f"uia:{sequence}:{state}:diagnostic_tasks:r3:r4"
+                ),
+                "captured_at_utc": (
+                    f"2030-01-01T00:00:{sequence:02d}+00:00"
+                ),
+                "route": "diagnostic_tasks",
+                "run_revision": "r3",
+                "evidence_revision": "r4",
+                "status_object_name": status_object_name,
+                "status_semantic_term": status_semantic_term,
+                "run_state": "",
+                "evidence_state": "",
+                "text_scale_percent": 200,
+                "high_contrast": True,
+                "reduced_motion": True,
+                "motion_duration_ms": 0,
+                "wcag_2_2_aa_contrast_verified": True,
+                "nodes": [
+                    {
+                        "object_name": status_object_name,
+                        "role": "StatusBar",
+                        "name_present": True,
+                        "description_present": False,
+                        "semantic_terms": [
+                            *state_terms[state].split(),
+                            "progress",
+                            "health",
+                            "fresh",
+                            "recovery",
+                            "recover",
+                            "error",
+                        ],
+                        "visible": state != "loading",
+                    },
+                    {
+                        "role": "StaticText",
+                        "name_present": True,
+                        "description_present": False,
+                        "semantic_terms": [
+                            "progress",
+                            "health",
+                            "fresh",
+                            "recovery",
+                            "recover",
+                            "error",
+                        ],
+                        "visible": True,
+                    },
+                ],
+                "non_color_cues": [],
+                "rendered_text_nodes": [],
+                "non_color_cue_verified": False,
+                "chart_narrative_table_revision": {
+                    "same_revision": state == "completed",
+                },
+            }
+        )
+
+    failures = validate_installed_accessibility_checkpoints(checkpoints)
+
+    assert (
+        "Installed loading checkpoint target did not expose its state"
+        in failures
+    )
+    assert "Installed accessibility states relied on color-only meaning" in failures
+
+
+def test_system_health_release_uses_public_bounded_lifecycle_contract():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _close_system_health_feature_for_release,
+        _system_health_release_is_stopped,
+    )
+
+    class SystemHealthFeature:
+        release_stopped = False
+
+        def __init__(self):
+            self.requested_timeout = None
+
+        def close_and_wait(self, *, timeout_seconds):
+            self.requested_timeout = timeout_seconds
+            self.release_stopped = True
+            return True
+
+    feature = SystemHealthFeature()
+
+    _close_system_health_feature_for_release(feature)
+
+    assert feature.requested_timeout == 5.0
+    assert _system_health_release_is_stopped(feature) is True
+
+
+def test_installed_manual_trading_audit_covers_six_routes_and_hidden_peers():
+    from stock_sim.release.frontend_v2_runtime_safety import (
+        REQUIRED_RUNTIME_SAFETY_COVERAGE,
+        REQUIRED_RUNTIME_SAFETY_ROUTES,
+        REQUIRED_RUNTIME_SAFETY_STAGES,
+        validate_no_manual_trading_route_audits,
+    )
+
+    audits = tuple(
+        {
+            "route": route,
+            "stage": stage,
+            "coverage": list(REQUIRED_RUNTIME_SAFETY_COVERAGE),
+            "object_count": 10,
+            "accessible_object_count": 5,
+            "interactive_object_count": 2,
+            "hidden_object_count": 3,
+            "disabled_object_count": 1,
+            "forbidden_action_count": 0,
+            "forbidden_actions": [],
+            "static_read_only_diagnostics": [],
+        }
+        for stage in REQUIRED_RUNTIME_SAFETY_STAGES
+        for route in REQUIRED_RUNTIME_SAFETY_ROUTES
+    )
+
+    assert validate_no_manual_trading_route_audits(audits) == ()
+    assert validate_no_manual_trading_route_audits(audits[:-1])
+    unsafe = [dict(item) for item in audits]
+    unsafe[0]["forbidden_action_count"] = 1
+    unsafe[0]["forbidden_actions"] = [
+        {
+            "object_name": "hiddenSellPeer",
+            "role": "Button",
+            "accessible_name_classification": "forbidden_manual_trading",
+            "action_patterns": ["Invoke"],
+            "trigger_sources": ["signal:clicked"],
+            "enabled": False,
+            "visible": False,
+            "focusable": False,
+        }
+    ]
+    assert validate_no_manual_trading_route_audits(tuple(unsafe))
+
+
+def test_temporary_persistence_cleanup_retries_without_masking_primary_failure(
+    tmp_path,
+):
+    from contextlib import ExitStack
+    from functools import partial
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _cleanup_temporary_persistence_root,
+        _record_cleanup,
+    )
+
+    retry_root = tmp_path / "retry-root"
+    retry_root.mkdir()
+    attempts = 0
+
+    def transient_remove(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("transient SQLite handle")
+        path.rmdir()
+
+    _cleanup_temporary_persistence_root(
+        retry_root,
+        remove_tree=transient_remove,
+        collect_cycles=lambda: 0,
+        pause=lambda _seconds: None,
+        max_attempts=3,
+    )
+    assert attempts == 3
+    assert not retry_root.exists()
+
+    blocked_root = tmp_path / "blocked-root"
+    blocked_root.mkdir()
+    cleanup_errors = []
+    with pytest.raises(ValueError, match="primary gate failure"):
+        with ExitStack() as cleanup:
+            cleanup.callback(
+                _record_cleanup,
+                cleanup_errors,
+                "temporary persistence root",
+                partial(
+                    _cleanup_temporary_persistence_root,
+                    blocked_root,
+                    remove_tree=lambda _path: (_ for _ in ()).throw(
+                        PermissionError("persistent SQLite handle")
+                    ),
+                    collect_cycles=lambda: 0,
+                    pause=lambda _seconds: None,
+                    max_attempts=2,
+                ),
+            )
+            raise ValueError("primary gate failure")
+    assert cleanup_errors == [
+        "temporary persistence root cleanup failed: RuntimeError"
+    ]
 
 
 def test_release_certification_does_not_expand_the_application_command_api():
@@ -2932,6 +3306,7 @@ def test_compiled_fixture_persistence_is_owned_by_the_report_directory(
         persistence_root = _packaged_fixture_persistence_root(
             report_dir=report_dir,
             cleanup=cleanup,
+            cleanup_errors=[],
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=True,
             temporary_directory_prefix="uti-wave2-runtime-",
@@ -2965,6 +3340,10 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
         def close(self):
             events.append(self.name)
             self._closed = True
+
+        @property
+        def release_stopped(self):
+            return self._closed
 
     class Host:
         _workspace_closed = False
@@ -3012,6 +3391,7 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
             "diagnostic_tasks_feature": Feature("diagnostic-feature"),
             "run_monitoring_feature": Feature("run-feature"),
             "evidence_and_findings_feature": Feature("evidence-feature"),
+            "system_health_feature": Feature("system-feature"),
         },
     )()
     host = Host()
@@ -3036,6 +3416,7 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
         "diagnostic-feature",
         "run-feature",
         "evidence-feature",
+        "system-feature",
         "process-events",
     ]
     assert _mount_is_closed(context, window, host) is True

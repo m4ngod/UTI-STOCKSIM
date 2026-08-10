@@ -1307,6 +1307,7 @@ class LiveSystemHealthAdapter:
         self._connection_transition_lock = RLock()
         self._sampling_interval = sampling_interval
         self._worker_wake = Event()
+        self._worker_stopped = Event()
         self._worker_thread: Thread | None = None
         self._pending_refresh_generation: int | None = None
         self._pending_data_source_delivery: tuple[int, int] | None = None
@@ -1390,7 +1391,7 @@ class LiveSystemHealthAdapter:
             self._on_snapshot_batch
         )
         self._worker_thread = Thread(
-            target=self._worker_loop,
+            target=self._run_worker,
             name="system-health-worker",
             daemon=True,
         )
@@ -1399,6 +1400,19 @@ class LiveSystemHealthAdapter:
     @property
     def interface_version(self) -> FeatureInterfaceVersion:
         return self._projection.interface_version
+
+    @property
+    def closed(self) -> bool:
+        """Whether ownership teardown has been requested."""
+
+        with self._lock:
+            return self._closed
+
+    @property
+    def release_stopped(self) -> bool:
+        """Whether teardown completed and the owned worker terminated."""
+
+        return self.closed and self._worker_stopped.is_set()
 
     def snapshot(self, context: SystemHealthContext) -> SystemHealthViewState:
         state = self._projection.snapshot(context)
@@ -1438,6 +1452,25 @@ class LiveSystemHealthAdapter:
         self._projection.close()
         if worker_thread is not None and worker_thread is not current_thread():
             worker_thread.join(timeout=0)
+
+    def close_and_wait(self, *, timeout_seconds: float = 5.0) -> bool:
+        """Close the Feature and wait a bounded interval for worker exit."""
+
+        if timeout_seconds < 0:
+            raise ValueError("System Health close timeout must be non-negative")
+        with self._lock:
+            worker_thread = self._worker_thread
+        self.close()
+        if current_thread() is worker_thread:
+            return False
+        self._worker_stopped.wait(timeout=timeout_seconds)
+        return self.release_stopped
+
+    def _run_worker(self) -> None:
+        try:
+            self._worker_loop()
+        finally:
+            self._worker_stopped.set()
 
     def _on_snapshot_batch(self, batch: EventBridgeBatch) -> None:
         relevant = tuple(

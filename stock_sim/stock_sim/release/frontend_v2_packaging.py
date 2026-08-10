@@ -178,6 +178,31 @@ _ACTIVE_JOURNEY_ROUTES = (
     "evidence_and_findings",
     "system_health",
 )
+_UIA_CHECKPOINT_BINDINGS = {
+    "loading": ("runMonitoringRouteNavigation", "loading"),
+    "empty": ("diagnosticTasksRouteNavigation", "empty"),
+    "failed": ("failedCampaignNodeAttemptHistory", "failed"),
+    "recovering": ("diagnosticTaskRecoveryProgressStatus", "recover"),
+    "partial": ("systemHealthAccessibleStatus", "partial"),
+    "disconnected": ("systemHealthAccessibleStatus", "disconnected"),
+    "stale": ("systemHealthAccessibleStatus", "stale"),
+    "completed": ("runMonitoringRouteNavigation", "terminal"),
+}
+_RUNTIME_SAFETY_STAGES = ("running", "reopened_terminal")
+_RUNTIME_SAFETY_COVERAGE = frozenset(
+    {
+        "qml_object_tree",
+        "accessible_interface",
+        "action_interface",
+        "selection_interface",
+        "value_interface",
+        "shortcut_properties",
+        "qt_signal_surface",
+        "command_binding_properties",
+        "context_menu_roles",
+        "hidden_automation_peers",
+    }
+)
 _WAVE2_RELEASE_FIXTURE_KIND = "authoritative_writable_wave3_inputs"
 _WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
     "compare_formal_strategy_set",
@@ -2208,6 +2233,24 @@ def verify_clean_room_report(
         failures.append("A dependency cache is present")
     if payload.get("dependency_cache_paths") != []:
         failures.append("Dependency cache paths are present")
+    if payload.get("source_checkout_absent") is not True:
+        failures.append("A source checkout is available in the clean room")
+    if payload.get("source_checkout_markers") != []:
+        failures.append("Source-checkout markers are present")
+    accessibility_environment = payload.get("accessibility_environment")
+    if not isinstance(accessibility_environment, dict):
+        failures.append("OS accessibility environment evidence is unavailable")
+    else:
+        if accessibility_environment.get("configured_before_launch") is not True:
+            failures.append("OS accessibility was not configured before launch")
+        if accessibility_environment.get("text_scale_registry_percent") != 200:
+            failures.append("OS text scaling was not configured to 200 percent")
+        if accessibility_environment.get("logical_dpi_registry") != 192:
+            failures.append("OS logical DPI was not configured to 192")
+        if accessibility_environment.get("win8_dpi_scaling") != 1:
+            failures.append("OS per-user DPI scaling was not enabled")
+        if accessibility_environment.get("errors") not in ([], ()):
+            failures.append("OS accessibility configuration reported errors")
     if payload.get("install_succeeded") is not True:
         failures.append("QML package installation did not succeed")
     if (
@@ -2228,6 +2271,11 @@ def verify_clean_room_report(
             if not isinstance(lane_report, dict):
                 failures.append(
                     f"{lane_name} installed performance evidence is unavailable"
+                )
+                continue
+            if lane_report.get("schema_version") != 3:
+                failures.append(
+                    f"{lane_name} installed performance schema must be 3"
                 )
                 continue
             failures.extend(
@@ -2444,6 +2492,252 @@ def verify_clean_room_report(
             failures.append(
                 f"{lane_name} renderer exposed an unapproved action"
             )
+        runtime_safety_audits = lane.get("manual_trading_route_audits")
+        if not isinstance(runtime_safety_audits, list):
+            failures.append(
+                f"{lane_name} renderer runtime safety audits are unavailable"
+            )
+        else:
+            observed_route_stages: set[tuple[str, str]] = set()
+            for audit in runtime_safety_audits:
+                if not isinstance(audit, dict):
+                    failures.append(
+                        f"{lane_name} renderer runtime safety audit is invalid"
+                    )
+                    continue
+                observed_route_stages.add(
+                    (str(audit.get("stage", "")), str(audit.get("route", "")))
+                )
+                if set(audit.get("coverage") or ()) != _RUNTIME_SAFETY_COVERAGE:
+                    failures.append(
+                        f"{lane_name} renderer runtime safety coverage is incomplete"
+                    )
+                if audit.get("object_count", 0) <= 0 or audit.get(
+                    "accessible_object_count", 0
+                ) <= 0:
+                    failures.append(
+                        f"{lane_name} renderer runtime object tree was not scanned"
+                    )
+                if audit.get("forbidden_action_count") != 0 or audit.get(
+                    "forbidden_actions"
+                ) not in ([], ()):
+                    failures.append(
+                        f"{lane_name} renderer exposed a manual-trading capability"
+                    )
+            expected_route_stages = {
+                (stage, route)
+                for stage in _RUNTIME_SAFETY_STAGES
+                for route in _ACTIVE_JOURNEY_ROUTES
+            }
+            if (
+                len(runtime_safety_audits) != len(expected_route_stages)
+                or observed_route_stages != expected_route_stages
+            ):
+                failures.append(
+                    f"{lane_name} renderer runtime safety route coverage is incomplete"
+                )
+        uia_accessibility = lane.get("uia_accessibility")
+        if not isinstance(uia_accessibility, dict):
+            failures.append(
+                f"{lane_name} renderer UIA accessibility evidence is unavailable"
+            )
+        else:
+            required_semantics = {
+                "loading",
+                "empty",
+                "stale",
+                "disconnected",
+                "partial",
+                "failed",
+                "recovering",
+                "completed",
+                "progress",
+                "error",
+                "health",
+                "fresh",
+                "recovery",
+            }
+            observed_semantics = uia_accessibility.get("semantic_terms")
+            semantics_valid = bool(
+                isinstance(observed_semantics, dict)
+                and set(observed_semantics) == required_semantics
+                and all(observed_semantics.values())
+            )
+            narrator_checkpoints = uia_accessibility.get(
+                "narrator_checkpoint_evidence"
+            )
+            narrator_checkpoint_mappings_valid = bool(
+                isinstance(narrator_checkpoints, list)
+                and all(
+                    isinstance(checkpoint, Mapping)
+                    for checkpoint in narrator_checkpoints
+                )
+            )
+            required_narrator_checkpoints = (
+                "loading",
+                "empty",
+                "failed",
+                "recovering",
+                "partial",
+                "disconnected",
+                "stale",
+                "completed",
+            )
+            checkpoint_timestamps: list[datetime] = []
+            if narrator_checkpoint_mappings_valid:
+                for checkpoint in narrator_checkpoints:
+                    try:
+                        captured_at = datetime.fromisoformat(
+                            str(checkpoint.get("captured_at_utc", ""))
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        checkpoint_timestamps = []
+                        break
+                    if captured_at.tzinfo is None:
+                        checkpoint_timestamps = []
+                        break
+                    checkpoint_timestamps.append(captured_at)
+            checkpoint_identities = (
+                tuple(
+                    str(checkpoint.get("snapshot_identity", ""))
+                    for checkpoint in narrator_checkpoints
+                )
+                if narrator_checkpoint_mappings_valid
+                else ()
+            )
+            checkpoint_scan_sequences = (
+                tuple(
+                    checkpoint.get("scan_sequence")
+                    for checkpoint in narrator_checkpoints
+                )
+                if narrator_checkpoint_mappings_valid
+                else ()
+            )
+            narrator_checkpoints_valid = bool(
+                narrator_checkpoint_mappings_valid
+                and len(narrator_checkpoints)
+                == len(required_narrator_checkpoints)
+                and tuple(
+                    str(checkpoint.get("checkpoint", ""))
+                    for checkpoint in narrator_checkpoints
+                )
+                == required_narrator_checkpoints
+                and tuple(
+                    checkpoint.get("sequence")
+                    for checkpoint in narrator_checkpoints
+                )
+                == tuple(range(1, len(required_narrator_checkpoints) + 1))
+                and all(checkpoint_identities)
+                and len(set(checkpoint_identities))
+                == len(checkpoint_identities)
+                and all(
+                    isinstance(sequence, int)
+                    for sequence in checkpoint_scan_sequences
+                )
+                and all(
+                    later > earlier
+                    for earlier, later in zip(
+                        checkpoint_scan_sequences,
+                        checkpoint_scan_sequences[1:],
+                    )
+                )
+                and len(checkpoint_timestamps)
+                == len(required_narrator_checkpoints)
+                and all(
+                    later > earlier
+                    for earlier, later in zip(
+                        checkpoint_timestamps,
+                        checkpoint_timestamps[1:],
+                    )
+                )
+                and all(
+                    isinstance(checkpoint, Mapping)
+                    and checkpoint.get("route") in _ACTIVE_JOURNEY_ROUTES
+                    and (
+                        checkpoint.get("status_object_name"),
+                        checkpoint.get("status_semantic_term"),
+                    )
+                    == _UIA_CHECKPOINT_BINDINGS[
+                        str(checkpoint.get("checkpoint", ""))
+                    ]
+                    and checkpoint.get("snapshot_identity")
+                    == (
+                        f"uia:{checkpoint.get('sequence')}:"
+                        f"{checkpoint.get('checkpoint')}:"
+                        f"{checkpoint.get('route')}:"
+                        f"{checkpoint.get('run_revision')}:"
+                        f"{checkpoint.get('evidence_revision')}:"
+                        f"{checkpoint.get('status_object_name')}:"
+                        f"{checkpoint.get('status_semantic_term')}"
+                    )
+                    and re.fullmatch(
+                        r"r\d+",
+                        str(checkpoint.get("run_revision", "")),
+                    )
+                    is not None
+                    and re.fullmatch(
+                        r"r\d+",
+                        str(checkpoint.get("evidence_revision", "")),
+                    )
+                    is not None
+                    and checkpoint.get("lifecycle_state_observed") is True
+                    and checkpoint.get("narrator_running") is True
+                    and checkpoint.get("focus_traversal_observed") is True
+                    and checkpoint.get("complete_snapshot") is True
+                    and checkpoint.get("named_element_count", 0) > 0
+                    and bool(checkpoint.get("control_types"))
+                    and checkpoint.get("passed") is True
+                    for checkpoint in narrator_checkpoints
+                )
+            )
+            discovered_count = uia_accessibility.get(
+                "discovered_element_count",
+                -1,
+            )
+            readable_count = uia_accessibility.get(
+                "readable_element_count",
+                -1,
+            )
+            unreadable_count = uia_accessibility.get(
+                "unreadable_element_count",
+                -1,
+            )
+            snapshot_accounting_valid = bool(
+                isinstance(discovered_count, int)
+                and isinstance(readable_count, int)
+                and isinstance(unreadable_count, int)
+                and discovered_count > 0
+                and readable_count > 0
+                and unreadable_count >= 0
+                and readable_count + unreadable_count == discovered_count
+                and uia_accessibility.get("complete_snapshot_count", 0) >= 8
+            )
+            if (
+                uia_accessibility.get("passed") is not True
+                or uia_accessibility.get("provider_available") is not True
+                or uia_accessibility.get("scan_count", 0) <= 0
+                or uia_accessibility.get("named_element_count", 0) <= 0
+                or uia_accessibility.get("focusable_element_count", 0) <= 0
+                or uia_accessibility.get("focus_observed") is not True
+                or not uia_accessibility.get("control_types")
+                or not uia_accessibility.get("action_patterns")
+                or uia_accessibility.get("narrator_started") is not True
+                or uia_accessibility.get("narrator_running_during_probe")
+                is not True
+                or uia_accessibility.get("focus_traversal_observed") is not True
+                or not narrator_checkpoints_valid
+                or not snapshot_accounting_valid
+                or uia_accessibility.get("observed_window_dpi_x", 0) < 192
+                or uia_accessibility.get("observed_window_dpi_y", 0) < 192
+                or uia_accessibility.get("observed_scale_percent", 0) < 200
+                or uia_accessibility.get("forbidden_action_count") != 0
+                or uia_accessibility.get("forbidden_actions") not in ([], ())
+                or not semantics_valid
+                or uia_accessibility.get("errors") not in ([], ())
+            ):
+                failures.append(
+                    f"{lane_name} renderer UIA/Narrator/200-percent gate failed"
+                )
         if lane.get("read_only_context_visible") is not True:
             failures.append(
                 f"{lane_name} renderer did not retain read-only "

@@ -103,6 +103,11 @@ def test_issue_118_installed_journey_contract_covers_six_live_features():
         "system_health_identity_graph",
         "system_health_accessibility_verified",
         "focus_restoration_verified",
+        "accessibility_checkpoints",
+        "installed_accessibility_verified",
+        "no_color_only_meaning_verified",
+        "chart_narrative_table_revision_verified",
+        "manual_trading_route_audits",
     }.issubset(result_fields)
 
 
@@ -138,6 +143,9 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         / "release"
         / "frontend_v2_performance_runtime.py"
     ).read_text(encoding="utf-8")
+    sandbox_source = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    ).read_text(encoding="utf-8")
 
     for required in (
         "installed_performance",
@@ -150,9 +158,34 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         assert required in clean_room_source
 
     assert "--performance-report" in clean_room_source
+    assert '$rollbackLanes[$lane] = Invoke-InstalledRollbackLane' in (
+        clean_room_source
+    )
+    assert "$candidateBeforePath" not in clean_room_source
+    assert 'foreach ($lane in @("hardware", "software"))' in (
+        clean_room_source
+    )
     assert "DeterministicFakeStrategyLibraryAdapter" not in performance_source
     assert "DeterministicFakeScenarioLabAdapter" not in performance_source
     assert "DeterministicFakeDiagnosticTasksAdapter" not in performance_source
+    for required_accessibility_probe in (
+        "UIAutomationClient",
+        "Narrator.exe",
+        "TextScaleFactor",
+        "LogPixels",
+        "Graphics]::FromHwnd",
+        "observed_window_dpi_x -ge 192",
+        "InvokePattern",
+        "TogglePattern",
+        "SelectionItemPattern",
+        "ValuePattern",
+        "forbidden_action_count",
+        "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR",
+        "installedAccessibilityCheckpointMarker",
+        "lifecycle_state_observed",
+    ):
+        assert required_accessibility_probe in clean_room_source
+    assert "<AudioOutput>Disable</AudioOutput>" in sandbox_source
 
 
 def test_issue_118_installed_migration_modes_use_real_public_persistence(
@@ -188,3 +221,16 @@ def test_issue_118_installed_migration_modes_use_real_public_persistence(
         assert report["reopen_verified"] is True
         assert report["destructive_migration"] is False
         assert report["clean_exit"] is True
+        assert report["source_schema_revision"] == report["target_schema_revision"]
+        assert report["first_reopen_applied_revisions"] == []
+        assert report["second_reopen_applied_revisions"] == []
+        if kind == "fresh":
+            assert report["initial_applied_revisions"]
+            assert report["initial_applied_revisions"][-1] == (
+                report["target_schema_revision"]
+            )
+            assert report["initial_file_inventory"] == (
+                report["final_file_inventory"]
+            )
+        else:
+            assert report["initial_applied_revisions"] == []

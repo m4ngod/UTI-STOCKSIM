@@ -8,7 +8,7 @@ from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from threading import RLock
+from threading import RLock, current_thread
 from time import sleep
 
 from app.event_bridge import (
@@ -627,8 +627,14 @@ class _ScenarioLabAdapter:
         for subscription in subscriptions:
             subscription.mark_disposed()
         if self._owns_executor:
+            called_from_owned_worker = bool(
+                self._executor_thread_prefix
+                and current_thread().name.startswith(
+                    self._executor_thread_prefix
+                )
+            )
             self._executor.shutdown(
-                wait=False,
+                wait=not called_from_owned_worker,
                 cancel_futures=True,
             )
 

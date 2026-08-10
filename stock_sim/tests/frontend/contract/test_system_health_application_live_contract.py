@@ -574,7 +574,9 @@ def test_first_incompatible_cache_observation_keeps_typed_state_without_generati
         )
         assert component.generation is None
     finally:
-        feature.close()
+        assert feature.close_and_wait(timeout_seconds=1.0) is True
+        assert feature.closed is True
+        assert feature.release_stopped is True
 
 
 def test_sql_queue_health_uses_one_bounded_active_target_projection(tmp_path) -> None:

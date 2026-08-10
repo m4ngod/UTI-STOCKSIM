@@ -1046,6 +1046,24 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
     assert diagnostic_page is not None
     diagnostic_projection = diagnostic_page.property("adapter")
+    assert diagnostic_projection.failedAttemptPresent is False
+    empty_attempt_history = root.findChild(
+        QObject,
+        "failedCampaignNodeAttemptHistory",
+    )
+    assert empty_attempt_history is not None
+    empty_attempt_interface = QAccessible.queryAccessibleInterface(
+        empty_attempt_history
+    )
+    assert empty_attempt_interface is not None
+    empty_attempt_text = " ".join(
+        (
+            empty_attempt_interface.text(QAccessible.Text.Name),
+            empty_attempt_interface.text(QAccessible.Text.Description),
+            diagnostic_projection.failedNodeRetryText,
+        )
+    ).casefold()
+    assert "failed" not in empty_attempt_text
     announcement_spy = QSignalSpy(diagnostic_projection.announcementChanged)
 
     def settle() -> None:
@@ -1291,6 +1309,25 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         assert background_task.task_id == running_task_identity
         assert background_task.handoff.campaign_id == running_campaign_identity
         assert background_task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+        if route_name == "diagnostic_tasks":
+            assert diagnostic_projection.failedAttemptPresent is True
+            failed_attempt_history = root.findChild(
+                QObject,
+                "failedCampaignNodeAttemptHistory",
+            )
+            assert failed_attempt_history is not None
+            failed_attempt_interface = QAccessible.queryAccessibleInterface(
+                failed_attempt_history
+            )
+            assert failed_attempt_interface is not None
+            assert "failed" in " ".join(
+                (
+                    failed_attempt_interface.text(QAccessible.Text.Name),
+                    failed_attempt_interface.text(
+                        QAccessible.Text.Description
+                    ),
+                )
+            ).casefold()
 
     assert root.setProperty("activeRoute", "system_health")
     settle()
@@ -3568,7 +3605,10 @@ def test_qml_create_persists_task_handle_across_remount_and_application_reopen(
     assert "diagnostic-task-" in task_text
     assert " · r2 · draft · " in task_text
     assert "diagnostic-task-handle-" in handle_text
-    assert " · completed · 100% · diagnostic_task_created · " in handle_text
+    assert (
+        " · phase completed · progress 100% · "
+        "result diagnostic_task_created · "
+    ) in handle_text
     window.close()
     run_monitoring.close()
 

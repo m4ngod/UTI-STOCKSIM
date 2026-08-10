@@ -7,6 +7,7 @@ import gc
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
@@ -16,6 +17,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from functools import partial
 from pathlib import Path
+from threading import current_thread
 from time import monotonic, perf_counter_ns, sleep
 from typing import Any
 
@@ -420,6 +422,11 @@ class PackageSmokeResult:
     system_health_identity_graph: tuple[str, ...] = ()
     system_health_accessibility_verified: bool = False
     focus_restoration_verified: bool = False
+    accessibility_checkpoints: tuple[dict[str, Any], ...] = ()
+    installed_accessibility_verified: bool = False
+    no_color_only_meaning_verified: bool = False
+    chart_narrative_table_revision_verified: bool = False
+    manual_trading_route_audits: tuple[dict[str, Any], ...] = ()
 
 
 def configure_renderer_environment(renderer_lane: RendererLane) -> None:
@@ -1963,6 +1970,7 @@ def _retry_installed_controlled_failure(
     root: Any,
     context: Any,
     task: Any,
+    capture_accessibility: Callable[[str], None] | None = None,
 ) -> tuple[Any, bool, bool, int]:
     """Observe and retry one real failed Campaign node via its typed Feature."""
 
@@ -2060,6 +2068,23 @@ def _retry_installed_controlled_failure(
         raise RuntimeError(
             "Controlled Diagnostic Task failure was not exposed accessibly"
         )
+    retry_control = _find_quick_item(root, "retryFailedCampaignNodeButton")
+    if retry_control is None or not retry_control.property("enabled"):
+        raise RuntimeError(
+            "Retry failed Campaign node keyboard control was unavailable"
+        )
+    _focus_with_keyboard(
+        app=app,
+        host=host,
+        target=retry_control,
+    )
+    _settle_until(
+        app,
+        lambda: bool(retry_control.property("activeFocus")),
+        "visible failed Campaign attempt history",
+    )
+    if capture_accessibility is not None:
+        capture_accessibility("failed")
 
     feature = context.diagnostic_tasks_feature
     retry_command = RetryFailedCampaignNode(
@@ -2100,6 +2125,38 @@ def _retry_installed_controlled_failure(
         raise RuntimeError(
             "DiagnosticTasksFeature retry was not an idempotent queued handoff"
         )
+    projection.refresh()
+    app.processEvents()
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="run_monitoring",
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="diagnostic_tasks",
+    )
+    def recovery_status_is_visible() -> bool:
+        snapshot = host.accessibility_snapshot()
+        recovery_text = snapshot.diagnostic_task_handle_text.casefold()
+        return bool(
+            root.property("activeRoute") == "diagnostic_tasks"
+            and _route_focus_is_visible(root, "diagnostic_tasks")
+            and snapshot.diagnostic_tasks_presentation in {"ready", "partial"}
+            and "recover" in recovery_text
+            and "progress" in recovery_text
+        )
+
+    _settle_until(
+        app,
+        recovery_status_is_visible,
+        "visible Diagnostic Task recovery progress after retry",
+    )
+    if capture_accessibility is not None:
+        capture_accessibility("recovering")
 
     workspace = DiagnosticTasksContext(
         task_id=DiagnosticTaskId(task.task_id.value)
@@ -2213,6 +2270,7 @@ def _packaged_fixture_persistence_root(
     *,
     report_dir: Path,
     cleanup: ExitStack,
+    cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
     defer_native_teardown: bool,
     temporary_directory_prefix: str,
@@ -2220,11 +2278,13 @@ def _packaged_fixture_persistence_root(
     if defer_native_teardown:
         return report_dir / "v1-persistence"
     runtime_root = Path(
-        cleanup.enter_context(
-            tempfile.TemporaryDirectory(
-                prefix=temporary_directory_prefix,
-            )
-        )
+        tempfile.mkdtemp(prefix=temporary_directory_prefix)
+    )
+    cleanup.callback(
+        _record_cleanup,
+        cleanup_errors,
+        "temporary persistence root",
+        partial(_cleanup_temporary_persistence_root, runtime_root),
     )
     lifecycle_checks.append(_path_absent_check(runtime_root))
     return runtime_root / "v1-persistence"
@@ -2380,6 +2440,16 @@ def _run_smoke_journey(
     from app.features.diagnostic_setup import (
         DiagnosticSetupSelectionCoordinator,
     )
+    from stock_sim.release.frontend_v2_accessibility import (
+        ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        capture_installed_accessibility_checkpoint,
+        summarize_installed_accessibility_checkpoints,
+        validate_installed_accessibility_checkpoints,
+    )
+    from stock_sim.release.frontend_v2_runtime_safety import (
+        capture_no_manual_trading_route_audit,
+        validate_no_manual_trading_route_audits,
+    )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         ReleaseCertificationFailFirstPTradeStrategyHost,
         create_file_backed_formal_v1_release_fixture,
@@ -2413,6 +2483,7 @@ def _run_smoke_journey(
         persistence_root = _packaged_fixture_persistence_root(
             report_dir=report_dir,
             cleanup=cleanup,
+            cleanup_errors=cleanup_errors,
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=defer_native_teardown,
             temporary_directory_prefix="uti-wave3-runtime-",
@@ -2442,6 +2513,7 @@ def _run_smoke_journey(
         persistence_root = _packaged_fixture_persistence_root(
             report_dir=report_dir,
             cleanup=cleanup,
+            cleanup_errors=cleanup_errors,
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=defer_native_teardown,
             temporary_directory_prefix="uti-v1-runtime-",
@@ -2594,7 +2666,35 @@ def _run_smoke_journey(
     qml_identity_graph_checkpoints: dict[str, tuple[str, ...]] = {}
     accessibility_announcements: list[str] = []
     accessibility_preferences: list[bool] = []
+    accessibility_checkpoints: list[dict[str, Any]] = []
+    manual_trading_route_audits: list[dict[str, Any]] = []
     keyboard_routes: set[str] = set()
+
+    def capture_manual_trading_audit(*, route: str, stage: str) -> None:
+        if not issue_118_certification:
+            return
+        audit = capture_no_manual_trading_route_audit(
+            root,
+            route=route,
+            stage=stage,
+        )
+        manual_trading_route_audits.append(audit)
+        if audit.get("forbidden_action_count", 0) > 0:
+            raise RuntimeError(
+                "Installed no-manual-trading capability detected; "
+                "redacted provenance: "
+                + json.dumps(
+                    {
+                        "route": audit.get("route"),
+                        "stage": audit.get("stage"),
+                        "forbidden_actions": audit.get(
+                            "forbidden_actions",
+                            [],
+                        ),
+                    },
+                    sort_keys=True,
+                )
+            )
 
     def feature_authority_signature() -> tuple[object, ...]:
         run_state = context.run_monitoring_feature.snapshot(
@@ -2693,6 +2793,172 @@ def _run_smoke_journey(
     root = host.rootObject()
     if root is None:
         raise RuntimeError("Journey Workspace root object is unavailable")
+
+    def _checkpoint_matches_current_projection(
+        checkpoint: str,
+        snapshot: Any,
+    ) -> bool:
+        if checkpoint == "loading":
+            return snapshot.run_presentation == "loading"
+        if checkpoint == "empty":
+            return snapshot.diagnostic_tasks_presentation == "empty"
+        if checkpoint == "failed":
+            return snapshot.diagnostic_failed_attempt_present
+        if checkpoint == "recovering":
+            recovery_text = snapshot.diagnostic_task_handle_text.casefold()
+            return "recover" in recovery_text and "progress" in recovery_text
+        if checkpoint == "partial":
+            return snapshot.system_health_completeness == "partial"
+        if checkpoint == "disconnected":
+            return bool(
+                snapshot.system_health_data_source_connection
+                == "disconnected"
+                or snapshot.system_health_freshness == "disconnected"
+            )
+        if checkpoint == "stale":
+            return bool(
+                snapshot.system_health_data_source_freshness == "stale"
+                or snapshot.system_health_freshness == "stale"
+            )
+        if checkpoint == "completed":
+            return snapshot.run_presentation == "terminal"
+        return False
+
+    def _wait_for_external_uia_ack(
+        *,
+        sequence: int,
+        checkpoint: str,
+        snapshot_identity: str,
+    ) -> None:
+        configured_root = os.environ.get(
+            "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR",
+            "",
+        ).strip()
+        if not configured_root:
+            return
+        ack_root = Path(configured_root).resolve()
+        if ack_root != report_dir.resolve():
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement root is invalid"
+            )
+        ack_path = ack_root / (
+            f"uia-checkpoint-{sequence:02d}-{checkpoint}.json"
+        )
+        if ack_path.exists():
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement was pre-existing"
+            )
+        deadline = monotonic() + 30.0
+        while monotonic() < deadline and not ack_path.is_file():
+            app.processEvents()
+            sleep(0.05)
+        if not ack_path.is_file():
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement timed out"
+            )
+        try:
+            acknowledgement = json.loads(
+                ack_path.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement is invalid"
+            ) from error
+        if (
+            acknowledgement.get("snapshot_identity") != snapshot_identity
+            or acknowledgement.get("checkpoint") != checkpoint
+            or acknowledgement.get("sequence") != sequence
+            or acknowledgement.get("passed") is not True
+        ):
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement did not match"
+            )
+
+    def capture_accessibility(checkpoint: str) -> None:
+        if not (wave2_mode and issue_118_certification):
+            return
+        sequence = len(accessibility_checkpoints) + 1
+        route = str(root.property("activeRoute") or "")
+        snapshot = host.accessibility_snapshot()
+        run_revision = snapshot.run_revision
+        evidence_revision = snapshot.evidence_revision
+        if (
+            re.fullmatch(r"r\d+", run_revision) is None
+            or re.fullmatch(r"r\d+", evidence_revision) is None
+        ):
+            raise RuntimeError(
+                "Installed accessibility projection revision was invalid"
+            )
+        if not _checkpoint_matches_current_projection(checkpoint, snapshot):
+            raise RuntimeError(
+                "Installed accessibility checkpoint did not match the "
+                "current public product projection"
+            )
+        try:
+            status_object_name, status_semantic_term = (
+                ACCESSIBILITY_CHECKPOINT_BINDINGS[checkpoint]
+            )
+        except KeyError as error:
+            raise RuntimeError(
+                "Installed accessibility checkpoint binding was unavailable"
+            ) from error
+        snapshot_identity = (
+            f"uia:{sequence}:{checkpoint}:{route}:"
+            f"{run_revision}:{evidence_revision}:"
+            f"{status_object_name}:{status_semantic_term}"
+        )
+        marker_properties = {
+            "installedAccessibilityCheckpointSequence": sequence,
+            "installedAccessibilityCheckpointState": checkpoint,
+            "installedAccessibilityCheckpointRoute": route,
+            "installedAccessibilityRunRevision": run_revision,
+            "installedAccessibilityEvidenceRevision": evidence_revision,
+            "installedAccessibilityStatusObjectName": status_object_name,
+            "installedAccessibilityStatusSemanticTerm": (
+                status_semantic_term
+            ),
+        }
+        if not all(
+            root.setProperty(name, value)
+            for name, value in marker_properties.items()
+        ):
+            raise RuntimeError(
+                "Installed accessibility checkpoint marker is unavailable"
+            )
+        app.processEvents()
+        checkpoint_evidence = capture_installed_accessibility_checkpoint(
+            root,
+            checkpoint=checkpoint,
+            sequence=sequence,
+            snapshot_identity=snapshot_identity,
+            route=route,
+            run_revision=run_revision,
+            evidence_revision=evidence_revision,
+            status_object_name=status_object_name,
+            status_semantic_term=status_semantic_term,
+        )
+        accessibility_checkpoints.append(checkpoint_evidence)
+        if (
+            checkpoint_evidence.get("non_color_cue_verified") is not True
+            or not checkpoint_evidence.get("non_color_cues")
+        ):
+            raise RuntimeError(
+                "Installed accessibility checkpoint lacked a visible "
+                "non-color semantic cue; redacted checkpoint summary: "
+                + json.dumps(
+                    summarize_installed_accessibility_checkpoints(
+                        (checkpoint_evidence,)
+                    ),
+                    sort_keys=True,
+                )
+            )
+        _wait_for_external_uia_ack(
+            sequence=sequence,
+            checkpoint=checkpoint,
+            snapshot_identity=snapshot_identity,
+        )
+
+    capture_accessibility("loading")
     accessibility_preferences.append(
         _accessibility_preferences_verified(root)
     )
@@ -2733,6 +2999,7 @@ def _run_smoke_journey(
         ),
         "authoritative Scenario Lab route",
     )
+    capture_accessibility("empty")
 
     diagnostic_task_identity = ""
     accepted_command_kinds: tuple[str, ...] = ()
@@ -2792,6 +3059,7 @@ def _run_smoke_journey(
                 root=root,
                 context=context,
                 task=running_task,
+                capture_accessibility=capture_accessibility,
             )
             queued_state_observed = retry_idempotency_verified
             running_state_observed = bool(
@@ -2834,6 +3102,10 @@ def _run_smoke_journey(
                 campaign_id=campaign_id,
                 task_handle_identities=task_handle_identities,
             )
+            capture_manual_trading_audit(
+                route=route,
+                stage="running",
+            )
 
         preterminal_generation = bridge.connection_generation
         bridge.mark_disconnected()
@@ -2868,8 +3140,12 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Installed disconnect did not expose a partial/last-reliable state"
             )
+        capture_accessibility("partial")
+        capture_accessibility("disconnected")
 
         preterminal_connection = bridge.mark_reconnected()
+        app.processEvents()
+        capture_accessibility("stale")
         monitoring_context = host._diagnostic_tasks.monitoring_context()
         monitoring_selection = (
             None
@@ -3832,6 +4108,27 @@ def _run_smoke_journey(
     prime_evidence_route()
     observe(*EXPECTED_JOURNEY[8])
     observe(*EXPECTED_JOURNEY[9])
+    capture_accessibility("completed")
+
+    if wave2_mode and issue_118_certification:
+        for route in ACTIVE_JOURNEY_ROUTES:
+            _navigate_route(
+                app=app,
+                host=host,
+                root=root,
+                route=route,
+            )
+            keyboard_routes.add(route)
+            expected_route = route
+            _settle_until(
+                app,
+                lambda: root.property("activeRoute") == expected_route,
+                f"reopened terminal safety audit {route} route",
+            )
+            capture_manual_trading_audit(
+                route=route,
+                stage="reopened_terminal",
+            )
 
     _navigate_route(
         app=app,
@@ -3938,7 +4235,41 @@ def _run_smoke_journey(
         )
 
     graphics_api = _graphics_api_name(host)
-    manual_action_count = _unapproved_interactive_action_count(root)
+    accessibility_failures = (
+        validate_installed_accessibility_checkpoints(
+            accessibility_checkpoints
+        )
+        if wave2_mode and issue_118_certification
+        else ()
+    )
+    if accessibility_failures:
+        raise RuntimeError(
+            "Installed accessibility gate failed: "
+            + "; ".join(accessibility_failures)
+            + "; redacted checkpoint summary: "
+            + json.dumps(
+                summarize_installed_accessibility_checkpoints(
+                    accessibility_checkpoints
+                ),
+                sort_keys=True,
+            )
+        )
+    manual_trading_failures = (
+        validate_no_manual_trading_route_audits(
+            manual_trading_route_audits
+        )
+        if wave2_mode and issue_118_certification
+        else ()
+    )
+    if manual_trading_failures:
+        raise RuntimeError(
+            "Installed no-manual-trading gate failed: "
+            + "; ".join(manual_trading_failures)
+        )
+    manual_action_count = sum(
+        int(audit["forbidden_action_count"])
+        for audit in manual_trading_route_audits
+    )
     read_only_context_visible = _read_only_context_visible(host)
 
     result = PackageSmokeResult(
@@ -3982,6 +4313,23 @@ def _run_smoke_journey(
         ),
         accessibility_announcements=tuple(
             accessibility_announcements
+        ),
+        accessibility_checkpoints=tuple(accessibility_checkpoints),
+        installed_accessibility_verified=not accessibility_failures,
+        no_color_only_meaning_verified=bool(accessibility_checkpoints)
+        and all(
+            checkpoint.get("non_color_cue_verified") is True
+            and bool(checkpoint.get("non_color_cues"))
+            for checkpoint in accessibility_checkpoints
+        ),
+        chart_narrative_table_revision_verified=bool(
+            accessibility_checkpoints
+            and accessibility_checkpoints[-1][
+                "chart_narrative_table_revision"
+            ]["same_revision"]
+        ),
+        manual_trading_route_audits=tuple(
+            manual_trading_route_audits
         ),
         old_generation_rejected=old_generation_rejected,
         authoritative_reconnect_verified=(
@@ -4191,6 +4539,11 @@ def _close_mount(
         "scenario_lab_feature",
         None,
     )
+    system_health_feature = getattr(
+        context,
+        "system_health_feature",
+        None,
+    )
     close_actions = [
         ("MainWindow hide", window.hide),
         ("Qt event drain before QML teardown", app.processEvents),
@@ -4227,6 +4580,12 @@ def _close_mount(
                 "Evidence and Findings Feature",
                 context.evidence_and_findings_feature.close,
             ),
+            (
+                "System Health Feature",
+                lambda: _close_system_health_feature_for_release(
+                    system_health_feature
+                ),
+            ),
             ("Qt event drain after Feature teardown", app.processEvents),
         ]
     )
@@ -4239,6 +4598,19 @@ def _close_mount(
             )
     if errors is None and observed_errors:
         raise RuntimeError("; ".join(observed_errors))
+
+
+def _close_system_health_feature_for_release(feature: Any) -> None:
+    if feature is None:
+        return
+    close_and_wait = getattr(feature, "close_and_wait", None)
+    if callable(close_and_wait):
+        stopped = bool(close_and_wait(timeout_seconds=5.0))
+    else:
+        feature.close()
+        stopped = True
+    if not stopped:
+        raise RuntimeError("System Health release worker did not stop")
 
 
 def _schedule_closed_mount_release(
@@ -4274,6 +4646,33 @@ def _record_cleanup(
         action()
     except BaseException as error:
         errors.append(f"{label} cleanup failed: {type(error).__name__}")
+
+
+def _cleanup_temporary_persistence_root(
+    path: Path,
+    *,
+    remove_tree: Callable[[Path], Any] = shutil.rmtree,
+    collect_cycles: Callable[[], Any] = gc.collect,
+    pause: Callable[[float], Any] = sleep,
+    max_attempts: int = 20,
+) -> None:
+    """Remove a closed SQLite fixture without replacing a primary failure."""
+
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    for attempt in range(max_attempts):
+        if not path.exists():
+            return
+        collect_cycles()
+        try:
+            remove_tree(path)
+        except OSError:
+            if attempt + 1 < max_attempts:
+                pause(min(0.05 * (attempt + 1), 0.25))
+            continue
+        if not path.exists():
+            return
+    raise RuntimeError("Temporary persistence root remained in use")
 
 
 def _path_absent_check(path: Path) -> Callable[[], bool]:
@@ -4333,6 +4732,9 @@ def _mount_is_closed(
             "_closed",
             False,
         )
+        and _owned_executor_is_stopped(
+            getattr(context, "scenario_lab_feature", None)
+        )
         and getattr(context.diagnostic_tasks_feature, "_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
         and _owned_executor_is_stopped(context.run_monitoring_feature)
@@ -4343,6 +4745,9 @@ def _mount_is_closed(
         )
         and _owned_executor_is_stopped(
             context.evidence_and_findings_feature
+        )
+        and _system_health_release_is_stopped(
+            getattr(context, "system_health_feature", None)
         )
         and not window.isVisible()
     )
@@ -4358,6 +4763,12 @@ def _owned_executor_is_stopped(feature: Any) -> bool:
         not thread.is_alive()
         for thread in tuple(getattr(executor, "_threads", ()))
     )
+
+
+def _system_health_release_is_stopped(feature: Any) -> bool:
+    if feature is None:
+        return True
+    return bool(getattr(feature, "release_stopped", False))
 
 
 def _settle_until(
@@ -4729,6 +5140,7 @@ def _run_installed_migration_report(
         create_file_backed_wave2_release_input_fixture,
         extract_sealed_wave2_release_input_fixture_archive,
         open_sealed_wave2_release_input_fixture,
+        reopen_file_backed_wave2_release_input_fixture,
     )
     from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
 
@@ -4741,30 +5153,60 @@ def _run_installed_migration_report(
     initial_inventory: tuple[str, ...]
     final_inventory: tuple[str, ...]
     clean_exit = False
+    schema_migration_verified = False
+    source_schema_revision = ""
+    initial_applied_revisions: tuple[str, ...] = ()
+    first_reopen_applied_revisions: tuple[str, ...] = ()
+    second_reopen_applied_revisions: tuple[str, ...] = ()
     if migration_kind == "fresh":
-        first_root = work_root / "fresh-first"
-        second_root = work_root / "fresh-second"
+        fresh_root = work_root / "fresh-install"
+        database_path = fresh_root / "strategy-diagnostics-v1.sqlite3"
+        artifact_root = fresh_root / "artifacts"
         first = create_file_backed_wave2_release_input_fixture(
-            database_path=first_root / "strategy-diagnostics-v1.sqlite3",
-            artifact_root=first_root / "artifacts",
+            database_path=database_path,
+            artifact_root=artifact_root,
         )
         try:
             first_identities = first.authoritative_input_identities
+            initial_migration = first.initialization_migration
+            first_reopen_migration = first.reopen_migration
         finally:
             first.close()
         first_closed = first.closed
-        second = create_file_backed_wave2_release_input_fixture(
-            database_path=second_root / "strategy-diagnostics-v1.sqlite3",
-            artifact_root=second_root / "artifacts",
+        initial_inventory = _file_inventory(fresh_root)
+        second = reopen_file_backed_wave2_release_input_fixture(
+            database_path=database_path,
+            artifact_root=artifact_root,
         )
         try:
             second_identities = second.authoritative_input_identities
+            second_reopen_migration = second.reopen_migration
         finally:
             second.close()
         reopen_verified = first_closed and second.closed
-        initial_inventory = _file_inventory(first_root)
-        final_inventory = _file_inventory(second_root)
+        final_inventory = _file_inventory(fresh_root)
         clean_exit = reopen_verified
+        if initial_migration is not None:
+            source_schema_revision = initial_migration.current_revision
+            initial_applied_revisions = initial_migration.applied_revisions
+        first_reopen_applied_revisions = (
+            first_reopen_migration.applied_revisions
+        )
+        second_reopen_applied_revisions = (
+            second_reopen_migration.applied_revisions
+        )
+        schema_migration_verified = bool(
+            initial_migration is not None
+            and initial_migration.current_revision == DIAGNOSTIC_SCHEMA_REVISION
+            and initial_applied_revisions
+            and initial_applied_revisions[-1] == DIAGNOSTIC_SCHEMA_REVISION
+            and first_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and not first_reopen_applied_revisions
+            and second_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and not second_reopen_applied_revisions
+        )
     elif migration_kind == "copied-wave3":
         copied_root = work_root / "copied-wave3"
         extract_sealed_wave2_release_input_fixture_archive(
@@ -4778,6 +5220,7 @@ def _run_installed_migration_report(
         )
         try:
             first_identities = first.authoritative_input_identities
+            first_reopen_migration = first.reopen_migration
         finally:
             first.close()
         second = open_sealed_wave2_release_input_fixture(
@@ -4786,11 +5229,27 @@ def _run_installed_migration_report(
         )
         try:
             second_identities = second.authoritative_input_identities
+            second_reopen_migration = second.reopen_migration
         finally:
             second.close()
         reopen_verified = first.closed and second.closed
         final_inventory = _file_inventory(copied_root)
         clean_exit = reopen_verified
+        source_schema_revision = first_reopen_migration.current_revision
+        first_reopen_applied_revisions = (
+            first_reopen_migration.applied_revisions
+        )
+        second_reopen_applied_revisions = (
+            second_reopen_migration.applied_revisions
+        )
+        schema_migration_verified = bool(
+            first_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and second_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and not first_reopen_applied_revisions
+            and not second_reopen_applied_revisions
+        )
     else:
         raise RuntimeError("Unsupported installed migration kind")
 
@@ -4813,7 +5272,8 @@ def _run_installed_migration_report(
     )
     non_destructive = set(initial_inventory).issubset(final_inventory)
     passed = bool(
-        identity_retention_verified
+        schema_migration_verified
+        and identity_retention_verified
         and bookmark_migration_verified
         and reopen_verified
         and clean_exit
@@ -4825,10 +5285,24 @@ def _run_installed_migration_report(
         "source_commit": source_commit,
         "passed": passed,
         "schema_revision": DIAGNOSTIC_SCHEMA_REVISION,
-        "schema_migration_verified": True,
+        "schema_migration_verified": schema_migration_verified,
+        "source_schema_revision": source_schema_revision,
+        "target_schema_revision": DIAGNOSTIC_SCHEMA_REVISION,
+        "initial_applied_revisions": list(initial_applied_revisions),
+        "first_reopen_applied_revisions": list(
+            first_reopen_applied_revisions
+        ),
+        "second_reopen_applied_revisions": list(
+            second_reopen_applied_revisions
+        ),
         "bookmark_migration_verified": bookmark_migration_verified,
         "deterministic": identity_retention_verified,
-        "idempotent": reopen_verified and not second_bookmark.migrated,
+        "idempotent": bool(
+            schema_migration_verified
+            and not second_reopen_applied_revisions
+            and reopen_verified
+            and not second_bookmark.migrated
+        ),
         "identity_retention_verified": identity_retention_verified,
         "reopen_verified": reopen_verified,
         "destructive_migration": not non_destructive,
@@ -5230,6 +5704,13 @@ def _compiled_smoke_failures(
         (
             result.focus_restoration_verified,
             "installed route focus was not restored after reopen",
+        ),
+        (
+            result.installed_accessibility_verified
+            and result.no_color_only_meaning_verified
+            and result.chart_narrative_table_revision_verified
+            and len(result.accessibility_checkpoints) >= 8,
+            "installed accessibility checkpoints are incomplete",
         ),
     )
     failures.extend(message for passed, message in checks if not passed)

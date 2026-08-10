@@ -3411,12 +3411,17 @@ class DiagnosticTasksQtAdapter(QObject):
     def taskHandleText(self) -> str:  # noqa: N802
         task = self._state.task
         if task is None or not task.task_handles:
-            return "No persistent TaskHandle is available."
+            return "Task progress · no persistent TaskHandle is available."
         return "\n".join(
             (
-                f"{handle.identity.value} · {handle.phase.value} · "
-                f"{handle.progress:.0%} · "
-                f"{handle.result or 'pending'} · "
+                (
+                    "Recovery completed · "
+                    if handle.result == "failed_campaign_node_retry_completed"
+                    else ""
+                )
+                + f"{handle.identity.value} · phase {handle.phase.value} · "
+                f"progress {handle.progress:.0%} · "
+                f"result {handle.result or 'pending'} · "
                 f"cancelable {str(handle.cancelable).lower()}"
             )
             for handle in task.task_handles
@@ -3538,7 +3543,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def failedNodeRetryText(self) -> str:  # noqa: N802
         node = self._retry_history_campaign_node()
         if node is None:
-            return "No failed Campaign attempt history is available."
+            return "No Campaign node attempt history is available."
         attempts = "; ".join(
             (
                 f"attempt {attempt.attempt_number} "
@@ -3555,6 +3560,14 @@ class DiagnosticTasksQtAdapter(QObject):
         return (
             f"Node {node.campaign_node_id.value} · r{node.revision} · "
             f"{attempts}"
+        )
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def failedAttemptPresent(self) -> bool:  # noqa: N802
+        node = self._retry_history_campaign_node()
+        return bool(
+            node is not None
+            and any(attempt.failure is not None for attempt in node.attempts)
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -7318,6 +7331,25 @@ class SystemHealthQtAdapter(QObject):
             pass
 
 
+@dataclass(frozen=True)
+class JourneyAccessibilitySnapshot:
+    """Safe, read-only current UI status used by installed certification."""
+
+    active_route: str
+    run_presentation: str
+    run_revision: str
+    evidence_revision: str
+    diagnostic_tasks_presentation: str
+    diagnostic_task_handle_text: str
+    diagnostic_failed_retry_text: str
+    diagnostic_failed_attempt_present: bool
+    system_health_presentation: str
+    system_health_freshness: str
+    system_health_completeness: str
+    system_health_data_source_connection: str
+    system_health_data_source_freshness: str
+
+
 class JourneyWorkspaceHost(QQuickWidget):
     """Exactly one route-level QML host mounted by the Widgets MainWindow."""
 
@@ -7751,6 +7783,65 @@ class JourneyWorkspaceHost(QQuickWidget):
     @property
     def journey_context(self) -> JourneyContext:
         return self._journey_context
+
+    def accessibility_snapshot(self) -> JourneyAccessibilitySnapshot:
+        """Return current public presentation facts without exposing adapters."""
+
+        def text(adapter: QObject | None, property_name: str) -> str:
+            if adapter is None:
+                return ""
+            return str(adapter.property(property_name) or "")
+
+        def flag(adapter: QObject | None, property_name: str) -> bool:
+            return bool(
+                adapter is not None and adapter.property(property_name)
+            )
+
+        return JourneyAccessibilitySnapshot(
+            active_route=self._active_route.value,
+            run_presentation=text(self._run_monitoring, "presentationState"),
+            run_revision=text(self._run_monitoring, "revisionText"),
+            evidence_revision=text(
+                self._evidence_and_findings,
+                "revisionText",
+            ),
+            diagnostic_tasks_presentation=text(
+                self._diagnostic_tasks,
+                "presentationState",
+            ),
+            diagnostic_task_handle_text=text(
+                self._diagnostic_tasks,
+                "taskHandleText",
+            ),
+            diagnostic_failed_retry_text=text(
+                self._diagnostic_tasks,
+                "failedNodeRetryText",
+            ),
+            diagnostic_failed_attempt_present=flag(
+                self._diagnostic_tasks,
+                "failedAttemptPresent",
+            ),
+            system_health_presentation=text(
+                self._system_health,
+                "presentationState",
+            ),
+            system_health_freshness=text(
+                self._system_health,
+                "freshness",
+            ),
+            system_health_completeness=text(
+                self._system_health,
+                "completeness",
+            ),
+            system_health_data_source_connection=text(
+                self._system_health,
+                "dataSourceConnection",
+            ),
+            system_health_data_source_freshness=text(
+                self._system_health,
+                "dataSourceFreshness",
+            ),
+        )
 
     def activate_route(self, route: JourneyWorkspaceRoute) -> bool:
         """Activate one typed destination; unavailable routes fail safely."""
@@ -8685,6 +8776,7 @@ class JourneyWorkspaceHost(QQuickWidget):
 __all__ = [
     "DiagnosticTasksQtAdapter",
     "EvidenceAndFindingsQtAdapter",
+    "JourneyAccessibilitySnapshot",
     "JourneyWorkspaceHost",
     "RunMonitoringQtAdapter",
     "ScenarioLabQtAdapter",

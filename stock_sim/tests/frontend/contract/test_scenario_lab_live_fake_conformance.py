@@ -2929,6 +2929,38 @@ def test_live_adapter_refreshes_only_for_scenario_lab_invalidations() -> None:
     bridge.stop()
 
 
+def test_live_scenario_lab_close_waits_for_its_owned_executor() -> None:
+    from threading import Event, Thread
+
+    feature = _live_feature()
+    started = Event()
+    release = Event()
+    close_completed = Event()
+
+    def blocking_work() -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    future = feature._executor.submit(blocking_work)
+    assert started.wait(timeout=1)
+    closer = Thread(
+        target=lambda: (feature.close(), close_completed.set()),
+        daemon=True,
+    )
+    closer.start()
+    try:
+        assert not close_completed.wait(timeout=0.1)
+    finally:
+        release.set()
+        closer.join(timeout=2)
+    future.result(timeout=1)
+    assert close_completed.is_set()
+    assert all(
+        not thread.is_alive()
+        for thread in feature._executor._threads
+    )
+
+
 def test_live_adapter_refreshes_each_subscribed_context_against_its_own_token() -> None:
     bridge = EventBridge(subscribe_backend=False)
     inventory = _inventory()

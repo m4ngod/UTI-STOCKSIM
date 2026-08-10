@@ -510,6 +510,157 @@ def _clean_room_lane(root, lane, graphics_api):
         "screenshots": _write_clean_room_screenshots(root, lane),
         "screenshots_distinct": True,
         "manual_trading_action_count": 0,
+        "manual_trading_route_audits": [
+            {
+                "route": route,
+                "stage": stage,
+                "coverage": [
+                    "qml_object_tree",
+                    "accessible_interface",
+                    "action_interface",
+                    "selection_interface",
+                    "value_interface",
+                    "shortcut_properties",
+                    "qt_signal_surface",
+                    "command_binding_properties",
+                    "context_menu_roles",
+                    "hidden_automation_peers",
+                ],
+                "object_count": 100,
+                "accessible_object_count": 50,
+                "interactive_object_count": 20,
+                "hidden_object_count": 10,
+                "disabled_object_count": 5,
+                "shortcut_surface_count": 0,
+                "context_menu_surface_count": 0,
+                "command_binding_surface_count": 0,
+                "signal_surface_count": 20,
+                "action_patterns_observed": ["Invoke", "Selection", "Value"],
+                "forbidden_action_count": 0,
+                "forbidden_actions": [],
+                "static_read_only_diagnostics": [],
+            }
+            for stage in ("running", "reopened_terminal")
+            for route in (
+                "strategy_library",
+                "scenario_lab",
+                "diagnostic_tasks",
+                "run_monitoring",
+                "evidence_and_findings",
+                "system_health",
+            )
+        ],
+        "uia_accessibility": {
+            "provider_available": True,
+            "scan_count": 20,
+            "discovered_element_count": 200,
+            "readable_element_count": 200,
+            "unreadable_element_count": 0,
+            "complete_snapshot_count": 20,
+            "named_element_count": 100,
+            "focusable_element_count": 20,
+            "focus_observed": True,
+            "control_types": ["Button", "ProgressBar", "Text"],
+            "action_patterns": ["Invoke", "Selection", "Value"],
+            "semantic_terms": {
+                term: True
+                for term in (
+                    "loading",
+                    "empty",
+                    "stale",
+                    "disconnected",
+                    "partial",
+                    "failed",
+                    "recovering",
+                    "completed",
+                    "progress",
+                    "error",
+                    "health",
+                    "fresh",
+                    "recovery",
+                )
+            },
+            "narrator_started": True,
+            "narrator_running_during_probe": True,
+            "focus_traversal_observed": True,
+            "narrator_checkpoint_evidence": [
+                {
+                    "checkpoint": checkpoint,
+                    "sequence": sequence,
+                    "snapshot_identity": (
+                        f"uia:{sequence}:{checkpoint}:diagnostic_tasks:r9:r11:"
+                        f"{checkpoint_binding[0]}:{checkpoint_binding[1]}"
+                    ),
+                    "scan_sequence": sequence * 2,
+                    "captured_at_utc": (
+                        f"2030-01-01T00:00:{sequence:02d}+00:00"
+                    ),
+                    "route": "diagnostic_tasks",
+                    "run_revision": "r9",
+                    "evidence_revision": "r11",
+                    "status_object_name": checkpoint_binding[0],
+                    "status_semantic_term": checkpoint_binding[1],
+                    "lifecycle_state_observed": True,
+                    "narrator_running": True,
+                    "focus_traversal_observed": True,
+                    "complete_snapshot": True,
+                    "named_element_count": 5,
+                    "control_types": ["StatusBar", "Text"],
+                    "passed": True,
+                }
+                for sequence, (checkpoint, checkpoint_binding) in enumerate(
+                    (
+                        (
+                            "loading",
+                            ("runMonitoringRouteNavigation", "loading"),
+                        ),
+                        (
+                            "empty",
+                            ("diagnosticTasksRouteNavigation", "empty"),
+                        ),
+                        (
+                            "failed",
+                            ("failedCampaignNodeAttemptHistory", "failed"),
+                        ),
+                        (
+                            "recovering",
+                            (
+                                "diagnosticTaskRecoveryProgressStatus",
+                                "recover",
+                            ),
+                        ),
+                        (
+                            "partial",
+                            ("systemHealthAccessibleStatus", "partial"),
+                        ),
+                        (
+                            "disconnected",
+                            (
+                                "systemHealthAccessibleStatus",
+                                "disconnected",
+                            ),
+                        ),
+                        (
+                            "stale",
+                            ("systemHealthAccessibleStatus", "stale"),
+                        ),
+                        (
+                            "completed",
+                            ("runMonitoringRouteNavigation", "terminal"),
+                        ),
+                    ),
+                    start=1,
+                )
+            ],
+            "observed_window_dpi_x": 192,
+            "observed_window_dpi_y": 192,
+            "observed_scale_percent": 200,
+            "forbidden_action_count": 0,
+            "forbidden_actions": [],
+            "static_read_only_diagnostics": [],
+            "passed": True,
+            "errors": [],
+        },
         "read_only_context_visible": True,
         "clean_exit": True,
         "errors": [],
@@ -560,6 +711,13 @@ def _clean_room_schema_four_evidence(source_commit="abc123"):
         for lane in ("hardware", "software")
     }
     return {
+        "accessibility_environment": {
+            "configured_before_launch": True,
+            "text_scale_registry_percent": 200,
+            "logical_dpi_registry": 192,
+            "win8_dpi_scaling": 1,
+            "errors": [],
+        },
         "installed_performance": installed_performance,
         "fresh_install_migration": deepcopy(migration),
         "copied_wave3_migration": deepcopy(migration),
@@ -1108,6 +1266,8 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "compiler_installations": [],
         "dependency_cache_present": False,
         "dependency_cache_paths": [],
+        "source_checkout_absent": True,
+        "source_checkout_markers": [],
         "install_succeeded": True,
         **_clean_room_schema_four_evidence(),
         "renderer_lanes": {
@@ -1128,6 +1288,66 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         expected_source_commit="abc123",
         expected_archive_sha256="sha256:package",
     ) == ()
+
+    historical_performance_report = deepcopy(report_payload)
+    historical_performance_report["installed_performance"]["hardware"][
+        "schema_version"
+    ] = 2
+    report_path.write_text(
+        json.dumps(historical_performance_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware installed performance schema must be 3"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    incomplete_uia_report = deepcopy(report_payload)
+    incomplete_uia_report["renderer_lanes"]["hardware"][
+        "uia_accessibility"
+    ]["narrator_checkpoint_evidence"][0]["complete_snapshot"] = False
+    report_path.write_text(
+        json.dumps(incomplete_uia_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware renderer UIA/Narrator/200-percent gate failed"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    duplicate_uia_identity_report = deepcopy(report_payload)
+    duplicate_checkpoints = duplicate_uia_identity_report["renderer_lanes"][
+        "hardware"
+    ]["uia_accessibility"]["narrator_checkpoint_evidence"]
+    duplicate_checkpoints[1]["snapshot_identity"] = duplicate_checkpoints[0][
+        "snapshot_identity"
+    ]
+    duplicate_checkpoints[1]["scan_sequence"] = duplicate_checkpoints[0][
+        "scan_sequence"
+    ]
+    report_path.write_text(
+        json.dumps(duplicate_uia_identity_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware renderer UIA/Narrator/200-percent gate failed"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
 
     duplicate_screenshot_report = json.loads(
         report_path.read_text(encoding="utf-8-sig")
@@ -1312,6 +1532,8 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
                 "compiler_installations": [],
                 "dependency_cache_present": False,
                 "dependency_cache_paths": [],
+                "source_checkout_absent": True,
+                "source_checkout_markers": [],
                 "install_succeeded": True,
                 **_clean_room_schema_four_evidence(),
                 "renderer_lanes": {
@@ -1460,6 +1682,8 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "compiler_installations": [],
                 "dependency_cache_present": False,
                 "dependency_cache_paths": [],
+                "source_checkout_absent": True,
+                "source_checkout_markers": [],
                 "install_succeeded": True,
                 "widgets_install_succeeded": True,
                 **_clean_room_schema_four_evidence(),
@@ -2686,10 +2910,19 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "python_installations" in script
     assert "compiler_installations" in script
     assert "dependency_cache_paths" in script
+    assert "source_checkout_absent" in script
+    assert "source_checkout_markers" in script
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
     assert "schema_version = 4" in script
+    assert "unreadable_element_count" in script
+    assert "complete_snapshot_count" in script
+    assert "narrator_checkpoint_evidence" in script
+    assert "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR" in script
+    assert "snapshot_identity" in script
+    assert "lifecycle_state_observed" in script
+    assert "focus_traversal_observed" in script
     assert '"--source-commit=$SourceCommit"' in script
     assert "production_path" in script
     assert (

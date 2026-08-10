@@ -46,7 +46,10 @@ from strategy_diagnostics.diagnostic_evidence_storage import (
     JsonDiagnosticEvidenceArtifactStore,
 )
 from strategy_diagnostics.market_paths import ParquetMarketPathArtifactStore
-from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
+from strategy_diagnostics.persistence import (
+    DIAGNOSTIC_SCHEMA_REVISION,
+    DiagnosticMigrationReport,
+)
 from strategy_diagnostics.ptrade_host import (
     EmbeddedProductionPTradeStrategyHost,
     InProcessPTradeStrategyHost,
@@ -437,6 +440,8 @@ class FileBackedWave2ReleaseInputFixture:
     engine: Engine
     database_path: Path
     artifact_root: Path
+    initialization_migration: DiagnosticMigrationReport | None
+    reopen_migration: DiagnosticMigrationReport
     authoritative_input_identities: tuple[str, ...]
     persisted_recipe_draft_count: int
     persisted_approved_recipe_count: int
@@ -599,6 +604,7 @@ def create_file_backed_wave2_release_input_fixture(
         database_path=database_path,
         artifact_root=artifact_root,
         ptrade_host=ptrade_host,
+        initialization_migration=migration,
     )
     try:
         _require(
@@ -609,6 +615,21 @@ def create_file_backed_wave2_release_input_fixture(
         reopened.close()
         raise
     return reopened
+
+
+def reopen_file_backed_wave2_release_input_fixture(
+    *,
+    database_path: Path,
+    artifact_root: Path,
+    ptrade_host: PTradeStrategyHost | None = None,
+) -> FileBackedWave2ReleaseInputFixture:
+    """Reopen one writable installed Wave 3 input fixture through the App."""
+
+    return _open_file_backed_wave2_release_input_fixture(
+        database_path=database_path,
+        artifact_root=artifact_root,
+        ptrade_host=ptrade_host,
+    )
 
 
 def create_sealed_wave2_release_input_fixture(
@@ -1220,6 +1241,7 @@ def _open_file_backed_wave2_release_input_fixture(
     artifact_root: Path,
     require_empty: bool = True,
     ptrade_host: PTradeStrategyHost | None = None,
+    initialization_migration: DiagnosticMigrationReport | None = None,
 ) -> FileBackedWave2ReleaseInputFixture:
     source = DeterministicReleaseMarketSource()
     reopened_engine = create_engine(
@@ -1292,6 +1314,8 @@ def _open_file_backed_wave2_release_input_fixture(
         engine=reopened_engine,
         database_path=database_path,
         artifact_root=artifact_root,
+        initialization_migration=initialization_migration,
+        reopen_migration=migration,
         authoritative_input_identities=identities,
         persisted_recipe_draft_count=recipe_draft_count,
         persisted_approved_recipe_count=approved_recipe_count,
@@ -1957,6 +1981,7 @@ __all__ = [
     "load_sealed_wave2_release_input_fixture_manifest",
     "open_sealed_formal_v1_release_fixture",
     "open_sealed_wave2_release_input_fixture",
+    "reopen_file_backed_wave2_release_input_fixture",
     "reopen_active_wave2_release_input_fixture",
     "reopen_completed_wave2_release_fixture",
     "write_sealed_formal_v1_release_fixture_archive",
