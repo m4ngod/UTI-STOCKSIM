@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "issue": 117,
+  "implementation_commit": "ce94f61c46600596bca7c04fedeaa5da7a2e4a18",
+  "baseline_commit": "1827763971a342fd3e9e94cd6cddd61a94535267",
+  "scope": "retained_widgets_adapter_lifecycle_promotion",
+  "root_cause": "market_agents_and_orders_adapters_cached_headless_qt_types_before_qapplication",
+  "resolved_behavior": "each_adapter_resolves_a_consistent_widget_type_bundle_when_creating_its_widget_tree",
+  "red_to_green": [
+    {
+      "adapter": "market",
+      "before": "1 failed in 1.85s",
+      "after": "1 passed in 1.33s",
+      "assertion": "root_detail_and_chart_are_real_qwidgets_after_headless_import"
+    },
+    {
+      "adapter": "agents",
+      "before": "full_gate_failed_with_app.ui.adapters.agents_adapter.QWidget",
+      "after": "combined_lifecycle_regression_advanced_to_orders_failure",
+      "assertion": "root_is_real_qwidget_after_headless_import"
+    },
+    {
+      "adapter": "orders",
+      "before": "combined_lifecycle_regression_failed_with__HeadlessRoot",
+      "after": "1 passed in 1.03s",
+      "assertion": "root_is_real_qwidget_after_headless_import"
+    }
+  ],
+  "focused_validation": [
+    {
+      "name": "market_adapter_focus",
+      "result": "19 passed in 4.20s"
+    },
+    {
+      "name": "agents_orders_and_no_manual_trading_focus",
+      "result": "49 passed in 27.32s"
+    },
+    {
+      "name": "account_market_agents_orders_then_rollback_drill",
+      "result": "5 passed in 118.50s"
+    },
+    {
+      "name": "wave4_observation_migration_rollback",
+      "result": "2 passed in 115.78s"
+    }
+  ],
+  "complete_source_gate": {
+    "elapsed_seconds": 1488.2,
+    "groups": [
+      "six-feature-conformance: 310 passed, 17 deselected, exit 0",
+      "persisted-application-qml-tracer: 64 passed, exit 0",
+      "strategy-diagnostics-v1-regression: 389 passed, 1 deselected, exit 0",
+      "strategy-diagnostics-v1-lazy-import-isolation: 1 passed, exit 0",
+      "frontend-v2-contract: 228 passed, 30 deselected, exit 0",
+      "frontend-v2-integration-e2e-accessibility: 153 passed, 5 deselected, exit 0",
+      "frontend-v2-unit: 299 passed, 1 skipped, exit 0",
+      "frontend-v2-event-bridge: 6 passed, exit 0",
+      "frontend-v2-safety: 29 passed, 1 deselected, exit 0",
+      "frontend-v2-performance-packaging-contract: 212 passed, 3 deselected, exit 0"
+    ]
+  },
+  "claims": {
+    "source_gate_verified": true,
+    "rollback_process_order_independent": true,
+    "durable_identity_and_clean_exit_regression_passed": true,
+    "no_manual_trading_boundary_passed": true,
+    "legacy_deleted": false,
+    "formal_release_started": false,
+    "fourteen_day_window_started": false,
+    "installed_windows_gate_verified": false,
+    "offline_windows_gate_verified": false,
+    "hardware_renderer_gate_verified": false,
+    "software_renderer_gate_verified": false,
+    "performance_certification_verified": false
+  }
+}

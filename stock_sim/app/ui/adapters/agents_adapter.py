@@ -16,7 +16,7 @@
 - 不做异步线程; 所有操作即时调用逻辑层 (Service 内部线程安全)
 """
 from __future__ import annotations
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, NamedTuple, Optional, List
 from .base_adapter import PanelAdapter
 from .runtime_mode import ui_runtime_enabled
 from app.ui.widgets.mini_charts import AgentInsightsWidget, HeadlessAgentInsightsWidget
@@ -132,6 +132,80 @@ except Exception:  # pragma: no cover - headless fallback
 
 _ROW_COLOR_STALE = QColor(255, 240, 240) if callable(getattr(QColor, '__call__', None)) else QColor(255, 240, 240)  # type: ignore
 
+
+class _AgentsUiTypes(NamedTuple):
+    widget: Any
+    vertical_layout: Any
+    horizontal_layout: Any
+    table: Any
+    table_item: Any
+    push_button: Any
+    label: Any
+    text_edit: Any
+    dialog: Any
+    line_edit: Any
+    combo_box: Any
+    abstract_item_view: Any
+    color: Any
+    brush: Any
+
+
+def _load_runtime_ui_types() -> Optional[_AgentsUiTypes]:
+    if not ui_runtime_enabled():
+        return None
+    try:
+        from PySide6.QtGui import QBrush as _QBrush, QColor as _QColor  # type: ignore
+        from PySide6.QtWidgets import (  # type: ignore
+            QAbstractItemView as _QAbstractItemView,
+            QComboBox as _QComboBox,
+            QDialog as _QDialog,
+            QHBoxLayout as _QHBoxLayout,
+            QLabel as _QLabel,
+            QLineEdit as _QLineEdit,
+            QPushButton as _QPushButton,
+            QTableWidget as _QTableWidget,
+            QTableWidgetItem as _QTableWidgetItem,
+            QTextEdit as _QTextEdit,
+            QVBoxLayout as _QVBoxLayout,
+            QWidget as _QWidget,
+        )
+    except Exception:  # pragma: no cover
+        return None
+    return _AgentsUiTypes(
+        widget=_QWidget,
+        vertical_layout=_QVBoxLayout,
+        horizontal_layout=_QHBoxLayout,
+        table=_QTableWidget,
+        table_item=_QTableWidgetItem,
+        push_button=_QPushButton,
+        label=_QLabel,
+        text_edit=_QTextEdit,
+        dialog=_QDialog,
+        line_edit=_QLineEdit,
+        combo_box=_QComboBox,
+        abstract_item_view=_QAbstractItemView,
+        color=_QColor,
+        brush=_QBrush,
+    )
+
+
+_INITIAL_UI_TYPES = _AgentsUiTypes(
+    widget=QWidget,
+    vertical_layout=QVBoxLayout,
+    horizontal_layout=QHBoxLayout,
+    table=QTableWidget,
+    table_item=QTableWidgetItem,
+    push_button=QPushButton,
+    label=QLabel,
+    text_edit=QTextEdit,
+    dialog=QDialog,
+    line_edit=QLineEdit,
+    combo_box=QComboBox,
+    abstract_item_view=QAbstractItemView,
+    color=QColor,
+    brush=QBrush,
+)
+
 # 新增: 相关事件主题（部分来自控制器，部分预留占位）
 _AGENT_PROGRESS_TOPIC = "agent.batch.create.progress"
 _AGENT_COMPLETED_TOPIC = "agent.batch.create.completed"
@@ -165,6 +239,9 @@ class AgentsPanelAdapter(PanelAdapter):
 
     def __init__(self):
         super().__init__()
+        self._ui_types = _INITIAL_UI_TYPES
+        self._item_type = self._ui_types.table_item
+        self._stale_color = _ROW_COLOR_STALE
         self._table: Optional[Any] = None
         self._root: Optional[Any] = None
         self._row_index: Dict[str, int] = {}
@@ -208,12 +285,18 @@ class AgentsPanelAdapter(PanelAdapter):
         # except Exception:
         #     pass
     def _create_widget(self):
-        root = QWidget()  # type: ignore
+        runtime_ui = _load_runtime_ui_types()
+        if runtime_ui is not None:
+            self._ui_types = runtime_ui
+        ui_types = self._ui_types
+        self._item_type = ui_types.table_item
+        self._stale_color = ui_types.color(255, 240, 240)
+        root = ui_types.widget()  # type: ignore
         try:
-            main_v = QVBoxLayout(root)  # type: ignore
-            filter_h = QHBoxLayout()  # type: ignore
-            filter_h.addWidget(QLabel("View"))  # type: ignore
-            self._filter_combo = QComboBox()  # type: ignore
+            main_v = ui_types.vertical_layout(root)  # type: ignore
+            filter_h = ui_types.horizontal_layout()  # type: ignore
+            filter_h.addWidget(ui_types.label("View"))  # type: ignore
+            self._filter_combo = ui_types.combo_box()  # type: ignore
             try:
                 self._filter_combo.addItems(["All", "Retail", "Model"])  # type: ignore[attr-defined]
                 self._filter_combo.currentIndexChanged.connect(lambda *_: self._on_filter_changed())  # type: ignore[attr-defined]
@@ -221,16 +304,16 @@ class AgentsPanelAdapter(PanelAdapter):
                 pass
             filter_h.addWidget(self._filter_combo)  # type: ignore
             main_v.addLayout(filter_h)  # type: ignore
-            self._table = QTableWidget(0, len(self.COLS))  # type: ignore
+            self._table = ui_types.table(0, len(self.COLS))  # type: ignore
             self._table.setColumnCount(len(self.COLS))  # type: ignore
             self._table.setHorizontalHeaderLabels(self.COLS)  # type: ignore
             try:
-                select_rows = getattr(QAbstractItemView, "SelectRows", None)
+                select_rows = getattr(ui_types.abstract_item_view, "SelectRows", None)
                 if select_rows is None:
-                    select_rows = getattr(getattr(QAbstractItemView, "SelectionBehavior", object), "SelectRows", None)
-                extended = getattr(QAbstractItemView, "ExtendedSelection", None)
+                    select_rows = getattr(getattr(ui_types.abstract_item_view, "SelectionBehavior", object), "SelectRows", None)
+                extended = getattr(ui_types.abstract_item_view, "ExtendedSelection", None)
                 if extended is None:
-                    extended = getattr(getattr(QAbstractItemView, "SelectionMode", object), "ExtendedSelection", None)
+                    extended = getattr(getattr(ui_types.abstract_item_view, "SelectionMode", object), "ExtendedSelection", None)
                 if select_rows is not None:
                     self._table.setSelectionBehavior(select_rows)  # type: ignore[attr-defined]
                 if extended is not None:
@@ -246,12 +329,12 @@ class AgentsPanelAdapter(PanelAdapter):
                 pass
             main_v.addWidget(self._table)  # type: ignore
             # 控制区
-            ctrl_h = QHBoxLayout()  # type: ignore
-            self._btn_start = QPushButton("Start")  # type: ignore
+            ctrl_h = ui_types.horizontal_layout()  # type: ignore
+            self._btn_start = ui_types.push_button("Start")  # type: ignore
             self._btn_pause = None
-            self._btn_stop = QPushButton("Stop")  # type: ignore
+            self._btn_stop = ui_types.push_button("Stop")  # type: ignore
             # 新增：批量创建按钮
-            self._btn_batch = QPushButton("Batch Create")  # type: ignore
+            self._btn_batch = ui_types.push_button("Batch Create")  # type: ignore
             for b, act in ((self._btn_start, 'start'), (self._btn_stop, 'stop')):
                 if b is not None:
                     def _make_handler(a):
@@ -271,7 +354,7 @@ class AgentsPanelAdapter(PanelAdapter):
             except Exception:
                 pass
             ctrl_h.addWidget(self._btn_batch)  # type: ignore
-            self._progress_label = QLabel("batch: idle")  # type: ignore
+            self._progress_label = ui_types.label("batch: idle")  # type: ignore
             ctrl_h.addWidget(self._progress_label)  # type: ignore
             main_v.addLayout(ctrl_h)  # type: ignore
             # 日志视图
@@ -462,7 +545,7 @@ class AgentsPanelAdapter(PanelAdapter):
                 self._row_index[aid] = row
                 # init columns
                 for col_i,_ in enumerate(self.COLS):
-                    try: table.setItem(row, col_i, QTableWidgetItem(""))  # type: ignore
+                    try: table.setItem(row, col_i, self._item_type(""))  # type: ignore
                     except Exception: pass
             # 更新列值
             for col_i, col_key in enumerate(self.COLS):
@@ -503,7 +586,7 @@ class AgentsPanelAdapter(PanelAdapter):
             try:
                 bg = getattr(item, 'setBackground', None)
                 if callable(bg):
-                    bg(_ROW_COLOR_STALE)
+                    bg(self._stale_color)
             except Exception:  # pragma: no cover
                 pass
 
@@ -514,8 +597,7 @@ class AgentsPanelAdapter(PanelAdapter):
             return f"● {status}"
         return str(value)
 
-    @staticmethod
-    def _apply_status_style(item: Any, value: Any) -> None:
+    def _apply_status_style(self, item: Any, value: Any) -> None:
         status = str(value or "").upper()
         color_map = {
             "RUNNING": (34, 164, 92),
@@ -524,7 +606,11 @@ class AgentsPanelAdapter(PanelAdapter):
             "INACTIVE": (140, 150, 160),
         }
         try:
-            item.setForeground(QBrush(QColor(*color_map.get(status, (140, 150, 160)))))  # type: ignore[misc]
+            item.setForeground(
+                self._ui_types.brush(
+                    self._ui_types.color(*color_map.get(status, (140, 150, 160)))
+                )
+            )
         except Exception:
             pass
 
@@ -692,13 +778,8 @@ class AgentsPanelAdapter(PanelAdapter):
         logic = self._logic
         if logic is None:
             return
-        # 若没有真实 PySide6，可用性检测 -> 直接降级调用逻辑层
-        try:
-            from PySide6.QtWidgets import QDialog as _RealQDialog  # type: ignore
-            _real_qt = True
-        except Exception:  # pragma: no cover
-            _real_qt = False
-        if not _real_qt:
+        ui_types = _load_runtime_ui_types()
+        if ui_types is None:
             try:
                 start = getattr(logic, 'start_batch_create', None)
                 if callable(start):
@@ -707,6 +788,14 @@ class AgentsPanelAdapter(PanelAdapter):
             except Exception:
                 pass
             return
+        QDialog = ui_types.dialog
+        QVBoxLayout = ui_types.vertical_layout
+        QHBoxLayout = ui_types.horizontal_layout
+        QLabel = ui_types.label
+        QLineEdit = ui_types.line_edit
+        QComboBox = ui_types.combo_box
+        QTextEdit = ui_types.text_edit
+        QPushButton = ui_types.push_button
         # 首选 Qt 对话框
         try:
             # 延迟导入所需组件
