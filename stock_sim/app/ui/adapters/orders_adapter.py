@@ -3,7 +3,7 @@ from __future__ import annotations
 """OrdersPanelAdapter with real-UI and headless-safe modes."""
 
 import time
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Set
 
 from infra.event_bus import event_bus
 
@@ -70,6 +70,10 @@ except Exception:  # pragma: no cover
             return False
 
 
+class _HeadlessRoot:
+    pass
+
+
 if ui_runtime_enabled():
     try:
         from PySide6.QtWidgets import (  # type: ignore
@@ -91,10 +95,6 @@ else:
 
 
 if not ui_runtime:
-    class _HeadlessRoot:
-        pass
-
-
     class _HeadlessSig:
         def connect(self, *_):
             return None
@@ -199,6 +199,57 @@ if not ui_runtime:
             self._text = t
 
 
+class _OrdersUiTypes(NamedTuple):
+    widget: Any
+    vertical_layout: Any
+    horizontal_layout: Any
+    label: Any
+    line_edit: Any
+    push_button: Any
+    table: Any
+    table_item: Any
+
+
+def _load_runtime_ui_types() -> Optional[_OrdersUiTypes]:
+    if not ui_runtime_enabled():
+        return None
+    try:
+        from PySide6.QtWidgets import (  # type: ignore
+            QHBoxLayout as _QHBoxLayout,
+            QLabel as _QLabel,
+            QLineEdit as _QLineEdit,
+            QPushButton as _QPushButton,
+            QTableWidget as _QTableWidget,
+            QTableWidgetItem as _QTableWidgetItem,
+            QVBoxLayout as _QVBoxLayout,
+            QWidget as _QWidget,
+        )
+    except Exception:  # pragma: no cover
+        return None
+    return _OrdersUiTypes(
+        widget=_QWidget,
+        vertical_layout=_QVBoxLayout,
+        horizontal_layout=_QHBoxLayout,
+        label=_QLabel,
+        line_edit=_QLineEdit,
+        push_button=_QPushButton,
+        table=_QTableWidget,
+        table_item=_QTableWidgetItem,
+    )
+
+
+_INITIAL_UI_TYPES = _OrdersUiTypes(
+    widget=QWidget,
+    vertical_layout=QVBoxLayout,
+    horizontal_layout=QHBoxLayout,
+    label=QLabel,
+    line_edit=QLineEdit,
+    push_button=QPushButton,
+    table=QTableWidget,
+    table_item=QTableWidgetItem,
+)
+
+
 _COLS = ["ts", "type", "order_id", "symbol", "side", "price", "qty", "status", "reason"]
 _FILTER_TYPES = ("OrderSubmitted", "Trade", "OrderRejected", "OrderCanceled")
 
@@ -206,6 +257,8 @@ _FILTER_TYPES = ("OrderSubmitted", "Trade", "OrderRejected", "OrderCanceled")
 class OrdersPanelAdapter(PanelAdapter):
     def __init__(self):
         super().__init__()
+        self._ui_types = _INITIAL_UI_TYPES
+        self._item_type = self._ui_types.table_item
         self._root: Optional[Any] = None
         self._table: Optional[Any] = None
         self._lbl_count: Optional[Any] = None
@@ -272,13 +325,18 @@ class OrdersPanelAdapter(PanelAdapter):
         self._refresh_throttle.submit()
 
     def _create_widget(self):
-        root: Any = QWidget() if ui_runtime else _HeadlessRoot()
+        runtime_ui = _load_runtime_ui_types()
+        if runtime_ui is not None:
+            self._ui_types = runtime_ui
+        ui_types = self._ui_types
+        self._item_type = ui_types.table_item
+        root: Any = ui_types.widget() if runtime_ui is not None else _HeadlessRoot()
         try:
-            v = QVBoxLayout(root)  # type: ignore[arg-type]
-            hb = QHBoxLayout()
-            hb.addWidget(QLabel("Symbol:"))  # type: ignore[arg-type]
+            v = ui_types.vertical_layout(root)  # type: ignore[arg-type]
+            hb = ui_types.horizontal_layout()
+            hb.addWidget(ui_types.label("Symbol:"))  # type: ignore[arg-type]
 
-            self._symbol_input = QLineEdit("")  # type: ignore[call-arg]
+            self._symbol_input = ui_types.line_edit("")  # type: ignore[call-arg]
 
             def _on_text_changed(*_):
                 value = None
@@ -300,7 +358,7 @@ class OrdersPanelAdapter(PanelAdapter):
             hb.addWidget(self._symbol_input)  # type: ignore[arg-type]
 
             for event_type in _FILTER_TYPES:
-                btn = QPushButton(event_type)  # type: ignore[call-arg]
+                btn = ui_types.push_button(event_type)  # type: ignore[call-arg]
                 try:
                     btn.setCheckable(True)  # type: ignore[attr-defined]
                     btn.setChecked(True)  # type: ignore[attr-defined]
@@ -330,7 +388,7 @@ class OrdersPanelAdapter(PanelAdapter):
 
             v.addLayout(hb)  # type: ignore[arg-type]
 
-            self._table = QTableWidget(0, len(_COLS))
+            self._table = ui_types.table(0, len(_COLS))
             try:
                 self._table.setColumnCount(len(_COLS))  # type: ignore[attr-defined]
                 self._table.setHorizontalHeaderLabels(_COLS)  # type: ignore[attr-defined]
@@ -338,7 +396,7 @@ class OrdersPanelAdapter(PanelAdapter):
                 pass
             v.addWidget(self._table, 1)  # type: ignore[arg-type]
 
-            self._lbl_count = QLabel("0 items")
+            self._lbl_count = ui_types.label("0 items")
             v.addWidget(self._lbl_count)  # type: ignore[arg-type]
         except Exception:
             pass
@@ -367,7 +425,7 @@ class OrdersPanelAdapter(PanelAdapter):
                         value = item.get(key)
                         text = "" if value is None else str(value)
                         try:
-                            tbl.setItem(row_idx, col_idx, QTableWidgetItem(text))  # type: ignore[arg-type]
+                            tbl.setItem(row_idx, col_idx, self._item_type(text))  # type: ignore[arg-type]
                         except Exception:
                             pass
             except Exception:

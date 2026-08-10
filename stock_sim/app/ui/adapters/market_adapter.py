@@ -12,7 +12,7 @@
 - 不做性能优化: 后续任务添加节流
 """
 from __future__ import annotations
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, NamedTuple, Optional, List
 import os
 import threading
 import time  # 新增：节流
@@ -81,112 +81,291 @@ try:
     from app.ui.ui_refresh import open_panel as _open_panel  # type: ignore
 except Exception:  # pragma: no cover
     _open_panel = None  # type: ignore
-# Qt 导入（默认走 headless-safe；仅在显式 real UI 模式下启用真实 Qt）
-if ui_runtime_enabled():
+# Qt types are resolved for each widget lifecycle. Module-level aliases remain
+# for compatibility with existing direct imports, but adapters do not rely on
+# the import-time choice.
+class _UiTypes(NamedTuple):
+    widget: Any
+    vertical_layout: Any
+    horizontal_layout: Any
+    list_widget: Any
+    label: Any
+    frame: Any
+    table: Any
+    table_item: Any
+    dialog: Any
+    line_edit: Any
+    push_button: Any
+    form_layout: Any
+    header_view: Any
+    qt: Any
+    rect_f: Any
+    point_f: Any
+    color: Any
+    painter: Any
+    painter_path: Any
+    pen: Any
+    brush: Any
+
+
+def _load_runtime_ui_types() -> Optional[_UiTypes]:
+    if not ui_runtime_enabled():
+        return None
     try:
-        from PySide6.QtWidgets import (
-            QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QLabel, QFrame, QTableWidget, QTableWidgetItem,
-            QDialog, QLineEdit, QPushButton, QFormLayout, QHeaderView
-        )  # type: ignore
-        from PySide6.QtCore import Qt, QRectF, QPointF  # type: ignore
-        from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QBrush  # type: ignore
+        from PySide6.QtCore import QPointF as _QPointF, QRectF as _QRectF, Qt as _Qt  # type: ignore
+        from PySide6.QtGui import (  # type: ignore
+            QBrush as _QBrush,
+            QColor as _QColor,
+            QPainter as _QPainter,
+            QPainterPath as _QPainterPath,
+            QPen as _QPen,
+        )
+        from PySide6.QtWidgets import (  # type: ignore
+            QDialog as _QDialog,
+            QFormLayout as _QFormLayout,
+            QFrame as _QFrame,
+            QHeaderView as _QHeaderView,
+            QHBoxLayout as _QHBoxLayout,
+            QLabel as _QLabel,
+            QLineEdit as _QLineEdit,
+            QListWidget as _QListWidget,
+            QPushButton as _QPushButton,
+            QTableWidget as _QTableWidget,
+            QTableWidgetItem as _QTableWidgetItem,
+            QVBoxLayout as _QVBoxLayout,
+            QWidget as _QWidget,
+        )
     except Exception:  # pragma: no cover
-        ui_runtime = False
-    else:
-        ui_runtime = True
-else:
-    ui_runtime = False
+        return None
+    return _UiTypes(
+        widget=_QWidget,
+        vertical_layout=_QVBoxLayout,
+        horizontal_layout=_QHBoxLayout,
+        list_widget=_QListWidget,
+        label=_QLabel,
+        frame=_QFrame,
+        table=_QTableWidget,
+        table_item=_QTableWidgetItem,
+        dialog=_QDialog,
+        line_edit=_QLineEdit,
+        push_button=_QPushButton,
+        form_layout=_QFormLayout,
+        header_view=_QHeaderView,
+        qt=_Qt,
+        rect_f=_QRectF,
+        point_f=_QPointF,
+        color=_QColor,
+        painter=_QPainter,
+        painter_path=_QPainterPath,
+        pen=_QPen,
+        brush=_QBrush,
+    )
+
 
 class _HeadlessRoot:
     pass
 
 
-if not ui_runtime:
-    class _HeadlessRoot:
+class _DummySignal:
+    def connect(self, *_args):
+        return None
+
+
+class _HeadlessWidget:
+    def __init__(self, *_args, **_kwargs):
         pass
-    class _DummySignal:  # type: ignore
-        def connect(self, *_): pass
-    class QWidget:  # type: ignore
-        def __init__(self, *_, **__): pass
-    class QListWidget:  # type: ignore
-        def __init__(self):
-            self._items: List[str] = []
-            self._current_row = -1
-            self.itemClicked = _DummySignal()
-            self.itemDoubleClicked = _DummySignal()
-        def clear(self): self._items.clear()
-        def addItem(self, text): self._items.append(text)
-        def currentItem(self):
-            if 0 <= self._current_row < len(self._items):
-                return _Item(self._items[self._current_row])
-            return None
-        def setCurrentRow(self, r): self._current_row = r
-    class _Item:  # type: ignore
-        def __init__(self, text): self._text = text
-        def text(self): return self._text
-    class QLabel:  # type: ignore
-        def __init__(self, text=""): self._text=text
-        def setText(self, t): self._text=t
-    class QVBoxLayout:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def addWidget(self, *_): pass
-        def addLayout(self, *_): pass
-    class QHBoxLayout:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def addWidget(self, *_): pass
-        def addLayout(self, *_): pass
-    class QFormLayout:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def addRow(self, *_): pass
-    class QFrame:  # type: ignore
-        PanelShape = None
-    class QTableWidget:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def setColumnCount(self, n): pass
-        def setHorizontalHeaderLabels(self, labels): pass
-        def setRowCount(self, n): pass
-        def setItem(self, r,c,item): pass
-        def horizontalHeader(self): return None
-        def verticalHeader(self): return None
-    class QTableWidgetItem:  # type: ignore
-        def __init__(self, text=""): self._text=text
-        def setTextAlignment(self, *_): pass
-    class QDialog:  # type: ignore
-        def __init__(self, *_, **__): pass
-        def exec(self): return 0
-    class QLineEdit:  # type: ignore
-        def __init__(self, text=""): self._text=text
-        def text(self): return self._text
-        def setText(self, t): self._text=t
-        @property
-        def textChanged(self): return _DummySignal()
-    class QPushButton:  # type: ignore
-        def __init__(self, text=""): self._text=text; self.clicked=_DummySignal()
-        def setEnabled(self, *_): pass
-    class QHeaderView:  # type: ignore
-        Stretch = 1
-        ResizeToContents = 2
-    class Qt:  # type: ignore
-        AlignCenter = 0
-        AlignRight = 0
-        AlignVCenter = 0
-        DashLine = 0
-        NoPen = 0
-        NoBrush = 0
-    class QRectF:  # type: ignore
-        def __init__(self, *_, **__): pass
-    class QPointF:  # type: ignore
-        def __init__(self, *_, **__): pass
-    class QColor:  # type: ignore
-        def __init__(self, *_, **__): pass
-    class QPainter:  # type: ignore
-        Antialiasing = 0
-    class QPainterPath:  # type: ignore
-        def __init__(self, *_, **__): pass
-    class QPen:  # type: ignore
-        def __init__(self, *_, **__): pass
-    class QBrush:  # type: ignore
-        def __init__(self, *_, **__): pass
+
+
+class _HeadlessListWidget:
+    def __init__(self):
+        self._items: List[str] = []
+        self._current_row = -1
+        self.itemClicked = _DummySignal()
+        self.itemDoubleClicked = _DummySignal()
+
+    def clear(self):
+        self._items.clear()
+
+    def addItem(self, text):
+        self._items.append(text)
+
+    def currentItem(self):
+        if 0 <= self._current_row < len(self._items):
+            return _HeadlessItem(self._items[self._current_row])
+        return None
+
+    def setCurrentRow(self, row):
+        self._current_row = row
+
+
+class _HeadlessItem:
+    def __init__(self, text):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+
+class _HeadlessLabel:
+    def __init__(self, text=""):
+        self._text = text
+
+    def setText(self, text):
+        self._text = text
+
+
+class _HeadlessLayout:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def addWidget(self, *_args):
+        return None
+
+    def addLayout(self, *_args):
+        return None
+
+
+class _HeadlessFormLayout(_HeadlessLayout):
+    def addRow(self, *_args):
+        return None
+
+
+class _HeadlessFrame:
+    PanelShape = None
+
+
+class _HeadlessTableWidget:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def setColumnCount(self, _count):
+        return None
+
+    def setHorizontalHeaderLabels(self, _labels):
+        return None
+
+    def setRowCount(self, _count):
+        return None
+
+    def setItem(self, _row, _column, _item):
+        return None
+
+    def horizontalHeader(self):
+        return None
+
+    def verticalHeader(self):
+        return None
+
+
+class _HeadlessTableWidgetItem:
+    def __init__(self, text=""):
+        self._text = text
+
+    def setTextAlignment(self, *_args):
+        return None
+
+
+class _HeadlessDialog:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def exec(self):
+        return 0
+
+
+class _HeadlessLineEdit:
+    def __init__(self, text=""):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+    def setText(self, text):
+        self._text = text
+
+    @property
+    def textChanged(self):
+        return _DummySignal()
+
+
+class _HeadlessPushButton:
+    def __init__(self, text=""):
+        self._text = text
+        self.clicked = _DummySignal()
+
+    def setEnabled(self, *_args):
+        return None
+
+
+class _HeadlessHeaderView:
+    Stretch = 1
+    ResizeToContents = 2
+
+
+class _HeadlessQt:
+    AlignCenter = 0
+    AlignRight = 0
+    AlignVCenter = 0
+    DashLine = 0
+    NoPen = 0
+    NoBrush = 0
+
+
+class _HeadlessValue:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+
+class _HeadlessPainter(_HeadlessValue):
+    Antialiasing = 0
+
+
+_HEADLESS_UI_TYPES = _UiTypes(
+    widget=_HeadlessWidget,
+    vertical_layout=_HeadlessLayout,
+    horizontal_layout=_HeadlessLayout,
+    list_widget=_HeadlessListWidget,
+    label=_HeadlessLabel,
+    frame=_HeadlessFrame,
+    table=_HeadlessTableWidget,
+    table_item=_HeadlessTableWidgetItem,
+    dialog=_HeadlessDialog,
+    line_edit=_HeadlessLineEdit,
+    push_button=_HeadlessPushButton,
+    form_layout=_HeadlessFormLayout,
+    header_view=_HeadlessHeaderView,
+    qt=_HeadlessQt,
+    rect_f=_HeadlessValue,
+    point_f=_HeadlessValue,
+    color=_HeadlessValue,
+    painter=_HeadlessPainter,
+    painter_path=_HeadlessValue,
+    pen=_HeadlessValue,
+    brush=_HeadlessValue,
+)
+
+_INITIAL_UI_TYPES = _load_runtime_ui_types() or _HEADLESS_UI_TYPES
+QWidget = _INITIAL_UI_TYPES.widget
+QVBoxLayout = _INITIAL_UI_TYPES.vertical_layout
+QHBoxLayout = _INITIAL_UI_TYPES.horizontal_layout
+QListWidget = _INITIAL_UI_TYPES.list_widget
+QLabel = _INITIAL_UI_TYPES.label
+QFrame = _INITIAL_UI_TYPES.frame
+QTableWidget = _INITIAL_UI_TYPES.table
+QTableWidgetItem = _INITIAL_UI_TYPES.table_item
+QDialog = _INITIAL_UI_TYPES.dialog
+QLineEdit = _INITIAL_UI_TYPES.line_edit
+QPushButton = _INITIAL_UI_TYPES.push_button
+QFormLayout = _INITIAL_UI_TYPES.form_layout
+QHeaderView = _INITIAL_UI_TYPES.header_view
+Qt = _INITIAL_UI_TYPES.qt
+QRectF = _INITIAL_UI_TYPES.rect_f
+QPointF = _INITIAL_UI_TYPES.point_f
+QColor = _INITIAL_UI_TYPES.color
+QPainter = _INITIAL_UI_TYPES.painter
+QPainterPath = _INITIAL_UI_TYPES.painter_path
+QPen = _INITIAL_UI_TYPES.pen
+QBrush = _INITIAL_UI_TYPES.brush
 
 # pyqtgraph（可选）
 try:  # pragma: no cover
@@ -357,18 +536,23 @@ class _SafeCandlestickItem:
         return self._item
 
 
+def _initialize_detail_chart_widget(widget: Any, ui_types: _UiTypes) -> None:
+    widget._ui_types = ui_types
+    widget._geometry = {}
+    widget._empty_text = "K: no data"
+    try:
+        if hasattr(widget, "setObjectName"):
+            widget.setObjectName("detailChartWidget")
+        if hasattr(widget, "setMinimumHeight"):
+            widget.setMinimumHeight(340)
+    except Exception:
+        pass
+
+
 class _DetailChartWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self._geometry: Dict[str, Any] = {}
-        self._empty_text = "K: no data"
-        try:
-            if hasattr(self, "setObjectName"):
-                self.setObjectName("detailChartWidget")  # type: ignore[attr-defined]
-            if hasattr(self, "setMinimumHeight"):
-                self.setMinimumHeight(340)  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        _initialize_detail_chart_widget(self, _INITIAL_UI_TYPES)
 
     def set_chart_geometry(
         self,
@@ -408,18 +592,19 @@ class _DetailChartWidget(QWidget):
     def paintEvent(self, event):  # type: ignore[override]
         if not ui_runtime_enabled():
             return
-        painter = QPainter(self)
+        ui_types = self._ui_types
+        painter = ui_types.painter(self)
         try:
-            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(ui_types.painter.Antialiasing, True)
             full = self.rect()
-            painter.fillRect(full, QColor(8, 13, 20))
+            painter.fillRect(full, ui_types.color(8, 13, 20))
             plot = full.adjusted(62, 20, -20, -36)
             if plot.width() <= 24 or plot.height() <= 24:
                 return
 
-            painter.setPen(QPen(QColor(58, 68, 80), 1))
+            painter.setPen(ui_types.pen(ui_types.color(58, 68, 80), 1))
             painter.drawRect(plot)
-            grid_pen = QPen(QColor(44, 52, 62), 1)
+            grid_pen = ui_types.pen(ui_types.color(44, 52, 62), 1)
             grid_pen.setCosmetic(True)
             painter.setPen(grid_pen)
             for row in range(1, 6):
@@ -429,8 +614,8 @@ class _DetailChartWidget(QWidget):
             candles = list(self._geometry.get("candles") or [])
             bars = int(self._geometry.get("n") or len(candles) or 0)
             if bars <= 0:
-                painter.setPen(QPen(QColor(194, 201, 211), 1))
-                painter.drawText(plot, Qt.AlignCenter, self._empty_text)
+                painter.setPen(ui_types.pen(ui_types.color(194, 201, 211), 1))
+                painter.drawText(plot, ui_types.qt.AlignCenter, self._empty_text)
                 return
 
             for column in range(bars):
@@ -442,7 +627,7 @@ class _DetailChartWidget(QWidget):
             close = list(self._geometry.get("close") or [])
             ref_price = self._geometry.get("ref_price")
 
-            painter.setPen(QPen(QColor(144, 156, 170), 1))
+            painter.setPen(ui_types.pen(ui_types.color(144, 156, 170), 1))
             for row in range(0, 6):
                 value = y_max - ((y_max - y_min) * row / 5.0)
                 y = plot.top() + (plot.height() * row / 5.0)
@@ -454,20 +639,20 @@ class _DetailChartWidget(QWidget):
                 except Exception:
                     ref_y = None
                 if ref_y is not None:
-                    ref_pen = QPen(QColor(112, 124, 138), 1)
-                    ref_pen.setStyle(Qt.DashLine)
+                    ref_pen = ui_types.pen(ui_types.color(112, 124, 138), 1)
+                    ref_pen.setStyle(ui_types.qt.DashLine)
                     painter.setPen(ref_pen)
                     painter.drawLine(plot.left(), int(round(ref_y)), plot.right(), int(round(ref_y)))
 
             body_width = max(min(float(plot.width()) / max(float(bars), 1.0) * 0.55, 18.0), 6.0)
-            up_pen = QPen(QColor(255, 109, 97), 2)
-            down_pen = QPen(QColor(87, 214, 132), 2)
-            up_brush = QBrush(QColor(255, 109, 97))
-            down_brush = QBrush(QColor(87, 214, 132))
-            line_pen = QPen(QColor(0, 220, 255), 3)
+            up_pen = ui_types.pen(ui_types.color(255, 109, 97), 2)
+            down_pen = ui_types.pen(ui_types.color(87, 214, 132), 2)
+            up_brush = ui_types.brush(ui_types.color(255, 109, 97))
+            down_brush = ui_types.brush(ui_types.color(87, 214, 132))
+            line_pen = ui_types.pen(ui_types.color(0, 220, 255), 3)
             line_pen.setCosmetic(True)
 
-            path = QPainterPath()
+            path = ui_types.painter_path()
             first_point = True
             for index, candle in enumerate(candles):
                 try:
@@ -482,17 +667,17 @@ class _DetailChartWidget(QWidget):
 
                 rising = float(close_price) >= float(open_price)
                 painter.setPen(up_pen if rising else down_pen)
-                painter.drawLine(QPointF(float(x), float(high_y)), QPointF(float(x), float(low_y)))
+                painter.drawLine(ui_types.point_f(float(x), float(high_y)), ui_types.point_f(float(x), float(low_y)))
 
                 body_top = min(open_y, close_y)
                 body_height = max(abs(close_y - open_y), 3.0)
-                body_rect = QRectF(float(x) - (body_width / 2.0), float(body_top), body_width, float(body_height))
+                body_rect = ui_types.rect_f(float(x) - (body_width / 2.0), float(body_top), body_width, float(body_height))
                 painter.setBrush(up_brush if rising else down_brush)
                 painter.drawRect(body_rect)
 
                 if index < len(close):
                     close_y_line = self._map_y(float(close[index]), float(plot.top()), float(plot.height()), y_min, y_max)
-                    point = QPointF(float(x), float(close_y_line))
+                    point = ui_types.point_f(float(x), float(close_y_line))
                     if first_point:
                         path.moveTo(point)
                         first_point = False
@@ -500,15 +685,15 @@ class _DetailChartWidget(QWidget):
                         path.lineTo(point)
 
             painter.setPen(line_pen)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(ui_types.qt.NoBrush)
             painter.drawPath(path)
-            painter.setBrush(QBrush(QColor(0, 220, 255)))
+            painter.setBrush(ui_types.brush(ui_types.color(0, 220, 255)))
             for index in range(min(len(close), bars)):
                 x = self._map_x(index, float(plot.left()), float(plot.width()), bars)
                 y = self._map_y(float(close[index]), float(plot.top()), float(plot.height()), y_min, y_max)
-                painter.drawEllipse(QPointF(float(x), float(y)), 3.5, 3.5)
+                painter.drawEllipse(ui_types.point_f(float(x), float(y)), 3.5, 3.5)
 
-            painter.setPen(QPen(QColor(144, 156, 170), 1))
+            painter.setPen(ui_types.pen(ui_types.color(144, 156, 170), 1))
             step = max(int(round(bars / 6.0)), 1)
             for column in range(0, bars, step):
                 x = self._map_x(column, float(plot.left()), float(plot.width()), bars)
@@ -516,6 +701,24 @@ class _DetailChartWidget(QWidget):
             painter.drawText(plot.center().x() - 14, full.bottom() - 10, "Bars")
         finally:
             painter.end()
+
+
+def _create_detail_chart_widget(ui_types: _UiTypes) -> Any:
+    if issubclass(_DetailChartWidget, ui_types.widget):
+        return _DetailChartWidget()
+
+    class _RuntimeDetailChartWidget(ui_types.widget):  # type: ignore[misc, valid-type]
+        set_chart_geometry = _DetailChartWidget.set_chart_geometry
+        clear_chart = _DetailChartWidget.clear_chart
+        _map_x = _DetailChartWidget._map_x
+        _map_y = _DetailChartWidget._map_y
+        paintEvent = _DetailChartWidget.paintEvent
+
+        def __init__(self):
+            ui_types.widget.__init__(self)
+            _initialize_detail_chart_widget(self, ui_types)
+
+    return _RuntimeDetailChartWidget()
 
 
 def _extract_trade_payload(payload: Any) -> Dict[str, Any] | None:
@@ -732,6 +935,7 @@ def _build_order_book_rows(order_book: Any, *, depth: int = 5) -> List[tuple[str
 class SymbolDetailAdapter:
     """详情适配: 展示 snapshot / order_book / series K 线 / 持仓饼图。"""
     def __init__(self):
+        self._ui_types = _HEADLESS_UI_TYPES
         self._symbol_label: Optional[Any] = None
         self._snapshot_label: Optional[Any] = None
         self._status_label: Optional[Any] = None
@@ -749,18 +953,19 @@ class SymbolDetailAdapter:
         try:
             if not rows:
                 self._order_book_table.setRowCount(1)  # type: ignore
-                self._order_book_table.setItem(0, 0, QTableWidgetItem("-"))  # type: ignore
-                self._order_book_table.setItem(0, 1, QTableWidgetItem("No book"))  # type: ignore
-                self._order_book_table.setItem(0, 2, QTableWidgetItem("-"))  # type: ignore
+                self._order_book_table.setItem(0, 0, self._ui_types.table_item("-"))  # type: ignore
+                self._order_book_table.setItem(0, 1, self._ui_types.table_item("No book"))  # type: ignore
+                self._order_book_table.setItem(0, 2, self._ui_types.table_item("-"))  # type: ignore
                 return
             self._order_book_table.setRowCount(len(rows))  # type: ignore
             for row_idx, (side, price, qty) in enumerate(rows):
-                side_item = QTableWidgetItem(side)  # type: ignore
-                price_item = QTableWidgetItem(price)  # type: ignore
-                qty_item = QTableWidgetItem(qty)  # type: ignore
+                side_item = self._ui_types.table_item(side)  # type: ignore
+                price_item = self._ui_types.table_item(price)  # type: ignore
+                qty_item = self._ui_types.table_item(qty)  # type: ignore
                 try:
-                    price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore[attr-defined]
-                    qty_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore[attr-defined]
+                    alignment = self._ui_types.qt.AlignRight | self._ui_types.qt.AlignVCenter
+                    price_item.setTextAlignment(alignment)  # type: ignore[attr-defined]
+                    qty_item.setTextAlignment(alignment)  # type: ignore[attr-defined]
                 except Exception:
                     pass
                 self._order_book_table.setItem(row_idx, 0, side_item)  # type: ignore
@@ -789,14 +994,21 @@ class SymbolDetailAdapter:
     def widget(self):  # 创建并返回根组件
         if self._root is not None:
             return self._root
-        root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
+        runtime_ui = _load_runtime_ui_types()
+        self._ui_types = runtime_ui or _HEADLESS_UI_TYPES
+        root = _HeadlessRoot() if runtime_ui is None else self._ui_types.widget()
+        vertical_layout_type = self._ui_types.vertical_layout
+        horizontal_layout_type = self._ui_types.horizontal_layout
+        label_type = self._ui_types.label
+        frame_type = self._ui_types.frame
+        table_type = self._ui_types.table
         try:
             try:
                 if hasattr(root, "setObjectName"):
                     root.setObjectName("symbolDetailRoot")  # type: ignore[attr-defined]
             except Exception:
                 pass
-            layout = QVBoxLayout(root)  # type: ignore
+            layout = vertical_layout_type(root)  # type: ignore
             try:
                 if hasattr(layout, 'setContentsMargins'):
                     layout.setContentsMargins(0, 0, 0, 0)
@@ -804,12 +1016,12 @@ class SymbolDetailAdapter:
                     layout.setSpacing(10)
             except Exception:
                 pass
-            header = QFrame()  # type: ignore
+            header = frame_type()  # type: ignore
             try:
                 header.setObjectName("detailHeader")  # type: ignore[attr-defined]
             except Exception:
                 pass
-            header_layout = QVBoxLayout(header)  # type: ignore
+            header_layout = vertical_layout_type(header)  # type: ignore
             try:
                 if hasattr(header_layout, 'setContentsMargins'):
                     header_layout.setContentsMargins(14, 12, 14, 12)
@@ -817,9 +1029,9 @@ class SymbolDetailAdapter:
                     header_layout.setSpacing(6)
             except Exception:
                 pass
-            title_row = QHBoxLayout()  # type: ignore
-            self._symbol_label = QLabel("Symbol -")  # type: ignore
-            self._status_label = QLabel("WAITING")  # type: ignore
+            title_row = horizontal_layout_type()  # type: ignore
+            self._symbol_label = label_type("Symbol -")  # type: ignore
+            self._status_label = label_type("WAITING")  # type: ignore
             try:
                 self._symbol_label.setObjectName("detailSymbolLabel")  # type: ignore[attr-defined]
                 self._status_label.setObjectName("detailStatusLabel")  # type: ignore[attr-defined]
@@ -828,7 +1040,7 @@ class SymbolDetailAdapter:
             title_row.addWidget(self._symbol_label, 1)  # type: ignore
             title_row.addWidget(self._status_label)  # type: ignore
             header_layout.addLayout(title_row)  # type: ignore
-            self._snapshot_label = QLabel("No symbol selected")  # type: ignore
+            self._snapshot_label = label_type("No symbol selected")  # type: ignore
             try:
                 self._snapshot_label.setObjectName("detailMetaLabel")  # type: ignore[attr-defined]
                 self._snapshot_label.setWordWrap(True)  # type: ignore[attr-defined]
@@ -836,7 +1048,7 @@ class SymbolDetailAdapter:
                 pass
             header_layout.addWidget(self._snapshot_label)  # type: ignore
             if _DETAIL_DEBUG_UI:
-                self._debug_label = QLabel("detail debug: init")  # type: ignore
+                self._debug_label = label_type("detail debug: init")  # type: ignore
                 try:
                     self._debug_label.setObjectName("detailDebugLabel")  # type: ignore[attr-defined]
                     self._debug_label.setWordWrap(True)  # type: ignore[attr-defined]
@@ -846,9 +1058,9 @@ class SymbolDetailAdapter:
             layout.addWidget(header)  # type: ignore
             # K 线
             chart_ok = False
-            if _DETAIL_ENABLE_CHART and ui_runtime_enabled():
+            if _DETAIL_ENABLE_CHART and runtime_ui is not None:
                 try:
-                    self._chart_widget = _DetailChartWidget()  # type: ignore
+                    self._chart_widget = _create_detail_chart_widget(self._ui_types)
                     self._chart_plot = None
                     self._chart_view_box = None
                     layout.addWidget(self._chart_widget, 1)  # type: ignore
@@ -858,11 +1070,11 @@ class SymbolDetailAdapter:
                     self._chart_plot = None
             if not chart_ok:
                 fallback_text = "K: disabled" if not _DETAIL_ENABLE_CHART else "K: (chart unavailable)"
-                self._chart_fallback_label = QLabel(fallback_text)  # type: ignore
+                self._chart_fallback_label = label_type(fallback_text)  # type: ignore
                 layout.addWidget(self._chart_fallback_label)  # type: ignore
             # 盘口表 (side, price, qty)
             if _DETAIL_ENABLE_ORDER_BOOK:
-                self._order_book_table = QTableWidget(0, 3)  # type: ignore
+                self._order_book_table = table_type(0, 3)  # type: ignore
                 try:
                     self._order_book_table.setObjectName("detailOrderBookTable")  # type: ignore[attr-defined]
                 except Exception:
@@ -878,9 +1090,9 @@ class SymbolDetailAdapter:
                         self._order_book_table.setAlternatingRowColors(True)  # type: ignore[attr-defined]
                     horizontal = self._order_book_table.horizontalHeader()  # type: ignore[attr-defined]
                     if horizontal is not None and hasattr(horizontal, 'setSectionResizeMode'):
-                        horizontal.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # type: ignore[attr-defined]
-                        horizontal.setSectionResizeMode(1, QHeaderView.Stretch)  # type: ignore[attr-defined]
-                        horizontal.setSectionResizeMode(2, QHeaderView.Stretch)  # type: ignore[attr-defined]
+                        horizontal.setSectionResizeMode(0, self._ui_types.header_view.ResizeToContents)  # type: ignore[attr-defined]
+                        horizontal.setSectionResizeMode(1, self._ui_types.header_view.Stretch)  # type: ignore[attr-defined]
+                        horizontal.setSectionResizeMode(2, self._ui_types.header_view.Stretch)  # type: ignore[attr-defined]
                     vertical = self._order_book_table.verticalHeader()  # type: ignore[attr-defined]
                     if vertical is not None and hasattr(vertical, 'setVisible'):
                         vertical.setVisible(False)  # type: ignore[attr-defined]
@@ -889,7 +1101,7 @@ class SymbolDetailAdapter:
                 layout.addWidget(self._order_book_table)  # type: ignore
             else:
                 self._order_book_table = None
-                layout.addWidget(QLabel("OrderBook: disabled"))  # type: ignore
+                layout.addWidget(label_type("OrderBook: disabled"))  # type: ignore
             # 持仓饼图
         except Exception:  # pragma: no cover
             self._create_headless_symbol_list_fallback()
@@ -1072,6 +1284,8 @@ class SymbolDetailAdapter:
 class MarketPanelAdapter(PanelAdapter):
     def __init__(self, *, read_only: bool = False):
         super().__init__()
+        self._ui_types = _HEADLESS_UI_TYPES
+        self._list_widget_type = _HEADLESS_UI_TYPES.list_widget
         self._read_only = read_only
         self._watch_widget: Optional[Any] = None
         self._detail = SymbolDetailAdapter()
@@ -1143,9 +1357,17 @@ class MarketPanelAdapter(PanelAdapter):
         return self
 
     def _create_widget(self):  # noqa: D401
-        root = _HeadlessRoot() if not ui_runtime_enabled() else QWidget()  # type: ignore
+        runtime_ui = _load_runtime_ui_types()
+        self._ui_types = runtime_ui or _HEADLESS_UI_TYPES
+        root = _HeadlessRoot() if runtime_ui is None else self._ui_types.widget()
+        horizontal_layout_type = self._ui_types.horizontal_layout
+        vertical_layout_type = self._ui_types.vertical_layout
+        frame_type = self._ui_types.frame
+        push_button_type = self._ui_types.push_button
+        list_widget_type = QListWidget if runtime_ui is None else self._ui_types.list_widget
+        self._list_widget_type = list_widget_type
         try:
-            h = QHBoxLayout(root)  # type: ignore
+            h = horizontal_layout_type(root)  # type: ignore
             try:
                 if hasattr(root, "setObjectName"):
                     root.setObjectName("marketPanelRoot")  # type: ignore[attr-defined]
@@ -1156,7 +1378,7 @@ class MarketPanelAdapter(PanelAdapter):
             except Exception:
                 pass
             # 左侧：自选 + 顶部操作区
-            left_frame = QFrame()  # type: ignore
+            left_frame = frame_type()  # type: ignore
             try:
                 left_frame.setObjectName("marketSidebar")  # type: ignore[attr-defined]
                 if hasattr(left_frame, "setMinimumWidth"):
@@ -1165,7 +1387,7 @@ class MarketPanelAdapter(PanelAdapter):
                     left_frame.setMaximumWidth(240)  # type: ignore[attr-defined]
             except Exception:
                 pass
-            left_v = QVBoxLayout(left_frame)  # type: ignore
+            left_v = vertical_layout_type(left_frame)  # type: ignore
             try:
                 if hasattr(left_v, "setContentsMargins"):
                     left_v.setContentsMargins(10, 10, 10, 10)
@@ -1176,7 +1398,7 @@ class MarketPanelAdapter(PanelAdapter):
             # 操作条：创建标的按钮
             if not self._read_only:
                 try:
-                    self._btn_create = QPushButton("Create Instrument")  # type: ignore
+                    self._btn_create = push_button_type("Create Instrument")  # type: ignore
                     def _on_create_clicked():
                         self._open_create_dialog()
                     self._btn_create.clicked.connect(_on_create_clicked)  # type: ignore[attr-defined]
@@ -1184,7 +1406,7 @@ class MarketPanelAdapter(PanelAdapter):
                 except Exception:
                     pass
             # 自选列表
-            self._symbol_list = QListWidget()  # type: ignore
+            self._symbol_list = list_widget_type()  # type: ignore
             try:
                 self._symbol_list.setObjectName("marketSymbolList")  # type: ignore[attr-defined]
             except Exception:
@@ -1377,7 +1599,7 @@ class MarketPanelAdapter(PanelAdapter):
     def _create_headless_symbol_list_fallback(self) -> None:
         if self._symbol_list is None:
             try:
-                self._symbol_list = QListWidget()  # type: ignore
+                self._symbol_list = self._list_widget_type()  # type: ignore
             except Exception:
                 self._symbol_list = None
         if self._symbol_list is None:
@@ -1452,31 +1674,16 @@ class MarketPanelAdapter(PanelAdapter):
 
     # 新增：打开创建标的对话框（Qt 有则弹窗；无则使用默认参数直接创建并加入关注）
     def _open_create_dialog(self):
-        if ui_runtime_enabled():
-            try:
-                global QWidget, QVBoxLayout, QHBoxLayout, QDialog, QLineEdit, QPushButton, QFormLayout, QFrame, QLabel
-                from PySide6.QtWidgets import (  # type: ignore
-                    QWidget as _QWidget,
-                    QVBoxLayout as _QVBoxLayout,
-                    QHBoxLayout as _QHBoxLayout,
-                    QDialog as _QDialog,
-                    QLineEdit as _QLineEdit,
-                    QPushButton as _QPushButton,
-                    QFormLayout as _QFormLayout,
-                    QFrame as _QFrame,
-                    QLabel as _QLabel,
-                )
-                QWidget = _QWidget  # type: ignore
-                QVBoxLayout = _QVBoxLayout  # type: ignore
-                QHBoxLayout = _QHBoxLayout  # type: ignore
-                QDialog = _QDialog  # type: ignore
-                QLineEdit = _QLineEdit  # type: ignore
-                QPushButton = _QPushButton  # type: ignore
-                QFormLayout = _QFormLayout  # type: ignore
-                QFrame = _QFrame  # type: ignore
-                QLabel = _QLabel  # type: ignore
-            except Exception:
-                pass
+        ui_types = _load_runtime_ui_types() or self._ui_types
+        QWidget = ui_types.widget
+        QVBoxLayout = ui_types.vertical_layout
+        QHBoxLayout = ui_types.horizontal_layout
+        QDialog = ui_types.dialog
+        QLineEdit = ui_types.line_edit
+        QPushButton = ui_types.push_button
+        QFormLayout = ui_types.form_layout
+        QFrame = ui_types.frame
+        QLabel = ui_types.label
         logic = self._logic
         if logic is None:
             return
