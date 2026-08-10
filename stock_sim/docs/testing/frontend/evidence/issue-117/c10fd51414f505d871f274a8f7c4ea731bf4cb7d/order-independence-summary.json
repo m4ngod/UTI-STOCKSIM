@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "issue": 117,
+  "implementation_commit": "c10fd51414f505d871f274a8f7c4ea731bf4cb7d",
+  "baseline_commit": "c4aca230a843bc41891f0e64882501b2f413a41e",
+  "scope": "retained_widgets_process_order_independence",
+  "root_cause": "account_adapter_selected_headless_or_qt_types_at_module_import_time",
+  "resolved_behavior": "widget_type_is_selected_when_the_adapter_creates_its_widget",
+  "reproduction": {
+    "order": [
+      "import_account_adapter_without_qapplication",
+      "run_headless_account_adapter",
+      "create_qapplication",
+      "run_candidate_widgets_candidate_drill"
+    ],
+    "before": "1 failed, 1 passed in 158.04s",
+    "failure": "_HeadlessAccountWidget rejected by QStackedWidget.addWidget"
+  },
+  "validation": [
+    {
+      "name": "isolated_headless_import_then_qapplication_regression",
+      "result": "1 passed in 3.19s"
+    },
+    {
+      "name": "original_polluted_order_candidate_widgets_candidate",
+      "result": "2 passed in 133.18s"
+    },
+    {
+      "name": "wave4_observation_migration_rollback",
+      "result": "2 passed in 155.51s"
+    },
+    {
+      "name": "frontend_v2_packaging_contract",
+      "result": "43 passed in 349.51s"
+    },
+    {
+      "name": "account_registry_mainwindow_manual_trading_safety",
+      "result": "10 passed in 5.42s"
+    }
+  ],
+  "claims": {
+    "source_seam_order_independent": true,
+    "fresh_install_and_copied_wave3_drill_preserved": true,
+    "candidate_widgets_candidate_identity_continuity_preserved": true,
+    "clean_exit_preserved": true,
+    "no_manual_trading_boundary_preserved": true,
+    "legacy_deleted": false,
+    "formal_release_started": false,
+    "fourteen_day_window_started": false,
+    "installed_windows_gate_verified": false,
+    "hardware_renderer_gate_verified": false,
+    "software_renderer_gate_verified": false,
+    "offline_windows_gate_verified": false
+  }
+}
