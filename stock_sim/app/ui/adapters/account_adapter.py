@@ -1,7 +1,7 @@
 """AccountPanelAdapter with real-UI and headless-safe modes."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from infra.event_bus import event_bus
 
@@ -22,7 +22,22 @@ except Exception:  # pragma: no cover
         return lambda: event_bus.unsubscribe(topic, handler)
 
 
-if ui_runtime_enabled():
+class _RuntimeUiTypes(NamedTuple):
+    timer: Any
+    combo_box: Any
+    horizontal_layout: Any
+    label: Any
+    table: Any
+    table_item: Any
+    vertical_layout: Any
+    widget: Any
+
+
+def _load_runtime_ui_types() -> Optional[_RuntimeUiTypes]:
+    """Load Qt widget classes for the current application lifecycle."""
+
+    if not ui_runtime_enabled():
+        return None
     try:
         from PySide6.QtCore import QTimer  # type: ignore
         from PySide6.QtWidgets import (  # type: ignore
@@ -35,133 +50,111 @@ if ui_runtime_enabled():
             QWidget,
         )
     except Exception:  # pragma: no cover
-        ui_runtime = False
-    else:
-        ui_runtime = True
-else:
-    ui_runtime = False
+        return None
+    return _RuntimeUiTypes(
+        timer=QTimer,
+        combo_box=QComboBox,
+        horizontal_layout=QHBoxLayout,
+        label=QLabel,
+        table=QTableWidget,
+        table_item=QTableWidgetItem,
+        vertical_layout=QVBoxLayout,
+        widget=QWidget,
+    )
 
 
-if not ui_runtime:
-    class QLabel:  # type: ignore
-        def __init__(self, text: str = ""):
-            self._text = text
+class _HeadlessLabel:
+    def __init__(self, text: str = ""):
+        self._text = text
 
-        def setText(self, t: str):
-            self._text = t
+    def setText(self, text: str):
+        self._text = text
 
-        def text(self) -> str:
-            return self._text
-
-
-    class QTableWidgetItem:  # type: ignore
-        def __init__(self, text: str = ""):
-            self._text = text
-
-        def setText(self, t: str):
-            self._text = t
-
-        def text(self) -> str:
-            return self._text
+    def text(self) -> str:
+        return self._text
 
 
-    class QTableWidget:  # type: ignore
-        def __init__(self, *_a, **_k):
-            self._rows: list[list[QTableWidgetItem | None]] = []
-            self._cols = 0
+class _HeadlessTableWidgetItem:
+    def __init__(self, text: str = ""):
+        self._text = text
 
-        def setColumnCount(self, n: int):
-            self._cols = n
+    def setText(self, text: str):
+        self._text = text
 
-        def setHorizontalHeaderLabels(self, _labels):
-            return None
-
-        def rowCount(self):
-            return len(self._rows)
-
-        def insertRow(self, r: int):
-            self._rows.insert(r, [None] * self._cols)
-
-        def removeRow(self, r: int):
-            self._rows.pop(r)
-
-        def setItem(self, r: int, c: int, item: QTableWidgetItem):
-            self._rows[r][c] = item
-
-        def item(self, r: int, c: int):
-            try:
-                return self._rows[r][c]
-            except Exception:
-                return None
+    def text(self) -> str:
+        return self._text
 
 
-    class _HeadlessSignal:  # type: ignore
-        def connect(self, *_):
-            return None
+class _HeadlessTableWidget:
+    def __init__(self, *_args, **_kwargs):
+        self._rows: list[list[_HeadlessTableWidgetItem | None]] = []
+        self._cols = 0
 
+    def setColumnCount(self, count: int):
+        self._cols = count
 
-    class QComboBox:  # type: ignore
-        def __init__(self):
-            self._items: List[str] = []
-            self._idx = -1
+    def setHorizontalHeaderLabels(self, _labels):
+        return None
 
-        def addItems(self, items: List[str]):
-            for item in items:
-                self.addItem(item)
+    def rowCount(self):
+        return len(self._rows)
 
-        def addItem(self, text: str):
-            self._items.append(text)
-            if self._idx == -1:
-                self._idx = 0
+    def insertRow(self, row: int):
+        self._rows.insert(row, [None] * self._cols)
 
-        def clear(self):
-            self._items.clear()
-            self._idx = -1
+    def removeRow(self, row: int):
+        self._rows.pop(row)
 
-        def currentText(self):
-            if 0 <= self._idx < len(self._items):
-                return self._items[self._idx]
-            return ""
+    def setItem(self, row: int, column: int, item: _HeadlessTableWidgetItem):
+        self._rows[row][column] = item
 
-        def findText(self, text: str):
-            try:
-                return self._items.index(text)
-            except Exception:
-                return -1
-
-        def setCurrentIndex(self, i: int):
-            self._idx = i if 0 <= i < len(self._items) else -1
-
-        @property
-        def currentTextChanged(self):
-            return _HeadlessSignal()
-
-
-    class QWidget:  # type: ignore
-        def __init__(self, *_, **__):
-            pass
-
-
-    class QVBoxLayout:  # type: ignore
-        def __init__(self, *_, **__):
-            pass
-
-        def addWidget(self, *_):
-            return None
-
-        def addLayout(self, *_):
+    def item(self, row: int, column: int):
+        try:
+            return self._rows[row][column]
+        except Exception:
             return None
 
 
-    class QHBoxLayout:  # type: ignore
-        def __init__(self, *_, **__):
-            pass
+class _HeadlessSignal:
+    def connect(self, *_args):
+        return None
 
-        def addWidget(self, *_):
-            return None
 
-        def addLayout(self, *_):
-            return None
+class _HeadlessComboBox:
+    def __init__(self):
+        self._items: List[str] = []
+        self._idx = -1
+
+    def addItems(self, items: List[str]):
+        for item in items:
+            self.addItem(item)
+
+    def addItem(self, text: str):
+        self._items.append(text)
+        if self._idx == -1:
+            self._idx = 0
+
+    def clear(self):
+        self._items.clear()
+        self._idx = -1
+
+    def currentText(self):
+        if 0 <= self._idx < len(self._items):
+            return self._items[self._idx]
+        return ""
+
+    def findText(self, text: str):
+        try:
+            return self._items.index(text)
+        except Exception:
+            return -1
+
+    def setCurrentIndex(self, index: int):
+        self._idx = index if 0 <= index < len(self._items) else -1
+
+    @property
+    def currentTextChanged(self):
+        return _HeadlessSignal()
 
 
 class _HeadlessAccountWidget:
@@ -193,9 +186,9 @@ class AccountPanelAdapter(PanelAdapter):
 
     def __init__(self):
         super().__init__()
-        self._summary: Dict[str, QLabel] = {}
-        self._summary_table: Optional[QTableWidget] = None
-        self._table: Optional[QTableWidget] = None
+        self._summary: Dict[str, Any] = {}
+        self._summary_table: Optional[Any] = None
+        self._table: Optional[Any] = None
         self._row_index: Dict[str, int] = {}
         self._account_combo: Optional[Any] = None
         self._orders_box: Optional[Any] = None
@@ -203,11 +196,15 @@ class AccountPanelAdapter(PanelAdapter):
         self._cancel_subs: List[Any] = []
         self._items: List[Dict[str, Any]] = []
         self._last_view: Dict[str, Any] = {}
+        self._item_type: Any = _HeadlessTableWidgetItem
+        self._timer_type: Optional[Any] = None
+        self._real_ui = False
 
     def _post_to_ui(self, fn):
         try:
-            if ui_runtime and self._widget is not None:
-                QTimer.singleShot(0, fn)  # type: ignore[name-defined]
+            if self._real_ui and self._widget is not None:
+                assert self._timer_type is not None
+                self._timer_type.singleShot(0, fn)
                 return
         except Exception:
             pass
@@ -220,24 +217,49 @@ class AccountPanelAdapter(PanelAdapter):
         self._post_to_ui(lambda: PanelAdapter.refresh(self))
 
     def _create_widget(self):
-        root: Any = QWidget() if ui_runtime else _HeadlessAccountWidget()
-        self._account_combo = QComboBox()
-        self._summary_table = QTableWidget(0, 2)
+        runtime_ui = _load_runtime_ui_types()
+        if runtime_ui is None:
+            root: Any = _HeadlessAccountWidget()
+            combo_type = _HeadlessComboBox
+            label_type = _HeadlessLabel
+            table_type = _HeadlessTableWidget
+            item_type = _HeadlessTableWidgetItem
+            horizontal_layout_type = None
+            vertical_layout_type = None
+            self._timer_type = None
+            self._real_ui = False
+        else:
+            self._timer_type = runtime_ui.timer
+            combo_type = runtime_ui.combo_box
+            horizontal_layout_type = runtime_ui.horizontal_layout
+            label_type = runtime_ui.label
+            table_type = runtime_ui.table
+            item_type = runtime_ui.table_item
+            vertical_layout_type = runtime_ui.vertical_layout
+            root = runtime_ui.widget()
+            self._real_ui = True
+        self._item_type = item_type
+        self._account_combo = combo_type()
+        self._summary_table = table_type(0, 2)
         self._summary_table.setColumnCount(2)
         self._summary_table.setHorizontalHeaderLabels(["Field", "Value"])
-        self._table = QTableWidget(0, len(self.COLS))
+        self._table = table_type(0, len(self.COLS))
         self._table.setColumnCount(len(self.COLS))
         self._table.setHorizontalHeaderLabels(self.COLS)
 
         for key, _label in self.SUMMARY_FIELDS:
-            self._summary[key] = QLabel(f"{key}:")
-        self._summary["semantic_gap"] = QLabel("account semantics: summary-oriented view")
+            self._summary[key] = label_type(f"{key}:")
+        self._summary["semantic_gap"] = label_type(
+            "account semantics: summary-oriented view"
+        )
 
-        if ui_runtime:
+        if self._real_ui:
             try:
-                layout = QVBoxLayout(root)  # type: ignore[arg-type]
-                top = QHBoxLayout()
-                top.addWidget(QLabel("Account"))  # type: ignore[arg-type]
+                assert vertical_layout_type is not None
+                assert horizontal_layout_type is not None
+                layout = vertical_layout_type(root)
+                top = horizontal_layout_type()
+                top.addWidget(label_type("Account"))
                 top.addWidget(self._account_combo, 1)  # type: ignore[arg-type]
                 layout.addLayout(top)
                 layout.addWidget(self._summary_table)  # type: ignore[arg-type]
@@ -426,13 +448,13 @@ class AccountPanelAdapter(PanelAdapter):
             for row_idx, (key, label) in enumerate(rows):
                 label_item = table.item(row_idx, 0)
                 if label_item is None:
-                    label_item = QTableWidgetItem(label)
+                    label_item = self._item_type(label)
                     table.setItem(row_idx, 0, label_item)
                 else:
                     label_item.setText(label)
                 value_item = table.item(row_idx, 1)
                 if value_item is None:
-                    value_item = QTableWidgetItem("")
+                    value_item = self._item_type("")
                     table.setItem(row_idx, 1, value_item)
                 value_item.setText(self._format_summary_value(key, acc.get(key)))
         except Exception:
@@ -500,7 +522,7 @@ class AccountPanelAdapter(PanelAdapter):
                 table.insertRow(row_idx)
                 self._row_index[sym] = row_idx
                 for col_idx, _ in enumerate(self.COLS):
-                    table.setItem(row_idx, col_idx, QTableWidgetItem(""))
+                    table.setItem(row_idx, col_idx, self._item_type(""))
             for col_idx, col_key in enumerate(self.COLS):
                 val = row.get(col_key)
                 item = table.item(row_idx, col_idx)
