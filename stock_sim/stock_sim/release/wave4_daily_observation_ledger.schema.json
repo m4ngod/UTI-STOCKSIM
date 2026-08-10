@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/m4ngod/UTI-STOCKSIM/schemas/wave4_daily_observation_ledger.schema.json",
+  "title": "UTI-STOCKSIM Wave 4 Daily Observation Ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "metric_set_id", "ledger_id", "observation_date",
+    "recorded_at", "calendar_timezone", "artifacts", "release", "collection",
+    "lifecycle", "routes", "continuity", "delivery", "health",
+    "route_incidents", "probe", "migration_integrity", "severity", "policy",
+    "legacy_inventory", "product_rollback_forced"
+  ],
+  "properties": {
+    "schema_version": {"const": "wave4.daily-observation-ledger.v1"},
+    "metric_set_id": {"const": "wave4.formal-observation.v1"},
+    "ledger_id": {"$ref": "#/$defs/safeId"},
+    "observation_date": {"type": "string", "format": "date"},
+    "recorded_at": {"$ref": "#/$defs/utcTimestamp"},
+    "calendar_timezone": {"const": "UTC"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "retained_widgets"],
+      "properties": {
+        "candidate": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"kind": {"const": "wave4-candidate"}}}
+          ]
+        },
+        "retained_widgets": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"kind": {"const": "retained-widgets"}}}
+          ]
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "release_gates_passed", "package_published", "published_at"],
+      "properties": {
+        "channel": {"enum": ["formal", "rc", "development", "prerelease"]},
+        "release_gates_passed": {"type": "boolean"},
+        "package_published": {"type": "boolean"},
+        "published_at": {"oneOf": [{"$ref": "#/$defs/utcTimestamp"}, {"type": "null"}]}
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_checkpoint_ids", "observed_checkpoint_ids"],
+      "properties": {
+        "expected_checkpoint_ids": {
+          "const": ["install", "upgrade", "launch", "six-route-probe", "clean-exit"]
+        },
+        "observed_checkpoint_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["install", "upgrade", "launch", "six-route-probe", "clean-exit"]}
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install", "upgrade", "launch", "clean_exit", "crash_count", "unhandled_error_count"],
+      "properties": {
+        "install": {"$ref": "#/$defs/result"},
+        "upgrade": {"$ref": "#/$defs/result"},
+        "launch": {"$ref": "#/$defs/result"},
+        "clean_exit": {"$ref": "#/$defs/result"},
+        "crash_count": {"$ref": "#/$defs/count"},
+        "unhandled_error_count": {"$ref": "#/$defs/count"}
+      }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"$ref": "#/$defs/strategyLibraryRoute"},
+        {"$ref": "#/$defs/scenarioLabRoute"},
+        {"$ref": "#/$defs/diagnosticTasksRoute"},
+        {"$ref": "#/$defs/runMonitoringRoute"},
+        {"$ref": "#/$defs/evidenceAndFindingsRoute"},
+        {"$ref": "#/$defs/systemHealthRoute"}
+      ],
+      "items": false
+    },
+    "continuity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_handle_continuity", "duplicate_prevention",
+        "durable_identity_continuity", "reopen_accepted_identities",
+        "context_compatibility_failure_count", "manifest_compatibility_failure_count"
+      ],
+      "properties": {
+        "task_handle_continuity": {"$ref": "#/$defs/result"},
+        "duplicate_prevention": {"$ref": "#/$defs/result"},
+        "durable_identity_continuity": {"$ref": "#/$defs/result"},
+        "reopen_accepted_identities": {"$ref": "#/$defs/result"},
+        "context_compatibility_failure_count": {"$ref": "#/$defs/count"},
+        "manifest_compatibility_failure_count": {"$ref": "#/$defs/count"}
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disconnect_count", "stale_count", "fallback_count", "recovery_outcome",
+        "max_recovery_latency_ms", "rejected_old_generation_count",
+        "rejected_duplicate_count", "rejected_lower_revision_count",
+        "incorrectly_accepted_old_generation_count",
+        "incorrectly_accepted_duplicate_count",
+        "incorrectly_accepted_lower_revision_count"
+      ],
+      "properties": {
+        "disconnect_count": {"$ref": "#/$defs/count"},
+        "stale_count": {"$ref": "#/$defs/count"},
+        "fallback_count": {"$ref": "#/$defs/count"},
+        "recovery_outcome": {"$ref": "#/$defs/result"},
+        "max_recovery_latency_ms": {"$ref": "#/$defs/count"},
+        "rejected_old_generation_count": {"$ref": "#/$defs/count"},
+        "rejected_duplicate_count": {"$ref": "#/$defs/count"},
+        "rejected_lower_revision_count": {"$ref": "#/$defs/count"},
+        "incorrectly_accepted_old_generation_count": {"$ref": "#/$defs/count"},
+        "incorrectly_accepted_duplicate_count": {"$ref": "#/$defs/count"},
+        "incorrectly_accepted_lower_revision_count": {"$ref": "#/$defs/count"}
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queue", "cache", "persistence", "system_health"],
+      "properties": {
+        "queue": {"$ref": "#/$defs/healthComponent"},
+        "cache": {"$ref": "#/$defs/healthComponent"},
+        "persistence": {"$ref": "#/$defs/healthComponent"},
+        "system_health": {"$ref": "#/$defs/healthComponent"}
+      }
+    },
+    "route_incidents": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"$ref": "#/$defs/strategyLibraryIncident"},
+        {"$ref": "#/$defs/scenarioLabIncident"},
+        {"$ref": "#/$defs/diagnosticTasksIncident"},
+        {"$ref": "#/$defs/runMonitoringIncident"},
+        {"$ref": "#/$defs/evidenceAndFindingsIncident"},
+        {"$ref": "#/$defs/systemHealthIncident"}
+      ],
+      "items": false
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probe_id", "scheduled", "six_route_passed", "renderer_lane",
+        "graphics_api", "stall_probe_passed", "stall_over_50ms_count", "max_stall_ms"
+      ],
+      "properties": {
+        "probe_id": {"$ref": "#/$defs/safeId"},
+        "scheduled": {"type": "boolean"},
+        "six_route_passed": {"type": "boolean"},
+        "renderer_lane": {"enum": ["hardware", "software"]},
+        "graphics_api": {"enum": ["Direct3D11", "Software"]},
+        "stall_probe_passed": {"type": "boolean"},
+        "stall_over_50ms_count": {"$ref": "#/$defs/count"},
+        "max_stall_ms": {"$ref": "#/$defs/count"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"renderer_lane": {"const": "hardware"}}},
+          "then": {"properties": {"graphics_api": {"const": "Direct3D11"}}}
+        },
+        {
+          "if": {"properties": {"renderer_lane": {"const": "software"}}},
+          "then": {"properties": {"graphics_api": {"const": "Software"}}}
+        }
+      ]
+    },
+    "migration_integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_loss", "corruption", "destructive_migration"],
+      "properties": {
+        "data_loss": {"type": "boolean"},
+        "corruption": {"type": "boolean"},
+        "destructive_migration": {"type": "boolean"}
+      }
+    },
+    "severity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unresolved_sev1_count", "unresolved_sev2_count"],
+      "properties": {
+        "unresolved_sev1_count": {"$ref": "#/$defs/count"},
+        "unresolved_sev2_count": {"$ref": "#/$defs/count"}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["security_violation_count", "redaction_violation_count", "webengine_included", "manual_trading_exposed"],
+      "properties": {
+        "security_violation_count": {"$ref": "#/$defs/count"},
+        "redaction_violation_count": {"$ref": "#/$defs/count"},
+        "webengine_included": {"type": "boolean"},
+        "manual_trading_exposed": {"type": "boolean"}
+      }
+    },
+    "legacy_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inventory_id", "inventory_sha256", "legacy_route_count"],
+      "properties": {
+        "inventory_id": {"$ref": "#/$defs/safeId"},
+        "inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "legacy_route_count": {"const": 8}
+      }
+    },
+    "product_rollback_forced": {"type": "boolean"}
+  },
+  "$defs": {
+    "safeId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "utcTimestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "count": {"type": "integer", "minimum": 0},
+    "result": {"enum": ["passed", "failed", "not_observed"]},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source_commit", "dependency_lock_sha256", "artifact_sha256", "package_id", "build_id"],
+      "properties": {
+        "kind": {"enum": ["wave4-candidate", "retained-widgets"]},
+        "source_commit": {"$ref": "#/$defs/sourceCommit"},
+        "dependency_lock_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "package_id": {"$ref": "#/$defs/safeId"},
+        "build_id": {"$ref": "#/$defs/safeId"}
+      }
+    },
+    "routeBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "activation", "restore", "focus_restore", "typed_context_resolution"],
+      "properties": {
+        "route": {"type": "string"},
+        "activation": {"$ref": "#/$defs/result"},
+        "restore": {"$ref": "#/$defs/result"},
+        "focus_restore": {"$ref": "#/$defs/result"},
+        "typed_context_resolution": {"$ref": "#/$defs/result"}
+      }
+    },
+    "strategyLibraryRoute": {"$ref": "#/$defs/routeBase", "properties": {"route": {"const": "strategy_library"}}},
+    "scenarioLabRoute": {"$ref": "#/$defs/routeBase", "properties": {"route": {"const": "scenario_lab"}}},
+    "diagnosticTasksRoute": {"$ref": "#/$defs/routeBase", "properties": {"route": {"const": "diagnostic_tasks"}}},
+    "runMonitoringRoute": {"$ref": "#/$defs/routeBase", "properties": {"route": {"const": "run_monitoring"}}},
+    "evidenceAndFindingsRoute": {"$ref": "#/$defs/routeBase", "properties": {"route": {"const": "evidence_and_findings"}}},
+    "systemHealthRoute": {"$ref": "#/$defs/routeBase", "properties": {"route": {"const": "system_health"}}},
+    "healthComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["degradation_count", "max_degradation_duration_ms"],
+      "properties": {
+        "degradation_count": {"$ref": "#/$defs/count"},
+        "max_degradation_duration_ms": {"$ref": "#/$defs/count"}
+      }
+    },
+    "incidentBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "legacy_fallback_count", "legacy_fallback_forced", "forced_rollback", "v2_route_caused_fallback", "incident_code"],
+      "properties": {
+        "route": {"type": "string"},
+        "legacy_fallback_count": {"$ref": "#/$defs/count"},
+        "legacy_fallback_forced": {"type": "boolean"},
+        "forced_rollback": {"type": "boolean"},
+        "v2_route_caused_fallback": {"type": "boolean"},
+        "incident_code": {"oneOf": [{"$ref": "#/$defs/safeId"}, {"type": "null"}]}
+      }
+    },
+    "strategyLibraryIncident": {"$ref": "#/$defs/incidentBase", "properties": {"route": {"const": "strategy_library"}}},
+    "scenarioLabIncident": {"$ref": "#/$defs/incidentBase", "properties": {"route": {"const": "scenario_lab"}}},
+    "diagnosticTasksIncident": {"$ref": "#/$defs/incidentBase", "properties": {"route": {"const": "diagnostic_tasks"}}},
+    "runMonitoringIncident": {"$ref": "#/$defs/incidentBase", "properties": {"route": {"const": "run_monitoring"}}},
+    "evidenceAndFindingsIncident": {"$ref": "#/$defs/incidentBase", "properties": {"route": {"const": "evidence_and_findings"}}},
+    "systemHealthIncident": {"$ref": "#/$defs/incidentBase", "properties": {"route": {"const": "system_health"}}}
+  }
+}

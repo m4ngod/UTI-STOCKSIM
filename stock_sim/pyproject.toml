@@ -26,6 +26,7 @@ dependencies = [
 frontend-trading-ui = "setup_frontend_entry:main"
 stock-sim-db-health = "stock_sim.persistence.db_health:main"
 strategy-diagnostics = "strategy_diagnostics.__main__:main"
+stock-sim-wave4-ledger = "stock_sim.release.wave4_observation_ledger_cli:main"
 
 [tool.setuptools]
 # 鏄惧紡鍚敤鍖呰嚜鍔ㄥ彂鐜帮紙浣嗙敤 include / exclude 绾︽潫锛?

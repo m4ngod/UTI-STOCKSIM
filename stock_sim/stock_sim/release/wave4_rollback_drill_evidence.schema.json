@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/m4ngod/UTI-STOCKSIM/schemas/wave4_rollback_drill_evidence.schema.json",
+  "title": "UTI-STOCKSIM Wave 4 Rollback Drill Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "drill_id", "started_at", "completed_at",
+    "execution_mode", "installed_binary_gate_verified", "candidate_artifact",
+    "retained_widgets_artifact", "supported_data_copy_sha256", "stage_sequence",
+    "stages", "persistence_migration", "bookmark_migration",
+    "task_handle_continuity", "duplicate_identity_count"
+  ],
+  "properties": {
+    "schema_version": {"const": "wave4.rollback-drill-evidence.v1"},
+    "drill_id": {"$ref": "#/$defs/safeId"},
+    "started_at": {"$ref": "#/$defs/utcTimestamp"},
+    "completed_at": {"$ref": "#/$defs/utcTimestamp"},
+    "execution_mode": {"enum": ["supported-data-copy", "installed-binary"]},
+    "installed_binary_gate_verified": {"type": "boolean"},
+    "candidate_artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"properties": {"kind": {"const": "wave4-candidate"}}}
+      ]
+    },
+    "retained_widgets_artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"properties": {"kind": {"const": "retained-widgets"}}}
+      ]
+    },
+    "supported_data_copy_sha256": {"$ref": "#/$defs/sha256"},
+    "stage_sequence": {"const": ["wave4-candidate", "retained-widgets", "wave4-candidate-recovered"]},
+    "stages": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/stage"}, {"properties": {"stage": {"const": "wave4-candidate"}}}]},
+        {"allOf": [{"$ref": "#/$defs/stage"}, {"properties": {"stage": {"const": "retained-widgets"}}}]},
+        {"allOf": [{"$ref": "#/$defs/stage"}, {"properties": {"stage": {"const": "wave4-candidate-recovered"}}}]}
+      ],
+      "items": false
+    },
+    "persistence_migration": {"$ref": "#/$defs/persistenceMigration"},
+    "bookmark_migration": {"$ref": "#/$defs/bookmarkMigration"},
+    "task_handle_continuity": {"const": true},
+    "duplicate_identity_count": {"const": 0}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"execution_mode": {"const": "supported-data-copy"}}},
+      "then": {
+        "properties": {
+          "installed_binary_gate_verified": {"const": false},
+          "stages": {
+            "prefixItems": [
+              {"properties": {"verification_surface": {"const": "qml-source-smoke"}}},
+              {"properties": {"verification_surface": {"const": "widgets-source-smoke"}}},
+              {"properties": {"verification_surface": {"const": "application-authoritative-reopen"}}}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"execution_mode": {"const": "installed-binary"}}},
+      "then": {
+        "properties": {
+          "installed_binary_gate_verified": {"const": true},
+          "stages": {
+            "prefixItems": [
+              {"properties": {"verification_surface": {"const": "installed-wave4-binary"}}},
+              {"properties": {"verification_surface": {"const": "installed-widgets-binary"}}},
+              {"properties": {"verification_surface": {"const": "installed-wave4-binary"}}}
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "safeId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "utcTimestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "source_commit", "dependency_lock_sha256", "artifact_sha256", "package_id", "build_id"],
+      "properties": {
+        "kind": {"enum": ["wave4-candidate", "retained-widgets"]},
+        "source_commit": {"$ref": "#/$defs/sourceCommit"},
+        "dependency_lock_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "package_id": {"$ref": "#/$defs/safeId"},
+        "build_id": {"$ref": "#/$defs/safeId"}
+      }
+    },
+    "identityList": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/safeId"}
+    },
+    "durableIdentities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["Strategy", "Recipe", "Task", "Campaign", "Run", "Evidence", "Finding", "Manifest"],
+      "properties": {
+        "Strategy": {"$ref": "#/$defs/identityList"},
+        "Recipe": {"$ref": "#/$defs/identityList"},
+        "Task": {"$ref": "#/$defs/identityList"},
+        "Campaign": {"$ref": "#/$defs/identityList"},
+        "Run": {"$ref": "#/$defs/identityList"},
+        "Evidence": {"$ref": "#/$defs/identityList"},
+        "Finding": {"$ref": "#/$defs/identityList"},
+        "Manifest": {"$ref": "#/$defs/identityList"}
+      }
+    },
+    "stage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage", "started_at", "completed_at", "verification_surface", "clean_exit", "readable_artifacts", "durable_identities", "task_handle_identities", "order_state_sha256"],
+      "properties": {
+        "stage": {"enum": ["wave4-candidate", "retained-widgets", "wave4-candidate-recovered"]},
+        "started_at": {"$ref": "#/$defs/utcTimestamp"},
+        "completed_at": {"$ref": "#/$defs/utcTimestamp"},
+        "verification_surface": {
+          "enum": [
+            "qml-source-smoke", "widgets-source-smoke",
+            "application-authoritative-reopen", "installed-wave4-binary",
+            "installed-widgets-binary"
+          ]
+        },
+        "clean_exit": {"const": true},
+        "readable_artifacts": {"const": ["Strategy", "Recipe", "Task", "Campaign", "Run", "Evidence", "Finding", "Manifest"]},
+        "durable_identities": {"$ref": "#/$defs/durableIdentities"},
+        "task_handle_identities": {"$ref": "#/$defs/identityList"},
+        "order_state_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "persistenceMigration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fresh_initialization_revision", "copied_wave3_source_revision", "upgraded_revision", "deterministic", "idempotent", "additive", "retained_widgets_compatible", "order_mutation_count"],
+      "properties": {
+        "fresh_initialization_revision": {"$ref": "#/$defs/safeId"},
+        "copied_wave3_source_revision": {"$ref": "#/$defs/safeId"},
+        "upgraded_revision": {"$ref": "#/$defs/safeId"},
+        "deterministic": {"const": true},
+        "idempotent": {"const": true},
+        "additive": {"const": true},
+        "retained_widgets_compatible": {"const": true},
+        "order_mutation_count": {"const": 0}
+      }
+    },
+    "bookmarkMigration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_schema_version", "target_schema_version", "deterministic", "idempotent", "exact_durable_identities_preserved"],
+      "properties": {
+        "source_schema_version": {"const": "1.0"},
+        "target_schema_version": {"const": "2.0"},
+        "deterministic": {"const": true},
+        "idempotent": {"const": true},
+        "exact_durable_identities_preserved": {"const": true}
+      }
+    }
+  }
+}

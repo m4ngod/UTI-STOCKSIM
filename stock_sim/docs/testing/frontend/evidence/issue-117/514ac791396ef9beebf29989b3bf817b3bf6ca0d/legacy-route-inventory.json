@@ -1,0 +1,76 @@
+{
+  "captured_at": "2026-08-09T19:34:31Z",
+  "clean_windows_gate_passed": false,
+  "deletion_authorized": false,
+  "inventory_id": "wave4-legacy-inventory-514ac791396e",
+  "legacy_route_count": 8,
+  "routes": [
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "diagnostics",
+      "panel_registration": "diagnostics",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "account",
+      "panel_registration": "account",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "market",
+      "panel_registration": "market",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "agents",
+      "panel_registration": "agents",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "arena",
+      "panel_registration": "arena",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "leaderboard",
+      "panel_registration": "leaderboard",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "clock",
+      "panel_registration": "clock",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    },
+    {
+      "atomic_exit_authorized": false,
+      "legacy_route_id": "orders",
+      "panel_registration": "orders",
+      "route_rollback_drill_id": null,
+      "stakeholder_exit_record_id": null,
+      "status": "retained"
+    }
+  ],
+  "schema_version": "wave4.legacy-route-inventory.v1",
+  "source_commit": "514ac791396ef9beebf29989b3bf817b3bf6ca0d",
+  "widgets_shell_status": "retained"
+}

@@ -1,0 +1,141 @@
+{
+  "acceptance_status": "source-seam-complete-external-gates-unverified",
+  "artifacts": {
+    "candidate_entry_sha256": "sha256:258f39acecb8ed5d60e085ad1d83b774cf484d3ba28eb885ef6a7c4248a1da66",
+    "daily_ledger_schema_sha256": "sha256:9002c0a4287b4ec6a47799d2fcff7800ab19d70e06b0cbf401275c7a930ba9d7",
+    "dependency_lock_sha256": "sha256:f53b1b7245e48a33420ee7a2657c7d7bedc35a61cefbe0fc86ce0a1232bfaf1f",
+    "legacy_inventory_schema_sha256": "sha256:3e469ea272a8090320be951be48a0e6ca9a1b024a414e11be100c59925407e95",
+    "legacy_inventory_sha256": "sha256:bdbbccc9f5f085ed586efcb64022af665e6799e36119bc197b6dd59270abc007",
+    "rollback_evidence_schema_sha256": "sha256:9c8387e520204e8346933e935bb361d4d4ecbcef7f9e77c1fae904cfff84fa04",
+    "widgets_entry_sha256": "sha256:3e3c72670c697e4bd7211d9e0db571122ae0f361eff8d6d75d3c3d5f7a5f1f75"
+  },
+  "baseline_commit": "ff9da228fadecb59dac0954a29308d6c2d3d71be",
+  "blocker_114": {
+    "closed": true,
+    "durable_identity_reopen_clean_exit_regression": "140 passed in 165.75s",
+    "status": "stable"
+  },
+  "code_review": {
+    "spec_review": "passed-no-residual-findings",
+    "standards_review": "passed-no-residual-findings"
+  },
+  "formal_state": {
+    "actual_consecutive_qualifying_days": 0,
+    "formal_observation_started": false,
+    "formal_release_started": false,
+    "issue_117_closed": false,
+    "parent_issue_107_modified": false
+  },
+  "implementation_commit": "514ac791396ef9beebf29989b3bf817b3bf6ca0d",
+  "legacy": {
+    "clean_windows_gate_passed": false,
+    "deletion_authorized": false,
+    "legacy_route_count": 8,
+    "route_deletion_count": 0,
+    "widgets_shell_deleted": false
+  },
+  "observation_contract": {
+    "active_window_metric_redefinition_rejected": true,
+    "complete_day_covered": true,
+    "fixed_consecutive_day_threshold": 14,
+    "forced_rollback_covered": true,
+    "hardware_and_software_lanes_required": true,
+    "incomplete_day_covered": true,
+    "non_formal_and_rc_days_rejected": true,
+    "qualifying_day_covered": true,
+    "reset_and_restart_covered": true,
+    "route_specific_incident_covered": true,
+    "synthetic_14_day_calculation_covered": true
+  },
+  "recorded_at": "2026-08-09T19:34:31Z",
+  "rollback_drill": {
+    "artifact_identity_kinds": [
+      "Strategy",
+      "Recipe",
+      "Task",
+      "Campaign",
+      "Run",
+      "Evidence",
+      "Finding",
+      "Manifest"
+    ],
+    "candidate_clean_exit": true,
+    "candidate_recovery_clean_exit": true,
+    "duplicate_identity_count": 0,
+    "execution_mode": "supported-data-copy",
+    "installed_binary_gate_verified": false,
+    "order_mutation_count": 0,
+    "same_dependency_lock": true,
+    "same_source_commit": true,
+    "stage_sequence": [
+      "wave4-candidate",
+      "retained-widgets",
+      "wave4-candidate-recovered"
+    ],
+    "task_handle_continuity": true,
+    "widgets_clean_exit": true,
+    "widgets_read_supported_copy": true
+  },
+  "safety": {
+    "arbitrary_command_rejected": true,
+    "database_url_or_path_rejected": true,
+    "manual_trading_capability_added": false,
+    "market_account_order_fill_payload_rejected": true,
+    "raw_sql_or_traceback_rejected": true,
+    "secret_or_token_rejected": true,
+    "system_health_remediation_added": false,
+    "webengine_added": false
+  },
+  "schema_version": "issue117.source-seam-acceptance.v1",
+  "test_results": [
+    {
+      "result": "57 passed in 0.49s",
+      "scope": "wave4-ledger-and-rollback-contracts"
+    },
+    {
+      "result": "2 passed in 119.43s",
+      "scope": "actual-commit-and-lock-fresh-copied-data-candidate-widgets-candidate"
+    },
+    {
+      "result": "43 passed in 252.32s",
+      "scope": "frontend-packaging-and-retained-widgets-contract"
+    },
+    {
+      "result": "140 passed in 165.75s",
+      "scope": "issue-114-durable-identity-reopen-clean-exit"
+    },
+    {
+      "result": "69 passed in 15.34s",
+      "scope": "persistence-migration-system-health-release-evidence"
+    },
+    {
+      "result": "success-no-issues-in-7-source-files",
+      "scope": "strict-local-mypy"
+    },
+    {
+      "result": "schemas-ok-3",
+      "scope": "machine-readable-json-schema-parse"
+    }
+  ],
+  "unverified_gates": [
+    "installed-wave4-binary",
+    "installed-retained-widgets-binary",
+    "clean-windows-machine",
+    "formal-hardware-d3d11-renderer",
+    "formal-software-renderer",
+    "offline-windows-certification",
+    "remote-release-artifact",
+    "formal-release-publication",
+    "actual-14-consecutive-day-observation"
+  ],
+  "wave3_copy_migration": {
+    "bookmark_source_schema": "1.0",
+    "bookmark_target_schema": "2.0",
+    "deterministic": true,
+    "durable_identities_preserved": true,
+    "idempotent": true,
+    "persistence_current_revision": "0021_diagnostic_selection_dependency_invalidation",
+    "persistence_schema_change_required_by_issue_117": false,
+    "supported_copy_reopened_twice": true
+  }
+}
