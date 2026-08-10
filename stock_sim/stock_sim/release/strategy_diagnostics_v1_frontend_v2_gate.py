@@ -1,9 +1,9 @@
-"""Wave 3 Strategy Diagnostics V1 + Frontend V2 source integration gate.
+"""Wave 4 six-Feature Strategy Diagnostics source integration gate.
 
 This gate is deliberately not a release-certification claim.  It keeps the
 shared conformance, persisted tracer, backend regression, and existing
-Frontend V2 gates executable from one fail-closed manifest.  Issue #88 owns
-the Wave 3 installed-offline release certification, evidence, and artifacts.
+Frontend V2 gates executable from one fail-closed manifest.  Issues #118 and
+#119 own installed-package certification and remote release evidence.
 """
 
 from __future__ import annotations
@@ -25,7 +25,9 @@ from tempfile import TemporaryDirectory
 
 from app.features import (
     ACTIVE_FEATURE_INTERFACES,
+    APPLICATION_READ_MODEL_INTERFACE_VERSION,
     DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
+    RUNTIME_HEALTH_APPLICATION_INTERFACE_VERSION,
     SCENARIO_LAB_APPLICATION_INTERFACE_VERSION,
     STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION,
 )
@@ -109,15 +111,31 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
         "LiveDiagnosticTasksAdapter",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
+        "LiveSystemHealthAdapter",
+        "LiveStrategyDiagnosticsV1ApplicationAdapter",
         "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
         "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
         "ParquetMarketPathArtifactStore",
         "JourneyWorkspaceHost",
-        "createRecipeDraft",
-        "validateRecipeDraft",
-        "approveRecipeValidation",
-        "materializeApprovedRecipeVersion",
+        "strategyLibraryRouteNavigation",
+        "scenarioLabRouteNavigation",
+        "diagnosticTasksRouteNavigation",
+        "runMonitoringRouteNavigation",
+        "evidenceAndFindingsRouteNavigation",
+        "systemHealthRouteNavigation",
+        "strategyLibraryCompareFormalSet",
+        "strategyLibrarySelectFormalSet",
+        "scenarioLabRecipeNameInput",
+        "scenarioLabRecipeTransformationInput",
+        "scenarioLabCreateRecipeDraftButton",
+        "scenarioLabValidateRecipeDraft-",
+        "scenarioLabApproveRecipe-",
+        "scenarioLabMaterializeApprovedRecipe-",
+        "scenarioLabComposeVisibleScenarioSetButton",
+        "scenarioLabResolveExecutionAssumptionsButton",
+        "scenarioLabSelectFormalScenarioSetButton",
         "strategy_run_status",
         "resolved_execution_conditions",
         "STOCKSIM_WAVE3_IDENTITY_LEDGER",
@@ -134,10 +152,22 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
         "DeterministicFakeDiagnosticTasksAdapter",
         "DeterministicFakeRunMonitoringAdapter",
         "DeterministicFakeEvidenceAndFindingsAdapter",
+        "DeterministicFakeSystemHealthAdapter",
         "DictionaryFixtureApplicationReadModel",
         "_LiveJourneyQueries",
         "Repository",
         "session.execute",
+        ".dispatch(",
+        "FrontendRuntime",
+        "host._strategy_library.compareFormalSet(",
+        "host._strategy_library.selectFormalSet(",
+        "scenario_adapter.createRecipeDraft(",
+        "scenario_adapter.validateRecipeDraft(",
+        "scenario_adapter.approveRecipeValidation(",
+        "scenario_adapter.materializeApprovedRecipeVersion(",
+        "scenario_adapter.composeVisibleScenarioSet(",
+        "scenario_adapter.resolveLatestScenarioSet(",
+        "scenario_adapter.selectLatestFormalScenarioSet(",
     ),
     coverage=(
         PersistedTracerCoverage(
@@ -398,29 +428,136 @@ PERSISTED_PRODUCT_TRACER = PersistedProductTracer(
                 ),
             ),
         ),
+        PersistedTracerCoverage(
+            requirement="system-health-live-fake-contract-and-context",
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_fake_conformance.py::"
+                    "test_system_health_feature_1_0_live_and_fake_share_one_contract_body"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_diagnostic_context_contract.py::"
+                    "test_live_adapter_resolves_real_persisted_task_campaign_and_run_exactly"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_diagnostic_context_contract.py::"
+                    "test_deterministic_fake_uses_the_same_contextual_conformance_body"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
+            requirement="contextual-health-degradation-recovery-and-terminal",
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_fake_conformance.py::"
+                    "test_disconnect_staleness_and_reconnect_retain_last_reliable_state"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_diagnostic_context_contract.py::"
+                    "test_live_adapter_preserves_completed_full_identity_graph_and_manifest_lineage"
+                ),
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_diagnostic_context_contract.py::"
+                    "test_deterministic_fake_uses_the_same_terminal_context_body"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
+            requirement="six-route-keyboard-remount-reopen-clean-exit",
+            pytest_targets=(
+                (
+                    "tests/frontend/integration/test_journey_rail_v4.py::"
+                    "test_keyboard_traverses_and_activates_the_six_destinations_in_exact_order"
+                ),
+                (
+                    "tests/frontend/integration/test_accessible_journey.py::"
+                    "test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation"
+                ),
+            ),
+        ),
+        PersistedTracerCoverage(
+            requirement="accessibility-redaction-and-no-trading-source-gates",
+            pytest_targets=(
+                (
+                    "tests/frontend/contract/"
+                    "test_system_health_live_fake_conformance.py::"
+                    "test_raw_filename_correlation_is_removed_before_the_feature_seam"
+                ),
+                (
+                    "tests/frontend/integration/test_system_health_workspace_route.py::"
+                    "test_system_health_qml_surface_has_no_web_or_control_plane_imports"
+                ),
+                (
+                    "tests/frontend/safety/test_no_manual_trading_release_gate.py::"
+                    "test_current_wave1_slice_passes_every_mandatory_safety_surface"
+                ),
+            ),
+        ),
     ),
 )
 
-_DIAGNOSTIC_CONFORMANCE_SOURCE = (
-    "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py"
+_SHARED_CONFORMANCE_SOURCES = (
+    "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py",
+    "tests/frontend/contract/test_system_health_live_fake_conformance.py",
+    "tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py",
 )
+
+
+def _is_shared_conformance_target(target: str) -> bool:
+    return any(
+        target.startswith(f"{source}::")
+        for source in _SHARED_CONFORMANCE_SOURCES
+    )
+
+
 _TRACER_CONFORMANCE_TARGETS = tuple(
     target
     for category in PERSISTED_PRODUCT_TRACER.coverage
     for target in category.pytest_targets
-    if target.startswith(f"{_DIAGNOSTIC_CONFORMANCE_SOURCE}::")
+    if _is_shared_conformance_target(target)
 )
 _TRACER_OTHER_CONTRACT_TARGETS = tuple(
     target
     for category in PERSISTED_PRODUCT_TRACER.coverage
     for target in category.pytest_targets
-    if not target.startswith(f"{_DIAGNOSTIC_CONFORMANCE_SOURCE}::")
+    if not _is_shared_conformance_target(target)
+)
+_TRACER_INTEGRATION_TARGETS = tuple(
+    target
+    for target in _TRACER_OTHER_CONTRACT_TARGETS
+    if target.startswith(("tests/frontend/integration/", "tests/frontend/e2e/"))
+)
+_TRACER_SAFETY_TARGETS = tuple(
+    target
+    for target in _TRACER_OTHER_CONTRACT_TARGETS
+    if target.startswith("tests/frontend/safety/")
+)
+
+DEFERRED_INSTALLED_PACKAGE_TARGETS = (
+    (
+        "tests/frontend/packaging/test_frontend_v2_release_candidate.py::"
+        "test_installed_smoke_reopens_a_sealed_real_v1_fixture"
+    ),
+    (
+        "tests/frontend/packaging/test_frontend_v2_release_candidate.py::"
+        "test_installed_wave2_smoke_creates_task_and_campaign_after_install"
+    ),
+    (
+        "tests/frontend/packaging/test_frontend_v2_release_candidate.py::"
+        "test_release_smoke_main_shuts_down_its_owned_qapplication"
+    ),
 )
 
 
 INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
     IntegrationGateGroup(
-        "shared-feature-conformance",
+        "six-feature-conformance",
         (
             (
                 "tests/frontend/contract/"
@@ -461,6 +598,21 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
             (
                 "tests/frontend/contract/"
                 "test_strategy_diagnostics_v1_feature_pair_conformance.py"
+            ),
+            "tests/frontend/contract/test_system_health_feature_contract.py",
+            "tests/frontend/contract/test_system_health_application_live_contract.py",
+            "tests/frontend/contract/test_system_health_live_fake_conformance.py",
+            (
+                "tests/frontend/contract/"
+                "test_system_health_diagnostic_context_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_system_health_live_diagnostic_context_contract.py"
+            ),
+            (
+                "tests/frontend/contract/"
+                "test_system_health_persistence_version_contract.py"
             ),
             (
                 "tests/frontend/contract/"
@@ -538,6 +690,27 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
                 "--ignore=tests/frontend/contract/"
                 "test_strategy_diagnostics_v1_feature_pair_conformance.py"
             ),
+            "--ignore=tests/frontend/contract/test_system_health_feature_contract.py",
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_system_health_application_live_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_system_health_live_fake_conformance.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_system_health_diagnostic_context_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_system_health_live_diagnostic_context_contract.py"
+            ),
+            (
+                "--ignore=tests/frontend/contract/"
+                "test_system_health_persistence_version_contract.py"
+            ),
             (
                 "--ignore=tests/frontend/contract/"
                 "test_strategy_diagnostics_v1_frontend_v2_integration_gate.py"
@@ -556,6 +729,7 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
         ),
         pytest_args=(
             f"--deselect={PERSISTED_PRODUCT_TRACER.pytest_target}",
+            *(f"--deselect={target}" for target in _TRACER_INTEGRATION_TARGETS),
         ),
     ),
     IntegrationGateGroup(
@@ -572,12 +746,19 @@ INTEGRATION_GATE_GROUPS: tuple[IntegrationGateGroup, ...] = (
     IntegrationGateGroup(
         "frontend-v2-safety",
         ("tests/frontend/safety",),
+        pytest_args=tuple(
+            f"--deselect={target}" for target in _TRACER_SAFETY_TARGETS
+        ),
     ),
     IntegrationGateGroup(
         "frontend-v2-performance-packaging-contract",
         (
             "tests/frontend/performance",
             "tests/frontend/packaging",
+        ),
+        pytest_args=tuple(
+            f"--deselect={target}"
+            for target in DEFERRED_INSTALLED_PACKAGE_TARGETS
         ),
     ),
 )
@@ -588,38 +769,44 @@ REQUIRED_CONTRACT_DOCUMENTS: tuple[Path, ...] = (
 )
 REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
     REQUIRED_CONTRACT_DOCUMENTS[0]: (
-        "# Strategy Diagnostics V1 + Frontend V2 Wave 3 contract",
+        "# Strategy Diagnostics V1 + Frontend V2 Wave 4 six-Feature contract",
         "`StrategyLibraryFeature` version 1.0",
         "`ScenarioLabFeature` version 1.0",
         "`DiagnosticTasksFeature` version 1.0",
         "`RunMonitoringFeature` version 1.2",
         "`EvidenceAndFindingsFeature` version 1.1",
+        "`SystemHealthFeature` version 1.0",
+        "`StrategyDiagnosticsV1ApplicationReadModel` version 1.0",
+        "`StrategyDiagnosticsV1SystemHealthApplication` version 1.0",
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` version 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` version 1.0",
         "`StrategyDiagnosticsV1ScenarioLabApplication` version 1.0",
         "Issue #79 activates Scenario Lab read tracing",
         "Issue #84 activates `DiagnosticSetupSelectionContext`",
-        "Issue #86 completes source-level T08/T09/T10 preflight",
-        "Issue #87 freezes one immutable source candidate",
+        "#115 preserves six-route accessible recovery truth",
+        "Issue #116 seals one source candidate",
         "`identity-ledger.json`",
         "durable bookmark contains those immutable references",
         "Seam 1",
         "Seam 2",
         "Seam 3",
-        "Wave 4 remain unimplemented",
-        "Issue #88 owns the installed offline black-box certification",
+        "Issue #116 owns the six-Feature",
+        "Issues #118 and #119 own installed-package",
     ),
     REQUIRED_CONTRACT_DOCUMENTS[1]: (
-        "# Strategy Diagnostics V1 + Frontend V2 Wave 3 integration runbook",
+        "# Strategy Diagnostics V1 + Frontend V2 Wave 4 six-Feature integration runbook",
         "`StrategyLibraryFeature` 1.0",
         "`ScenarioLabFeature` 1.0",
         "`DiagnosticTasksFeature` 1.0",
         "`RunMonitoringFeature` 1.2",
         "`EvidenceAndFindingsFeature` 1.1",
+        "`SystemHealthFeature` 1.0",
+        "`StrategyDiagnosticsV1ApplicationReadModel` 1.0",
+        "`StrategyDiagnosticsV1SystemHealthApplication` 1.0",
         "`StrategyDiagnosticsV1DiagnosticTasksApplication` 1.0",
         "`StrategyDiagnosticsV1StrategyLibraryApplication` 1.0",
         "`StrategyDiagnosticsV1ScenarioLabApplication` 1.0",
-        "including Issues #77–#87",
+        "including Issues #108–#116",
         "--evidence-root",
         "identity-ledger.json",
         "durable bookmark reread",
@@ -627,9 +814,11 @@ REQUIRED_CONTRACT_MARKERS: dict[Path, tuple[str, ...]] = {
         "test_diagnostic_tasks_live_fake_conformance.py",
         "test_strategy_library_live_fake_conformance.py",
         "test_scenario_lab_live_fake_conformance.py",
+        "test_system_health_live_fake_conformance.py",
+        "test_system_health_live_diagnostic_context_contract.py",
         "test_live_exact_setup_selection_is_bound_through_approval",
         "Seam 3",
-        "Issue #88",
+        "Issues #118 and #119",
         "source-level T08/T09/T10 preflight",
     ),
 }
@@ -648,6 +837,46 @@ _FORBIDDEN_TRACER_MARKERS = (
     "get_run_monitoring_snapshot",
     "get_evidence_and_findings_snapshot",
 )
+
+
+def _application_read_model_interface_version() -> str:
+    return (
+        f"{APPLICATION_READ_MODEL_INTERFACE_VERSION.major}."
+        f"{APPLICATION_READ_MODEL_INTERFACE_VERSION.minor}"
+    )
+
+
+def _active_feature_registry() -> list[str]:
+    return [
+        f"{item.name.value}/{item.version.render()}"
+        for item in ACTIVE_FEATURE_INTERFACES
+    ]
+
+
+def _application_interfaces() -> list[str]:
+    return [
+        "StrategyDiagnosticsV1StrategyLibraryApplication/"
+        + STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION.render(),
+        "StrategyDiagnosticsV1ScenarioLabApplication/"
+        + SCENARIO_LAB_APPLICATION_INTERFACE_VERSION.render(),
+        "StrategyDiagnosticsV1DiagnosticTasksApplication/"
+        + DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION.render(),
+        "StrategyDiagnosticsV1ApplicationReadModel/"
+        + _application_read_model_interface_version(),
+        "StrategyDiagnosticsV1SystemHealthApplication/"
+        + RUNTIME_HEALTH_APPLICATION_INTERFACE_VERSION.render(),
+    ]
+
+
+def _persisted_fixture_identity() -> dict[str, object]:
+    return {
+        "id": "wave4-six-feature-persisted-product-v1",
+        "production_qml": True,
+        "single_app_context": True,
+        "shared_diagnostics_application": True,
+        "live_feature_adapter_count": 6,
+        "persistence": "real-writable-files",
+    }
 
 
 def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
@@ -683,6 +912,15 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         errors.append(
             "StrategyDiagnosticsV1ScenarioLabApplication drifted from 1.0"
         )
+    application_read_model_version = _application_read_model_interface_version()
+    if application_read_model_version != "1.0":
+        errors.append(
+            "StrategyDiagnosticsV1ApplicationReadModel drifted from 1.0"
+        )
+    if RUNTIME_HEALTH_APPLICATION_INTERFACE_VERSION.render() != "1.0":
+        errors.append(
+            "StrategyDiagnosticsV1SystemHealthApplication drifted from 1.0"
+        )
     expected_tracer_requirements = (
         "authoritative-strategy-library-slice",
         "authoritative-scenario-recipe-materialization-and-formal-set",
@@ -694,6 +932,10 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         "command-identity-idempotency-and-recovery",
         "lifecycle-retry-terminal-and-order-isolation",
         "connection-generation-disposal-and-no-late-callback",
+        "system-health-live-fake-contract-and-context",
+        "contextual-health-degradation-recovery-and-terminal",
+        "six-route-keyboard-remount-reopen-clean-exit",
+        "accessibility-redaction-and-no-trading-source-gates",
     )
     actual_tracer_requirements = tuple(
         category.requirement
@@ -728,6 +970,16 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
                     _function_source(target_path, function_name)
                 except (SyntaxError, ValueError) as error:
                     errors.append(f"{group.name}: {error}")
+    for target in DEFERRED_INSTALLED_PACKAGE_TARGETS:
+        target_path_text, function_name = target.split("::", maxsplit=1)
+        target_path = root / target_path_text
+        if not target_path.is_file():
+            errors.append(f"missing deferred installed-package target {target}")
+            continue
+        try:
+            _function_source(target_path, function_name)
+        except (SyntaxError, ValueError) as error:
+            errors.append(f"deferred installed-package gate: {error}")
 
     for document in REQUIRED_CONTRACT_DOCUMENTS:
         document_path = root / document
@@ -738,7 +990,7 @@ def validate_integration_gate(project_root: Path) -> IntegrationGateValidation:
         for marker in REQUIRED_CONTRACT_MARKERS[document]:
             if marker not in document_source:
                 errors.append(
-                    f"{document}: missing Wave 3 contract marker {marker!r}"
+                    f"{document}: missing Wave 4 contract marker {marker!r}"
                 )
 
     tracer_path = root / PERSISTED_PRODUCT_TRACER.source_path
@@ -949,6 +1201,23 @@ def _validate_identity_ledger(
         "recovery": (
             "durable_identity_graph",
         ),
+        "system_health": (
+            "task_id",
+            "task_handle_id",
+            "campaign_id",
+            "run_id",
+            "evidence_package_id",
+            "finding_id",
+            "breakpoint_id",
+            "reproduction_manifest_id",
+            "degraded_revision",
+            "recovered_revision",
+            "final_revision",
+            "old_generation_quarantined",
+            "authoritative_reread_before_recovery",
+            "final_context_resolution",
+            "final_overall_classification",
+        ),
     }
     sections: dict[str, Mapping[str, object]] = {}
     for section_name, names in required_sections.items():
@@ -1056,7 +1325,146 @@ def _validate_identity_ledger(
             raise ValueError(
                 f"identity ledger recovery proof {name!r} did not pass"
             )
+    health = sections["system_health"]
+    diagnostic_tasks = sections["diagnostic_tasks"]
+    campaign = sections["campaign"]
+    expected_health_links = {
+        "task_id": diagnostic_tasks["task_id"],
+        "campaign_id": campaign["campaign_id"],
+        "evidence_package_id": evidence["evidence_package_id"],
+        "reproduction_manifest_id": evidence["reproduction_manifest_id"],
+    }
+    health_memberships = (
+        ("task_handle_id", diagnostic_tasks["task_handle_ids"]),
+        ("run_id", campaign["run_ids"]),
+        ("finding_id", finding_ids),
+        ("breakpoint_id", breakpoint_ids),
+    )
+    if any(
+        health.get(name) != value
+        for name, value in expected_health_links.items()
+    ) or any(health.get(name) not in values for name, values in health_memberships):
+        raise ValueError(
+            "System Health context is not linked to the exact persisted identity graph"
+        )
+    revisions = tuple(
+        health[name]
+        for name in ("degraded_revision", "recovered_revision", "final_revision")
+    )
+    if (
+        any(not isinstance(revision, int) for revision in revisions)
+        or list(revisions) != sorted(set(revisions))
+    ):
+        raise ValueError("System Health revisions are not strictly monotonic")
+    for name in (
+        "old_generation_quarantined",
+        "authoritative_reread_before_recovery",
+    ):
+        if health.get(name) is not True:
+            raise ValueError(f"System Health recovery proof {name!r} did not pass")
+    if health.get("final_context_resolution") != "completed":
+        raise ValueError("System Health final context is not completed")
+    if health.get("final_overall_classification") != "diagnostic_completed":
+        raise ValueError("System Health final classification is not diagnostic_completed")
     return ledger
+
+
+def _write_gate_result(
+    *,
+    evidence_root: Path,
+    source_commit: str,
+    executions: Sequence[IntegrationGateExecution],
+    failure_classification: str | None = None,
+    publish: bool = True,
+) -> Path:
+    """Persist a machine-readable result even when the fail-fast Gate stops."""
+
+    expected_groups = tuple(group.name for group in INTEGRATION_GATE_GROUPS)
+    completed_groups = tuple(item.group for item in executions)
+    failed_execution = next(
+        (item for item in executions if item.returncode != 0),
+        None,
+    )
+    complete = completed_groups == expected_groups
+    execution_passed = complete and failed_execution is None
+    if failure_classification is None:
+        failure_classification = (
+            "none"
+            if execution_passed
+            else "pytest-failure"
+            if failed_execution is not None
+            else "incomplete-gate"
+        )
+    passed = execution_passed and failure_classification == "none"
+    result = {
+        "schema_version": 1,
+        "candidate_source": source_commit,
+        "source_identity": {
+            "kind": "git-commit",
+            "value": source_commit,
+        },
+        "candidate_kind": "wave4-six-feature-source-gate",
+        "release_claim": False,
+        "result": "passed" if passed else "failed",
+        "failure_classification": failure_classification,
+        "failed_group": (
+            None if failed_execution is None else failed_execution.group
+        ),
+        "completed_group_count": len(completed_groups),
+        "expected_group_count": len(expected_groups),
+        "unreached_groups": [
+            name for name in expected_groups if name not in completed_groups
+        ],
+        "groups": [
+            {
+                "name": item.group,
+                "command": list(item.command),
+                "returncode": item.returncode,
+            }
+            for item in executions
+        ],
+        "active_feature_registry": _active_feature_registry(),
+        "application_interfaces": _application_interfaces(),
+        "fixture": _persisted_fixture_identity(),
+        "deferred_installed_package_gates": {
+            "status": "pending-issues-118-119",
+            "pytest_targets": list(DEFERRED_INSTALLED_PACKAGE_TARGETS),
+        },
+    }
+    result_path = evidence_root.resolve() / "gate-result.json"
+    pending_path = result_path.with_suffix(".json.tmp")
+    pending_path.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if publish:
+        pending_path.replace(result_path)
+        return result_path
+    return pending_path
+
+
+def _write_preflight_gate_result(
+    *,
+    evidence_root: Path | None,
+    source_commit: str | None,
+    failure_classification: str,
+) -> Path | None:
+    """Write preflight failure evidence only when the target is safe and empty."""
+
+    if evidence_root is None:
+        return None
+    candidate_root = evidence_root.resolve()
+    if candidate_root.exists():
+        if not candidate_root.is_dir() or any(candidate_root.iterdir()):
+            return None
+    else:
+        candidate_root.mkdir(parents=True)
+    return _write_gate_result(
+        evidence_root=candidate_root,
+        source_commit=source_commit or "unbound",
+        executions=(),
+        failure_classification=failure_classification,
+    )
 
 
 def write_source_candidate_evidence(
@@ -1132,16 +1540,15 @@ def write_source_candidate_evidence(
             }
         )
 
-    active_registry = [
-        f"{item.name.value}/{item.version.render()}"
-        for item in ACTIVE_FEATURE_INTERFACES
-    ]
     summary = {
         "schema_version": 1,
         "candidate_source": source_commit,
-        "candidate_kind": "immutable-wave3-source",
+        "candidate_kind": "wave4-six-feature-source-gate",
         "release_claim": False,
         "all_groups_passed": True,
+        "result": "passed",
+        "failure_classification": "none",
+        "fixture": _persisted_fixture_identity(),
         "groups": group_evidence,
         "persisted_tracer_coverage": [
             item.requirement for item in PERSISTED_PRODUCT_TRACER.coverage
@@ -1150,15 +1557,8 @@ def write_source_candidate_evidence(
             "path": "identity-ledger.json",
             "sha256": _sha256_path(identity_ledger_path),
         },
-        "active_feature_registry": active_registry,
-        "application_interfaces": [
-            "StrategyDiagnosticsV1StrategyLibraryApplication/"
-            + STRATEGY_LIBRARY_APPLICATION_INTERFACE_VERSION.render(),
-            "StrategyDiagnosticsV1ScenarioLabApplication/"
-            + SCENARIO_LAB_APPLICATION_INTERFACE_VERSION.render(),
-            "StrategyDiagnosticsV1DiagnosticTasksApplication/"
-            + DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION.render(),
-        ],
+        "active_feature_registry": _active_feature_registry(),
+        "application_interfaces": _application_interfaces(),
         "migration_chain": "0001-through-0021",
         "migrations": list(_WAVE3_MIGRATIONS),
         "toolchain_lock": {
@@ -1178,11 +1578,15 @@ def write_source_candidate_evidence(
             for path in REQUIRED_CONTRACT_DOCUMENTS
         ],
         "seams": {
-            "seam_1_persisted_five_feature_tracer": "passed",
-            "seam_2_shared_live_fake_conformance": "passed",
-            "seam_3_installed_offline_certification": "pending-issue-88",
+            "seam_1_persisted_six_feature_tracer": "passed",
+            "seam_2_six_feature_live_fake_conformance": "passed",
+            "seam_3_installed_offline_certification": "pending-issues-118-119",
         },
-        "wave4_started": False,
+        "wave4_source_gate": "issue-116",
+        "deferred_installed_package_gates": {
+            "status": "pending-issues-118-119",
+            "pytest_targets": list(DEFERRED_INSTALLED_PACKAGE_TARGETS),
+        },
     }
     summary_path = candidate_root / "source-candidate-summary.json"
     summary_path.write_text(
@@ -1192,7 +1596,7 @@ def write_source_candidate_evidence(
     (candidate_root / "evidence-summary.md").write_text(
         "\n".join(
             (
-                "# Wave 3 immutable source candidate evidence",
+                "# Wave 4 six-Feature source candidate evidence",
                 "",
                 f"Candidate source: `{source_commit}`",
                 "",
@@ -1200,32 +1604,45 @@ def write_source_candidate_evidence(
                 "to the JUnit/raw reports and persisted six-Feature identity",
                 "ledger in this directory.",
                 "",
-                "This is source-level evidence only. Issue #88 owns installed",
-                "offline Windows certification and the GitHub Release. Wave 4",
-                "has not started.",
+                "This is source-level evidence only. Issues #118 and #119 own",
+                "installed-package certification, offline Windows evidence,",
+                "formal performance certification, and the GitHub Release.",
                 "",
             )
         ),
         encoding="utf-8",
     )
+    pending_gate_result = _write_gate_result(
+        evidence_root=candidate_root,
+        source_commit=source_commit,
+        executions=executions,
+        publish=False,
+    )
+    checksum_files = [
+        (item, item.relative_to(candidate_root).as_posix())
+        for item in candidate_root.rglob("*")
+        if item.is_file()
+        and item.name not in {"SHA256SUMS.txt", pending_gate_result.name}
+    ]
+    checksum_files.append((pending_gate_result, "gate-result.json"))
     checksum_entries = []
-    for path in sorted(
-        (
-            item
-            for item in candidate_root.rglob("*")
-            if item.is_file() and item.name != "SHA256SUMS.txt"
-        ),
-        key=lambda item: item.relative_to(candidate_root).as_posix(),
+    for path, relative_path in sorted(
+        checksum_files,
+        key=lambda item: item[1],
     ):
         checksum_entries.append(
             _sha256_path(path).removeprefix("sha256:")
             + "  "
-            + path.relative_to(candidate_root).as_posix()
+            + relative_path
         )
-    (candidate_root / "SHA256SUMS.txt").write_text(
+    checksum_path = candidate_root / "SHA256SUMS.txt"
+    pending_checksum_path = checksum_path.with_suffix(".txt.tmp")
+    pending_checksum_path.write_text(
         "\n".join(checksum_entries) + "\n",
         encoding="utf-8",
     )
+    pending_checksum_path.replace(checksum_path)
+    pending_gate_result.replace(candidate_root / "gate-result.json")
     return summary_path
 
 
@@ -1317,24 +1734,43 @@ def run_integration_gate(
     """Run the checked-in groups in isolation and stop on the first failure."""
 
     root = project_root.resolve()
+    if (evidence_root is None) != (source_commit is None):
+        _write_preflight_gate_result(
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            failure_classification="argument-validation-failure",
+        )
+        raise ValueError(
+            "evidence_root and source_commit must be provided together"
+        )
     validation = validate_integration_gate(root)
     if not validation.ok:
+        _write_preflight_gate_result(
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            failure_classification="gate-validation-failure",
+        )
         raise RuntimeError("; ".join(validation.errors))
     selected = set(group_names)
     unknown = selected.difference(group.name for group in INTEGRATION_GATE_GROUPS)
     if unknown:
-        raise ValueError(f"unknown integration gate groups: {sorted(unknown)!r}")
-    if (evidence_root is None) != (source_commit is None):
-        raise ValueError(
-            "evidence_root and source_commit must be provided together"
+        _write_preflight_gate_result(
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            failure_classification="argument-validation-failure",
         )
+        raise ValueError(f"unknown integration gate groups: {sorted(unknown)!r}")
     if evidence_root is not None and selected:
+        _write_preflight_gate_result(
+            evidence_root=evidence_root,
+            source_commit=source_commit,
+            failure_classification="argument-validation-failure",
+        )
         raise ValueError("candidate evidence requires the complete Gate")
 
     candidate_evidence_root: Path | None = None
     if evidence_root is not None:
         assert source_commit is not None
-        _verify_candidate_source(root, source_commit)
         candidate_evidence_root = evidence_root.resolve()
         if candidate_evidence_root.exists() and any(
             candidate_evidence_root.iterdir()
@@ -1343,6 +1779,16 @@ def run_integration_gate(
                 "candidate evidence root must be absent or empty before capture"
             )
         candidate_evidence_root.mkdir(parents=True, exist_ok=True)
+        try:
+            _verify_candidate_source(root, source_commit)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            _write_gate_result(
+                evidence_root=candidate_evidence_root,
+                source_commit=source_commit,
+                executions=(),
+                failure_classification="source-preflight-failure",
+            )
+            raise
 
     environment = os.environ.copy()
     environment.pop("PYTEST_ADDOPTS", None)
@@ -1352,10 +1798,18 @@ def run_integration_gate(
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     environment.setdefault("QT_QUICK_BACKEND", "software")
-    resolved_temporary_parent = _integration_gate_temporary_parent(
-        root,
-        temporary_parent,
-    )
+    try:
+        resolved_temporary_parent = _integration_gate_temporary_parent(
+            root,
+            temporary_parent,
+        )
+    except (OSError, RuntimeError, ValueError):
+        _write_preflight_gate_result(
+            evidence_root=candidate_evidence_root,
+            source_commit=source_commit,
+            failure_classification="environment-preflight-failure",
+        )
+        raise
     executions: list[IntegrationGateExecution] = []
     for group_index, group in enumerate(INTEGRATION_GATE_GROUPS, start=1):
         if selected and group.name not in selected:
@@ -1458,21 +1912,35 @@ def run_integration_gate(
         executions.append(execution)
         if completed.returncode:
             break
-    if candidate_evidence_root is not None and all(
-        item.returncode == 0 for item in executions
-    ):
+    if candidate_evidence_root is not None:
         assert source_commit is not None
-        _verify_candidate_source(
-            root,
-            source_commit,
-            allowed_untracked_root=candidate_evidence_root,
-        )
-        write_source_candidate_evidence(
-            root,
-            evidence_root=candidate_evidence_root,
-            source_commit=source_commit,
-            executions=executions,
-        )
+        if any(item.returncode != 0 for item in executions):
+            _write_gate_result(
+                evidence_root=candidate_evidence_root,
+                source_commit=source_commit,
+                executions=executions,
+            )
+        else:
+            try:
+                _verify_candidate_source(
+                    root,
+                    source_commit,
+                    allowed_untracked_root=candidate_evidence_root,
+                )
+                write_source_candidate_evidence(
+                    root,
+                    evidence_root=candidate_evidence_root,
+                    source_commit=source_commit,
+                    executions=executions,
+                )
+            except (OSError, RuntimeError, ValueError):
+                _write_gate_result(
+                    evidence_root=candidate_evidence_root,
+                    source_commit=source_commit,
+                    executions=executions,
+                    failure_classification="evidence-validation-failure",
+                )
+                raise
     return tuple(executions)
 
 
@@ -1519,7 +1987,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Validate or run the Strategy Diagnostics V1 + Frontend V2 "
-            "Wave 3 source integration quality gate."
+            "Wave 4 six-Feature source integration quality gate."
         )
     )
     parser.add_argument(
@@ -1561,11 +2029,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     validation = validate_integration_gate(arguments.project_root)
     if not validation.ok:
+        _write_preflight_gate_result(
+            evidence_root=arguments.evidence_root,
+            source_commit=arguments.source_commit,
+            failure_classification="gate-validation-failure",
+        )
         for error in validation.errors:
             print(f"ERROR: {error}")
         return 2
     if arguments.validate_only:
-        print("Wave 3 source integration gate manifest: valid")
+        print("Wave 4 six-Feature source integration gate manifest: valid")
         return 0
     executions = run_integration_gate(
         arguments.project_root,
@@ -1585,6 +2058,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "INTEGRATION_GATE_GROUPS",
+    "DEFERRED_INSTALLED_PACKAGE_TARGETS",
     "PERSISTED_PRODUCT_TRACER",
     "REQUIRED_CONTRACT_DOCUMENTS",
     "REQUIRED_CONTRACT_MARKERS",

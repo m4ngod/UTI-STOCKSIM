@@ -1,4 +1,3 @@
-import gc
 import json
 import os
 from dataclasses import replace
@@ -41,13 +40,15 @@ def _release_closed_qml_hosts_between_tests():
     app = QApplication.instance()
     if app is None:
         return
-    gc.collect()
+    # Every host is closed by its test. Drain Qt-owned deferred deletes here;
+    # forcing cyclic Python GC over wrappers already deleted by a preceding QML
+    # module can dereference invalid Qt Quick objects on Windows.
+    app.processEvents()
     QCoreApplication.sendPostedEvents(
         None,
         QEvent.Type.DeferredDelete,
     )
     app.processEvents()
-    gc.collect()
 
 
 def test_route_flag_mounts_one_centralized_qml_workspace_with_loading_state():

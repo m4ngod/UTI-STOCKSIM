@@ -1,11 +1,10 @@
-# Strategy Diagnostics V1 + Frontend V2 Wave 3 contract
+# Strategy Diagnostics V1 + Frontend V2 Wave 4 six-Feature contract
 
-Status: source-level integration contract for Issues #77–#87 plus the
-certified Wave 2 delivery in Issues #56–#66. This is not a Wave 3 installed
-release-certification claim. Issue #86 owns source-level T08/T09/T10 preflight;
-Issue #87 owns the immutable source candidate and retained Seam 1/Seam 2 evidence;
-Issue #88 owns the installed offline black-box certification, packages, tag,
-release assets, and retained final T08/T09/T10 evidence.
+Status: source-level six-Feature conformance and persisted-product contract for
+Issues #108–#116, layered on the retained Wave 1–3 gates. This is not an
+installed-package or remote-release claim. Issue #116 owns the six-Feature
+source gate. Issues #118 and #119 own installed-package and remote release
+certification, including renderer, offline, performance and retained evidence.
 
 ## Versioned boundary
 
@@ -19,6 +18,16 @@ composition root.
 - `DiagnosticTasksFeature` version 1.0
 - `RunMonitoringFeature` version 1.2
 - `EvidenceAndFindingsFeature` version 1.1
+- `SystemHealthFeature` version 1.0
+
+The six live Feature Adapters share one `AppContext` and one
+`DiagnosticsApplication`. The versioned application boundaries also include
+`StrategyDiagnosticsV1ApplicationReadModel` version 1.0 and
+`StrategyDiagnosticsV1SystemHealthApplication` version 1.0. System Health is
+read-only: it exposes finite typed component classifications, safe redacted
+errors, freshness/age/threshold, phase/completeness, last reliable payload,
+typed optional diagnostic context, and no infrastructure-management command or
+generic metrics dictionary.
 
 The Strategy inventory read boundary is the separate in-process
 `StrategyDiagnosticsV1StrategyLibraryApplication` version 1.0. Its production
@@ -182,8 +191,8 @@ validates, approves, and starts a Diagnostic Task through public
 `DiagnosticsApplication` behavior and the live
 `StrategyDiagnosticsV1DiagnosticTasksApplication` adapter.
 
-The primary tracer mounts production QML with all five live Feature adapters
-and the three versioned Application adapters. It observes the persistent task,
+The primary tracer mounts production QML with all six live Feature adapters
+and all five versioned Application interfaces. It observes the persistent task,
 campaign, node, attempt and run identities, compares requested, effective and
 override execution facts with the resulting Strategy Run, follows Run
 Monitoring into Evidence & Findings, and preserves exact Evidence Package,
@@ -196,6 +205,14 @@ It exercises disconnect, reconnect, old-generation quarantine and remount;
 then disposes the database engine, creates a fresh Application and engine
 against the same files, and verifies the exact durable identity graph and
 terminal history before clean close.
+
+The same tracer navigates all six production routes while the task is running,
+retains the System Health last reliable contextual state through disconnect,
+requires an authoritative reread before recovery, rejects old-generation and
+duplicate/lower-revision delivery, observes contextual completion for the exact
+Task/Run/Evidence/Finding/Breakpoint/Manifest graph, and restores the exact
+route, selection, focus and result after close/reopen. Its horizontal evidence
+comparison spans multiple typed dimensions and never produces a universal score.
 
 The primary production-QML path is joined by exact real live/file-backed
 targets for authoritative input rejection and correction, exact-revision
@@ -255,17 +272,31 @@ execution resolution and override reasons, `not_yet_resolved` exclusion,
 formal selection, idempotency, source conflict, and stale successor contexts.
 Structured failure retains the last reliable immutable inventory as stale.
 
-Issue #87 freezes one immutable source candidate only after the complete
+System Health executes one unchanged public contract body for both
+`LiveSystemHealthAdapter` and `DeterministicFakeSystemHealthAdapter`. It covers
+immutable typed state and collections, finite classifications, strictly
+monotonic revisions, generation quarantine, loading/no-current-task, stale,
+disconnected, partial, failed, recovering, healthy/degraded, incompatible,
+unknown and completed-context states, idempotent Subscription disposal and
+Adapter close, safe redaction, and no callback after disposal or close. Its
+context extension uses the same assertion helpers for live persisted identity
+resolution and deterministic fake edge states.
+
+Issue #116 seals one source candidate only after the complete
 ten-group source Gate, Seam 1 tracer, Seam 2 unchanged-body conformance,
 migrations 0019–0021, type/architecture/safety gates, QML import checks,
 source-level T08/T09/T10 preflight, and Wave 2 regression are green. The
 candidate evidence contains per-group JUnit XML and raw stdout/stderr, a
-source-bound `identity-ledger.json`, the exact active five-Feature registry,
-three Application Interface versions, contract and toolchain digests, and a
-complete SHA-256 manifest. This evidence is committed separately after the
+source-bound `identity-ledger.json`, the exact active six-Feature registry,
+five Application Interface versions, contract and toolchain digests, and a
+complete SHA-256 manifest. The runner always writes `gate-result.json` with
+the candidate source identity, active registry, fixture identity, completed
+and unreached groups, result, and failure classification; fail-fast test
+failure therefore remains machine-readable even when later groups do not run.
+This evidence is committed separately after the
 candidate source commit; the evidence commit may descend from the candidate,
 but no product-source edit may be introduced between candidate freeze and
-Issue #88 certification. The Gate re-verifies the exact source and tracked tree
+downstream certification. The Gate re-verifies the exact source and tracked tree
 both before and after all ten groups, permitting only its configured untracked
 evidence root during the post-Gate check. The sealer validates the complete
 identity-ledger schema, exact registry, non-empty identity/provenance graph and
@@ -274,7 +305,7 @@ fix, a new candidate, and rerunning every affected gate.
 
 ### Seam 3: installed offline black-box release
 
-Issue #88 owns the Wave 3 installed offline black-box journey, hardware and
+Issues #118 and #119 own installed offline black-box journeys, hardware and
 software rendering certification, clean-room installation, package checksums,
 dependency manifests, retained raw evidence, release tag, and remote assets.
 The source gate proves incremental preflight readiness but does not claim that
@@ -283,11 +314,11 @@ by Issue #66.
 
 ## Accessibility, safety, and performance
 
-Issue #86 completes source-level T08/T09/T10 preflight for the current
-five-route Journey. T08 drives all routes without a pointer, verifies logical
+Issue #116 retains source-level T08/T09/T10 preflight for the current
+six-route Journey. T08 drives all routes without a pointer, verifies logical
 visible focus and restoration, Narrator status identities and descriptions,
 200% text scale, high contrast, reduced motion, reconnect/remount behavior,
-and five distinct route frames in both Software and Direct3D 11 renderer
+and six distinct route frames in both Software and Direct3D 11 renderer
 lanes. Comparison and chart views retain synchronized narrative/table
 revisions.
 
@@ -312,16 +343,17 @@ installed black-box certification and not a claim that Seam 3 has passed.
 
 ## Explicit exclusions
 
-Wave 3 does not add manual trading, HTTP, REST, OpenAPI, IPC, a second process,
+Wave 4 does not add manual trading, HTTP, REST, OpenAPI, IPC, a second process,
 WebEngine, or a general-purpose frontend façade. It does not remove legacy
 Widgets. Issues #77 and #78 activate Strategy Library browse, explicit
 comparison, exact formal selection, and authoritative bookmark recovery.
 Issues #79–#83 activate Scenario Lab read tracing, Recipe writes, approval,
 materialization, scenario-set composition, and formal selection. Issue #84
 activates the exact typed handoff into unchanged Diagnostic Tasks 1.0. Issue
-#85 preserves five-Feature recovery truth and Issue #86 completes the
-accessible no-trading source preflight. Issue #87 closes the persisted
-five-Feature tracer and shared conformance seams and freezes their immutable
-source candidate. System Health and Wave 4 remain unimplemented.
-This contract does not claim Wave 3 installed T08/T09/T10 or
-release certification.
+#115 preserves six-route accessible recovery truth. Issue #116 extends the
+existing highest product tracer and conformance union to System Health without
+creating a fake, database, Repository, ORM, page-internal, generic-dispatch or
+second-composition-root path. Observation-ledger/rollback work from #117 and
+installed-package/release work from #118–#119 remain explicitly out of scope.
+This contract does not claim installed D3D11/Software, clean offline Windows,
+manual Narrator, formal performance, rollback or remote-release certification.

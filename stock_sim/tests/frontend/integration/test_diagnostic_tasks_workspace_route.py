@@ -47,6 +47,7 @@ from app.features import (
     MarketScenarioId,
     ReviseDiagnosticTaskConfiguration,
     RetryFailedCampaignNode,
+    RuntimeHealthRecoveryPhase,
     RunMonitoringContext,
     RunMonitoringSelection,
     ScenarioLabContext,
@@ -567,8 +568,31 @@ def test_real_persisted_evidence_handoff_resolves_in_qml_without_id_remap(
 
 def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     tmp_path,
+    monkeypatch,
 ) -> None:
     app = _app()
+    toolchain_lock_path = (
+        Path(__file__).parents[3]
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_toolchain.lock.json"
+    )
+    release_manifest_path = tmp_path / "dependency-manifest.json"
+    release_manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "toolchain_lock": json.loads(
+                    toolchain_lock_path.read_text(encoding="utf-8")
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "STOCKSIM_FRONTEND_V2_RELEASE_MANIFEST_PATH",
+        str(release_manifest_path),
+    )
     settings_path = tmp_path / "frontend-settings.json"
     evidence_root = tmp_path / "diagnostic-evidence"
     market_path_root = tmp_path / "market-paths"
@@ -593,6 +617,9 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert returned_source is source
     assert returned_artifact_store is artifact_store
     initial_diagnostic_tasks.close()
+    system_health_clock = _Clock(
+        datetime(2026, 7, 21, tzinfo=timezone.utc)
+    )
     bridge = EventBridge(subscribe_backend=False)
     read_model = LiveStrategyDiagnosticsV1ApplicationAdapter(
         application,
@@ -621,11 +648,34 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
                 current_manifest_format_provider=(
                     lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
                 ),
+                clock=system_health_clock,
             )
         ),
+        system_health_clock=system_health_clock,
+        system_health_sampling_interval=None,
         legacy_read_only=True,
     )
     assert context.strategy_diagnostics_application is application
+    assert isinstance(
+        context.strategy_diagnostics_read_model,
+        LiveStrategyDiagnosticsV1ApplicationAdapter,
+    )
+    assert isinstance(
+        context.strategy_diagnostics_tasks_application,
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+    )
+    assert isinstance(
+        context.strategy_diagnostics_library_application,
+        LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+    )
+    assert isinstance(
+        context.strategy_diagnostics_scenario_lab_application,
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+    )
+    assert isinstance(
+        context.strategy_diagnostics_system_health_application,
+        LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
+    )
     expected_application_identity = diagnostics_application_identity(application)
     assert {
         adapter.application_identity
@@ -644,6 +694,12 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     run_monitoring = context.run_monitoring_feature
     evidence = context.evidence_and_findings_feature
     system_health = context.system_health_feature
+    assert isinstance(strategy_feature, LiveStrategyLibraryAdapter)
+    assert isinstance(scenario_feature, LiveScenarioLabAdapter)
+    assert isinstance(diagnostic_tasks, LiveDiagnosticTasksAdapter)
+    assert isinstance(run_monitoring, LiveRunMonitoringAdapter)
+    assert isinstance(evidence, LiveEvidenceAndFindingsAdapter)
+    assert isinstance(system_health, LiveSystemHealthAdapter)
     workspace = context.diagnostic_tasks_context
     strategy_bookmarks = []
     journey_bookmarks = []
@@ -696,13 +752,56 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
             if predicate():
                 return
             QTest.qWait(5)
-        raise AssertionError("Five-Feature setup did not reach authoritative state")
+        raise AssertionError("Six-Feature setup did not reach authoritative state")
+
+    def find_product_control(object_name: str) -> QQuickItem | None:
+        pending = [root]
+        while pending:
+            candidate = pending.pop()
+            if candidate.objectName() == object_name:
+                return candidate
+            pending.extend(candidate.childItems())
+        return None
+
+    def keyboard_focus_product_control(object_name: str) -> QQuickItem:
+        target = None
+        for _ in range(512):
+            target = find_product_control(object_name)
+            if target is not None and target.property("activeFocus") is True:
+                assert target.property("visible") is True
+                return target
+            QTest.keyClick(host, Qt.Key.Key_Tab)
+            settle_setup()
+        assert target is not None
+        raise AssertionError(f"{object_name} is not keyboard reachable")
+
+    def keyboard_activate_product_control(object_name: str) -> None:
+        target = keyboard_focus_product_control(object_name)
+        assert target.property("enabled") is True
+        QTest.keyClick(host, Qt.Key.Key_Space)
+        settle_setup()
+
+    def keyboard_replace_product_text(object_name: str, value: str) -> None:
+        target = keyboard_focus_product_control(object_name)
+        QTest.keyClick(
+            host,
+            Qt.Key.Key_A,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+        QTest.keyClicks(host, value)
+        settle_setup()
+        assert target.property("text") == value
+
+    def keyboard_remount_scenario_lab() -> None:
+        keyboard_activate_product_control("strategyLibraryRouteNavigation")
+        assert root.property("activeRoute") == "strategy_library"
+        keyboard_activate_product_control("scenarioLabRouteNavigation")
+        assert root.property("activeRoute") == "scenario_lab"
 
     assert root.property("activeRoute") == "strategy_library"
     assert root.findChild(QObject, "strategyLibraryPage") is not None
-    host._strategy_library.compareFormalSet()
-    host._strategy_library.selectFormalSet()
-    settle_setup()
+    keyboard_activate_product_control("strategyLibraryCompareFormalSet")
+    keyboard_activate_product_control("strategyLibrarySelectFormalSet")
     assert strategy_bookmarks
     strategy_selection = (
         host._strategy_library.current_formal_strategy_selection()
@@ -743,36 +842,78 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         for item in scenario_adapter.transformations
         if item["transformationId"] == "execution-stress.v1"
     )
-    scenario_adapter.createRecipeDraft(
-        "Wave 3 persisted five-Feature tracer recipe",
-        str(admitted_segment["segmentId"]),
-        str(execution_stress["transformationId"]),
-        "3",
-        "5",
-        "1",
-        "75",
-        0,
-        30,
-        17,
-        True,
-        "a-share-cash-equity.v1",
+    keyboard_replace_product_text(
+        "scenarioLabRecipeNameInput",
+        "Wave 4 persisted six-Feature tracer recipe",
     )
+    segment_input = keyboard_focus_product_control(
+        "scenarioLabRecipeSegmentInput"
+    )
+    assert segment_input.property("currentValue") == (
+        admitted_segment["segmentId"]
+    )
+    transformation_input = keyboard_focus_product_control(
+        "scenarioLabRecipeTransformationInput"
+    )
+    QTest.keyClick(host, Qt.Key.Key_Home)
+    for _ in range(
+        next(
+            index
+            for index, item in enumerate(scenario_adapter.transformations, start=1)
+            if item["transformationId"] == execution_stress["transformationId"]
+        )
+    ):
+        QTest.keyClick(host, Qt.Key.Key_Down)
+    settle_setup()
+    assert transformation_input.property("currentValue") == (
+        execution_stress["transformationId"]
+    )
+    keyboard_replace_product_text(
+        "scenarioLabRecipeTransformationParameterInput",
+        "75",
+    )
+    keyboard_replace_product_text("scenarioLabRecipeSlippageInput", "5")
+    assert root.findChild(
+        QQuickItem,
+        "scenarioLabRecipeCommissionInput",
+    ).property("text") == "3"
+    assert root.findChild(
+        QQuickItem,
+        "scenarioLabRecipeMaxFillInput",
+    ).property("text") == "1"
+    assert root.findChild(
+        QQuickItem,
+        "scenarioLabRecipePartialFillsInput",
+    ).property("checked") is True
+    keyboard_activate_product_control("scenarioLabCreateRecipeDraftButton")
     assert scenario_adapter.recipeDraftCount == draft_count + 1
     recipe_draft = scenario_adapter.recipeDrafts[-1]
-    scenario_adapter.validateRecipeDraft(str(recipe_draft["draftId"]))
+    keyboard_remount_scenario_lab()
+    wait_for_setup(
+        lambda: find_product_control(
+            "scenarioLabValidateRecipeDraft-" + str(recipe_draft["draftId"]),
+        )
+        is not None
+    )
+    keyboard_activate_product_control(
+        "scenarioLabValidateRecipeDraft-" + str(recipe_draft["draftId"])
+    )
     recipe_validation = scenario_adapter.recipeValidations[-1]
     assert recipe_validation["draftId"] == recipe_draft["draftId"]
     assert recipe_validation["valid"] is True
-    scenario_adapter.approveRecipeValidation(
-        str(recipe_validation["validationId"])
+    keyboard_remount_scenario_lab()
+    keyboard_activate_product_control(
+        "scenarioLabApproveRecipe-" + str(recipe_validation["validationId"])
     )
     approved_recipe = next(
         item
         for item in scenario_adapter.approvedRecipeVersions
         if item["validationId"] == recipe_validation["validationId"]
     )
-    scenario_adapter.materializeApprovedRecipeVersion(
-        str(approved_recipe["recipeVersionId"])
+    keyboard_remount_scenario_lab()
+    keyboard_activate_product_control(
+        "scenarioLabMaterializeApprovedRecipe-"
+        + str(approved_recipe["recipeVersionId"])
     )
     wait_for_setup(
         lambda: scenario_adapter.taskHandleCount == handle_count + 1
@@ -790,16 +931,32 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         if item["pathId"] == materialization_handle["resultIdentity"]
         and item["recipeVersionId"] == approved_recipe["recipeVersionId"]
     )
-    scenario_adapter.composeVisibleScenarioSet()
+    keyboard_activate_product_control(
+        "scenarioLabComposeVisibleScenarioSetButton"
+    )
     assert (
         scenario_adapter.scenarioSets
     ), scenario_adapter.recipeCapabilityMessage
     formal_scenario_set = scenario_adapter.scenarioSets[-1]
     assert formal_scenario_set["eligibility"] == "formal_campaign_eligible"
     assert materialized_case["scenarioId"] in formal_scenario_set["caseIds"]
-    scenario_adapter.resolveLatestScenarioSet()
+    assert formal_scenario_set["baselineCaseId"]
+    assert formal_scenario_set["isolatedCaseIds"]
+    assert formal_scenario_set["compoundCaseIds"]
+    formal_layer_ids = {
+        formal_scenario_set["baselineCaseId"],
+        *formal_scenario_set["isolatedCaseIds"],
+        *formal_scenario_set["compoundCaseIds"],
+    }
+    assert formal_layer_ids == set(formal_scenario_set["caseIds"])
+    assert formal_scenario_set["comparisonRelationships"]
+    keyboard_activate_product_control(
+        "scenarioLabResolveExecutionAssumptionsButton"
+    )
     execution_resolution = scenario_adapter.executionResolutions[-1]
-    scenario_adapter.selectLatestFormalScenarioSet()
+    keyboard_activate_product_control(
+        "scenarioLabSelectFormalScenarioSetButton"
+    )
     scenario_selection = scenario_adapter.current_diagnostic_selection()
     assert scenario_selection is not None
     assert materialized_case["scenarioId"] in {
@@ -1026,6 +1183,10 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     activate("startDiagnosticCampaignButton")
 
     failed_task = current_task()
+    assert any(
+        node.lifecycle is DiagnosticTaskLifecycle.QUEUED
+        for node in failed_task.handoff.campaign_nodes
+    )
     failed_node = next(
         node
         for node in failed_task.handoff.campaign_nodes
@@ -1061,6 +1222,22 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         QObject,
         "runMonitoringRunIdentity",
     ).property("text") == f"Run · {failed_run.run_id.value}"
+    run_monitoring_status = root.findChild(
+        QObject,
+        "runMonitoringAccessibleStatus",
+    )
+    assert run_monitoring_status is not None
+    run_monitoring_accessible = QAccessible.queryAccessibleInterface(
+        run_monitoring_status
+    )
+    assert run_monitoring_accessible is not None
+    assert "completeness partial" in run_monitoring_accessible.text(
+        QAccessible.Text.Name
+    ).casefold()
+    assert (
+        failed_run_snapshot.processed_node_count
+        < failed_run_snapshot.total_node_count
+    )
     assert failed_task.lifecycle is DiagnosticTaskLifecycle.RUNNING
     running_task_identity = failed_task.task_id
     running_campaign_identity = failed_task.handoff.campaign_id
@@ -1069,7 +1246,51 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     )
     assert running_campaign_identity is not None
     assert running_task_handle_identities
+    failed_system_health_context = SystemHealthContext(
+        diagnostic=SystemHealthDiagnosticContext(
+            task_id=failed_task.task_id,
+            task_revision=failed_task.revision,
+            configuration_content_id=failed_task.configuration.content_identity,
+            task_handle_id=failed_task.task_handles[-1].identity,
+            campaign_id=failed_task.handoff.campaign_id,
+            campaign_revision=failed_task.handoff.campaign_revision,
+            run_id=failed_run.run_id,
+            approved_recipe_version_ids=tuple(
+                item.recipe_version_id
+                for item in failed_task.configuration.campaign_case_selections
+            ),
+        )
+    )
+    system_health_states = []
+    system_health_probe = system_health.subscribe(
+        failed_system_health_context,
+        system_health_states.append,
+    )
+    failed_system_health_state = system_health_states[-1]
+    assert failed_system_health_state.diagnostic_context.resolution is (
+        SystemHealthContextResolution.FAILED
+    )
+    assert failed_system_health_state.last_reliable_payload is not None
+    degraded_system_health_revision = failed_system_health_state.revision
     assert host._diagnostic_tasks._subscription is None
+
+    for navigation_object, route_name in (
+        ("strategyLibraryRouteNavigation", "strategy_library"),
+        ("scenarioLabRouteNavigation", "scenario_lab"),
+        ("diagnosticTasksRouteNavigation", "diagnostic_tasks"),
+        ("runMonitoringRouteNavigation", "run_monitoring"),
+        ("evidenceAndFindingsRouteNavigation", "evidence_and_findings"),
+        ("systemHealthRouteNavigation", "system_health"),
+    ):
+        traverse_to(navigation_object)
+        QTest.keyClick(host, Qt.Key.Key_Return)
+        settle()
+        assert root.property("activeRoute") == route_name
+        background_task = diagnostic_tasks.snapshot(workspace).task
+        assert background_task is not None
+        assert background_task.task_id == running_task_identity
+        assert background_task.handoff.campaign_id == running_campaign_identity
+        assert background_task.lifecycle is DiagnosticTaskLifecycle.RUNNING
 
     assert root.setProperty("activeRoute", "system_health")
     settle()
@@ -1115,10 +1336,22 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         workspace,
         diagnostic_states.append,
     )
+    pre_disconnect_system_health = system_health.snapshot(
+        failed_system_health_context
+    )
     old_generation = bridge.connection_generation
     announcements_before_disconnect = announcement_spy.count()
     bridge.mark_disconnected()
     settle()
+    disconnected_system_health = system_health.snapshot(
+        failed_system_health_context
+    )
+    assert disconnected_system_health.recovery_phase is (
+        RuntimeHealthRecoveryPhase.DISCONNECTED
+    )
+    assert disconnected_system_health.last_reliable_payload == (
+        pre_disconnect_system_health.last_reliable_payload
+    )
     assert host._diagnostic_tasks._subscription is None
     assert announcement_spy.count() == announcements_before_disconnect
     assert root.setProperty("activeRoute", "system_health")
@@ -1176,7 +1409,60 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     announcements_before_reconnect = announcement_spy.count()
     reconnected = bridge.mark_reconnected()
     assert reconnected.generation.value > old_generation.value
+    pre_disconnect_source_revision = (
+        pre_disconnect_system_health.diagnostic_data_source.accepted_revision
+    )
+    assert pre_disconnect_source_revision is not None
+    bridge.on_snapshot(
+        {
+            "feature": "system_health",
+            "component": "diagnostic_data_source",
+            "source_revision": pre_disconnect_source_revision.value + 1,
+        },
+        generation=reconnected.generation,
+    )
+    bridge.flush(force=True)
     settle()
+    for _ in range(400):
+        recovered_candidates = tuple(
+            state
+            for state in system_health_states
+            if state.recovery_phase is RuntimeHealthRecoveryPhase.RECOVERED
+        )
+        if recovered_candidates:
+            recovered_system_health = recovered_candidates[-1]
+            break
+        settle()
+        QTest.qWait(5)
+    else:
+        raise AssertionError(
+            "System Health did not complete authoritative reread: "
+            + repr(
+                tuple(
+                    (
+                        state.revision,
+                        state.recovery_phase.value,
+                        state.presentation.value,
+                        state.diagnostic_context.resolution.value,
+                        state.context == failed_system_health_context,
+                        tuple(
+                            getattr(component, "classification", None).value
+                            for component in state.components
+                        ),
+                        state.diagnostic_data_source.classification.value,
+                        state.diagnostic_queue.classification.value,
+                        state.diagnostic_cache.classification.value,
+                    )
+                    for state in system_health_states[-12:]
+                )
+            )
+        )
+    assert any(
+        state.recovery_phase is RuntimeHealthRecoveryPhase.REREADING
+        for state in system_health_states
+    )
+    recovered_system_health_revision = recovered_system_health.revision
+    assert recovered_system_health_revision > degraded_system_health_revision
     diagnostic_projection.refresh()
     settle()
     assert diagnostic_projection.freshness == "fresh"
@@ -1236,6 +1522,34 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert diagnostic_projection.revisionText == quarantined_revision_text
     assert len(diagnostic_states) == quarantine_delivery_count
     assert announcement_spy.count() == quarantine_announcement_count
+    health_source_revision = (
+        recovered_system_health.diagnostic_data_source.accepted_revision
+    )
+    assert health_source_revision is not None
+    health_delivery_count = len(system_health_states)
+    health_revision_before_quarantine = system_health_states[-1].revision
+    for generation, revision in (
+        (old_generation, health_source_revision.value + 100),
+        (reconnected.generation, health_source_revision.value),
+        (reconnected.generation, max(0, health_source_revision.value - 1)),
+    ):
+        bridge.on_snapshot(
+            {
+                "feature": "system_health",
+                "component": "diagnostic_data_source",
+                "source_revision": revision,
+            },
+            generation=generation,
+        )
+    bridge.flush(force=True)
+    settle()
+    assert len(system_health_states) == health_delivery_count
+    assert system_health_states[-1].revision == health_revision_before_quarantine
+    assert tuple(state.revision for state in system_health_states) == tuple(
+        sorted({state.revision for state in system_health_states})
+    )
+    system_health_probe.dispose()
+    system_health_probe.dispose()
     diagnostic_probe.dispose()
     diagnostic_probe.dispose()
 
@@ -1514,6 +1828,19 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     assert finding_ids
     assert breakpoint_ids
     assert breakpoint_finding_edges
+    comparison_dimensions = {
+        record.dimension.value
+        for candidate in evidence_data.candidates
+        for record in candidate.evidence
+    }
+    assert comparison_dimensions.issuperset(
+        {"return", "risk", "execution", "exposure", "stability"}
+    )
+    assert all(candidate.comparisons for candidate in evidence_data.candidates)
+    assert not any(
+        hasattr(candidate, "universal_score")
+        for candidate in evidence_data.candidates
+    )
 
     candidate_with_breakpoint, finding_with_breakpoint = next(
         (candidate, finding)
@@ -1568,6 +1895,7 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         )
     )
     system_health_projection = system_health.snapshot(system_health_context)
+    assert system_health_projection.revision > recovered_system_health_revision
     assert (
         system_health_projection.diagnostic_context.resolution
         is SystemHealthContextResolution.COMPLETED
@@ -1797,8 +2125,11 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
                 current_manifest_format_provider=(
                     lambda: REPRODUCTION_MANIFEST_SCHEMA_VERSION
                 ),
+                clock=system_health_clock,
             )
         ),
+        system_health_clock=system_health_clock,
+        system_health_sampling_interval=None,
         legacy_read_only=True,
     )
     restarted_setup_coordinator = (
@@ -2124,6 +2455,29 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
                 "breakpoint_ids": breakpoint_ids,
                 "breakpoint_finding_edges": breakpoint_finding_edges,
                 "reproduction_manifest_id": manifest_id.value,
+            },
+            "system_health": {
+                "task_id": completed_task.task_id.value,
+                "task_handle_id": selected_task_handle.identity.value,
+                "campaign_id": campaign_id.value,
+                "run_id": accepted_run.run_id.value,
+                "evidence_package_id": (
+                    evidence_data.evidence_package_id.value
+                ),
+                "finding_id": finding_with_breakpoint.identity.value,
+                "breakpoint_id": selected_breakpoint.identity.value,
+                "reproduction_manifest_id": manifest_id.value,
+                "degraded_revision": degraded_system_health_revision,
+                "recovered_revision": recovered_system_health_revision,
+                "final_revision": system_health_projection.revision,
+                "old_generation_quarantined": True,
+                "authoritative_reread_before_recovery": True,
+                "final_context_resolution": (
+                    system_health_projection.diagnostic_context.resolution.value
+                ),
+                "final_overall_classification": (
+                    system_health_projection.overall_classification.value
+                ),
             },
             "recovery": {
                 "single_app_context": True,

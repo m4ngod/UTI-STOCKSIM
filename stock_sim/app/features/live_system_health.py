@@ -3284,7 +3284,9 @@ def _with_data_source_aggregate(
     return replace(
         aggregate,
         phase=(
-            ViewPhase.FAILED
+            ViewPhase.LOADING
+            if aggregate.phase is ViewPhase.LOADING
+            else ViewPhase.FAILED
             if source_phase is ViewPhase.FAILED
             and aggregate.phase is not ViewPhase.FAILED
             else aggregate.phase
