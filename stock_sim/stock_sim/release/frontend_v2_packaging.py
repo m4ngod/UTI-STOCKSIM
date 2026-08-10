@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -65,6 +66,7 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
     for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
+CLEAN_ROOM_REPORT_SCHEMA_VERSION = 4
 _QML_IMPORT_PATTERN = re.compile(
     r"^\s*import\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s+"
@@ -164,7 +166,17 @@ _PRODUCTION_JOURNEY_PATH = (
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
+    "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+    "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
+)
+_ACTIVE_JOURNEY_ROUTES = (
+    "strategy_library",
+    "scenario_lab",
+    "diagnostic_tasks",
+    "run_monitoring",
+    "evidence_and_findings",
+    "system_health",
 )
 _WAVE2_RELEASE_FIXTURE_KIND = "authoritative_writable_wave3_inputs"
 _WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
@@ -355,6 +367,8 @@ class FrontendV2ToolchainLock:
     platform: LockedPlatform
     toolchain: ToolchainVersions
     invalidation_policy: str
+    production_dependencies: dict[str, str] = field(default_factory=dict)
+    build_dependencies: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,6 +532,18 @@ class RendererLaneEvidence:
     accessibility_announcements: tuple[str, ...]
     old_generation_rejected: bool
     authoritative_reconnect_verified: bool
+    queued_state_observed: bool
+    running_state_observed: bool
+    partial_state_observed: bool
+    controlled_failure_observed: bool
+    safe_failure_reason_verified: bool
+    retry_idempotency_verified: bool
+    duplicate_work_count: int
+    terminal_completion_observed: bool
+    system_health_context_verified: bool
+    system_health_identity_graph: tuple[str, ...]
+    system_health_accessibility_verified: bool
+    focus_restoration_verified: bool
     connection_transitions: tuple[str, ...]
     manual_trading_action_count: int
     read_only_context_visible: bool
@@ -664,6 +690,34 @@ EXPECTED_TOOLCHAIN = ToolchainVersions(
     nuitka="2.6.8",
 )
 
+EXPECTED_PRODUCTION_DEPENDENCIES = {
+    "PySide6": "6.9.1",
+    "PySide6-Addons": "6.9.1",
+    "PySide6-Essentials": "6.9.1",
+    "SQLAlchemy": "2.0.49",
+    "asn1crypto": "1.5.1",
+    "duckdb": "1.5.4",
+    "greenlet": "3.4.0",
+    "numpy": "2.3.1",
+    "pg8000": "1.31.5",
+    "psycopg": "3.2.9",
+    "psycopg-binary": "3.2.9",
+    "pydantic": "1.10.26",
+    "pyqtgraph": "0.13.7",
+    "python-dateutil": "2.9.0.post0",
+    "redis": "7.4.0",
+    "scramp": "1.4.8",
+    "shiboken6": "6.9.1",
+    "six": "1.17.0",
+    "typing-extensions": "4.15.0",
+    "tzdata": "2025.2",
+}
+EXPECTED_BUILD_DEPENDENCIES = {
+    "Nuitka": "2.6.8",
+    "ordered-set": "4.1.0",
+    "zstandard": "0.25.0",
+}
+
 
 def load_toolchain_lock(
     path: Path = TOOLCHAIN_LOCK_PATH,
@@ -685,6 +739,35 @@ def load_toolchain_lock(
             nuitka=str(toolchain["nuitka"]),
         ),
         invalidation_policy=str(payload["invalidation_policy"]),
+        production_dependencies={
+            str(name): str(version)
+            for name, version in payload.get(
+                "production_dependencies",
+                {},
+            ).items()
+        },
+        build_dependencies={
+            str(name): str(version)
+            for name, version in payload.get(
+                "build_dependencies",
+                {},
+            ).items()
+        },
+    )
+
+
+def running_locked_dependencies(
+    lock: FrontendV2ToolchainLock,
+) -> tuple[dict[str, str], dict[str, str]]:
+    def observed(locked: dict[str, str]) -> dict[str, str]:
+        return {
+            name: importlib.metadata.version(name)
+            for name in sorted(locked)
+        }
+
+    return (
+        observed(lock.production_dependencies),
+        observed(lock.build_dependencies),
     )
 
 
@@ -716,6 +799,26 @@ def verify_running_toolchain(
             mismatches.append(
                 f"{field_name}: expected {expected}, observed {actual}"
             )
+    observed_production, observed_build = running_locked_dependencies(lock)
+    for dependency_kind, expected_dependencies, actual_dependencies in (
+        (
+            "production_dependency",
+            lock.production_dependencies,
+            observed_production,
+        ),
+        (
+            "build_dependency",
+            lock.build_dependencies,
+            observed_build,
+        ),
+    ):
+        for name, expected in sorted(expected_dependencies.items()):
+            actual = actual_dependencies.get(name)
+            if actual != expected:
+                mismatches.append(
+                    f"{dependency_kind}[{name}]: expected {expected}, "
+                    f"observed {actual}"
+                )
     observed_platform = running_platform()
     if (
         observed_platform.operating_system
@@ -783,6 +886,12 @@ def toolchain_evidence_identity(
                 "numpy": lock.toolchain.numpy,
                 "nuitka": lock.toolchain.nuitka,
             },
+            "production_dependencies": dict(
+                sorted(lock.production_dependencies.items())
+            ),
+            "build_dependencies": dict(
+                sorted(lock.build_dependencies.items())
+            ),
             "invalidation_policy": lock.invalidation_policy,
         },
         ensure_ascii=True,
@@ -937,6 +1046,10 @@ def create_package_build_plans(
         source_imports=None,
         resolved_qml_dependencies=None,
         extra_arguments=(
+            (
+                f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
+                "stock_sim/release/frontend_v2_toolchain.lock.json"
+            ),
             "--include-package=psycopg",
             "--include-package=psycopg_binary",
             *(
@@ -974,6 +1087,15 @@ def create_package_build_plans(
                 f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
                 "stock_sim/release/frontend_v2_toolchain.lock.json"
             ),
+            (
+                "--include-data-files="
+                f"{PROJECT_ROOT / 'stock_sim/release/wave4_daily_observation_ledger.schema.json'}="
+                "stock_sim/release/wave4_daily_observation_ledger.schema.json"
+            ),
+            "--include-module=stock_sim.release.frontend_v2_performance_runtime",
+            "--include-module=stock_sim.release.wave4_rollback_probe",
+            "--include-module=stock_sim.release.wave4_legacy_inventory",
+            "--include-module=stock_sim.release.wave4_observation_ledger",
             (
                 "--include-module=stock_sim.release."
                 "strategy_diagnostics_v1_release_fixture"
@@ -1788,6 +1910,38 @@ def _installed_wave2_smoke_failures(
         failures.append(
             "persistent TaskHandle identities are incomplete or invalid"
         )
+    for field_name, label in (
+        ("queued_state_observed", "queued task state"),
+        ("running_state_observed", "running task state"),
+        ("partial_state_observed", "partial task state"),
+        ("controlled_failure_observed", "controlled task failure"),
+        ("safe_failure_reason_verified", "safe failure reason"),
+        ("retry_idempotency_verified", "idempotent task retry"),
+        ("terminal_completion_observed", "terminal task completion"),
+        ("system_health_context_verified", "System Health context"),
+        (
+            "system_health_accessibility_verified",
+            "System Health accessibility",
+        ),
+        ("focus_restoration_verified", "route focus restoration"),
+    ):
+        if payload.get(field_name) is not True:
+            failures.append(f"{label} was not verified")
+    if payload.get("duplicate_work_count") != 0:
+        failures.append("Diagnostic Task retry produced duplicate work")
+    expected_health_graph = (
+        diagnostic_task_identity,
+        payload.get("campaign_identity"),
+        payload.get("run_identity"),
+        payload.get("evidence_package_identity"),
+        payload.get("reproduction_manifest_identity"),
+    )
+    if tuple(payload.get("system_health_identity_graph", ())) != (
+        expected_health_graph
+    ):
+        failures.append(
+            "System Health did not retain the exact Task/Run/Evidence/Manifest graph"
+        )
     return tuple(failures)
 
 
@@ -2008,7 +2162,7 @@ def verify_clean_room_report(
         report_path.read_text(encoding="utf-8-sig")
     )
     failures = []
-    if payload.get("schema_version") != 3:
+    if payload.get("schema_version") != CLEAN_ROOM_REPORT_SCHEMA_VERSION:
         failures.append("Unsupported clean-room report schema")
     if payload.get("source_commit") != expected_source_commit:
         failures.append("Clean-room source commit does not match")
@@ -2062,6 +2216,150 @@ def verify_clean_room_report(
     ):
         failures.append("Widgets rollback installation did not succeed")
 
+    installed_performance = payload.get("installed_performance")
+    if not isinstance(installed_performance, dict):
+        failures.append("Installed performance evidence is unavailable")
+    else:
+        from .frontend_v2_performance import validate_performance_lane
+
+        toolchain_digest = _sha256_path(TOOLCHAIN_LOCK_PATH)
+        for lane_name in ("hardware", "software"):
+            lane_report = installed_performance.get(lane_name)
+            if not isinstance(lane_report, dict):
+                failures.append(
+                    f"{lane_name} installed performance evidence is unavailable"
+                )
+                continue
+            failures.extend(
+                f"{lane_name} installed performance {failure}"
+                for failure in validate_performance_lane(
+                    lane_report,
+                    expected_lane=lane_name,
+                    expected_source_commit=expected_source_commit,
+                    expected_toolchain_digest=toolchain_digest,
+                )
+            )
+
+    for block_name, required_true_fields in (
+        (
+            "fresh_install_migration",
+            (
+                "passed",
+                "schema_migration_verified",
+                "bookmark_migration_verified",
+                "deterministic",
+                "idempotent",
+                "identity_retention_verified",
+                "reopen_verified",
+            ),
+        ),
+        (
+            "copied_wave3_migration",
+            (
+                "passed",
+                "schema_migration_verified",
+                "bookmark_migration_verified",
+                "deterministic",
+                "idempotent",
+                "identity_retention_verified",
+                "reopen_verified",
+            ),
+        ),
+        (
+            "candidate_widgets_candidate_rollback",
+            (
+                "passed",
+                "same_source_commit",
+                "same_dependency_lock",
+                "identity_retention_verified",
+                "reopen_verified",
+            ),
+        ),
+        (
+            "observation_ledger_readiness",
+            (
+                "passed",
+                "legacy_inventory_available",
+                "observation_ledger_configuration_available",
+            ),
+        ),
+    ):
+        block = payload.get(block_name)
+        if not isinstance(block, dict):
+            failures.append(
+                f"{block_name.replace('_', ' ')} evidence is unavailable"
+            )
+            continue
+        if block.get("source_commit") != expected_source_commit:
+            failures.append(
+                f"{block_name.replace('_', ' ')} source commit does not match"
+            )
+        for field_name in required_true_fields:
+            if block.get(field_name) is not True:
+                failures.append(
+                    f"{block_name.replace('_', ' ')} {field_name.replace('_', ' ')} "
+                    "was not verified"
+                )
+        if block.get("destructive_migration") is not False:
+            failures.append(
+                f"{block_name.replace('_', ' ')} did not prove a non-destructive migration"
+            )
+    ledger = payload.get("observation_ledger_readiness")
+    if isinstance(ledger, dict):
+        legacy_route_count = ledger.get("legacy_route_count")
+        if (
+            not isinstance(legacy_route_count, int)
+            or isinstance(legacy_route_count, bool)
+            or legacy_route_count < 1
+        ):
+            failures.append("Observation ledger legacy route count is unavailable")
+        if ledger.get("observation_window_started") is not False:
+            failures.append(
+                "Issue #118 must not start the formal observation window"
+            )
+    rollback = payload.get("candidate_widgets_candidate_rollback")
+    if isinstance(rollback, dict):
+        rollback_lanes = rollback.get("renderer_lanes")
+        if not isinstance(rollback_lanes, dict):
+            failures.append(
+                "Candidate-to-Widgets rollback renderer lanes are unavailable"
+            )
+        else:
+            for lane_name in ("hardware", "software"):
+                lane_rollback = rollback_lanes.get(lane_name)
+                if not isinstance(lane_rollback, dict):
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback is unavailable"
+                    )
+                    continue
+                if lane_rollback.get("lane") != lane_name:
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback lane does not match"
+                    )
+                if lane_rollback.get("source_commit") != expected_source_commit:
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback source does not match"
+                    )
+                for field_name in (
+                    "passed",
+                    "same_source_commit",
+                    "same_dependency_lock",
+                    "identity_retention_verified",
+                    "task_handle_continuity_verified",
+                    "order_state_continuity_verified",
+                    "reopen_verified",
+                ):
+                    if lane_rollback.get(field_name) is not True:
+                        failures.append(
+                            f"{lane_name} candidate-to-Widgets rollback "
+                            f"{field_name.replace('_', ' ')} was not verified"
+                        )
+                if lane_rollback.get("destructive_migration") is not False:
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback did not prove "
+                        "a non-destructive migration"
+                    )
+
     lanes = payload.get("renderer_lanes")
     if not isinstance(lanes, dict):
         failures.append("Renderer lane evidence is unavailable")
@@ -2109,15 +2407,9 @@ def verify_clean_room_report(
                 f"{lane_name} renderer did not complete the connection, "
                 "remount, and close journey"
             )
-        if tuple(lane.get("routes_rendered", ())) != (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
+        if tuple(lane.get("routes_rendered", ())) != _ACTIVE_JOURNEY_ROUTES:
             failures.append(
-                f"{lane_name} renderer did not render all five active routes"
+                f"{lane_name} renderer did not render all six active routes"
             )
         observations = lane.get("observations")
         observed_journey = (
@@ -2485,14 +2777,7 @@ def _load_renderer_lane(
     real_v1_failures = _real_v1_smoke_failures(payload)
     installed_wave2_failures = _installed_wave2_smoke_failures(payload)
     if (
-        routes_rendered
-        != (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        )
+        routes_rendered != _ACTIVE_JOURNEY_ROUTES
         or production_path != _PRODUCTION_JOURNEY_PATH
         or connection_transitions
         != _EXPECTED_CONNECTION_TRANSITIONS
@@ -2683,6 +2968,20 @@ def _load_renderer_lane(
         ),
         old_generation_rejected=True,
         authoritative_reconnect_verified=True,
+        queued_state_observed=True,
+        running_state_observed=True,
+        partial_state_observed=True,
+        controlled_failure_observed=True,
+        safe_failure_reason_verified=True,
+        retry_idempotency_verified=True,
+        duplicate_work_count=0,
+        terminal_completion_observed=True,
+        system_health_context_verified=True,
+        system_health_identity_graph=tuple(
+            str(value) for value in payload["system_health_identity_graph"]
+        ),
+        system_health_accessibility_verified=True,
+        focus_restoration_verified=True,
         connection_transitions=connection_transitions,
         manual_trading_action_count=0,
         read_only_context_visible=True,

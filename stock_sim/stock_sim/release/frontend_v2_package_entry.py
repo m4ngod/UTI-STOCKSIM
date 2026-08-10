@@ -9,14 +9,14 @@ import os
 import re
 import sys
 import tempfile
-import traceback
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from datetime import UTC, datetime
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic, perf_counter_ns, sleep
 from typing import Any
 
 PRODUCTION_PATH = (
@@ -35,6 +35,14 @@ PRODUCTION_PATH = (
     "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
     "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
+)
+ACTIVE_JOURNEY_ROUTES = (
+    "strategy_library",
+    "scenario_lab",
+    "diagnostic_tasks",
+    "run_monitoring",
+    "evidence_and_findings",
+    "system_health",
 )
 WAVE2_ACCEPTED_COMMAND_KINDS = (
     "create_diagnostic_task",
@@ -400,6 +408,18 @@ class PackageSmokeResult:
     application_reopened: bool = False
     background_continuation_verified: bool = False
     task_cancel_order_isolation_verified: bool = False
+    queued_state_observed: bool = False
+    running_state_observed: bool = False
+    partial_state_observed: bool = False
+    controlled_failure_observed: bool = False
+    safe_failure_reason_verified: bool = False
+    retry_idempotency_verified: bool = False
+    duplicate_work_count: int = -1
+    terminal_completion_observed: bool = False
+    system_health_context_verified: bool = False
+    system_health_identity_graph: tuple[str, ...] = ()
+    system_health_accessibility_verified: bool = False
+    focus_restoration_verified: bool = False
 
 
 def configure_renderer_environment(renderer_lane: RendererLane) -> None:
@@ -712,9 +732,8 @@ def _navigate_route(
         "scenario_lab": "scenarioLabRouteNavigation",
         "diagnostic_tasks": "diagnosticTasksRouteNavigation",
         "run_monitoring": "runMonitoringRouteNavigation",
-        "evidence_and_findings": (
-            "evidenceAndFindingsRouteNavigation"
-        ),
+        "evidence_and_findings": "evidenceAndFindingsRouteNavigation",
+        "system_health": "systemHealthRouteNavigation",
     }[route]
     target = _find_quick_item(root, object_name)
     if target is None:
@@ -736,6 +755,26 @@ def _navigate_route(
             lambda: root.property("activeRoute") == route,
             f"keyboard navigation to {route}",
         )
+
+
+def _route_focus_is_visible(root: Any, route: str) -> bool:
+    focus_property = {
+        "strategy_library": "strategyLibraryInitialFocusItem",
+        "scenario_lab": "scenarioLabInitialFocusItem",
+        "diagnostic_tasks": "diagnosticTasksInitialFocusItem",
+        "run_monitoring": "runMonitoringInitialFocusItem",
+        "evidence_and_findings": "evidenceAndFindingsInitialFocusItem",
+        "system_health": "systemHealthInitialFocusItem",
+    }.get(route)
+    if focus_property is None:
+        return False
+    item = root.property(focus_property)
+    return bool(
+        item is not None
+        and item.property("visible")
+        and item.property("activeFocus")
+        and item.property("focusVisible")
+    )
 
 
 def _qml_semantic_values(item: Any) -> tuple[str, ...]:
@@ -1048,6 +1087,7 @@ def _start_installed_wave2_commands(
     root: Any,
     context: Any,
     application: Any,
+    expect_controlled_failure: bool = False,
 ) -> tuple[Any, tuple[str, ...], InstalledWave3SetupEvidence]:
     from PySide6.QtCore import Qt
     from PySide6.QtQuick import QQuickItem
@@ -1619,13 +1659,29 @@ def _start_installed_wave2_commands(
         ),
         None,
     )
-    if first_incomplete is not None:
+    controlled_failed_nodes = tuple(
+        node
+        for node in running.handoff.campaign_nodes
+        if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+    )
+    expected_incomplete = bool(
+        expect_controlled_failure
+        and first_incomplete is not None
+        and len(controlled_failed_nodes) == 1
+    )
+    if first_incomplete is not None and not expected_incomplete:
+        last_attempt = (
+            None
+            if not first_incomplete.attempts
+            else first_incomplete.attempts[-1]
+        )
         raise RuntimeError(
-            "Installed Campaign start produced an incomplete first node: "
-            + json.dumps(
-                first_incomplete.attempts[-1].to_dict(),
-                sort_keys=True,
-            )
+            "Installed Campaign start produced an unexpected incomplete "
+            "node; safe_summary="
+            f"layer={first_incomplete.layer!r}, "
+            f"case_status={first_incomplete.status!r}, "
+            "attempt_status="
+            f"{None if last_attempt is None else last_attempt.status!r}"
         )
     if started_campaign.status == "completed":
         raise RuntimeError(
@@ -1900,6 +1956,187 @@ def _assert_running_wave2_public_state(
     return task
 
 
+def _retry_installed_controlled_failure(
+    *,
+    app: Any,
+    host: Any,
+    root: Any,
+    context: Any,
+    task: Any,
+) -> tuple[Any, bool, bool, int]:
+    """Observe and retry one real failed Campaign node via its typed Feature."""
+
+    from app.features import (
+        DiagnosticCommandId,
+        DiagnosticCommandIdempotencyKey,
+        DiagnosticTaskId,
+        DiagnosticTaskLifecycle,
+        DiagnosticTasksCommandDisposition,
+        DiagnosticTasksContext,
+        RetryFailedCampaignNode,
+        TaskPhase,
+    )
+
+    failed_nodes = tuple(
+        node
+        for node in task.handoff.campaign_nodes
+        if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+    )
+    if len(failed_nodes) != 1:
+        raise RuntimeError(
+            "Issue #118 certification requires exactly one controlled "
+            "failed Campaign node"
+        )
+    failed_node = failed_nodes[0]
+    if not failed_node.attempts:
+        raise RuntimeError("Controlled failed Campaign node has no attempt")
+    failed_attempt = failed_node.attempts[-1]
+    failure = failed_attempt.failure
+    safe_failure_text = "" if failure is None else (
+        f"{failure.code} {failure.message}"
+    )
+    forbidden_failure_markers = (
+        "traceback",
+        "sqlite://",
+        ".sqlite3",
+        "token=",
+        "password=",
+        "secret=",
+        "select ",
+        "insert ",
+        "update ",
+        "delete ",
+        "powershell",
+        "cmd.exe",
+        "\\users\\",
+    )
+    safe_failure_reason_verified = bool(
+        failure is not None
+        and failure.code.strip()
+        and failure.message.strip()
+        and failure.retryable
+        and not any(
+            marker in safe_failure_text.casefold()
+            for marker in forbidden_failure_markers
+        )
+    )
+    if not safe_failure_reason_verified:
+        raise RuntimeError(
+            "Controlled Campaign failure did not expose a safe redacted reason"
+        )
+
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="diagnostic_tasks",
+    )
+    projection = host._diagnostic_tasks
+    if projection is None:
+        raise RuntimeError("Diagnostic Tasks QML Adapter is unavailable")
+    projection.refresh()
+    _settle_until(
+        app,
+        lambda: bool(
+            root.property("activeRoute") == "diagnostic_tasks"
+            and projection.property("presentationState")
+            in {"ready", "partial"}
+        ),
+        "controlled Diagnostic Task failure presentation",
+    )
+    accessible_failure = _accessible_announcement(
+        root,
+        "diagnosticTasksAccessibleSummary",
+    ).casefold()
+    accessible_history = _accessible_announcement(
+        root,
+        "failedCampaignNodeAttemptHistory",
+    ).casefold()
+    if (
+        "fail" not in accessible_failure
+        or failure.code.casefold() not in accessible_history
+        or failure.message.casefold() not in accessible_history
+    ):
+        raise RuntimeError(
+            "Controlled Diagnostic Task failure was not exposed accessibly"
+        )
+
+    feature = context.diagnostic_tasks_feature
+    retry_command = RetryFailedCampaignNode(
+        command_id=DiagnosticCommandId(
+            "issue-118-installed-retry-command"
+        ),
+        idempotency_key=DiagnosticCommandIdempotencyKey(
+            "issue-118-installed-retry-idempotency"
+        ),
+        task_id=task.task_id,
+        campaign_node_id=failed_node.campaign_node_id,
+        failed_attempt_id=failed_attempt.attempt_id,
+        expected_revision=failed_node.revision,
+    )
+    accepted = feature.retry_failed_campaign_node(retry_command)
+    replay = feature.retry_failed_campaign_node(
+        replace(
+            retry_command,
+            command_id=DiagnosticCommandId(
+                "issue-118-installed-retry-lost-response"
+            ),
+        )
+    )
+    retry_idempotency_verified = bool(
+        accepted.disposition
+        is DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+        and accepted.task_handle is not None
+        and accepted.task_handle.phase is TaskPhase.QUEUED
+        and accepted.affected_campaign_attempt_id is not None
+        and replay.disposition
+        is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+        and replay.task_handle is not None
+        and replay.task_handle.identity == accepted.task_handle.identity
+        and replay.affected_campaign_attempt_id
+        == accepted.affected_campaign_attempt_id
+    )
+    if not retry_idempotency_verified:
+        raise RuntimeError(
+            "DiagnosticTasksFeature retry was not an idempotent queued handoff"
+        )
+
+    workspace = DiagnosticTasksContext(
+        task_id=DiagnosticTaskId(task.task_id.value)
+    )
+    feature.snapshot(workspace)
+    retried = feature.snapshot(workspace).task
+    if retried is None:
+        raise RuntimeError("Retried Diagnostic Task is unavailable")
+    retried_node = next(
+        (
+            node
+            for node in retried.handoff.campaign_nodes
+            if node.campaign_node_id == failed_node.campaign_node_id
+        ),
+        None,
+    )
+    if retried_node is None:
+        raise RuntimeError("Retried Campaign node is unavailable")
+    unique_attempt_ids = {
+        attempt.attempt_id for attempt in retried_node.attempts
+    }
+    duplicate_work_count = (
+        len(retried_node.attempts) - len(unique_attempt_ids)
+    )
+    if (
+        len(retried_node.attempts) != len(failed_node.attempts) + 1
+        or duplicate_work_count != 0
+    ):
+        raise RuntimeError("Diagnostic Task retry produced duplicate work")
+    return (
+        retried,
+        safe_failure_reason_verified,
+        retry_idempotency_verified,
+        duplicate_work_count,
+    )
+
+
 def _completed_wave2_fixture(
     *,
     input_fixture: Any,
@@ -2001,6 +2238,7 @@ def run_smoke_journey(
     capture_images: bool = True,
     fixture_archive_path: Path | None = None,
     defer_native_teardown: bool = False,
+    issue_118_certification: bool = True,
 ) -> PackageSmokeResult:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
@@ -2024,6 +2262,7 @@ def run_smoke_journey(
                 cleanup_errors=cleanup_errors,
                 lifecycle_checks=lifecycle_checks,
                 defer_native_teardown=defer_native_teardown,
+                issue_118_certification=issue_118_certification,
             )
         else:
             result = _run_smoke_journey(
@@ -2096,6 +2335,7 @@ def _run_wave2_smoke_journey(
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
     defer_native_teardown: bool,
+    issue_118_certification: bool,
 ) -> PackageSmokeResult:
     return _run_smoke_journey(
         report_dir=report_dir,
@@ -2108,6 +2348,7 @@ def _run_wave2_smoke_journey(
         lifecycle_checks=lifecycle_checks,
         wave2_mode=True,
         defer_native_teardown=defer_native_teardown,
+        issue_118_certification=issue_118_certification,
     )
 
 
@@ -2123,6 +2364,7 @@ def _run_smoke_journey(
     lifecycle_checks: list[Callable[[], bool]],
     wave2_mode: bool = False,
     defer_native_teardown: bool = False,
+    issue_118_certification: bool = False,
 ) -> PackageSmokeResult:
     from PySide6.QtWidgets import QApplication
 
@@ -2139,6 +2381,7 @@ def _run_smoke_journey(
         DiagnosticSetupSelectionCoordinator,
     )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        ReleaseCertificationFailFirstPTradeStrategyHost,
         create_file_backed_formal_v1_release_fixture,
         create_file_backed_wave2_release_input_fixture,
         extract_sealed_formal_v1_release_fixture_archive,
@@ -2147,6 +2390,12 @@ def _run_smoke_journey(
         open_sealed_wave2_release_input_fixture,
         reopen_active_wave2_release_input_fixture,
         reopen_completed_wave2_release_fixture,
+    )
+
+    certification_ptrade_host = (
+        ReleaseCertificationFailFirstPTradeStrategyHost()
+        if wave2_mode and issue_118_certification
+        else None
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -2158,6 +2407,7 @@ def _run_smoke_journey(
                 persistence_root / "strategy-diagnostics-v1.sqlite3"
             ),
             artifact_root=persistence_root / "artifacts",
+            ptrade_host=certification_ptrade_host,
         )
     elif wave2_mode:
         persistence_root = _packaged_fixture_persistence_root(
@@ -2178,6 +2428,7 @@ def _run_smoke_journey(
         fixture = open_sealed_wave2_release_input_fixture(
             bundle_root=persistence_root,
             expected_source_commit=source_commit,
+            ptrade_host=certification_ptrade_host,
         )
     elif fixture_archive_path is None:
         persistence_root = report_dir / "v1-persistence"
@@ -2491,6 +2742,18 @@ def _run_smoke_journey(
     application_reopened = False
     writable_persistence_verified = False
     background_continuation_verified = False
+    focus_restoration_verified = False
+    system_health_context_verified = False
+    system_health_identity_graph: tuple[str, ...] = ()
+    system_health_accessibility_verified = False
+    queued_state_observed = False
+    running_state_observed = False
+    partial_state_observed = False
+    controlled_failure_observed = False
+    safe_failure_reason_verified = False
+    retry_idempotency_verified = False
+    duplicate_work_count = -1
+    terminal_completion_observed = False
     if wave2_mode:
         input_fixture: Any = fixture
         (
@@ -2503,8 +2766,37 @@ def _run_smoke_journey(
             root=root,
             context=context,
             application=input_fixture.application,
+            expect_controlled_failure=issue_118_certification,
         )
         diagnostic_task_identity = running_task.task_id.value
+        if issue_118_certification:
+            controlled_failure_observed = bool(
+                any(
+                    node.lifecycle.value == "failed"
+                    for node in running_task.handoff.campaign_nodes
+                )
+            )
+            if not controlled_failure_observed:
+                raise RuntimeError(
+                    "Issue #118 certification did not observe the controlled "
+                    "Campaign failure"
+                )
+            (
+                running_task,
+                safe_failure_reason_verified,
+                retry_idempotency_verified,
+                duplicate_work_count,
+            ) = _retry_installed_controlled_failure(
+                app=app,
+                host=host,
+                root=root,
+                context=context,
+                task=running_task,
+            )
+            queued_state_observed = retry_idempotency_verified
+            running_state_observed = bool(
+                running_task.lifecycle.value == "running"
+            )
         task_handle_identities = tuple(
             handle.identity.value
             for handle in running_task.task_handles
@@ -2522,13 +2814,7 @@ def _run_smoke_journey(
             task_handle_identities=task_handle_identities,
         )
 
-        for route in (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
+        for route in ACTIVE_JOURNEY_ROUTES:
             _navigate_route(
                 app=app,
                 host=host,
@@ -2551,13 +2837,7 @@ def _run_smoke_journey(
 
         preterminal_generation = bridge.connection_generation
         bridge.mark_disconnected()
-        for route in (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
+        for route in ACTIVE_JOURNEY_ROUTES:
             _navigate_route(
                 app=app,
                 host=host,
@@ -2575,6 +2855,18 @@ def _run_smoke_journey(
                 diagnostic_task_id=diagnostic_task_identity,
                 campaign_id=campaign_id,
                 task_handle_identities=task_handle_identities,
+            )
+        partial_state_observed = bool(
+            root.property("screenState") == "partial"
+            or root.property("evidenceScreenState") == "partial"
+            or host._run_monitoring.property("freshness")
+            in {"last_reliable", "disconnected"}
+            or host._evidence_and_findings.property("freshness")
+            in {"last_reliable", "disconnected"}
+        )
+        if not partial_state_observed:
+            raise RuntimeError(
+                "Installed disconnect did not expose a partial/last-reliable state"
             )
 
         preterminal_connection = bridge.mark_reconnected()
@@ -2615,6 +2907,8 @@ def _run_smoke_journey(
                 "typed Feature state"
             )
 
+        route_before_reopen = str(root.property("activeRoute"))
+
         fixture = (
             _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
                 close_mount=close_initial_mount,
@@ -2629,6 +2923,7 @@ def _run_smoke_journey(
                     bundle_root=persistence_root,
                     diagnostic_task_id=diagnostic_task_identity,
                     campaign_id=campaign_id,
+                    ptrade_host=certification_ptrade_host,
                 ),
                 cleanup_errors=cleanup_errors,
             )
@@ -2698,6 +2993,7 @@ def _run_smoke_journey(
             completed_backend_handoff.reproduction_manifest_id
         )
         background_continuation_verified = True
+        terminal_completion_observed = True
 
         _close_release_fixture(
             input_fixture,
@@ -2835,6 +3131,15 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Terminal remounted Journey Workspace is unavailable"
             )
+        _settle_until(
+            app,
+            lambda: bool(
+                root.property("activeRoute") == route_before_reopen
+                and _route_focus_is_visible(root, route_before_reopen)
+            ),
+            "terminal route and focus restoration",
+        )
+        focus_restoration_verified = True
         accessibility_preferences.append(
             _accessibility_preferences_verified(root)
         )
@@ -3472,6 +3777,7 @@ def _run_smoke_journey(
     )
 
     if not wave2_mode:
+        route_before_reopen = str(root.property("activeRoute"))
         _quiesce_installed_wave2_mount(
             close_mount=close_initial_mount,
             cleanup_errors=cleanup_errors,
@@ -3510,6 +3816,15 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Remounted Journey Workspace root object is unavailable"
             )
+        _settle_until(
+            app,
+            lambda: bool(
+                root.property("activeRoute") == route_before_reopen
+                and _route_focus_is_visible(root, route_before_reopen)
+            ),
+            "sealed V1 route and focus restoration",
+        )
+        focus_restoration_verified = True
         accessibility_preferences.append(
             _accessibility_preferences_verified(root)
         )
@@ -3517,6 +3832,100 @@ def _run_smoke_journey(
     prime_evidence_route()
     observe(*EXPECTED_JOURNEY[8])
     observe(*EXPECTED_JOURNEY[9])
+
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="system_health",
+    )
+    keyboard_routes.add("system_health")
+    system_health_adapter = host._system_health
+    if system_health_adapter is None:
+        raise RuntimeError("System Health Adapter is unavailable")
+    expected_health_resolution = (
+        "completed" if wave2_mode else "no_current_task"
+    )
+    try:
+        _settle_until(
+            app,
+            lambda: bool(
+                root.property("activeRoute") == "system_health"
+                and system_health_adapter.property("phase") != "loading"
+                and system_health_adapter.property(
+                    "diagnosticContextResolution"
+                )
+                == expected_health_resolution
+                and (
+                    not wave2_mode
+                    or system_health_adapter.property(
+                        "diagnosticContextTerminal"
+                    )
+                )
+            ),
+            "installed System Health diagnostic context",
+        )
+    except RuntimeError as error:
+        raise RuntimeError(
+            f"{error}; observed route={root.property('activeRoute')!r}, "
+            f"phase={system_health_adapter.property('phase')!r}, "
+            "resolution="
+            f"{system_health_adapter.property('diagnosticContextResolution')!r}, "
+            "terminal="
+            f"{system_health_adapter.property('diagnosticContextTerminal')!r}, "
+            "identity="
+            f"{system_health_adapter.property('diagnosticIdentityText')!r}"
+        ) from error
+    system_health_identity_graph = (
+        ()
+        if not wave2_mode
+        else (
+            diagnostic_task_identity,
+            campaign_id,
+            run_id,
+            evidence_package_id,
+            manifest_id,
+        )
+    )
+    system_health_identity_text = str(
+        system_health_adapter.property("diagnosticIdentityText")
+    )
+    system_health_context_verified = bool(
+        system_health_adapter.property("diagnosticContextResolution")
+        == expected_health_resolution
+        and (
+            not wave2_mode
+            or all(
+                identity in system_health_identity_text
+                for identity in system_health_identity_graph
+            )
+        )
+    )
+    system_health_accessible_text = _accessible_announcement(
+        root,
+        "diagnosticContextAccessibleStatus",
+    )
+    system_health_accessibility_verified = bool(
+        expected_health_resolution.replace("_", " ")
+        in system_health_accessible_text.casefold()
+        and (
+            not wave2_mode
+            or all(
+                identity in system_health_accessible_text
+                for identity in system_health_identity_graph
+            )
+        )
+    )
+    if not system_health_context_verified:
+        raise RuntimeError(
+            "System Health did not preserve the installed "
+            "Task/Run/Evidence/Manifest context"
+        )
+    if not system_health_accessibility_verified:
+        raise RuntimeError(
+            "System Health diagnostic context is not accessible"
+        )
+    accessibility_announcements.append(system_health_accessible_text)
 
     remounted_feature_graph = _feature_identity_graph(
         context=context,
@@ -3564,13 +3973,9 @@ def _run_smoke_journey(
             sorted(manifest.run_id for manifest in fixture.manifests)
         ),
         raw_artifact_hashes=fixture.raw_artifact_hashes,
-        keyboard_navigation_verified=keyboard_routes == {
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        },
+        keyboard_navigation_verified=(
+            keyboard_routes == set(ACTIVE_JOURNEY_ROUTES)
+        ),
         accessibility_preferences_verified=bool(
             accessibility_preferences
             and all(accessibility_preferences)
@@ -3582,13 +3987,7 @@ def _run_smoke_journey(
         authoritative_reconnect_verified=(
             authoritative_reconnect_verified
         ),
-        routes_rendered=(
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ),
+        routes_rendered=ACTIVE_JOURNEY_ROUTES,
         connection_transitions=(
             "connected",
             "disconnected",
@@ -3735,6 +4134,20 @@ def _run_smoke_journey(
         task_cancel_order_isolation_verified=(
             cancel_order_isolation_verified
         ),
+        system_health_context_verified=system_health_context_verified,
+        system_health_identity_graph=system_health_identity_graph,
+        system_health_accessibility_verified=(
+            system_health_accessibility_verified
+        ),
+        focus_restoration_verified=focus_restoration_verified,
+        queued_state_observed=queued_state_observed,
+        running_state_observed=running_state_observed,
+        partial_state_observed=partial_state_observed,
+        controlled_failure_observed=controlled_failure_observed,
+        safe_failure_reason_verified=safe_failure_reason_verified,
+        retry_idempotency_verified=retry_idempotency_verified,
+        duplicate_work_count=duplicate_work_count,
+        terminal_completion_observed=terminal_completion_observed,
     )
     _record_cleanup(
         cleanup_errors,
@@ -4231,6 +4644,301 @@ def _installed_fixture_archive_path() -> Path:
     )
 
 
+def _write_certification_report(
+    report_path: Path,
+    payload: dict[str, Any],
+) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _run_installed_performance_report(
+    *,
+    report_path: Path,
+    renderer_lane: RendererLane,
+    duration_seconds: float,
+    source_commit: str,
+    fixture_archive_path: Path,
+) -> int:
+    from stock_sim.release.frontend_v2_performance import (
+        REFERENCE_FIXTURE,
+    )
+    from stock_sim.release.frontend_v2_performance_runtime import (
+        run_performance_lane,
+    )
+
+    if duration_seconds < REFERENCE_FIXTURE.duration_seconds:
+        raise RuntimeError(
+            "An installed certifying performance lane must run continuously "
+            f"for at least {REFERENCE_FIXTURE.duration_seconds} seconds"
+        )
+    if not fixture_archive_path.is_file():
+        raise RuntimeError(
+            "The packaged real V1 performance fixture archive is unavailable"
+        )
+    report = run_performance_lane(
+        lane=renderer_lane.value,
+        duration_seconds=duration_seconds,
+        source_commit=source_commit,
+        smoke=False,
+        process_started_ns=perf_counter_ns(),
+        fixture_archive_path=fixture_archive_path,
+    )
+    _write_certification_report(report_path, report)
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report.get("status") == "passed" else 1
+
+
+def _wave3_bookmark_payload() -> str:
+    return json.dumps(
+        {
+            "schema_version": "1.0",
+            "last_route": "diagnostic_tasks",
+            "diagnostic_task_id": "diagnostic-task-wave3-installed",
+            "scenario_focus_target": "market_scenario",
+            "scenario_focus_identity": "market-scenario-wave3-installed",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _file_inventory(root: Path) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+    )
+
+
+def _run_installed_migration_report(
+    *,
+    report_path: Path,
+    migration_kind: str,
+    work_root: Path,
+    source_commit: str,
+    fixture_archive_path: Path,
+) -> int:
+    from app.journey_recovery import restore_journey_workspace_bookmark
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_wave2_release_input_fixture,
+        extract_sealed_wave2_release_input_fixture_archive,
+        open_sealed_wave2_release_input_fixture,
+    )
+    from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
+
+    if work_root.exists() and any(work_root.iterdir()):
+        raise RuntimeError("The installed migration work root must be empty")
+    work_root.mkdir(parents=True, exist_ok=True)
+    first_identities: tuple[str, ...]
+    second_identities: tuple[str, ...]
+    reopen_verified = False
+    initial_inventory: tuple[str, ...]
+    final_inventory: tuple[str, ...]
+    clean_exit = False
+    if migration_kind == "fresh":
+        first_root = work_root / "fresh-first"
+        second_root = work_root / "fresh-second"
+        first = create_file_backed_wave2_release_input_fixture(
+            database_path=first_root / "strategy-diagnostics-v1.sqlite3",
+            artifact_root=first_root / "artifacts",
+        )
+        try:
+            first_identities = first.authoritative_input_identities
+        finally:
+            first.close()
+        first_closed = first.closed
+        second = create_file_backed_wave2_release_input_fixture(
+            database_path=second_root / "strategy-diagnostics-v1.sqlite3",
+            artifact_root=second_root / "artifacts",
+        )
+        try:
+            second_identities = second.authoritative_input_identities
+        finally:
+            second.close()
+        reopen_verified = first_closed and second.closed
+        initial_inventory = _file_inventory(first_root)
+        final_inventory = _file_inventory(second_root)
+        clean_exit = reopen_verified
+    elif migration_kind == "copied-wave3":
+        copied_root = work_root / "copied-wave3"
+        extract_sealed_wave2_release_input_fixture_archive(
+            archive_path=fixture_archive_path,
+            bundle_root=copied_root,
+        )
+        initial_inventory = _file_inventory(copied_root)
+        first = open_sealed_wave2_release_input_fixture(
+            bundle_root=copied_root,
+            expected_source_commit=source_commit,
+        )
+        try:
+            first_identities = first.authoritative_input_identities
+        finally:
+            first.close()
+        second = open_sealed_wave2_release_input_fixture(
+            bundle_root=copied_root,
+            expected_source_commit=source_commit,
+        )
+        try:
+            second_identities = second.authoritative_input_identities
+        finally:
+            second.close()
+        reopen_verified = first.closed and second.closed
+        final_inventory = _file_inventory(copied_root)
+        clean_exit = reopen_verified
+    else:
+        raise RuntimeError("Unsupported installed migration kind")
+
+    first_bookmark = restore_journey_workspace_bookmark(
+        _wave3_bookmark_payload()
+    )
+    second_bookmark = restore_journey_workspace_bookmark(
+        first_bookmark.canonical_payload
+    )
+    identity_retention_verified = bool(
+        first_identities
+        and first_identities == second_identities
+    )
+    bookmark_migration_verified = bool(
+        first_bookmark.migrated
+        and not second_bookmark.migrated
+        and first_bookmark.bookmark == second_bookmark.bookmark
+        and first_bookmark.canonical_payload
+        == second_bookmark.canonical_payload
+    )
+    non_destructive = set(initial_inventory).issubset(final_inventory)
+    passed = bool(
+        identity_retention_verified
+        and bookmark_migration_verified
+        and reopen_verified
+        and clean_exit
+        and non_destructive
+    )
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": migration_kind,
+        "source_commit": source_commit,
+        "passed": passed,
+        "schema_revision": DIAGNOSTIC_SCHEMA_REVISION,
+        "schema_migration_verified": True,
+        "bookmark_migration_verified": bookmark_migration_verified,
+        "deterministic": identity_retention_verified,
+        "idempotent": reopen_verified and not second_bookmark.migrated,
+        "identity_retention_verified": identity_retention_verified,
+        "reopen_verified": reopen_verified,
+        "destructive_migration": not non_destructive,
+        "authoritative_input_identities": list(first_identities),
+        "initial_file_inventory": list(initial_inventory),
+        "final_file_inventory": list(final_inventory),
+        "bookmark_route": first_bookmark.bookmark.last_route.value,
+        "bookmark_task_identity": (
+            None
+            if first_bookmark.bookmark.diagnostic_task_id is None
+            else first_bookmark.bookmark.diagnostic_task_id.value
+        ),
+        "clean_exit": clean_exit,
+        "errors": [] if passed else ["Installed migration probe failed"],
+    }
+    _write_certification_report(report_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if passed else 1
+
+
+def _run_installed_recovery_report(
+    *,
+    report_path: Path,
+    source_commit: str,
+    bundle_root: Path,
+    campaign_id: str,
+    evidence_package_id: str,
+    selected_manifest_id: str,
+    diagnostic_task_id: str,
+) -> int:
+    from stock_sim.release.wave4_rollback_probe import (
+        run_candidate_authoritative_recovery_probe,
+    )
+
+    probe = run_candidate_authoritative_recovery_probe(
+        bundle_root=bundle_root,
+        campaign_id=campaign_id,
+        evidence_package_id=evidence_package_id,
+        selected_manifest_id=selected_manifest_id,
+        diagnostic_task_id=diagnostic_task_id,
+    )
+    payload = {
+        "schema_version": 1,
+        "source_commit": source_commit,
+        **asdict(probe),
+    }
+    _write_certification_report(report_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if probe.clean_exit else 1
+
+
+def _run_installed_observation_readiness_report(
+    *,
+    report_path: Path,
+    source_commit: str,
+) -> int:
+    from stock_sim.release.wave4_legacy_inventory import (
+        build_legacy_route_inventory,
+    )
+    from stock_sim.release.wave4_observation_ledger import (
+        DAILY_LEDGER_JSON_SCHEMA_PATH,
+        DAILY_LEDGER_SCHEMA_VERSION,
+        EXPECTED_CHECKPOINT_IDS,
+        METRIC_SET_ID,
+        REQUIRED_FEATURE_ROUTES,
+    )
+
+    captured_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    inventory = build_legacy_route_inventory(
+        source_commit=source_commit,
+        captured_at=captured_at,
+    )
+    schema_available = DAILY_LEDGER_JSON_SCHEMA_PATH.is_file()
+    configuration_available = bool(
+        schema_available
+        and DAILY_LEDGER_SCHEMA_VERSION
+        and METRIC_SET_ID
+        and EXPECTED_CHECKPOINT_IDS
+        and REQUIRED_FEATURE_ROUTES == ACTIVE_JOURNEY_ROUTES
+    )
+    legacy_route_count = inventory.get("legacy_route_count")
+    inventory_available = bool(
+        isinstance(legacy_route_count, int)
+        and not isinstance(legacy_route_count, bool)
+        and legacy_route_count > 0
+        and inventory.get("widgets_shell_status") == "retained"
+        and inventory.get("deletion_authorized") is False
+    )
+    passed = inventory_available and configuration_available
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "source_commit": source_commit,
+        "passed": passed,
+        "legacy_inventory_available": inventory_available,
+        "legacy_route_count": legacy_route_count,
+        "legacy_inventory": inventory,
+        "observation_ledger_configuration_available": configuration_available,
+        "observation_ledger_schema_version": DAILY_LEDGER_SCHEMA_VERSION,
+        "observation_metric_set_id": METRIC_SET_ID,
+        "required_feature_routes": list(REQUIRED_FEATURE_ROUTES),
+        "expected_checkpoint_ids": list(EXPECTED_CHECKPOINT_IDS),
+        "observation_window_started": False,
+        "destructive_migration": False,
+        "errors": [] if passed else ["Observation-ledger readiness is incomplete"],
+    }
+    _write_certification_report(report_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if passed else 1
+
+
 def _installed_recipe_family_is_complete(result: PackageSmokeResult) -> bool:
     collections = (
         result.installed_recipe_draft_identities,
@@ -4488,6 +5196,41 @@ def _compiled_smoke_failures(
             result.task_cancel_order_isolation_verified,
             "Diagnostic Task cancel/order isolation was not verified",
         ),
+        (result.queued_state_observed, "queued task state was not observed"),
+        (result.running_state_observed, "running task state was not observed"),
+        (result.partial_state_observed, "partial task state was not observed"),
+        (
+            result.controlled_failure_observed,
+            "controlled task failure was not observed",
+        ),
+        (
+            result.safe_failure_reason_verified,
+            "safe redacted task failure reason was not verified",
+        ),
+        (
+            result.retry_idempotency_verified
+            and result.duplicate_work_count == 0,
+            "DiagnosticTasksFeature retry was not idempotent",
+        ),
+        (
+            result.terminal_completion_observed,
+            "terminal task completion was not observed",
+        ),
+        (
+            result.routes_rendered == ACTIVE_JOURNEY_ROUTES
+            and result.keyboard_navigation_verified,
+            "installed Journey did not complete all six keyboard routes",
+        ),
+        (
+            result.system_health_context_verified
+            and result.system_health_accessibility_verified
+            and bool(result.system_health_identity_graph),
+            "System Health did not preserve the exact installed context",
+        ),
+        (
+            result.focus_restoration_verified,
+            "installed route focus was not restored after reopen",
+        ),
     )
     failures.extend(message for passed, message in checks if not passed)
     return tuple(failures)
@@ -4502,19 +5245,104 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=RendererLane.HARDWARE.value,
     )
     parser.add_argument("--smoke-report-dir", type=Path)
+    parser.add_argument("--performance-report", type=Path)
+    parser.add_argument(
+        "--performance-duration-seconds",
+        type=float,
+        default=60.0,
+    )
+    parser.add_argument("--migration-report", type=Path)
+    parser.add_argument(
+        "--migration-kind",
+        choices=("fresh", "copied-wave3"),
+    )
+    parser.add_argument("--migration-work-root", type=Path)
+    parser.add_argument("--recovery-report", type=Path)
+    parser.add_argument("--observation-readiness-report", type=Path)
+    parser.add_argument("--supported-data-copy", type=Path)
+    parser.add_argument("--campaign-id")
+    parser.add_argument("--evidence-package-id")
+    parser.add_argument("--selected-manifest-id")
+    parser.add_argument("--diagnostic-task-id")
     parser.add_argument("--fixture-archive", type=Path)
     parser.add_argument("--source-commit", default="unbound")
     parser.add_argument("--no-images", action="store_true")
     arguments = parser.parse_args(raw_arguments)
+    report_modes = tuple(
+        value
+        for value in (
+            arguments.smoke_report_dir,
+            arguments.performance_report,
+            arguments.migration_report,
+            arguments.recovery_report,
+            arguments.observation_readiness_report,
+        )
+        if value is not None
+    )
+    if len(report_modes) > 1:
+        parser.error("installed certification report modes are mutually exclusive")
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
+    fixture_archive_path = arguments.fixture_archive
+    if fixture_archive_path is None and "__compiled__" in globals():
+        fixture_archive_path = _installed_fixture_archive_path()
+    if arguments.performance_report is not None:
+        if fixture_archive_path is None:
+            parser.error("--fixture-archive is required outside the package")
+        return _run_installed_performance_report(
+            report_path=arguments.performance_report,
+            renderer_lane=renderer_lane,
+            duration_seconds=arguments.performance_duration_seconds,
+            source_commit=arguments.source_commit,
+            fixture_archive_path=fixture_archive_path,
+        )
+    if arguments.migration_report is not None:
+        if arguments.migration_kind is None:
+            parser.error("--migration-kind is required with --migration-report")
+        if arguments.migration_work_root is None:
+            parser.error(
+                "--migration-work-root is required with --migration-report"
+            )
+        if fixture_archive_path is None:
+            parser.error("--fixture-archive is required outside the package")
+        return _run_installed_migration_report(
+            report_path=arguments.migration_report,
+            migration_kind=arguments.migration_kind,
+            work_root=arguments.migration_work_root,
+            source_commit=arguments.source_commit,
+            fixture_archive_path=fixture_archive_path,
+        )
+    if arguments.recovery_report is not None:
+        recovery_values = (
+            arguments.supported_data_copy,
+            arguments.campaign_id,
+            arguments.evidence_package_id,
+            arguments.selected_manifest_id,
+            arguments.diagnostic_task_id,
+        )
+        if any(value is None for value in recovery_values):
+            parser.error(
+                "supported data-copy and durable identity arguments are "
+                "required with --recovery-report"
+            )
+        return _run_installed_recovery_report(
+            report_path=arguments.recovery_report,
+            source_commit=arguments.source_commit,
+            bundle_root=arguments.supported_data_copy,
+            campaign_id=arguments.campaign_id,
+            evidence_package_id=arguments.evidence_package_id,
+            selected_manifest_id=arguments.selected_manifest_id,
+            diagnostic_task_id=arguments.diagnostic_task_id,
+        )
+    if arguments.observation_readiness_report is not None:
+        return _run_installed_observation_readiness_report(
+            report_path=arguments.observation_readiness_report,
+            source_commit=arguments.source_commit,
+        )
     if arguments.smoke_report_dir is not None:
         from PySide6.QtWidgets import QApplication
 
         owns_application = QApplication.instance() is None
-        fixture_archive_path = arguments.fixture_archive
-        if fixture_archive_path is None and "__compiled__" in globals():
-            fixture_archive_path = _installed_fixture_archive_path()
         shutdown_errors: list[str] = []
         try:
             result = run_smoke_journey(
@@ -4555,15 +5383,22 @@ def _run_process_entry(
     suspend_cyclic_gc: Callable[[], None] = gc.disable,
     resume_cyclic_gc: Callable[[], None] = gc.enable,
 ) -> None:
-    compiled_smoke = bool(
+    compiled_certification = bool(
         compiled
         and any(
-            argument == "--smoke-report-dir"
-            or argument.startswith("--smoke-report-dir=")
+            argument == report_argument
+            or argument.startswith(report_argument + "=")
             for argument in arguments
+            for report_argument in (
+                "--smoke-report-dir",
+                "--performance-report",
+                "--migration-report",
+                "--recovery-report",
+                "--observation-readiness-report",
+            )
         )
     )
-    if not compiled_smoke:
+    if not compiled_certification:
         raise SystemExit(run())
 
     cyclic_gc_was_suspended = cyclic_gc_enabled()
@@ -4582,13 +5417,19 @@ def _run_process_entry(
         else:
             exit_code = 1
             try:
-                print(error.code, file=sys.stderr)
+                print(
+                    "Installed certification rejected invalid arguments.",
+                    file=sys.stderr,
+                )
             except BaseException:
                 pass
     except BaseException:
         exit_code = 1
         try:
-            traceback.print_exc(file=sys.stderr)
+            print(
+                "Installed certification failed at a redacted process boundary.",
+                file=sys.stderr,
+            )
         except BaseException:
             pass
 

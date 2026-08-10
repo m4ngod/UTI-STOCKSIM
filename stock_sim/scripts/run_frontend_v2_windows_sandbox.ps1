@@ -11,8 +11,8 @@ param(
     [string]$SourceCommit,
     [Parameter(Mandatory = $true)]
     [string]$EvidenceDir,
-    [ValidateRange(60, 3600)]
-    [int]$TimeoutSeconds = 1200
+    [ValidateRange(60, 7200)]
+    [int]$TimeoutSeconds = 3600
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,7 +97,7 @@ try {
 catch {
     [IO.File]::WriteAllText(
         "C:\ReleaseEvidence\sandbox-error.txt",
-        $_.Exception.ToString(),
+        "Windows Sandbox certification failed at a redacted boundary.",
         [Text.UTF8Encoding]::new($false)
     )
 }

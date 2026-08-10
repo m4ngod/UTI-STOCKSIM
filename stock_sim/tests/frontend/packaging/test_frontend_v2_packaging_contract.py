@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from dataclasses import asdict, replace
 
 import pytest
@@ -329,6 +330,8 @@ def _clean_room_lane(root, lane, graphics_api):
             "EventBridge",
             "LiveRunMonitoringAdapter",
             "LiveEvidenceAndFindingsAdapter",
+            "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+            "LiveSystemHealthAdapter",
             "JourneyWorkspaceHost",
         ],
         "fixture_kind": "authoritative_writable_wave3_inputs",
@@ -404,6 +407,14 @@ def _clean_room_lane(root, lane, graphics_api):
         "application_reopened": True,
         "background_continuation_verified": True,
         "task_cancel_order_isolation_verified": True,
+        "queued_state_observed": True,
+        "running_state_observed": True,
+        "partial_state_observed": True,
+        "controlled_failure_observed": True,
+        "safe_failure_reason_verified": True,
+        "retry_idempotency_verified": True,
+        "duplicate_work_count": 0,
+        "terminal_completion_observed": True,
         "campaign_identity": "FDC-RC-001",
         "case_identity": "CASE-RC-001",
         "run_identity": "RUN-RC-001",
@@ -453,12 +464,23 @@ def _clean_room_lane(root, lane, graphics_api):
         ],
         "old_generation_rejected": True,
         "authoritative_reconnect_verified": True,
+        "system_health_context_verified": True,
+        "system_health_identity_graph": [
+            "DT-RC-001",
+            "FDC-RC-001",
+            "RUN-RC-001",
+            "EVIDENCE-RC-001",
+            "RM-RC-001",
+        ],
+        "system_health_accessibility_verified": True,
+        "focus_restoration_verified": True,
         "routes_rendered": [
             "strategy_library",
             "scenario_lab",
             "diagnostic_tasks",
             "run_monitoring",
             "evidence_and_findings",
+            "system_health",
         ],
         "connection_transitions": [
             "connected",
@@ -491,6 +513,77 @@ def _clean_room_lane(root, lane, graphics_api):
         "read_only_context_visible": True,
         "clean_exit": True,
         "errors": [],
+    }
+
+
+def _clean_room_schema_four_evidence(source_commit="abc123"):
+    from tests.frontend.performance.test_frontend_v2_performance_certification import (
+        _passing_lane_report,
+    )
+
+    toolchain_digest = (
+        "sha256:" + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
+    )
+    installed_performance = {}
+    for lane in ("hardware", "software"):
+        report = deepcopy(_passing_lane_report(lane))
+        report["source_commit"] = source_commit
+        report["toolchain_lock_digest"] = toolchain_digest
+        report["installed_exit_code"] = 0
+        installed_performance[lane] = report
+    migration = {
+        "source_commit": source_commit,
+        "passed": True,
+        "schema_migration_verified": True,
+        "bookmark_migration_verified": True,
+        "deterministic": True,
+        "idempotent": True,
+        "identity_retention_verified": True,
+        "reopen_verified": True,
+        "destructive_migration": False,
+        "errors": [],
+    }
+    rollback_lanes = {
+        lane: {
+            "lane": lane,
+            "source_commit": source_commit,
+            "passed": True,
+            "same_source_commit": True,
+            "same_dependency_lock": True,
+            "identity_retention_verified": True,
+            "task_handle_continuity_verified": True,
+            "order_state_continuity_verified": True,
+            "reopen_verified": True,
+            "destructive_migration": False,
+            "errors": [],
+        }
+        for lane in ("hardware", "software")
+    }
+    return {
+        "installed_performance": installed_performance,
+        "fresh_install_migration": deepcopy(migration),
+        "copied_wave3_migration": deepcopy(migration),
+        "candidate_widgets_candidate_rollback": {
+            "source_commit": source_commit,
+            "passed": True,
+            "same_source_commit": True,
+            "same_dependency_lock": True,
+            "identity_retention_verified": True,
+            "reopen_verified": True,
+            "destructive_migration": False,
+            "renderer_lanes": rollback_lanes,
+            "errors": [],
+        },
+        "observation_ledger_readiness": {
+            "source_commit": source_commit,
+            "passed": True,
+            "legacy_inventory_available": True,
+            "legacy_route_count": 8,
+            "observation_ledger_configuration_available": True,
+            "observation_window_started": False,
+            "destructive_migration": False,
+            "errors": [],
+        },
     }
 
 
@@ -1000,7 +1093,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 ):
     report_path = tmp_path / "clean-room-report.json"
     report_payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "source_commit": "abc123",
         "archive_sha256": "sha256:package",
         "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1016,6 +1109,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "dependency_cache_present": False,
         "dependency_cache_paths": [],
         "install_succeeded": True,
+        **_clean_room_schema_four_evidence(),
         "renderer_lanes": {
             lane: _clean_room_lane(tmp_path, lane, graphics_api)
             for lane, graphics_api in (
@@ -1192,11 +1286,18 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
     software["qml_identity_graph_checkpoints"] = {
         stage: software_graph for stage, *_ in _CLEAN_ROOM_JOURNEY
     }
+    software["system_health_identity_graph"] = [
+        "DT-RC-SOFTWARE",
+        "FDC-RC-001",
+        "RUN-RC-001",
+        "EVIDENCE-RC-001",
+        "RM-RC-001",
+    ]
     report_path = tmp_path / "lane-local-clean-room-report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1212,6 +1313,7 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
                 "dependency_cache_present": False,
                 "dependency_cache_paths": [],
                 "install_succeeded": True,
+                **_clean_room_schema_four_evidence(),
                 "renderer_lanes": {
                     "hardware": hardware,
                     "software": software,
@@ -1342,7 +1444,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     report.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "source_commit": "abc123",
                 "archive_sha256": qml_sha256,
                 "widgets_archive_sha256": widgets_sha256,
@@ -1360,6 +1462,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "dependency_cache_paths": [],
                 "install_succeeded": True,
                 "widgets_install_succeeded": True,
+                **_clean_room_schema_four_evidence(),
                 "widgets_rollback": {
                     "exit_code": 0,
                     "source_commit": "abc123",
@@ -1594,10 +1697,12 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
                         "LiveDiagnosticTasksAdapter",
                         "LiveStrategyDiagnosticsV1ApplicationAdapter",
-                        "EventBridge",
-                        "LiveRunMonitoringAdapter",
-                        "LiveEvidenceAndFindingsAdapter",
-                        "JourneyWorkspaceHost",
+                            "EventBridge",
+                            "LiveRunMonitoringAdapter",
+                            "LiveEvidenceAndFindingsAdapter",
+                            "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+                            "LiveSystemHealthAdapter",
+                            "JourneyWorkspaceHost",
                     ],
                     "fixture_kind": "authoritative_writable_wave3_inputs",
                     "strategy_selection_created_after_install": True,
@@ -1691,7 +1796,15 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     "writable_persistence_verified": True,
                     "application_reopened": True,
                     "background_continuation_verified": True,
-                    "task_cancel_order_isolation_verified": True,
+                        "task_cancel_order_isolation_verified": True,
+                        "queued_state_observed": True,
+                        "running_state_observed": True,
+                        "partial_state_observed": True,
+                        "controlled_failure_observed": True,
+                        "safe_failure_reason_verified": True,
+                        "retry_idempotency_verified": True,
+                        "duplicate_work_count": 0,
+                        "terminal_completion_observed": True,
                     "campaign_identity": "FDC-RC-001",
                     "case_identity": "CASE-RC-001",
                     "run_identity": "RUN-RC-001",
@@ -1750,13 +1863,24 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                         "Evidence and Findings fresh",
                     ],
                     "old_generation_rejected": True,
-                    "authoritative_reconnect_verified": True,
-                    "routes_rendered": [
+                        "authoritative_reconnect_verified": True,
+                        "system_health_context_verified": True,
+                        "system_health_identity_graph": [
+                            "DT-RC-001",
+                            "FDC-RC-001",
+                            "RUN-RC-001",
+                            "EVIDENCE-RC-001",
+                            "RM-RC-001",
+                        ],
+                        "system_health_accessibility_verified": True,
+                        "focus_restoration_verified": True,
+                        "routes_rendered": [
                         "strategy_library",
                         "scenario_lab",
                         "diagnostic_tasks",
                         "run_monitoring",
-                        "evidence_and_findings",
+                            "evidence_and_findings",
+                            "system_health",
                     ],
                     "connection_transitions": [
                         "connected",
@@ -1856,6 +1980,13 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
     software_payload["qml_identity_graph_checkpoints"] = {
         stage: drifted_graph for stage, *_ in _CLEAN_ROOM_JOURNEY
     }
+    software_payload["system_health_identity_graph"] = [
+        "DT-RC-SOFTWARE",
+        "FDC-RC-001",
+        "RUN-RC-001",
+        "EVIDENCE-RC-001",
+        "RM-RC-001",
+    ]
     reports["software"].write_text(
         json.dumps(software_payload),
         encoding="utf-8",
@@ -2558,7 +2689,7 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
-    assert "schema_version = 3" in script
+    assert "schema_version = 4" in script
     assert '"--source-commit=$SourceCommit"' in script
     assert "production_path" in script
     assert (

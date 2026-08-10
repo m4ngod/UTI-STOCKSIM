@@ -15,13 +15,13 @@ import os
 import platform
 from array import array
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import ceil, sin
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import RLock, local
-from time import perf_counter_ns
+from time import monotonic, perf_counter_ns, sleep
 from typing import Any, cast
 
 from PySide6.QtCore import (
@@ -49,10 +49,9 @@ from app.features import (
     ApplicationReadResult,
     ApproveDiagnosticTaskConfiguration,
     ApprovedScenarioRecipeId,
+    CompareStrategies,
+    ComposeFormalScenarioSetCommand,
     CreateDiagnosticTask,
-    DeterministicFakeDiagnosticTasksAdapter,
-    DeterministicFakeScenarioLabAdapter,
-    DeterministicFakeStrategyLibraryAdapter,
     DiagnosticActorId,
     DiagnosticCampaignCaseSelection,
     DiagnosticCampaignLayer,
@@ -60,6 +59,7 @@ from app.features import (
     DiagnosticCommandIdempotencyKey,
     DiagnosticComparisonRole,
     DiagnosticEvidencePackageId,
+    DiagnosticsApplicationIdentity,
     DiagnosticStrategySelection,
     DiagnosticTaskCapabilities,
     DiagnosticTaskConfiguration,
@@ -87,17 +87,28 @@ from app.features import (
     RunMonitoringSelection,
     RunProgress,
     ScenarioLabContext,
+    ScenarioLabCommandContentIdentity,
+    ScenarioLabCommandDisposition,
+    ScenarioLabCommandId,
+    ScenarioLabCommandMetadata,
+    ScenarioLabFeature,
+    ScenarioLabIdempotencyIdentity,
     ScenarioSetId,
     SimulationTime,
     SourceRevisionToken,
     StartFormalDiagnosticCampaign,
     StrategyRunId,
     StrategyLibraryContext,
+    StrategyLibraryFeature,
+    StrategyComparisonDisposition,
+    StrategySelectionDisposition,
+    SelectFormalStrategySet,
     StrategyUnderTestId,
     TerminalOutcome,
     V1JourneySelector,
     ValidateDiagnosticTaskConfiguration,
     WallTime,
+    canonical_scenario_lab_command_content_identity,
 )
 from app.ui.journey_workspace import JourneyWorkspaceHost
 
@@ -120,14 +131,19 @@ from .frontend_v2_performance import (
 from .no_manual_trading_gate import audit_qml_text
 
 UTC = timezone.utc
-RUN_ID = "RUN-PERF-001"
-CAMPAIGN_ID = "FDC-PERF-001"
-STRATEGY_ID = "STRATEGY-PERF-001"
-SCENARIO_ID = "SCENARIO-PERF-001"
-RECIPE_ID = "RECIPE-PERF-001"
-MANIFEST_ID = "RM-PERF-001"
 SOURCE_MARKER = "frontend-v2-performance-start"
 END_MARKER = "frontend-v2-performance-end"
+
+
+@dataclass(frozen=True, slots=True)
+class _PerformanceIdentity:
+    campaign_id: str
+    run_id: str
+    strategy_id: str
+    scenario_id: str
+    recipe_id: str
+    evidence_package_id: str
+    manifest_id: str
 
 
 class _ProcessMemoryCountersEx(ctypes.Structure):
@@ -181,10 +197,51 @@ def _trim_process_working_set() -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-class _PerformanceLoadProjectionReadModel:
-    """Thread-safe fixed-load projection used only for SLA measurement."""
+class _PackagedPerformanceFixtureReadModel:
+    """Fixed-load projection bound to one real persisted Diagnostics app."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        identity: _PerformanceIdentity,
+        authoritative: LiveStrategyDiagnosticsV1ApplicationAdapter,
+    ) -> None:
+        self.identity = identity
+        self._authoritative = authoritative
+        selector = V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(identity.campaign_id),
+            run_id=StrategyRunId(identity.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                identity.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(identity.manifest_id),
+        )
+        authoritative_journey = authoritative.resolve_journey(selector)
+        if (
+            authoritative_journey.availability
+            is not ApplicationReadAvailability.READY
+            or authoritative_journey.value is None
+            or authoritative_journey.error is not None
+        ):
+            raise RuntimeError(
+                "Persisted performance Journey is not authoritative"
+            )
+        self._authoritative_journey = authoritative_journey.value
+        for label, result in (
+            ("Run", authoritative.read_run(self._authoritative_journey)),
+            (
+                "Evidence",
+                authoritative.read_evidence(self._authoritative_journey),
+            ),
+        ):
+            if (
+                result.availability is not ApplicationReadAvailability.READY
+                or result.value is None
+                or result.error is not None
+            ):
+                raise RuntimeError(
+                    f"Persisted performance {label} is not authoritative"
+                )
         self._lock = RLock()
         self._thread_reads = local()
         self._revision = 1
@@ -222,6 +279,12 @@ class _PerformanceLoadProjectionReadModel:
         ] = {}
 
     @property
+    def application_identity(self) -> DiagnosticsApplicationIdentity:
+        """Prove that this projection belongs to the authoritative app."""
+
+        return self._authoritative.application_identity
+
+    @property
     def current_evidence_read_revision(self) -> int:
         return int(getattr(self._thread_reads, "evidence_revision", 0))
 
@@ -242,11 +305,11 @@ class _PerformanceLoadProjectionReadModel:
         selector: V1JourneySelector,
     ) -> ApplicationReadResult[ResolvedV1Journey]:
         if (
-            selector.campaign_id.value != CAMPAIGN_ID
-            or selector.run_id.value != RUN_ID
+            selector.campaign_id.value != self.identity.campaign_id
+            or selector.run_id.value != self.identity.run_id
             or (
                 selector.manifest_id is not None
-                and selector.manifest_id.value != MANIFEST_ID
+                and selector.manifest_id.value != self.identity.manifest_id
             )
         ):
             return self._read_failure(
@@ -254,13 +317,7 @@ class _PerformanceLoadProjectionReadModel:
                 message="The performance certification journey was not found.",
                 retryable=False,
             )
-        journey = ResolvedV1Journey(
-            run_context=_run_context(),
-            evidence_context=_evidence_context(),
-            evidence_package_id=selector.evidence_package_id,
-            campaign_case_id=MarketScenarioId(SCENARIO_ID),
-            campaign_layer=EvidenceCoverage.COMPOUND_SCENARIO,
-        )
+        journey = self._authoritative_journey
         revision, status, updated_at = self._run_source_state()
         return ApplicationReadResult(
             availability=ApplicationReadAvailability.READY,
@@ -274,12 +331,18 @@ class _PerformanceLoadProjectionReadModel:
         self,
         journey: ResolvedV1Journey,
     ) -> ApplicationReadResult[RunMonitoringData]:
+        if journey != self._authoritative_journey:
+            return self._read_failure(
+                code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
+                message="The performance Run journey is not authoritative.",
+                retryable=False,
+            )
         selection = journey.run_context.selection
         if (
             selection is None
             or selection.run_id is None
-            or selection.campaign_id.value != CAMPAIGN_ID
-            or selection.run_id.value != RUN_ID
+            or selection.campaign_id.value != self.identity.campaign_id
+            or selection.run_id.value != self.identity.run_id
         ):
             return self._read_failure(
                 code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
@@ -302,10 +365,12 @@ class _PerformanceLoadProjectionReadModel:
         started_at = updated_at - timedelta(minutes=5)
         data = RunMonitoringData(
             selection=selection,
-            strategy_id=StrategyUnderTestId(STRATEGY_ID),
-            market_scenario_id=MarketScenarioId(SCENARIO_ID),
+            strategy_id=StrategyUnderTestId(self.identity.strategy_id),
+            market_scenario_id=MarketScenarioId(self.identity.scenario_id),
             scenario_set_id=ScenarioSetId("SET-PERF-001"),
-            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
+            reproduction_manifest_id=ReproductionManifestId(
+                self.identity.manifest_id
+            ),
             task_id=None,
             lifecycle=lifecycle,
             terminal_outcome=terminal_outcome,
@@ -365,11 +430,20 @@ class _PerformanceLoadProjectionReadModel:
             _map_record,
         )
 
+        if journey != self._authoritative_journey:
+            return self._read_failure(
+                code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
+                message=(
+                    "The performance Diagnostic Evidence journey is not "
+                    "authoritative."
+                ),
+                retryable=False,
+            )
         selection = journey.evidence_context.selection
         if (
             selection is None
-            or selection.campaign_id.value != CAMPAIGN_ID
-            or selection.run_id.value != RUN_ID
+            or selection.campaign_id.value != self.identity.campaign_id
+            or selection.run_id.value != self.identity.run_id
         ):
             return self._read_failure(
                 code=ApplicationReadErrorCode.IDENTITY_MISMATCH,
@@ -379,7 +453,7 @@ class _PerformanceLoadProjectionReadModel:
                 ),
                 retryable=False,
             )
-        record = self.get_evidence_and_findings_snapshot(RUN_ID)
+        record = self.get_evidence_and_findings_snapshot(self.identity.run_id)
         if record is None:
             return self._read_failure(
                 code=ApplicationReadErrorCode.EVIDENCE_PENDING,
@@ -426,13 +500,16 @@ class _PerformanceLoadProjectionReadModel:
         with self._lock:
             return self._revision, self._status, self._updated_at
 
-    @staticmethod
     def _run_source_token(
+        self,
         revision: int,
         status: str,
         updated_at: datetime,
     ) -> SourceRevisionToken:
-        payload = f"{CAMPAIGN_ID}|{RUN_ID}|{revision}|{status}|{updated_at.isoformat()}"
+        payload = (
+            f"{self.identity.campaign_id}|{self.identity.run_id}|"
+            f"{revision}|{status}|{updated_at.isoformat()}"
+        )
         return SourceRevisionToken(hashlib.sha256(payload.encode("utf-8")).hexdigest())
 
     @staticmethod
@@ -458,7 +535,7 @@ class _PerformanceLoadProjectionReadModel:
         self,
         run_id: str,
     ) -> dict[str, Any] | None:
-        if run_id != RUN_ID:
+        if run_id != self.identity.run_id:
             return None
         with self._lock:
             revision = self._revision
@@ -467,18 +544,19 @@ class _PerformanceLoadProjectionReadModel:
             candidates = self._candidate_rows
         self._thread_reads.evidence_revision = revision
         return {
-            "run_id": RUN_ID,
+            "run_id": self.identity.run_id,
+            "evidence_package_id": self.identity.evidence_package_id,
             "revision": revision,
             "updated_at": updated_at.isoformat(),
             "status": status,
             "content_digest": self._content_digest,
             "selection": {
-                "campaign_id": CAMPAIGN_ID,
-                "run_id": RUN_ID,
-                "strategy_id": STRATEGY_ID,
-                "market_scenario_id": SCENARIO_ID,
-                "approved_recipe_id": RECIPE_ID,
-                "reproduction_manifest_id": MANIFEST_ID,
+                "campaign_id": self.identity.campaign_id,
+                "run_id": self.identity.run_id,
+                "strategy_id": self.identity.strategy_id,
+                "market_scenario_id": self.identity.scenario_id,
+                "approved_recipe_id": self.identity.recipe_id,
+                "reproduction_manifest_id": self.identity.manifest_id,
             },
             "candidates": candidates,
             "read_only_context": {
@@ -592,13 +670,13 @@ class _PerformanceLoadProjectionReadModel:
             ],
             "provenance": {
                 "artifact_hashes": [f"sha256:performance-{suffix}"],
-                "source_run_ids": [RUN_ID],
+                "source_run_ids": [self.identity.run_id],
                 "runner_version": "frontend-v2-performance/1",
                 "build_version": "uti-stocksim/wave1",
                 "dependencies": [
                     {
                         "name": "reproduction-manifest",
-                        "version": MANIFEST_ID,
+                        "version": self.identity.manifest_id,
                         "artifact_hash": "sha256:performance-manifest",
                     }
                 ],
@@ -723,6 +801,28 @@ class _RealV1PerformanceProbe:
                 "Real V1 performance probe preparation failed: "
                 f"{errors}"
             )
+
+    @property
+    def fixture(self) -> Any:
+        return self._fixture
+
+    @property
+    def application_adapter(
+        self,
+    ) -> LiveStrategyDiagnosticsV1ApplicationAdapter:
+        return self._adapter
+
+    @property
+    def performance_identity(self) -> _PerformanceIdentity:
+        return _PerformanceIdentity(
+            campaign_id=self._identity["campaign_identity"],
+            run_id=self._identity["run_identity"],
+            strategy_id=self._identity["strategy_identity"],
+            scenario_id=self._identity["case_identity"],
+            recipe_id=self._identity["approved_recipe_identity"],
+            evidence_package_id=self._identity["evidence_package_identity"],
+            manifest_id=self._identity["reproduction_manifest_identity"],
+        )
 
     def run_preflight(self, *, sample_count: int = 2) -> None:
         if sample_count < 2:
@@ -1005,7 +1105,7 @@ def capture_real_v1_performance_preflight(
 class _MetricRecorder:
     def __init__(
         self,
-        queries: _PerformanceLoadProjectionReadModel,
+        queries: _PackagedPerformanceFixtureReadModel,
     ) -> None:
         self._queries = queries
         self._lock = RLock()
@@ -1083,7 +1183,7 @@ class _QtPerformanceProbe(QObject):
         app: QApplication,
         host: JourneyWorkspaceHost,
         recorder: _MetricRecorder,
-        queries: _PerformanceLoadProjectionReadModel,
+        queries: _PackagedPerformanceFixtureReadModel,
         bridge: EventBridge,
         duration_seconds: float,
         process_started_ns: int,
@@ -1339,7 +1439,7 @@ class _QtPerformanceProbe(QObject):
         self._source_events += 1
         self._bridge.on_snapshot(
             {
-                "run_id": RUN_ID,
+                "run_id": self._queries.identity.run_id,
                 "source_revision": revision,
                 "status": "running",
             }
@@ -1372,7 +1472,7 @@ class _QtPerformanceProbe(QObject):
         self._source_events += 1
         self._bridge.on_snapshot(
             {
-                "run_id": RUN_ID,
+                "run_id": self._queries.identity.run_id,
                 "source_revision": revision,
                 "status": "completed",
             }
@@ -1522,48 +1622,6 @@ def _diagnostic_configuration(
     )
 
 
-def _wave2_performance_feature() -> DeterministicFakeDiagnosticTasksAdapter:
-    seed = DeterministicFakeDiagnosticTasksAdapter()
-    workspace = DiagnosticTasksContext.workspace()
-    seed.snapshot(workspace)
-    inventory = seed.snapshot(workspace).last_reliable_inventory
-    seed.close()
-    if inventory is None:
-        raise RuntimeError("Diagnostic Tasks seed inventory is unavailable")
-    baseline = inventory.market_scenarios[0]
-    isolated = tuple(
-        replace(
-            baseline,
-            market_scenario_id=type(baseline.market_scenario_id)(
-                f"sha256:performance-isolated-scenario-{index:02d}"
-            ),
-            campaign_case_id=type(baseline.campaign_case_id)(
-                f"performance-isolated-campaign-case-{index:02d}"
-            ),
-            layer=DiagnosticCampaignLayer.ISOLATED_SENSITIVITY,
-            comparison_requirement="compare_to_baseline",
-        )
-        for index in range(1, 13)
-    )
-    compound = replace(
-        baseline,
-        market_scenario_id=type(baseline.market_scenario_id)(
-            "sha256:performance-compound-scenario"
-        ),
-        campaign_case_id=type(baseline.campaign_case_id)(
-            "performance-compound-campaign-case"
-        ),
-        layer=DiagnosticCampaignLayer.COMPOUND,
-        comparison_requirement="compare_to_baseline",
-    )
-    return DeterministicFakeDiagnosticTasksAdapter(
-        inventory=replace(
-            inventory,
-            market_scenarios=(baseline, *isolated, compound),
-        )
-    )
-
-
 def _read_diagnostic_task(
     feature: DiagnosticTasksFeature,
     task_id: DiagnosticTaskId,
@@ -1574,6 +1632,39 @@ def _read_diagnostic_task(
     if state.task is None:
         raise RuntimeError("Diagnostic Tasks performance task is unavailable")
     return state.task
+
+
+def _wait_for_diagnostic_task_terminal(
+    feature: DiagnosticTasksFeature,
+    task_id: DiagnosticTaskId,
+    app: QApplication,
+    *,
+    timeout_seconds: float,
+) -> DiagnosticTaskPresentation:
+    context = DiagnosticTasksContext(task_id=task_id)
+    latest = [feature.snapshot(context)]
+    subscription = feature.subscribe(
+        context,
+        lambda state: latest.__setitem__(0, state),
+    )
+    try:
+        deadline = monotonic() + timeout_seconds
+        while monotonic() < deadline:
+            app.processEvents()
+            state = latest[0]
+            task = state.task
+            if task is not None and task.lifecycle.value in {
+                "completed",
+                "failed",
+            }:
+                return task
+            sleep(0.05)
+    finally:
+        subscription.dispose()
+    raise RuntimeError(
+        "Timed out waiting for real Diagnostic Task terminal state before "
+        "renderer clock"
+    )
 
 
 def _identity_graph(
@@ -1604,8 +1695,13 @@ def _identity_graph(
 
 
 def _prepare_wave2_diagnostic_task_load(
-    feature: DeterministicFakeDiagnosticTasksAdapter,
-) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    feature: DiagnosticTasksFeature,
+) -> tuple[
+    dict[str, Any],
+    tuple[str, ...],
+    tuple[str, ...],
+    DiagnosticTaskId,
+]:
     workspace = DiagnosticTasksContext.workspace()
     feature.snapshot(workspace)
     inventory = feature.snapshot(workspace).last_reliable_inventory
@@ -1674,7 +1770,6 @@ def _prepare_wave2_diagnostic_task_load(
             approved_revision=task.revision,
         )
     )
-    feature.advance_evidence_available(task_id)
     task = _read_diagnostic_task(feature, task_id)
     feature.snapshot(workspace)
     feature.snapshot(workspace)
@@ -1729,10 +1824,12 @@ def _prepare_wave2_diagnostic_task_load(
             "observed_before_load": False,
             "observed_after_load": False,
             "task_lifecycle": task.lifecycle.value,
+            "task_id": task_id.value,
             "identity_graph": list(graph),
         },
         graph,
         qml_observation_graph,
+        task_id,
     )
 
 
@@ -1880,6 +1977,153 @@ def _observe_wave3_setup_features(
     }
 
 
+def _prepare_wave3_setup_feature_load(
+    strategy_feature: StrategyLibraryFeature,
+    scenario_feature: ScenarioLabFeature,
+) -> dict[str, Any]:
+    """Run the fixed setup workload only through public Feature commands."""
+
+    strategy_context = StrategyLibraryContext()
+    strategy_before = strategy_feature.snapshot(strategy_context)
+    strategy_inventory = strategy_before.last_reliable_inventory
+    if (
+        strategy_inventory is None
+        or strategy_before.source_revision is None
+    ):
+        raise RuntimeError("Strategy Library inventory is unavailable")
+    formal_entries = tuple(
+        item
+        for item in strategy_inventory.entries
+        if item.required_for_v1_formal_campaign
+    )
+    if not formal_entries or any(
+        item.guardrail_profile is None for item in formal_entries
+    ):
+        raise RuntimeError("Formal Strategy set is unavailable")
+    comparison = strategy_feature.compare_strategies(
+        CompareStrategies(
+            strategy_ids=tuple(item.strategy_id for item in formal_entries),
+            expected_source_revision=strategy_before.source_revision,
+            expected_source_generation=strategy_before.source.generation,
+        )
+    )
+    if comparison.disposition is not StrategyComparisonDisposition.AVAILABLE:
+        raise RuntimeError("Formal Strategy comparison was not accepted")
+    selection = strategy_feature.select_formal_strategy_set(
+        SelectFormalStrategySet(
+            strategy_ids=tuple(item.strategy_id for item in formal_entries),
+            guardrail_profile_ids=tuple(
+                item.guardrail_profile.profile_id
+                for item in formal_entries
+                if item.guardrail_profile is not None
+            ),
+            expected_source_revision=strategy_before.source_revision,
+            expected_source_generation=strategy_before.source.generation,
+            originating_view_revision=strategy_before.revision,
+        )
+    )
+    if selection.disposition is not StrategySelectionDisposition.SELECTED:
+        raise RuntimeError("Formal Strategy selection was not accepted")
+    strategy_after = strategy_feature.snapshot(strategy_context)
+
+    scenario_context = ScenarioLabContext()
+    scenario_before = scenario_feature.snapshot(scenario_context)
+    scenario_inventory = scenario_before.last_reliable_inventory
+    if scenario_inventory is None or scenario_before.source_revision is None:
+        raise RuntimeError("Scenario Lab inventory is unavailable")
+    baseline = next(
+        (
+            item
+            for item in scenario_inventory.market_scenarios
+            if item.layer.value == "baseline"
+        ),
+        None,
+    )
+    if baseline is None:
+        raise RuntimeError("Scenario Lab baseline is unavailable")
+    metadata = ScenarioLabCommandMetadata(
+        command_id=ScenarioLabCommandId(
+            "performance-compose-formal-scenario-set"
+        ),
+        idempotency_identity=ScenarioLabIdempotencyIdentity(
+            "performance-compose-formal-scenario-set-key"
+        ),
+        canonical_content_identity=ScenarioLabCommandContentIdentity(
+            "pending-canonical-content"
+        ),
+        expected_source_revision=scenario_before.source_revision,
+        expected_source_generation=scenario_before.source.generation,
+    )
+    compose = ComposeFormalScenarioSetCommand(
+        metadata=metadata,
+        baseline_case_id=baseline.scenario_id,
+        isolated_case_ids=tuple(
+            item.scenario_id
+            for item in scenario_inventory.market_scenarios
+            if item.layer.value == "isolated_sensitivity"
+        ),
+        compound_case_ids=tuple(
+            item.scenario_id
+            for item in scenario_inventory.market_scenarios
+            if item.layer.value == "compound"
+        ),
+    )
+    compose = replace(
+        compose,
+        metadata=replace(
+            metadata,
+            canonical_content_identity=(
+                canonical_scenario_lab_command_content_identity(compose)
+            ),
+        ),
+    )
+    composed = scenario_feature.compose_scenario_set(compose)
+    if (
+        composed.receipt.disposition
+        is not ScenarioLabCommandDisposition.ACCEPTED
+    ):
+        raise RuntimeError("Formal Scenario Set composition was not accepted")
+    scenario_after = scenario_feature.snapshot(scenario_context)
+    scenario_set = (
+        None
+        if not scenario_after.scenario_sets
+        else scenario_after.scenario_sets[-1]
+    )
+    eligibility = (
+        "unavailable"
+        if scenario_set is None
+        else str(
+            getattr(
+                scenario_set.eligibility,
+                "value",
+                scenario_set.eligibility,
+            )
+        )
+    )
+    return {
+        "prepared_before_measurement": True,
+        "accepted_setup_commands": [
+            "compare_formal_strategy_set",
+            "select_formal_strategy_set",
+            "compose_visible_scenario_set",
+        ],
+        "accepted_revisions": {
+            "strategy_library": [
+                strategy_before.revision,
+                strategy_after.revision,
+            ],
+            "scenario_lab": [
+                scenario_before.revision,
+                scenario_after.revision,
+            ],
+        },
+        "comparison_count": len(comparison.entries),
+        "strategy_selection_status": strategy_after.selection_status.value,
+        "scenario_set_count": len(scenario_after.scenario_sets),
+        "scenario_set_eligibility": eligibility,
+    }
+
+
 def run_performance_lane(
     *,
     lane: str,
@@ -1888,32 +2132,100 @@ def run_performance_lane(
     smoke: bool,
     process_started_ns: int,
     integrated_v1_evidence: Mapping[str, Any] | None = None,
+    fixture_archive_path: Path | None = None,
 ) -> dict[str, Any]:
     """Execute one isolated renderer lane and return its retained report."""
 
-    if not smoke and integrated_v1_evidence is None:
+    if not smoke and fixture_archive_path is None:
         raise RuntimeError(
-            "A certifying performance lane requires real V1 preflight "
-            "evidence"
+            "A certifying performance lane requires the packaged real V1 "
+            "fixture archive"
         )
+    real_v1_probe = prepare_real_v1_performance_probe(
+        fixture_archive_path=fixture_archive_path,
+        expected_source_commit=(
+            None if fixture_archive_path is None else source_commit
+        ),
+    )
+    try:
+        real_v1_probe.run_preflight(sample_count=2)
+        fixture = real_v1_probe.fixture
+        identity = real_v1_probe.performance_identity
+        queries = _PackagedPerformanceFixtureReadModel(
+            identity=identity,
+            authoritative=real_v1_probe.application_adapter,
+        )
+    except BaseException:
+        real_v1_probe.close()
+        raise
+    ui_runtime_started_ns = perf_counter_ns()
     existing_app = QApplication.instance()
     app = (
         QApplication([])
         if existing_app is None
         else cast(QApplication, existing_app)
     )
-    queries = _PerformanceLoadProjectionReadModel()
-    strategy_library = DeterministicFakeStrategyLibraryAdapter()
-    scenario_lab = DeterministicFakeScenarioLabAdapter()
-    diagnostic_tasks = _wave2_performance_feature()
+    from app.features import (
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
+        LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter,
+        LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter,
+    )
+    from app.features.diagnostic_setup import (
+        DiagnosticSetupSelectionCoordinator,
+    )
+    from .frontend_v2_package_entry import (
+        _configure_smoke_route_identity,
+        _create_production_window,
+        _navigate_route,
+        _restore_environment,
+        _settle_until,
+    )
+
+    setup_coordinator = DiagnosticSetupSelectionCoordinator()
+    diagnostic_tasks_application = (
+        LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter(
+            fixture.application,
+            setup_selection_provider=setup_coordinator.current,
+        )
+    )
+    strategy_library_application = (
+        LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter(
+            fixture.application
+        )
+    )
+    scenario_lab_application = (
+        LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter(
+            fixture.application
+        )
+    )
+    system_health_application = (
+        LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter(
+            fixture.application
+        )
+    )
+    previous_environment = _configure_smoke_route_identity(
+        campaign_id=identity.campaign_id,
+        run_id=identity.run_id,
+        strategy_id=identity.strategy_id,
+        case_id=identity.scenario_id,
+        recipe_id=identity.recipe_id,
+        evidence_package_id=identity.evidence_package_id,
+        manifest_id=identity.manifest_id,
+    )
+    context: Any | None = None
+    window: Any | None = None
+    strategy_library: Any | None = None
+    scenario_lab: Any | None = None
+    diagnostic_tasks: Any | None = None
     wave3_setup_features: dict[str, Any] = {
         "feature_interfaces": [
-            f"StrategyLibraryFeature/{strategy_library.interface_version.render()}",
-            f"ScenarioLabFeature/{scenario_lab.interface_version.render()}",
+            "StrategyLibraryFeature/1.0",
+            "ScenarioLabFeature/1.0",
         ],
         "adapters": [
-            type(strategy_library).__name__,
-            type(scenario_lab).__name__,
+            "LiveStrategyLibraryAdapter",
+            "LiveScenarioLabAdapter",
         ],
         "routes": ["strategy_library", "scenario_lab"],
         "presentation_states": {},
@@ -1922,6 +2234,7 @@ def run_performance_lane(
         "initial_focus_observed": {},
         "observed_before_load": False,
         "executed_during_active_load": False,
+        "observed_during_active_load": False,
         "accepted_setup_commands": [],
         "accepted_revisions": {},
         "comparison_count": 0,
@@ -1931,15 +2244,14 @@ def run_performance_lane(
     }
     wave2_diagnostic_tasks: dict[str, Any] = {
         "feature_interface": (
-            f"DiagnosticTasksFeature/"
-            f"{diagnostic_tasks.interface_version.render()}"
+            "DiagnosticTasksFeature/1.0"
         ),
         "application_interface": (
             "StrategyDiagnosticsV1DiagnosticTasksApplication/"
             f"{DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION.render()}"
         ),
-        "adapter": type(diagnostic_tasks).__name__,
-        "accepted_command_ids": list(WAVE2_PERFORMANCE_COMMAND_IDS),
+        "adapter": "LiveDiagnosticTasksAdapter",
+        "accepted_command_ids": [],
         "result_command_ids": [],
         "accepted_command_observed": False,
         "task_handle_observed": False,
@@ -1947,6 +2259,7 @@ def run_performance_lane(
         "handoff_observed": False,
         "terminal_observed": False,
         "executed_during_active_load": False,
+        "observed_during_active_load": False,
         "source_events_before_command": 0,
         "source_events_after_command": 0,
         "observed_before_load": False,
@@ -1975,97 +2288,105 @@ def run_performance_lane(
         finished[0] = True
         app.quit()
 
-    def run_wave3_active_load() -> None:
+    def prepare_feature_load() -> None:
         nonlocal wave2_qml_observation_graph
-        if probe is None or not probe.measurement_active or host is None:
-            raise RuntimeError(
-                "Wave 3 commands were not started inside the active load"
-            )
-        strategy_adapter = host._strategy_library
-        scenario_adapter = host._scenario_lab
-        if strategy_adapter is None or scenario_adapter is None:
-            raise RuntimeError("Wave 3 setup adapters are unavailable")
-        strategy_before = strategy_adapter._state.revision
-        scenario_before = scenario_adapter._state.revision
-        strategy_adapter.compareFormalSet()
-        strategy_adapter.selectFormalSet()
-        app.processEvents()
-        scenario_adapter.composeVisibleScenarioSet()
-        app.processEvents()
-        scenario_eligibility = (
-            "unavailable"
-            if not scenario_adapter.scenarioSets
-            else str(scenario_adapter.scenarioSets[-1]["eligibility"])
-        )
+        if (
+            host is None
+            or diagnostic_tasks is None
+            or strategy_library is None
+            or scenario_lab is None
+        ):
+            raise RuntimeError("Production Feature load is unavailable")
         wave3_setup_features.update(
+            _prepare_wave3_setup_feature_load(
+                strategy_library,
+                scenario_lab,
+            )
+        )
+        app.processEvents()
+        workspace_state = diagnostic_tasks.snapshot(
+            DiagnosticTasksContext.workspace()
+        )
+        inventory = workspace_state.last_reliable_inventory
+        if inventory is None:
+            raise RuntimeError(
+                "Live Diagnostic Tasks inventory is unavailable"
+            )
+        wave2_qml_observation_graph = ()
+        wave2_diagnostic_tasks.update(
             {
-                "executed_during_active_load": probe.measurement_active,
-                "accepted_setup_commands": [
-                    "compare_formal_strategy_set",
-                    "select_formal_strategy_set",
-                    "compose_visible_scenario_set",
-                ],
-                "accepted_revisions": {
-                    "strategy_library": [
-                        strategy_before,
-                        strategy_adapter._state.revision,
-                    ],
-                    "scenario_lab": [
-                        scenario_before,
-                        scenario_adapter._state.revision,
-                    ],
+                "mode": "read_only_live_inventory_observation",
+                "prepared_before_measurement": True,
+                "inventory_counts": {
+                    "strategies": len(inventory.strategies),
+                    "approved_recipes": len(inventory.approved_recipes),
+                    "market_scenarios": len(inventory.market_scenarios),
                 },
-                "comparison_count": strategy_adapter.comparisonCount,
-                "strategy_selection_status": (
-                    strategy_adapter.selectionStatus
-                ),
-                "scenario_set_count": scenario_adapter.scenarioSetCount,
-                "scenario_set_eligibility": scenario_eligibility,
+                "observed_before_load": True,
             }
         )
-        source_events_before = probe.source_events
-        report, _identity_graph_value, qml_graph = (
-            _prepare_wave2_diagnostic_task_load(diagnostic_tasks)
+
+    def observe_active_load() -> None:
+        if (
+            probe is None
+            or not probe.measurement_active
+            or host is None
+            or diagnostic_tasks is None
+        ):
+            raise RuntimeError(
+                "Production Feature load was not observed inside the active load"
+            )
+        wave3_setup_features["observed_during_active_load"] = True
+        wave2_diagnostic_tasks.update(
+            {
+                "source_events_after_command": probe.source_events,
+                "observed_during_active_load": bool(
+                    wave2_diagnostic_tasks.get("observed_before_load")
+                ),
+            }
         )
-        report["executed_during_active_load"] = probe.measurement_active
-        report["source_events_before_command"] = source_events_before
-        report["source_events_after_command"] = probe.source_events
-        report["observed_before_load"] = wave2_diagnostic_tasks[
-            "observed_before_load"
-        ]
-        wave2_diagnostic_tasks.clear()
-        wave2_diagnostic_tasks.update(report)
-        wave2_qml_observation_graph = qml_graph
+        _navigate_route(
+            app=app,
+            host=host,
+            root=host.rootObject(),
+            route="evidence_and_findings",
+        )
 
     try:
-        run_feature = LiveRunMonitoringAdapter(
-            application_read_model=queries,
+        context, window, host = _create_production_window(
             event_bridge=bridge,
+            strategy_diagnostics_application=fixture.application,
+            strategy_diagnostics_read_model=queries,
+            strategy_diagnostics_tasks_application=(
+                diagnostic_tasks_application
+            ),
+            strategy_diagnostics_library_application=(
+                strategy_library_application
+            ),
+            strategy_diagnostics_scenario_lab_application=(
+                scenario_lab_application
+            ),
+            strategy_diagnostics_system_health_application=(
+                system_health_application
+            ),
+            diagnostic_setup_selection_coordinator=setup_coordinator,
+            settings_path=(
+                Path(fixture.database_path).parent
+                / "frontend-v2-performance-settings.json"
+            ),
         )
-        evidence_feature = LiveEvidenceAndFindingsAdapter(
-            application_read_model=queries,
-            event_bridge=bridge,
-        )
+        strategy_library = context.strategy_library_feature
+        scenario_lab = context.scenario_lab_feature
+        diagnostic_tasks = context.diagnostic_tasks_feature
+        run_feature = context.run_monitoring_feature
+        evidence_feature = context.evidence_and_findings_feature
         dispose_batch_probe = bridge.subscribe_batches(
             recorder.record_batch
         )
-        evidence_context = _evidence_context()
+        evidence_context = _evidence_context(identity)
         performance_subscription = evidence_feature.subscribe(
             evidence_context,
             recorder.record_feature_state,
-        )
-        host = JourneyWorkspaceHost(
-            run_feature,
-            context=_run_context(),
-            strategy_library_feature=strategy_library,
-            strategy_library_context=StrategyLibraryContext(),
-            scenario_lab_feature=scenario_lab,
-            scenario_lab_context=ScenarioLabContext(),
-            diagnostic_tasks_feature=diagnostic_tasks,
-            diagnostic_tasks_context=DiagnosticTasksContext.workspace(),
-            evidence_feature=evidence_feature,
-            evidence_context=evidence_context,
-            initial_route="evidence_and_findings",
         )
         root = host.rootObject()
         if root is None:
@@ -2081,36 +2402,57 @@ def run_performance_lane(
         wave2_diagnostic_tasks["observed_before_load"] = (
             _qml_observes_ready_inventory(host, app)
         )
-        diagnostic_qt_adapter.campaignHandoffReady.disconnect(
-            host._open_run_monitoring_handoff
+        _navigate_route(
+            app=app,
+            host=host,
+            root=root,
+            route="evidence_and_findings",
         )
-        diagnostic_qt_adapter.evidenceHandoffReady.disconnect(
-            host._open_evidence_and_findings_handoff
-        )
-        host._run_monitoring.select_context(_run_context())
-        evidence_qt_adapter.select_context(evidence_context)
-        root.setProperty("activeRoute", "evidence_and_findings")
         evidence_qt_adapter.setActiveTab("context")
 
         bridge.start()
-        host.resize(
+        window.resize(
             REFERENCE_MEASUREMENT_PROTOCOL.window_width,
             REFERENCE_MEASUREMENT_PROTOCOL.window_height,
         )
-        host.move(-10_000, -10_000)
-        host.setAttribute(
+        window.move(-10_000, -10_000)
+        window.setAttribute(
             Qt.WidgetAttribute.WA_DontShowOnScreen,
             True,
         )
-        host.show()
+        window.show()
         app.processEvents()
         wave3_setup_features.update(
             _observe_wave3_setup_features(host, app)
         )
-        root.setProperty("activeRoute", "evidence_and_findings")
+        _navigate_route(
+            app=app,
+            host=host,
+            root=root,
+            route="evidence_and_findings",
+        )
         evidence_qt_adapter.setActiveTab("context")
         app.processEvents()
         app.processEvents()
+        try:
+            _settle_until(
+                app,
+                lambda: bool(
+                    evidence_qt_adapter.presentationState == "ready"
+                    and evidence_qt_adapter.chartSourcePointCount
+                    == REFERENCE_FIXTURE.source_points
+                ),
+                "real persisted performance Evidence projection",
+                timeout_seconds=15.0,
+            )
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"{error}; presentation={evidence_qt_adapter.presentationState}; "
+                f"status={evidence_qt_adapter.statusText}; "
+                f"chart_source_points="
+                f"{evidence_qt_adapter.chartSourcePointCount}"
+            ) from error
+        prepare_feature_load()
         probe = _QtPerformanceProbe(
             app=app,
             host=host,
@@ -2118,8 +2460,8 @@ def run_performance_lane(
             queries=queries,
             bridge=bridge,
             duration_seconds=duration_seconds,
-            process_started_ns=process_started_ns,
-            on_measurement_active=run_wave3_active_load,
+            process_started_ns=ui_runtime_started_ns,
+            on_measurement_active=observe_active_load,
             on_finished=quit_app,
         )
         host.quickWindow().beforeSynchronizing.connect(
@@ -2140,19 +2482,12 @@ def run_performance_lane(
         if not finished[0]:
             probe.errors.append("Performance lane watchdog expired")
         observed_fixture = probe.observed_fixture
-        qml_observed_after_load = (
-            _qml_observes_identity_graph(
-                host,
-                app,
-                wave2_qml_observation_graph,
-            )
+        qml_observed_after_load = _qml_observes_ready_inventory(
+            host,
+            app,
         )
         wave2_diagnostic_tasks["observed_after_load"] = (
             qml_observed_after_load
-        )
-        wave2_diagnostic_tasks["task_handle_observed"] = bool(
-            wave2_diagnostic_tasks.get("task_handle_observed")
-            and qml_observed_after_load
         )
     finally:
         cleanup_candidates: tuple[
@@ -2176,16 +2511,24 @@ def run_performance_lane(
                 host.close if host is not None else None,
             ),
             (
+                "Production MainWindow",
+                window.close if window is not None else None,
+            ),
+            (
                 "Strategy Library Feature",
-                strategy_library.close,
+                (
+                    strategy_library.close
+                    if strategy_library is not None
+                    else None
+                ),
             ),
             (
                 "Scenario Lab Feature",
-                scenario_lab.close,
+                scenario_lab.close if scenario_lab is not None else None,
             ),
             (
                 "Diagnostic Tasks Feature",
-                diagnostic_tasks.close,
+                diagnostic_tasks.close if diagnostic_tasks is not None else None,
             ),
             (
                 "Run Monitoring Feature",
@@ -2204,12 +2547,25 @@ def run_performance_lane(
                 ),
             ),
             (
+                "System Health Feature",
+                (
+                    context.system_health_feature.close
+                    if context is not None
+                    else None
+                ),
+            ),
+            (
                 "EventBridge batch probe",
                 dispose_batch_probe,
             ),
             (
                 "EventBridge",
                 bridge.stop,
+            ),
+            ("real persisted V1 fixture", real_v1_probe.close),
+            (
+                "release environment",
+                lambda: _restore_environment(previous_environment),
             ),
             ("Qt event drain", app.processEvents),
         )
@@ -2229,6 +2585,7 @@ def run_performance_lane(
     if probe is None or observed_fixture is None:
         raise RuntimeError("Performance lane did not produce a report")
     probe.errors.extend(cleanup_errors)
+    integrated_v1_evidence = real_v1_probe.evidence()
 
     report = _build_report(
         lane=lane,
@@ -2323,6 +2680,22 @@ def _build_report(
                 probe.source_events - len(recorder.event_to_visible_ms),
             ),
         },
+        "raw_samples": {
+            "event_to_visible_ms": list(recorder.event_to_visible_ms),
+            "input_response_ms": list(recorder.input_response_ms),
+            "source_event_intervals_ms": source_intervals_ms,
+            "main_thread_gaps_ms": list(recorder.main_thread_gaps_ms),
+            "working_set_mib": list(recorder.memory_mib),
+            "accepted_revision_to_source_revision": [
+                {
+                    "view_revision": view_revision,
+                    "source_revision": source_revision,
+                }
+                for view_revision, source_revision in sorted(
+                    recorder.view_to_source_revision.items()
+                )
+            ],
+        },
         "accepted_revisions": revisions,
         "revisions_strictly_monotonic": monotonic,
         "terminal": {
@@ -2411,24 +2784,28 @@ def _manual_action_count(root: QObject) -> int:
     return count
 
 
-def _run_context() -> RunMonitoringContext:
+def _run_context(identity: _PerformanceIdentity) -> RunMonitoringContext:
     return RunMonitoringContext.for_run(
         RunMonitoringSelection(
-            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
-            run_id=StrategyRunId(RUN_ID),
+            campaign_id=FormalDiagnosticCampaignId(identity.campaign_id),
+            run_id=StrategyRunId(identity.run_id),
         )
     )
 
 
-def _evidence_context() -> EvidenceAndFindingsContext:
+def _evidence_context(
+    identity: _PerformanceIdentity,
+) -> EvidenceAndFindingsContext:
     return EvidenceAndFindingsContext.for_selection(
         EvidenceAndFindingsSelection(
-            campaign_id=FormalDiagnosticCampaignId(CAMPAIGN_ID),
-            run_id=StrategyRunId(RUN_ID),
-            strategy_id=StrategyUnderTestId(STRATEGY_ID),
-            market_scenario_id=MarketScenarioId(SCENARIO_ID),
-            approved_recipe_id=ApprovedScenarioRecipeId(RECIPE_ID),
-            reproduction_manifest_id=ReproductionManifestId(MANIFEST_ID),
+            campaign_id=FormalDiagnosticCampaignId(identity.campaign_id),
+            run_id=StrategyRunId(identity.run_id),
+            strategy_id=StrategyUnderTestId(identity.strategy_id),
+            market_scenario_id=MarketScenarioId(identity.scenario_id),
+            approved_recipe_id=ApprovedScenarioRecipeId(identity.recipe_id),
+            reproduction_manifest_id=ReproductionManifestId(
+                identity.manifest_id
+            ),
         )
     )
 

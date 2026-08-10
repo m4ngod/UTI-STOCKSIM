@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "platform": {
     "operating_system": "Windows 11",
     "architecture": "x86_64"
@@ -10,6 +10,33 @@
     "qt": "6.9.1",
     "numpy": "2.3.1",
     "nuitka": "2.6.8"
+  },
+  "production_dependencies": {
+    "PySide6": "6.9.1",
+    "PySide6-Addons": "6.9.1",
+    "PySide6-Essentials": "6.9.1",
+    "SQLAlchemy": "2.0.49",
+    "asn1crypto": "1.5.1",
+    "duckdb": "1.5.4",
+    "greenlet": "3.4.0",
+    "numpy": "2.3.1",
+    "pg8000": "1.31.5",
+    "psycopg": "3.2.9",
+    "psycopg-binary": "3.2.9",
+    "pydantic": "1.10.26",
+    "pyqtgraph": "0.13.7",
+    "python-dateutil": "2.9.0.post0",
+    "redis": "7.4.0",
+    "scramp": "1.4.8",
+    "shiboken6": "6.9.1",
+    "six": "1.17.0",
+    "typing-extensions": "4.15.0",
+    "tzdata": "2025.2"
+  },
+  "build_dependencies": {
+    "Nuitka": "2.6.8",
+    "ordered-set": "4.1.0",
+    "zstandard": "0.25.0"
   },
   "invalidation_policy": "Any locked dependency version change invalidates all affected packaging and performance evidence."
 }

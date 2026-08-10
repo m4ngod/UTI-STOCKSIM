@@ -6,21 +6,12 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Final, cast
-
-from sqlalchemy import Engine, text
+from typing import Any, cast
 
 from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
     reopen_completed_wave2_release_fixture,
 )
 from stock_sim.release.wave4_rollback_evidence import READABLE_ARTIFACT_KINDS
-
-
-_ORDER_STATE_QUERY: Final = (
-    "SELECT order_id, run_id, instrument, shares, decision_time, "
-    "activation_time, status, rejection_reason "
-    "FROM diagnostic_run_orders ORDER BY order_id"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,14 +23,33 @@ class SupportedDataCopySnapshot:
     clean_exit: bool
 
 
-def _order_state_identity(engine: Engine) -> tuple[str, int]:
-    """Hash all simulated order rows without returning their payload."""
+def _order_state_identity(
+    application: Any,
+    run_ids: tuple[str, ...],
+) -> tuple[str, int]:
+    """Hash read-only simulated order facts through DiagnosticsApplication."""
 
-    with engine.connect() as connection:
-        rows = tuple(
-            dict(row)
-            for row in connection.execute(text(_ORDER_STATE_QUERY)).mappings()
+    rows = tuple(
+        sorted(
+            (
+                {
+                    "order_id": order.order_id,
+                    "run_id": run_id,
+                    "instrument": order.instrument,
+                    "shares": order.shares,
+                    "decision_time": order.decision_time.isoformat(),
+                    "activation_time": order.activation_time.isoformat(),
+                    "status": str(
+                        getattr(order.status, "value", order.status)
+                    ),
+                    "rejection_reason": order.rejection_reason,
+                }
+                for run_id in run_ids
+                for order in application.strategy_run_status(run_id).orders
+            ),
+            key=lambda item: (item["order_id"], item["run_id"]),
         )
+    )
     canonical = json.dumps(
         rows,
         ensure_ascii=True,
@@ -99,7 +109,10 @@ def read_supported_data_copy(
         )
         if not task_handles or len(task_handles) != len(set(task_handles)):
             raise RuntimeError("TaskHandle identities are missing or duplicated")
-        order_state_sha256, order_count = _order_state_identity(fixture.engine)
+        order_state_sha256, order_count = _order_state_identity(
+            fixture.application,
+            tuple(manifest.run_id for manifest in fixture.manifests),
+        )
     finally:
         fixture.close()
     if not fixture.closed:

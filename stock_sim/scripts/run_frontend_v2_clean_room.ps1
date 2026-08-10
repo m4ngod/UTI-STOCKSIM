@@ -78,6 +78,205 @@ function Test-ExactStringArray {
     )
 }
 
+function Test-DurableIdentityMap {
+    param(
+        [AllowNull()]
+        [object]$Actual,
+        [AllowNull()]
+        [object]$Expected
+    )
+
+    $expectedKinds = @(
+        "Strategy", "Recipe", "Task", "Campaign",
+        "Run", "Evidence", "Finding", "Manifest"
+    )
+    if ($null -eq $Actual -or $null -eq $Expected) {
+        return $false
+    }
+    $actualKinds = @($Actual.PSObject.Properties.Name | Sort-Object)
+    if (-not (Test-ExactStringArray `
+        -Actual $actualKinds `
+        -Expected @($expectedKinds | Sort-Object)
+    )) {
+        return $false
+    }
+    foreach ($kind in $expectedKinds) {
+        $actualProperty = $Actual.PSObject.Properties[$kind]
+        $expectedProperty = $Expected.PSObject.Properties[$kind]
+        if (
+            $null -eq $actualProperty -or
+            $null -eq $expectedProperty -or
+            -not (Test-ExactStringArray `
+                -Actual $actualProperty.Value `
+                -Expected $expectedProperty.Value
+            )
+        ) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Invoke-InstalledRollbackLane {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$CandidateExecutable,
+        [Parameter(Mandatory = $true)]
+        [string]$WidgetsExecutable,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [string]$CandidateDependencyLockSha256,
+        [Parameter(Mandatory = $true)]
+        [string]$WidgetsDependencyLockSha256
+    )
+
+    $failed = [ordered]@{
+        lane = $Lane
+        source_commit = $SourceCommit
+        passed = $false
+        same_source_commit = $false
+        same_dependency_lock = $false
+        identity_retention_verified = $false
+        task_handle_continuity_verified = $false
+        order_state_continuity_verified = $false
+        reopen_verified = $false
+        destructive_migration = $true
+        errors = @("Installed rollback lane was not completed")
+    }
+    $smokePath = Join-Path $EvidenceRoot "$Lane\smoke-report.json"
+    $sourcePersistence = Join-Path $EvidenceRoot "$Lane\v1-persistence"
+    if (
+        -not (Test-Path -LiteralPath $smokePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $sourcePersistence -PathType Container)
+    ) {
+        return $failed
+    }
+    $smoke = Get-Content -LiteralPath $smokePath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $laneRoot = Join-Path $EvidenceRoot "installed-rollback-$Lane"
+    $supportedCopy = Join-Path $laneRoot "supported-data-copy"
+    New-Item -ItemType Directory -Path $laneRoot | Out-Null
+    Copy-Item `
+        -LiteralPath $sourcePersistence `
+        -Destination $supportedCopy `
+        -Recurse
+
+    $commonArguments = @(
+        "--supported-data-copy=$supportedCopy",
+        "--campaign-id=$([string]$smoke.campaign_identity)",
+        "--evidence-package-id=$([string]$smoke.evidence_package_identity)",
+        "--selected-manifest-id=$([string]$smoke.reproduction_manifest_identity)",
+        "--diagnostic-task-id=$([string]$smoke.diagnostic_task_identity)",
+        "--source-commit=$SourceCommit"
+    )
+    $beforePath = Join-Path $laneRoot "candidate-before.json"
+    & $CandidateExecutable "--recovery-report=$beforePath" @commonArguments
+    $beforeExitCode = $LASTEXITCODE
+
+    $widgetsDir = Join-Path $laneRoot "widgets"
+    New-Item -ItemType Directory -Path $widgetsDir | Out-Null
+    & $WidgetsExecutable "--smoke-report-dir=$widgetsDir" @commonArguments
+    $widgetsExitCode = $LASTEXITCODE
+    $widgetsPath = Join-Path $widgetsDir "smoke-report.json"
+
+    $afterPath = Join-Path $laneRoot "candidate-after.json"
+    & $CandidateExecutable "--recovery-report=$afterPath" @commonArguments
+    $afterExitCode = $LASTEXITCODE
+    if (
+        -not (Test-Path -LiteralPath $beforePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $widgetsPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $afterPath -PathType Leaf)
+    ) {
+        return $failed
+    }
+
+    $before = Get-Content -LiteralPath $beforePath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $widgets = Get-Content -LiteralPath $widgetsPath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $after = Get-Content -LiteralPath $afterPath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $expected = [pscustomobject][ordered]@{
+        Strategy = @([string]$smoke.strategy_identity)
+        Recipe = @([string]$smoke.approved_recipe_identity)
+        Task = @([string]$smoke.diagnostic_task_identity)
+        Campaign = @([string]$smoke.campaign_identity)
+        Run = @([string]$smoke.run_identity)
+        Evidence = @([string]$smoke.evidence_package_identity)
+        Finding = @($smoke.evidence_identity_sets.findings)
+        Manifest = @([string]$smoke.reproduction_manifest_identity)
+    }
+    $identitiesMatch = (
+        (Test-DurableIdentityMap -Actual $before.durable_identities -Expected $expected) -and
+        (Test-DurableIdentityMap -Actual $widgets.durable_identities -Expected $expected) -and
+        (Test-DurableIdentityMap -Actual $after.durable_identities -Expected $expected)
+    )
+    $taskHandlesMatch = (
+        (Test-ExactStringArray -Actual $before.task_handle_identities -Expected $smoke.task_handle_identities) -and
+        (Test-ExactStringArray -Actual $widgets.task_handle_identities -Expected $smoke.task_handle_identities) -and
+        (Test-ExactStringArray -Actual $after.task_handle_identities -Expected $smoke.task_handle_identities)
+    )
+    $orderStateMatches = (
+        [string]$before.order_state_sha256 -eq
+            [string]$widgets.order_state_sha256 -and
+        [string]$before.order_state_sha256 -eq
+            [string]$after.order_state_sha256 -and
+        [int]$before.order_count -eq [int]$widgets.order_count -and
+        [int]$before.order_count -eq [int]$after.order_count
+    )
+    $sameSourceCommit = (
+        [string]$before.source_commit -eq $SourceCommit -and
+        [string]$widgets.source_commit -eq $SourceCommit -and
+        [string]$after.source_commit -eq $SourceCommit
+    )
+    $sameDependencyLock = (
+        -not [string]::IsNullOrWhiteSpace($CandidateDependencyLockSha256) -and
+        $CandidateDependencyLockSha256 -eq $WidgetsDependencyLockSha256
+    )
+    $reopenVerified = (
+        $beforeExitCode -eq 0 -and
+        $widgetsExitCode -eq 0 -and
+        $afterExitCode -eq 0 -and
+        $before.clean_exit -eq $true -and
+        $widgets.clean_exit -eq $true -and
+        $widgets.supported_data_copy_verified -eq $true -and
+        $after.clean_exit -eq $true
+    )
+    $passed = (
+        $identitiesMatch -and
+        $taskHandlesMatch -and
+        $orderStateMatches -and
+        $sameSourceCommit -and
+        $sameDependencyLock -and
+        $reopenVerified
+    )
+    return [ordered]@{
+        lane = $Lane
+        source_commit = $SourceCommit
+        passed = $passed
+        same_source_commit = $sameSourceCommit
+        same_dependency_lock = $sameDependencyLock
+        identity_retention_verified = $identitiesMatch
+        task_handle_continuity_verified = $taskHandlesMatch
+        order_state_continuity_verified = $orderStateMatches
+        reopen_verified = $reopenVerified
+        destructive_migration = $false
+        candidate_before = $before
+        retained_widgets = $widgets
+        candidate_after = $after
+        errors = @(
+            if (-not $passed) {
+                "Installed $Lane rollback lane failed"
+            }
+        )
+    }
+}
+
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -245,6 +444,124 @@ $widgetsExecutable = (
         Select-Object -First 1
 )
 $widgetsInstallSucceeded = [bool]$widgetsExecutable
+$candidateToolchainLock = Get-ChildItem `
+    -LiteralPath $resolvedInstall `
+    -Recurse `
+    -File `
+    -Filter "frontend_v2_toolchain.lock.json" |
+    Select-Object -First 1
+$widgetsToolchainLock = Get-ChildItem `
+    -LiteralPath $resolvedWidgetsInstall `
+    -Recurse `
+    -File `
+    -Filter "frontend_v2_toolchain.lock.json" |
+    Select-Object -First 1
+$candidateDependencyLockSha256 = ""
+$widgetsDependencyLockSha256 = ""
+if ($candidateToolchainLock) {
+    $candidateDependencyLockSha256 = "sha256:" + (
+        Get-FileHash `
+            -LiteralPath $candidateToolchainLock.FullName `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+}
+if ($widgetsToolchainLock) {
+    $widgetsDependencyLockSha256 = "sha256:" + (
+        Get-FileHash `
+            -LiteralPath $widgetsToolchainLock.FullName `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+}
+
+$freshInstallMigration = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    schema_migration_verified = $false
+    bookmark_migration_verified = $false
+    deterministic = $false
+    idempotent = $false
+    identity_retention_verified = $false
+    reopen_verified = $false
+    destructive_migration = $true
+    errors = @("Fresh install migration probe was not run")
+}
+$copiedWave3Migration = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    schema_migration_verified = $false
+    bookmark_migration_verified = $false
+    deterministic = $false
+    idempotent = $false
+    identity_retention_verified = $false
+    reopen_verified = $false
+    destructive_migration = $true
+    errors = @("Copied Wave 3 migration probe was not run")
+}
+$observationLedgerReadiness = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    legacy_inventory_available = $false
+    legacy_route_count = 0
+    observation_ledger_configuration_available = $false
+    observation_window_started = $false
+    destructive_migration = $false
+    errors = @("Observation-ledger readiness probe was not run")
+}
+if ($installSucceeded) {
+    $migrationEvidenceDir = Join-Path $resolvedEvidence "migration"
+    New-Item -ItemType Directory -Path $migrationEvidenceDir | Out-Null
+    $freshReportPath = Join-Path $migrationEvidenceDir "fresh-install.json"
+    & $executable.FullName `
+        "--migration-report=$freshReportPath" `
+        "--migration-kind=fresh" `
+        "--migration-work-root=$(Join-Path $migrationEvidenceDir 'fresh-work')" `
+        "--source-commit=$SourceCommit"
+    $freshExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $freshReportPath -PathType Leaf) {
+        $freshInstallMigration = Get-Content `
+            -LiteralPath $freshReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $freshInstallMigration | Add-Member `
+            -NotePropertyName exit_code `
+            -NotePropertyValue $freshExitCode `
+            -Force
+    }
+    $copiedReportPath = Join-Path $migrationEvidenceDir "copied-wave3.json"
+    & $executable.FullName `
+        "--migration-report=$copiedReportPath" `
+        "--migration-kind=copied-wave3" `
+        "--migration-work-root=$(Join-Path $migrationEvidenceDir 'copied-work')" `
+        "--source-commit=$SourceCommit"
+    $copiedExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $copiedReportPath -PathType Leaf) {
+        $copiedWave3Migration = Get-Content `
+            -LiteralPath $copiedReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $copiedWave3Migration | Add-Member `
+            -NotePropertyName exit_code `
+            -NotePropertyValue $copiedExitCode `
+            -Force
+    }
+    $readinessReportPath = Join-Path `
+        $migrationEvidenceDir `
+        "observation-ledger-readiness.json"
+    & $executable.FullName `
+        "--observation-readiness-report=$readinessReportPath" `
+        "--source-commit=$SourceCommit"
+    $readinessExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $readinessReportPath -PathType Leaf) {
+        $observationLedgerReadiness = Get-Content `
+            -LiteralPath $readinessReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $observationLedgerReadiness | Add-Member `
+            -NotePropertyName exit_code `
+            -NotePropertyValue $readinessExitCode `
+            -Force
+    }
+}
 $widgetsRollback = [ordered]@{
     exit_code = -1
     source_commit = ""
@@ -304,6 +621,7 @@ if ($widgetsInstallSucceeded) {
     }
 }
 $rendererLanes = [ordered]@{}
+$installedPerformance = [ordered]@{}
 if ($installSucceeded) {
     $expectedJourneySignatures = @(
         "launched_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
@@ -330,6 +648,8 @@ if ($installSucceeded) {
         "EventBridge",
         "LiveRunMonitoringAdapter",
         "LiveEvidenceAndFindingsAdapter",
+        "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+        "LiveSystemHealthAdapter",
         "JourneyWorkspaceHost"
     )
     $expectedRoutes = @(
@@ -337,7 +657,8 @@ if ($installSucceeded) {
         "scenario_lab",
         "diagnostic_tasks",
         "run_monitoring",
-        "evidence_and_findings"
+        "evidence_and_findings",
+        "system_health"
     )
     $expectedAcceptedCommandKinds = @(
         "create_diagnostic_task",
@@ -384,6 +705,33 @@ if ($installSucceeded) {
             "--smoke-report-dir=$laneDir" `
             "--source-commit=$SourceCommit"
         $exitCode = $LASTEXITCODE
+        $performancePath = Join-Path $laneDir "performance.json"
+        & $executable.FullName `
+            "--renderer-lane=$lane" `
+            "--performance-report=$performancePath" `
+            "--performance-duration-seconds=60" `
+            "--source-commit=$SourceCommit"
+        $performanceExitCode = $LASTEXITCODE
+        if (Test-Path -LiteralPath $performancePath -PathType Leaf) {
+            $performanceReport = Get-Content `
+                -LiteralPath $performancePath `
+                -Raw `
+                -Encoding utf8 | ConvertFrom-Json
+            $performanceReport | Add-Member `
+                -NotePropertyName installed_exit_code `
+                -NotePropertyValue $performanceExitCode `
+                -Force
+            $installedPerformance[$lane] = $performanceReport
+        }
+        else {
+            $installedPerformance[$lane] = [ordered]@{
+                status = "failed"
+                lane = $lane
+                source_commit = $SourceCommit
+                installed_exit_code = $performanceExitCode
+                errors = @("Installed performance report was not produced")
+            }
+        }
         $smokePath = Join-Path $laneDir "smoke-report.json"
         if (Test-Path -LiteralPath $smokePath) {
             $smoke = Get-Content -LiteralPath $smokePath -Raw -Encoding utf8 |
@@ -1242,8 +1590,298 @@ if ($installSucceeded) {
     }
 }
 
+$candidateWidgetsCandidateRollback = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    same_source_commit = $false
+    same_dependency_lock = $false
+    identity_retention_verified = $false
+    reopen_verified = $false
+    destructive_migration = $true
+    errors = @("Installed candidate-to-Widgets rollback drill was not run")
+}
+$hardwareSmokePath = Join-Path $resolvedEvidence "hardware\smoke-report.json"
+if (
+    $installSucceeded -and
+    $widgetsInstallSucceeded -and
+    (Test-Path -LiteralPath $hardwareSmokePath -PathType Leaf)
+) {
+    $hardwareSmoke = Get-Content `
+        -LiteralPath $hardwareSmokePath `
+        -Raw `
+        -Encoding utf8 | ConvertFrom-Json
+    $sourcePersistence = Join-Path $resolvedEvidence "hardware\v1-persistence"
+    $rollbackRoot = Join-Path $resolvedEvidence "installed-rollback"
+    $supportedCopy = Join-Path $rollbackRoot "supported-data-copy"
+    New-Item -ItemType Directory -Path $rollbackRoot | Out-Null
+    if (Test-Path -LiteralPath $sourcePersistence -PathType Container) {
+        Copy-Item `
+            -LiteralPath $sourcePersistence `
+            -Destination $supportedCopy `
+            -Recurse
+    }
+    $candidateBeforePath = Join-Path $rollbackRoot "candidate-before.json"
+    if (Test-Path -LiteralPath $supportedCopy -PathType Container) {
+        & $executable.FullName `
+            "--recovery-report=$candidateBeforePath" `
+            "--supported-data-copy=$supportedCopy" `
+            "--campaign-id=$([string]$hardwareSmoke.campaign_identity)" `
+            "--evidence-package-id=$([string]$hardwareSmoke.evidence_package_identity)" `
+            "--selected-manifest-id=$([string]$hardwareSmoke.reproduction_manifest_identity)" `
+            "--diagnostic-task-id=$([string]$hardwareSmoke.diagnostic_task_identity)" `
+            "--source-commit=$SourceCommit"
+        $candidateBeforeExitCode = $LASTEXITCODE
+    }
+    else {
+        $candidateBeforeExitCode = -1
+    }
+    $rollbackWidgetsDir = Join-Path $rollbackRoot "widgets"
+    New-Item -ItemType Directory -Path $rollbackWidgetsDir | Out-Null
+    if (Test-Path -LiteralPath $supportedCopy -PathType Container) {
+        & $widgetsExecutable.FullName `
+            "--source-commit=$SourceCommit" `
+            "--smoke-report-dir=$rollbackWidgetsDir" `
+            "--supported-data-copy=$supportedCopy" `
+            "--campaign-id=$([string]$hardwareSmoke.campaign_identity)" `
+            "--evidence-package-id=$([string]$hardwareSmoke.evidence_package_identity)" `
+            "--selected-manifest-id=$([string]$hardwareSmoke.reproduction_manifest_identity)" `
+            "--diagnostic-task-id=$([string]$hardwareSmoke.diagnostic_task_identity)"
+        $rollbackWidgetsExitCode = $LASTEXITCODE
+    }
+    else {
+        $rollbackWidgetsExitCode = -1
+    }
+    $candidateAfterPath = Join-Path $rollbackRoot "candidate-after.json"
+    if (Test-Path -LiteralPath $supportedCopy -PathType Container) {
+        & $executable.FullName `
+            "--recovery-report=$candidateAfterPath" `
+            "--supported-data-copy=$supportedCopy" `
+            "--campaign-id=$([string]$hardwareSmoke.campaign_identity)" `
+            "--evidence-package-id=$([string]$hardwareSmoke.evidence_package_identity)" `
+            "--selected-manifest-id=$([string]$hardwareSmoke.reproduction_manifest_identity)" `
+            "--diagnostic-task-id=$([string]$hardwareSmoke.diagnostic_task_identity)" `
+            "--source-commit=$SourceCommit"
+        $candidateAfterExitCode = $LASTEXITCODE
+    }
+    else {
+        $candidateAfterExitCode = -1
+    }
+
+    $rollbackWidgetsReportPath = Join-Path `
+        $rollbackWidgetsDir `
+        "smoke-report.json"
+    if (
+        (Test-Path -LiteralPath $candidateBeforePath -PathType Leaf) -and
+        (Test-Path -LiteralPath $rollbackWidgetsReportPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $candidateAfterPath -PathType Leaf)
+    ) {
+        $candidateBefore = Get-Content `
+            -LiteralPath $candidateBeforePath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $rollbackWidgetsReport = Get-Content `
+            -LiteralPath $rollbackWidgetsReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $candidateAfter = Get-Content `
+            -LiteralPath $candidateAfterPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $expectedDurableIdentities = [pscustomobject][ordered]@{
+            Strategy = @([string]$hardwareSmoke.strategy_identity)
+            Recipe = @([string]$hardwareSmoke.approved_recipe_identity)
+            Task = @([string]$hardwareSmoke.diagnostic_task_identity)
+            Campaign = @([string]$hardwareSmoke.campaign_identity)
+            Run = @([string]$hardwareSmoke.run_identity)
+            Evidence = @([string]$hardwareSmoke.evidence_package_identity)
+            Finding = @($hardwareSmoke.evidence_identity_sets.findings)
+            Manifest = @(
+                [string]$hardwareSmoke.reproduction_manifest_identity
+            )
+        }
+        $identityRetentionVerified = (
+            (Test-DurableIdentityMap `
+                -Actual $candidateBefore.durable_identities `
+                -Expected $expectedDurableIdentities) -and
+            (Test-DurableIdentityMap `
+                -Actual $rollbackWidgetsReport.durable_identities `
+                -Expected $expectedDurableIdentities) -and
+            (Test-DurableIdentityMap `
+                -Actual $candidateAfter.durable_identities `
+                -Expected $expectedDurableIdentities)
+        )
+        $taskHandleContinuity = (
+            (Test-ExactStringArray `
+                -Actual $candidateBefore.task_handle_identities `
+                -Expected $hardwareSmoke.task_handle_identities) -and
+            (Test-ExactStringArray `
+                -Actual $rollbackWidgetsReport.task_handle_identities `
+                -Expected $hardwareSmoke.task_handle_identities) -and
+            (Test-ExactStringArray `
+                -Actual $candidateAfter.task_handle_identities `
+                -Expected $hardwareSmoke.task_handle_identities)
+        )
+        $orderStateContinuity = (
+            [string]$candidateBefore.order_state_sha256 -eq
+                [string]$rollbackWidgetsReport.order_state_sha256 -and
+            [string]$candidateBefore.order_state_sha256 -eq
+                [string]$candidateAfter.order_state_sha256 -and
+            [int]$candidateBefore.order_count -eq
+                [int]$rollbackWidgetsReport.order_count -and
+            [int]$candidateBefore.order_count -eq
+                [int]$candidateAfter.order_count
+        )
+        $sameSourceCommit = (
+            [string]$candidateBefore.source_commit -eq $SourceCommit -and
+            [string]$rollbackWidgetsReport.source_commit -eq $SourceCommit -and
+            [string]$candidateAfter.source_commit -eq $SourceCommit
+        )
+        $sameDependencyLock = (
+            -not [string]::IsNullOrWhiteSpace(
+                $candidateDependencyLockSha256
+            ) -and
+            $candidateDependencyLockSha256 -eq
+                $widgetsDependencyLockSha256
+        )
+        $reopenVerified = (
+            $candidateBeforeExitCode -eq 0 -and
+            $rollbackWidgetsExitCode -eq 0 -and
+            $candidateAfterExitCode -eq 0 -and
+            $candidateBefore.clean_exit -is [bool] -and
+            $candidateBefore.clean_exit -eq $true -and
+            $rollbackWidgetsReport.clean_exit -is [bool] -and
+            $rollbackWidgetsReport.clean_exit -eq $true -and
+            $rollbackWidgetsReport.supported_data_copy_verified -is [bool] -and
+            $rollbackWidgetsReport.supported_data_copy_verified -eq $true -and
+            $candidateAfter.clean_exit -is [bool] -and
+            $candidateAfter.clean_exit -eq $true
+        )
+        $rollbackPassed = (
+            $sameSourceCommit -and
+            $sameDependencyLock -and
+            $identityRetentionVerified -and
+            $taskHandleContinuity -and
+            $orderStateContinuity -and
+            $reopenVerified
+        )
+        $candidateWidgetsCandidateRollback = [ordered]@{
+            source_commit = $SourceCommit
+            passed = $rollbackPassed
+            same_source_commit = $sameSourceCommit
+            same_dependency_lock = $sameDependencyLock
+            candidate_dependency_lock_sha256 = (
+                $candidateDependencyLockSha256
+            )
+            widgets_dependency_lock_sha256 = (
+                $widgetsDependencyLockSha256
+            )
+            identity_retention_verified = $identityRetentionVerified
+            task_handle_continuity_verified = $taskHandleContinuity
+            order_state_continuity_verified = $orderStateContinuity
+            reopen_verified = $reopenVerified
+            destructive_migration = $false
+            candidate_before = $candidateBefore
+            retained_widgets = $rollbackWidgetsReport
+            candidate_after = $candidateAfter
+            errors = @(
+                if (-not $rollbackPassed) {
+                    "Installed candidate-to-Widgets rollback drill failed"
+                }
+            )
+        }
+        $widgetsRollback = [ordered]@{
+            exit_code = $rollbackWidgetsExitCode
+            source_commit = [string]$rollbackWidgetsReport.source_commit
+            source_commit_matches = (
+                [string]$rollbackWidgetsReport.source_commit -eq $SourceCommit
+            )
+            mode = [string]$rollbackWidgetsReport.mode
+            placeholder_panels = @(
+                $rollbackWidgetsReport.placeholder_panels
+            )
+            real_panel_count = [int]$rollbackWidgetsReport.real_panel_count
+            manual_trading_action_count = (
+                [int]$rollbackWidgetsReport.manual_trading_action_count
+            )
+            opened_panels = @($rollbackWidgetsReport.opened_panels)
+            supported_data_copy_verified = (
+                $rollbackWidgetsReport.supported_data_copy_verified -is [bool] -and
+                $rollbackWidgetsReport.supported_data_copy_verified -eq $true
+            )
+            clean_exit = (
+                $rollbackWidgetsReport.clean_exit -is [bool] -and
+                $rollbackWidgetsReport.clean_exit -eq $true
+            )
+            errors = @()
+        }
+    }
+}
+
+$hardwareRollbackLane = $candidateWidgetsCandidateRollback
+$softwareRollbackLane = [ordered]@{
+    lane = "software"
+    source_commit = $SourceCommit
+    passed = $false
+    same_source_commit = $false
+    same_dependency_lock = $false
+    identity_retention_verified = $false
+    reopen_verified = $false
+    destructive_migration = $true
+    errors = @("Software rollback lane was not run")
+}
+if ($installSucceeded -and $widgetsInstallSucceeded) {
+    $softwareRollbackLane = Invoke-InstalledRollbackLane `
+        -Lane "software" `
+        -EvidenceRoot $resolvedEvidence `
+        -CandidateExecutable $executable.FullName `
+        -WidgetsExecutable $widgetsExecutable.FullName `
+        -SourceCommit $SourceCommit `
+        -CandidateDependencyLockSha256 $candidateDependencyLockSha256 `
+        -WidgetsDependencyLockSha256 $widgetsDependencyLockSha256
+}
+$rollbackBothLanesPassed = (
+    $hardwareRollbackLane.passed -and
+    $softwareRollbackLane.passed
+)
+$candidateWidgetsCandidateRollback = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $rollbackBothLanesPassed
+    same_source_commit = (
+        $hardwareRollbackLane.same_source_commit -and
+        $softwareRollbackLane.same_source_commit
+    )
+    same_dependency_lock = (
+        $hardwareRollbackLane.same_dependency_lock -and
+        $softwareRollbackLane.same_dependency_lock
+    )
+    identity_retention_verified = (
+        $hardwareRollbackLane.identity_retention_verified -and
+        $softwareRollbackLane.identity_retention_verified
+    )
+    reopen_verified = (
+        $hardwareRollbackLane.reopen_verified -and
+        $softwareRollbackLane.reopen_verified
+    )
+    destructive_migration = (
+        $hardwareRollbackLane.destructive_migration -or
+        $softwareRollbackLane.destructive_migration
+    )
+    renderer_lanes = [ordered]@{
+        hardware = $hardwareRollbackLane
+        software = $softwareRollbackLane
+    }
+    errors = @(
+        if (-not $hardwareRollbackLane.passed) {
+            "Hardware rollback lane failed"
+        }
+        if (-not $softwareRollbackLane.passed) {
+            "Software rollback lane failed"
+        }
+    )
+}
+
 $report = [ordered]@{
-    schema_version = 3
+    schema_version = 4
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
@@ -1262,6 +1900,13 @@ $report = [ordered]@{
     install_succeeded = $installSucceeded
     widgets_install_succeeded = $widgetsInstallSucceeded
     widgets_rollback = $widgetsRollback
+    installed_performance = $installedPerformance
+    fresh_install_migration = $freshInstallMigration
+    copied_wave3_migration = $copiedWave3Migration
+    candidate_widgets_candidate_rollback = (
+        $candidateWidgetsCandidateRollback
+    )
+    observation_ledger_readiness = $observationLedgerReadiness
     renderer_lanes = $rendererLanes
 }
 $reportPath = Join-Path $resolvedEvidence "clean-room-report.json"
@@ -1299,6 +1944,45 @@ $gatePassed = (
     ).Count -eq 3 -and
     $widgetsRollback.clean_exit -and
     $widgetsRollback.errors.Count -eq 0 -and
+    $freshInstallMigration.exit_code -eq 0 -and
+    $freshInstallMigration.passed -and
+    $freshInstallMigration.schema_migration_verified -and
+    $freshInstallMigration.bookmark_migration_verified -and
+    $freshInstallMigration.deterministic -and
+    $freshInstallMigration.idempotent -and
+    $freshInstallMigration.identity_retention_verified -and
+    $freshInstallMigration.reopen_verified -and
+    -not $freshInstallMigration.destructive_migration -and
+    $copiedWave3Migration.exit_code -eq 0 -and
+    $copiedWave3Migration.passed -and
+    $copiedWave3Migration.schema_migration_verified -and
+    $copiedWave3Migration.bookmark_migration_verified -and
+    $copiedWave3Migration.deterministic -and
+    $copiedWave3Migration.idempotent -and
+    $copiedWave3Migration.identity_retention_verified -and
+    $copiedWave3Migration.reopen_verified -and
+    -not $copiedWave3Migration.destructive_migration -and
+    $candidateWidgetsCandidateRollback.passed -and
+    $candidateWidgetsCandidateRollback.same_source_commit -and
+    $candidateWidgetsCandidateRollback.same_dependency_lock -and
+    $candidateWidgetsCandidateRollback.identity_retention_verified -and
+    $candidateWidgetsCandidateRollback.reopen_verified -and
+    -not $candidateWidgetsCandidateRollback.destructive_migration -and
+    $observationLedgerReadiness.exit_code -eq 0 -and
+    $observationLedgerReadiness.passed -and
+    $observationLedgerReadiness.legacy_inventory_available -and
+    $observationLedgerReadiness.legacy_route_count -ge 1 -and
+    $observationLedgerReadiness.observation_ledger_configuration_available -and
+    -not $observationLedgerReadiness.observation_window_started -and
+    -not $observationLedgerReadiness.destructive_migration -and
+    $installedPerformance.hardware.installed_exit_code -eq 0 -and
+    $installedPerformance.hardware.status -eq "passed" -and
+    $installedPerformance.hardware.lane -eq "hardware" -and
+    $installedPerformance.hardware.graphics_api -eq "Direct3D11" -and
+    $installedPerformance.software.installed_exit_code -eq 0 -and
+    $installedPerformance.software.status -eq "passed" -and
+    $installedPerformance.software.lane -eq "software" -and
+    $installedPerformance.software.graphics_api -eq "Software" -and
     $rendererLanes.hardware.exit_code -eq 0 -and
     $rendererLanes.hardware.graphics_api -eq "Direct3D11" -and
     $rendererLanes.hardware.source_commit_matches -and

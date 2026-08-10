@@ -50,6 +50,8 @@ from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
 from strategy_diagnostics.ptrade_host import (
     EmbeddedProductionPTradeStrategyHost,
     InProcessPTradeStrategyHost,
+    PTradeHostInvocation,
+    PTradeHostResult,
     PTradeStrategyHost,
     SubprocessPTradeStrategyHost,
 )
@@ -73,6 +75,32 @@ WAVE3_RELEASE_INPUT_FIXTURE_MANIFEST = (
 WAVE2_RELEASE_INPUT_FIXTURE_DIRNAME = WAVE3_RELEASE_INPUT_FIXTURE_DIRNAME
 WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE = WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE
 WAVE2_RELEASE_INPUT_FIXTURE_MANIFEST = WAVE3_RELEASE_INPUT_FIXTURE_MANIFEST
+
+
+class ReleaseCertificationFailFirstPTradeStrategyHost:
+    """Inject one safe external-source failure around the production host.
+
+    This is a supported packaged certification fixture, not a Feature Adapter
+    substitute.  Every invocation after the single controlled failure is
+    delegated unchanged to the same embedded production PTrade host.
+    """
+
+    def __init__(self) -> None:
+        self._delegate = EmbeddedProductionPTradeStrategyHost()
+        self._controlled_failure_delivered = False
+
+    @property
+    def adapter_version(self) -> str:
+        return self._delegate.adapter_version
+
+    def invoke(self, invocation: PTradeHostInvocation) -> PTradeHostResult:
+        if (
+            invocation.event == "decision"
+            and not self._controlled_failure_delivered
+        ):
+            self._controlled_failure_delivered = True
+            raise RuntimeError("controlled external data source failure")
+        return self._delegate.invoke(invocation)
 _FORMAL_V1_RELEASE_FIXTURE_DATABASE = "strategy-diagnostics-v1.sqlite3"
 _FORMAL_V1_RELEASE_FIXTURE_ARTIFACTS = "artifacts"
 _SOURCE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -534,6 +562,7 @@ def create_file_backed_wave2_release_input_fixture(
     *,
     database_path: Path,
     artifact_root: Path,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> FileBackedWave2ReleaseInputFixture:
     """Create and reopen only the authoritative inputs for installed Wave 2."""
 
@@ -545,7 +574,9 @@ def create_file_backed_wave2_release_input_fixture(
         application = _new_application(
             source=source,
             artifact_root=artifact_root,
-            ptrade_host=EmbeddedProductionPTradeStrategyHost(),
+            ptrade_host=(
+                ptrade_host or EmbeddedProductionPTradeStrategyHost()
+            ),
         )
         application.start()
         migration = application.initialize_persistence(engine)
@@ -567,6 +598,7 @@ def create_file_backed_wave2_release_input_fixture(
     reopened = _open_file_backed_wave2_release_input_fixture(
         database_path=database_path,
         artifact_root=artifact_root,
+        ptrade_host=ptrade_host,
     )
     try:
         _require(
@@ -874,6 +906,7 @@ def open_sealed_wave2_release_input_fixture(
     *,
     bundle_root: Path,
     expected_source_commit: str,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> FileBackedWave2ReleaseInputFixture:
     """Open the verified installed input copy as writable real persistence."""
 
@@ -886,6 +919,7 @@ def open_sealed_wave2_release_input_fixture(
     fixture = _open_file_backed_wave2_release_input_fixture(
         database_path=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_DATABASE,
         artifact_root=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_ARTIFACTS,
+        ptrade_host=ptrade_host,
     )
     try:
         _require(
@@ -957,6 +991,7 @@ def reopen_active_wave2_release_input_fixture(
     bundle_root: Path,
     diagnostic_task_id: str,
     campaign_id: str,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> FileBackedWave2ReleaseInputFixture:
     """Reopen a nonterminal installed task and Campaign for continuation."""
 
@@ -964,6 +999,7 @@ def reopen_active_wave2_release_input_fixture(
         database_path=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_DATABASE,
         artifact_root=bundle_root / _FORMAL_V1_RELEASE_FIXTURE_ARTIFACTS,
         require_empty=False,
+        ptrade_host=ptrade_host,
     )
     try:
         task = fixture.application.get_diagnostic_task(diagnostic_task_id)
@@ -1183,6 +1219,7 @@ def _open_file_backed_wave2_release_input_fixture(
     database_path: Path,
     artifact_root: Path,
     require_empty: bool = True,
+    ptrade_host: PTradeStrategyHost | None = None,
 ) -> FileBackedWave2ReleaseInputFixture:
     source = DeterministicReleaseMarketSource()
     reopened_engine = create_engine(
@@ -1197,7 +1234,9 @@ def _open_file_backed_wave2_release_input_fixture(
             source=source,
             artifact_root=artifact_root,
             market_path_store=reopened_paths,
-            ptrade_host=EmbeddedProductionPTradeStrategyHost(),
+            ptrade_host=(
+                ptrade_host or EmbeddedProductionPTradeStrategyHost()
+            ),
         )
         reopened.start()
         migration = reopened.initialize_persistence(reopened_engine)
@@ -1904,6 +1943,7 @@ __all__ = [
     "DeterministicReleaseMarketSource",
     "FileBackedFormalV1ReleaseFixture",
     "FileBackedWave2ReleaseInputFixture",
+    "ReleaseCertificationFailFirstPTradeStrategyHost",
     "SealedFormalV1ReleaseFixtureFile",
     "SealedFormalV1ReleaseFixtureManifest",
     "SealedWave2ReleaseInputFixtureManifest",

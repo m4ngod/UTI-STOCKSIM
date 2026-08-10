@@ -114,7 +114,7 @@ EXPECTED_JOURNEY = (
 )
 
 
-def test_clean_room_route_failure_names_all_five_active_routes() -> None:
+def test_clean_room_route_failure_names_all_six_active_routes() -> None:
     source = (
         PROJECT_ROOT
         / "stock_sim"
@@ -122,7 +122,8 @@ def test_clean_room_route_failure_names_all_five_active_routes() -> None:
         / "frontend_v2_packaging.py"
     ).read_text(encoding="utf-8")
 
-    assert "did not render all five active routes" in source
+    assert "did not render all six active routes" in source
+    assert "did not render all five active routes" not in source
     assert "did not render all four active routes" not in source
     assert "did not render all three active routes" not in source
 _IDENTITY_SETS = {
@@ -2149,7 +2150,7 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "WidgetsPackageArchive" in script
     assert "ExpectedWidgetsArchiveSha256" in script
     assert "C:\\ReleaseInputWidgets" in script
-    assert "1200" in script
+    assert "3600" in script
     assert "sandbox-exit-code.txt" in script
     assert "shutdown.exe /s /t 0" in script
     assert "Test-Path -LiteralPath $exitCodePath" in script
@@ -2159,6 +2160,8 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "$remainingSandboxProcesses" in script
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
+    assert "Windows Sandbox certification failed at a redacted boundary." in script
+    assert "Exception.ToString" not in script
     assert "'^[0-9a-f]{40}$'" in script
     assert "'^sha256:[0-9a-f]{64}$'" in script
     assert "'^[A-Za-z0-9][A-Za-z0-9._-]*$'" in script
@@ -3413,6 +3416,36 @@ def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
     assert terminated == [0]
 
 
+@pytest.mark.parametrize(
+    "report_argument",
+    (
+        "--performance-report=C:/performance.json",
+        "--migration-report=C:/migration.json",
+        "--recovery-report=C:/recovery.json",
+        "--observation-readiness-report=C:/readiness.json",
+    ),
+)
+def test_all_compiled_issue_118_reports_bypass_static_teardown(
+    report_argument,
+):
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=(report_argument,),
+            run=lambda: 0,
+            terminate=terminated.append,
+        )
+    assert terminated == [0]
+
+
 def test_successful_compiled_smoke_exits_before_python_stream_teardown(
     monkeypatch,
 ):
@@ -3513,7 +3546,9 @@ def test_compiled_smoke_system_exit_zero_flushes_diagnostics(
     ]
 
 
-def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
+def test_compiled_smoke_failure_is_redacted_and_bypasses_static_teardown(
+    capsys,
+):
     from stock_sim.release.frontend_v2_package_entry import (
         _run_process_entry,
     )
@@ -3535,7 +3570,13 @@ def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
         )
 
     assert terminated == [1]
-    assert "RuntimeError: smoke failed before returning" in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert stderr == (
+        "Installed certification failed at a redacted process boundary.\n"
+    )
+    assert "RuntimeError" not in stderr
+    assert "smoke failed before returning" not in stderr
+    assert "Traceback" not in stderr
 
 
 def test_compiled_smoke_preserves_argparse_exit_code():
