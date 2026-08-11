@@ -10,7 +10,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QMetaObject, QObject, QPointF, Qt
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QMetaObject,
+    QObject,
+    QPointF,
+    Qt,
+)
 from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QSignalSpy, QTest
@@ -118,6 +125,20 @@ from tests.strategy_diagnostics.test_recipe_lifecycle import (
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _release_closed_qml_hosts_between_tests():
+    yield
+    app = QApplication.instance()
+    if app is None:
+        return
+    # MainWindow.close() unloads the QML source. Drain the resulting Qt-owned
+    # deferred deletes before the next parameterized window processes events;
+    # otherwise a stale Qt Quick wrapper can be dereferenced on Windows.
+    app.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 @dataclass
