@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Mapping, Sequence
+from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -392,13 +393,55 @@ class LockedPlatform:
 
 
 @dataclass(frozen=True, slots=True)
+class LockedBuildArtifact:
+    filename: str
+    url: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class LockedExecutable:
+    relative_path: str
+    version: str
+    version_line: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class LockedNativeToolchain:
+    compiler_family: str
+    compiler_distribution: str
+    nuitka_install_tree_file_count: int
+    nuitka_install_tree_total_bytes: int
+    nuitka_install_tree_sha256: str
+    compiler_tree_file_count: int
+    compiler_tree_total_bytes: int
+    compiler_tree_sha256: str
+    nuitka_source: LockedBuildArtifact
+    compiler_archive: LockedBuildArtifact
+    compiler: LockedExecutable
+    binary_inspector: LockedExecutable
+
+
+@dataclass(frozen=True, slots=True)
 class FrontendV2ToolchainLock:
     schema_version: int
     platform: LockedPlatform
     toolchain: ToolchainVersions
+    native_toolchain: LockedNativeToolchain
     invalidation_policy: str
     production_dependencies: dict[str, str] = field(default_factory=dict)
     build_dependencies: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class LockedNativeToolchainPaths:
+    nuitka_source: Path
+    compiler_archive: Path
+    compiler: Path
+    binary_inspector: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +488,8 @@ class PackageBuildPlan:
     distribution_dir: Path
     executable_name: str
     nuitka_report: Path
+    native_toolchain_attestation: Path
+    isolated_pycache_root: Path
     nuitka_command: tuple[str, ...]
     source_imports: QmlDependencyManifest | None
     resolved_qml_dependencies: QmlDependencyClosure | None
@@ -485,6 +530,7 @@ class PackageEvidence:
     qml_delta_limit_bytes: int
     webengine_files: tuple[str, ...]
     dependency_reports: tuple[ArtifactChecksum, ...]
+    native_toolchain_attestations: tuple[ArtifactChecksum, ...]
     formal_strategy_sources: tuple[ArtifactChecksum, ...]
 
 
@@ -717,7 +763,7 @@ EXPECTED_TOOLCHAIN = ToolchainVersions(
     pyside6="6.9.1",
     qt="6.9.1",
     numpy="2.3.1",
-    nuitka="2.6.8",
+    nuitka="4.1.3",
 )
 
 EXPECTED_PRODUCTION_DEPENDENCIES = {
@@ -743,7 +789,7 @@ EXPECTED_PRODUCTION_DEPENDENCIES = {
     "tzdata": "2025.2",
 }
 EXPECTED_BUILD_DEPENDENCIES = {
-    "Nuitka": "2.6.8",
+    "Nuitka": "4.1.3",
     "ordered-set": "4.1.0",
     "zstandard": "0.25.0",
 }
@@ -755,6 +801,25 @@ def load_toolchain_lock(
     payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     platform = payload["platform"]
     toolchain = payload["toolchain"]
+    native_toolchain = payload["native_toolchain"]
+
+    def locked_artifact(value: Mapping[str, Any]) -> LockedBuildArtifact:
+        return LockedBuildArtifact(
+            filename=str(value["filename"]),
+            url=str(value["url"]),
+            sha256=str(value["sha256"]),
+            size_bytes=int(value["size_bytes"]),
+        )
+
+    def locked_executable(value: Mapping[str, Any]) -> LockedExecutable:
+        return LockedExecutable(
+            relative_path=str(value["relative_path"]),
+            version=str(value["version"]),
+            version_line=str(value["version_line"]),
+            sha256=str(value["sha256"]),
+            size_bytes=int(value["size_bytes"]),
+        )
+
     return FrontendV2ToolchainLock(
         schema_version=int(payload["schema_version"]),
         platform=LockedPlatform(
@@ -767,6 +832,40 @@ def load_toolchain_lock(
             qt=str(toolchain["qt"]),
             numpy=str(toolchain["numpy"]),
             nuitka=str(toolchain["nuitka"]),
+        ),
+        native_toolchain=LockedNativeToolchain(
+            compiler_family=str(native_toolchain["compiler_family"]),
+            compiler_distribution=str(
+                native_toolchain["compiler_distribution"]
+            ),
+            nuitka_install_tree_file_count=int(
+                native_toolchain["nuitka_install_tree_file_count"]
+            ),
+            nuitka_install_tree_total_bytes=int(
+                native_toolchain["nuitka_install_tree_total_bytes"]
+            ),
+            nuitka_install_tree_sha256=str(
+                native_toolchain["nuitka_install_tree_sha256"]
+            ),
+            compiler_tree_file_count=int(
+                native_toolchain["compiler_tree_file_count"]
+            ),
+            compiler_tree_total_bytes=int(
+                native_toolchain["compiler_tree_total_bytes"]
+            ),
+            compiler_tree_sha256=str(
+                native_toolchain["compiler_tree_sha256"]
+            ),
+            nuitka_source=locked_artifact(
+                native_toolchain["nuitka_source"]
+            ),
+            compiler_archive=locked_artifact(
+                native_toolchain["compiler_archive"]
+            ),
+            compiler=locked_executable(native_toolchain["compiler"]),
+            binary_inspector=locked_executable(
+                native_toolchain["binary_inspector"]
+            ),
         ),
         invalidation_policy=str(payload["invalidation_policy"]),
         production_dependencies={
@@ -805,14 +904,13 @@ def running_toolchain() -> ToolchainVersions:
     import numpy
     import PySide6
     from PySide6.QtCore import qVersion
-    from nuitka.Version import getNuitkaVersion
 
     return ToolchainVersions(
         python=".".join(str(part) for part in sys.version_info[:3]),
         pyside6=PySide6.__version__,
         qt=qVersion(),
         numpy=numpy.__version__,
-        nuitka=getNuitkaVersion(),
+        nuitka=importlib.metadata.version("Nuitka"),
     )
 
 
@@ -916,6 +1014,7 @@ def toolchain_evidence_identity(
                 "numpy": lock.toolchain.numpy,
                 "nuitka": lock.toolchain.nuitka,
             },
+            "native_toolchain": asdict(lock.native_toolchain),
             "production_dependencies": dict(
                 sorted(lock.production_dependencies.items())
             ),
@@ -1089,10 +1188,6 @@ def create_package_build_plans(
                     *_FORBIDDEN_NETWORK_MODULE_PREFIXES,
                 )
             ),
-            *(
-                f"--noinclude-custom-mode={module_prefix}:nofollow"
-                for module_prefix in _FORBIDDEN_NETWORK_MODULE_PREFIXES
-            ),
             "--nofollow-import-to=app.runtime_gateway",
             "--nofollow-import-to=app.ui.journey_workspace",
             "--nofollow-import-to=app.ui.ui_refresh",
@@ -1158,10 +1253,6 @@ def create_package_build_plans(
                 f"--nofollow-import-to={module_prefix}"
                 for module_prefix in _QML_NUITKA_EXCLUDED_MODULE_PREFIXES
             ),
-            *(
-                f"--noinclude-custom-mode={module_prefix}:nofollow"
-                for module_prefix in _FORBIDDEN_NETWORK_MODULE_PREFIXES
-            ),
         ),
     )
     return widgets_plan, qml_plan
@@ -1178,13 +1269,21 @@ def _build_plan(
     resolved_qml_dependencies: QmlDependencyClosure | None,
     extra_arguments: tuple[str, ...],
 ) -> PackageBuildPlan:
+    entry_point = entry_point.resolve()
+    output_root = output_root.resolve()
     nuitka_report = output_root / "nuitka-report.xml"
+    isolated_pycache_root = output_root / "python-pycache"
     command = (
         sys.executable,
+        "-I",
+        "-B",
+        "-X",
+        f"pycache_prefix={isolated_pycache_root}",
         "-m",
         "nuitka",
         str(entry_point),
         "--standalone",
+        "--mingw64",
         "--enable-plugin=pyside6",
         "--jobs=1",
         "--include-module=numpy._core._exceptions",
@@ -1203,6 +1302,10 @@ def _build_plan(
         distribution_dir=output_root / f"{entry_point.stem}.dist",
         executable_name=executable_name,
         nuitka_report=nuitka_report,
+        native_toolchain_attestation=(
+            output_root / "native-toolchain-attestation.json"
+        ),
+        isolated_pycache_root=isolated_pycache_root,
         nuitka_command=command,
         source_imports=source_imports,
         resolved_qml_dependencies=resolved_qml_dependencies,
@@ -1211,6 +1314,8 @@ def _build_plan(
 
 def deploy_scanned_qml_runtime(
     plan: PackageBuildPlan,
+    *,
+    objdump_path: Path | None = None,
 ) -> QmlRuntimeDeployment:
     if (
         plan.kind is not PackageKind.QML_JOURNEY
@@ -1246,7 +1351,8 @@ def deploy_scanned_qml_runtime(
             if source_file.suffix.casefold() == ".dll":
                 plugin_binaries.append(source_file)
 
-    objdump_path = _find_objdump()
+    if objdump_path is None:
+        objdump_path = _find_objdump()
     pyside_binaries = {
         path.name.casefold(): path
         for path in pyside_root.iterdir()
@@ -1307,25 +1413,338 @@ def deploy_scanned_qml_runtime(
     )
 
 
-def _find_objdump() -> Path:
-    from_path = shutil.which("objdump")
-    if from_path:
-        return Path(from_path).resolve()
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        raise FileNotFoundError("LOCALAPPDATA is unavailable")
-    cache_root = Path(local_app_data) / "Nuitka" / "Nuitka" / "Cache"
-    candidates = tuple(
+def _nuitka_downloads_cache_root() -> Path:
+    downloads_cache = os.environ.get("NUITKA_CACHE_DIR_DOWNLOADS")
+    nuitka_cache = os.environ.get("NUITKA_CACHE_DIR")
+    if downloads_cache:
+        cache_root = Path(downloads_cache)
+    elif nuitka_cache:
+        cache_root = Path(nuitka_cache) / "downloads"
+    else:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            raise FileNotFoundError(
+                "Nuitka cache root and LOCALAPPDATA are unavailable"
+            )
+        cache_root = (
+            Path(local_app_data)
+            / "Nuitka"
+            / "Nuitka"
+            / "Cache"
+            / "downloads"
+        )
+    return cache_root.resolve()
+
+
+def _resolve_locked_native_toolchain_paths(
+    lock: FrontendV2ToolchainLock,
+) -> LockedNativeToolchainPaths:
+    nuitka_source_value = os.environ.get(
+        "FRONTEND_V2_NUITKA_SOURCE_ARCHIVE"
+    )
+    if not nuitka_source_value:
+        raise FileNotFoundError(
+            "FRONTEND_V2_NUITKA_SOURCE_ARCHIVE is required for a locked "
+            "production build"
+        )
+    native = lock.native_toolchain
+    distribution_root = (
+        _nuitka_downloads_cache_root()
+        / "gcc"
+        / lock.platform.architecture
+        / native.compiler_distribution
+    )
+    return LockedNativeToolchainPaths(
+        nuitka_source=Path(nuitka_source_value).resolve(),
+        compiler_archive=(
+            distribution_root / native.compiler_archive.filename
+        ).resolve(),
+        compiler=(
+            distribution_root / Path(native.compiler.relative_path)
+        ).resolve(),
+        binary_inspector=(
+            distribution_root
+            / Path(native.binary_inspector.relative_path)
+        ).resolve(),
+    )
+
+
+def _verify_locked_file(
+    *,
+    path: Path,
+    filename: str | None,
+    size_bytes: int,
+    sha256: str,
+    label: str,
+) -> None:
+    if filename is not None and path.name != filename:
+        raise RuntimeError(
+            f"Locked {label} filename mismatch: expected {filename}, "
+            f"observed {path.name}"
+        )
+    if not path.is_file():
+        raise FileNotFoundError(f"Locked {label} is unavailable: {path}")
+    observed_size = path.stat().st_size
+    if observed_size != size_bytes:
+        raise RuntimeError(
+            f"Locked {label} size mismatch: expected {size_bytes}, "
+            f"observed {observed_size}"
+        )
+    observed_sha256 = _sha256_path(path)
+    if observed_sha256 != sha256:
+        raise RuntimeError(
+            f"Locked {label} SHA-256 mismatch: expected {sha256}, "
+            f"observed {observed_sha256}"
+        )
+
+
+def _verify_locked_executable(
+    *,
+    path: Path,
+    locked: LockedExecutable,
+    label: str,
+) -> None:
+    _verify_locked_file(
+        path=path,
+        filename=Path(locked.relative_path).name,
+        size_bytes=locked.size_bytes,
+        sha256=locked.sha256,
+        label=label,
+    )
+    completed = subprocess.run(
+        (str(path), "--version"),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    version_lines = completed.stdout.splitlines()
+    if not version_lines:
+        raise RuntimeError(f"Locked {label} did not report a version")
+    first_line = version_lines[0].strip()
+    if first_line != locked.version_line or locked.version not in first_line:
+        raise RuntimeError(
+            f"Locked {label} version mismatch: expected "
+            f"{locked.version_line!r}, observed {first_line!r}"
+        )
+
+
+def _compiler_tree_identity(root: Path) -> tuple[int, int, str]:
+    files = tuple(
         sorted(
-            cache_root.rglob("objdump.exe"),
-            key=lambda path: (len(path.parts), str(path)),
+            (path for path in root.rglob("*") if path.is_file()),
+            key=lambda path: path.relative_to(root).as_posix(),
         )
     )
-    if not candidates:
-        raise FileNotFoundError(
-            "Nuitka compiler objdump is unavailable for PE dependency scanning"
+    tree_hasher = hashlib.sha256()
+    total_bytes = 0
+    for path in files:
+        relative_path = path.relative_to(root).as_posix()
+        size_bytes = path.stat().st_size
+        total_bytes += size_bytes
+        tree_hasher.update(
+            (
+                f"{_sha256_path(path)} {size_bytes} {relative_path}\n"
+            ).encode("utf-8")
         )
-    return candidates[0]
+    return len(files), total_bytes, f"sha256:{tree_hasher.hexdigest()}"
+
+
+def _running_nuitka_installation_identity(
+) -> tuple[int, int, str, str, str]:
+    distribution = importlib.metadata.distribution("Nuitka")
+    package_root = Path(distribution.locate_file("nuitka")).resolve()
+    package_files = tuple(
+        sorted(
+            (
+                path
+                for path in package_root.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix.casefold() not in {".pyc", ".pyo"}
+            ),
+            key=lambda path: path.relative_to(package_root).as_posix(),
+        )
+    )
+    tree_hasher = hashlib.sha256()
+    total_bytes = 0
+    for path in package_files:
+        relative_path = path.relative_to(package_root).as_posix()
+        size_bytes = path.stat().st_size
+        total_bytes += size_bytes
+        tree_hasher.update(
+            (
+                f"{_sha256_path(path)} {size_bytes} {relative_path}\n"
+            ).encode("utf-8")
+        )
+
+    direct_url_text = distribution.read_text("direct_url.json")
+    if direct_url_text is None:
+        raise RuntimeError(
+            "Locked Nuitka installation has no direct_url archive identity"
+        )
+    direct_url = json.loads(direct_url_text)
+    archive_hashes = direct_url.get("archive_info", {}).get("hashes", {})
+    source_sha256 = str(archive_hashes.get("sha256", ""))
+    source_filename = Path(
+        unquote(urlparse(str(direct_url.get("url", ""))).path)
+    ).name
+    return (
+        len(package_files),
+        total_bytes,
+        f"sha256:{tree_hasher.hexdigest()}",
+        source_filename,
+        f"sha256:{source_sha256}",
+    )
+
+
+def verify_locked_native_toolchain(
+    lock: FrontendV2ToolchainLock,
+) -> LockedNativeToolchainPaths:
+    native = lock.native_toolchain
+    if native.compiler_family != "MinGW64":
+        raise RuntimeError(
+            "Frontend V2 production compiler family must be MinGW64"
+        )
+    paths = _resolve_locked_native_toolchain_paths(lock)
+    observed_nuitka_identity = _running_nuitka_installation_identity()
+    expected_nuitka_identity = (
+        native.nuitka_install_tree_file_count,
+        native.nuitka_install_tree_total_bytes,
+        native.nuitka_install_tree_sha256,
+        native.nuitka_source.filename,
+        native.nuitka_source.sha256,
+    )
+    if observed_nuitka_identity != expected_nuitka_identity:
+        raise RuntimeError(
+            "Locked Nuitka installation identity mismatch: expected "
+            f"{expected_nuitka_identity!r}, observed "
+            f"{observed_nuitka_identity!r}"
+        )
+    for path, artifact, label in (
+        (paths.nuitka_source, native.nuitka_source, "Nuitka source archive"),
+        (
+            paths.compiler_archive,
+            native.compiler_archive,
+            "compiler archive",
+        ),
+    ):
+        _verify_locked_file(
+            path=path,
+            filename=artifact.filename,
+            size_bytes=artifact.size_bytes,
+            sha256=artifact.sha256,
+            label=label,
+        )
+    _verify_locked_executable(
+        path=paths.compiler,
+        locked=native.compiler,
+        label="compiler",
+    )
+    _verify_locked_executable(
+        path=paths.binary_inspector,
+        locked=native.binary_inspector,
+        label="binary inspector",
+    )
+    compiler_tree_root = paths.compiler.parent.parent
+    observed_tree_identity = _compiler_tree_identity(compiler_tree_root)
+    expected_tree_identity = (
+        native.compiler_tree_file_count,
+        native.compiler_tree_total_bytes,
+        native.compiler_tree_sha256,
+    )
+    if observed_tree_identity != expected_tree_identity:
+        raise RuntimeError(
+            "Locked compiler tree identity mismatch: expected "
+            f"{expected_tree_identity!r}, observed {observed_tree_identity!r}"
+        )
+    return paths
+
+
+def _find_objdump(
+    lock: FrontendV2ToolchainLock | None = None,
+) -> Path:
+    retained_lock = lock or load_toolchain_lock()
+    paths = _resolve_locked_native_toolchain_paths(retained_lock)
+    _verify_locked_executable(
+        path=paths.binary_inspector,
+        locked=retained_lock.native_toolchain.binary_inspector,
+        label="binary inspector",
+    )
+    return paths.binary_inspector
+
+
+def _expected_native_toolchain_attestation_payload(
+    *,
+    package_kind: PackageKind,
+    source_commit: str,
+    report_checksum: ArtifactChecksum,
+    distribution_identity: Mapping[str, Any],
+    archive_checksum: ArtifactChecksum,
+    lock: FrontendV2ToolchainLock,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "package_kind": package_kind.value,
+        "source_commit": source_commit,
+        "toolchain_identity": toolchain_evidence_identity(lock),
+        "nuitka_report": asdict(report_checksum),
+        "distribution": dict(distribution_identity),
+        "archive": asdict(archive_checksum),
+        "native_toolchain": asdict(lock.native_toolchain),
+    }
+
+
+def _write_native_toolchain_attestation(
+    *,
+    plan: PackageBuildPlan,
+    archive_checksum: ArtifactChecksum,
+    lock: FrontendV2ToolchainLock,
+) -> None:
+    verify_locked_native_toolchain(lock)
+    report_checksum = _checksum_file(plan.nuitka_report, plan.output_root)
+    inventory = _inventory_package(plan)
+    payload = _expected_native_toolchain_attestation_payload(
+        package_kind=plan.kind,
+        source_commit=plan.source_commit,
+        report_checksum=report_checksum,
+        distribution_identity={
+            "file_count": inventory.file_count,
+            "total_bytes": inventory.total_bytes,
+            "tree_sha256": inventory.tree_sha256,
+        },
+        archive_checksum=archive_checksum,
+        lock=lock,
+    )
+    plan.native_toolchain_attestation.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _verify_isolated_pycache_root(plan: PackageBuildPlan) -> None:
+    plan.isolated_pycache_root.mkdir(parents=True, exist_ok=True)
+    retained_files = tuple(
+        sorted(
+            (
+                path
+                for path in plan.isolated_pycache_root.rglob("*")
+                if path.is_file()
+            ),
+            key=lambda path: path.relative_to(
+                plan.isolated_pycache_root
+            ).as_posix(),
+        )
+    )
+    if retained_files:
+        raise RuntimeError(
+            "Nuitka isolated Python bytecode cache is not empty: "
+            + ", ".join(
+                path.relative_to(plan.isolated_pycache_root).as_posix()
+                for path in retained_files
+            )
+        )
 
 
 def _inspect_binary_dependencies(
@@ -1350,6 +1769,7 @@ def _inspect_binary_dependencies(
 def write_package_evidence(
     *,
     plans: tuple[PackageBuildPlan, PackageBuildPlan],
+    archives: tuple[ArtifactChecksum, ArtifactChecksum],
     evidence_dir: Path,
 ) -> PackageEvidence:
     plans_by_kind = {plan.kind: plan for plan in plans}
@@ -1388,6 +1808,19 @@ def write_package_evidence(
             + ", ".join(webengine_files)
         )
     lock = load_toolchain_lock()
+    archives_by_kind: dict[PackageKind, ArtifactChecksum] = {}
+    for kind in PackageKind:
+        matches = tuple(
+            archive
+            for archive in archives
+            if archive.relative_path.startswith(f"{kind.value}-")
+            and archive.relative_path.endswith(".zip")
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"Exactly one {kind.value} archive checksum is required"
+            )
+        archives_by_kind[kind] = matches[0]
     package_roots = {
         plan.output_root.parent.resolve()
         for plan in plans
@@ -1397,6 +1830,39 @@ def write_package_evidence(
     packages_root = package_roots.pop()
     dependency_reports = tuple(
         _checksum_file(plan.nuitka_report, packages_root)
+        for plan in sorted(plans, key=lambda item: item.kind.value)
+    )
+    for plan in plans:
+        inventory = (
+            widgets_inventory
+            if plan.kind is PackageKind.WIDGETS_ROLLBACK
+            else qml_inventory
+        )
+        expected_attestation = _expected_native_toolchain_attestation_payload(
+            package_kind=plan.kind,
+            source_commit=plan.source_commit,
+            report_checksum=_checksum_file(
+                plan.nuitka_report,
+                plan.output_root,
+            ),
+            distribution_identity={
+                "file_count": inventory.file_count,
+                "total_bytes": inventory.total_bytes,
+                "tree_sha256": inventory.tree_sha256,
+            },
+            archive_checksum=archives_by_kind[plan.kind],
+            lock=lock,
+        )
+        observed_attestation = _load_json_mapping(
+            plan.native_toolchain_attestation
+        )
+        if observed_attestation != expected_attestation:
+            raise RuntimeError(
+                "Native toolchain attestation does not match the "
+                f"production lock/report: {plan.kind.value}"
+            )
+    native_toolchain_attestations = tuple(
+        _checksum_file(plan.native_toolchain_attestation, packages_root)
         for plan in sorted(plans, key=lambda item: item.kind.value)
     )
     qml_distribution = plans_by_kind[
@@ -1418,6 +1884,7 @@ def write_package_evidence(
         qml_delta_limit_bytes=MAX_QML_DELTA_BYTES,
         webengine_files=webengine_files,
         dependency_reports=dependency_reports,
+        native_toolchain_attestations=native_toolchain_attestations,
         formal_strategy_sources=formal_strategy_sources,
     )
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -1437,6 +1904,10 @@ def write_package_evidence(
         "webengine_files": webengine_files,
         "dependency_reports": tuple(
             asdict(report) for report in dependency_reports
+        ),
+        "native_toolchain_attestations": tuple(
+            asdict(attestation)
+            for attestation in native_toolchain_attestations
         ),
         "formal_strategy_sources": tuple(
             asdict(source) for source in formal_strategy_sources
@@ -1465,23 +1936,21 @@ def write_package_evidence(
     return evidence
 
 
-def _inventory_package(plan: PackageBuildPlan) -> PackageInventory:
-    executable = plan.distribution_dir / plan.executable_name
-    if not executable.is_file():
-        raise FileNotFoundError(
-            f"Package executable is unavailable: {executable}"
-        )
+def _inventory_distribution(
+    *,
+    kind: PackageKind,
+    source_commit: str,
+    distribution_dir: Path,
+) -> PackageInventory:
     files = tuple(
-        _checksum_file(path, plan.distribution_dir)
+        _checksum_file(path, distribution_dir)
         for path in sorted(
             (
                 candidate
-                for candidate in plan.distribution_dir.rglob("*")
+                for candidate in distribution_dir.rglob("*")
                 if candidate.is_file()
             ),
-            key=lambda path: path.relative_to(
-                plan.distribution_dir
-            ).as_posix(),
+            key=lambda path: path.relative_to(distribution_dir).as_posix(),
         )
     )
     tree_hasher = hashlib.sha256()
@@ -1493,12 +1962,25 @@ def _inventory_package(plan: PackageBuildPlan) -> PackageInventory:
             ).encode("utf-8")
         )
     return PackageInventory(
-        kind=plan.kind,
-        source_commit=plan.source_commit,
+        kind=kind,
+        source_commit=source_commit,
         file_count=len(files),
         total_bytes=sum(checksum.size_bytes for checksum in files),
         tree_sha256=f"sha256:{tree_hasher.hexdigest()}",
         files=files,
+    )
+
+
+def _inventory_package(plan: PackageBuildPlan) -> PackageInventory:
+    executable = plan.distribution_dir / plan.executable_name
+    if not executable.is_file():
+        raise FileNotFoundError(
+            f"Package executable is unavailable: {executable}"
+        )
+    return _inventory_distribution(
+        kind=plan.kind,
+        source_commit=plan.source_commit,
+        distribution_dir=plan.distribution_dir,
     )
 
 
@@ -3304,6 +3786,36 @@ def audit_nuitka_dependency_report(
 ) -> tuple[str, ...]:
     root = _parse_nuitka_dependency_report(report_path)
     findings = []
+    lock = load_toolchain_lock()
+    if root.attrib.get("nuitka_version") != lock.toolchain.nuitka:
+        findings.append(
+            "Nuitka version does not match the production lock: expected "
+            f"{lock.toolchain.nuitka}, observed "
+            f"{root.attrib.get('nuitka_version')!r}"
+        )
+    scons_environment = root.find("./scons_environment")
+    expected_compiler_identity = {
+        "c_compiler": lock.native_toolchain.compiler_family,
+        "the_cc_name": "gcc",
+        "the_compiler": "gcc",
+    }
+    if scons_environment is None or any(
+        scons_environment.attrib.get(name) != expected
+        for name, expected in expected_compiler_identity.items()
+    ):
+        observed_compiler_identity = (
+            None
+            if scons_environment is None
+            else {
+                name: scons_environment.attrib.get(name)
+                for name in expected_compiler_identity
+            }
+        )
+        findings.append(
+            "Nuitka native compiler identity does not match the production "
+            f"lock: expected {expected_compiler_identity!r}, observed "
+            f"{observed_compiler_identity!r}"
+        )
     if root.attrib.get("mode") != "standalone":
         findings.append("Nuitka report is not a standalone build")
     if root.attrib.get("completion") != "yes":
@@ -3568,17 +4080,21 @@ def build_frontend_v2_release(
             "Frontend V2 safety gate failed: "
             + "; ".join(surface_findings)
         )
+    lock = load_toolchain_lock()
+    native_toolchain_paths = verify_locked_native_toolchain(lock)
     plans = create_package_build_plans(
         output_root=output_root / "packages",
         source_commit=source_commit,
     )
 
     for plan in plans:
+        _verify_isolated_pycache_root(plan)
         subprocess.run(
             plan.nuitka_command,
             cwd=PROJECT_ROOT,
             check=True,
         )
+        _verify_isolated_pycache_root(plan)
         dependency_findings = audit_nuitka_dependency_report(
             plan.nuitka_report,
             package_kind=plan.kind,
@@ -3606,7 +4122,10 @@ def build_frontend_v2_release(
         for plan in plans
         if plan.kind is PackageKind.WIDGETS_ROLLBACK
     )
-    deploy_scanned_qml_runtime(qml_plan)
+    deploy_scanned_qml_runtime(
+        qml_plan,
+        objdump_path=native_toolchain_paths.binary_inspector,
+    )
     stage_packaged_formal_v1_release_fixture(qml_plan)
     stage_packaged_wave2_release_input_fixture(qml_plan)
 
@@ -3626,17 +4145,6 @@ def build_frontend_v2_release(
             ),
         )
 
-    evidence_dir = output_root / "evidence"
-    package_evidence = write_package_evidence(
-        plans=plans,
-        evidence_dir=evidence_dir,
-    )
-    renderer_evidence = write_renderer_evidence(
-        hardware_report=smoke_root / "hardware" / "smoke-report.json",
-        software_report=smoke_root / "software" / "smoke-report.json",
-        source_commit=source_commit,
-        evidence_dir=evidence_dir,
-    )
     archive_dir = output_root / "archives"
     archives = tuple(
         create_deterministic_package_archive(
@@ -3644,6 +4152,34 @@ def build_frontend_v2_release(
             archive_dir=archive_dir,
         )
         for plan in plans
+    )
+    for plan in plans:
+        archive_matches = tuple(
+            archive
+            for archive in archives
+            if archive.relative_path.startswith(f"{plan.kind.value}-")
+        )
+        if len(archive_matches) != 1:
+            raise RuntimeError(
+                f"Final {plan.kind.value} archive identity is ambiguous"
+            )
+        _write_native_toolchain_attestation(
+            plan=plan,
+            archive_checksum=archive_matches[0],
+            lock=lock,
+        )
+
+    evidence_dir = output_root / "evidence"
+    package_evidence = write_package_evidence(
+        plans=plans,
+        archives=archives,
+        evidence_dir=evidence_dir,
+    )
+    renderer_evidence = write_renderer_evidence(
+        hardware_report=smoke_root / "hardware" / "smoke-report.json",
+        software_report=smoke_root / "software" / "smoke-report.json",
+        source_commit=source_commit,
+        evidence_dir=evidence_dir,
     )
     result = ReleaseBuildResult(
         source_commit=source_commit,
@@ -3890,6 +4426,178 @@ def verify_packaged_dependency_evidence(
             f"release pair: expected {sorted(expected_paths)!r}, "
             f"observed {sorted(observed_paths)!r}"
         )
+    retained_attestations = packages.get("native_toolchain_attestations")
+    expected_attestation_paths = {
+        f"{kind.value}/native-toolchain-attestation.json"
+        for kind in PackageKind
+    }
+    observed_attestation_paths: set[str] = set()
+    lock = load_toolchain_lock()
+    retained_archives = candidate.get("archives")
+    archive_checksums_by_kind: dict[PackageKind, ArtifactChecksum] = {}
+    if not isinstance(retained_archives, list):
+        findings.append("Candidate archive inventory is unavailable")
+    else:
+        archives_root = (output_root / "archives").resolve()
+        for kind in PackageKind:
+            matches = tuple(
+                archive
+                for archive in retained_archives
+                if isinstance(archive, dict)
+                and str(archive.get("relative_path", "")).startswith(
+                    f"{kind.value}-"
+                )
+                and str(archive.get("relative_path", "")).endswith(".zip")
+            )
+            if len(matches) != 1:
+                findings.append(
+                    f"Candidate {kind.value} archive identity is ambiguous"
+                )
+                continue
+            retained_archive = matches[0]
+            archive_path = (
+                archives_root / str(retained_archive["relative_path"])
+            ).resolve()
+            try:
+                archive_path.relative_to(archives_root)
+            except ValueError:
+                findings.append(
+                    f"Candidate {kind.value} archive escapes archive root"
+                )
+                continue
+            if not archive_path.is_file():
+                findings.append(
+                    f"Candidate {kind.value} archive is unavailable"
+                )
+                continue
+            observed_archive = _checksum_file(
+                archive_path,
+                archives_root,
+            )
+            if (
+                observed_archive.sha256 != retained_archive.get("sha256")
+                or observed_archive.size_bytes
+                != retained_archive.get("size_bytes")
+            ):
+                findings.append(
+                    f"Candidate {kind.value} archive checksum does not match"
+                )
+                continue
+            archive_checksums_by_kind[kind] = observed_archive
+    if not isinstance(retained_attestations, list):
+        findings.append(
+            "Native toolchain attestation inventory is unavailable"
+        )
+    else:
+        for retained_attestation in retained_attestations:
+            if not isinstance(retained_attestation, dict):
+                findings.append(
+                    "Native toolchain attestation inventory is invalid"
+                )
+                continue
+            relative_path = str(
+                retained_attestation.get("relative_path", "")
+            )
+            observed_attestation_paths.add(relative_path)
+            attestation_path = (packages_root / relative_path).resolve()
+            try:
+                attestation_path.relative_to(packages_root)
+            except ValueError:
+                findings.append(
+                    "Native toolchain attestation escapes package root: "
+                    f"{relative_path}"
+                )
+                continue
+            if not attestation_path.is_file():
+                findings.append(
+                    "Native toolchain attestation is unavailable: "
+                    f"{relative_path}"
+                )
+                continue
+            observed_attestation = _checksum_file(
+                attestation_path,
+                packages_root,
+            )
+            if (
+                observed_attestation.sha256
+                != retained_attestation.get("sha256")
+                or observed_attestation.size_bytes
+                != retained_attestation.get("size_bytes")
+            ):
+                findings.append(
+                    "Native toolchain attestation checksum does not match "
+                    f"candidate evidence: {relative_path}"
+                )
+                continue
+            try:
+                package_kind = PackageKind(relative_path.split("/", 1)[0])
+            except ValueError:
+                findings.append(
+                    "Native toolchain attestation package kind is invalid: "
+                    f"{relative_path}"
+                )
+                continue
+            report_path = packages_root / package_kind.value / "nuitka-report.xml"
+            if not report_path.is_file():
+                findings.append(
+                    "Native toolchain attestation report is unavailable: "
+                    f"{package_kind.value}"
+                )
+                continue
+            archive_checksum = archive_checksums_by_kind.get(package_kind)
+            if archive_checksum is None:
+                continue
+            distribution_dir = packages_root / package_kind.value / (
+                "frontend_widgets_rollback_entry.dist"
+                if package_kind is PackageKind.WIDGETS_ROLLBACK
+                else "frontend_v2_package_entry.dist"
+            )
+            if not distribution_dir.is_dir():
+                findings.append(
+                    "Native toolchain attestation distribution is "
+                    f"unavailable: {package_kind.value}"
+                )
+                continue
+            distribution_inventory = _inventory_distribution(
+                kind=package_kind,
+                source_commit=str(candidate.get("source_commit", "")),
+                distribution_dir=distribution_dir,
+            )
+            expected_payload = _expected_native_toolchain_attestation_payload(
+                package_kind=package_kind,
+                source_commit=str(candidate.get("source_commit", "")),
+                report_checksum=_checksum_file(
+                    report_path,
+                    packages_root / package_kind.value,
+                ),
+                distribution_identity={
+                    "file_count": distribution_inventory.file_count,
+                    "total_bytes": distribution_inventory.total_bytes,
+                    "tree_sha256": distribution_inventory.tree_sha256,
+                },
+                archive_checksum=archive_checksum,
+                lock=lock,
+            )
+            try:
+                observed_payload = _load_json_mapping(attestation_path)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                findings.append(
+                    "Native toolchain attestation is unreadable: "
+                    f"{package_kind.value}: {type(error).__name__}"
+                )
+                continue
+            if observed_payload != expected_payload:
+                findings.append(
+                    "Native toolchain attestation does not match the "
+                    f"production lock/report: {package_kind.value}"
+                )
+        if observed_attestation_paths != expected_attestation_paths:
+            findings.append(
+                "Native toolchain attestation inventory does not match the "
+                f"release pair: expected "
+                f"{sorted(expected_attestation_paths)!r}, observed "
+                f"{sorted(observed_attestation_paths)!r}"
+            )
     retained_sources = packages.get("formal_strategy_sources")
     expected_source_paths = {
         (
@@ -4535,6 +5243,10 @@ __all__ = [
     "AccessibilityGateEvidence",
     "CleanRoomCertification",
     "FrontendV2ToolchainLock",
+    "LockedBuildArtifact",
+    "LockedExecutable",
+    "LockedNativeToolchain",
+    "LockedNativeToolchainPaths",
     "MandatoryReleaseGateEvidence",
     "PackageEvidence",
     "PerformanceGateEvidence",
@@ -4552,6 +5264,7 @@ __all__ = [
     "verify_safety_gate_evidence",
     "verify_clean_room_report",
     "verify_running_toolchain",
+    "verify_locked_native_toolchain",
     "write_mandatory_release_gate_evidence",
 ]
 

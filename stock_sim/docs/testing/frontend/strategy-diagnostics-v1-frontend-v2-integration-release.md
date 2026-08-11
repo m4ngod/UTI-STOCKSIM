@@ -49,8 +49,28 @@ No later Feature Module is active or claimed by this source candidate.
 
 The candidate is certifiable only when one immutable integration source commit
 and the locked Python 3.11.9, PySide6 6.9.1, Qt 6.9.1, NumPy 2.3.1, and
-Nuitka 2.6.8 toolchain identify every T08, T09, T10, package, Sandbox, and
+Nuitka 4.1.3 toolchain identify every T08, T09, T10, package, Sandbox, and
 rollback artifact.
+The machine-readable lock also pins the Nuitka 4.1.3 source archive and
+SHA-256, the Nuitka-downloaded MinGW64 15.2.0 distribution/archive and
+SHA-256, and the exact `gcc.exe` and `objdump.exe` bytes/version lines. Both
+the executing 1,168-file Nuitka package tree and its `direct_url` source hash,
+the compiler archive, and the complete 11,602-file extracted compiler tree are
+bound by file count, total bytes, and a canonical SHA-256 tree digest. Both
+artifact plans force `--mingw64` and run Nuitka with ignored Python
+environment variables, bytecode writes disabled, and a distinct empty
+`pycache_prefix`, so adjacent or injected cached bytecode cannot replace the
+verified source tree. Production builds must set
+`FRONTEND_V2_NUITKA_SOURCE_ARCHIVE` to the locked source archive and locate
+the locked compiler distribution through `NUITKA_CACHE_DIR_DOWNLOADS`,
+`NUITKA_CACHE_DIR`, or the default Nuitka downloads cache; any missing or
+different byte, version, or compiler identity blocks the pair before release
+evidence is written.
+After deployment, packaged fixtures, and smoke execution are complete, each
+artifact receives a separate checksummed native-toolchain attestation that
+binds its source commit, toolchain identity, Nuitka report checksum, final
+distribution tree digest, and final archive SHA-256. Candidate re-audit rejects
+missing, altered, or cross-paired attestations.
 
 - T10 combines the fixed 100,000-point/50-candidate QML load projection with
   a retained real V1 preflight in the same lane process. Hardware and software

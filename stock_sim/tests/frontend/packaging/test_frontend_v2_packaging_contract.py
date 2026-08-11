@@ -1,10 +1,12 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 from copy import deepcopy
 from dataclasses import asdict, replace
 
@@ -16,6 +18,8 @@ from stock_sim.release.frontend_v2_packaging import (
     PROJECT_ROOT,
     TOOLCHAIN_LOCK_PATH,
     AccessibilityGateEvidence,
+    LockedBuildArtifact,
+    LockedExecutable,
     LockedPlatform,
     MandatoryReleaseGateEvidence,
     PackageKind,
@@ -35,10 +39,13 @@ from stock_sim.release.frontend_v2_packaging import (
     toolchain_evidence_identity,
     verify_clean_room_report,
     verify_release_source,
+    verify_locked_native_toolchain,
     verify_running_toolchain,
     write_package_evidence,
     write_renderer_evidence,
+    _find_objdump,
 )
+import stock_sim.release.frontend_v2_packaging as packaging
 from stock_sim.release.frontend_v2_packaging import (
     main as packaging_main,
 )
@@ -254,8 +261,38 @@ def _nuitka_report_xml(
         for relative_path in data_files
     )
     return (
-        '<nuitka-compilation-report mode="standalone" completion="yes">'
+        '<nuitka-compilation-report nuitka_version="4.1.3" '
+        'mode="standalone" completion="yes">'
+        '<scons_environment c_compiler="MinGW64" '
+        'the_cc_name="gcc" the_compiler="gcc" />'
         f"{modules}{retained_data_files}</nuitka-compilation-report>"
+    )
+
+
+def _write_native_toolchain_attestation_fixture(plan, archive_checksum):
+    lock = load_toolchain_lock()
+    report_checksum = packaging._checksum_file(
+        plan.nuitka_report,
+        plan.output_root,
+    )
+    inventory = packaging._inventory_package(plan)
+    payload = {
+        "schema_version": 1,
+        "package_kind": plan.kind.value,
+        "source_commit": plan.source_commit,
+        "toolchain_identity": toolchain_evidence_identity(lock),
+        "nuitka_report": asdict(report_checksum),
+        "distribution": {
+            "file_count": inventory.file_count,
+            "total_bytes": inventory.total_bytes,
+            "tree_sha256": inventory.tree_sha256,
+        },
+        "archive": asdict(archive_checksum),
+        "native_toolchain": asdict(lock.native_toolchain),
+    }
+    plan.native_toolchain_attestation.write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
     )
 
 
@@ -757,13 +794,284 @@ def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment(
     assert lock.toolchain.pyside6 == "6.9.1"
     assert lock.toolchain.qt == "6.9.1"
     assert lock.toolchain.numpy == "2.3.1"
-    assert lock.toolchain.nuitka == "2.6.8"
+    assert lock.toolchain.nuitka == "4.1.3"
+    assert lock.native_toolchain.compiler_family == "MinGW64"
+    assert (
+        lock.native_toolchain.compiler_distribution
+        == "15.2.0posix-13.0.0-msvcrt-r6"
+    )
+    assert lock.native_toolchain.nuitka_source == LockedBuildArtifact(
+        filename="nuitka-4.1.3.tar.gz",
+        url=(
+            "https://files.pythonhosted.org/packages/3f/d8/"
+            "bdb7febea4b4fe5d3d6fe2610f946771f03e792e05a5e8ec00b62c00b265/"
+            "nuitka-4.1.3.tar.gz"
+        ),
+        sha256=(
+            "sha256:838ff8899dc2f0b652d4fcf6c5d7466cb7ad5abcb005668ac622d1e40f4d8a8d"
+        ),
+        size_bytes=4_565_475,
+    )
+    assert lock.native_toolchain.nuitka_install_tree_file_count == 1_168
+    assert lock.native_toolchain.nuitka_install_tree_total_bytes == 21_589_360
+    assert lock.native_toolchain.nuitka_install_tree_sha256 == (
+        "sha256:a61c36d8912dec15916e1e804f1f1706564a0d7f7330d4095d537bfd223e5425"
+    )
+    assert lock.native_toolchain.compiler.version == "15.2.0"
+    assert lock.native_toolchain.binary_inspector.version == "2.46.0.20260210"
+    assert lock.native_toolchain.compiler_tree_file_count == 11_602
+    assert lock.native_toolchain.compiler_tree_total_bytes == 938_526_933
+    assert lock.native_toolchain.compiler_tree_sha256 == (
+        "sha256:5d511c07a05f702b106800a0b73e0ad9dc0c0a26fc0b8c21ce28217f0c5ab4be"
+    )
     assert lock.invalidation_policy == (
-        "Any locked dependency version change invalidates all affected "
-        "packaging and performance evidence."
+        "Any locked dependency version or native build tool byte/version "
+        "change invalidates all affected packaging and performance evidence."
     )
     assert verify_running_toolchain(lock) == ()
     assert toolchain_evidence_identity(lock).startswith("sha256:")
+
+
+def test_toolchain_identity_changes_with_native_compiler_bytes():
+    lock = load_toolchain_lock()
+    changed = replace(
+        lock,
+        native_toolchain=replace(
+            lock.native_toolchain,
+            compiler=replace(
+                lock.native_toolchain.compiler,
+                sha256="sha256:" + "0" * 64,
+            ),
+        ),
+    )
+
+    assert toolchain_evidence_identity(changed) != toolchain_evidence_identity(
+        lock
+    )
+
+
+def _write_locked_native_toolchain_fixture(
+    tmp_path,
+    monkeypatch,
+    *,
+    downloads_override=False,
+):
+    source_archive = tmp_path / "nuitka-4.1.3.tar.gz"
+    source_archive.write_bytes(b"nuitka-source")
+    cache_root = tmp_path / "nuitka-cache"
+    downloads_root = (
+        tmp_path / "downloads-cache"
+        if downloads_override
+        else cache_root / "downloads"
+    )
+    distribution_root = (
+        downloads_root
+        / "gcc"
+        / "x86_64"
+        / "15.2.0posix-13.0.0-msvcrt-r6"
+    )
+    compiler_archive = distribution_root / "locked-compiler.zip"
+    compiler = distribution_root / "mingw64" / "bin" / "gcc.exe"
+    objdump = distribution_root / "mingw64" / "bin" / "objdump.exe"
+    for path, content in (
+        (compiler_archive, b"compiler-archive"),
+        (compiler, b"locked-gcc"),
+        (objdump, b"locked-objdump"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    def artifact(path, *, url):
+        return LockedBuildArtifact(
+            filename=path.name,
+            url=url,
+            sha256="sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            size_bytes=path.stat().st_size,
+        )
+
+    def executable(path, *, version, version_line):
+        return LockedExecutable(
+            relative_path=path.relative_to(distribution_root).as_posix(),
+            version=version,
+            version_line=version_line,
+            sha256="sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            size_bytes=path.stat().st_size,
+        )
+
+    lock = load_toolchain_lock()
+    compiler_tree_files = tuple(
+        sorted(
+            (
+                path
+                for path in (distribution_root / "mingw64").rglob("*")
+                if path.is_file()
+            ),
+            key=lambda path: path.relative_to(
+                distribution_root / "mingw64"
+            ).as_posix(),
+        )
+    )
+    tree_hasher = hashlib.sha256()
+    compiler_tree_total_bytes = 0
+    for path in compiler_tree_files:
+        size_bytes = path.stat().st_size
+        compiler_tree_total_bytes += size_bytes
+        tree_hasher.update(
+            (
+                "sha256:"
+                + hashlib.sha256(path.read_bytes()).hexdigest()
+                + f" {size_bytes} "
+                + path.relative_to(
+                    distribution_root / "mingw64"
+                ).as_posix()
+                + "\n"
+            ).encode("utf-8")
+        )
+    lock = replace(
+        lock,
+        native_toolchain=replace(
+            lock.native_toolchain,
+            nuitka_source=artifact(source_archive, url="https://example/source"),
+            compiler_archive=artifact(
+                compiler_archive,
+                url="https://example/compiler",
+            ),
+            compiler=executable(
+                compiler,
+                version="15.2.0",
+                version_line="locked gcc 15.2.0",
+            ),
+            binary_inspector=executable(
+                objdump,
+                version="2.46.0.20260210",
+                version_line="locked objdump 2.46.0.20260210",
+            ),
+            compiler_tree_file_count=len(compiler_tree_files),
+            compiler_tree_total_bytes=compiler_tree_total_bytes,
+            compiler_tree_sha256="sha256:" + tree_hasher.hexdigest(),
+        ),
+    )
+    monkeypatch.setenv("NUITKA_CACHE_DIR", str(cache_root))
+    if downloads_override:
+        monkeypatch.setenv(
+            "NUITKA_CACHE_DIR_DOWNLOADS",
+            str(downloads_root),
+        )
+    else:
+        monkeypatch.delenv("NUITKA_CACHE_DIR_DOWNLOADS", raising=False)
+    monkeypatch.setenv(
+        "FRONTEND_V2_NUITKA_SOURCE_ARCHIVE",
+        str(source_archive),
+    )
+    monkeypatch.setattr(
+        packaging.subprocess,
+        "run",
+        lambda command, **_kwargs: SimpleNamespace(
+            stdout=(
+                "locked gcc 15.2.0\n"
+                if str(command[0]).endswith("gcc.exe")
+                else "locked objdump 2.46.0.20260210\n"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        packaging,
+        "_running_nuitka_installation_identity",
+        lambda: (
+            lock.native_toolchain.nuitka_install_tree_file_count,
+            lock.native_toolchain.nuitka_install_tree_total_bytes,
+            lock.native_toolchain.nuitka_install_tree_sha256,
+            lock.native_toolchain.nuitka_source.filename,
+            lock.native_toolchain.nuitka_source.sha256,
+        ),
+    )
+    return lock, compiler_archive, compiler, objdump
+
+
+def test_locked_native_toolchain_preflight_verifies_exact_bytes_and_versions(
+    monkeypatch,
+    tmp_path,
+):
+    lock, compiler_archive, compiler, objdump = (
+        _write_locked_native_toolchain_fixture(tmp_path, monkeypatch)
+    )
+
+    paths = verify_locked_native_toolchain(lock)
+
+    assert paths.compiler_archive == compiler_archive.resolve()
+    assert paths.compiler == compiler.resolve()
+    assert paths.binary_inspector == objdump.resolve()
+    assert _find_objdump(lock) == objdump.resolve()
+
+
+def test_locked_native_toolchain_preflight_rejects_byte_drift(
+    monkeypatch,
+    tmp_path,
+):
+    lock, _compiler_archive, compiler, _objdump = (
+        _write_locked_native_toolchain_fixture(tmp_path, monkeypatch)
+    )
+    compiler.write_bytes(b"different-gcc")
+
+    with pytest.raises(RuntimeError, match="compiler.*(size|SHA-256)"):
+        verify_locked_native_toolchain(lock)
+
+
+def test_locked_native_toolchain_preflight_rejects_other_tool_file_drift(
+    monkeypatch,
+    tmp_path,
+):
+    lock, _compiler_archive, _compiler, objdump = (
+        _write_locked_native_toolchain_fixture(tmp_path, monkeypatch)
+    )
+    unrelated_tool = objdump.with_name("ld.exe")
+    unrelated_tool.write_bytes(b"unexpected-linker")
+
+    with pytest.raises(RuntimeError, match="compiler tree"):
+        verify_locked_native_toolchain(lock)
+
+
+def test_locked_native_toolchain_preflight_rejects_running_nuitka_tree_drift(
+    monkeypatch,
+    tmp_path,
+):
+    lock, _compiler_archive, _compiler, _objdump = (
+        _write_locked_native_toolchain_fixture(tmp_path, monkeypatch)
+    )
+    monkeypatch.setattr(
+        packaging,
+        "_running_nuitka_installation_identity",
+        lambda: (0, 0, "sha256:" + "0" * 64, "wrong.tar.gz", "0" * 64),
+    )
+
+    with pytest.raises(RuntimeError, match="Nuitka installation"):
+        verify_locked_native_toolchain(lock)
+
+
+def test_objdump_discovery_honors_the_explicit_nuitka_cache_root(
+    monkeypatch,
+    tmp_path,
+):
+    lock, _archive, _compiler, expected = (
+        _write_locked_native_toolchain_fixture(tmp_path, monkeypatch)
+    )
+
+    assert _find_objdump(lock) == expected.resolve()
+
+
+def test_objdump_discovery_honors_the_download_cache_override(
+    monkeypatch,
+    tmp_path,
+):
+    lock, _archive, _compiler, expected = (
+        _write_locked_native_toolchain_fixture(
+            tmp_path,
+            monkeypatch,
+            downloads_override=True,
+        )
+    )
+
+    assert _find_objdump(lock) == expected.resolve()
 
 
 def test_toolchain_lock_rejects_a_different_build_architecture():
@@ -1018,6 +1326,18 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
     assert qml_plan.resolved_qml_dependencies is not None
     assert "--standalone" in qml_plan.nuitka_command
     assert "--enable-plugin=pyside6" in qml_plan.nuitka_command
+    assert all("--mingw64" in plan.nuitka_command for plan in plans)
+    for plan in plans:
+        assert plan.nuitka_command[:6] == (
+            sys.executable,
+            "-I",
+            "-B",
+            "-X",
+            f"pycache_prefix={plan.isolated_pycache_root}",
+            "-m",
+        )
+        assert plan.output_root.is_absolute()
+        assert plan.isolated_pycache_root.is_absolute()
     assert any(
         argument.startswith("--include-data-dir=")
         for argument in qml_plan.nuitka_command
@@ -1063,6 +1383,53 @@ def test_build_plans_share_one_commit_and_exclude_webengine_by_construction(
     } <= set(widgets_plan.nuitka_command)
 
 
+def test_nuitka_build_rejects_injected_isolated_bytecode(tmp_path):
+    plan = create_package_build_plans(
+        output_root=tmp_path,
+        source_commit="abc123",
+    )[0]
+    injected = plan.isolated_pycache_root / "nuitka" / "Version.pyc"
+    injected.parent.mkdir(parents=True)
+    injected.write_bytes(b"hostile-cached-bytecode")
+
+    with pytest.raises(RuntimeError, match="isolated Python bytecode cache"):
+        packaging._verify_isolated_pycache_root(plan)
+
+
+def test_nuitka_child_ignores_shadow_package_with_relative_output_root(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    plan = create_package_build_plans(
+        output_root=Path("relative-output"),
+        source_commit="abc123",
+    )[0]
+    shadow_root = tmp_path / "shadow"
+    shadow_package = shadow_root / "nuitka"
+    shadow_package.mkdir(parents=True)
+    (shadow_package / "__init__.py").write_text("", encoding="utf-8")
+    (shadow_package / "__main__.py").write_text(
+        'print("SHADOW_NUITKA_EXECUTED")\n',
+        encoding="utf-8",
+    )
+    module_index = plan.nuitka_command.index("nuitka")
+    completed = subprocess.run(
+        (*plan.nuitka_command[: module_index + 1], "--help"),
+        cwd=shadow_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "SHADOW_NUITKA_EXECUTED" not in completed.stdout
+    assert "Usage:" in completed.stdout
+    assert plan.output_root == (tmp_path / "relative-output" / "widgets-rollback")
+
+
 def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namespaces(
     tmp_path,
 ):
@@ -1076,15 +1443,6 @@ def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namesp
         for argument in qml_plan.nuitka_command
         if argument.startswith("--nofollow-import-to=")
     }
-    anti_bloat_excluded = {
-        argument.removeprefix("--noinclude-custom-mode=").removesuffix(
-            ":nofollow"
-        )
-        for argument in qml_plan.nuitka_command
-        if argument.startswith("--noinclude-custom-mode=")
-        and argument.endswith(":nofollow")
-    }
-
     assert "app.app_context" not in excluded
     assert {
         "app.legacy_panel_context",
@@ -1112,13 +1470,10 @@ def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namesp
         "wsgiref.simple_server",
         "xmlrpc.server",
     } <= excluded
-    assert {
-        "http.server",
-        "pydoc",
-        "socketserver",
-        "wsgiref.simple_server",
-        "xmlrpc.server",
-    } <= anti_bloat_excluded
+    assert not any(
+        argument.startswith("--noinclude-custom-mode=")
+        for argument in qml_plan.nuitka_command
+    )
 
 
 def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
@@ -1134,15 +1489,6 @@ def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
         for argument in widgets_plan.nuitka_command
         if argument.startswith("--nofollow-import-to=")
     }
-    anti_bloat_excluded = {
-        argument.removeprefix("--noinclude-custom-mode=").removesuffix(
-            ":nofollow"
-        )
-        for argument in widgets_plan.nuitka_command
-        if argument.startswith("--noinclude-custom-mode=")
-        and argument.endswith(":nofollow")
-    }
-
     assert {
         "app.app_context",
         "app.event_bridge",
@@ -1160,13 +1506,10 @@ def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
         "wsgiref.simple_server",
         "xmlrpc.server",
     } <= excluded
-    assert {
-        "http.server",
-        "pydoc",
-        "socketserver",
-        "wsgiref.simple_server",
-        "xmlrpc.server",
-    } <= anti_bloat_excluded
+    assert not any(
+        argument.startswith("--noinclude-custom-mode=")
+        for argument in widgets_plan.nuitka_command
+    )
 
 
 def test_scanner_driven_qml_deployment_copies_modules_and_binary_closure(
@@ -1178,7 +1521,12 @@ def test_scanner_driven_qml_deployment_copies_modules_and_binary_closure(
     )[1]
     qml_plan.distribution_dir.mkdir(parents=True)
 
-    deployment = deploy_scanned_qml_runtime(qml_plan)
+    system_objdump = shutil.which("objdump")
+    assert system_objdump is not None
+    deployment = deploy_scanned_qml_runtime(
+        qml_plan,
+        objdump_path=Path(system_objdump),
+    )
 
     assert (
         qml_plan.distribution_dir
@@ -1227,9 +1575,27 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
     qml_marker.parent.mkdir(parents=True)
     qml_marker.write_text("module QtQuick\n", encoding="utf-8")
     _write_bound_formal_strategy_sources(plans[1].distribution_dir)
+    archives = tuple(
+        create_deterministic_package_archive(
+            plan,
+            archive_dir=tmp_path / "archives",
+        )
+        for plan in plans
+    )
+    for plan in plans:
+        archive_checksum = next(
+            archive
+            for archive in archives
+            if archive.relative_path.startswith(f"{plan.kind.value}-")
+        )
+        _write_native_toolchain_attestation_fixture(
+            plan,
+            archive_checksum,
+        )
 
     evidence = write_package_evidence(
         plans=plans,
+        archives=archives,
         evidence_dir=tmp_path / "evidence",
     )
 
@@ -1246,6 +1612,13 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
     } == {
         "qml-journey/nuitka-report.xml",
         "widgets-rollback/nuitka-report.xml",
+    }
+    assert {
+        attestation.relative_path
+        for attestation in evidence.native_toolchain_attestations
+    } == {
+        "qml-journey/native-toolchain-attestation.json",
+        "widgets-rollback/native-toolchain-attestation.json",
     }
     assert {
         source.relative_path
@@ -1267,6 +1640,49 @@ def test_package_evidence_records_checksums_sizes_delta_and_rollback(
     assert "UTI-Frontend-V2.exe" in checksums.read_text(
         encoding="utf-8"
     )
+
+    tampered_attestation = plans[1].native_toolchain_attestation
+    tampered_payload = json.loads(
+        tampered_attestation.read_text(encoding="utf-8")
+    )
+    assert set(tampered_payload) == {
+        "schema_version",
+        "package_kind",
+        "source_commit",
+        "toolchain_identity",
+        "nuitka_report",
+        "distribution",
+        "archive",
+        "native_toolchain",
+    }
+    assert tampered_payload["distribution"] == {
+        "file_count": evidence.qml_journey.file_count,
+        "total_bytes": evidence.qml_journey.total_bytes,
+        "tree_sha256": evidence.qml_journey.tree_sha256,
+    }
+    assert tampered_payload["archive"] == asdict(
+        next(
+            archive
+            for archive in archives
+            if archive.relative_path.startswith("qml-journey-")
+        )
+    )
+    tampered_payload["native_toolchain"]["compiler"]["sha256"] = (
+        "sha256:" + "0" * 64
+    )
+    tampered_attestation.write_text(
+        json.dumps(tampered_payload),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="Native toolchain attestation does not match",
+    ):
+        write_package_evidence(
+            plans=plans,
+            archives=archives,
+            evidence_dir=tmp_path / "tampered-evidence",
+        )
 
 
 def test_packaged_formal_strategy_source_audit_rejects_ast_clean_tampering(
@@ -1622,6 +2038,16 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
         / "frontend_v2_package_entry.dist"
     )
     _write_bound_formal_strategy_sources(qml_distribution)
+    (qml_distribution / "UTI-Frontend-V2.exe").write_bytes(b"qml-exe")
+    widgets_distribution = (
+        packages_dir
+        / "widgets-rollback"
+        / "frontend_widgets_rollback_entry.dist"
+    )
+    widgets_distribution.mkdir(parents=True)
+    (widgets_distribution / "UTI-Widgets-Rollback.exe").write_bytes(
+        b"widgets-exe"
+    )
     formal_strategy_sources = []
     for binding in FORMAL_STRATEGY_SOURCE_BINDINGS.values():
         retained_source = (
@@ -1644,8 +2070,11 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     dependency_reports = []
     safe_dependency_xml_by_kind = {
         "widgets-rollback": (
-            '<nuitka-compilation-report mode="standalone" '
+            '<nuitka-compilation-report nuitka_version="4.1.3" '
+            'mode="standalone" '
             'completion="yes">'
+            '<scons_environment c_compiler="MinGW64" '
+            'the_cc_name="gcc" the_compiler="gcc" />'
             '<module name="frontend_widgets_rollback_entry" />'
             "</nuitka-compilation-report>"
         ),
@@ -1675,6 +2104,65 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 ),
             }
         )
+    native_toolchain_attestations = []
+    lock = load_toolchain_lock()
+    for kind in ("widgets-rollback", "qml-journey"):
+        package_kind = PackageKind(kind)
+        package_root = packages_dir / kind
+        dependency_report = package_root / "nuitka-report.xml"
+        attestation = package_root / "native-toolchain-attestation.json"
+        distribution_dir = (
+            widgets_distribution
+            if package_kind is PackageKind.WIDGETS_ROLLBACK
+            else qml_distribution
+        )
+        inventory = packaging._inventory_distribution(
+            kind=package_kind,
+            source_commit="abc123",
+            distribution_dir=distribution_dir,
+        )
+        archive_path = (
+            widgets_archive
+            if package_kind is PackageKind.WIDGETS_ROLLBACK
+            else qml_archive
+        )
+        payload = {
+            "schema_version": 1,
+            "package_kind": kind,
+            "source_commit": "abc123",
+            "toolchain_identity": toolchain_evidence_identity(lock),
+            "nuitka_report": asdict(
+                packaging._checksum_file(
+                    dependency_report,
+                    package_root,
+                )
+            ),
+            "distribution": {
+                "file_count": inventory.file_count,
+                "total_bytes": inventory.total_bytes,
+                "tree_sha256": inventory.tree_sha256,
+            },
+            "archive": asdict(
+                packaging._checksum_file(archive_path, archives_dir)
+            ),
+            "native_toolchain": asdict(lock.native_toolchain),
+        }
+        attestation.write_text(
+            json.dumps(payload, sort_keys=True),
+            encoding="utf-8",
+        )
+        native_toolchain_attestations.append(
+            {
+                "relative_path": attestation.relative_to(
+                    packages_dir
+                ).as_posix(),
+                "size_bytes": attestation.stat().st_size,
+                "sha256": (
+                    "sha256:"
+                    + hashlib.sha256(attestation.read_bytes()).hexdigest()
+                ),
+            }
+        )
     safety_evidence = asdict(
         audit_no_manual_trading_gate(
             PROJECT_ROOT,
@@ -1688,6 +2176,9 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "safety": safety_evidence,
                 "packages": {
                     "dependency_reports": dependency_reports,
+                    "native_toolchain_attestations": (
+                        native_toolchain_attestations
+                    ),
                     "formal_strategy_sources": formal_strategy_sources,
                 },
                 "archives": [
@@ -1706,6 +2197,35 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
         ),
         encoding="utf-8",
     )
+    candidate_payload = json.loads(
+        (evidence_dir / "release-candidate-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert packaging.verify_packaged_dependency_evidence(
+        candidate_payload,
+        output_root=tmp_path,
+    ) == ()
+    qml_archive.write_bytes(b"different-qml-package")
+    mixed_payload = deepcopy(candidate_payload)
+    mixed_qml_archive = next(
+        archive
+        for archive in mixed_payload["archives"]
+        if archive["relative_path"].startswith("qml-journey-")
+    )
+    mixed_qml_archive["size_bytes"] = qml_archive.stat().st_size
+    mixed_qml_archive["sha256"] = (
+        "sha256:" + hashlib.sha256(qml_archive.read_bytes()).hexdigest()
+    )
+    mixed_findings = packaging.verify_packaged_dependency_evidence(
+        mixed_payload,
+        output_root=tmp_path,
+    )
+    assert any(
+        "Native toolchain attestation does not match" in finding
+        for finding in mixed_findings
+    )
+    qml_archive.write_bytes(b"qml-package")
     report = tmp_path / "clean-room-report.json"
     report.write_text(
         json.dumps(
@@ -1786,8 +2306,11 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     )
     qml_dependency_report.write_text(
         (
-            '<nuitka-compilation-report mode="standalone" '
-            'completion="yes"><module name="services.order_service" />'
+            '<nuitka-compilation-report nuitka_version="4.1.3" '
+            'mode="standalone" completion="yes">'
+            '<scons_environment c_compiler="MinGW64" '
+            'the_cc_name="gcc" the_compiler="gcc" />'
+            '<module name="services.order_service" />'
             "</nuitka-compilation-report>"
         ),
         encoding="utf-8",
@@ -2282,7 +2805,8 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
     safe_report = tmp_path / "safe.xml"
     safe_report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.features.run_monitoring" />
           <module name="app.features.live_run_monitoring" />
           <module name="app.ui.journey_workspace" />
@@ -2319,7 +2843,8 @@ def test_dependency_and_surface_audits_reject_manual_or_web_payloads(
     unsafe_report = tmp_path / "unsafe.xml"
     unsafe_report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.panels.orders" />
           <module name="app.services.trading_service" />
           <module name="services.order_service" />
@@ -2364,8 +2889,11 @@ def test_dependency_audit_accepts_nuitka_utf8_alias_with_non_ascii_path(
     report.write_bytes(
         (
             "<?xml version='1.0' encoding='utf8'?>\n"
-            '<nuitka-compilation-report mode="standalone" '
+            '<nuitka-compilation-report nuitka_version="4.1.3" '
+            'mode="standalone" '
             'completion="yes">\n'
+            '  <scons_environment c_compiler="MinGW64" '
+            'the_cc_name="gcc" the_compiler="gcc" />\n'
             "  <python><search_path>"
             '<path value="T:\\文档\\release-input" />'
             "</search_path></python>\n"
@@ -2383,7 +2911,8 @@ def test_dependency_audit_rejects_embedded_server_runtime_modules(tmp_path):
     report = tmp_path / "embedded-server.xml"
     report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="http.server" />
           <module name="pydoc" />
           <module name="socketserver" />
@@ -2409,13 +2938,54 @@ def test_dependency_audit_rejects_embedded_server_runtime_modules(tmp_path):
         assert any(module_name in finding for finding in findings)
 
 
+@pytest.mark.parametrize(
+    ("root_attributes", "scons_attributes", "expected_finding"),
+    (
+        (
+            'nuitka_version="4.1.2"',
+            'c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc"',
+            "Nuitka version",
+        ),
+        (
+            'nuitka_version="4.1.3"',
+            'c_compiler="msvc" the_cc_name="cl" the_compiler="msvc"',
+            "native compiler",
+        ),
+    ),
+)
+def test_dependency_audit_rejects_unlocked_nuitka_or_compiler_identity(
+    tmp_path,
+    root_attributes,
+    scons_attributes,
+    expected_finding,
+):
+    report = tmp_path / "unlocked-toolchain.xml"
+    report.write_text(
+        (
+            f"<nuitka-compilation-report {root_attributes} "
+            'mode="standalone" completion="yes">'
+            f"<scons_environment {scons_attributes} />"
+            "</nuitka-compilation-report>"
+        ),
+        encoding="utf-8",
+    )
+
+    findings = audit_nuitka_dependency_report(
+        report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    )
+
+    assert any(expected_finding in finding for finding in findings)
+
+
 def test_qml_dependency_audit_allows_production_main_window_host_only(
     tmp_path,
 ):
     host_report = tmp_path / "qml-production-host.xml"
     host_report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.app_context" />
           <module name="app.i18n.loader" />
           <module name="app.journey_recovery" />
@@ -2453,7 +3023,8 @@ def test_qml_dependency_audit_allows_production_main_window_host_only(
     command_report = tmp_path / "qml-command-path.xml"
     command_report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.controllers.trading_controller" />
           <module name="app.panels.orders" />
           <module name="app.services.trading_service" />
@@ -2565,7 +3136,8 @@ def test_widgets_dependency_audit_allows_read_only_trade_context_only(
     read_only_report = tmp_path / "widgets-read-only.xml"
     read_only_report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.core_dto.trade" />
           <module name="stock_sim.persistence.models_order" />
         </nuitka-compilation-report>
@@ -2575,7 +3147,8 @@ def test_widgets_dependency_audit_allows_read_only_trade_context_only(
     command_report = tmp_path / "widgets-command-path.xml"
     command_report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.services.trading_service" />
           <module name="services.order_service" />
           <module name="services.runtime_command_service" />
@@ -2612,7 +3185,8 @@ def test_widgets_dependency_audit_rejects_new_v1_seam_and_network_stack(
     report = tmp_path / "widgets-coupled.xml"
     report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.app_context" />
           <module name="app.event_bridge" />
           <module name="app.features.live_strategy_diagnostics_v1_application" />
@@ -2642,7 +3216,8 @@ def test_dependency_audit_rejects_missing_project_modules_only(tmp_path):
     report = tmp_path / "missing-project-module.xml"
     report.write_text(
         """
-        <nuitka-compilation-report mode="standalone" completion="yes">
+        <nuitka-compilation-report nuitka_version="4.1.3" mode="standalone" completion="yes">
+          <scons_environment c_compiler="MinGW64" the_cc_name="gcc" the_compiler="gcc" />
           <module name="app.services.model_checkpoint_service">
             <module_usage
               name="persistence.models_training"

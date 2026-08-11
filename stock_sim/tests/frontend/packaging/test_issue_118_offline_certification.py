@@ -51,7 +51,7 @@ EXPECTED_PRODUCTION_DEPENDENCIES = {
     "tzdata": "2025.2",
 }
 EXPECTED_BUILD_DEPENDENCIES = {
-    "Nuitka": "2.6.8",
+    "Nuitka": "4.1.3",
     "ordered-set": "4.1.0",
     "zstandard": "0.25.0",
 }
@@ -61,7 +61,7 @@ SOURCE_COMMIT = "a" * 40
 def test_issue_118_lock_captures_the_complete_production_and_build_closure():
     lock = load_toolchain_lock()
 
-    assert lock.schema_version == 2
+    assert lock.schema_version == 3
     assert lock.production_dependencies == EXPECTED_PRODUCTION_DEPENDENCIES
     assert lock.build_dependencies == EXPECTED_BUILD_DEPENDENCIES
 

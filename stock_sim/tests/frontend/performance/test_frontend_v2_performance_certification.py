@@ -157,7 +157,7 @@ def passing_performance_lane_report(
             "pyside6": "6.9.1",
             "qt": "6.9.1",
             "numpy": "2.3.1",
-            "nuitka": "2.6.8",
+            "nuitka": "4.1.3",
         },
         "metrics": {
             "event_to_visible": _sample_metric(
