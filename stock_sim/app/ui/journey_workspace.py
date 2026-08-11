@@ -3002,6 +3002,7 @@ class DiagnosticTasksQtAdapter(QObject):
             Callable[[], DiagnosticSetupSelectionContext | None] | None
         ) = None,
         setup_selection_refresh: Callable[[], None] | None = None,
+        setup_selection_sources_current: Callable[[], bool] | None = None,
         setup_selection_coordinator: (
             DiagnosticSetupSelectionCoordinator | None
         ) = None,
@@ -3013,6 +3014,9 @@ class DiagnosticTasksQtAdapter(QObject):
         self._context = context or DiagnosticTasksContext.workspace()
         self._setup_selection_provider = setup_selection_provider
         self._setup_selection_refresh = setup_selection_refresh
+        self._setup_selection_sources_current = (
+            setup_selection_sources_current or (lambda: False)
+        )
         self._setup_selection_coordinator = setup_selection_coordinator
         self._refreshing_setup_selection = False
         initial_setup_selection = None
@@ -3021,7 +3025,11 @@ class DiagnosticTasksQtAdapter(QObject):
         self._state = feature.snapshot(self._context)
         self._setup_sources_diagnostic_generation = (
             None
-            if setup_selection_provider is None or initial_setup_selection is None
+            if setup_selection_provider is None
+            or (
+                initial_setup_selection is None
+                and not self._setup_selection_sources_current()
+            )
             else self._state.source.generation.value
         )
         self._mount_generation = _next_mount_generation()
@@ -4691,7 +4699,17 @@ class DiagnosticTasksQtAdapter(QObject):
     def upstreamSelectionChanged(self) -> None:  # noqa: N802
         if self._closed or self._refreshing_setup_selection:
             return
-        self._observe_current_setup_selection()
+        selection = self._observe_current_setup_selection()
+        if (
+            (
+                selection is not None
+                or self._setup_selection_sources_current()
+            )
+            and self._setup_sources_diagnostic_generation is None
+        ):
+            self._setup_sources_diagnostic_generation = (
+                self._state.source.generation.value
+            )
         self.refresh()
         self.stateChanged.emit()
 
@@ -7629,6 +7647,11 @@ class JourneyWorkspaceHost(QQuickWidget):
             "strategyLibrary",
             self._strategy_library,
         )
+        if (
+            self._strategy_library is not None
+            and initial_route_identity is JourneyWorkspaceRoute.SCENARIO_LAB
+        ):
+            self._strategy_library.refresh()
         initial_scenario_context = scenario_lab_context
         if self._journey_workspace_bookmark.scenario_focus_identity is not None:
             initial_scenario_context = replace(
@@ -7661,6 +7684,12 @@ class JourneyWorkspaceHost(QQuickWidget):
             "scenarioLab",
             self._scenario_lab,
         )
+        if (
+            self._scenario_lab is not None
+            and initial_route_identity is not JourneyWorkspaceRoute.SCENARIO_LAB
+            and self._journey_workspace_bookmark.scenario_focus_identity is not None
+        ):
+            self._scenario_lab.refresh()
         if self._strategy_library is not None and self._scenario_lab is not None:
             self._strategy_library.stateChanged.connect(
                 self._scenario_lab.stateChanged
@@ -7685,6 +7714,12 @@ class JourneyWorkspaceHost(QQuickWidget):
                 ),
                 setup_selection_refresh=(
                     self._refresh_diagnostic_setup_sources
+                    if self._strategy_library is not None
+                    and self._scenario_lab is not None
+                    else None
+                ),
+                setup_selection_sources_current=(
+                    self._diagnostic_setup_sources_current
                     if self._strategy_library is not None
                     and self._scenario_lab is not None
                     else None
@@ -8750,6 +8785,18 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._strategy_library.refresh()
         if self._scenario_lab is not None:
             self._scenario_lab.refresh()
+
+    def _diagnostic_setup_sources_current(self) -> bool:
+        strategy = self._strategy_library
+        scenario = self._scenario_lab
+        if strategy is None or scenario is None:
+            return False
+        return bool(
+            strategy.freshness == "fresh"
+            and strategy.presentationState in {"ready", "partial"}
+            and scenario.freshness == "fresh"
+            and scenario.presentationState in {"ready", "partial"}
+        )
 
     def _apply_route_activation(
         self,

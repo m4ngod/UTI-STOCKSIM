@@ -1007,6 +1007,38 @@ def test_host_construction_reads_each_setup_feature_once(tmp_path) -> None:
     _close(context, host)
 
 
+def test_scenario_dependency_reread_has_one_authoritative_follow_up_per_feature(
+    tmp_path,
+) -> None:
+    _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    observed_strategy = _ObservedFeature(context.strategy_library_feature)
+    observed_scenario = _ObservedFeature(context.scenario_lab_feature)
+    observed_diagnostic = _ObservedFeature(context.diagnostic_tasks_feature)
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.SCENARIO_LAB,
+    )
+
+    host = _host(
+        context,
+        strategy_library_feature=observed_strategy,
+        scenario_lab_feature=observed_scenario,
+        diagnostic_tasks_feature=observed_diagnostic,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+
+    assert observed_strategy.snapshot_count == 2
+    assert observed_scenario.snapshot_count == 2
+    assert observed_diagnostic.snapshot_count == 2
+
+    _close(context, host)
+
+
 def test_breakpoint_from_another_finding_is_explicitly_incompatible(
     tmp_path,
 ) -> None:
