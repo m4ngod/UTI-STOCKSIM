@@ -3594,6 +3594,7 @@ def build_frontend_v2_release(
         if plan.kind is PackageKind.WIDGETS_ROLLBACK
     )
     deploy_scanned_qml_runtime(qml_plan)
+    stage_packaged_formal_v1_release_fixture(qml_plan)
     stage_packaged_wave2_release_input_fixture(qml_plan)
 
     smoke_root = output_root / "evidence" / "smoke"

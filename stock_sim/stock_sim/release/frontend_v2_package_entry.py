@@ -5068,7 +5068,18 @@ def _run_interactive() -> int:
     return int(app.exec())
 
 
-def _installed_fixture_archive_path() -> Path:
+def _installed_formal_v1_fixture_archive_path() -> Path:
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    return (
+        Path(sys.argv[0]).resolve().parent
+        / str(FORMAL_V1_RELEASE_FIXTURE_ARCHIVE)
+    )
+
+
+def _installed_wave3_input_fixture_archive_path() -> Path:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
@@ -5788,10 +5799,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("installed certification report modes are mutually exclusive")
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
-    fixture_archive_path = arguments.fixture_archive
-    if fixture_archive_path is None and "__compiled__" in globals():
-        fixture_archive_path = _installed_fixture_archive_path()
     if arguments.performance_report is not None:
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and "__compiled__" in globals():
+            fixture_archive_path = _installed_formal_v1_fixture_archive_path()
         if fixture_archive_path is None:
             parser.error("--fixture-archive is required outside the package")
         return _run_installed_performance_report(
@@ -5802,6 +5813,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             fixture_archive_path=fixture_archive_path,
         )
     if arguments.migration_report is not None:
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and "__compiled__" in globals():
+            fixture_archive_path = _installed_wave3_input_fixture_archive_path()
         if arguments.migration_kind is None:
             parser.error("--migration-kind is required with --migration-report")
         if arguments.migration_work_root is None:
@@ -5845,6 +5859,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_commit=arguments.source_commit,
         )
     if arguments.smoke_report_dir is not None:
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and "__compiled__" in globals():
+            fixture_archive_path = _installed_wave3_input_fixture_archive_path()
         from PySide6.QtWidgets import QApplication
 
         owns_application = QApplication.instance() is None

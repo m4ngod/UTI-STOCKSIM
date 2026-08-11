@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -2229,7 +2230,8 @@ def test_default_installed_entry_uses_the_production_app_context():
     assert "get_evidence_and_findings_snapshot" not in source
     assert "create_file_backed_formal_v1_release_fixture" in source
     assert "open_sealed_formal_v1_release_fixture" in source
-    assert "_installed_fixture_archive_path" in source
+    assert "_installed_formal_v1_fixture_archive_path" in source
+    assert "_installed_wave3_input_fixture_archive_path" in source
     assert "--ptrade-host-worker" not in source
     assert "SubprocessPTradeStrategyHost" not in source
     assert "LiveStrategyDiagnosticsV1ApplicationAdapter" in source
@@ -2966,6 +2968,99 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         )
         == 1
     )
+
+
+def test_compiled_performance_defaults_to_the_packaged_formal_v1_fixture(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "installed" / "UTI-Frontend-V2.exe"
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    observed = {}
+
+    def record_performance(**arguments):
+        observed.update(arguments)
+        return 0
+
+    monkeypatch.setattr(
+        package_entry,
+        "_run_installed_performance_report",
+        record_performance,
+    )
+
+    report_path = tmp_path / "performance.json"
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--performance-report={report_path}",
+                "--performance-duration-seconds=60",
+                f"--source-commit={'a' * 40}",
+            )
+        )
+        == 0
+    )
+    assert observed["fixture_archive_path"] == (
+        executable.parent / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+
+
+@pytest.mark.parametrize("migration_kind", ("fresh", "copied-wave3"))
+def test_compiled_migration_defaults_to_the_packaged_wave3_input_fixture(
+    tmp_path,
+    monkeypatch,
+    migration_kind,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "installed" / "UTI-Frontend-V2.exe"
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    observed = {}
+
+    def record_migration(**arguments):
+        observed.update(arguments)
+        return 0
+
+    monkeypatch.setattr(
+        package_entry,
+        "_run_installed_migration_report",
+        record_migration,
+    )
+
+    assert (
+        package_entry.main(
+            (
+                f"--migration-report={tmp_path / 'migration.json'}",
+                f"--migration-kind={migration_kind}",
+                f"--migration-work-root={tmp_path / 'migration-work'}",
+                f"--source-commit={'a' * 40}",
+            )
+        )
+        == 0
+    )
+    assert observed["migration_kind"] == migration_kind
+    assert observed["fixture_archive_path"] == (
+        executable.parent / WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+
+
+def test_production_build_stages_both_installed_fixture_archives():
+    from stock_sim.release.frontend_v2_packaging import build_frontend_v2_release
+
+    source = inspect.getsource(build_frontend_v2_release)
+
+    assert "stage_packaged_formal_v1_release_fixture(qml_plan)" in source
+    assert "stage_packaged_wave2_release_input_fixture(qml_plan)" in source
 
 
 def test_release_smoke_stops_bridge_before_final_fixture_disposal(
