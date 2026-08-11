@@ -1089,6 +1089,8 @@ def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namesp
         "aiohttp",
         "core.order",
         "httpx",
+        "http.server",
+        "pydoc",
         "redis",
         "requests",
         "services.order_service",
@@ -1096,8 +1098,11 @@ def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namesp
         "stock_sim.core.order",
         "stock_sim.services.order_service",
         "stock_sim.services.runtime_command_service",
+        "socketserver",
         "urllib3",
         "websockets",
+        "wsgiref.simple_server",
+        "xmlrpc.server",
     } <= excluded
 
 
@@ -1122,10 +1127,15 @@ def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
         "app.services.redis_subscriber",
         "aiohttp",
         "httpx",
+        "http.server",
+        "pydoc",
         "redis",
         "requests",
+        "socketserver",
         "urllib3",
         "websockets",
+        "wsgiref.simple_server",
+        "xmlrpc.server",
     } <= excluded
 
 
@@ -2337,6 +2347,36 @@ def test_dependency_audit_accepts_nuitka_utf8_alias_with_non_ascii_path(
         report,
         package_kind=PackageKind.WIDGETS_ROLLBACK,
     ) == ()
+
+
+def test_dependency_audit_rejects_embedded_server_runtime_modules(tmp_path):
+    report = tmp_path / "embedded-server.xml"
+    report.write_text(
+        """
+        <nuitka-compilation-report mode="standalone" completion="yes">
+          <module name="http.server" />
+          <module name="pydoc" />
+          <module name="socketserver" />
+          <module name="wsgiref.simple_server" />
+          <module name="xmlrpc.server" />
+        </nuitka-compilation-report>
+        """,
+        encoding="utf-8",
+    )
+
+    findings = audit_nuitka_dependency_report(
+        report,
+        package_kind=PackageKind.WIDGETS_ROLLBACK,
+    )
+
+    for module_name in (
+        "http.server",
+        "pydoc",
+        "socketserver",
+        "wsgiref.simple_server",
+        "xmlrpc.server",
+    ):
+        assert any(module_name in finding for finding in findings)
 
 
 def test_qml_dependency_audit_allows_production_main_window_host_only(

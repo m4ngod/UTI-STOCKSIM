@@ -111,11 +111,16 @@ _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
 _FORBIDDEN_NETWORK_MODULE_PREFIXES = (
     "aiohttp",
     "app.services.redis_subscriber",
+    "http.server",
     "httpx",
+    "pydoc",
     "redis",
     "requests",
+    "socketserver",
     "urllib3",
     "websockets",
+    "wsgiref.simple_server",
+    "xmlrpc.server",
 )
 _WIDGETS_FORBIDDEN_SEAM_MODULE_PREFIXES = (
     "app.app_context",
