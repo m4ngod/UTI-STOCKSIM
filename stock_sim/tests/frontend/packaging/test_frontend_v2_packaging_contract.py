@@ -1076,6 +1076,14 @@ def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namesp
         for argument in qml_plan.nuitka_command
         if argument.startswith("--nofollow-import-to=")
     }
+    anti_bloat_excluded = {
+        argument.removeprefix("--noinclude-custom-mode=").removesuffix(
+            ":nofollow"
+        )
+        for argument in qml_plan.nuitka_command
+        if argument.startswith("--noinclude-custom-mode=")
+        and argument.endswith(":nofollow")
+    }
 
     assert "app.app_context" not in excluded
     assert {
@@ -1104,6 +1112,13 @@ def test_qml_build_plan_keeps_app_context_but_excludes_legacy_and_network_namesp
         "wsgiref.simple_server",
         "xmlrpc.server",
     } <= excluded
+    assert {
+        "http.server",
+        "pydoc",
+        "socketserver",
+        "wsgiref.simple_server",
+        "xmlrpc.server",
+    } <= anti_bloat_excluded
 
 
 def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
@@ -1118,6 +1133,14 @@ def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
         argument.removeprefix("--nofollow-import-to=")
         for argument in widgets_plan.nuitka_command
         if argument.startswith("--nofollow-import-to=")
+    }
+    anti_bloat_excluded = {
+        argument.removeprefix("--noinclude-custom-mode=").removesuffix(
+            ":nofollow"
+        )
+        for argument in widgets_plan.nuitka_command
+        if argument.startswith("--noinclude-custom-mode=")
+        and argument.endswith(":nofollow")
     }
 
     assert {
@@ -1137,6 +1160,13 @@ def test_widgets_build_plan_excludes_new_v1_seam_and_network_namespaces(
         "wsgiref.simple_server",
         "xmlrpc.server",
     } <= excluded
+    assert {
+        "http.server",
+        "pydoc",
+        "socketserver",
+        "wsgiref.simple_server",
+        "xmlrpc.server",
+    } <= anti_bloat_excluded
 
 
 def test_scanner_driven_qml_deployment_copies_modules_and_binary_closure(

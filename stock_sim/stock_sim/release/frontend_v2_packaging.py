@@ -1089,6 +1089,10 @@ def create_package_build_plans(
                     *_FORBIDDEN_NETWORK_MODULE_PREFIXES,
                 )
             ),
+            *(
+                f"--noinclude-custom-mode={module_prefix}:nofollow"
+                for module_prefix in _FORBIDDEN_NETWORK_MODULE_PREFIXES
+            ),
             "--nofollow-import-to=app.runtime_gateway",
             "--nofollow-import-to=app.ui.journey_workspace",
             "--nofollow-import-to=app.ui.ui_refresh",
@@ -1153,6 +1157,10 @@ def create_package_build_plans(
             *(
                 f"--nofollow-import-to={module_prefix}"
                 for module_prefix in _QML_NUITKA_EXCLUDED_MODULE_PREFIXES
+            ),
+            *(
+                f"--noinclude-custom-mode={module_prefix}:nofollow"
+                for module_prefix in _FORBIDDEN_NETWORK_MODULE_PREFIXES
             ),
         ),
     )
