@@ -989,6 +989,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
+        "system_health",
     )
     assert result.connection_transitions == (
         "connected",
@@ -1083,6 +1084,65 @@ def test_smoke_observation_snapshots_state_before_frame_capture(
             route="evidence_and_findings",
             capture_images=True,
         )
+
+
+def test_release_focus_probe_uses_public_evidence_focus_property():
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    class FocusItem:
+        def property(self, name):
+            return name in {"visible", "activeFocus", "focusVisible"}
+
+    class Root:
+        def __init__(self):
+            self.requested_properties = []
+
+        def property(self, name):
+            self.requested_properties.append(name)
+            if name == "evidenceInitialFocusItem":
+                return FocusItem()
+            return None
+
+    root = Root()
+
+    assert package_entry._route_focus_is_visible(
+        root,
+        "evidence_and_findings",
+    )
+    assert root.requested_properties == ["evidenceInitialFocusItem"]
+
+
+def test_public_accessibility_snapshot_exposes_reconnect_freshness():
+    from types import SimpleNamespace
+
+    from app.ui.journey_workspace import JourneyWorkspaceHost
+
+    class Adapter:
+        def __init__(self, **properties):
+            self._properties = properties
+
+        def property(self, name):
+            return self._properties.get(name)
+
+    host = SimpleNamespace(
+        _active_route=SimpleNamespace(value="run_monitoring"),
+        _run_monitoring=Adapter(
+            presentationState="ready",
+            freshness="stale",
+            revisionText="run-r1",
+        ),
+        _evidence_and_findings=Adapter(
+            freshness="stale",
+            revisionText="evidence-r1",
+        ),
+        _diagnostic_tasks=Adapter(),
+        _system_health=Adapter(),
+    )
+
+    snapshot = JourneyWorkspaceHost.accessibility_snapshot(host)
+
+    assert snapshot.run_freshness == "stale"
+    assert snapshot.evidence_freshness == "stale"
 
 
 def test_v2_app_context_uses_only_the_read_only_runtime_boundary(
@@ -1259,6 +1319,11 @@ raise SystemExit(
 def test_clean_room_report_requires_the_complete_production_journey(
     tmp_path,
 ):
+    from tests.frontend.packaging.test_frontend_v2_packaging_contract import (
+        clean_room_lane_fixture,
+        clean_room_schema_four_evidence_fixture,
+    )
+
     renderer_lanes = {}
     for lane, graphics_api in (
         ("hardware", "Direct3D11"),
@@ -1479,11 +1544,24 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "errors": [],
         }
 
+    # Keep the release-candidate negative cases below, but source the accepted
+    # lane and cross-lane evidence from the same schema-4 builders used by the
+    # clean-room packaging contract.  This prevents the positive fixture from
+    # silently lagging newly mandatory installed gates.
+    for lane, graphics_api in (
+        ("hardware", "Direct3D11"),
+        ("software", "Software"),
+    ):
+        renderer_lanes[lane].update(
+            clean_room_lane_fixture(tmp_path, lane, graphics_api)
+        )
+    schema_four_evidence = clean_room_schema_four_evidence_fixture("abc123")
+
     report_path = tmp_path / "clean-room-report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1501,6 +1579,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
+                **schema_four_evidence,
                 "renderer_lanes": renderer_lanes,
             }
         ),
@@ -1790,7 +1869,7 @@ def _write_accessibility_junit(
     )
 
 
-def _copy_performance_evidence(root):
+def _write_passing_performance_evidence_fixture(root):
     source_commit = "1acb1b76c9d4d389d49087a401512499f223fd72"
     source = (
         PROJECT_ROOT
@@ -1809,80 +1888,33 @@ def _copy_performance_evidence(root):
         "sha256:"
         + hashlib.sha256(fixture_archive.read_bytes()).hexdigest()
     )
-    for name in (
-        "hardware.json",
-        "software.json",
-        "no-manual-trading.json",
-    ):
-        copy2(source / name, target / name)
+    copy2(
+        source / "no-manual-trading.json",
+        target / "no-manual-trading.json",
+    )
+    from tests.frontend.performance import (
+        test_frontend_v2_performance_certification as performance_fixtures,
+    )
+
     hardware_path = target / "hardware.json"
     software_path = target / "software.json"
-    hardware = json.loads(hardware_path.read_text(encoding="utf-8"))
-    software = json.loads(software_path.read_text(encoding="utf-8"))
+    hardware = json.loads(
+        json.dumps(
+            performance_fixtures.passing_performance_lane_report("hardware")
+        )
+    )
+    software = json.loads(
+        json.dumps(
+            performance_fixtures.passing_performance_lane_report("software")
+        )
+    )
+    toolchain_digest = (
+        "sha256:"
+        + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
+    )
     for report in (hardware, software):
-        report["schema_version"] = 3
-        report["production_path"] = [
-            "PerformanceLoadProjectionReadModel",
-            "DeterministicFakeStrategyLibraryAdapter",
-            "DeterministicFakeScenarioLabAdapter",
-            "DeterministicFakeDiagnosticTasksAdapter",
-            "EventBridge",
-            "LiveRunMonitoringAdapter",
-            "LiveEvidenceAndFindingsAdapter",
-            "JourneyWorkspaceHost",
-            "StrategyLibraryPage.qml",
-            "ScenarioLabPage.qml",
-            "DiagnosticTasksPage.qml",
-            "EvidenceChart.qml",
-        ]
-        report["wave3_setup_features"] = {
-            "feature_interfaces": [
-                "StrategyLibraryFeature/1.0",
-                "ScenarioLabFeature/1.0",
-            ],
-            "adapters": [
-                "DeterministicFakeStrategyLibraryAdapter",
-                "DeterministicFakeScenarioLabAdapter",
-            ],
-            "routes": ["strategy_library", "scenario_lab"],
-            "presentation_states": {
-                "strategy_library": "ready",
-                "scenario_lab": "ready",
-            },
-            "freshness": {
-                "strategy_library": "fresh",
-                "scenario_lab": "fresh",
-            },
-            "qml_status_roles": {
-                "strategy_library": "StatusBar",
-                "scenario_lab": "StatusBar",
-            },
-            "initial_focus_observed": {
-                "strategy_library": True,
-                "scenario_lab": True,
-            },
-            "observed_before_load": True,
-            "executed_during_active_load": True,
-            "accepted_setup_commands": [
-                "compare_formal_strategy_set",
-                "select_formal_strategy_set",
-                "compose_visible_scenario_set",
-            ],
-            "accepted_revisions": {
-                "strategy_library": [2, 3],
-                "scenario_lab": [2, 3],
-            },
-            "comparison_count": 2,
-            "strategy_selection_status": "current",
-            "scenario_set_count": 1,
-            "scenario_set_eligibility": "formal_campaign_eligible",
-        }
-        report["wave2_diagnostic_tasks"] = (
-            _passing_wave2_performance_load()
-        )
-        report["integrated_v1_probe"] = (
-            _passing_real_v1_performance_probe()
-        )
+        report["source_commit"] = source_commit
+        report["toolchain_lock_digest"] = toolchain_digest
         report["integrated_v1_probe"][
             "fixture_archive_digest"
         ] = fixture_archive_digest
@@ -1897,16 +1929,13 @@ def _copy_performance_evidence(root):
     safety = json.loads(
         (target / "no-manual-trading.json").read_text(encoding="utf-8")
     )
-    toolchain_digest = (
-        "sha256:"
-        + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
-    )
     certification = certify_performance_evidence(
         hardware,
         software,
         safety,
         expected_source_commit=source_commit,
         expected_toolchain_digest=toolchain_digest,
+        expected_fixture_archive_digest=fixture_archive_digest,
     )
     (target / "certification.json").write_text(
         json.dumps(asdict(certification)),
@@ -1918,7 +1947,9 @@ def _copy_performance_evidence(root):
 def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -1973,7 +2004,9 @@ def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
 def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     base_name = (
         "test_shared_default_and_high_contrast_tokens_meet_wcag_aa_ratios"
@@ -2010,7 +2043,9 @@ def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
 def test_mandatory_release_gates_fail_closed_on_missing_accessibility_coverage(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2040,7 +2075,9 @@ def test_mandatory_release_gates_fail_closed_on_missing_accessibility_coverage(
 def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2080,7 +2117,9 @@ def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
 def test_mandatory_release_gates_reject_a_tampered_v1_fixture_archive(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2111,7 +2150,9 @@ def test_mandatory_release_gates_reject_a_tampered_v1_fixture_archive(
 def test_mandatory_release_gates_reject_unbound_accessibility_evidence(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2792,6 +2833,31 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         application_reopened = True
         background_continuation_verified = True
         task_cancel_order_isolation_verified = True
+        queued_state_observed = True
+        running_state_observed = True
+        partial_state_observed = True
+        controlled_failure_observed = True
+        safe_failure_reason_verified = True
+        retry_idempotency_verified = True
+        duplicate_work_count = 0
+        terminal_completion_observed = True
+        routes_rendered = (
+            "strategy_library",
+            "scenario_lab",
+            "diagnostic_tasks",
+            "run_monitoring",
+            "evidence_and_findings",
+            "system_health",
+        )
+        keyboard_navigation_verified = True
+        system_health_context_verified = True
+        system_health_accessibility_verified = True
+        system_health_identity_graph = ("diagnostic-task-installed",)
+        focus_restoration_verified = True
+        installed_accessibility_verified = True
+        no_color_only_meaning_verified = True
+        chart_narrative_table_revision_verified = True
+        accessibility_checkpoints = tuple(range(8))
 
     def record_smoke(**arguments):
         observed.update(arguments)

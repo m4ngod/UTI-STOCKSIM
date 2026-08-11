@@ -102,7 +102,9 @@ def _sample_metric(
     }
 
 
-def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
+def passing_performance_lane_report(
+    lane: str = "hardware",
+) -> dict[str, object]:
     return {
         "schema_version": 3,
         "status": "passed",
@@ -264,6 +266,9 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         },
         "errors": [],
     }
+
+
+_passing_lane_report = passing_performance_lane_report
 
 
 def _passing_wave2_lane_report(lane: str) -> dict[str, object]:

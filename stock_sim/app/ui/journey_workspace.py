@@ -7337,7 +7337,9 @@ class JourneyAccessibilitySnapshot:
 
     active_route: str
     run_presentation: str
+    run_freshness: str
     run_revision: str
+    evidence_freshness: str
     evidence_revision: str
     diagnostic_tasks_presentation: str
     diagnostic_task_handle_text: str
@@ -7800,7 +7802,12 @@ class JourneyWorkspaceHost(QQuickWidget):
         return JourneyAccessibilitySnapshot(
             active_route=self._active_route.value,
             run_presentation=text(self._run_monitoring, "presentationState"),
+            run_freshness=text(self._run_monitoring, "freshness"),
             run_revision=text(self._run_monitoring, "revisionText"),
+            evidence_freshness=text(
+                self._evidence_and_findings,
+                "freshness",
+            ),
             evidence_revision=text(
                 self._evidence_and_findings,
                 "revisionText",

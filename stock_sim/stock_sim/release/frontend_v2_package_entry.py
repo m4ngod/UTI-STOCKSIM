@@ -770,7 +770,7 @@ def _route_focus_is_visible(root: Any, route: str) -> bool:
         "scenario_lab": "scenarioLabInitialFocusItem",
         "diagnostic_tasks": "diagnosticTasksInitialFocusItem",
         "run_monitoring": "runMonitoringInitialFocusItem",
-        "evidence_and_findings": "evidenceAndFindingsInitialFocusItem",
+        "evidence_and_findings": "evidenceInitialFocusItem",
         "system_health": "systemHealthInitialFocusItem",
     }.get(route)
     if focus_property is None:
@@ -4017,6 +4017,30 @@ def _run_smoke_journey(
             "A stale EventBridge generation changed the typed Feature state"
         )
 
+    # Leave the route-scoped Evidence subscription before publishing the
+    # current-generation invalidation.  Publishing while Evidence is active
+    # races its queued Qt delivery against the subsequent route change and can
+    # expose either stale or fresh at the Run checkpoint.
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="run_monitoring",
+    )
+
+    def reconnect_route_is_stale() -> bool:
+        snapshot = host.accessibility_snapshot()
+        return bool(
+            root.property("activeRoute") == "run_monitoring"
+            and snapshot.run_freshness == "stale"
+            and snapshot.evidence_freshness == "stale"
+        )
+
+    _settle_until(
+        app,
+        reconnect_route_is_stale,
+        "reconnected Run route before current-generation invalidation",
+    )
     bridge.on_snapshot(
         {"run_id": run_id},
         generation=connection.generation,

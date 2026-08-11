@@ -292,7 +292,7 @@ def _write_clean_room_screenshots(root, lane):
     return screenshots
 
 
-def _clean_room_lane(root, lane, graphics_api):
+def clean_room_lane_fixture(root, lane, graphics_api):
     installed_recipe_drafts = [
         f"RECIPE-DRAFT-RC-{index:03d}" for index in range(1, 15)
     ]
@@ -667,9 +667,9 @@ def _clean_room_lane(root, lane, graphics_api):
     }
 
 
-def _clean_room_schema_four_evidence(source_commit="abc123"):
+def clean_room_schema_four_evidence_fixture(source_commit="abc123"):
     from tests.frontend.performance.test_frontend_v2_performance_certification import (
-        _passing_lane_report,
+        passing_performance_lane_report,
     )
 
     toolchain_digest = (
@@ -677,7 +677,7 @@ def _clean_room_schema_four_evidence(source_commit="abc123"):
     )
     installed_performance = {}
     for lane in ("hardware", "software"):
-        report = deepcopy(_passing_lane_report(lane))
+        report = deepcopy(passing_performance_lane_report(lane))
         report["source_commit"] = source_commit
         report["toolchain_lock_digest"] = toolchain_digest
         report["installed_exit_code"] = 0
@@ -743,6 +743,10 @@ def _clean_room_schema_four_evidence(source_commit="abc123"):
             "errors": [],
         },
     }
+
+
+_clean_room_lane = clean_room_lane_fixture
+_clean_room_schema_four_evidence = clean_room_schema_four_evidence_fixture
 
 
 def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
