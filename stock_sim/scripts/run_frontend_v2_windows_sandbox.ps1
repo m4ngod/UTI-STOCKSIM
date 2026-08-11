@@ -220,6 +220,72 @@ function Stop-OwnedWindowsSandboxLauncher {
         -ErrorAction SilentlyContinue
 }
 
+function Get-OwnedWindowsSandboxRemoteSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$LauncherIdentity
+    )
+
+    $earliestChildStartUtc = $LauncherIdentity.StartTimeUtc.AddSeconds(-2)
+    $candidates = Get-CimInstance `
+        -ClassName Win32_Process `
+        -Filter "Name = 'WindowsSandboxRemoteSession.exe'" `
+        -ErrorAction SilentlyContinue
+    foreach ($candidate in @($candidates)) {
+        try {
+            $startTimeUtc = (
+                [DateTime]$candidate.CreationDate
+            ).ToUniversalTime()
+        }
+        catch {
+            continue
+        }
+        if (
+            [int]$candidate.ParentProcessId -eq $LauncherIdentity.ProcessId -and
+            $startTimeUtc -ge $earliestChildStartUtc
+        ) {
+            return [PSCustomObject]@{
+                ProcessId = [int]$candidate.ProcessId
+                ParentProcessId = [int]$candidate.ParentProcessId
+                StartTimeUtc = $startTimeUtc
+            }
+        }
+    }
+    return $null
+}
+
+function Test-OwnedWindowsSandboxRemoteSessionAlive {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$RemoteSessionIdentity
+    )
+
+    if ($null -eq $RemoteSessionIdentity) {
+        return $false
+    }
+    $candidate = Get-CimInstance `
+        -ClassName Win32_Process `
+        -Filter "ProcessId = $($RemoteSessionIdentity.ProcessId)" `
+        -ErrorAction SilentlyContinue
+    if (
+        $null -eq $candidate -or
+        [string]$candidate.Name -cne "WindowsSandboxRemoteSession.exe" -or
+        [int]$candidate.ParentProcessId -ne
+            $RemoteSessionIdentity.ParentProcessId
+    ) {
+        return $false
+    }
+    try {
+        $actualStartTimeUtc = (
+            [DateTime]$candidate.CreationDate
+        ).ToUniversalTime()
+    }
+    catch {
+        return $false
+    }
+    return $actualStartTimeUtc -eq $RemoteSessionIdentity.StartTimeUtc
+}
+
 $sandboxCommand = Get-Command WindowsSandbox.exe -ErrorAction Stop
 $sandboxProcess = Start-Process `
     -FilePath $sandboxCommand.Source `
@@ -232,13 +298,32 @@ $sandboxLauncherIdentity = [PSCustomObject]@{
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $sandboxLaunchGraceDeadline = [DateTime]::UtcNow.AddSeconds(5)
 $sandboxExitedBeforeResult = $false
+$sandboxRemoteSessionIdentity = $null
 while (
     -not (Test-Path -LiteralPath $exitCodePath -PathType Leaf) -and
     [DateTime]::UtcNow -lt $deadline
 ) {
+    if ($null -eq $sandboxRemoteSessionIdentity) {
+        $sandboxRemoteSessionIdentity = (
+            Get-OwnedWindowsSandboxRemoteSession `
+                -LauncherIdentity $sandboxLauncherIdentity
+        )
+    }
     if ([DateTime]::UtcNow -ge $sandboxLaunchGraceDeadline) {
         $sandboxProcess.Refresh()
-        if ($sandboxProcess.HasExited) {
+        if (
+            $sandboxProcess.HasExited -and
+            -not (Test-OwnedWindowsSandboxRemoteSessionAlive `
+                -RemoteSessionIdentity $sandboxRemoteSessionIdentity)
+        ) {
+            $sandboxExitedBeforeResult = $true
+            break
+        }
+        if (
+            $null -ne $sandboxRemoteSessionIdentity -and
+            -not (Test-OwnedWindowsSandboxRemoteSessionAlive `
+                -RemoteSessionIdentity $sandboxRemoteSessionIdentity)
+        ) {
             $sandboxExitedBeforeResult = $true
             break
         }
@@ -261,7 +346,10 @@ $sandboxExitCode = (
 $sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
 do {
     $sandboxProcess.Refresh()
-    if ($sandboxProcess.HasExited) {
+    $launcherAlive = -not $sandboxProcess.HasExited
+    $remoteSessionAlive = Test-OwnedWindowsSandboxRemoteSessionAlive `
+        -RemoteSessionIdentity $sandboxRemoteSessionIdentity
+    if (-not $launcherAlive -and -not $remoteSessionAlive) {
         break
     }
     Start-Sleep -Milliseconds 500
@@ -281,6 +369,12 @@ if ($sandboxExitCode -ne "0") {
 }
 if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
     throw "Windows Sandbox did not produce clean-room-report.json."
+}
+if (
+    Test-OwnedWindowsSandboxRemoteSessionAlive `
+        -RemoteSessionIdentity $sandboxRemoteSessionIdentity
+) {
+    throw "Windows Sandbox RemoteSession remained active after successful certification."
 }
 
 Get-Item -LiteralPath $reportPath

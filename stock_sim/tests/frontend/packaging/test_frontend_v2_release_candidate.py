@@ -2216,12 +2216,31 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "StartTimeUtc" in script
     assert "function Stop-OwnedWindowsSandboxLauncher" in script
     assert script.count("Stop-OwnedWindowsSandboxLauncher") == 4
+    assert "function Get-OwnedWindowsSandboxRemoteSession" in script
+    assert "function Test-OwnedWindowsSandboxRemoteSessionAlive" in script
+    assert "ParentProcessId -eq $LauncherIdentity.ProcessId" in script
+    assert "$sandboxRemoteSessionIdentity" in script
     assert "$existingSandboxProcessIds" not in script
-    assert "WindowsSandboxRemoteSession" not in script
+    assert "WindowsSandboxRemoteSession.exe" in script
     assert "WindowsSandboxServer" not in script
+    assert "WindowsSandboxClient" not in script
     assert "Windows Sandbox exited before producing certification result" in script
+    assert (
+        "Windows Sandbox RemoteSession remained active after successful "
+        "certification."
+    ) in script
     assert script.index("$sandboxShutdownDeadline") < script.index(
         'if ($sandboxExitCode -ne "0")'
+    )
+    assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
+        "Windows Sandbox RemoteSession remained active after successful "
+        "certification."
+    )
+    assert script.index(
+        "Windows Sandbox did not produce clean-room-report.json."
+    ) < script.index(
+        "Windows Sandbox RemoteSession remained active after successful "
+        "certification."
     )
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
@@ -2334,7 +2353,7 @@ def test_packaged_no_trading_inventory_fails_closed_without_semantics():
     approved_action = Item(
         objectName="approvedAction",
         activeFocusOnTab=True,
-        accessibleName="Open Diagnostic Tasks",
+        accessibleName="Open Diagnostic Tasks, inventory degraded",
     )
     missing_semantics = Item(
         objectName="unknownKeyboardAction",
@@ -2348,6 +2367,34 @@ def test_packaged_no_trading_inventory_fails_closed_without_semantics():
     assert _unapproved_interactive_action_count(
         Root((approved_action, missing_semantics, known_text_input))
     ) == 1
+
+
+def test_packaged_interactive_route_names_follow_typed_presentations():
+    from app.features.diagnostic_tasks import (
+        DiagnosticTasksPresentationState,
+    )
+    from app.features.run_monitoring import RunMonitoringPresentationState
+    from stock_sim.release.frontend_v2_package_entry import (
+        _APPROVED_INTERACTIVE_NAMES,
+    )
+
+    for presentation in DiagnosticTasksPresentationState:
+        assert _APPROVED_INTERACTIVE_NAMES.fullmatch(
+            "Open Diagnostic Tasks, inventory " + presentation.value
+        )
+    assert _APPROVED_INTERACTIVE_NAMES.fullmatch(
+        "Open Diagnostic Tasks, inventory unavailable"
+    )
+    for presentation in RunMonitoringPresentationState:
+        assert _APPROVED_INTERACTIVE_NAMES.fullmatch(
+            "Open Run Monitoring, current state " + presentation.value
+        )
+    assert not _APPROVED_INTERACTIVE_NAMES.fullmatch(
+        "Open Diagnostic Tasks, inventory arbitrary"
+    )
+    assert not _APPROVED_INTERACTIVE_NAMES.fullmatch(
+        "Open Run Monitoring, current state recovered"
+    )
 
 
 def test_installed_manual_trading_audit_uses_role_and_capability():

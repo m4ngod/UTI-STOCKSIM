@@ -181,11 +181,16 @@ def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
     progress = root.findChild(QObject, "runMonitoringAccessibleProgress")
     pause = root.findChild(QObject, "pauseDiagnosticTask")
     route = root.findChild(QObject, "runMonitoringRouteNavigation")
+    diagnostic_route = root.findChild(
+        QObject,
+        "diagnosticTasksRouteNavigation",
+    )
 
     status_interface = _interface(status)
     progress_interface = _interface(progress)
     pause_interface = _interface(pause)
     route_interface = _interface(route)
+    diagnostic_route_interface = _interface(diagnostic_route)
 
     assert status_interface.role() == QAccessible.Role.StatusBar
     assert "active" in status_interface.text(QAccessible.Text.Name).casefold()
@@ -204,6 +209,12 @@ def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
     ).casefold()
     assert bool(route_interface.state().selected) is True
     assert bool(route_interface.state().focusable) is True
+    assert str(root.property("screenState")).casefold() in (
+        route_interface.text(QAccessible.Text.Name).casefold()
+    )
+    assert str(root.property("diagnosticTasksInventoryState")).casefold() in (
+        diagnostic_route_interface.text(QAccessible.Text.Name).casefold()
+    )
     assert QAccessibleActionInterface.pressAction() in (
         route_interface.actionInterface().actionNames()
     )

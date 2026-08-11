@@ -229,6 +229,172 @@ function Get-SafeAutomationId {
     return "redacted"
 }
 
+$script:getDpiForWindowDelegate = $null
+
+function Get-CompilerFreeWindowDpi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$WindowHandle
+    )
+
+    if ($script:getDpiForWindowDelegate -eq $null) {
+        $unsafeNativeMethods = @(
+            [AppDomain]::CurrentDomain.GetAssemblies() |
+                ForEach-Object {
+                    try {
+                        $_.GetTypes()
+                    }
+                    catch {
+                    }
+                } |
+                Where-Object {
+                    $_.FullName -eq "Microsoft.Win32.UnsafeNativeMethods" -and
+                    $_.Assembly.GetName().Name -eq "System"
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $unsafeNativeMethods) {
+            throw "Compiler-free native DPI resolver was unavailable"
+        }
+        $bindingFlags = [Reflection.BindingFlags](
+            [Reflection.BindingFlags]::Static -bor
+            [Reflection.BindingFlags]::NonPublic -bor
+            [Reflection.BindingFlags]::Public
+        )
+        $getModuleHandle = $unsafeNativeMethods.GetMethod(
+            "GetModuleHandle",
+            $bindingFlags,
+            $null,
+            [Type[]]@([string]),
+            $null
+        )
+        $getProcAddress = $unsafeNativeMethods.GetMethod(
+            "GetProcAddress",
+            $bindingFlags,
+            $null,
+            [Type[]]@([IntPtr], [string]),
+            $null
+        )
+        if ($null -eq $getModuleHandle -or $null -eq $getProcAddress) {
+            throw "Compiler-free native export resolver was unavailable"
+        }
+        $user32 = [IntPtr]$getModuleHandle.Invoke(
+            $null,
+            [object[]]@("user32.dll")
+        )
+        $getDpiForWindow = [IntPtr]$getProcAddress.Invoke(
+            $null,
+            [object[]]@($user32, "GetDpiForWindow")
+        )
+        if (
+            $user32 -eq [IntPtr]::Zero -or
+            $getDpiForWindow -eq [IntPtr]::Zero
+        ) {
+            throw "GetDpiForWindow export was unavailable"
+        }
+
+        $assemblyName = New-Object Reflection.AssemblyName(
+            "Issue118CompilerFreeNativeDelegates"
+        )
+        $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+            $assemblyName,
+            [Reflection.Emit.AssemblyBuilderAccess]::Run
+        )
+        $module = $assembly.DefineDynamicModule(
+            "Issue118CompilerFreeNativeDelegates"
+        )
+        $delegateTypeBuilder = $module.DefineType(
+            "Issue118GetDpiForWindowDelegate",
+            [Reflection.TypeAttributes](
+                [Reflection.TypeAttributes]::Class -bor
+                [Reflection.TypeAttributes]::Public -bor
+                [Reflection.TypeAttributes]::Sealed
+            ),
+            [MulticastDelegate]
+        )
+        $constructor = $delegateTypeBuilder.DefineConstructor(
+            [Reflection.MethodAttributes](
+                [Reflection.MethodAttributes]::RTSpecialName -bor
+                [Reflection.MethodAttributes]::HideBySig -bor
+                [Reflection.MethodAttributes]::Public
+            ),
+            [Reflection.CallingConventions]::Standard,
+            [Type[]]@([object], [IntPtr])
+        )
+        $constructor.SetImplementationFlags(
+            [Reflection.MethodImplAttributes]::Runtime
+        )
+        $invoke = $delegateTypeBuilder.DefineMethod(
+            "Invoke",
+            [Reflection.MethodAttributes](
+                [Reflection.MethodAttributes]::Public -bor
+                [Reflection.MethodAttributes]::HideBySig -bor
+                [Reflection.MethodAttributes]::NewSlot -bor
+                [Reflection.MethodAttributes]::Virtual
+            ),
+            [uint32],
+            [Type[]]@([IntPtr])
+        )
+        $invoke.SetImplementationFlags(
+            [Reflection.MethodImplAttributes]::Runtime
+        )
+        $delegateType = $delegateTypeBuilder.CreateType()
+        $script:getDpiForWindowDelegate = (
+            [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(
+                $getDpiForWindow,
+                $delegateType
+            )
+        )
+    }
+    $dpi = [uint32]$script:getDpiForWindowDelegate.DynamicInvoke(
+        [object[]]@($WindowHandle)
+    )
+    if ($dpi -eq 0) {
+        throw "Window DPI observation returned zero"
+    }
+    return [int]$dpi
+}
+
+function Resolve-KnownUiAutomationObjectName {
+    param(
+        [AllowNull()]
+        [object]$Value,
+        [Parameter(Mandatory = $true)]
+        [string[]]$KnownObjectNames
+    )
+
+    $candidate = [string]$Value
+    if ($candidate -cnotmatch '^[A-Za-z0-9_.:-]{1,160}$') {
+        return ""
+    }
+    foreach ($objectName in $KnownObjectNames) {
+        if (
+            $candidate -ceq $objectName -or
+            $candidate.EndsWith(".$objectName", [StringComparison]::Ordinal)
+        ) {
+            return $objectName
+        }
+    }
+    return ""
+}
+
+function Register-UniqueCanonicalUiAutomationObjectName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CanonicalObjectName,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ObservationCounts
+    )
+
+    $observationCount = 1
+    if ($ObservationCounts.ContainsKey($CanonicalObjectName)) {
+        $observationCount = (
+            [int]$ObservationCounts[$CanonicalObjectName] + 1
+        )
+    }
+    $ObservationCounts[$CanonicalObjectName] = $observationCount
+    return $observationCount -eq 1
+}
+
 function Merge-UiAutomationSnapshot {
     param(
         [Parameter(Mandatory = $true)]
@@ -260,6 +426,7 @@ function Merge-UiAutomationSnapshot {
     $snapshotControlTypes = @()
     $checkpointMarker = $null
     $snapshotSemanticByAutomationId = @{}
+    $canonicalAutomationIdObservationCounts = @{}
     $checkpointBindings = @{
         loading = @{
             target = "runMonitoringRouteNavigation"
@@ -294,6 +461,11 @@ function Merge-UiAutomationSnapshot {
             term = "terminal"
         }
     }
+    $knownAutomationObjectNames = @(
+        "installedAccessibilityCheckpointMarker"
+        $checkpointBindings.Values |
+            ForEach-Object { [string]$_.target }
+    ) | Sort-Object -Unique
     $semanticAliases = [ordered]@{
         loading = @("loading", "waiting")
         empty = @("empty", "no current", "unavailable")
@@ -332,6 +504,11 @@ function Merge-UiAutomationSnapshot {
             $snapshotReadable++
             $name = [string]$current.Name
             $automationId = [string]$current.AutomationId
+            $canonicalAutomationId = Resolve-KnownUiAutomationObjectName `
+                -Value $automationId `
+                -KnownObjectNames $knownAutomationObjectNames
+            $resolvedCanonicalAutomationId = $canonicalAutomationId
+            $canonicalAutomationIdAmbiguous = $false
             $controlType = (
                 [string]$current.ControlType.ProgrammaticName
             ).Replace("ControlType.", "")
@@ -339,6 +516,30 @@ function Merge-UiAutomationSnapshot {
             $visible = -not [bool]$current.IsOffscreen
             $focusable = [bool]$current.IsKeyboardFocusable
             $focused = [bool]$current.HasKeyboardFocus
+            if (
+                $visible -and
+                -not [string]::IsNullOrWhiteSpace($canonicalAutomationId) -and
+                -not (Register-UniqueCanonicalUiAutomationObjectName `
+                    -CanonicalObjectName $canonicalAutomationId `
+                    -ObservationCounts (
+                        $canonicalAutomationIdObservationCounts
+                    ))
+            ) {
+                $Evidence.errors += (
+                    "UI Automation canonical object identity was ambiguous"
+                )
+                [void]$snapshotSemanticByAutomationId.Remove(
+                    $canonicalAutomationId
+                )
+                if (
+                    $canonicalAutomationId -eq
+                        "installedAccessibilityCheckpointMarker"
+                ) {
+                    $checkpointMarker = $null
+                }
+                $canonicalAutomationId = ""
+                $canonicalAutomationIdAmbiguous = $true
+            }
             if (-not [string]::IsNullOrWhiteSpace($name)) {
                 $Evidence.named_element_count++
                 $snapshotNamed++
@@ -353,7 +554,9 @@ function Merge-UiAutomationSnapshot {
                 $controlTypes += $controlType
                 $snapshotControlTypes += $controlType
             }
-            if ($automationId -eq "installedAccessibilityCheckpointMarker") {
+            if (
+                $canonicalAutomationId -eq "installedAccessibilityCheckpointMarker"
+            ) {
                 $markerPattern = (
                     '^Installed checkpoint sequence=(?<sequence>\d+) ' +
                     'state=(?<state>loading|empty|failed|recovering|partial|' +
@@ -423,8 +626,19 @@ function Merge-UiAutomationSnapshot {
             ) -join " "
             $semanticText = $semanticText.ToLowerInvariant()
             if ($visible) {
-                if (-not [string]::IsNullOrWhiteSpace($automationId)) {
+                if (
+                    -not [string]::IsNullOrWhiteSpace($automationId) -and
+                    -not (
+                        $canonicalAutomationIdAmbiguous -and
+                        $automationId -ceq $resolvedCanonicalAutomationId
+                    )
+                ) {
                     $snapshotSemanticByAutomationId[$automationId] = (
+                        $semanticText
+                    )
+                }
+                if (-not [string]::IsNullOrWhiteSpace($canonicalAutomationId)) {
+                    $snapshotSemanticByAutomationId[$canonicalAutomationId] = (
                         $semanticText
                     )
                 }
@@ -568,22 +782,13 @@ function Merge-UiAutomationSnapshot {
         }
     }
     try {
-        Add-Type -AssemblyName System.Drawing
-        $graphics = [Drawing.Graphics]::FromHwnd($WindowHandle)
-        try {
-            $Evidence.observed_window_dpi_x = [int][Math]::Round(
-                [double]$graphics.DpiX
-            )
-            $Evidence.observed_window_dpi_y = [int][Math]::Round(
-                [double]$graphics.DpiY
-            )
-            $Evidence.observed_scale_percent = [int][Math]::Round(
-                ([double]$graphics.DpiX / 96.0) * 100.0
-            )
-        }
-        finally {
-            $graphics.Dispose()
-        }
+        $windowDpi = Get-CompilerFreeWindowDpi `
+            -WindowHandle $WindowHandle
+        $Evidence.observed_window_dpi_x = $windowDpi
+        $Evidence.observed_window_dpi_y = $windowDpi
+        $Evidence.observed_scale_percent = [int][Math]::Round(
+            ([double]$windowDpi / 96.0) * 100.0
+        )
     }
     catch {
         $Evidence.errors += "Window DPI observation failed"

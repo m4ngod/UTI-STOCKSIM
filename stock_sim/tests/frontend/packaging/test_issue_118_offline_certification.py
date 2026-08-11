@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import fields
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 from stock_sim.release.frontend_v2_package_entry import (
     ACTIVE_JOURNEY_ROUTES,
@@ -173,7 +178,10 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         "Narrator.exe",
         "TextScaleFactor",
         "LogPixels",
-        "Graphics]::FromHwnd",
+        "Get-CompilerFreeWindowDpi",
+        "GetDpiForWindow",
+        "DefineDynamicAssembly",
+        "GetProcAddress",
         "observed_window_dpi_x -ge 192",
         "InvokePattern",
         "TogglePattern",
@@ -185,7 +193,236 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         "lifecycle_state_observed",
     ):
         assert required_accessibility_probe in clean_room_source
+    assert "Graphics]::FromHwnd" not in clean_room_source
+    assert "function Resolve-KnownUiAutomationObjectName" in clean_room_source
+    assert (
+        "function Register-UniqueCanonicalUiAutomationObjectName"
+        in clean_room_source
+    )
+    assert 'EndsWith(".$objectName", [StringComparison]::Ordinal)' in (
+        clean_room_source
+    )
+    assert (
+        '$canonicalAutomationId = Resolve-KnownUiAutomationObjectName'
+        in clean_room_source
+    )
+    assert (
+        '$canonicalAutomationId -eq "installedAccessibilityCheckpointMarker"'
+        in clean_room_source
+    )
+    assert "$snapshotSemanticByAutomationId[$canonicalAutomationId]" in (
+        clean_room_source
+    )
     assert "<AudioOutput>Disable</AudioOutput>" in sandbox_source
+
+
+def test_clean_room_uia_object_name_resolver_accepts_only_known_suffixes():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the Windows clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$resolver = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Resolve-KnownUiAutomationObjectName"
+    },
+    $true
+)
+if ($null -eq $resolver) {
+    throw "UIA object-name resolver was unavailable"
+}
+Invoke-Expression $resolver.Extent.Text
+$known = @(
+    "installedAccessibilityCheckpointMarker",
+    "runMonitoringRouteNavigation"
+)
+@(
+    Resolve-KnownUiAutomationObjectName `
+        -Value "runMonitoringRouteNavigation" `
+        -KnownObjectNames $known
+    Resolve-KnownUiAutomationObjectName `
+        -Value (
+            "QApplication.frontendV2PackageWindow." +
+            "journeyWorkspaceHost.runMonitoringRouteNavigation"
+        ) `
+        -KnownObjectNames $known
+    Resolve-KnownUiAutomationObjectName `
+        -Value "prefix.runMonitoringRouteNavigation.evil" `
+        -KnownObjectNames $known
+    Resolve-KnownUiAutomationObjectName `
+        -Value "prefix.unknownObject" `
+        -KnownObjectNames $known
+    Resolve-KnownUiAutomationObjectName `
+        -Value "unsafe object id" `
+        -KnownObjectNames $known
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            probe,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == [
+        "runMonitoringRouteNavigation",
+        "runMonitoringRouteNavigation",
+        "",
+        "",
+        "",
+    ]
+
+
+def test_clean_room_uia_canonical_object_names_reject_duplicates():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the Windows clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$register = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Register-UniqueCanonicalUiAutomationObjectName"
+    },
+    $true
+)
+if ($null -eq $register) {
+    throw "canonical UIA uniqueness register was unavailable"
+}
+Invoke-Expression $register.Extent.Text
+$counts = @{}
+$first = Register-UniqueCanonicalUiAutomationObjectName `
+    -CanonicalObjectName "runMonitoringRouteNavigation" `
+    -ObservationCounts $counts
+$second = Register-UniqueCanonicalUiAutomationObjectName `
+    -CanonicalObjectName "runMonitoringRouteNavigation" `
+    -ObservationCounts $counts
+@($first, $second, $counts["runMonitoringRouteNavigation"]) |
+    ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == [True, False, 2]
+
+
+def test_clean_room_window_dpi_probe_runs_without_a_compiler():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$dpiProbe = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Get-CompilerFreeWindowDpi"
+    },
+    $true
+)
+if ($null -eq $dpiProbe) {
+    throw "compiler-free DPI probe was unavailable"
+}
+$script:getDpiForWindowDelegate = $null
+Invoke-Expression $dpiProbe.Extent.Text
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object Windows.Forms.Form
+try {
+    $form.ShowInTaskbar = $false
+    $form.Opacity = 0
+    $form.Show()
+    [Windows.Forms.Application]::DoEvents()
+    Get-CompilerFreeWindowDpi -WindowHandle $form.Handle
+}
+finally {
+    $form.Close()
+    $form.Dispose()
+}
+"""
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            probe,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert int(completed.stdout.strip()) > 0
 
 
 def test_issue_118_installed_migration_modes_use_real_public_persistence(

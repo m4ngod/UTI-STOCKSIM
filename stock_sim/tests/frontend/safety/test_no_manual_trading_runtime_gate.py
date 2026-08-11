@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import os
-import re
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 
@@ -46,11 +45,14 @@ from app.features import (
 )
 from app.runtime_gateway import RuntimeGateway
 from app.ui.main_window import MainWindow
+from stock_sim.release.frontend_v2_interactive_actions import (
+    APPROVED_INTERACTIVE_NAMES,
+)
 from stock_sim.release.no_manual_trading_gate import audit_qml_text
+from strategy_diagnostics import create_diagnostics_application
 from tests.frontend.strategy_diagnostics_v1_test_support import (
     DictionaryFixtureApplicationReadModel,
 )
-from strategy_diagnostics import create_diagnostics_application
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 3, 9, 30, tzinfo=UTC)
@@ -64,67 +66,6 @@ FORBIDDEN_RUNTIME_MEMBERS = (
     "sell",
     "dispatch",
 )
-APPROVED_INTERACTIVE_NAMES = re.compile(
-    r"^(?:"
-    r"Open Strategy Library|"
-    r"Open Scenario Lab|"
-    r"Compare formal set|"
-    r"Select exact formal set|"
-    r"Scenario Recipe Draft name|"
-    r"Select admitted Historical Market Segment|"
-    r"Select registered Scenario transformation|"
-    r"Closed transformation first parameter value|"
-    r"Select optional second registered Scenario transformation|"
-    r"Closed second transformation first parameter value|"
-    r"Requested commission basis points|"
-    r"Requested slippage basis points|"
-    r"Requested maximum fill fraction|"
-    r"Requested execution latency nodes|"
-    r"Scenario decision cadence minutes|"
-    r"Scenario materialization seed|"
-    r"Market Rule Profile version identity|"
-    r"Allow requested partial fills|"
-    r"Create exact immutable Scenario Recipe Draft|"
-    r"Create exact immutable Compound Scenario Recipe Draft|"
-    r"Audited AI Scenario Recipe intent|"
-    r"Create audited AI-assisted Scenario Recipe Draft|"
-    r"Create immutable successor Recipe Draft revision|"
-    r"Create immutable Compound Recipe successor revision|"
-    r"Select Recipe Draft .+ for successor revision|"
-    r"Validate exact Recipe Draft revision \d+|"
-    r"Compose visible Campaign Cases into a Scenario Set|"
-    r"Resolve requested and effective execution assumptions|"
-    r"Select immutable Formal Scenario Set context|"
-    r"Open Diagnostic Tasks|"
-    r"Create Diagnostic Task|"
-    r"Correct Configuration|"
-    r"Validate Configuration|"
-    r"Approve Configuration|"
-    r"Start Formal Diagnostic Campaign|"
-    r"Open Run Monitoring|"
-    r"Open Evidence and Findings|"
-    r"Open System Health|"
-    r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
-    r"(?:Pause|Resume|Cancel) Formal Diagnostic Campaign lifecycle|"
-    r"(?:Pause|Resume|Cancel) Campaign node lifecycle|"
-    r"Retry failed Campaign node attempt|"
-    r"Pause diagnostic task|"
-    r"Resume diagnostic task|"
-    r"Cancel diagnostic task|"
-    r"Inspect details for .+|"
-    r"Select candidate .+|"
-    r"Select finding .+|"
-    r"Select chart overlay .+|"
-    r"Select Sensitivity Breakpoint .+|"
-    r"Select diagnostic evidence point|"
-    r"Filter evidence by risk|"
-    r"Sort evidence by coverage|"
-    r"Focus compound stress evidence|"
-    r"Show (?:findings|assumptions|provenance|context) tab"
-    r")$"
-)
-
-
 class _DirectExecutor:
     def submit(self, fn, /, *args, **kwargs):
         future = Future()

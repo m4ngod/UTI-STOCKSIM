@@ -707,7 +707,10 @@ Rectangle {
                 Rectangle {
                     id: diagnosticTasksRouteNavigation
                     objectName: "diagnosticTasksRouteNavigation"
-                    property string accessibleName: "Open Diagnostic Tasks"
+                    property string accessibleName: (
+                        "Open Diagnostic Tasks, inventory "
+                        + workspace.diagnosticTasksInventoryState
+                    )
                     property string accessibleDescription: (
                         "Navigate to authoritative Diagnostic Tasks inputs"
                         + ", inventory "
@@ -781,7 +784,10 @@ Rectangle {
                 Rectangle {
                     id: runMonitoringRouteNavigation
                     objectName: "runMonitoringRouteNavigation"
-                    property string accessibleName: "Open Run Monitoring"
+                    property string accessibleName: (
+                        "Open Run Monitoring, current state "
+                        + workspace.screenState
+                    )
                     property string accessibleDescription: (
                         "Navigate to the read-only Run Monitoring route"
                         + ", current state " + workspace.screenState
