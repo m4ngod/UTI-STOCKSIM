@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from PySide6.QtCore import QObject
@@ -45,6 +45,34 @@ _STATE_TERMS = {
     "recovering": ("recover", "retry", "queued"),
     "completed": ("completed", "complete", "terminal", "sealed"),
 }
+
+
+class InstalledAccessibilityCheckpointClock:
+    """Issue strictly ordered UTC checkpoint timestamps per journey."""
+
+    def __init__(
+        self,
+        *,
+        now_utc: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._now_utc = now_utc or (lambda: datetime.now(UTC))
+        self._last_utc: datetime | None = None
+
+    def capture(self) -> datetime:
+        captured_at = self._now_utc()
+        if (
+            captured_at.tzinfo is None
+            or captured_at.utcoffset() != timedelta(0)
+        ):
+            raise RuntimeError(
+                "Installed accessibility checkpoint clock must return UTC"
+            )
+        captured_at = captured_at.astimezone(UTC)
+        if self._last_utc is not None and captured_at <= self._last_utc:
+            captured_at = self._last_utc + timedelta(microseconds=1)
+        self._last_utc = captured_at
+        return captured_at
+
 
 _SAFE_SEMANTIC_TERMS = tuple(
     sorted(
@@ -343,6 +371,7 @@ def capture_installed_accessibility_checkpoint(
     evidence_revision: str,
     status_object_name: str,
     status_semantic_term: str,
+    captured_at_utc: datetime,
 ) -> dict[str, Any]:
     """Capture the rendered QAccessible graph and effective preferences."""
 
@@ -362,7 +391,7 @@ def capture_installed_accessibility_checkpoint(
         "checkpoint": checkpoint,
         "sequence": sequence,
         "snapshot_identity": snapshot_identity,
-        "captured_at_utc": datetime.now(UTC).isoformat(),
+        "captured_at_utc": captured_at_utc.isoformat(),
         "route": route,
         "run_revision": run_revision,
         "evidence_revision": evidence_revision,
@@ -628,6 +657,7 @@ def summarize_installed_accessibility_checkpoints(
 
 __all__ = [
     "ACCESSIBILITY_CHECKPOINT_BINDINGS",
+    "InstalledAccessibilityCheckpointClock",
     "REQUIRED_ACCESSIBILITY_STATES",
     "ORDERED_ACCESSIBILITY_CHECKPOINTS",
     "capture_installed_accessibility_checkpoint",

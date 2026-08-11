@@ -4401,13 +4401,14 @@ class DiagnosticTasksQtAdapter(QObject):
         return self._context.task_id if task is None else task.task_id
 
     def journey_selection(self) -> JourneyDiagnosticSelection | None:
-        if not self._closed and not self._route_active:
-            authoritative = self._feature.snapshot(self._context)
-            if (
-                authoritative.context == self._context
-                and authoritative.revision > self._state.revision
-            ):
-                self._state = authoritative
+        """Project the last authoritative route snapshot without hidden I/O.
+
+        Route activation performs the authoritative snapshot and publishes a
+        state change.  Other live Feature revisions must not synchronously
+        rescan the persisted Diagnostic Tasks inventory while this route is
+        inactive.
+        """
+
         task = self._state.task
         if task is None:
             return None
@@ -6302,6 +6303,7 @@ class SystemHealthQtAdapter(QObject):
     stateChanged = Signal()
     announcementChanged = Signal()
     deliveryRequested = Signal(int, object)
+    subscriptionRetryRequested = Signal(int)
 
     def __init__(
         self,
@@ -6318,6 +6320,14 @@ class SystemHealthQtAdapter(QObject):
         self._mount_generation = _next_mount_generation()
         self._route_active = route_active
         self._closed = False
+        self._subscription_retry_generation = self._mount_generation.value
+        self._subscription_retry_attempts = 0
+        self._subscription_retry_timer = QTimer(self)
+        self._subscription_retry_timer.setSingleShot(True)
+        self._subscription_retry_timer.setInterval(50)
+        self._subscription_retry_timer.timeout.connect(
+            self._retry_subscription
+        )
         self._last_accessibility_announcement_key = (
             self._accessibility_announcement_key()
         )
@@ -6327,6 +6337,10 @@ class SystemHealthQtAdapter(QObject):
         self._subscription_lock = Lock()
         self.deliveryRequested.connect(
             self._accept_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.subscriptionRetryRequested.connect(
+            self._schedule_subscription_retry,
             Qt.ConnectionType.QueuedConnection,
         )
         self._subscription: Subscription | None = None
@@ -6348,9 +6362,10 @@ class SystemHealthQtAdapter(QObject):
 
     def _start_subscription(self) -> None:
         mount_generation = self._mount_generation.value
+        context = self._context
         Thread(
             target=self._subscribe_worker,
-            args=(mount_generation,),
+            args=(mount_generation, context),
             name="system-health-qt-subscription",
             daemon=True,
         ).start()
@@ -6362,27 +6377,48 @@ class SystemHealthQtAdapter(QObject):
         if self._closed or not self._route_active:
             return
         mount_generation = self._mount_generation.value
+        context = self._context
         Thread(
             target=self._refresh_worker,
-            args=(mount_generation,),
+            args=(mount_generation, context),
             name="system-health-qt-refresh",
             daemon=True,
         ).start()
 
-    def _refresh_worker(self, mount_generation: int) -> None:
+    def _refresh_worker(
+        self,
+        mount_generation: int,
+        context: SystemHealthContext,
+    ) -> None:
         try:
-            state = self._feature.snapshot(self._context)
+            state = self._feature.snapshot(context)
         except RuntimeError:
             return
         self._queue_state(mount_generation, state)
 
-    def _subscribe_worker(self, mount_generation: int) -> None:
+    def _subscribe_worker(
+        self,
+        mount_generation: int,
+        context: SystemHealthContext,
+    ) -> None:
         try:
             subscription = self._feature.subscribe(
-                self._context,
+                context,
                 lambda state: self._queue_state(mount_generation, state),
             )
         except RuntimeError:
+            if (
+                self._closed
+                or not self._route_active
+                or mount_generation != self._mount_generation.value
+            ):
+                return
+            try:
+                self.subscriptionRetryRequested.emit(mount_generation)
+            except (RuntimeError, TypeError):
+                # The owning QObject may be deleted after the generation
+                # guard but before the cross-thread signal reaches Qt.
+                return
             return
         previous: Subscription | None = None
         with self._subscription_lock:
@@ -6400,6 +6436,35 @@ class SystemHealthQtAdapter(QObject):
             subscription.dispose()
         elif previous is not None:
             previous.dispose()
+
+    @Slot(int)
+    def _schedule_subscription_retry(self, mount_generation: int) -> None:
+        if (
+            self._closed
+            or not self._route_active
+            or mount_generation != self._mount_generation.value
+            or mount_generation != self._subscription_retry_generation
+            or self._subscription_retry_attempts >= 3
+        ):
+            return
+        self._subscription_retry_attempts += 1
+        self._subscription_retry_timer.start()
+
+    @Slot()
+    def _retry_subscription(self) -> None:
+        if (
+            self._closed
+            or not self._route_active
+            or self._subscription_retry_generation
+            != self._mount_generation.value
+        ):
+            return
+        self._start_subscription()
+
+    def _reset_subscription_retry(self) -> None:
+        self._subscription_retry_timer.stop()
+        self._subscription_retry_generation = self._mount_generation.value
+        self._subscription_retry_attempts = 0
 
     @Slot(int, object)
     def _accept_state(
@@ -6425,6 +6490,7 @@ class SystemHealthQtAdapter(QObject):
             return
         self._route_active = active
         self._mount_generation = _next_mount_generation()
+        self._reset_subscription_retry()
         with self._subscription_lock:
             subscription = self._subscription
             self._subscription = None
@@ -6443,6 +6509,7 @@ class SystemHealthQtAdapter(QObject):
         if self._closed or context == self._context:
             return
         self._mount_generation = _next_mount_generation()
+        self._reset_subscription_retry()
         with self._subscription_lock:
             subscription = self._subscription
             self._subscription = None
@@ -7318,6 +7385,7 @@ class SystemHealthQtAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        self._subscription_retry_timer.stop()
         self._route_active = False
         self._mount_generation = _next_mount_generation()
         with self._subscription_lock:
@@ -7588,10 +7656,6 @@ class JourneyWorkspaceHost(QQuickWidget):
             "scenarioLab",
             self._scenario_lab,
         )
-        if self._strategy_library is not None:
-            self._strategy_library.refresh()
-        if self._scenario_lab is not None:
-            self._scenario_lab.refresh()
         if self._strategy_library is not None and self._scenario_lab is not None:
             self._strategy_library.stateChanged.connect(
                 self._scenario_lab.stateChanged
@@ -7750,11 +7814,6 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._publish_recovery_state()
             self._active_route_changed()
         if self._diagnostic_tasks is not None:
-            if (
-                initial_route_identity
-                is not JourneyWorkspaceRoute.DIAGNOSTIC_TASKS
-            ):
-                self._diagnostic_tasks.refresh()
             monitoring_context = self._diagnostic_tasks.monitoring_context()
             if monitoring_context is not None:
                 self._run_monitoring.select_context(monitoring_context)

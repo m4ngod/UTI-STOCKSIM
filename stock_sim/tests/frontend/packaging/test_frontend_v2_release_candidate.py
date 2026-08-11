@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 import hashlib
 import inspect
 import json
@@ -2187,6 +2188,7 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     ).read_text(encoding="utf-8")
 
     assert "WindowsSandbox.exe" in script
+    assert "-WindowStyle Hidden" not in script
     assert "<Networking>Disable</Networking>" in script
     assert "<VGpu>Enable</VGpu>" in script
     assert "<ReadOnly>true</ReadOnly>" in script
@@ -2207,7 +2209,20 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "Start-Sleep -Milliseconds 500" in script
     assert "WaitForExit" not in script
     assert "$sandboxShutdownDeadline" in script
-    assert "$remainingSandboxProcesses" in script
+    assert "$sandboxExitedBeforeResult" in script
+    assert "$sandboxLaunchGraceDeadline" in script
+    assert "$sandboxProcess.HasExited" in script
+    assert "$sandboxLauncherIdentity" in script
+    assert "StartTimeUtc" in script
+    assert "function Stop-OwnedWindowsSandboxLauncher" in script
+    assert script.count("Stop-OwnedWindowsSandboxLauncher") == 4
+    assert "$existingSandboxProcessIds" not in script
+    assert "WindowsSandboxRemoteSession" not in script
+    assert "WindowsSandboxServer" not in script
+    assert "Windows Sandbox exited before producing certification result" in script
+    assert script.index("$sandboxShutdownDeadline") < script.index(
+        'if ($sandboxExitCode -ne "0")'
+    )
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
     assert "Windows Sandbox certification failed at a redacted boundary." in script
@@ -2571,6 +2586,24 @@ def test_installed_accessibility_rejects_hidden_state_text_and_color_only_cues()
         in failures
     )
     assert "Installed accessibility states relied on color-only meaning" in failures
+
+
+def test_installed_accessibility_checkpoint_clock_is_strictly_monotonic():
+    from stock_sim.release.frontend_v2_accessibility import (
+        InstalledAccessibilityCheckpointClock,
+    )
+
+    baseline = datetime(2030, 1, 1, tzinfo=UTC)
+    observed_wall_times = iter(
+        (baseline, baseline, baseline - timedelta(seconds=1))
+    )
+    clock = InstalledAccessibilityCheckpointClock(
+        now_utc=lambda: next(observed_wall_times)
+    )
+
+    assert clock.capture() == baseline
+    assert clock.capture() == baseline + timedelta(microseconds=1)
+    assert clock.capture() == baseline + timedelta(microseconds=2)
 
 
 def test_system_health_release_uses_public_bounded_lifecycle_contract():

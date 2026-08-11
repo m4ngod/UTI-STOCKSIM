@@ -193,42 +193,83 @@ $configuration = @"
     [Text.UTF8Encoding]::new($false)
 )
 
+function Stop-OwnedWindowsSandboxLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$LauncherIdentity
+    )
+
+    $launcher = Get-Process `
+        -Id $LauncherIdentity.ProcessId `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $launcher) {
+        return
+    }
+    try {
+        $actualStartTimeUtc = $launcher.StartTime.ToUniversalTime()
+    }
+    catch {
+        return
+    }
+    if ($actualStartTimeUtc -ne $LauncherIdentity.StartTimeUtc) {
+        return
+    }
+    Stop-Process `
+        -InputObject $launcher `
+        -Force `
+        -ErrorAction SilentlyContinue
+}
+
 $sandboxCommand = Get-Command WindowsSandbox.exe -ErrorAction Stop
-$existingSandboxProcessIds = @(
-    Get-Process `
-        -Name WindowsSandboxRemoteSession, WindowsSandboxServer `
-        -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty Id
-)
 $sandboxProcess = Start-Process `
     -FilePath $sandboxCommand.Source `
     -ArgumentList "`"$configurationPath`"" `
-    -WindowStyle Hidden `
     -PassThru
+$sandboxLauncherIdentity = [PSCustomObject]@{
+    ProcessId = $sandboxProcess.Id
+    StartTimeUtc = $sandboxProcess.StartTime.ToUniversalTime()
+}
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+$sandboxLaunchGraceDeadline = [DateTime]::UtcNow.AddSeconds(5)
+$sandboxExitedBeforeResult = $false
 while (
     -not (Test-Path -LiteralPath $exitCodePath -PathType Leaf) -and
     [DateTime]::UtcNow -lt $deadline
 ) {
+    if ([DateTime]::UtcNow -ge $sandboxLaunchGraceDeadline) {
+        $sandboxProcess.Refresh()
+        if ($sandboxProcess.HasExited) {
+            $sandboxExitedBeforeResult = $true
+            break
+        }
+    }
     Start-Sleep -Milliseconds 500
 }
+if ($sandboxExitedBeforeResult) {
+    Stop-OwnedWindowsSandboxLauncher `
+        -LauncherIdentity $sandboxLauncherIdentity
+    throw "Windows Sandbox exited before producing certification result."
+}
 if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
-    if (-not $sandboxProcess.HasExited) {
-        Stop-Process `
-            -Id $sandboxProcess.Id `
-            -Force `
-            -ErrorAction SilentlyContinue
-    }
-    Get-Process `
-        -Name WindowsSandboxRemoteSession, WindowsSandboxServer `
-        -ErrorAction SilentlyContinue |
-        Where-Object { $_.Id -notin $existingSandboxProcessIds } |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+    Stop-OwnedWindowsSandboxLauncher `
+        -LauncherIdentity $sandboxLauncherIdentity
     throw "Windows Sandbox validation exceeded $TimeoutSeconds seconds."
 }
 $sandboxExitCode = (
     Get-Content -LiteralPath $exitCodePath -Raw -Encoding UTF8
 ).Trim()
+$sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
+do {
+    $sandboxProcess.Refresh()
+    if ($sandboxProcess.HasExited) {
+        break
+    }
+    Start-Sleep -Milliseconds 500
+}
+while ([DateTime]::UtcNow -lt $sandboxShutdownDeadline)
+Stop-OwnedWindowsSandboxLauncher `
+    -LauncherIdentity $sandboxLauncherIdentity
+
 if ($sandboxExitCode -ne "0") {
     $details = if (Test-Path -LiteralPath $sandboxErrorPath) {
         Get-Content -LiteralPath $sandboxErrorPath -Raw -Encoding UTF8
@@ -240,25 +281,6 @@ if ($sandboxExitCode -ne "0") {
 }
 if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
     throw "Windows Sandbox did not produce clean-room-report.json."
-}
-
-$sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
-do {
-    $remainingSandboxProcesses = @(
-        Get-Process `
-            -Name WindowsSandboxRemoteSession, WindowsSandboxServer `
-            -ErrorAction SilentlyContinue |
-            Where-Object { $_.Id -notin $existingSandboxProcessIds }
-    )
-    if ($remainingSandboxProcesses.Count -eq 0) {
-        break
-    }
-    Start-Sleep -Milliseconds 500
-}
-while ([DateTime]::UtcNow -lt $sandboxShutdownDeadline)
-if ($remainingSandboxProcesses.Count -gt 0) {
-    $remainingSandboxProcesses |
-        Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 Get-Item -LiteralPath $reportPath

@@ -39,6 +39,13 @@ from PySide6.QtQuick import QQuickItem
 from PySide6.QtWidgets import QApplication
 
 from app.event_bridge import EventBridge, EventBridgeBatch
+from app.journey_recovery import (
+    JourneyWorkspaceBookmark,
+    JourneyWorkspaceRoute,
+    encode_journey_workspace_bookmark,
+    restore_journey_workspace_bookmark,
+)
+from app.state.settings_store import SettingsStore
 from app.features import (
     APPLICATION_READ_MODEL_INTERFACE_VERSION,
     DIAGNOSTIC_TASKS_APPLICATION_INTERFACE_VERSION,
@@ -144,6 +151,141 @@ class _PerformanceIdentity:
     recipe_id: str
     evidence_package_id: str
     manifest_id: str
+
+
+@dataclass(slots=True)
+class _PerformanceStartupMarkers:
+    runtime_started_ns: int
+    qapplication_ready_ns: int | None = None
+    window_create_started_ns: int | None = None
+    window_created_ns: int | None = None
+    window_bindings_ready_ns: int | None = None
+    initial_route_ready_ns: int | None = None
+    bridge_started_ns: int | None = None
+    window_show_started_ns: int | None = None
+    window_show_returned_ns: int | None = None
+    window_shown_ns: int | None = None
+    fixture_projection_ready_ns: int | None = None
+
+    def phase_durations_ms(
+        self,
+        *,
+        usable_visible_ns: int,
+    ) -> dict[str, float]:
+        ordered_markers = (
+            ("runtime_started", self.runtime_started_ns),
+            ("qapplication_ready", self.qapplication_ready_ns),
+            ("window_create_started", self.window_create_started_ns),
+            ("window_created", self.window_created_ns),
+            ("window_bindings_ready", self.window_bindings_ready_ns),
+            ("initial_route_ready", self.initial_route_ready_ns),
+            ("bridge_started", self.bridge_started_ns),
+            ("window_show_started", self.window_show_started_ns),
+            ("window_show_returned", self.window_show_returned_ns),
+            ("window_shown", self.window_shown_ns),
+            (
+                "fixture_projection_ready",
+                self.fixture_projection_ready_ns,
+            ),
+            ("usable_visible", usable_visible_ns),
+        )
+        missing = [
+            name
+            for name, value in ordered_markers
+            if value is None or value <= 0
+        ]
+        if missing:
+            raise RuntimeError(
+                "Performance startup markers are incomplete: "
+                + ", ".join(missing)
+            )
+        values = tuple(
+            cast(int, value) for _, value in ordered_markers
+        )
+        if any(
+            current < previous
+            for previous, current in zip(values, values[1:])
+        ):
+            raise RuntimeError(
+                "Performance startup markers are out of order"
+            )
+
+        (
+            runtime_started_ns,
+            qapplication_ready_ns,
+            window_create_started_ns,
+            window_created_ns,
+            window_bindings_ready_ns,
+            initial_route_ready_ns,
+            bridge_started_ns,
+            window_show_started_ns,
+            window_show_returned_ns,
+            window_shown_ns,
+            fixture_projection_ready_ns,
+            usable_visible_ns,
+        ) = values
+
+        def elapsed_ms(start_ns: int, end_ns: int) -> float:
+            return round((end_ns - start_ns) / 1_000_000, 6)
+
+        return {
+            "total_to_usable_visible": elapsed_ms(
+                runtime_started_ns,
+                usable_visible_ns,
+            ),
+            "qapplication_creation": elapsed_ms(
+                runtime_started_ns,
+                qapplication_ready_ns,
+            ),
+            "application_setup_before_window": elapsed_ms(
+                qapplication_ready_ns,
+                window_create_started_ns,
+            ),
+            "window_create": elapsed_ms(
+                window_create_started_ns,
+                window_created_ns,
+            ),
+            "window_created_to_shown": elapsed_ms(
+                window_created_ns,
+                window_shown_ns,
+            ),
+            "window_created_to_bindings_ready": elapsed_ms(
+                window_created_ns,
+                window_bindings_ready_ns,
+            ),
+            "bindings_to_initial_route_ready": elapsed_ms(
+                window_bindings_ready_ns,
+                initial_route_ready_ns,
+            ),
+            "initial_route_to_bridge_started": elapsed_ms(
+                initial_route_ready_ns,
+                bridge_started_ns,
+            ),
+            "bridge_started_to_show_started": elapsed_ms(
+                bridge_started_ns,
+                window_show_started_ns,
+            ),
+            "window_show_call": elapsed_ms(
+                window_show_started_ns,
+                window_show_returned_ns,
+            ),
+            "show_return_to_events_processed": elapsed_ms(
+                window_show_returned_ns,
+                window_shown_ns,
+            ),
+            "shown_to_projection_ready": elapsed_ms(
+                window_shown_ns,
+                fixture_projection_ready_ns,
+            ),
+            "projection_ready_to_usable_visible": elapsed_ms(
+                fixture_projection_ready_ns,
+                usable_visible_ns,
+            ),
+            "shown_to_usable_visible": elapsed_ms(
+                window_shown_ns,
+                usable_visible_ns,
+            ),
+        }
 
 
 class _ProcessMemoryCountersEx(ctypes.Structure):
@@ -1187,37 +1329,28 @@ class _QtPerformanceProbe(QObject):
         bridge: EventBridge,
         duration_seconds: float,
         process_started_ns: int,
+        on_usable: Callable[[], None],
         on_measurement_active: Callable[[], None],
         on_finished: Callable[[], None],
     ) -> None:
         super().__init__(host)
         self._app = app
         self._host = host
-        self._root = host.rootObject()
-        self._adapter = host._evidence_and_findings
-        if self._root is None or self._adapter is None:
-            raise RuntimeError("Evidence & Findings QML Adapter is unavailable")
-        self._renderer = self._required_item("productionEvidenceChart")
-        self._series_canvas = self._required_object(
-            "evidenceChartSeriesShape"
-        )
-        self._candidate_repeater = self._required_object("evidenceCandidateRepeater")
-        self._context_panel = self._required_item("evidenceContextPanel")
-        loader = self._required_item("evidenceAndFindingsPageLoader")
-        page = loader.property("item")
-        if not isinstance(page, QQuickItem):
-            raise RuntimeError("Evidence & Findings QML page is unavailable")
-        self._tab_findings = page.property("firstTabControl")
-        self._tab_assumptions = page.property("secondTabControl")
-        if not isinstance(self._tab_findings, QQuickItem) or not isinstance(
-            self._tab_assumptions, QQuickItem
-        ):
-            raise RuntimeError("Evidence QML tab controls are unavailable")
+        self._root: Any = None
+        self._adapter: Any = None
+        self._renderer: Any = None
+        self._series_canvas: Any = None
+        self._candidate_repeater: Any = None
+        self._context_panel: Any = None
+        self._tab_findings: Any = None
+        self._tab_assumptions: Any = None
+        self._bind_qml_items()
         self._recorder = recorder
         self._queries = queries
         self._bridge = bridge
         self._duration_seconds = duration_seconds
         self._process_started_ns = process_started_ns
+        self._on_usable = on_usable
         self._on_measurement_active = on_measurement_active
         self._on_finished = on_finished
         self._measurement_started_ns: int | None = None
@@ -1225,6 +1358,10 @@ class _QtPerformanceProbe(QObject):
         self._started_at: datetime | None = None
         self._ended_at: datetime | None = None
         self._usable_state_ms: float | None = None
+        self._usable_visible_ns: int | None = None
+        self._pre_measurement_setup_started_ns: int | None = None
+        self._pre_measurement_setup_ended_ns: int | None = None
+        self._render_signals_connected = False
         self._graphics_api = "Unknown"
         self._last_stall_tick_ns: int | None = None
         self._source_events = 0
@@ -1292,6 +1429,10 @@ class _QtPerformanceProbe(QObject):
         return float(self._usable_state_ms or 0.0)
 
     @property
+    def usable_visible_ns(self) -> int:
+        return int(self._usable_visible_ns or 0)
+
+    @property
     def observed_fixture(self) -> dict[str, int]:
         return {
             "source_points": self._adapter.chartSourcePointCount,
@@ -1351,12 +1492,13 @@ class _QtPerformanceProbe(QObject):
             and self._fixture_is_usable()
         ):
             self._usable_state_ms = (visible_ns - self._process_started_ns) / 1_000_000
+            self._usable_visible_ns = visible_ns
             self.read_only_context_visible = bool(
                 self._context_panel.property("visible")
                 and "read-only" in self._adapter.readOnlyContextText.lower()
             )
             self._adapter.setActiveTab("findings")
-            QTimer.singleShot(0, self._start_measurement)
+            self._prepare_after_usable()
         if (
             self._recorder.terminal_visible_ms is not None
             and self._terminal_sent_ns is not None
@@ -1376,6 +1518,51 @@ class _QtPerformanceProbe(QObject):
             self.observed_fixture == expected
             and self._context_panel.property("visible")
         )
+
+    def _prepare_after_usable(self) -> None:
+        """Complete certification setup after the first usable visible frame."""
+
+        self._pre_measurement_setup_started_ns = perf_counter_ns()
+        self.disconnect_render_signals()
+        try:
+            self._on_usable()
+            self._bind_qml_items()
+            if not self._fixture_is_usable():
+                raise RuntimeError(
+                    "Performance fixture was not usable after production setup"
+                )
+            self.connect_render_signals()
+        except BaseException as error:
+            self.errors.append(
+                "Pre-measurement production setup failed: "
+                f"{type(error).__name__}"
+            )
+            self._finish()
+            return
+        self._pre_measurement_setup_ended_ns = perf_counter_ns()
+        QTimer.singleShot(0, self._start_measurement)
+
+    def connect_render_signals(self) -> None:
+        if self._render_signals_connected:
+            return
+        render_window = self._host.quickWindow()
+        render_window.beforeSynchronizing.connect(
+            self.before_synchronize,
+            Qt.ConnectionType.DirectConnection,
+        )
+        render_window.afterRendering.connect(
+            self.after_render,
+            Qt.ConnectionType.DirectConnection,
+        )
+        self._render_signals_connected = True
+
+    def disconnect_render_signals(self) -> None:
+        if not self._render_signals_connected:
+            return
+        render_window = self._host.quickWindow()
+        render_window.beforeSynchronizing.disconnect(self.before_synchronize)
+        render_window.afterRendering.disconnect(self.after_render)
+        self._render_signals_connected = False
 
     @Slot()
     def _start_measurement(self) -> None:
@@ -1560,6 +1747,34 @@ class _QtPerformanceProbe(QObject):
         for error in self._host.errors():
             self.errors.append(error.toString())
         self._on_finished()
+
+    def _bind_qml_items(self) -> None:
+        """Bind the current Evidence route objects after any route remount."""
+
+        root = self._host.rootObject()
+        adapter = self._host._evidence_and_findings
+        if root is None or adapter is None:
+            raise RuntimeError("Evidence & Findings QML Adapter is unavailable")
+        self._root = root
+        self._adapter = adapter
+        self._renderer = self._required_item("productionEvidenceChart")
+        self._series_canvas = self._required_object(
+            "evidenceChartSeriesShape"
+        )
+        self._candidate_repeater = self._required_object(
+            "evidenceCandidateRepeater"
+        )
+        self._context_panel = self._required_item("evidenceContextPanel")
+        loader = self._required_item("evidenceAndFindingsPageLoader")
+        page = loader.property("item")
+        if not isinstance(page, QQuickItem):
+            raise RuntimeError("Evidence & Findings QML page is unavailable")
+        self._tab_findings = page.property("firstTabControl")
+        self._tab_assumptions = page.property("secondTabControl")
+        if not isinstance(self._tab_findings, QQuickItem) or not isinstance(
+            self._tab_assumptions, QQuickItem
+        ):
+            raise RuntimeError("Evidence QML tab controls are unavailable")
 
     def _required_item(self, object_name: str) -> QQuickItem:
         item = self._root.findChild(QQuickItem, object_name)
@@ -2124,6 +2339,52 @@ def _prepare_wave3_setup_feature_load(
     }
 
 
+def _prepare_performance_journey_settings(settings_path: Path) -> None:
+    """Persist the fixture's exact initial route through production settings."""
+
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+    )
+    settings = SettingsStore(path=str(settings_path), auto_save=False)
+    settings.update(
+        journey_workspace_bookmark_json=(
+            encode_journey_workspace_bookmark(bookmark)
+        )
+    )
+    settings.get_state().save()
+    restored = restore_journey_workspace_bookmark(
+        settings.get_state().journey_workspace_bookmark_json
+    )
+    if (
+        restored.migrated
+        or restored.bookmark.last_route
+        is not JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    ):
+        raise RuntimeError(
+            "Performance Journey route persistence did not restore exactly"
+        )
+
+
+def _ensure_performance_evidence_route(
+    *,
+    app: Any,
+    host: Any,
+    root: Any,
+    navigate: Callable[..., Any],
+) -> bool:
+    """Navigate only when Evidence is not already the authoritative route."""
+
+    if host.active_route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS:
+        return False
+    navigate(
+        app=app,
+        host=host,
+        root=root,
+        route="evidence_and_findings",
+    )
+    return True
+
+
 def run_performance_lane(
     *,
     lane: str,
@@ -2158,13 +2419,22 @@ def run_performance_lane(
     except BaseException:
         real_v1_probe.close()
         raise
+    performance_settings_path = (
+        Path(fixture.database_path).parent
+        / "frontend-v2-performance-settings.json"
+    )
+    _prepare_performance_journey_settings(performance_settings_path)
     ui_runtime_started_ns = perf_counter_ns()
+    startup_markers = _PerformanceStartupMarkers(
+        runtime_started_ns=ui_runtime_started_ns
+    )
     existing_app = QApplication.instance()
     app = (
         QApplication([])
         if existing_app is None
         else cast(QApplication, existing_app)
     )
+    startup_markers.qapplication_ready_ns = perf_counter_ns()
     from app.features import (
         LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter,
         LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter,
@@ -2297,6 +2567,16 @@ def run_performance_lane(
             or scenario_lab is None
         ):
             raise RuntimeError("Production Feature load is unavailable")
+        root = host.rootObject()
+        evidence_qt_adapter = host._evidence_and_findings
+        if root is None or evidence_qt_adapter is None:
+            raise RuntimeError("Production Evidence route is unavailable")
+        wave2_diagnostic_tasks["observed_before_load"] = (
+            _qml_observes_ready_inventory(host, app)
+        )
+        wave3_setup_features.update(
+            _observe_wave3_setup_features(host, app)
+        )
         wave3_setup_features.update(
             _prepare_wave3_setup_feature_load(
                 strategy_library,
@@ -2325,6 +2605,15 @@ def run_performance_lane(
                 "observed_before_load": True,
             }
         )
+        _ensure_performance_evidence_route(
+            app=app,
+            host=host,
+            root=root,
+            navigate=_navigate_route,
+        )
+        evidence_qt_adapter.setActiveTab("context")
+        app.processEvents()
+        app.processEvents()
 
     def observe_active_load() -> None:
         if (
@@ -2345,13 +2634,14 @@ def run_performance_lane(
                 ),
             }
         )
-        _navigate_route(
+        _ensure_performance_evidence_route(
             app=app,
             host=host,
             root=host.rootObject(),
-            route="evidence_and_findings",
+            navigate=_navigate_route,
         )
 
+    startup_markers.window_create_started_ns = perf_counter_ns()
     try:
         context, window, host = _create_production_window(
             event_bridge=bridge,
@@ -2370,11 +2660,9 @@ def run_performance_lane(
                 system_health_application
             ),
             diagnostic_setup_selection_coordinator=setup_coordinator,
-            settings_path=(
-                Path(fixture.database_path).parent
-                / "frontend-v2-performance-settings.json"
-            ),
+            settings_path=performance_settings_path,
         )
+        startup_markers.window_created_ns = perf_counter_ns()
         strategy_library = context.strategy_library_feature
         scenario_lab = context.scenario_lab_feature
         diagnostic_tasks = context.diagnostic_tasks_feature
@@ -2399,18 +2687,18 @@ def run_performance_lane(
         diagnostic_qt_adapter = host._diagnostic_tasks
         if diagnostic_qt_adapter is None:
             raise RuntimeError("Diagnostic Tasks Qt Adapter is unavailable")
-        wave2_diagnostic_tasks["observed_before_load"] = (
-            _qml_observes_ready_inventory(host, app)
-        )
-        _navigate_route(
+        startup_markers.window_bindings_ready_ns = perf_counter_ns()
+        _ensure_performance_evidence_route(
             app=app,
             host=host,
             root=root,
-            route="evidence_and_findings",
+            navigate=_navigate_route,
         )
         evidence_qt_adapter.setActiveTab("context")
+        startup_markers.initial_route_ready_ns = perf_counter_ns()
 
         bridge.start()
+        startup_markers.bridge_started_ns = perf_counter_ns()
         window.resize(
             REFERENCE_MEASUREMENT_PROTOCOL.window_width,
             REFERENCE_MEASUREMENT_PROTOCOL.window_height,
@@ -2420,20 +2708,11 @@ def run_performance_lane(
             Qt.WidgetAttribute.WA_DontShowOnScreen,
             True,
         )
+        startup_markers.window_show_started_ns = perf_counter_ns()
         window.show()
+        startup_markers.window_show_returned_ns = perf_counter_ns()
         app.processEvents()
-        wave3_setup_features.update(
-            _observe_wave3_setup_features(host, app)
-        )
-        _navigate_route(
-            app=app,
-            host=host,
-            root=root,
-            route="evidence_and_findings",
-        )
-        evidence_qt_adapter.setActiveTab("context")
-        app.processEvents()
-        app.processEvents()
+        startup_markers.window_shown_ns = perf_counter_ns()
         try:
             _settle_until(
                 app,
@@ -2452,7 +2731,7 @@ def run_performance_lane(
                 f"chart_source_points="
                 f"{evidence_qt_adapter.chartSourcePointCount}"
             ) from error
-        prepare_feature_load()
+        startup_markers.fixture_projection_ready_ns = perf_counter_ns()
         probe = _QtPerformanceProbe(
             app=app,
             host=host,
@@ -2461,17 +2740,11 @@ def run_performance_lane(
             bridge=bridge,
             duration_seconds=duration_seconds,
             process_started_ns=ui_runtime_started_ns,
+            on_usable=prepare_feature_load,
             on_measurement_active=observe_active_load,
             on_finished=quit_app,
         )
-        host.quickWindow().beforeSynchronizing.connect(
-            probe.before_synchronize,
-            Qt.ConnectionType.DirectConnection,
-        )
-        host.quickWindow().afterRendering.connect(
-            probe.after_render,
-            Qt.ConnectionType.DirectConnection,
-        )
+        probe.connect_render_signals()
         host.update()
         host.quickWindow().update()
         QTimer.singleShot(
@@ -2494,6 +2767,14 @@ def run_performance_lane(
             tuple[str, Callable[[], None] | None],
             ...,
         ] = (
+            (
+                "performance render probe",
+                (
+                    probe.disconnect_render_signals
+                    if probe is not None
+                    else None
+                ),
+            ),
             (
                 "performance subscription",
                 (
@@ -2597,6 +2878,7 @@ def run_performance_lane(
         real_v1_evidence=integrated_v1_evidence,
         wave3_setup_features=wave3_setup_features,
         wave2_diagnostic_tasks=wave2_diagnostic_tasks,
+        startup_markers=startup_markers,
     )
     return report
 
@@ -2612,6 +2894,7 @@ def _build_report(
     real_v1_evidence: Mapping[str, Any] | None,
     wave3_setup_features: Mapping[str, Any],
     wave2_diagnostic_tasks: Mapping[str, Any],
+    startup_markers: _PerformanceStartupMarkers,
 ) -> dict[str, Any]:
     event_metric = build_performance_metric(recorder.event_to_visible_ms)
     input_metric = build_performance_metric(recorder.input_response_ms)
@@ -2647,6 +2930,9 @@ def _build_report(
         "measurement": asdict(REFERENCE_MEASUREMENT_PROTOCOL),
         "observed_fixture": dict(observed_fixture),
         "sampling_policy": "uniform_endpoints_v1",
+        "startup_phases_ms": startup_markers.phase_durations_ms(
+            usable_visible_ns=probe.usable_visible_ns
+        ),
         "production_path": list(WAVE3_PERFORMANCE_PRODUCTION_PATH),
         "integrated_v1_probe": (
             None

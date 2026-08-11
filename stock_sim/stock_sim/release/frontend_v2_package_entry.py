@@ -2442,6 +2442,7 @@ def _run_smoke_journey(
     )
     from stock_sim.release.frontend_v2_accessibility import (
         ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        InstalledAccessibilityCheckpointClock,
         capture_installed_accessibility_checkpoint,
         summarize_installed_accessibility_checkpoints,
         validate_installed_accessibility_checkpoints,
@@ -2667,6 +2668,9 @@ def _run_smoke_journey(
     accessibility_announcements: list[str] = []
     accessibility_preferences: list[bool] = []
     accessibility_checkpoints: list[dict[str, Any]] = []
+    accessibility_checkpoint_clock = (
+        InstalledAccessibilityCheckpointClock()
+    )
     manual_trading_route_audits: list[dict[str, Any]] = []
     keyboard_routes: set[str] = set()
 
@@ -2936,6 +2940,7 @@ def _run_smoke_journey(
             evidence_revision=evidence_revision,
             status_object_name=status_object_name,
             status_semantic_term=status_semantic_term,
+            captured_at_utc=accessibility_checkpoint_clock.capture(),
         )
         accessibility_checkpoints.append(checkpoint_evidence)
         if (

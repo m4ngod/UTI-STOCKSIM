@@ -242,8 +242,10 @@ class _ObservedFeature:
         self.inner = inner
         self.subscribe_count = 0
         self.dispose_count = 0
+        self.snapshot_count = 0
 
     def snapshot(self, context):
+        self.snapshot_count += 1
         return self.inner.snapshot(context)
 
     def subscribe(self, context, observer):
@@ -924,6 +926,83 @@ def test_bookmarked_evidence_selection_waits_for_authoritative_feature_state(
     assert host.journey_context.evidence_selection == durable
     assert host.journey_context.presentation.selected_identity == finding.identity.value
     assert host.journey_context.presentation.view_mode is JourneyViewMode.DETAILS
+
+    _close(context, host)
+
+
+def test_evidence_revisions_do_not_reread_inactive_diagnostic_inventory(
+    tmp_path,
+) -> None:
+    app = _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    observed_diagnostic = _ObservedFeature(context.diagnostic_tasks_feature)
+    evidence_context = EvidenceAndFindingsContext.for_selection(
+        EvidenceAndFindingsSelection(
+            campaign_id=FormalDiagnosticCampaignId("campaign-fast-evidence-118"),
+            run_id=StrategyRunId("run-fast-evidence-118"),
+            strategy_id=StrategyUnderTestId("strategy-fast-evidence-118"),
+            market_scenario_id=MarketScenarioId("scenario-fast-evidence-118"),
+            approved_recipe_id=ApprovedScenarioRecipeId("recipe-fast-evidence-118"),
+            reproduction_manifest_id=ReproductionManifestId(
+                "manifest-fast-evidence-118"
+            ),
+        )
+    )
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+    host = _host(
+        context,
+        diagnostic_tasks_feature=observed_diagnostic,
+        evidence_context=evidence_context,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+    host.show()
+    _settle(app)
+    reads_before_evidence = observed_diagnostic.snapshot_count
+
+    context.evidence_and_findings_feature.advance_to_completed(evidence_context)
+    _wait_for(app, lambda: host.journey_context.evidence_selection is not None)
+
+    assert observed_diagnostic.snapshot_count == reads_before_evidence
+    assert host.activate_route(JourneyWorkspaceRoute.DIAGNOSTIC_TASKS) is True
+    _settle(app)
+    assert observed_diagnostic.snapshot_count == reads_before_evidence + 1
+
+    _close(context, host)
+
+
+def test_host_construction_reads_each_setup_feature_once(tmp_path) -> None:
+    _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    observed_strategy = _ObservedFeature(context.strategy_library_feature)
+    observed_scenario = _ObservedFeature(context.scenario_lab_feature)
+    observed_diagnostic = _ObservedFeature(context.diagnostic_tasks_feature)
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+
+    host = _host(
+        context,
+        strategy_library_feature=observed_strategy,
+        scenario_lab_feature=observed_scenario,
+        diagnostic_tasks_feature=observed_diagnostic,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+
+    assert observed_strategy.snapshot_count == 1
+    assert observed_scenario.snapshot_count == 1
+    assert observed_diagnostic.snapshot_count == 1
 
     _close(context, host)
 

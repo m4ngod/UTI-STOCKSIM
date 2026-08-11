@@ -3044,6 +3044,25 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "$dependencyCachePaths = @(" in script
 
 
+def test_clean_room_uia_window_discovery_falls_back_to_process_id():
+    script = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Find-InstalledProcessAutomationWindow" in script
+    assert "[System.Windows.Automation.AutomationElement]::ProcessIdProperty" in script
+    assert "[System.Windows.Automation.TreeScope]::Children" in script
+    assert "[System.Windows.Automation.TreeScope]::Descendants" in script
+    assert "[System.Windows.Automation.AutomationElement]::RootElement" in script
+    assert "NativeWindowHandle" in script
+    assert "window_discovery_attempt_count" in script
+    assert "main_window_handle_observed" in script
+    assert "process_id_automation_element_count_max" in script
+    assert "Installed UIA window was not discovered" in script
+    assert script.count("uia_accessibility = $uiaAccessibility") == 2
+    assert '"uia-accessibility.json"' in script
+
+
 def test_clean_room_error_normalizer_ignores_blank_json_error_values(
     monkeypatch,
 ):

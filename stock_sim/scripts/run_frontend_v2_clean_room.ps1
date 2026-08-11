@@ -174,6 +174,9 @@ function New-UiAutomationAccessibilityEvidence {
     return [ordered]@{
         provider_available = $false
         scan_count = 0
+        window_discovery_attempt_count = 0
+        main_window_handle_observed = $false
+        process_id_automation_element_count_max = 0
         discovered_element_count = 0
         readable_element_count = 0
         unreadable_element_count = 0
@@ -594,6 +597,69 @@ function Merge-UiAutomationSnapshot {
     $Evidence.static_read_only_diagnostics = $staticDiagnostics
 }
 
+function Find-InstalledProcessAutomationWindow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$Evidence
+    )
+
+    $Evidence.window_discovery_attempt_count = (
+        [int]$Evidence.window_discovery_attempt_count + 1
+    )
+    $Process.Refresh()
+    $mainWindowHandle = [IntPtr]$Process.MainWindowHandle
+    if ($mainWindowHandle -ne [IntPtr]::Zero) {
+        $Evidence.main_window_handle_observed = $true
+        $rootElement = (
+            [System.Windows.Automation.AutomationElement]::FromHandle(
+                $mainWindowHandle
+            )
+        )
+        if ($null -ne $rootElement) {
+            return [pscustomobject]@{
+                root_element = $rootElement
+                window_handle = $mainWindowHandle
+            }
+        }
+    }
+
+    $processCondition = (
+        [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+            $Process.Id
+        )
+    )
+    foreach (
+        $treeScope in @(
+            [System.Windows.Automation.TreeScope]::Children,
+            [System.Windows.Automation.TreeScope]::Descendants
+        )
+    ) {
+        $automationWindows = (
+            [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                $treeScope,
+                $processCondition
+            )
+        )
+        $Evidence.process_id_automation_element_count_max = [Math]::Max(
+            [int]$Evidence.process_id_automation_element_count_max,
+            [int]$automationWindows.Count
+        )
+        foreach ($candidate in $automationWindows) {
+            $nativeWindowHandle = [IntPtr]$candidate.Current.NativeWindowHandle
+            if ($nativeWindowHandle -ne [IntPtr]::Zero) {
+                return [pscustomobject]@{
+                    root_element = $candidate
+                    window_handle = $nativeWindowHandle
+                }
+            }
+        }
+    }
+    return $null
+}
+
 function Invoke-InstalledJourneyWithAccessibilityProbe {
     param(
         [Parameter(Mandatory = $true)]
@@ -651,15 +717,16 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         $narratorAttempted = $false
         while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             $process.Refresh()
-            if (
-                $process.MainWindowHandle -ne [IntPtr]::Zero -and
-                [DateTime]::UtcNow -ge $nextScan
-            ) {
+            if ([DateTime]::UtcNow -ge $nextScan) {
                 try {
-                    $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle(
-                        $process.MainWindowHandle
+                    $automationWindow = (
+                        Find-InstalledProcessAutomationWindow `
+                            -Process $process `
+                            -Evidence $evidence
                     )
-                    if ($null -ne $rootElement) {
+                    if ($null -ne $automationWindow) {
+                        $rootElement = $automationWindow.root_element
+                        $windowHandle = [IntPtr]$automationWindow.window_handle
                         if (-not $narratorAttempted) {
                             $narratorAttempted = $true
                             Start-Process `
@@ -698,7 +765,7 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
                         Merge-UiAutomationSnapshot `
                             -Evidence $evidence `
                             -RootElement $rootElement `
-                            -WindowHandle $process.MainWindowHandle `
+                            -WindowHandle $windowHandle `
                             -NarratorRunning $narratorRunning `
                             -FocusTraversalObserved $focusTraversalObserved `
                             -CheckpointAckDirectory $LaneDirectory
@@ -741,6 +808,12 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
                 "Env:\$ackEnvironmentName" `
                 -ErrorAction SilentlyContinue
         }
+    }
+    if (
+        $evidence.scan_count -eq 0 -and
+        "Installed UIA window was not discovered" -notin $evidence.errors
+    ) {
+        $evidence.errors += "Installed UIA window was not discovered"
     }
     $allSemanticTerms = $true
     foreach ($property in $evidence.semantic_terms.GetEnumerator()) {
@@ -1478,6 +1551,14 @@ if ($installSucceeded) {
             -AccessibilityEnvironment $accessibilityEnvironment
         $exitCode = [int]$journeyInvocation.exit_code
         $uiaAccessibility = $journeyInvocation.uia_accessibility
+        $uiaAccessibilityPath = Join-Path `
+            $laneDir `
+            "uia-accessibility.json"
+        [IO.File]::WriteAllText(
+            $uiaAccessibilityPath,
+            ($uiaAccessibility | ConvertTo-Json -Depth 20),
+            [Text.UTF8Encoding]::new($false)
+        )
         $performancePath = Join-Path $laneDir "performance.json"
         & $executable.FullName `
             "--renderer-lane=$lane" `
@@ -2425,9 +2506,7 @@ if ($installSucceeded) {
                 chart_narrative_table_revision_verified = $false
                 accessibility_checkpoints = @()
                 manual_trading_route_audits = @()
-                uia_accessibility = (
-                    New-UiAutomationAccessibilityEvidence
-                )
+                uia_accessibility = $uiaAccessibility
                 old_generation_rejected = $false
                 authoritative_reconnect_verified = $false
                 real_v1_identity_valid = $false
