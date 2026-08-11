@@ -1,5 +1,9 @@
+import importlib
+
 from app.diagnostics_runtime_gateway import DiagnosticsRuntimeGateway
-from services import runtime_query_service
+
+
+runtime_query_service = importlib.import_module("services.runtime_query_service")
 
 
 def test_default_query_service_is_created_lazily_once(monkeypatch):
