@@ -3015,12 +3015,13 @@ class DiagnosticTasksQtAdapter(QObject):
         self._setup_selection_refresh = setup_selection_refresh
         self._setup_selection_coordinator = setup_selection_coordinator
         self._refreshing_setup_selection = False
+        initial_setup_selection = None
         if setup_selection_provider is not None:
-            self._observe_current_setup_selection()
+            initial_setup_selection = self._observe_current_setup_selection()
         self._state = feature.snapshot(self._context)
         self._setup_sources_diagnostic_generation = (
             None
-            if setup_selection_provider is None
+            if setup_selection_provider is None or initial_setup_selection is None
             else self._state.source.generation.value
         )
         self._mount_generation = _next_mount_generation()
@@ -4628,10 +4629,14 @@ class DiagnosticTasksQtAdapter(QObject):
         except (KeyError, TypeError, ValueError):
             return None
 
-    def _observe_current_setup_selection(self) -> None:
+    def _observe_current_setup_selection(
+        self,
+    ) -> DiagnosticSetupSelectionContext | None:
+        selection = self._current_setup_selection()
         coordinator = self._setup_selection_coordinator
         if coordinator is not None:
-            coordinator.observe(self._current_setup_selection())
+            coordinator.observe(selection)
+        return selection
 
     def _refresh_setup_selection_sources(
         self,
@@ -7814,6 +7819,17 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._publish_recovery_state()
             self._active_route_changed()
         if self._diagnostic_tasks is not None:
+            if (
+                diagnostic_tasks_context is not None
+                and diagnostic_tasks_context.task_id is not None
+                and initial_route_identity
+                in {
+                    JourneyWorkspaceRoute.RUN_MONITORING,
+                    JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+                    JourneyWorkspaceRoute.SYSTEM_HEALTH,
+                }
+            ):
+                self._diagnostic_tasks.refresh()
             monitoring_context = self._diagnostic_tasks.monitoring_context()
             if monitoring_context is not None:
                 self._run_monitoring.select_context(monitoring_context)

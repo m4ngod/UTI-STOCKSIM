@@ -446,8 +446,7 @@ def test_reopen_rereads_task_handoffs_without_overriding_last_route(
     )
     diagnostic_tasks.advance_evidence_available(approved.task_id)
     task_context = DiagnosticTasksContext(task_id=approved.task_id)
-    diagnostic_tasks.snapshot(task_context)
-    task = diagnostic_tasks.snapshot(task_context).task
+    task = diagnostic_tasks.snapshot(DiagnosticTasksContext.workspace()).task
     assert task is not None
     expected_run = RunMonitoringContext.for_run(
         RunMonitoringSelection(
@@ -1091,6 +1090,15 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         app.processEvents()
         app.processEvents()
 
+    def settle_until(predicate) -> bool:
+        for _ in range(1_000):
+            settle()
+            if predicate():
+                return True
+            QTest.qWait(5)
+        settle()
+        return bool(predicate())
+
     def traverse_to(
         object_name: str,
         *,
@@ -1270,9 +1278,12 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         run_monitoring_status
     )
     assert run_monitoring_accessible is not None
-    assert "completeness partial" in run_monitoring_accessible.text(
-        QAccessible.Text.Name
-    ).casefold()
+    assert settle_until(
+        lambda: "completeness partial"
+        in run_monitoring_accessible.text(
+            QAccessible.Text.Name
+        ).casefold()
+    )
     assert (
         failed_run_snapshot.processed_node_count
         < failed_run_snapshot.total_node_count
@@ -2074,6 +2085,12 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         remounted_status
     )
     assert remounted_interface is not None
+    assert settle_until(
+        lambda: expected_identity_text[2]
+        in remounted_interface.text(
+            QAccessible.Text.Description
+        )
+    ), remounted_interface.text(QAccessible.Text.Description)
     assert expected_identity_text[2] in remounted_interface.text(
         QAccessible.Text.Description
     )
