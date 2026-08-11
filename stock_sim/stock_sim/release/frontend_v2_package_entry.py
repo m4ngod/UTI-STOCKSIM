@@ -4190,6 +4190,7 @@ def _run_smoke_journey(
                 )
             ),
             "installed System Health diagnostic context",
+            timeout_seconds=10.0,
         )
     except RuntimeError as error:
         raise RuntimeError(
