@@ -69,6 +69,8 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
 CLEAN_ROOM_REPORT_SCHEMA_VERSION = 4
+PACKAGE_SMOKE_REPORT_SCHEMA_VERSION = 4
+RENDERER_GATE_REPORT_SCHEMA_VERSION = 2
 _QML_IMPORT_PATTERN = re.compile(
     r"^\s*import\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s+"
@@ -538,6 +540,7 @@ class PackageEvidence:
 @dataclass(frozen=True, slots=True)
 class RendererLaneEvidence:
     lane: str
+    certification_scope: str
     graphics_api: str
     journey_stages: tuple[str, ...]
     routes_rendered: tuple[str, ...]
@@ -631,6 +634,7 @@ class RendererLaneEvidence:
 @dataclass(frozen=True, slots=True)
 class RendererGateEvidence:
     source_commit: str
+    certification_scope: str
     created_at: str
     environment_identity: str
     toolchain_identity: str
@@ -645,6 +649,7 @@ class ReleaseBuildResult:
     safety: NoManualTradingGateReport
     packages: PackageEvidence
     renderers: RendererGateEvidence
+    renderer_gate_report: ArtifactChecksum
     archives: tuple[ArtifactChecksum, ...]
 
 
@@ -2006,6 +2011,12 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
+def _json_projection(value: Any) -> Any:
+    return json.loads(
+        json.dumps(value, sort_keys=True, default=_json_default)
+    )
+
+
 _REOPENED_SETUP_LEDGER_KEYS = (
     "recipe_drafts",
     "recipe_validations",
@@ -2139,6 +2150,8 @@ def _expected_reopened_setup_ledger(
 
 def _installed_wave2_smoke_failures(
     payload: Mapping[str, Any],
+    *,
+    require_installed_window_scale: bool = True,
 ) -> tuple[str, ...]:
     failures: list[str] = []
     if payload.get("fixture_kind") != _WAVE2_RELEASE_FIXTURE_KIND:
@@ -2450,27 +2463,29 @@ def _installed_wave2_smoke_failures(
             failures.append(f"{label} was not verified")
     if payload.get("duplicate_work_count") != 0:
         failures.append("Diagnostic Task retry produced duplicate work")
-    accessibility_checkpoints = payload.get("accessibility_checkpoints")
-    if (
-        not isinstance(accessibility_checkpoints, (list, tuple))
-        or len(accessibility_checkpoints) < 8
-        or any(
-            not isinstance(checkpoint, Mapping)
-            or not isinstance(
-                checkpoint.get("window_device_pixel_ratio"),
-                (int, float),
+    if require_installed_window_scale:
+        accessibility_checkpoints = payload.get("accessibility_checkpoints")
+        if (
+            not isinstance(accessibility_checkpoints, (list, tuple))
+            or len(accessibility_checkpoints) < 8
+            or any(
+                not isinstance(checkpoint, Mapping)
+                or not isinstance(
+                    checkpoint.get("window_device_pixel_ratio"),
+                    (int, float),
+                )
+                or not math.isfinite(
+                    float(checkpoint.get("window_device_pixel_ratio", 0))
+                )
+                or float(checkpoint.get("window_device_pixel_ratio", 0))
+                != 2.0
+                for checkpoint in accessibility_checkpoints
             )
-            or not math.isfinite(
-                float(checkpoint.get("window_device_pixel_ratio", 0))
+        ):
+            failures.append(
+                "installed accessibility checkpoints did not prove 200 "
+                "percent Qt window scaling"
             )
-            or float(checkpoint.get("window_device_pixel_ratio", 0)) != 2.0
-            for checkpoint in accessibility_checkpoints
-        )
-    ):
-        failures.append(
-            "installed accessibility checkpoints did not prove 200 percent "
-            "Qt window scaling"
-        )
     expected_health_graph = (
         diagnostic_task_identity,
         payload.get("campaign_identity"),
@@ -2942,6 +2957,14 @@ def verify_clean_room_report(
             continue
         if lane.get("exit_code") != 0:
             failures.append(f"{lane_name} renderer lane failed")
+        if lane.get("schema_version") != PACKAGE_SMOKE_REPORT_SCHEMA_VERSION:
+            failures.append(
+                f"{lane_name} renderer smoke report schema is unsupported"
+            )
+        if lane.get("certification_scope") != "installed":
+            failures.append(
+                f"{lane_name} renderer report is not installed certification"
+            )
         if lane.get("graphics_api") != expected_api:
             failures.append(
                 f"{lane_name} renderer used {lane.get('graphics_api')!r}"
@@ -3527,6 +3550,7 @@ def write_renderer_evidence(
     lock = load_toolchain_lock()
     evidence = RendererGateEvidence(
         source_commit=source_commit,
+        certification_scope="package-assembly",
         created_at=datetime.now(timezone.utc).isoformat(),
         environment_identity=(
             f"{socket.gethostname()}|{platform.platform()}|"
@@ -3541,18 +3565,115 @@ def write_renderer_evidence(
         PROJECT_QML_ROOT
     )
     payload = {
-        "schema_version": 1,
+        "schema_version": RENDERER_GATE_REPORT_SCHEMA_VERSION,
         **asdict(evidence),
         "toolchain_lock": asdict(lock),
         "qml_source_imports": asdict(source_imports),
         "qml_dependency_closure": asdict(dependency_closure),
     }
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / "renderer-gate-report.json").write_text(
+    report_path = evidence_dir / "renderer-gate-report.json"
+    report_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    report_failures = verify_renderer_gate_report(
+        report_path,
+        expected_source_commit=source_commit,
+        expected_candidate_renderers=asdict(evidence),
+    )
+    if report_failures:
+        raise RuntimeError(
+            "Renderer gate report verification failed: "
+            + "; ".join(report_failures)
+        )
     return evidence
+
+
+def verify_renderer_gate_report(
+    report_path: Path,
+    *,
+    expected_source_commit: str,
+    expected_candidate_renderers: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    payload = _load_json_mapping(report_path)
+    failures: list[str] = []
+    if payload.get("schema_version") != RENDERER_GATE_REPORT_SCHEMA_VERSION:
+        failures.append("Renderer gate report schema is unsupported")
+    if payload.get("source_commit") != expected_source_commit:
+        failures.append("Renderer gate source commit does not match")
+    if payload.get("certification_scope") != "package-assembly":
+        failures.append("Renderer gate scope is not package-assembly")
+    lock = load_toolchain_lock()
+    if payload.get("toolchain_identity") != toolchain_evidence_identity(lock):
+        failures.append("Renderer gate toolchain identity does not match")
+    if payload.get("toolchain_lock") != _json_projection(asdict(lock)):
+        failures.append("Renderer gate toolchain lock does not match")
+    if payload.get("qml_source_imports") != _json_projection(
+        asdict(scan_qml_dependencies(PROJECT_QML_ROOT))
+    ):
+        failures.append("Renderer gate QML source imports do not match")
+    if payload.get("qml_dependency_closure") != _json_projection(
+        asdict(resolve_qml_dependency_closure(PROJECT_QML_ROOT))
+    ):
+        failures.append("Renderer gate QML dependency closure does not match")
+    projection: dict[str, Any] = {}
+    for evidence_field in fields(RendererGateEvidence):
+        if evidence_field.name not in payload:
+            failures.append(
+                f"Renderer gate {evidence_field.name} is unavailable"
+            )
+            continue
+        projection[evidence_field.name] = payload[evidence_field.name]
+    if (
+        expected_candidate_renderers is not None
+        and projection
+        != _json_projection(dict(expected_candidate_renderers))
+    ):
+        failures.append(
+            "Renderer gate projection does not match candidate evidence"
+        )
+    for lane_name, expected_graphics_api in (
+        ("hardware", "Direct3D11"),
+        ("software", "Software"),
+    ):
+        lane = payload.get(lane_name)
+        if not isinstance(lane, Mapping):
+            failures.append(f"Renderer gate {lane_name} lane is unavailable")
+            continue
+        for lane_field in fields(RendererLaneEvidence):
+            if lane_field.name not in lane:
+                failures.append(
+                    f"Renderer gate {lane_name} {lane_field.name} is unavailable"
+                )
+        if lane.get("certification_scope") != "package-assembly":
+            failures.append(
+                f"Renderer gate {lane_name} scope is not package-assembly"
+            )
+        if lane.get("lane") != lane_name:
+            failures.append(f"Renderer gate {lane_name} identity does not match")
+        if lane.get("graphics_api") != expected_graphics_api:
+            failures.append(
+                f"Renderer gate {lane_name} graphics API does not match"
+            )
+        if tuple(lane.get("production_path", ())) != _PRODUCTION_JOURNEY_PATH:
+            failures.append(
+                f"Renderer gate {lane_name} production path does not match"
+            )
+        if tuple(lane.get("journey_stages", ())) != tuple(
+            stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
+        ):
+            failures.append(
+                f"Renderer gate {lane_name} journey stages do not match"
+            )
+        if (
+            lane.get("clean_exit") is not True
+            or lane.get("errors") not in ([], ())
+        ):
+            failures.append(
+                f"Renderer gate {lane_name} lifecycle did not pass"
+            )
+    return tuple(failures)
 
 
 def _load_renderer_lane(
@@ -3578,9 +3699,17 @@ def _load_renderer_lane(
         if isinstance(observation, dict)
     )
     errors = tuple(str(error) for error in payload.get("errors", ()))
+    if payload.get("schema_version") != PACKAGE_SMOKE_REPORT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{expected_lane} renderer smoke report schema is unsupported"
+        )
     if payload.get("renderer_lane") != expected_lane:
         raise RuntimeError(
             f"Expected {expected_lane} renderer report at {report_path}"
+        )
+    if payload.get("certification_scope") != "package-assembly":
+        raise RuntimeError(
+            f"{expected_lane} renderer report is not package-assembly smoke"
         )
     if payload.get("graphics_api") != expected_graphics_api:
         raise RuntimeError(
@@ -3600,7 +3729,10 @@ def _load_renderer_lane(
         payload.get("connection_transitions", ())
     )
     real_v1_failures = _real_v1_smoke_failures(payload)
-    installed_wave2_failures = _installed_wave2_smoke_failures(payload)
+    installed_wave2_failures = _installed_wave2_smoke_failures(
+        payload,
+        require_installed_window_scale=False,
+    )
     if (
         routes_rendered != _ACTIVE_JOURNEY_ROUTES
         or production_path != _PRODUCTION_JOURNEY_PATH
@@ -3624,6 +3756,7 @@ def _load_renderer_lane(
         )
     return RendererLaneEvidence(
         lane=expected_lane,
+        certification_scope="package-assembly",
         graphics_api=expected_graphics_api,
         journey_stages=tuple(
             stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
@@ -4176,7 +4309,7 @@ def build_frontend_v2_release(
             (
                 "--renderer-lane",
                 lane,
-                "--smoke-report-dir",
+                "--package-assembly-smoke-report-dir",
                 str(smoke_root / lane),
             ),
         )
@@ -4217,12 +4350,17 @@ def build_frontend_v2_release(
         source_commit=source_commit,
         evidence_dir=evidence_dir,
     )
+    renderer_gate_report = _checksum_file(
+        evidence_dir / "renderer-gate-report.json",
+        evidence_dir,
+    )
     result = ReleaseBuildResult(
         source_commit=source_commit,
         output_root=str(output_root.resolve()),
         safety=safety_evidence,
         packages=package_evidence,
         renderers=renderer_evidence,
+        renderer_gate_report=renderer_gate_report,
         archives=archives,
     )
     (evidence_dir / "release-candidate-summary.json").write_text(
@@ -4720,6 +4858,42 @@ def certify_frontend_v2_release(
     if candidate.get("source_commit") != source_commit:
         raise RuntimeError(
             "Release candidate source commit does not match certification"
+        )
+    renderer_gate_path = evidence_dir / "renderer-gate-report.json"
+    if not renderer_gate_path.is_file():
+        raise FileNotFoundError(
+            "Release candidate renderer gate evidence is unavailable: "
+            f"{renderer_gate_path}"
+        )
+    retained_renderer_gate_report = candidate.get("renderer_gate_report")
+    if not isinstance(retained_renderer_gate_report, Mapping):
+        raise RuntimeError(
+            "Release candidate renderer gate checksum is unavailable"
+        )
+    observed_renderer_gate_report = _checksum_file(
+        renderer_gate_path,
+        evidence_dir,
+    )
+    if asdict(observed_renderer_gate_report) != dict(
+        retained_renderer_gate_report
+    ):
+        raise RuntimeError(
+            "Release candidate renderer gate checksum does not match"
+        )
+    candidate_renderers = candidate.get("renderers")
+    if not isinstance(candidate_renderers, Mapping):
+        raise RuntimeError(
+            "Release candidate renderer projection is unavailable"
+        )
+    renderer_gate_failures = verify_renderer_gate_report(
+        renderer_gate_path,
+        expected_source_commit=source_commit,
+        expected_candidate_renderers=candidate_renderers,
+    )
+    if renderer_gate_failures:
+        raise RuntimeError(
+            "Renderer gate candidate verification failed: "
+            + "; ".join(renderer_gate_failures)
         )
     safety_failures = verify_safety_gate_evidence(
         candidate,
@@ -5301,6 +5475,7 @@ __all__ = [
     "verify_clean_room_report",
     "verify_running_toolchain",
     "verify_locked_native_toolchain",
+    "verify_renderer_gate_report",
     "write_mandatory_release_gate_evidence",
 ]
 

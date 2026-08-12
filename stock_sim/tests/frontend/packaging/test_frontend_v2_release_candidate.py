@@ -2752,6 +2752,20 @@ def test_installed_accessibility_accepts_complete_200_percent_qt_scale():
             in validate_installed_accessibility_checkpoints(checkpoints)
         )
 
+    checkpoints[0]["window_device_pixel_ratio"] = 1.0
+    assert validate_installed_accessibility_checkpoints(
+        checkpoints,
+        require_installed_window_scale=False,
+    ) == ()
+    checkpoints[0]["non_color_cues"] = []
+    assert (
+        "Installed accessibility states relied on color-only meaning"
+        in validate_installed_accessibility_checkpoints(
+            checkpoints,
+            require_installed_window_scale=False,
+        )
+    )
+
 
 def test_installed_accessibility_rejects_non_finite_qt_window_scale():
     from stock_sim.release.frontend_v2_packaging import (
@@ -2963,6 +2977,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     observed = {}
 
     class PassingSmoke:
+        certification_scope = "installed"
         errors = ()
         clean_exit = True
         manual_trading_action_count = 0
@@ -3107,6 +3122,83 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     assert observed["defer_native_teardown"] is True
     assert "installed_package_certification" not in observed
 
+    class PackageAssemblySmoke(PassingSmoke):
+        certification_scope = "package-assembly"
+        installed_accessibility_verified = False
+
+    observed.clear()
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **arguments: (
+            observed.update(arguments) or PackageAssemblySmoke()
+        ),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                "--package-assembly-smoke-report-dir="
+                f"{tmp_path / 'package-assembly'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 0
+    )
+    assert observed["certification_scope"] == "package-assembly"
+
+    for incomplete_assembly_smoke in (
+        type(
+            "AssemblyWithoutNonColorCues",
+            (PackageAssemblySmoke,),
+            {"no_color_only_meaning_verified": False},
+        ),
+        type(
+            "AssemblyWithoutSynchronizedViews",
+            (PackageAssemblySmoke,),
+            {"chart_narrative_table_revision_verified": False},
+        ),
+        type(
+            "AssemblyWithoutLifecycleCheckpoints",
+            (PackageAssemblySmoke,),
+            {"accessibility_checkpoints": ()},
+        ),
+    ):
+        monkeypatch.setattr(
+            package_entry,
+            "run_smoke_journey",
+            lambda **_arguments: incomplete_assembly_smoke(),
+        )
+        assert (
+            package_entry.main(
+                (
+                    "--renderer-lane=software",
+                    "--package-assembly-smoke-report-dir="
+                    f"{tmp_path / incomplete_assembly_smoke.__name__}",
+                    f"--source-commit={'a' * 40}",
+                    "--no-images",
+                )
+            )
+            == 1
+        )
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: PackageAssemblySmoke(),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'installed'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 1
+    )
     class MissingRecipeFamilySmoke(PassingSmoke):
         installed_materialized_scenario_identities = (
             PassingSmoke.installed_materialized_scenario_identities[:-1]
@@ -3193,6 +3285,57 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         )
         == 1
     )
+
+
+def test_source_smoke_report_cannot_claim_installed_certification(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    observed = {}
+    production_run_smoke_journey = package_entry.run_smoke_journey
+
+    class SourceSmoke:
+        certification_scope = "source-validation"
+        errors = ()
+
+    monkeypatch.delitem(
+        package_entry.__dict__,
+        "__compiled__",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **arguments: observed.update(arguments) or SourceSmoke(),
+    )
+
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'source'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 0
+    )
+    assert (
+        observed["certification_scope"]
+        is package_entry.CertificationScope.SOURCE_VALIDATION
+    )
+    with pytest.raises(
+        ValueError,
+        match="Source smoke cannot claim a compiled certification scope",
+    ):
+        production_run_smoke_journey(
+            report_dir=tmp_path / "forged-installed",
+            renderer_lane=package_entry.RendererLane.SOFTWARE,
+            capture_images=False,
+            certification_scope=package_entry.CertificationScope.INSTALLED,
+        )
 
 
 def test_compiled_performance_defaults_to_the_packaged_formal_v1_fixture(
@@ -4186,6 +4329,7 @@ def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
 @pytest.mark.parametrize(
     "report_argument",
     (
+        "--package-assembly-smoke-report-dir=C:/package-assembly",
         "--performance-report=C:/performance.json",
         "--migration-report=C:/migration.json",
         "--recovery-report=C:/recovery.json",

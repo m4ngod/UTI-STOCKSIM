@@ -230,6 +230,12 @@ class RendererLane(str, Enum):
     SOFTWARE = "software"
 
 
+class CertificationScope(str, Enum):
+    SOURCE_VALIDATION = "source-validation"
+    INSTALLED = "installed"
+    PACKAGE_ASSEMBLY = "package-assembly"
+
+
 @dataclass(frozen=True, slots=True)
 class SmokeStateObservation:
     stage: str
@@ -370,6 +376,7 @@ class PackageSmokeResult:
     no_color_only_meaning_verified: bool = False
     chart_narrative_table_revision_verified: bool = False
     manual_trading_route_audits: tuple[dict[str, Any], ...] = ()
+    certification_scope: str = CertificationScope.SOURCE_VALIDATION.value
 
 
 def configure_renderer_environment(renderer_lane: RendererLane) -> None:
@@ -2246,10 +2253,21 @@ def run_smoke_journey(
     fixture_archive_path: Path | None = None,
     defer_native_teardown: bool = False,
     issue_118_certification: bool = True,
+    certification_scope: CertificationScope = (
+        CertificationScope.SOURCE_VALIDATION
+    ),
 ) -> PackageSmokeResult:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
+
+    if (
+        "__compiled__" not in globals()
+        and certification_scope is not CertificationScope.SOURCE_VALIDATION
+    ):
+        raise ValueError(
+            "Source smoke cannot claim a compiled certification scope"
+        )
 
     cleanup_errors: list[str] = []
     lifecycle_checks: list[Callable[[], bool]] = []
@@ -2270,6 +2288,7 @@ def run_smoke_journey(
                 lifecycle_checks=lifecycle_checks,
                 defer_native_teardown=defer_native_teardown,
                 issue_118_certification=issue_118_certification,
+                certification_scope=certification_scope,
             )
         else:
             result = _run_smoke_journey(
@@ -2343,6 +2362,7 @@ def _run_wave2_smoke_journey(
     lifecycle_checks: list[Callable[[], bool]],
     defer_native_teardown: bool,
     issue_118_certification: bool,
+    certification_scope: CertificationScope,
 ) -> PackageSmokeResult:
     return _run_smoke_journey(
         report_dir=report_dir,
@@ -2356,6 +2376,7 @@ def _run_wave2_smoke_journey(
         wave2_mode=True,
         defer_native_teardown=defer_native_teardown,
         issue_118_certification=issue_118_certification,
+        certification_scope=certification_scope,
     )
 
 
@@ -2372,6 +2393,9 @@ def _run_smoke_journey(
     wave2_mode: bool = False,
     defer_native_teardown: bool = False,
     issue_118_certification: bool = False,
+    certification_scope: CertificationScope = (
+        CertificationScope.SOURCE_VALIDATION
+    ),
 ) -> PackageSmokeResult:
     from PySide6.QtWidgets import QApplication
 
@@ -2410,7 +2434,10 @@ def _run_smoke_journey(
         reopen_completed_wave2_release_fixture,
     )
 
-    installed_package_certification = "__compiled__" in globals()
+    installed_package_certification = bool(
+        "__compiled__" in globals()
+        and certification_scope is CertificationScope.INSTALLED
+    )
 
     certification_ptrade_host = (
         ReleaseCertificationFailFirstPTradeStrategyHost()
@@ -4234,10 +4261,10 @@ def _run_smoke_journey(
     graphics_api = _graphics_api_name(host)
     accessibility_failures = (
         validate_installed_accessibility_checkpoints(
-            accessibility_checkpoints
+            accessibility_checkpoints,
+            require_installed_window_scale=installed_package_certification,
         )
         if wave2_mode and issue_118_certification
-        and installed_package_certification
         else ()
     )
     if accessibility_failures:
@@ -4271,7 +4298,7 @@ def _run_smoke_journey(
     read_only_context_visible = _read_only_context_visible(host)
 
     result = PackageSmokeResult(
-        schema_version=3,
+        schema_version=4,
         source_commit=source_commit,
         renderer_lane=renderer_lane,
         graphics_api=graphics_api,
@@ -4331,6 +4358,7 @@ def _run_smoke_journey(
         manual_trading_route_audits=tuple(
             manual_trading_route_audits
         ),
+        certification_scope=certification_scope.value,
         old_generation_rejected=old_generation_rejected,
         authoritative_reconnect_verified=(
             authoritative_reconnect_verified
@@ -5552,9 +5580,14 @@ def _compiled_smoke_failures(
     result: PackageSmokeResult,
     *,
     shutdown_errors: Sequence[str],
+    certification_scope: CertificationScope = CertificationScope.INSTALLED,
 ) -> tuple[str, ...]:
     failures = [*shutdown_errors, *result.errors]
     checks = (
+        (
+            result.certification_scope == certification_scope.value,
+            "installed Journey certification scope did not match",
+        ),
         (result.clean_exit, "installed Journey did not exit cleanly"),
         (
             result.manual_trading_action_count == 0,
@@ -5717,7 +5750,10 @@ def _compiled_smoke_failures(
             "installed route focus was not restored after reopen",
         ),
         (
-            result.installed_accessibility_verified
+            (
+                certification_scope is CertificationScope.PACKAGE_ASSEMBLY
+                or result.installed_accessibility_verified
+            )
             and result.no_color_only_meaning_verified
             and result.chart_narrative_table_revision_verified
             and len(result.accessibility_checkpoints) >= 8,
@@ -5737,6 +5773,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=RendererLane.HARDWARE.value,
     )
     parser.add_argument("--smoke-report-dir", type=Path)
+    parser.add_argument("--package-assembly-smoke-report-dir", type=Path)
     parser.add_argument("--performance-report", type=Path)
     parser.add_argument(
         "--performance-duration-seconds",
@@ -5764,6 +5801,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         value
         for value in (
             arguments.smoke_report_dir,
+            arguments.package_assembly_smoke_report_dir,
             arguments.performance_report,
             arguments.migration_report,
             arguments.recovery_report,
@@ -5834,8 +5872,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_path=arguments.observation_readiness_report,
             source_commit=arguments.source_commit,
         )
-    if arguments.smoke_report_dir is not None:
+    smoke_report_dir = (
+        arguments.package_assembly_smoke_report_dir
+        if arguments.package_assembly_smoke_report_dir is not None
+        else arguments.smoke_report_dir
+    )
+    if smoke_report_dir is not None:
         compiled_package = "__compiled__" in globals()
+        certification_scope = (
+            CertificationScope.PACKAGE_ASSEMBLY
+            if arguments.package_assembly_smoke_report_dir is not None
+            else (
+                CertificationScope.INSTALLED
+                if compiled_package
+                else CertificationScope.SOURCE_VALIDATION
+            )
+        )
+        if (
+            certification_scope is CertificationScope.PACKAGE_ASSEMBLY
+            and not compiled_package
+        ):
+            parser.error(
+                "--package-assembly-smoke-report-dir requires the compiled "
+                "package"
+            )
         fixture_archive_path = arguments.fixture_archive
         if fixture_archive_path is None and compiled_package:
             fixture_archive_path = _installed_wave3_input_fixture_archive_path()
@@ -5845,12 +5905,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         shutdown_errors: list[str] = []
         try:
             result = run_smoke_journey(
-                report_dir=arguments.smoke_report_dir,
+                report_dir=smoke_report_dir,
                 renderer_lane=renderer_lane,
                 source_commit=arguments.source_commit,
                 capture_images=not arguments.no_images,
                 fixture_archive_path=fixture_archive_path,
                 defer_native_teardown=compiled_package,
+                certification_scope=certification_scope,
             )
         finally:
             if owns_application:
@@ -5862,6 +5923,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _compiled_smoke_failures(
                 result,
                 shutdown_errors=shutdown_errors,
+                certification_scope=certification_scope,
             )
             if compiled_package
             else tuple((*shutdown_errors, *result.errors))
@@ -5894,6 +5956,7 @@ def _run_process_entry(
             for argument in arguments
             for report_argument in (
                 "--smoke-report-dir",
+                "--package-assembly-smoke-report-dir",
                 "--performance-report",
                 "--migration-report",
                 "--recovery-report",

@@ -351,7 +351,9 @@ def clean_room_lane_fixture(root, lane, graphics_api):
         {*_CLEAN_ROOM_IDENTITY_GRAPH, *installed_paths}
     )
     return {
+        "schema_version": 4,
         "exit_code": 0,
+        "certification_scope": "installed",
         "graphics_api": graphics_api,
         "source_commit": "abc123",
         "production_path": [
@@ -1253,6 +1255,8 @@ def test_package_smoke_observes_the_complete_production_journey(
     )
     assert result.errors == ()
     assert result.clean_exit is True
+    assert result.schema_version == 4
+    assert result.certification_scope == "source-validation"
     assert result.installed_accessibility_verified is False
 
 
@@ -1774,6 +1778,42 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         expected_archive_sha256="sha256:package",
     ) == ()
 
+    assembly_scope_report = deepcopy(report_payload)
+    assembly_scope_report["renderer_lanes"]["hardware"][
+        "certification_scope"
+    ] = "package-assembly"
+    report_path.write_text(
+        json.dumps(assembly_scope_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware renderer report is not installed certification"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    old_smoke_schema_report = deepcopy(report_payload)
+    old_smoke_schema_report["renderer_lanes"]["hardware"][
+        "schema_version"
+    ] = 3
+    report_path.write_text(
+        json.dumps(old_smoke_schema_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware renderer smoke report schema is unsupported"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
     historical_performance_report = deepcopy(report_payload)
     historical_performance_report["installed_performance"]["hardware"][
         "schema_version"
@@ -2081,6 +2121,38 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
 ):
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
+    assembly_reports = {}
+    for lane, graphics_api in (
+        ("hardware", "Direct3D11"),
+        ("software", "Software"),
+    ):
+        assembly_payload = clean_room_lane_fixture(
+            tmp_path / "assembly-screenshots",
+            lane,
+            graphics_api,
+        )
+        assembly_payload["renderer_lane"] = lane
+        assembly_payload["certification_scope"] = "package-assembly"
+        assembly_payload["installed_accessibility_verified"] = False
+        for checkpoint in assembly_payload["accessibility_checkpoints"]:
+            checkpoint["window_device_pixel_ratio"] = 1.0
+        assembly_report = tmp_path / "assembly" / lane / "smoke-report.json"
+        assembly_report.parent.mkdir(parents=True)
+        assembly_report.write_text(
+            json.dumps(assembly_payload),
+            encoding="utf-8",
+        )
+        assembly_reports[lane] = assembly_report
+    renderer_evidence = write_renderer_evidence(
+        hardware_report=assembly_reports["hardware"],
+        software_report=assembly_reports["software"],
+        source_commit="abc123",
+        evidence_dir=evidence_dir,
+    )
+    renderer_gate_report = packaging._checksum_file(
+        evidence_dir / "renderer-gate-report.json",
+        evidence_dir,
+    )
     archives_dir = tmp_path / "archives"
     archives_dir.mkdir()
     qml_archive = archives_dir / "qml-journey-abc123.zip"
@@ -2237,6 +2309,8 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
             {
                 "source_commit": "abc123",
                 "safety": safety_evidence,
+                "renderers": asdict(renderer_evidence),
+                "renderer_gate_report": asdict(renderer_gate_report),
                 "packages": {
                     "dependency_reports": dependency_reports,
                     "native_toolchain_attestations": (
@@ -2344,6 +2418,20 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
         ),
         encoding="utf-8",
     )
+
+    renderer_gate_path = evidence_dir / "renderer-gate-report.json"
+    renderer_gate_bytes = renderer_gate_path.read_bytes()
+    renderer_gate_path.write_bytes(renderer_gate_bytes + b"\n")
+    with pytest.raises(
+        RuntimeError,
+        match="Release candidate renderer gate checksum does not match",
+    ):
+        certify_frontend_v2_release(
+            output_root=tmp_path,
+            source_commit="abc123",
+            clean_room_report=report,
+        )
+    renderer_gate_path.write_bytes(renderer_gate_bytes)
 
     compromised = json.loads(report.read_text(encoding="utf-8"))
     compromised["renderer_lanes"]["software"]["errors"] = [
@@ -2537,7 +2625,8 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
         report_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 3,
+                    "schema_version": 4,
+                    "certification_scope": "package-assembly",
                     "source_commit": "abc123",
                     "renderer_lane": lane,
                     "graphics_api": graphics_api,
@@ -2710,13 +2799,13 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     ),
                     "keyboard_navigation_verified": True,
                     "accessibility_preferences_verified": True,
-                    "installed_accessibility_verified": True,
+                    "installed_accessibility_verified": False,
                     "no_color_only_meaning_verified": True,
                     "chart_narrative_table_revision_verified": True,
                     "accessibility_checkpoints": [
                         {
                             "checkpoint": checkpoint,
-                            "window_device_pixel_ratio": 2.0,
+                            "window_device_pixel_ratio": 1.0,
                         }
                         for checkpoint in (
                             "loading",
@@ -2814,9 +2903,125 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
         "remounted_terminal_evidence",
     )
     assert evidence.environment_identity
-    assert (
+    renderer_gate_path = (
         tmp_path / "evidence" / "renderer-gate-report.json"
-    ).is_file()
+    )
+    assert renderer_gate_path.is_file()
+    renderer_gate_payload = json.loads(
+        renderer_gate_path.read_text(encoding="utf-8")
+    )
+    assert renderer_gate_payload["schema_version"] == 2
+    from stock_sim.release.frontend_v2_packaging import (
+        verify_renderer_gate_report,
+    )
+
+    assert verify_renderer_gate_report(
+        renderer_gate_path,
+        expected_source_commit="abc123",
+        expected_candidate_renderers=asdict(evidence),
+    ) == ()
+
+    mismatched_projection = deepcopy(asdict(evidence))
+    mismatched_projection["environment_identity"] = "foreign-build-host"
+    assert "Renderer gate projection does not match candidate evidence" in (
+        verify_renderer_gate_report(
+            renderer_gate_path,
+            expected_source_commit="abc123",
+            expected_candidate_renderers=mismatched_projection,
+        )
+    )
+
+    tampered_toolchain = deepcopy(renderer_gate_payload)
+    tampered_toolchain["toolchain_identity"] = "sha256:" + "0" * 64
+    renderer_gate_path.write_text(
+        json.dumps(tampered_toolchain),
+        encoding="utf-8",
+    )
+    assert "Renderer gate toolchain identity does not match" in (
+        verify_renderer_gate_report(
+            renderer_gate_path,
+            expected_source_commit="abc123",
+            expected_candidate_renderers=asdict(evidence),
+        )
+    )
+
+    sparse_renderer_gate_path = tmp_path / "sparse-renderer-gate.json"
+    sparse_renderer_gate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_commit": "abc123",
+                "certification_scope": "package-assembly",
+            }
+        ),
+        encoding="utf-8",
+    )
+    sparse_failures = verify_renderer_gate_report(
+        sparse_renderer_gate_path,
+        expected_source_commit="abc123",
+        expected_candidate_renderers=asdict(evidence),
+    )
+    assert "Renderer gate toolchain identity does not match" in sparse_failures
+    assert "Renderer gate hardware lane is unavailable" in sparse_failures
+    assert "Renderer gate software lane is unavailable" in sparse_failures
+
+    renderer_gate_payload["schema_version"] = 1
+    renderer_gate_path.write_text(
+        json.dumps(renderer_gate_payload),
+        encoding="utf-8",
+    )
+    assert verify_renderer_gate_report(
+        renderer_gate_path,
+        expected_source_commit="abc123",
+    ) == ("Renderer gate report schema is unsupported",)
+
+    old_schema_payload = json.loads(
+        reports["hardware"].read_text(encoding="utf-8")
+    )
+    old_schema_payload["schema_version"] = 3
+    reports["hardware"].write_text(
+        json.dumps(old_schema_payload),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="hardware renderer smoke report schema is unsupported",
+    ):
+        write_renderer_evidence(
+            hardware_report=reports["hardware"],
+            software_report=reports["software"],
+            source_commit="abc123",
+            evidence_dir=tmp_path / "old-schema-evidence",
+        )
+    old_schema_payload["schema_version"] = 4
+    reports["hardware"].write_text(
+        json.dumps(old_schema_payload),
+        encoding="utf-8",
+    )
+
+    installed_scope_payload = json.loads(
+        reports["hardware"].read_text(encoding="utf-8")
+    )
+    installed_scope_payload["certification_scope"] = "installed"
+    reports["hardware"].write_text(
+        json.dumps(installed_scope_payload),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="hardware renderer report is not package-assembly smoke",
+    ):
+        write_renderer_evidence(
+            hardware_report=reports["hardware"],
+            software_report=reports["software"],
+            source_commit="abc123",
+            evidence_dir=tmp_path / "installed-scope-evidence",
+        )
+    installed_scope_payload["certification_scope"] = "package-assembly"
+    reports["hardware"].write_text(
+        json.dumps(installed_scope_payload),
+        encoding="utf-8",
+    )
 
     software_payload = json.loads(
         reports["software"].read_text(encoding="utf-8")

@@ -423,6 +423,8 @@ def capture_installed_accessibility_checkpoint(
 
 def validate_installed_accessibility_checkpoints(
     checkpoints: Sequence[Mapping[str, Any]],
+    *,
+    require_installed_window_scale: bool = True,
 ) -> tuple[str, ...]:
     """Return fail-closed reasons for incomplete installed accessibility."""
 
@@ -554,7 +556,7 @@ def validate_installed_accessibility_checkpoints(
         )
     if any(item.get("text_scale_percent") != 200 for item in checkpoints):
         failures.append("Installed accessibility text scale was not 200 percent")
-    if any(
+    if require_installed_window_scale and any(
         not isinstance(item.get("window_device_pixel_ratio"), (int, float))
         or not math.isfinite(float(item.get("window_device_pixel_ratio", 0.0)))
         or float(item.get("window_device_pixel_ratio", 0.0)) != 2.0
