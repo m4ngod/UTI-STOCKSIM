@@ -9,6 +9,7 @@ from enum import Enum
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -2449,6 +2450,27 @@ def _installed_wave2_smoke_failures(
             failures.append(f"{label} was not verified")
     if payload.get("duplicate_work_count") != 0:
         failures.append("Diagnostic Task retry produced duplicate work")
+    accessibility_checkpoints = payload.get("accessibility_checkpoints")
+    if (
+        not isinstance(accessibility_checkpoints, (list, tuple))
+        or len(accessibility_checkpoints) < 8
+        or any(
+            not isinstance(checkpoint, Mapping)
+            or not isinstance(
+                checkpoint.get("window_device_pixel_ratio"),
+                (int, float),
+            )
+            or not math.isfinite(
+                float(checkpoint.get("window_device_pixel_ratio", 0))
+            )
+            or float(checkpoint.get("window_device_pixel_ratio", 0)) != 2.0
+            for checkpoint in accessibility_checkpoints
+        )
+    ):
+        failures.append(
+            "installed accessibility checkpoints did not prove 200 percent "
+            "Qt window scaling"
+        )
     expected_health_graph = (
         diagnostic_task_identity,
         payload.get("campaign_identity"),
@@ -3163,7 +3185,8 @@ def verify_clean_room_report(
                         f"{checkpoint.get('run_revision')}:"
                         f"{checkpoint.get('evidence_revision')}:"
                         f"{checkpoint.get('status_object_name')}:"
-                        f"{checkpoint.get('status_semantic_term')}"
+                        f"{checkpoint.get('status_semantic_term')}:"
+                        f"scale{checkpoint.get('window_scale_percent')}"
                     )
                     and re.fullmatch(
                         r"r\d+",
@@ -3178,6 +3201,15 @@ def verify_clean_room_report(
                     and checkpoint.get("lifecycle_state_observed") is True
                     and checkpoint.get("narrator_running") is True
                     and checkpoint.get("focus_traversal_observed") is True
+                    and isinstance(
+                        checkpoint.get("window_scale_percent"),
+                        (int, float),
+                    )
+                    and math.isfinite(
+                        float(checkpoint.get("window_scale_percent", 0))
+                    )
+                    and checkpoint.get("window_scale_percent") == 200
+                    and checkpoint.get("native_window_dpi") == 192
                     and checkpoint.get("complete_snapshot") is True
                     and checkpoint.get("named_element_count", 0) > 0
                     and bool(checkpoint.get("control_types"))
@@ -3222,9 +3254,13 @@ def verify_clean_room_report(
                 or uia_accessibility.get("focus_traversal_observed") is not True
                 or not narrator_checkpoints_valid
                 or not snapshot_accounting_valid
-                or uia_accessibility.get("observed_window_dpi_x", 0) < 192
-                or uia_accessibility.get("observed_window_dpi_y", 0) < 192
-                or uia_accessibility.get("observed_scale_percent", 0) < 200
+                or uia_accessibility.get("observed_window_dpi_x") != 192
+                or uia_accessibility.get("observed_window_dpi_y") != 192
+                or uia_accessibility.get("observed_scale_percent") != 200
+                or uia_accessibility.get(
+                    "observed_qt_window_scale_percent",
+                    0,
+                ) != 200
                 or uia_accessibility.get("forbidden_action_count") != 0
                 or uia_accessibility.get("forbidden_actions") not in ([], ())
                 or not semantics_valid

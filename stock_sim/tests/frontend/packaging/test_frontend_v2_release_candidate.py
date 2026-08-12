@@ -2609,6 +2609,7 @@ def test_installed_accessibility_rejects_hidden_state_text_and_color_only_cues()
                 "run_state": "",
                 "evidence_state": "",
                 "text_scale_percent": 200,
+                "window_device_pixel_ratio": 1.0,
                 "high_contrast": True,
                 "reduced_motion": True,
                 "motion_duration_ms": 0,
@@ -2661,6 +2662,121 @@ def test_installed_accessibility_rejects_hidden_state_text_and_color_only_cues()
         in failures
     )
     assert "Installed accessibility states relied on color-only meaning" in failures
+    assert "Installed Qt window scale was not 200 percent" in failures
+
+
+def test_installed_accessibility_accepts_complete_200_percent_qt_scale():
+    from stock_sim.release.frontend_v2_accessibility import (
+        ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        ORDERED_ACCESSIBILITY_CHECKPOINTS,
+        validate_installed_accessibility_checkpoints,
+    )
+
+    checkpoints = []
+    for sequence, state in enumerate(
+        ORDERED_ACCESSIBILITY_CHECKPOINTS,
+        start=1,
+    ):
+        status_object_name, status_semantic_term = (
+            ACCESSIBILITY_CHECKPOINT_BINDINGS[state]
+        )
+        checkpoints.append(
+            {
+                "checkpoint": state,
+                "sequence": sequence,
+                "snapshot_identity": f"snapshot-{sequence}",
+                "captured_at_utc": (
+                    f"2030-01-01T00:00:{sequence:02d}+00:00"
+                ),
+                "route": "diagnostic_tasks",
+                "run_revision": "r3",
+                "evidence_revision": "r4",
+                "status_object_name": status_object_name,
+                "status_semantic_term": status_semantic_term,
+                "text_scale_percent": 200,
+                "window_device_pixel_ratio": 2.0,
+                "high_contrast": True,
+                "reduced_motion": True,
+                "motion_duration_ms": 0,
+                "wcag_2_2_aa_contrast_verified": True,
+                "nodes": [
+                    {
+                        "object_name": status_object_name,
+                        "role": "StatusBar",
+                        "name_present": True,
+                        "description_present": False,
+                        "visible": True,
+                        "semantic_terms": [
+                            status_semantic_term,
+                            "progress",
+                            "error",
+                            "health",
+                            "fresh",
+                            "recover",
+                        ],
+                    }
+                ],
+                "rendered_text_nodes": [
+                    {
+                        "visible": True,
+                        "owner_object_names": [status_object_name],
+                        "semantic_terms": [status_semantic_term],
+                    }
+                ],
+                "non_color_cue_verified": True,
+                "non_color_cues": [
+                    {
+                        "cue_kind": "rendered_qquick_text",
+                        "status_object_name": status_object_name,
+                        "matched_term": status_semantic_term,
+                    }
+                ],
+                "chart_narrative_table_revision": {
+                    "same_revision": state == "completed",
+                },
+            }
+        )
+
+    assert validate_installed_accessibility_checkpoints(checkpoints) == ()
+
+    for invalid_ratio in (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        1.999,
+        2.001,
+    ):
+        checkpoints[0]["window_device_pixel_ratio"] = invalid_ratio
+        assert (
+            "Installed Qt window scale was not 200 percent"
+            in validate_installed_accessibility_checkpoints(checkpoints)
+        )
+
+
+def test_installed_accessibility_rejects_non_finite_qt_window_scale():
+    from stock_sim.release.frontend_v2_packaging import (
+        _installed_wave2_smoke_failures,
+    )
+
+    for invalid_ratio in (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        1.999,
+        2.001,
+    ):
+        failures = _installed_wave2_smoke_failures(
+            {
+                "accessibility_checkpoints": [
+                    {"window_device_pixel_ratio": invalid_ratio}
+                    for _ in range(8)
+                ]
+            }
+        )
+        assert (
+            "installed accessibility checkpoints did not prove 200 percent "
+            "Qt window scaling"
+        ) in failures
 
 
 def test_installed_accessibility_checkpoint_clock_is_strictly_monotonic():
@@ -2989,6 +3105,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
     )
     assert observed["defer_native_teardown"] is True
+    assert "installed_package_certification" not in observed
 
     class MissingRecipeFamilySmoke(PassingSmoke):
         installed_materialized_scenario_identities = (

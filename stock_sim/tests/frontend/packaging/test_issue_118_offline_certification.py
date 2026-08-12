@@ -117,6 +117,27 @@ def test_issue_118_installed_journey_contract_covers_six_live_features():
     }.issubset(result_fields)
 
 
+@pytest.mark.parametrize("lane", ("hardware", "software"))
+def test_issue_118_renderer_environment_pins_production_qt_style(
+    lane,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry
+    from stock_sim.release import frontend_v2_performance
+
+    monkeypatch.setenv("QT_QUICK_CONTROLS_STYLE", "Windows")
+    renderer_lane = frontend_v2_package_entry.RendererLane(lane)
+
+    frontend_v2_package_entry.configure_renderer_environment(renderer_lane)
+
+    assert os.environ["QT_QUICK_CONTROLS_STYLE"] == "Basic"
+
+    monkeypatch.setenv("QT_QUICK_CONTROLS_STYLE", "Windows")
+    frontend_v2_performance._configure_renderer_environment(lane)
+
+    assert os.environ["QT_QUICK_CONTROLS_STYLE"] == "Basic"
+
+
 def test_issue_118_supported_data_copy_never_queries_storage_directly():
     source = (
         PROJECT_ROOT
@@ -183,7 +204,8 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         "GetDpiForWindow",
         "DefineDynamicAssembly",
         "GetProcAddress",
-        "observed_window_dpi_x -ge 192",
+        "observed_window_dpi_x -eq 192",
+        "native_window_dpi",
         "InvokePattern",
         "TogglePattern",
         "SelectionItemPattern",
@@ -192,6 +214,8 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR",
         "installedAccessibilityCheckpointMarker",
         "lifecycle_state_observed",
+        "Test-UiAutomationActionPatternProbeRequired",
+        "window_device_pixel_ratio",
     ):
         assert required_accessibility_probe in clean_room_source
     assert "Graphics]::FromHwnd" not in clean_room_source
@@ -358,6 +382,64 @@ $second = Register-UniqueCanonicalUiAutomationObjectName `
     assert json.loads(completed.stdout) == [True, False, 2]
 
 
+def test_clean_room_uia_pattern_probe_covers_interactive_and_forbidden_peers():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Test-UiAutomationActionPatternProbeRequired"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "UIA pattern-probe classifier was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+@(
+    Test-UiAutomationActionPatternProbeRequired `
+        -ControlType "Button" -Focusable $false `
+        -MatchesForbiddenCapability $false
+    Test-UiAutomationActionPatternProbeRequired `
+        -ControlType "Text" -Focusable $true `
+        -MatchesForbiddenCapability $false
+    Test-UiAutomationActionPatternProbeRequired `
+        -ControlType "Text" -Focusable $false `
+        -MatchesForbiddenCapability $true
+    Test-UiAutomationActionPatternProbeRequired `
+        -ControlType "Text" -Focusable $false `
+        -MatchesForbiddenCapability $false
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == [True, True, True, False]
+
+
 def test_clean_room_window_dpi_probe_runs_without_a_compiler():
     powershell = shutil.which("powershell.exe")
     if powershell is None:
@@ -424,6 +506,32 @@ finally {
     )
 
     assert int(completed.stdout.strip()) > 0
+
+
+def test_clean_room_installed_journey_does_not_override_windows_dpi():
+    source = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    ).read_text(encoding="utf-8")
+
+    journey_start = source.index(
+        "function Invoke-InstalledJourneyWithAccessibilityProbe"
+    )
+    rollback_start = source.index(
+        "function Invoke-InstalledRollbackLane",
+        journey_start,
+    )
+    journey = source[journey_start:rollback_start]
+
+    assert "QT_SCALE_FACTOR" not in journey
+
+    package_entry = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    ).read_text(encoding="utf-8")
+    assert "window_device_pixel_ratio != 2.0" in package_entry
+    assert "math.isfinite(window_device_pixel_ratio)" in package_entry
 
 
 @pytest.mark.parametrize(

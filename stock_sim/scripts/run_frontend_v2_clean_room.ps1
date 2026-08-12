@@ -208,6 +208,8 @@ function New-UiAutomationAccessibilityEvidence {
         observed_window_dpi_x = 0
         observed_window_dpi_y = 0
         observed_scale_percent = 0
+        window_dpi_observation_failure_count = 0
+        observed_qt_window_scale_percent = 0
         forbidden_action_count = 0
         forbidden_actions = @()
         static_read_only_diagnostics = @()
@@ -395,6 +397,27 @@ function Register-UniqueCanonicalUiAutomationObjectName {
     return $observationCount -eq 1
 }
 
+function Test-UiAutomationActionPatternProbeRequired {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ControlType,
+        [Parameter(Mandatory = $true)]
+        [bool]$Focusable,
+        [Parameter(Mandatory = $true)]
+        [bool]$MatchesForbiddenCapability
+    )
+
+    return [bool](
+        $Focusable -or
+        $MatchesForbiddenCapability -or
+        $ControlType -in @(
+            "Button", "CheckBox", "ComboBox", "Edit", "Hyperlink",
+            "ListItem", "MenuItem", "RadioButton", "Slider", "Spinner",
+            "TabItem", "TreeItem"
+        )
+    )
+}
+
 function Merge-UiAutomationSnapshot {
     param(
         [Parameter(Mandatory = $true)]
@@ -493,11 +516,6 @@ function Merge-UiAutomationSnapshot {
         '\bbroker[ _-]*(?:connection|connect)?\b|' +
         '\breal[ _-]*money\b)'
     )
-    $interactiveTypes = @(
-        "Button", "CheckBox", "ComboBox", "Edit", "Hyperlink",
-        "ListItem", "MenuItem", "RadioButton", "Slider", "Spinner",
-        "TabItem", "TreeItem"
-    )
     foreach ($element in $elements) {
         try {
             $current = $element.Current
@@ -565,7 +583,8 @@ function Merge-UiAutomationSnapshot {
                     'run_revision=(?<run_revision>r\d+) ' +
                     'evidence_revision=(?<evidence_revision>r\d+) ' +
                     'target=(?<target>[A-Za-z0-9_.:-]+) ' +
-                    'term=(?<term>[a-z]+)$'
+                    'term=(?<term>[a-z]+) ' +
+                    'window_scale_percent=(?<window_scale_percent>\d+)$'
                 )
                 if ($visible) {
                     if ($name -match $markerPattern) {
@@ -586,6 +605,9 @@ function Merge-UiAutomationSnapshot {
                                 evidence_revision = [string]$Matches.evidence_revision
                                 status_object_name = [string]$Matches.target
                                 status_semantic_term = [string]$Matches.term
+                                window_scale_percent = (
+                                    [int]$Matches.window_scale_percent
+                                )
                             }
                         }
                         else {
@@ -602,21 +624,31 @@ function Merge-UiAutomationSnapshot {
                 }
                 continue
             }
+            $classificationText = "$name $automationId"
+            $matchesForbiddenCapability = (
+                $classificationText -match $forbiddenPattern
+            )
             $patterns = @()
-            foreach ($patternSpec in @(
-                @("Invoke", [System.Windows.Automation.InvokePattern]::Pattern),
-                @("Toggle", [System.Windows.Automation.TogglePattern]::Pattern),
-                @("Selection", [System.Windows.Automation.SelectionItemPattern]::Pattern),
-                @("Value", [System.Windows.Automation.ValuePattern]::Pattern),
-                @("ExpandCollapse", [System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-            )) {
-                $patternObject = $null
-                if ($element.TryGetCurrentPattern(
-                    $patternSpec[1],
-                    [ref]$patternObject
+            if (Test-UiAutomationActionPatternProbeRequired `
+                -ControlType $controlType `
+                -Focusable $focusable `
+                -MatchesForbiddenCapability $matchesForbiddenCapability
+            ) {
+                foreach ($patternSpec in @(
+                    @("Invoke", [System.Windows.Automation.InvokePattern]::Pattern),
+                    @("Toggle", [System.Windows.Automation.TogglePattern]::Pattern),
+                    @("Selection", [System.Windows.Automation.SelectionItemPattern]::Pattern),
+                    @("Value", [System.Windows.Automation.ValuePattern]::Pattern),
+                    @("ExpandCollapse", [System.Windows.Automation.ExpandCollapsePattern]::Pattern)
                 )) {
-                    $patterns += [string]$patternSpec[0]
-                    $actionPatterns += [string]$patternSpec[0]
+                    $patternObject = $null
+                    if ($element.TryGetCurrentPattern(
+                        $patternSpec[1],
+                        [ref]$patternObject
+                    )) {
+                        $patterns += [string]$patternSpec[0]
+                        $actionPatterns += [string]$patternSpec[0]
+                    }
                 }
             }
             $semanticText = @(
@@ -651,12 +683,14 @@ function Merge-UiAutomationSnapshot {
                     }
                 }
             }
-            $classificationText = "$name $automationId"
-            if ($classificationText -match $forbiddenPattern) {
+            if ($matchesForbiddenCapability) {
                 $actionable = (
                     $patterns.Count -gt 0 -or
                     $focusable -or
-                    $controlType -in $interactiveTypes
+                    (Test-UiAutomationActionPatternProbeRequired `
+                        -ControlType $controlType `
+                        -Focusable $false `
+                        -MatchesForbiddenCapability $false)
                 )
                 $safeSurface = [ordered]@{
                     automation_id = Get-SafeAutomationId $automationId
@@ -695,6 +729,21 @@ function Merge-UiAutomationSnapshot {
     if ($completeSnapshot) {
         $Evidence.complete_snapshot_count++
     }
+    $windowDpi = 0
+    try {
+        $windowDpi = Get-CompilerFreeWindowDpi `
+            -WindowHandle $WindowHandle
+        $Evidence.observed_window_dpi_x = $windowDpi
+        $Evidence.observed_window_dpi_y = $windowDpi
+        $Evidence.observed_scale_percent = [int][Math]::Round(
+            ([double]$windowDpi / 96.0) * 100.0
+        )
+    }
+    catch {
+        $Evidence.window_dpi_observation_failure_count = (
+            [int]$Evidence.window_dpi_observation_failure_count + 1
+        )
+    }
     if ($null -ne $checkpointMarker) {
         $checkpoint = [string]$checkpointMarker.checkpoint
         $snapshotIdentity = (
@@ -702,7 +751,8 @@ function Merge-UiAutomationSnapshot {
             "$($checkpointMarker.route):$($checkpointMarker.run_revision):" +
             "$($checkpointMarker.evidence_revision):" +
             "$($checkpointMarker.status_object_name):" +
-            "$($checkpointMarker.status_semantic_term)"
+            "$($checkpointMarker.status_semantic_term):" +
+            "scale$($checkpointMarker.window_scale_percent)"
         )
         $targetSemanticText = [string](
             $snapshotSemanticByAutomationId[
@@ -727,6 +777,8 @@ function Merge-UiAutomationSnapshot {
             evidence_revision = [string]$checkpointMarker.evidence_revision
             status_object_name = [string]$checkpointMarker.status_object_name
             status_semantic_term = [string]$checkpointMarker.status_semantic_term
+            window_scale_percent = [int]$checkpointMarker.window_scale_percent
+            native_window_dpi = [int]$windowDpi
             lifecycle_state_observed = $targetStateObserved
             narrator_running = $NarratorRunning
             focus_traversal_observed = $FocusTraversalObserved
@@ -739,7 +791,9 @@ function Merge-UiAutomationSnapshot {
                 $completeSnapshot -and
                 $targetStateObserved -and
                 $snapshotNamed -gt 0 -and
-                $snapshotControlTypes.Count -gt 0
+                $snapshotControlTypes.Count -gt 0 -and
+                [int]$checkpointMarker.window_scale_percent -eq 200 -and
+                [int]$windowDpi -eq 192
             )
         }
         $existingCheckpoint = @(
@@ -765,6 +819,10 @@ function Merge-UiAutomationSnapshot {
             ) + @($checkpointEvidence)
         }
         if ([bool]$checkpointEvidence.passed) {
+            $Evidence.observed_qt_window_scale_percent = [Math]::Max(
+                [int]$Evidence.observed_qt_window_scale_percent,
+                [int]$checkpointEvidence.window_scale_percent
+            )
             $ackPath = Join-Path `
                 $CheckpointAckDirectory `
                 ("uia-checkpoint-{0:D2}-{1}.json" -f `
@@ -780,18 +838,6 @@ function Merge-UiAutomationSnapshot {
                     -Encoding UTF8
             }
         }
-    }
-    try {
-        $windowDpi = Get-CompilerFreeWindowDpi `
-            -WindowHandle $WindowHandle
-        $Evidence.observed_window_dpi_x = $windowDpi
-        $Evidence.observed_window_dpi_y = $windowDpi
-        $Evidence.observed_scale_percent = [int][Math]::Round(
-            ([double]$windowDpi / 96.0) * 100.0
-        )
-    }
-    catch {
-        $Evidence.errors += "Window DPI observation failed"
     }
     $Evidence.provider_available = $true
     $Evidence.scan_count++
@@ -1075,7 +1121,8 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
             "$($requiredNarratorCheckpoints[$checkpointIndex]):" +
             "$($checkpoint.route):$($checkpoint.run_revision):" +
             "$($checkpoint.evidence_revision):" +
-            "$($expectedBinding[0]):$($expectedBinding[1])"
+            "$($expectedBinding[0]):$($expectedBinding[1]):" +
+            "scale$([int]$checkpoint.window_scale_percent)"
         )
         $narratorCheckpointsPassed = (
             $narratorCheckpointsPassed -and
@@ -1088,6 +1135,8 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
                 [string]$expectedBinding[0] -and
             [string]$checkpoint.status_semantic_term -eq
                 [string]$expectedBinding[1] -and
+            [int]$checkpoint.window_scale_percent -eq 200 -and
+            [int]$checkpoint.native_window_dpi -eq 192 -and
             [int]$checkpoint.scan_sequence -gt $previousScanSequence -and
             $timestampValid -and
             $capturedAt -gt $previousCapturedAt -and
@@ -1124,9 +1173,10 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         $narratorCheckpointsPassed -and
         $evidence.complete_snapshot_count -ge 8 -and
         $evidence.focus_traversal_observed -and
-        $evidence.observed_window_dpi_x -ge 192 -and
-        $evidence.observed_window_dpi_y -ge 192 -and
-        $evidence.observed_scale_percent -ge 200 -and
+        $evidence.observed_window_dpi_x -eq 192 -and
+        $evidence.observed_window_dpi_y -eq 192 -and
+        $evidence.observed_scale_percent -eq 200 -and
+        $evidence.observed_qt_window_scale_percent -eq 200 -and
         $evidence.forbidden_action_count -eq 0 -and
         $evidence.forbidden_actions.Count -eq 0 -and
         $allSemanticTerms -and
@@ -2335,6 +2385,18 @@ if ($installSucceeded) {
                         (@($requiredSafetyCoverage | Sort-Object) -join "|")
                 )
             }
+            $installedScaleCheckpointsValid = (
+                @($smoke.accessibility_checkpoints).Count -ge 8 -and
+                @(
+                    $smoke.accessibility_checkpoints |
+                        Where-Object {
+                            $ratio = [double]$_.window_device_pixel_ratio
+                            [double]::IsNaN($ratio) -or
+                            [double]::IsInfinity($ratio) -or
+                            $ratio -ne 2.0
+                        }
+                ).Count -eq 0
+            )
             $releaseBehaviorValid = (
                 $smoke.keyboard_navigation_verified -is [bool] -and
                 $smoke.keyboard_navigation_verified -eq $true -and
@@ -2346,7 +2408,7 @@ if ($installSucceeded) {
                 $smoke.no_color_only_meaning_verified -eq $true -and
                 $smoke.chart_narrative_table_revision_verified -is [bool] -and
                 $smoke.chart_narrative_table_revision_verified -eq $true -and
-                @($smoke.accessibility_checkpoints).Count -ge 8 -and
+                $installedScaleCheckpointsValid -and
                 $manualTradingAuditValid -and
                 $uiaAccessibility.passed -is [bool] -and
                 $uiaAccessibility.passed -eq $true -and

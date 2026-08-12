@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import os
 import re
 import shutil
@@ -372,6 +373,10 @@ class PackageSmokeResult:
 
 
 def configure_renderer_environment(renderer_lane: RendererLane) -> None:
+    # The production QML customizes every control surface.  Pinning the
+    # non-native Basic style avoids the Windows native-style fallback path and
+    # keeps the two renderer lanes on the same QML control implementation.
+    os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     if renderer_lane is RendererLane.SOFTWARE:
         os.environ["QT_QUICK_BACKEND"] = "software"
         os.environ["QSG_RHI_BACKEND"] = "software"
@@ -2405,6 +2410,8 @@ def _run_smoke_journey(
         reopen_completed_wave2_release_fixture,
     )
 
+    installed_package_certification = "__compiled__" in globals()
+
     certification_ptrade_host = (
         ReleaseCertificationFailFirstPTradeStrategyHost()
         if wave2_mode and issue_118_certification
@@ -2848,10 +2855,25 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Installed accessibility checkpoint binding was unavailable"
             ) from error
+        quick_window = root.window()
+        window_device_pixel_ratio = (
+            0.0
+            if quick_window is None
+            else float(quick_window.devicePixelRatio())
+        )
+        if installed_package_certification and (
+            not math.isfinite(window_device_pixel_ratio)
+            or window_device_pixel_ratio != 2.0
+        ):
+            raise RuntimeError(
+                "Installed accessibility Qt window scale was not 200 percent"
+            )
+        window_scale_percent = int(round(window_device_pixel_ratio * 100.0))
         snapshot_identity = (
             f"uia:{sequence}:{checkpoint}:{route}:"
             f"{run_revision}:{evidence_revision}:"
-            f"{status_object_name}:{status_semantic_term}"
+            f"{status_object_name}:{status_semantic_term}:"
+            f"scale{window_scale_percent}"
         )
         marker_properties = {
             "installedAccessibilityCheckpointSequence": sequence,
@@ -2862,6 +2884,9 @@ def _run_smoke_journey(
             "installedAccessibilityStatusObjectName": status_object_name,
             "installedAccessibilityStatusSemanticTerm": (
                 status_semantic_term
+            ),
+            "installedAccessibilityWindowScalePercent": (
+                window_scale_percent
             ),
         }
         if not all(
@@ -4212,6 +4237,7 @@ def _run_smoke_journey(
             accessibility_checkpoints
         )
         if wave2_mode and issue_118_certification
+        and installed_package_certification
         else ()
     )
     if accessibility_failures:
@@ -4287,7 +4313,9 @@ def _run_smoke_journey(
             accessibility_announcements
         ),
         accessibility_checkpoints=tuple(accessibility_checkpoints),
-        installed_accessibility_verified=not accessibility_failures,
+        installed_accessibility_verified=bool(
+            installed_package_certification and not accessibility_failures
+        ),
         no_color_only_meaning_verified=bool(accessibility_checkpoints)
         and all(
             checkpoint.get("non_color_cue_verified") is True
@@ -5807,8 +5835,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_commit=arguments.source_commit,
         )
     if arguments.smoke_report_dir is not None:
+        compiled_package = "__compiled__" in globals()
         fixture_archive_path = arguments.fixture_archive
-        if fixture_archive_path is None and "__compiled__" in globals():
+        if fixture_archive_path is None and compiled_package:
             fixture_archive_path = _installed_wave3_input_fixture_archive_path()
         from PySide6.QtWidgets import QApplication
 
@@ -5821,17 +5850,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_commit=arguments.source_commit,
                 capture_images=not arguments.no_images,
                 fixture_archive_path=fixture_archive_path,
-                defer_native_teardown="__compiled__" in globals(),
+                defer_native_teardown=compiled_package,
             )
         finally:
             if owns_application:
                 _shutdown_smoke_application(
                     shutdown_errors,
-                    run_qt_teardown="__compiled__" not in globals(),
+                    run_qt_teardown=not compiled_package,
                 )
-        failures = _compiled_smoke_failures(
-            result,
-            shutdown_errors=shutdown_errors,
+        failures = (
+            _compiled_smoke_failures(
+                result,
+                shutdown_errors=shutdown_errors,
+            )
+            if compiled_package
+            else tuple((*shutdown_errors, *result.errors))
         )
         if failures:
             print(

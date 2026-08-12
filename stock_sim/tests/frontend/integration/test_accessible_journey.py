@@ -801,7 +801,11 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
     )
     assert health_grid.property("columns") == 1
     health_source.forceActiveFocus()
-    _settle(app)
+    _wait_for(
+        lambda: health_scroll.property("contentY") > 0,
+        app,
+        "System Health did not scroll the focused data-source status into view",
+    )
     assert health_source.property("activeFocus") is True
     assert health_scroll.property("contentY") > 0
     health_top = health_source.mapToItem(root, QPointF(0, 0)).y()

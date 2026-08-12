@@ -80,6 +80,7 @@ Rectangle {
     property string installedAccessibilityEvidenceRevision: ""
     property string installedAccessibilityStatusObjectName: ""
     property string installedAccessibilityStatusSemanticTerm: ""
+    property int installedAccessibilityWindowScalePercent: 0
     readonly property string installedAccessibilityCheckpointText: (
         "Installed checkpoint sequence="
         + installedAccessibilityCheckpointSequence
@@ -89,6 +90,8 @@ Rectangle {
         + " evidence_revision=" + installedAccessibilityEvidenceRevision
         + " target=" + installedAccessibilityStatusObjectName
         + " term=" + installedAccessibilityStatusSemanticTerm
+        + " window_scale_percent="
+        + installedAccessibilityWindowScalePercent
     )
     property string headline: screenState === "loading"
         ? "Preparing Run Monitoring"

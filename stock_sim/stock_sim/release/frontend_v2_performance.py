@@ -1301,6 +1301,7 @@ def prepare_sealed_v1_performance_fixture(
 
 
 def _configure_renderer_environment(lane: str) -> None:
+    os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     if lane == "software":
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
         os.environ["QT_QUICK_BACKEND"] = "software"

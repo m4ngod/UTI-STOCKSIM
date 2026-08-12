@@ -511,6 +511,25 @@ def clean_room_lane_fixture(root, lane, graphics_api):
         ],
         "system_health_accessibility_verified": True,
         "focus_restoration_verified": True,
+        "installed_accessibility_verified": True,
+        "no_color_only_meaning_verified": True,
+        "chart_narrative_table_revision_verified": True,
+        "accessibility_checkpoints": [
+            {
+                "checkpoint": checkpoint,
+                "window_device_pixel_ratio": 2.0,
+            }
+            for checkpoint in (
+                "loading",
+                "empty",
+                "failed",
+                "recovering",
+                "partial",
+                "disconnected",
+                "stale",
+                "completed",
+            )
+        ],
         "routes_rendered": [
             "strategy_library",
             "scenario_lab",
@@ -626,7 +645,8 @@ def clean_room_lane_fixture(root, lane, graphics_api):
                     "sequence": sequence,
                     "snapshot_identity": (
                         f"uia:{sequence}:{checkpoint}:diagnostic_tasks:r9:r11:"
-                        f"{checkpoint_binding[0]}:{checkpoint_binding[1]}"
+                        f"{checkpoint_binding[0]}:{checkpoint_binding[1]}:"
+                        "scale200"
                     ),
                     "scan_sequence": sequence * 2,
                     "captured_at_utc": (
@@ -637,6 +657,8 @@ def clean_room_lane_fixture(root, lane, graphics_api):
                     "evidence_revision": "r11",
                     "status_object_name": checkpoint_binding[0],
                     "status_semantic_term": checkpoint_binding[1],
+                    "window_scale_percent": 200,
+                    "native_window_dpi": 192,
                     "lifecycle_state_observed": True,
                     "narrator_running": True,
                     "focus_traversal_observed": True,
@@ -692,6 +714,8 @@ def clean_room_lane_fixture(root, lane, graphics_api):
             "observed_window_dpi_x": 192,
             "observed_window_dpi_y": 192,
             "observed_scale_percent": 200,
+            "window_dpi_observation_failure_count": 0,
+            "observed_qt_window_scale_percent": 200,
             "forbidden_action_count": 0,
             "forbidden_actions": [],
             "static_read_only_diagnostics": [],
@@ -1229,6 +1253,7 @@ def test_package_smoke_observes_the_complete_production_journey(
     )
     assert result.errors == ()
     assert result.clean_exit is True
+    assert result.installed_accessibility_verified is False
 
 
 def test_minimal_package_smoke_captures_distinct_software_frames(
@@ -1773,6 +1798,44 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     ]["narrator_checkpoint_evidence"][0]["complete_snapshot"] = False
     report_path.write_text(
         json.dumps(incomplete_uia_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware renderer UIA/Narrator/200-percent gate failed"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    stale_native_dpi_report = deepcopy(report_payload)
+    stale_native_dpi_report["renderer_lanes"]["hardware"][
+        "uia_accessibility"
+    ]["narrator_checkpoint_evidence"][3]["native_window_dpi"] = 0
+    report_path.write_text(
+        json.dumps(stale_native_dpi_report),
+        encoding="utf-8",
+    )
+    assert (
+        "hardware renderer UIA/Narrator/200-percent gate failed"
+        in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    non_finite_scale_report = deepcopy(report_payload)
+    non_finite_scale_report["renderer_lanes"]["hardware"][
+        "uia_accessibility"
+    ]["narrator_checkpoint_evidence"][3]["window_scale_percent"] = float(
+        "inf"
+    )
+    report_path.write_text(
+        json.dumps(non_finite_scale_report),
         encoding="utf-8",
     )
     assert (
@@ -2647,6 +2710,25 @@ def test_renderer_evidence_allows_lane_local_generated_identity_graphs(
                     ),
                     "keyboard_navigation_verified": True,
                     "accessibility_preferences_verified": True,
+                    "installed_accessibility_verified": True,
+                    "no_color_only_meaning_verified": True,
+                    "chart_narrative_table_revision_verified": True,
+                    "accessibility_checkpoints": [
+                        {
+                            "checkpoint": checkpoint,
+                            "window_device_pixel_ratio": 2.0,
+                        }
+                        for checkpoint in (
+                            "loading",
+                            "empty",
+                            "failed",
+                            "recovering",
+                            "partial",
+                            "disconnected",
+                            "stale",
+                            "completed",
+                        )
+                    ],
                     "accessibility_announcements": [
                         "Run Monitoring disconnected",
                         "Evidence and Findings disconnected",

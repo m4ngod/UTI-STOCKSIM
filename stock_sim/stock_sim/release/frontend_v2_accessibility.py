@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -378,6 +379,10 @@ def capture_installed_accessibility_checkpoint(
     tokens = root.findChild(QObject, "designTokens")
     if tokens is None:
         raise RuntimeError("Installed accessibility design tokens are unavailable")
+    window = root.window() if isinstance(root, QQuickItem) else None
+    window_device_pixel_ratio = (
+        0.0 if window is None else float(window.devicePixelRatio())
+    )
     nodes = _accessible_nodes(root)
     rendered_text_nodes = _rendered_text_nodes(root)
     contrast = _contrast_evidence(tokens)
@@ -401,6 +406,7 @@ def capture_installed_accessibility_checkpoint(
         "run_state": str(root.property("screenState") or ""),
         "evidence_state": str(root.property("evidenceScreenState") or ""),
         "text_scale_percent": int(round(float(tokens.property("textScale")) * 100)),
+        "window_device_pixel_ratio": window_device_pixel_ratio,
         "high_contrast": bool(tokens.property("highContrast")),
         "reduced_motion": bool(tokens.property("reducedMotion")),
         "motion_duration_ms": int(tokens.property("durationForMotion")),
@@ -548,6 +554,13 @@ def validate_installed_accessibility_checkpoints(
         )
     if any(item.get("text_scale_percent") != 200 for item in checkpoints):
         failures.append("Installed accessibility text scale was not 200 percent")
+    if any(
+        not isinstance(item.get("window_device_pixel_ratio"), (int, float))
+        or not math.isfinite(float(item.get("window_device_pixel_ratio", 0.0)))
+        or float(item.get("window_device_pixel_ratio", 0.0)) != 2.0
+        for item in checkpoints
+    ):
+        failures.append("Installed Qt window scale was not 200 percent")
     if any(item.get("high_contrast") is not True for item in checkpoints):
         failures.append("Installed high-contrast preference was not effective")
     if any(item.get("reduced_motion") is not True for item in checkpoints):
