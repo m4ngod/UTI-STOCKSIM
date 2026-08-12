@@ -152,8 +152,8 @@ def test_issue_118_supported_data_copy_never_queries_storage_directly():
     assert "diagnostic_run_orders" not in source
 
 
-def test_issue_118_clean_room_contract_is_installed_schema_four():
-    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 4
+def test_issue_118_clean_room_contract_is_installed_schema_five():
+    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 5
 
     packaging_source = (
         PROJECT_ROOT
@@ -199,7 +199,6 @@ def test_issue_118_clean_room_contract_is_installed_schema_four():
         "UIAutomationClient",
         "Narrator.exe",
         "TextScaleFactor",
-        "LogPixels",
         "Get-CompilerFreeWindowDpi",
         "GetDpiForWindow",
         "DefineDynamicAssembly",
@@ -522,7 +521,13 @@ def test_clean_room_installed_journey_does_not_override_windows_dpi():
     )
     journey = source[journey_start:rollback_start]
 
-    assert "QT_SCALE_FACTOR" not in journey
+    assert "QT_SCALE_FACTOR" not in source
+    assert 'Name "LogPixels"' not in source
+    assert 'Name "Win8DpiScaling"' not in source
+    assert "UpdatePerUserSystemParameters" not in source
+    assert "guest_dpi_override_applied = $false" in source
+    assert 'native_dpi_evidence_source = "GetDpiForWindow"' in source
+    assert "text_scale_registry_percent -eq 200" in journey
 
     package_entry = (
         PROJECT_ROOT

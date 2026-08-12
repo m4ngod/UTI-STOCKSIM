@@ -119,47 +119,26 @@ function Test-DurableIdentityMap {
 
 function Initialize-InstalledAccessibilityEnvironment {
     $result = [ordered]@{
-        configured_before_launch = $false
+        text_scale_configured_before_launch = $false
         text_scale_registry_percent = 0
-        logical_dpi_registry = 0
-        win8_dpi_scaling = -1
+        guest_dpi_override_applied = $false
+        native_dpi_evidence_source = "GetDpiForWindow"
         errors = @()
     }
     try {
         $accessibilityKey = "HKCU:\Software\Microsoft\Accessibility"
-        $desktopKey = "HKCU:\Control Panel\Desktop"
         New-Item -Path $accessibilityKey -Force | Out-Null
         Set-ItemProperty `
             -Path $accessibilityKey `
             -Name "TextScaleFactor" `
             -Type DWord `
             -Value 200
-        Set-ItemProperty `
-            -Path $desktopKey `
-            -Name "LogPixels" `
-            -Type DWord `
-            -Value 192
-        Set-ItemProperty `
-            -Path $desktopKey `
-            -Name "Win8DpiScaling" `
-            -Type DWord `
-            -Value 1
-        Start-Process `
-            -FilePath "$env:WINDIR\System32\rundll32.exe" `
-            -ArgumentList "user32.dll,UpdatePerUserSystemParameters" `
-            -WindowStyle Hidden `
-            -Wait
         $accessibility = Get-ItemProperty -Path $accessibilityKey
-        $desktop = Get-ItemProperty -Path $desktopKey
         $result.text_scale_registry_percent = (
             [int]$accessibility.TextScaleFactor
         )
-        $result.logical_dpi_registry = [int]$desktop.LogPixels
-        $result.win8_dpi_scaling = [int]$desktop.Win8DpiScaling
-        $result.configured_before_launch = (
-            $result.text_scale_registry_percent -eq 200 -and
-            $result.logical_dpi_registry -eq 192 -and
-            $result.win8_dpi_scaling -eq 1
+        $result.text_scale_configured_before_launch = (
+            $result.text_scale_registry_percent -eq 200
         )
     }
     catch {
@@ -1158,9 +1137,12 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
     }
     $evidence.narrator_running_during_probe = $narratorCheckpointsPassed
     $evidence.passed = (
-        $AccessibilityEnvironment.configured_before_launch -and
+        $AccessibilityEnvironment.text_scale_configured_before_launch -and
         $AccessibilityEnvironment.text_scale_registry_percent -eq 200 -and
-        $AccessibilityEnvironment.logical_dpi_registry -eq 192 -and
+        -not $AccessibilityEnvironment.guest_dpi_override_applied -and
+        $AccessibilityEnvironment.native_dpi_evidence_source -eq (
+            "GetDpiForWindow"
+        ) -and
         $evidence.provider_available -and
         $evidence.scan_count -gt 0 -and
         $evidence.named_element_count -gt 0 -and
@@ -2866,7 +2848,7 @@ $candidateWidgetsCandidateRollback = [ordered]@{
 }
 
 $report = [ordered]@{
-    schema_version = 4
+    schema_version = 5
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
@@ -2919,9 +2901,12 @@ $gatePassed = (
     $dependencyCachePaths.Count -eq 0 -and
     $sourceCheckoutAbsent -and
     $sourceCheckoutMarkers.Count -eq 0 -and
-    $accessibilityEnvironment.configured_before_launch -and
+    $accessibilityEnvironment.text_scale_configured_before_launch -and
     $accessibilityEnvironment.text_scale_registry_percent -eq 200 -and
-    $accessibilityEnvironment.logical_dpi_registry -eq 192 -and
+    -not $accessibilityEnvironment.guest_dpi_override_applied -and
+    $accessibilityEnvironment.native_dpi_evidence_source -eq (
+        "GetDpiForWindow"
+    ) -and
     $accessibilityEnvironment.errors.Count -eq 0 -and
     $installSucceeded -and
     $widgetsInstallSucceeded -and

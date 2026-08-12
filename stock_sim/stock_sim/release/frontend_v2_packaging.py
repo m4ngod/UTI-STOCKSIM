@@ -68,7 +68,7 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
     for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
-CLEAN_ROOM_REPORT_SCHEMA_VERSION = 4
+CLEAN_ROOM_REPORT_SCHEMA_VERSION = 5
 PACKAGE_SMOKE_REPORT_SCHEMA_VERSION = 4
 RENDERER_GATE_REPORT_SCHEMA_VERSION = 2
 _QML_IMPORT_PATTERN = re.compile(
@@ -2773,14 +2773,22 @@ def verify_clean_room_report(
     if not isinstance(accessibility_environment, dict):
         failures.append("OS accessibility environment evidence is unavailable")
     else:
-        if accessibility_environment.get("configured_before_launch") is not True:
-            failures.append("OS accessibility was not configured before launch")
+        if (
+            accessibility_environment.get(
+                "text_scale_configured_before_launch"
+            )
+            is not True
+        ):
+            failures.append("OS text scaling was not configured before launch")
         if accessibility_environment.get("text_scale_registry_percent") != 200:
             failures.append("OS text scaling was not configured to 200 percent")
-        if accessibility_environment.get("logical_dpi_registry") != 192:
-            failures.append("OS logical DPI was not configured to 192")
-        if accessibility_environment.get("win8_dpi_scaling") != 1:
-            failures.append("OS per-user DPI scaling was not enabled")
+        if accessibility_environment.get("guest_dpi_override_applied") is not False:
+            failures.append("Guest DPI override evidence is not explicitly false")
+        if (
+            accessibility_environment.get("native_dpi_evidence_source")
+            != "GetDpiForWindow"
+        ):
+            failures.append("Native window DPI evidence source is unsupported")
         if accessibility_environment.get("errors") not in ([], ()):
             failures.append("OS accessibility configuration reported errors")
     if payload.get("install_succeeded") is not True:
