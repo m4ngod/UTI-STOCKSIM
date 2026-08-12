@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -423,6 +424,121 @@ finally {
     )
 
     assert int(completed.stdout.strip()) > 0
+
+
+@pytest.mark.parametrize(
+    ("clean_room_exit_code", "ack_value"),
+    (
+        (0, None),
+        (1, None),
+        (0, "d" * 32),
+        (0, "e" * 32),
+    ),
+)
+def test_sandbox_guest_runner_waits_for_host_result_acknowledgment(
+    tmp_path,
+    clean_room_exit_code,
+    ack_value,
+):
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox guest probe")
+
+    source = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    ).read_text(encoding="utf-8")
+    runner_start = source.index("$runner = @'")
+    runner_start = source.index("\n", runner_start) + 1
+    runner_end = source.index("\n'@", runner_start)
+    guest_runner = source[runner_start:runner_end]
+
+    evidence_root = tmp_path / "ReleaseEvidence"
+    evidence_root.mkdir()
+    clean_room_runner = evidence_root / "clean-room-runner.ps1"
+    clean_room_runner.write_text(
+        "param([Parameter(ValueFromRemainingArguments=$true)]$Ignored)\n"
+        "[IO.File]::WriteAllText(\n"
+        "    (Join-Path $PSScriptRoot 'clean-room-report.json'),\n"
+        "    '{}',\n"
+        "    [Text.UTF8Encoding]::new($false)\n"
+        ")\n"
+        f"exit {clean_room_exit_code}\n",
+        encoding="utf-8",
+    )
+    escaped_evidence_root = str(evidence_root)
+    guest_runner = (
+        guest_runner.replace(
+            "C:\\ReleaseEvidence",
+            escaped_evidence_root,
+        )
+        .replace("__ARCHIVE_NAME__", "candidate.zip")
+        .replace("__ARCHIVE_SHA256__", "sha256:" + "a" * 64)
+        .replace("__WIDGETS_ARCHIVE_NAME__", "widgets.zip")
+        .replace("__WIDGETS_ARCHIVE_SHA256__", "sha256:" + "b" * 64)
+        .replace("__SOURCE_COMMIT__", "c" * 40)
+        .replace("__RESULT_ACK_TOKEN__", "d" * 32)
+        .replace(
+            "$resultAckDeadline = [DateTime]::UtcNow.AddSeconds(60)",
+            "$resultAckDeadline = [DateTime]::UtcNow.AddSeconds(2)",
+        )
+        .replace(
+            "& shutdown.exe /s /t 0",
+            "[IO.File]::WriteAllText(\n"
+            "    (Join-Path $PSScriptRoot 'shutdown-observed.txt'),\n"
+            "    'observed',\n"
+            "    [Text.UTF8Encoding]::new($false)\n"
+            ")",
+        )
+    )
+    guest_runner_path = tmp_path / "sandbox-runner.ps1"
+    guest_runner_path.write_text(guest_runner, encoding="utf-8")
+
+    process = subprocess.Popen(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(guest_runner_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    exit_code_path = evidence_root / "sandbox-exit-code.txt"
+    deadline = time.monotonic() + 10
+    while not exit_code_path.is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert exit_code_path.is_file()
+    if ack_value is not None:
+        (evidence_root / "sandbox-result-ack.txt").write_text(
+            ack_value,
+            encoding="utf-8",
+        )
+    stdout, stderr = process.communicate(timeout=15)
+
+    assert process.returncode == 0, stderr
+    assert stdout == ""
+    assert (evidence_root / "clean-room-report.json").is_file()
+    assert (evidence_root / "sandbox-exit-code.txt").read_text(
+        encoding="utf-8"
+    ) == str(clean_room_exit_code)
+    assert (tmp_path / "shutdown-observed.txt").is_file()
+    ack_received_path = evidence_root / "sandbox-result-ack-received.txt"
+    if ack_value == "d" * 32:
+        assert ack_received_path.read_text(encoding="utf-8") == ack_value
+        assert not (evidence_root / "sandbox-error.txt").exists()
+    else:
+        assert not ack_received_path.exists()
+    if clean_room_exit_code == 0 and ack_value != "d" * 32:
+        assert (evidence_root / "sandbox-error.txt").read_text(
+            encoding="utf-8"
+        ) == "Windows Sandbox result acknowledgment was not received."
+    elif clean_room_exit_code != 0:
+        assert not (evidence_root / "sandbox-error.txt").exists()
 
 
 def test_issue_118_installed_migration_modes_use_real_public_persistence(

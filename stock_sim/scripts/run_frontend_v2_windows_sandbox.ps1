@@ -83,6 +83,11 @@ $configurationPath = Join-Path $resolvedEvidence "frontend-v2-offline.wsb"
 $exitCodePath = Join-Path $resolvedEvidence "sandbox-exit-code.txt"
 $reportPath = Join-Path $resolvedEvidence "clean-room-report.json"
 $sandboxErrorPath = Join-Path $resolvedEvidence "sandbox-error.txt"
+$resultAckPath = Join-Path $resolvedEvidence "sandbox-result-ack.txt"
+$resultAckReceivedPath = Join-Path `
+    $resolvedEvidence `
+    "sandbox-result-ack-received.txt"
+$resultAckToken = [Guid]::NewGuid().ToString("N")
 Copy-Item `
     -LiteralPath $resolvedCleanRoomScript `
     -Destination $cleanRoomRunnerPath
@@ -119,6 +124,39 @@ catch {
     [string]$exitCode,
     [Text.UTF8Encoding]::new($false)
 )
+$expectedResultAck = "__RESULT_ACK_TOKEN__"
+$resultAckDeadline = [DateTime]::UtcNow.AddSeconds(60)
+$resultAckReceived = $false
+do {
+    $resultAckPath = "C:\ReleaseEvidence\sandbox-result-ack.txt"
+    if (Test-Path -LiteralPath $resultAckPath -PathType Leaf) {
+        $observedResultAck = (
+            Get-Content -LiteralPath $resultAckPath -Raw -Encoding UTF8
+        ).Trim()
+        if ($observedResultAck -ceq $expectedResultAck) {
+            [IO.File]::WriteAllText(
+                "C:\ReleaseEvidence\sandbox-result-ack-received.txt",
+                $observedResultAck,
+                [Text.UTF8Encoding]::new($false)
+            )
+            $resultAckReceived = $true
+            break
+        }
+    }
+    Start-Sleep -Milliseconds 200
+}
+while ([DateTime]::UtcNow -lt $resultAckDeadline)
+if (
+    -not $resultAckReceived -and
+    $exitCode -eq 0 -and
+    -not (Test-Path -LiteralPath "C:\ReleaseEvidence\sandbox-error.txt")
+) {
+    [IO.File]::WriteAllText(
+        "C:\ReleaseEvidence\sandbox-error.txt",
+        "Windows Sandbox result acknowledgment was not received.",
+        [Text.UTF8Encoding]::new($false)
+    )
+}
 & shutdown.exe /s /t 0
 '@
 $runner = $runner.Replace(
@@ -140,6 +178,10 @@ $runner = $runner.Replace(
 $runner = $runner.Replace(
     "__SOURCE_COMMIT__",
     $SourceCommit.Replace('"', '""')
+)
+$runner = $runner.Replace(
+    "__RESULT_ACK_TOKEN__",
+    $resultAckToken
 )
 [IO.File]::WriteAllText(
     $runnerPath,
@@ -343,7 +385,72 @@ if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
 $sandboxExitCode = (
     Get-Content -LiteralPath $exitCodePath -Raw -Encoding UTF8
 ).Trim()
-$sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
+$reportVisibilityDeadline = [DateTime]::UtcNow.AddSeconds(30)
+while (
+    -not (Test-Path -LiteralPath $reportPath -PathType Leaf) -and
+    [DateTime]::UtcNow -lt $reportVisibilityDeadline
+) {
+    Start-Sleep -Milliseconds 200
+}
+$reportVisible = Test-Path -LiteralPath $reportPath -PathType Leaf
+$resultAckWriteFailure = $null
+$resultAckPersisted = $false
+if ($reportVisible) {
+    try {
+        [IO.File]::WriteAllText(
+            $resultAckPath,
+            $resultAckToken,
+            [Text.UTF8Encoding]::new($false)
+        )
+        $observedResultAck = (
+            Get-Content -LiteralPath $resultAckPath -Raw -Encoding UTF8
+        ).Trim()
+        $expectedResultAck = $resultAckToken
+        if ($observedResultAck -cne $expectedResultAck) {
+            $resultAckWriteFailure = (
+                "Windows Sandbox result acknowledgment was not persisted."
+            )
+        }
+        else {
+            $resultAckPersisted = $true
+        }
+    }
+    catch {
+        $resultAckWriteFailure = (
+            "Windows Sandbox result acknowledgment was not persisted."
+        )
+    }
+}
+$resultAckConfirmed = $false
+if ($resultAckPersisted) {
+    $resultAckReceivedDeadline = [DateTime]::UtcNow.AddSeconds(65)
+    while ([DateTime]::UtcNow -lt $resultAckReceivedDeadline) {
+        if (
+            Test-Path `
+                -LiteralPath $resultAckReceivedPath `
+                -PathType Leaf
+        ) {
+            try {
+                $observedResultAckReceived = (
+                    Get-Content `
+                        -LiteralPath $resultAckReceivedPath `
+                        -Raw `
+                        -Encoding UTF8
+                ).Trim()
+                $expectedResultAck = $resultAckToken
+                if ($observedResultAckReceived -ceq $expectedResultAck) {
+                    $resultAckConfirmed = $true
+                    break
+                }
+            }
+            catch {
+                # Keep the failure at the redacted acknowledgment boundary.
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+}
+$sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(70)
 do {
     $sandboxProcess.Refresh()
     $launcherAlive = -not $sandboxProcess.HasExited
@@ -367,8 +474,17 @@ if ($sandboxExitCode -ne "0") {
     }
     throw "Windows Sandbox validation failed with code $sandboxExitCode. $details"
 }
-if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+if ($null -ne $resultAckWriteFailure) {
+    throw $resultAckWriteFailure
+}
+if ($resultAckPersisted -and -not $resultAckConfirmed) {
+    throw "Windows Sandbox did not confirm the result acknowledgment."
+}
+if (-not $reportVisible) {
     throw "Windows Sandbox did not produce clean-room-report.json."
+}
+if (Test-Path -LiteralPath $sandboxErrorPath -PathType Leaf) {
+    throw "Windows Sandbox reported a redacted failure after exit code 0."
 }
 if (
     Test-OwnedWindowsSandboxRemoteSessionAlive `

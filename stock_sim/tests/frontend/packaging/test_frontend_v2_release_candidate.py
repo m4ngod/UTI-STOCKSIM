@@ -2204,6 +2204,14 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "C:\\ReleaseInputWidgets" in script
     assert "3600" in script
     assert "sandbox-exit-code.txt" in script
+    assert "sandbox-result-ack.txt" in script
+    assert "sandbox-result-ack-received.txt" in script
+    assert '$resultAckToken = [Guid]::NewGuid().ToString("N")' in script
+    assert "$resultAckDeadline" in script
+    assert "$observedResultAck -ceq $expectedResultAck" in script
+    assert "$observedResultAckReceived -ceq $expectedResultAck" in script
+    assert "Windows Sandbox result acknowledgment was not received." in script
+    assert "Windows Sandbox did not confirm the result acknowledgment." in script
     assert "shutdown.exe /s /t 0" in script
     assert "Test-Path -LiteralPath $exitCodePath" in script
     assert "Start-Sleep -Milliseconds 500" in script
@@ -2231,6 +2239,26 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     ) in script
     assert script.index("$sandboxShutdownDeadline") < script.index(
         'if ($sandboxExitCode -ne "0")'
+    )
+    assert script.index(
+        "[IO.File]::WriteAllText(\n            $resultAckPath"
+    ) < script.index("$sandboxShutdownDeadline")
+    assert script.index("$reportVisibilityDeadline") < script.index(
+        "[IO.File]::WriteAllText(\n            $resultAckPath"
+    )
+    assert script.index("$resultAckReceivedDeadline") < script.index(
+        "$sandboxShutdownDeadline"
+    )
+    assert script.index("$resultAckDeadline") < script.index(
+        "shutdown.exe /s /t 0"
+    )
+    assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
+        "if ($null -ne $resultAckWriteFailure)"
+    )
+    assert script.index(
+        "Stop-OwnedWindowsSandboxLauncher `\n    -LauncherIdentity"
+    ) < script.index(
+        "if ($null -ne $resultAckWriteFailure)"
     )
     assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
         "Windows Sandbox RemoteSession remained active after successful "
