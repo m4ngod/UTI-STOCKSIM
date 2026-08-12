@@ -2216,38 +2216,43 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "Test-Path -LiteralPath $exitCodePath" in script
     assert "Start-Sleep -Milliseconds 500" in script
     assert "WaitForExit" not in script
-    assert "$sandboxShutdownDeadline" in script
+    assert "$sandboxGuestShutdownDeadline" in script
+    assert "$sandboxTerminalCloseDeadline" in script
     assert "$sandboxExitedBeforeResult" in script
     assert "$sandboxLaunchGraceDeadline" in script
     assert "$sandboxProcess.HasExited" in script
     assert "$sandboxLauncherIdentity" in script
     assert "StartTimeUtc" in script
     assert "function Stop-OwnedWindowsSandboxLauncher" in script
-    assert script.count("Stop-OwnedWindowsSandboxLauncher") == 4
-    assert "function Get-OwnedWindowsSandboxRemoteSession" in script
-    assert "function Test-OwnedWindowsSandboxRemoteSessionAlive" in script
-    assert "ParentProcessId -eq $LauncherIdentity.ProcessId" in script
-    assert "$sandboxRemoteSessionIdentity" in script
+    assert script.count("Stop-OwnedWindowsSandboxLauncher") == 2
+    assert script.count("Stop-Process") == 1
+    assert "function Get-OwnedWindowsSandboxTerminalProcess" in script
+    assert "function Test-OwnedWindowsProcessIdentityAlive" in script
+    assert "function Test-OwnedWindowsSandboxGuestProcessesStopped" in script
+    assert "function Request-OwnedWindowsSandboxTerminalClose" in script
+    assert "[int]$candidate.ParentProcessId -eq" in script
+    assert "$LauncherIdentity.ProcessId" in script
+    assert "$sandboxTerminalProcessIdentity" in script
     assert "$existingSandboxProcessIds" not in script
     assert "WindowsSandboxRemoteSession.exe" in script
-    assert "WindowsSandboxServer" not in script
-    assert "WindowsSandboxClient" not in script
+    assert "WindowsSandboxServer.exe" in script
+    assert "WindowsSandboxClient.exe" in script
+    assert '"vmwp.exe"' in script
     assert "Windows Sandbox exited before producing certification result" in script
     assert (
-        "Windows Sandbox RemoteSession remained active after successful "
-        "certification."
+        "Windows Sandbox terminal process remained active after normal close."
     ) in script
-    assert script.index("$sandboxShutdownDeadline") < script.index(
+    assert script.index("$sandboxGuestShutdownDeadline") < script.index(
         'if ($sandboxExitCode -ne "0")'
     )
     assert script.index(
         "[IO.File]::WriteAllText(\n            $resultAckPath"
-    ) < script.index("$sandboxShutdownDeadline")
+    ) < script.index("$sandboxGuestShutdownDeadline")
     assert script.index("$reportVisibilityDeadline") < script.index(
         "[IO.File]::WriteAllText(\n            $resultAckPath"
     )
     assert script.index("$resultAckReceivedDeadline") < script.index(
-        "$sandboxShutdownDeadline"
+        "$sandboxGuestShutdownDeadline"
     )
     assert script.index("$resultAckDeadline") < script.index(
         "shutdown.exe /s /t 0"
@@ -2255,21 +2260,20 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
         "if ($null -ne $resultAckWriteFailure)"
     )
-    assert script.index(
-        "Stop-OwnedWindowsSandboxLauncher `\n    -LauncherIdentity"
-    ) < script.index(
-        "if ($null -ne $resultAckWriteFailure)"
+    assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
+        "Windows Sandbox terminal process ownership was not observed."
     )
     assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
-        "Windows Sandbox RemoteSession remained active after successful "
-        "certification."
+        "Windows Sandbox terminal process remained active after normal close."
     )
     assert script.index(
         "Windows Sandbox did not produce clean-room-report.json."
     ) < script.index(
-        "Windows Sandbox RemoteSession remained active after successful "
-        "certification."
+        "Windows Sandbox terminal process remained active after normal close."
     )
+    assert "A Hyper-V VM worker already exists." in script
+    assert "Windows Sandbox compute-system ownership was not observed." in script
+    assert "Windows Sandbox VM worker ownership was not observed." in script
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
     assert "Windows Sandbox certification failed at a redacted boundary." in script

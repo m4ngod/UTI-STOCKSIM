@@ -262,58 +262,74 @@ function Stop-OwnedWindowsSandboxLauncher {
         -ErrorAction SilentlyContinue
 }
 
-function Get-OwnedWindowsSandboxRemoteSession {
+function Get-OwnedWindowsSandboxTerminalProcess {
     param(
         [Parameter(Mandatory = $true)]
         [PSCustomObject]$LauncherIdentity
     )
 
     $earliestChildStartUtc = $LauncherIdentity.StartTimeUtc.AddSeconds(-2)
-    $candidates = Get-CimInstance `
-        -ClassName Win32_Process `
-        -Filter "Name = 'WindowsSandboxRemoteSession.exe'" `
-        -ErrorAction SilentlyContinue
-    foreach ($candidate in @($candidates)) {
-        try {
-            $startTimeUtc = (
-                [DateTime]$candidate.CreationDate
-            ).ToUniversalTime()
-        }
-        catch {
-            continue
-        }
-        if (
-            [int]$candidate.ParentProcessId -eq $LauncherIdentity.ProcessId -and
-            $startTimeUtc -ge $earliestChildStartUtc
-        ) {
-            return [PSCustomObject]@{
-                ProcessId = [int]$candidate.ProcessId
-                ParentProcessId = [int]$candidate.ParentProcessId
-                StartTimeUtc = $startTimeUtc
+    $ownedCandidates = @()
+    foreach ($terminalName in @(
+        "WindowsSandboxClient.exe",
+        "WindowsSandboxRemoteSession.exe"
+    )) {
+        $candidates = Get-CimInstance `
+            -ClassName Win32_Process `
+            -Filter "Name = '$terminalName'" `
+            -ErrorAction SilentlyContinue
+        foreach ($candidate in @($candidates)) {
+            try {
+                $startTimeUtc = (
+                    [DateTime]$candidate.CreationDate
+                ).ToUniversalTime()
+            }
+            catch {
+                continue
+            }
+            if (
+                [int]$candidate.ParentProcessId -eq
+                    $LauncherIdentity.ProcessId -and
+                $startTimeUtc -ge $earliestChildStartUtc
+            ) {
+                $ownedCandidates += [PSCustomObject]@{
+                    Name = $terminalName
+                    ProcessId = [int]$candidate.ProcessId
+                    ParentProcessId = [int]$candidate.ParentProcessId
+                    StartTimeUtc = $startTimeUtc
+                }
             }
         }
     }
-    return $null
+    if ($ownedCandidates.Count -gt 1) {
+        throw "Windows Sandbox terminal process ownership was ambiguous."
+    }
+    return $ownedCandidates | Select-Object -First 1
 }
 
-function Test-OwnedWindowsSandboxRemoteSessionAlive {
+function Test-OwnedWindowsProcessIdentityAlive {
     param(
         [AllowNull()]
-        [PSCustomObject]$RemoteSessionIdentity
+        [PSCustomObject]$ProcessIdentity
     )
 
-    if ($null -eq $RemoteSessionIdentity) {
+    if ($null -eq $ProcessIdentity) {
         return $false
     }
     $candidate = Get-CimInstance `
         -ClassName Win32_Process `
-        -Filter "ProcessId = $($RemoteSessionIdentity.ProcessId)" `
+        -Filter "ProcessId = $($ProcessIdentity.ProcessId)" `
         -ErrorAction SilentlyContinue
     if (
         $null -eq $candidate -or
-        [string]$candidate.Name -cne "WindowsSandboxRemoteSession.exe" -or
+        [string]$candidate.Name -cne [string]$ProcessIdentity.Name
+    ) {
+        return $false
+    }
+    if (
+        $null -ne $ProcessIdentity.ParentProcessId -and
         [int]$candidate.ParentProcessId -ne
-            $RemoteSessionIdentity.ParentProcessId
+            [int]$ProcessIdentity.ParentProcessId
     ) {
         return $false
     }
@@ -325,10 +341,471 @@ function Test-OwnedWindowsSandboxRemoteSessionAlive {
     catch {
         return $false
     }
-    return $actualStartTimeUtc -eq $RemoteSessionIdentity.StartTimeUtc
+    return $actualStartTimeUtc -eq $ProcessIdentity.StartTimeUtc
 }
 
+function Test-OwnedWindowsSandboxGuestProcessesStopped {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$ServerIdentity,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [PSCustomObject[]]$VmWorkerIdentities
+    )
+
+    if (
+        Test-OwnedWindowsProcessIdentityAlive `
+            -ProcessIdentity $ServerIdentity
+    ) {
+        return $false
+    }
+    foreach ($workerIdentity in @($VmWorkerIdentities)) {
+        if (
+            Test-OwnedWindowsProcessIdentityAlive `
+                -ProcessIdentity $workerIdentity
+        ) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-OwnedWindowsSandboxServerOwnership {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$TerminalProcessIdentity,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [PSCustomObject[]]$ServerIdentities
+    )
+
+    if ($null -eq $TerminalProcessIdentity) {
+        return $false
+    }
+    if (
+        [string]$TerminalProcessIdentity.Name -ceq
+            "WindowsSandboxClient.exe"
+    ) {
+        return $ServerIdentities.Count -eq 0
+    }
+    if (
+        [string]$TerminalProcessIdentity.Name -cne
+            "WindowsSandboxRemoteSession.exe"
+    ) {
+        return $false
+    }
+    return (
+        $ServerIdentities.Count -eq 1 -and
+        [int]$ServerIdentities[0].ParentProcessId -eq
+            [int]$TerminalProcessIdentity.ProcessId
+    )
+}
+
+function Get-NewWindowsSandboxGuestProcessIdentities {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [int[]]$BaselineProcessIds,
+        [Parameter(Mandatory = $true)]
+        [DateTime]$LauncherStartTimeUtc
+    )
+
+    $identities = @()
+    foreach ($processName in @("WindowsSandboxServer.exe", "vmwp.exe")) {
+        $candidates = Get-CimInstance `
+            -ClassName Win32_Process `
+            -Filter "Name = '$processName'" `
+            -ErrorAction SilentlyContinue
+        foreach ($candidate in @($candidates)) {
+            if ($BaselineProcessIds -contains [int]$candidate.ProcessId) {
+                continue
+            }
+            try {
+                $startTimeUtc = (
+                    [DateTime]$candidate.CreationDate
+                ).ToUniversalTime()
+            }
+            catch {
+                continue
+            }
+            if ($startTimeUtc -lt $LauncherStartTimeUtc.AddSeconds(-2)) {
+                continue
+            }
+            $identities += [PSCustomObject]@{
+                Name = $processName
+                ProcessId = [int]$candidate.ProcessId
+                ParentProcessId = [int]$candidate.ParentProcessId
+                StartTimeUtc = $startTimeUtc
+            }
+        }
+    }
+    if (@($identities | Where-Object { $_.Name -ceq "vmwp.exe" }).Count -gt 1) {
+        throw "Windows Sandbox VM worker ownership was ambiguous."
+    }
+    if (
+        @(
+            $identities |
+                Where-Object { $_.Name -ceq "WindowsSandboxServer.exe" }
+        ).Count -gt 1
+    ) {
+        throw "Windows Sandbox server ownership was ambiguous."
+    }
+    return $identities
+}
+
+function Get-WindowsSandboxComputeSystemSnapshot {
+    $hcsdiag = Get-Command hcsdiag.exe -ErrorAction Stop
+    $rawSnapshot = & $hcsdiag.Source list -raw
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows Sandbox compute-system inventory was unavailable."
+    }
+    try {
+        $snapshot = @($rawSnapshot | ConvertFrom-Json -ErrorAction Stop)
+    }
+    catch {
+        throw "Windows Sandbox compute-system inventory was unreadable."
+    }
+    return @(
+        $snapshot |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Id = [string]$_.Id
+                    SystemType = [string]$_.SystemType
+                    Owner = [string]$_.Owner
+                    RuntimeId = [string]$_.RuntimeId
+                    RuntimeTemplateId = [string]$_.RuntimeTemplateId
+                }
+            }
+    )
+}
+
+function Get-NewWindowsSandboxComputeSystemIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$BaselineComputeSystemIds
+    )
+
+    $newComputeSystems = @(
+        Get-WindowsSandboxComputeSystemSnapshot |
+            Where-Object {
+                $_.Id -and
+                -not ($BaselineComputeSystemIds -contains $_.Id)
+            }
+    )
+    if ($newComputeSystems.Count -gt 1) {
+        throw "Windows Sandbox compute-system ownership was ambiguous."
+    }
+    if ($newComputeSystems.Count -eq 0) {
+        return $null
+    }
+    $candidate = $newComputeSystems[0]
+    if (
+        $candidate.SystemType -cne "VirtualMachine" -or
+        $candidate.Owner -cne "Madrid" -or
+        $candidate.RuntimeId -cne $candidate.Id -or
+        -not $candidate.RuntimeTemplateId -or
+        -not ($BaselineComputeSystemIds -contains $candidate.RuntimeTemplateId)
+    ) {
+        throw "Windows Sandbox compute-system ownership was ambiguous."
+    }
+    return $candidate
+}
+
+function Request-OwnedWindowsSandboxRemoteSessionClose {
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$TerminalProcessIdentity
+    )
+
+    if (
+        [string]$TerminalProcessIdentity.Name -cne
+            "WindowsSandboxRemoteSession.exe"
+    ) {
+        return $false
+    }
+    try {
+        $script:sandboxTerminalCloseJob = Start-Job `
+            -ScriptBlock {
+                param(
+                    [int]$ProcessId,
+                    [int]$ParentProcessId,
+                    [string]$StartTimeUtcText
+                )
+                $ErrorActionPreference = "Stop"
+                $expectedStartTimeUtc = [DateTime]::Parse(
+                    $StartTimeUtcText,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind
+                ).ToUniversalTime()
+                $ownedProcess = Get-CimInstance `
+                    -ClassName Win32_Process `
+                    -Filter "ProcessId = $ProcessId" `
+                    -ErrorAction Stop
+                if (
+                    [string]$ownedProcess.Name -cne
+                        "WindowsSandboxRemoteSession.exe" -or
+                    [int]$ownedProcess.ParentProcessId -ne $ParentProcessId -or
+                    ([DateTime]$ownedProcess.CreationDate).ToUniversalTime() -ne
+                        $expectedStartTimeUtc
+                ) {
+                    throw "Owned Sandbox terminal identity changed."
+                }
+                $ownedTerminal = Get-Process -Id $ProcessId -ErrorAction Stop
+                if (
+                    [string]$ownedTerminal.ProcessName -cne
+                        "WindowsSandboxRemoteSession" -or
+                    [Math]::Abs((
+                        $ownedTerminal.StartTime.ToUniversalTime() -
+                            $expectedStartTimeUtc
+                    ).TotalMilliseconds) -gt 1.0 -or
+                    $ownedTerminal.MainWindowHandle -eq [IntPtr]::Zero
+                ) {
+                    throw "Owned Sandbox terminal window identity changed."
+                }
+                Add-Type -AssemblyName UIAutomationClient
+                Add-Type -AssemblyName UIAutomationTypes
+                $ownedWindow = (
+                    [System.Windows.Automation.AutomationElement]::FromHandle(
+                        $ownedTerminal.MainWindowHandle
+                    )
+                )
+                if ($null -eq $ownedWindow) {
+                    throw "Owned Sandbox terminal window was unavailable."
+                }
+                $ownedCloseActions = @(
+                    $ownedWindow.FindAll(
+                        [System.Windows.Automation.TreeScope]::Descendants,
+                        [System.Windows.Automation.Condition]::TrueCondition
+                        ) |
+                        Where-Object {
+                            [string]$_.Current.ControlType.ProgrammaticName -ceq
+                                "ControlType.Button" -and
+                            [string]$_.Current.AutomationId -ceq "" -and
+                            [string]$_.Current.ClassName -ceq "Button" -and
+                            [string]$_.Current.FrameworkId -ceq "XAML" -and
+                            [bool]$_.Current.IsEnabled -and
+                            -not [bool]$_.Current.IsOffscreen
+                        }
+                )
+                if ($ownedCloseActions.Count -ne 1) {
+                    throw "Owned Sandbox terminal Close action was ambiguous."
+                }
+                $ownedInvokePattern = $null
+                if (
+                    -not $ownedCloseActions[0].TryGetCurrentPattern(
+                        [System.Windows.Automation.InvokePattern]::Pattern,
+                        [ref]$ownedInvokePattern
+                    )
+                ) {
+                    throw "Owned Sandbox terminal Close action was unavailable."
+                }
+                "sandbox-terminal-close-dispatch-started"
+                $ownedInvokePattern.Invoke()
+            } `
+            -ArgumentList @(
+                [int]$TerminalProcessIdentity.ProcessId,
+                [int]$TerminalProcessIdentity.ParentProcessId,
+                $TerminalProcessIdentity.StartTimeUtc.ToString("o")
+            )
+        return $null -ne $script:sandboxTerminalCloseJob
+    }
+    catch {
+        return $false
+    }
+}
+
+function Request-OwnedWindowsSandboxTerminalClose {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$TerminalProcessIdentity
+    )
+
+    if ($null -eq $TerminalProcessIdentity) {
+        return $false
+    }
+    $allowedTerminalProcessNames = @{
+        "WindowsSandboxClient.exe" = "WindowsSandboxClient"
+        "WindowsSandboxRemoteSession.exe" = "WindowsSandboxRemoteSession"
+    }
+    $terminalName = [string]$TerminalProcessIdentity.Name
+    if (-not $allowedTerminalProcessNames.ContainsKey($terminalName)) {
+        return $false
+    }
+    $candidate = Get-CimInstance `
+        -ClassName Win32_Process `
+        -Filter "ProcessId = $($TerminalProcessIdentity.ProcessId)" `
+        -ErrorAction SilentlyContinue
+    if (
+        $null -eq $candidate -or
+        [string]$candidate.Name -cne $terminalName -or
+        [int]$candidate.ParentProcessId -ne
+            $TerminalProcessIdentity.ParentProcessId
+    ) {
+        return $false
+    }
+    try {
+        $actualStartTimeUtc = (
+            [DateTime]$candidate.CreationDate
+        ).ToUniversalTime()
+    }
+    catch {
+        return $false
+    }
+    if ($actualStartTimeUtc -ne $TerminalProcessIdentity.StartTimeUtc) {
+        return $false
+    }
+    $terminalProcess = Get-Process `
+        -Id $TerminalProcessIdentity.ProcessId `
+        -ErrorAction SilentlyContinue
+    if (
+        $null -eq $terminalProcess -or
+        [string]$terminalProcess.ProcessName -cne
+            $allowedTerminalProcessNames[$terminalName]
+    ) {
+        return $false
+    }
+    try {
+        if (
+            [Math]::Abs((
+                $terminalProcess.StartTime.ToUniversalTime() -
+                    $TerminalProcessIdentity.StartTimeUtc
+            ).TotalMilliseconds) -gt 1.0 -or
+            $terminalProcess.MainWindowHandle -eq [IntPtr]::Zero
+        ) {
+            return $false
+        }
+        if ($terminalName -ceq "WindowsSandboxRemoteSession.exe") {
+            return Request-OwnedWindowsSandboxRemoteSessionClose `
+                -TerminalProcessIdentity $TerminalProcessIdentity
+        }
+        return [bool]$terminalProcess.CloseMainWindow()
+    }
+    catch {
+        return $false
+    }
+}
+
+function Complete-OwnedWindowsSandboxTerminalCloseJob {
+    param(
+        [AllowNull()]
+        [System.Management.Automation.Job]$CloseJob
+    )
+
+    if ($null -eq $CloseJob) {
+        return $false
+    }
+    $invokeConfirmed = $false
+    try {
+        $invokeResult = @(
+            Receive-Job -Job $CloseJob -ErrorAction SilentlyContinue
+        )
+        $invokeConfirmed = @(
+            $invokeResult |
+                Where-Object {
+                    [string]$_ -ceq
+                        "sandbox-terminal-close-dispatch-started"
+                }
+        ).Count -eq 1
+    }
+    catch {
+        $invokeConfirmed = $false
+    }
+    Stop-Job -Job $CloseJob -ErrorAction SilentlyContinue
+    Remove-Job -Job $CloseJob -Force -ErrorAction SilentlyContinue
+    return $invokeConfirmed
+}
+
+function Request-OwnedWindowsSandboxFailureClose {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$TerminalProcessIdentity
+    )
+
+    if ($null -eq $TerminalProcessIdentity) {
+        return
+    }
+    $allowedProcessNames = @{
+        "WindowsSandboxClient.exe" = "WindowsSandboxClient"
+        "WindowsSandboxRemoteSession.exe" = "WindowsSandboxRemoteSession"
+    }
+    $terminalName = [string]$TerminalProcessIdentity.Name
+    if (-not $allowedProcessNames.ContainsKey($terminalName)) {
+        return
+    }
+    $candidate = Get-CimInstance `
+        -ClassName Win32_Process `
+        -Filter "ProcessId = $($TerminalProcessIdentity.ProcessId)" `
+        -ErrorAction SilentlyContinue
+    if (
+        $null -eq $candidate -or
+        [string]$candidate.Name -cne $terminalName -or
+        [int]$candidate.ParentProcessId -ne
+            [int]$TerminalProcessIdentity.ParentProcessId
+    ) {
+        return
+    }
+    try {
+        if (
+            ([DateTime]$candidate.CreationDate).ToUniversalTime() -ne
+                $TerminalProcessIdentity.StartTimeUtc
+        ) {
+            return
+        }
+        $terminalProcess = Get-Process `
+            -Id $TerminalProcessIdentity.ProcessId `
+            -ErrorAction SilentlyContinue
+        if (
+            $null -eq $terminalProcess -or
+            [string]$terminalProcess.ProcessName -cne
+                $allowedProcessNames[$terminalName] -or
+            [Math]::Abs((
+                $terminalProcess.StartTime.ToUniversalTime() -
+                    $TerminalProcessIdentity.StartTimeUtc
+            ).TotalMilliseconds) -gt 1.0 -or
+            $terminalProcess.MainWindowHandle -eq [IntPtr]::Zero
+        ) {
+            return
+        }
+        $null = $terminalProcess.CloseMainWindow()
+    }
+    catch {
+        # Failure cleanup must preserve the original redacted gate failure.
+    }
+}
+
+$existingWindowsSandboxProcesses = @(
+    Get-CimInstance `
+        -ClassName Win32_Process `
+        -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.Name -like "WindowsSandbox*" }
+)
+if ($existingWindowsSandboxProcesses.Count -ne 0) {
+    throw "A Windows Sandbox process already exists."
+}
+$existingVmWorkerProcesses = @(
+    Get-CimInstance `
+        -ClassName Win32_Process `
+        -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.Name -ceq "vmwp.exe" }
+)
+if ($existingVmWorkerProcesses.Count -ne 0) {
+    throw "A Hyper-V VM worker already exists."
+}
+$baselineComputeSystemIds = @(
+    Get-WindowsSandboxComputeSystemSnapshot |
+        ForEach-Object { $_.Id }
+)
+$baselineSandboxGuestProcessIds = @()
 $sandboxCommand = Get-Command WindowsSandbox.exe -ErrorAction Stop
+$sandboxProcess = $null
+$sandboxLauncherIdentity = $null
+$sandboxTerminalProcessIdentity = $null
+$sandboxComputeSystemIdentity = $null
+$sandboxGuestProcessIdentities = @()
+$script:sandboxTerminalCloseJob = $null
+$runnerCompleted = $false
+try {
 $sandboxProcess = Start-Process `
     -FilePath $sandboxCommand.Source `
     -ArgumentList "`"$configurationPath`"" `
@@ -340,31 +817,79 @@ $sandboxLauncherIdentity = [PSCustomObject]@{
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $sandboxLaunchGraceDeadline = [DateTime]::UtcNow.AddSeconds(5)
 $sandboxExitedBeforeResult = $false
-$sandboxRemoteSessionIdentity = $null
 while (
     -not (Test-Path -LiteralPath $exitCodePath -PathType Leaf) -and
     [DateTime]::UtcNow -lt $deadline
 ) {
-    if ($null -eq $sandboxRemoteSessionIdentity) {
-        $sandboxRemoteSessionIdentity = (
-            Get-OwnedWindowsSandboxRemoteSession `
+    if ($null -eq $sandboxTerminalProcessIdentity) {
+        $sandboxTerminalProcessIdentity = (
+            Get-OwnedWindowsSandboxTerminalProcess `
                 -LauncherIdentity $sandboxLauncherIdentity
         )
+    }
+    $observedComputeSystemIdentity = (
+        Get-NewWindowsSandboxComputeSystemIdentity `
+            -BaselineComputeSystemIds $baselineComputeSystemIds
+    )
+    if ($null -ne $observedComputeSystemIdentity) {
+        if ($null -eq $sandboxComputeSystemIdentity) {
+            $sandboxComputeSystemIdentity = $observedComputeSystemIdentity
+        }
+        elseif (
+            $observedComputeSystemIdentity.Id -cne
+                $sandboxComputeSystemIdentity.Id -or
+            $observedComputeSystemIdentity.RuntimeId -cne
+                $sandboxComputeSystemIdentity.RuntimeId
+        ) {
+            throw "Windows Sandbox compute-system ownership was ambiguous."
+        }
+    }
+    $observedGuestProcesses = @(
+        Get-NewWindowsSandboxGuestProcessIdentities `
+            -BaselineProcessIds $baselineSandboxGuestProcessIds `
+            -LauncherStartTimeUtc $sandboxLauncherIdentity.StartTimeUtc
+    )
+    foreach ($observedGuestProcess in $observedGuestProcesses) {
+        if (
+            -not ($sandboxGuestProcessIdentities | Where-Object {
+                $_.Name -ceq $observedGuestProcess.Name -and
+                $_.ProcessId -eq $observedGuestProcess.ProcessId -and
+                $_.StartTimeUtc -eq $observedGuestProcess.StartTimeUtc
+            })
+        ) {
+            $sandboxGuestProcessIdentities += $observedGuestProcess
+        }
+    }
+    if (
+        @(
+            $sandboxGuestProcessIdentities |
+                Where-Object { $_.Name -ceq "vmwp.exe" }
+        ).Count -gt 1
+    ) {
+        throw "Windows Sandbox VM worker ownership was ambiguous."
+    }
+    if (
+        @(
+            $sandboxGuestProcessIdentities |
+                Where-Object { $_.Name -ceq "WindowsSandboxServer.exe" }
+        ).Count -gt 1
+    ) {
+        throw "Windows Sandbox server ownership was ambiguous."
     }
     if ([DateTime]::UtcNow -ge $sandboxLaunchGraceDeadline) {
         $sandboxProcess.Refresh()
         if (
             $sandboxProcess.HasExited -and
-            -not (Test-OwnedWindowsSandboxRemoteSessionAlive `
-                -RemoteSessionIdentity $sandboxRemoteSessionIdentity)
+            -not (Test-OwnedWindowsProcessIdentityAlive `
+                -ProcessIdentity $sandboxTerminalProcessIdentity)
         ) {
             $sandboxExitedBeforeResult = $true
             break
         }
         if (
-            $null -ne $sandboxRemoteSessionIdentity -and
-            -not (Test-OwnedWindowsSandboxRemoteSessionAlive `
-                -RemoteSessionIdentity $sandboxRemoteSessionIdentity)
+            $null -ne $sandboxTerminalProcessIdentity -and
+            -not (Test-OwnedWindowsProcessIdentityAlive `
+                -ProcessIdentity $sandboxTerminalProcessIdentity)
         ) {
             $sandboxExitedBeforeResult = $true
             break
@@ -373,13 +898,9 @@ while (
     Start-Sleep -Milliseconds 500
 }
 if ($sandboxExitedBeforeResult) {
-    Stop-OwnedWindowsSandboxLauncher `
-        -LauncherIdentity $sandboxLauncherIdentity
     throw "Windows Sandbox exited before producing certification result."
 }
 if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
-    Stop-OwnedWindowsSandboxLauncher `
-        -LauncherIdentity $sandboxLauncherIdentity
     throw "Windows Sandbox validation exceeded $TimeoutSeconds seconds."
 }
 $sandboxExitCode = (
@@ -450,20 +971,86 @@ if ($resultAckPersisted) {
         Start-Sleep -Milliseconds 200
     }
 }
-$sandboxShutdownDeadline = [DateTime]::UtcNow.AddSeconds(70)
+$sandboxGuestShutdownDeadline = [DateTime]::UtcNow.AddSeconds(70)
 do {
-    $sandboxProcess.Refresh()
-    $launcherAlive = -not $sandboxProcess.HasExited
-    $remoteSessionAlive = Test-OwnedWindowsSandboxRemoteSessionAlive `
-        -RemoteSessionIdentity $sandboxRemoteSessionIdentity
-    if (-not $launcherAlive -and -not $remoteSessionAlive) {
+    $serverIdentities = @(
+        $sandboxGuestProcessIdentities |
+            Where-Object { $_.Name -ceq "WindowsSandboxServer.exe" }
+    )
+    $serverIdentity = $serverIdentities | Select-Object -First 1
+    $vmWorkerIdentities = @(
+        $sandboxGuestProcessIdentities |
+            Where-Object { $_.Name -ceq "vmwp.exe" }
+    )
+    $guestProcessesStopped = Test-OwnedWindowsSandboxGuestProcessesStopped `
+        -ServerIdentity $serverIdentity `
+        -VmWorkerIdentities $vmWorkerIdentities
+    if ($guestProcessesStopped) {
         break
     }
     Start-Sleep -Milliseconds 500
 }
-while ([DateTime]::UtcNow -lt $sandboxShutdownDeadline)
-Stop-OwnedWindowsSandboxLauncher `
-    -LauncherIdentity $sandboxLauncherIdentity
+while ([DateTime]::UtcNow -lt $sandboxGuestShutdownDeadline)
+$vmWorkerIdentity = $vmWorkerIdentities | Select-Object -First 1
+$terminalName = [string]$sandboxTerminalProcessIdentity.Name
+$serverOwnershipValid = Test-OwnedWindowsSandboxServerOwnership `
+    -TerminalProcessIdentity $sandboxTerminalProcessIdentity `
+    -ServerIdentities $serverIdentities
+$terminalCloseRequested = $false
+$terminalCloseInvokeConfirmed = $false
+if (
+    $guestProcessesStopped -and
+    $(Test-OwnedWindowsProcessIdentityAlive `
+        -ProcessIdentity $sandboxTerminalProcessIdentity)
+) {
+    $terminalCloseRequested = Request-OwnedWindowsSandboxTerminalClose `
+        -TerminalProcessIdentity $sandboxTerminalProcessIdentity
+}
+$sandboxTerminalCloseDeadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+    $sandboxProcess.Refresh()
+    $launcherAlive = -not $sandboxProcess.HasExited
+    $terminalProcessAlive = Test-OwnedWindowsProcessIdentityAlive `
+        -ProcessIdentity $sandboxTerminalProcessIdentity
+    if (
+        -not $launcherAlive -and
+        -not $terminalProcessAlive -and
+        $guestProcessesStopped
+    ) {
+        break
+    }
+    Start-Sleep -Milliseconds 500
+}
+while ([DateTime]::UtcNow -lt $sandboxTerminalCloseDeadline)
+if ($null -ne $script:sandboxTerminalCloseJob) {
+    $terminalCloseInvokeConfirmed = (
+        Complete-OwnedWindowsSandboxTerminalCloseJob `
+            -CloseJob $script:sandboxTerminalCloseJob
+    )
+    $script:sandboxTerminalCloseJob = $null
+}
+$terminalProcessIdentityObserved = $null -ne $sandboxTerminalProcessIdentity
+$computeSystemIdentityObserved = $null -ne $sandboxComputeSystemIdentity
+$vmWorkerIdentityObserved = $null -ne $vmWorkerIdentity
+$remainingWindowsSandboxProcesses = @(
+    Get-CimInstance `
+        -ClassName Win32_Process `
+        -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.Name -like "WindowsSandbox*" }
+)
+$remainingVmWorkerProcesses = @(
+    Get-CimInstance `
+        -ClassName Win32_Process `
+        -Filter "Name = 'vmwp.exe'" `
+        -ErrorAction SilentlyContinue
+)
+$remainingNewComputeSystems = @(
+    Get-WindowsSandboxComputeSystemSnapshot |
+        Where-Object {
+            $_.Id -and
+            -not ($baselineComputeSystemIds -contains $_.Id)
+        }
+)
 
 if ($sandboxExitCode -ne "0") {
     $details = if (Test-Path -LiteralPath $sandboxErrorPath) {
@@ -486,11 +1073,62 @@ if (-not $reportVisible) {
 if (Test-Path -LiteralPath $sandboxErrorPath -PathType Leaf) {
     throw "Windows Sandbox reported a redacted failure after exit code 0."
 }
+if (-not $terminalProcessIdentityObserved) {
+    throw "Windows Sandbox terminal process ownership was not observed."
+}
+if (-not $computeSystemIdentityObserved) {
+    throw "Windows Sandbox compute-system ownership was not observed."
+}
+if (-not $vmWorkerIdentityObserved) {
+    throw "Windows Sandbox VM worker ownership was not observed."
+}
+if (-not $serverOwnershipValid) {
+    throw "Windows Sandbox server ownership was ambiguous."
+}
+if (-not $guestProcessesStopped) {
+    throw "Windows Sandbox guest processes remained active after guest shutdown."
+}
+if ($terminalProcessAlive -and -not $terminalCloseRequested) {
+    throw "Windows Sandbox terminal window did not accept a normal close request."
+}
 if (
-    Test-OwnedWindowsSandboxRemoteSessionAlive `
-        -RemoteSessionIdentity $sandboxRemoteSessionIdentity
+    $terminalName -ceq "WindowsSandboxRemoteSession.exe" -and
+    -not $terminalCloseInvokeConfirmed
 ) {
-    throw "Windows Sandbox RemoteSession remained active after successful certification."
+    throw "Windows Sandbox terminal Close action was not confirmed."
+}
+if ($remainingVmWorkerProcesses.Count -ne 0) {
+    throw "Windows Sandbox VM worker remained active after normal close."
+}
+if ($remainingNewComputeSystems.Count -ne 0) {
+    throw "Windows Sandbox compute system remained active after normal close."
+}
+if (
+    $terminalProcessAlive -or
+    $launcherAlive -or
+    $remainingWindowsSandboxProcesses.Count -ne 0
+) {
+    throw "Windows Sandbox terminal process remained active after normal close."
 }
 
+$runnerCompleted = $true
 Get-Item -LiteralPath $reportPath
+}
+finally {
+    if ($null -ne $script:sandboxTerminalCloseJob) {
+        $null = Complete-OwnedWindowsSandboxTerminalCloseJob `
+            -CloseJob $script:sandboxTerminalCloseJob
+        $script:sandboxTerminalCloseJob = $null
+    }
+    if (-not $runnerCompleted) {
+        Request-OwnedWindowsSandboxFailureClose `
+            -TerminalProcessIdentity $sandboxTerminalProcessIdentity
+    }
+    if (
+        -not $runnerCompleted -and
+        $null -ne $sandboxLauncherIdentity
+    ) {
+        Stop-OwnedWindowsSandboxLauncher `
+            -LauncherIdentity $sandboxLauncherIdentity
+    }
+}

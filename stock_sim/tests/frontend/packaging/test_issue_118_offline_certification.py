@@ -649,6 +649,613 @@ def test_sandbox_guest_runner_waits_for_host_result_acknowledgment(
         assert not (evidence_root / "sandbox-error.txt").exists()
 
 
+def test_sandbox_host_requests_only_the_exact_owned_terminal_window_to_close():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Request-OwnedWindowsSandboxTerminalClose"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "owned Sandbox terminal-close helper was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+
+$script:closeCalls = 0
+$script:candidateStartUtc = [DateTime]::Parse(
+    "2026-08-12T15:20:28.0318160Z"
+).ToUniversalTime()
+$script:candidateParentPid = 71072
+$script:candidatePid = 67668
+$script:expectedName = "WindowsSandboxClient.exe"
+$script:expectedProcessName = "WindowsSandboxClient"
+$script:remoteCloseCalls = 0
+
+function Request-OwnedWindowsSandboxRemoteSessionClose {
+    param($TerminalProcessIdentity)
+    $script:remoteCloseCalls += 1
+    return $true
+}
+
+function Get-CimInstance {
+    param($ClassName, $Filter, $ErrorAction)
+        [PSCustomObject]@{
+            Name = $script:expectedName
+        ProcessId = $script:candidatePid
+        ParentProcessId = $script:candidateParentPid
+        CreationDate = $script:candidateStartUtc
+    }
+}
+function Get-Process {
+    param($Id, $ErrorAction)
+    $process = [PSCustomObject]@{
+        Id = $script:candidatePid
+            ProcessName = $script:expectedProcessName
+        StartTime = $script:candidateStartUtc.ToLocalTime()
+        MainWindowHandle = [IntPtr]123
+    }
+    Add-Member `
+        -InputObject $process `
+        -MemberType ScriptMethod `
+        -Name CloseMainWindow `
+        -Value {
+            $script:closeCalls += 1
+            return $true
+        }
+    return $process
+}
+
+$owned = [PSCustomObject]@{
+    Name = "WindowsSandboxClient.exe"
+    ProcessId = 67668
+    ParentProcessId = 71072
+    StartTimeUtc = $script:candidateStartUtc
+}
+$exactClose = Request-OwnedWindowsSandboxTerminalClose `
+    -TerminalProcessIdentity $owned
+$wrongIdentity = [PSCustomObject]@{
+    Name = "WindowsSandboxClient.exe"
+    ProcessId = 67668
+    ParentProcessId = 99999
+    StartTimeUtc = $script:candidateStartUtc
+}
+$wrongClose = Request-OwnedWindowsSandboxTerminalClose `
+    -TerminalProcessIdentity $wrongIdentity
+$remoteIdentity = [PSCustomObject]@{
+    Name = "WindowsSandboxRemoteSession.exe"
+    ProcessId = 67668
+    ParentProcessId = 71072
+    StartTimeUtc = $script:candidateStartUtc
+}
+$script:expectedName = "WindowsSandboxRemoteSession.exe"
+$script:expectedProcessName = "WindowsSandboxRemoteSession"
+$remoteClose = Request-OwnedWindowsSandboxTerminalClose `
+    -TerminalProcessIdentity $remoteIdentity
+$unknownIdentity = [PSCustomObject]@{
+    Name = "unowned.exe"
+    ProcessId = 67668
+    ParentProcessId = 71072
+    StartTimeUtc = $script:candidateStartUtc
+}
+$unknownClose = Request-OwnedWindowsSandboxTerminalClose `
+    -TerminalProcessIdentity $unknownIdentity
+@(
+    $exactClose,
+    $wrongClose,
+    $remoteClose,
+    $unknownClose,
+    $script:closeCalls,
+    $script:remoteCloseCalls
+) |
+    ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, False, True, False, 1, 1]
+
+
+def test_sandbox_remote_session_close_uses_the_exact_xaml_terminal_action():
+    script = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "function Request-OwnedWindowsSandboxRemoteSessionClose" in script
+    assert "Add-Type -AssemblyName UIAutomationClient" in script
+    assert "Add-Type -AssemblyName UIAutomationTypes" in script
+    assert 'AutomationId -ceq ""' in script
+    assert 'ClassName -ceq "Button"' in script
+    assert 'FrameworkId -ceq "XAML"' in script
+    assert "[System.Windows.Automation.InvokePattern]::Pattern" in script
+    assert "Start-Job" in script
+    assert "sandbox-terminal-close-dispatch-started" in script
+    assert "Receive-Job" in script
+    assert "Stop-Job" in script
+    assert "Remove-Job" in script
+    assert "CloseMainWindow()" in script
+
+
+def test_sandbox_terminal_close_job_requires_the_dispatch_marker():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Complete-OwnedWindowsSandboxTerminalCloseJob"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "Sandbox terminal Close job helper was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+
+$acceptedJob = Start-Job -ScriptBlock {
+    "sandbox-terminal-close-dispatch-started"
+}
+$rejectedJob = Start-Job -ScriptBlock {
+    "unexpected-marker"
+}
+$null = Wait-Job -Job @($acceptedJob, $rejectedJob) -Timeout 10
+$accepted = Complete-OwnedWindowsSandboxTerminalCloseJob `
+    -CloseJob $acceptedJob
+$rejected = Complete-OwnedWindowsSandboxTerminalCloseJob `
+    -CloseJob $rejectedJob
+@($accepted, $rejected) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, False]
+
+
+def test_sandbox_host_requires_exclusive_hcs_and_vm_worker_ownership():
+    script = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "hcsdiag.exe" in script
+    assert 'SystemType -cne "VirtualMachine"' in script
+    assert 'Owner -cne "Madrid"' in script
+    assert "RuntimeId" in script
+    assert "Windows Sandbox compute-system ownership was ambiguous." in script
+    assert "Windows Sandbox VM worker ownership was ambiguous." in script
+    assert "Windows Sandbox compute-system ownership was not observed." in script
+    assert "Windows Sandbox VM worker ownership was not observed." in script
+    assert "Windows Sandbox VM worker remained active after normal close." in script
+    assert "try {" in script
+    assert "finally {" in script
+
+
+def test_sandbox_host_waits_for_guest_processes_before_terminal_close():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+    $identityHelper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq "Test-OwnedWindowsProcessIdentityAlive"
+        },
+        $true
+    )
+    $shutdownHelper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq "Test-OwnedWindowsSandboxGuestProcessesStopped"
+        },
+        $true
+    )
+if (
+    $null -eq $identityHelper -or
+    $null -eq $shutdownHelper -or
+    $parseErrors.Count -ne 0
+) {
+    throw "Sandbox guest-shutdown helper was unavailable"
+}
+Invoke-Expression $identityHelper.Extent.Text
+Invoke-Expression $shutdownHelper.Extent.Text
+
+$script:activePids = @()
+$script:startUtc = [DateTime]::Parse(
+    "2026-08-12T15:20:28.0318160Z"
+).ToUniversalTime()
+function Get-CimInstance {
+    param($ClassName, $Filter, $ErrorAction)
+    $pidValue = [int](($Filter -split "=")[1].Trim())
+    if ($script:activePids -contains $pidValue) {
+        if ($pidValue -eq 64032) {
+            return [PSCustomObject]@{
+                Name = "WindowsSandboxServer.exe"
+                ProcessId = 64032
+                ParentProcessId = 67668
+                CreationDate = $script:startUtc.AddMilliseconds(500)
+            }
+        }
+        return [PSCustomObject]@{
+            Name = "vmwp.exe"
+            ProcessId = $pidValue
+            ParentProcessId = 1234
+            CreationDate = $script:startUtc.AddSeconds(1)
+        }
+    }
+}
+$server = [PSCustomObject]@{
+    Name = "WindowsSandboxServer.exe"
+    ProcessId = 64032
+    ParentProcessId = 67668
+    StartTimeUtc = $script:startUtc.AddMilliseconds(500)
+}
+$worker = [PSCustomObject]@{
+    Name = "vmwp.exe"
+    ProcessId = 41424
+    ParentProcessId = $null
+    StartTimeUtc = $script:startUtc.AddSeconds(1)
+}
+$script:activePids = @(64032)
+$serverActive = Test-OwnedWindowsSandboxGuestProcessesStopped `
+    -ServerIdentity $server `
+    -VmWorkerIdentities @($worker)
+$script:activePids = @(41424)
+$workerActive = Test-OwnedWindowsSandboxGuestProcessesStopped `
+    -ServerIdentity $server `
+    -VmWorkerIdentities @($worker)
+$script:activePids = @(99999)
+$unrelatedWorkerIgnored = Test-OwnedWindowsSandboxGuestProcessesStopped `
+    -ServerIdentity $server `
+    -VmWorkerIdentities @($worker)
+$script:activePids = @()
+$guestStopped = Test-OwnedWindowsSandboxGuestProcessesStopped `
+    -ServerIdentity $server `
+    -VmWorkerIdentities @($worker)
+@(
+    $serverActive,
+    $workerActive,
+    $unrelatedWorkerIgnored,
+    $guestStopped
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [False, False, True, True]
+
+
+def test_sandbox_server_ownership_matches_the_terminal_variant():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Test-OwnedWindowsSandboxServerOwnership"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "Sandbox server ownership helper was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+
+$client = [PSCustomObject]@{
+    Name = "WindowsSandboxClient.exe"
+    ProcessId = 100
+}
+$remote = [PSCustomObject]@{
+    Name = "WindowsSandboxRemoteSession.exe"
+    ProcessId = 200
+}
+$ownedServer = [PSCustomObject]@{
+    Name = "WindowsSandboxServer.exe"
+    ProcessId = 300
+    ParentProcessId = 200
+}
+$foreignServer = [PSCustomObject]@{
+    Name = "WindowsSandboxServer.exe"
+    ProcessId = 301
+    ParentProcessId = 999
+}
+$clientWithoutServer = Test-OwnedWindowsSandboxServerOwnership `
+    -TerminalProcessIdentity $client `
+    -ServerIdentities @()
+$clientWithServer = Test-OwnedWindowsSandboxServerOwnership `
+    -TerminalProcessIdentity $client `
+    -ServerIdentities @($ownedServer)
+$remoteWithOwnedServer = Test-OwnedWindowsSandboxServerOwnership `
+    -TerminalProcessIdentity $remote `
+    -ServerIdentities @($ownedServer)
+$remoteWithoutServer = Test-OwnedWindowsSandboxServerOwnership `
+    -TerminalProcessIdentity $remote `
+    -ServerIdentities @()
+$remoteWithForeignServer = Test-OwnedWindowsSandboxServerOwnership `
+    -TerminalProcessIdentity $remote `
+    -ServerIdentities @($foreignServer)
+@(
+    $clientWithoutServer,
+    $clientWithServer,
+    $remoteWithOwnedServer,
+    $remoteWithoutServer,
+    $remoteWithForeignServer
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, False, True, False, False]
+
+
+def test_sandbox_host_accepts_an_empty_guest_process_baseline():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Get-NewWindowsSandboxGuestProcessIdentities"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "Sandbox guest-process discovery helper was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+
+$script:startUtc = [DateTime]::Parse(
+    "2026-08-12T15:20:28.0318160Z"
+).ToUniversalTime()
+function Get-CimInstance {
+    param($ClassName, $Filter, $ErrorAction)
+    if ($Filter -eq "Name = 'WindowsSandboxServer.exe'") {
+        return [PSCustomObject]@{
+            Name = "WindowsSandboxServer.exe"
+            ProcessId = 64032
+            ParentProcessId = 67668
+            CreationDate = $script:startUtc.AddMilliseconds(500)
+        }
+    }
+    if ($Filter -eq "Name = 'vmwp.exe'") {
+        return [PSCustomObject]@{
+            Name = "vmwp.exe"
+            ProcessId = 41424
+            ParentProcessId = 1234
+            CreationDate = $script:startUtc.AddSeconds(1)
+        }
+    }
+}
+
+$identities = @(
+    Get-NewWindowsSandboxGuestProcessIdentities `
+        -BaselineProcessIds @() `
+        -LauncherStartTimeUtc $script:startUtc
+)
+@(
+    $identities.Count,
+    @($identities | ForEach-Object { $_.Name } | Sort-Object)
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [
+        2,
+        ["vmwp.exe", "WindowsSandboxServer.exe"],
+    ]
+
+
+def test_sandbox_guest_process_discovery_rejects_multiple_vm_workers():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Get-NewWindowsSandboxGuestProcessIdentities"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "Sandbox guest-process discovery helper was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+
+$script:startUtc = [DateTime]::Parse(
+    "2026-08-12T15:20:28.0318160Z"
+).ToUniversalTime()
+function Get-CimInstance {
+    param($ClassName, $Filter, $ErrorAction)
+    if ($Filter -eq "Name = 'WindowsSandboxServer.exe'") {
+        return @()
+    }
+    if ($Filter -eq "Name = 'vmwp.exe'") {
+        return @(
+            [PSCustomObject]@{
+                Name = "vmwp.exe"
+                ProcessId = 41424
+                ParentProcessId = 1234
+                CreationDate = $script:startUtc.AddSeconds(1)
+            },
+            [PSCustomObject]@{
+                Name = "vmwp.exe"
+                ProcessId = 41425
+                ParentProcessId = 1234
+                CreationDate = $script:startUtc.AddSeconds(2)
+            }
+        )
+    }
+}
+
+try {
+    Get-NewWindowsSandboxGuestProcessIdentities `
+        -BaselineProcessIds @() `
+        -LauncherStartTimeUtc $script:startUtc | Out-Null
+    "not-rejected"
+}
+catch {
+    $_.Exception.Message
+}
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == (
+        "Windows Sandbox VM worker ownership was ambiguous."
+    )
+
+
 def test_issue_118_installed_migration_modes_use_real_public_persistence(
     tmp_path,
 ):
