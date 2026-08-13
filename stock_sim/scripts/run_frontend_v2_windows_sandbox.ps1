@@ -503,13 +503,56 @@ function Get-NewWindowsSandboxComputeSystemIdentity {
     if (
         $candidate.SystemType -cne "VirtualMachine" -or
         $candidate.Owner -cne "Madrid" -or
-        $candidate.RuntimeId -cne $candidate.Id -or
-        -not $candidate.RuntimeTemplateId -or
+        $candidate.RuntimeId -cne $candidate.Id
+    ) {
+        throw "Windows Sandbox compute-system ownership was ambiguous."
+    }
+    if (-not $candidate.RuntimeTemplateId) {
+        return $candidate
+    }
+    if (
         -not ($BaselineComputeSystemIds -contains $candidate.RuntimeTemplateId)
     ) {
         throw "Windows Sandbox compute-system ownership was ambiguous."
     }
     return $candidate
+}
+
+function Merge-WindowsSandboxComputeSystemIdentity {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$CurrentIdentity,
+        [AllowNull()]
+        [PSCustomObject]$ObservedIdentity
+    )
+
+    if ($null -eq $ObservedIdentity) {
+        return $CurrentIdentity
+    }
+    if ($null -eq $CurrentIdentity) {
+        return $ObservedIdentity
+    }
+    if (
+        $ObservedIdentity.Id -cne $CurrentIdentity.Id -or
+        $ObservedIdentity.RuntimeId -cne $CurrentIdentity.RuntimeId
+    ) {
+        throw "Windows Sandbox compute-system ownership was ambiguous."
+    }
+    if (
+        $CurrentIdentity.RuntimeTemplateId -and
+        $ObservedIdentity.RuntimeTemplateId -and
+        $ObservedIdentity.RuntimeTemplateId -cne
+            $CurrentIdentity.RuntimeTemplateId
+    ) {
+        throw "Windows Sandbox compute-system ownership was ambiguous."
+    }
+    if (
+        -not $CurrentIdentity.RuntimeTemplateId -and
+        $ObservedIdentity.RuntimeTemplateId
+    ) {
+        return $ObservedIdentity
+    }
+    return $CurrentIdentity
 }
 
 function Request-OwnedWindowsSandboxRemoteSessionClose {
@@ -831,19 +874,11 @@ while (
         Get-NewWindowsSandboxComputeSystemIdentity `
             -BaselineComputeSystemIds $baselineComputeSystemIds
     )
-    if ($null -ne $observedComputeSystemIdentity) {
-        if ($null -eq $sandboxComputeSystemIdentity) {
-            $sandboxComputeSystemIdentity = $observedComputeSystemIdentity
-        }
-        elseif (
-            $observedComputeSystemIdentity.Id -cne
-                $sandboxComputeSystemIdentity.Id -or
-            $observedComputeSystemIdentity.RuntimeId -cne
-                $sandboxComputeSystemIdentity.RuntimeId
-        ) {
-            throw "Windows Sandbox compute-system ownership was ambiguous."
-        }
-    }
+    $sandboxComputeSystemIdentity = (
+        Merge-WindowsSandboxComputeSystemIdentity `
+            -CurrentIdentity $sandboxComputeSystemIdentity `
+            -ObservedIdentity $observedComputeSystemIdentity
+    )
     $observedGuestProcesses = @(
         Get-NewWindowsSandboxGuestProcessIdentities `
             -BaselineProcessIds $baselineSandboxGuestProcessIds `
@@ -1030,7 +1065,12 @@ if ($null -ne $script:sandboxTerminalCloseJob) {
     $script:sandboxTerminalCloseJob = $null
 }
 $terminalProcessIdentityObserved = $null -ne $sandboxTerminalProcessIdentity
-$computeSystemIdentityObserved = $null -ne $sandboxComputeSystemIdentity
+$computeSystemIdentityObserved = (
+    $null -ne $sandboxComputeSystemIdentity -and
+    $sandboxComputeSystemIdentity.RuntimeTemplateId -and
+    $baselineComputeSystemIds -contains
+        $sandboxComputeSystemIdentity.RuntimeTemplateId
+)
 $vmWorkerIdentityObserved = $null -ne $vmWorkerIdentity
 $remainingWindowsSandboxProcesses = @(
     Get-CimInstance `

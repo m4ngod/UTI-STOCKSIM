@@ -1220,6 +1220,140 @@ def test_sandbox_host_requires_exclusive_hcs_and_vm_worker_ownership():
     assert "finally {" in script
 
 
+def test_sandbox_hcs_ownership_waits_for_runtime_template_identity():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the sandbox host probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r"""
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helpers = @(
+    "Get-WindowsSandboxComputeSystemSnapshot",
+    "Get-NewWindowsSandboxComputeSystemIdentity",
+    "Merge-WindowsSandboxComputeSystemIdentity"
+)
+foreach ($helperName in $helpers) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $helperName
+        },
+        $true
+    )
+    if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+        throw "Sandbox HCS ownership helper was unavailable"
+    }
+    Invoke-Expression $helper.Extent.Text
+}
+
+$script:snapshot = @()
+function Get-WindowsSandboxComputeSystemSnapshot {
+    return @($script:snapshot)
+}
+$baseline = "baseline-template"
+$pendingCandidate = [PSCustomObject]@{
+    Id = "candidate"
+    SystemType = "VirtualMachine"
+    Owner = "Madrid"
+    RuntimeId = "candidate"
+    RuntimeTemplateId = ""
+}
+$script:snapshot = @($pendingCandidate)
+$pending = Get-NewWindowsSandboxComputeSystemIdentity `
+    -BaselineComputeSystemIds @($baseline)
+$boundPending = Merge-WindowsSandboxComputeSystemIdentity `
+    -CurrentIdentity $null `
+    -ObservedIdentity $pending
+$stableCandidate = [PSCustomObject]@{
+    Id = "candidate"
+    SystemType = "VirtualMachine"
+    Owner = "Madrid"
+    RuntimeId = "candidate"
+    RuntimeTemplateId = $baseline
+}
+$script:snapshot = @($stableCandidate)
+$stable = Get-NewWindowsSandboxComputeSystemIdentity `
+    -BaselineComputeSystemIds @($baseline)
+$boundStable = Merge-WindowsSandboxComputeSystemIdentity `
+    -CurrentIdentity $boundPending `
+    -ObservedIdentity $stable
+$stableRuntimeTemplateId = [string]$stable.RuntimeTemplateId
+$foreignCandidate = [PSCustomObject]@{
+    Id = "candidate"
+    SystemType = "VirtualMachine"
+    Owner = "Madrid"
+    RuntimeId = "candidate"
+    RuntimeTemplateId = "foreign-template"
+}
+$script:snapshot = @($foreignCandidate)
+try {
+    Get-NewWindowsSandboxComputeSystemIdentity `
+        -BaselineComputeSystemIds @($baseline) | Out-Null
+    $foreign = "not-rejected"
+}
+catch {
+    $foreign = $_.Exception.Message
+}
+$replacementCandidate = [PSCustomObject]@{
+    Id = "replacement"
+    SystemType = "VirtualMachine"
+    Owner = "Madrid"
+    RuntimeId = "replacement"
+    RuntimeTemplateId = $baseline
+}
+try {
+    Merge-WindowsSandboxComputeSystemIdentity `
+        -CurrentIdentity $boundPending `
+        -ObservedIdentity $replacementCandidate | Out-Null
+    $replacement = "not-rejected"
+}
+catch {
+    $replacement = $_.Exception.Message
+}
+@(
+    $boundPending.Id,
+    [string]$boundPending.RuntimeTemplateId,
+    $boundStable.Id,
+    $stableRuntimeTemplateId,
+    $foreign,
+    $replacement
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [
+        "candidate",
+        "",
+        "candidate",
+        "baseline-template",
+        "Windows Sandbox compute-system ownership was ambiguous.",
+        "Windows Sandbox compute-system ownership was ambiguous.",
+    ]
+
+
 def test_sandbox_host_waits_for_guest_processes_before_terminal_close():
     powershell = shutil.which("pwsh")
     if powershell is None:
