@@ -7,6 +7,7 @@ from decimal import Decimal
 import errno
 import os
 from pathlib import Path
+import shutil
 from threading import Barrier, Event, Lock
 
 import pytest
@@ -36,6 +37,7 @@ from strategy_diagnostics.market_paths import (
     MarketPathCacheCompatibility,
     MarketPathCacheFallbackState,
     MarketPathCacheRefreshResult,
+    _native_filesystem_path,
 )
 
 
@@ -825,14 +827,18 @@ def test_parquet_store_round_trips_beyond_legacy_windows_path_limit(
     instrument_states_path = root / artifact_suffix
     assert len(str(instrument_states_path)) >= 270
 
-    materialized = ScenarioMaterializer(
-        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
-        artifact_store=ParquetMarketPathArtifactStore(root),
-    ).materialize_baseline(_segment(), seed=17)
+    try:
+        materialized = ScenarioMaterializer(
+            source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+            artifact_store=ParquetMarketPathArtifactStore(root),
+        ).materialize_baseline(_segment(), seed=17)
 
-    reopened_store = ParquetMarketPathArtifactStore(root)
-    assert reopened_store.get(materialized.artifact_hash) == materialized
-    assert reopened_store.list_paths() == (materialized,)
+        reopened_store = ParquetMarketPathArtifactStore(root)
+        assert reopened_store.get(materialized.artifact_hash) == materialized
+        assert reopened_store.list_paths() == (materialized,)
+    finally:
+        shutil.rmtree(_native_filesystem_path(root), ignore_errors=False)
+    assert not _native_filesystem_path(root).exists()
 
 
 def test_parquet_store_retries_transient_directory_publish_conflict(
