@@ -1095,6 +1095,7 @@ def _start_installed_wave2_commands(
         object_name: str,
         *,
         completed: Callable[[], bool],
+        timeout_seconds: float = 3.0,
     ) -> None:
         try:
             _settle_until(
@@ -1137,6 +1138,7 @@ def _start_installed_wave2_commands(
                 app,
                 completed,
                 f"{object_name} authoritative completion",
+                timeout_seconds=timeout_seconds,
             )
         except RuntimeError as error:
             raise RuntimeError(
@@ -1375,6 +1377,7 @@ def _start_installed_wave2_commands(
                     for item in scenario_projection.taskHandles
                 )
             ),
+            timeout_seconds=10.0,
         )
         materialization_handle = next(
             item

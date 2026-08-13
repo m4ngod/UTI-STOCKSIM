@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import fields
 import json
 import os
@@ -115,6 +116,86 @@ def test_issue_118_installed_journey_contract_covers_six_live_features():
         "chart_narrative_table_revision_verified",
         "manual_trading_route_audits",
     }.issubset(result_fields)
+
+
+def test_issue_118_materialization_has_one_bounded_cold_start_allowance():
+    source_path = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    )
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+    journey = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_start_installed_wave2_commands"
+    )
+    activate = next(
+        node
+        for node in journey.body
+        if isinstance(node, ast.FunctionDef) and node.name == "activate"
+    )
+    timeout_index = next(
+        index
+        for index, argument in enumerate(activate.args.kwonlyargs)
+        if argument.arg == "timeout_seconds"
+    )
+    timeout_default = activate.args.kw_defaults[timeout_index]
+    assert isinstance(timeout_default, ast.Constant)
+    assert timeout_default.value == 3.0
+
+    authoritative_wait = next(
+        node
+        for node in ast.walk(activate)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_settle_until"
+        and any(
+            isinstance(value, ast.Constant)
+            and value.value == " authoritative completion"
+            for argument in node.args
+            for value in ast.walk(argument)
+        )
+    )
+    timeout_keyword = next(
+        keyword
+        for keyword in authoritative_wait.keywords
+        if keyword.arg == "timeout_seconds"
+    )
+    assert isinstance(timeout_keyword.value, ast.Name)
+    assert timeout_keyword.value.id == "timeout_seconds"
+
+    materialize_calls = tuple(
+        node
+        for node in ast.walk(journey)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "activate"
+        and node.args
+        and "scenarioLabMaterializeApprovedRecipe-"
+        in ast.unparse(node.args[0])
+    )
+    assert len(materialize_calls) == 1
+    materialize_timeout = next(
+        keyword
+        for keyword in materialize_calls[0].keywords
+        if keyword.arg == "timeout_seconds"
+    )
+    assert isinstance(materialize_timeout.value, ast.Constant)
+    assert materialize_timeout.value.value == 10.0
+
+    non_materialize_timeouts = tuple(
+        node
+        for node in ast.walk(journey)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "activate"
+        and node not in materialize_calls
+        and any(keyword.arg == "timeout_seconds" for keyword in node.keywords)
+    )
+    assert non_materialize_timeouts == ()
 
 
 @pytest.mark.parametrize("lane", ("hardware", "software"))
