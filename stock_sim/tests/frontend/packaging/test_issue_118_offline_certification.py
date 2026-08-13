@@ -1241,7 +1241,8 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 $helpers = @(
     "Get-WindowsSandboxComputeSystemSnapshot",
     "Get-NewWindowsSandboxComputeSystemIdentity",
-    "Merge-WindowsSandboxComputeSystemIdentity"
+    "Merge-WindowsSandboxComputeSystemIdentity",
+    "Test-WindowsSandboxComputeSystemIdentityComplete"
 )
 foreach ($helperName in $helpers) {
     $helper = $ast.Find(
@@ -1262,7 +1263,23 @@ $script:snapshot = @()
 function Get-WindowsSandboxComputeSystemSnapshot {
     return @($script:snapshot)
 }
-$baseline = "baseline-template"
+$baseline = @("baseline-template", "baseline-template-2")
+$sparseCandidate = [PSCustomObject]@{
+    Id = "candidate"
+    SystemType = ""
+    Owner = ""
+    RuntimeId = ""
+    RuntimeTemplateId = ""
+}
+$script:snapshot = @($sparseCandidate)
+$sparse = Get-NewWindowsSandboxComputeSystemIdentity `
+    -BaselineComputeSystemIds @($baseline)
+$boundSparse = Merge-WindowsSandboxComputeSystemIdentity `
+    -CurrentIdentity $null `
+    -ObservedIdentity $sparse
+$sparseComplete = Test-WindowsSandboxComputeSystemIdentityComplete `
+    -ComputeSystemIdentity $boundSparse `
+    -BaselineComputeSystemIds @($baseline)
 $pendingCandidate = [PSCustomObject]@{
     Id = "candidate"
     SystemType = "VirtualMachine"
@@ -1274,14 +1291,17 @@ $script:snapshot = @($pendingCandidate)
 $pending = Get-NewWindowsSandboxComputeSystemIdentity `
     -BaselineComputeSystemIds @($baseline)
 $boundPending = Merge-WindowsSandboxComputeSystemIdentity `
-    -CurrentIdentity $null `
+    -CurrentIdentity $boundSparse `
     -ObservedIdentity $pending
+$pendingComplete = Test-WindowsSandboxComputeSystemIdentityComplete `
+    -ComputeSystemIdentity $boundPending `
+    -BaselineComputeSystemIds @($baseline)
 $stableCandidate = [PSCustomObject]@{
     Id = "candidate"
     SystemType = "VirtualMachine"
     Owner = "Madrid"
     RuntimeId = "candidate"
-    RuntimeTemplateId = $baseline
+    RuntimeTemplateId = $baseline[0]
 }
 $script:snapshot = @($stableCandidate)
 $stable = Get-NewWindowsSandboxComputeSystemIdentity `
@@ -1289,7 +1309,44 @@ $stable = Get-NewWindowsSandboxComputeSystemIdentity `
 $boundStable = Merge-WindowsSandboxComputeSystemIdentity `
     -CurrentIdentity $boundPending `
     -ObservedIdentity $stable
+$stableComplete = Test-WindowsSandboxComputeSystemIdentityComplete `
+    -ComputeSystemIdentity $boundStable `
+    -BaselineComputeSystemIds @($baseline)
 $stableRuntimeTemplateId = [string]$stable.RuntimeTemplateId
+$identityFieldConflicts = @()
+foreach ($identityFieldConflict in @(
+    [PSCustomObject]@{
+        Id = "candidate"
+        SystemType = "Container"
+        Owner = ""
+        RuntimeId = ""
+        RuntimeTemplateId = ""
+    },
+    [PSCustomObject]@{
+        Id = "candidate"
+        SystemType = ""
+        Owner = "foreign-owner"
+        RuntimeId = ""
+        RuntimeTemplateId = ""
+    },
+    [PSCustomObject]@{
+        Id = "candidate"
+        SystemType = ""
+        Owner = ""
+        RuntimeId = "foreign-runtime"
+        RuntimeTemplateId = ""
+    }
+)) {
+    $script:snapshot = @($identityFieldConflict)
+    try {
+        Get-NewWindowsSandboxComputeSystemIdentity `
+            -BaselineComputeSystemIds @($baseline) | Out-Null
+        $identityFieldConflicts += "not-rejected"
+    }
+    catch {
+        $identityFieldConflicts += $_.Exception.Message
+    }
+}
 $foreignCandidate = [PSCustomObject]@{
     Id = "candidate"
     SystemType = "VirtualMachine"
@@ -1311,7 +1368,7 @@ $replacementCandidate = [PSCustomObject]@{
     SystemType = "VirtualMachine"
     Owner = "Madrid"
     RuntimeId = "replacement"
-    RuntimeTemplateId = $baseline
+    RuntimeTemplateId = $baseline[0]
 }
 try {
     Merge-WindowsSandboxComputeSystemIdentity `
@@ -1322,13 +1379,41 @@ try {
 catch {
     $replacement = $_.Exception.Message
 }
+$templateDriftCandidate = [PSCustomObject]@{
+    Id = "candidate"
+    SystemType = "VirtualMachine"
+    Owner = "Madrid"
+    RuntimeId = "candidate"
+    RuntimeTemplateId = $baseline[1]
+}
+try {
+    Merge-WindowsSandboxComputeSystemIdentity `
+        -CurrentIdentity $boundStable `
+        -ObservedIdentity $templateDriftCandidate | Out-Null
+    $templateDrift = "not-rejected"
+}
+catch {
+    $templateDrift = $_.Exception.Message
+}
 @(
+    $boundSparse.Id,
+    [string]$boundSparse.SystemType,
+    [string]$boundSparse.Owner,
+    [string]$boundSparse.RuntimeId,
+    $sparseComplete,
     $boundPending.Id,
+    [string]$boundPending.SystemType,
+    [string]$boundPending.Owner,
+    [string]$boundPending.RuntimeId,
     [string]$boundPending.RuntimeTemplateId,
+    $pendingComplete,
     $boundStable.Id,
     $stableRuntimeTemplateId,
+    $stableComplete,
+    $identityFieldConflicts,
     $foreign,
-    $replacement
+    $replacement,
+    $templateDrift
 ) | ConvertTo-Json -Compress
 """
     completed = subprocess.run(
@@ -1347,8 +1432,24 @@ catch {
     assert json.loads(completed.stdout) == [
         "candidate",
         "",
+        "",
+        "",
+        False,
+        "candidate",
+        "VirtualMachine",
+        "Madrid",
+        "candidate",
+        "",
+        False,
         "candidate",
         "baseline-template",
+        True,
+        [
+            "Windows Sandbox compute-system ownership was ambiguous.",
+            "Windows Sandbox compute-system ownership was ambiguous.",
+            "Windows Sandbox compute-system ownership was ambiguous.",
+        ],
+        "Windows Sandbox compute-system ownership was ambiguous.",
         "Windows Sandbox compute-system ownership was ambiguous.",
         "Windows Sandbox compute-system ownership was ambiguous.",
     ]

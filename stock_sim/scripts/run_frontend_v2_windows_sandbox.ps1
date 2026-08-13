@@ -501,9 +501,11 @@ function Get-NewWindowsSandboxComputeSystemIdentity {
     }
     $candidate = $newComputeSystems[0]
     if (
-        $candidate.SystemType -cne "VirtualMachine" -or
-        $candidate.Owner -cne "Madrid" -or
-        $candidate.RuntimeId -cne $candidate.Id
+        ($candidate.SystemType -and
+            $candidate.SystemType -cne "VirtualMachine") -or
+        ($candidate.Owner -and $candidate.Owner -cne "Madrid") -or
+        ($candidate.RuntimeId -and
+            $candidate.RuntimeId -cne $candidate.Id)
     ) {
         throw "Windows Sandbox compute-system ownership was ambiguous."
     }
@@ -532,27 +534,62 @@ function Merge-WindowsSandboxComputeSystemIdentity {
     if ($null -eq $CurrentIdentity) {
         return $ObservedIdentity
     }
-    if (
-        $ObservedIdentity.Id -cne $CurrentIdentity.Id -or
-        $ObservedIdentity.RuntimeId -cne $CurrentIdentity.RuntimeId
-    ) {
+    if ($ObservedIdentity.Id -cne $CurrentIdentity.Id) {
         throw "Windows Sandbox compute-system ownership was ambiguous."
     }
-    if (
-        $CurrentIdentity.RuntimeTemplateId -and
-        $ObservedIdentity.RuntimeTemplateId -and
-        $ObservedIdentity.RuntimeTemplateId -cne
-            $CurrentIdentity.RuntimeTemplateId
+    $mergedFields = @{}
+    foreach (
+        $fieldName in @(
+            "SystemType",
+            "Owner",
+            "RuntimeId",
+            "RuntimeTemplateId"
+        )
     ) {
-        throw "Windows Sandbox compute-system ownership was ambiguous."
+        $currentValue = [string]$CurrentIdentity.$fieldName
+        $observedValue = [string]$ObservedIdentity.$fieldName
+        if (
+            $currentValue -and
+            $observedValue -and
+            $observedValue -cne $currentValue
+        ) {
+            throw "Windows Sandbox compute-system ownership was ambiguous."
+        }
+        $mergedFields[$fieldName] = if ($currentValue) {
+            $currentValue
+        }
+        else {
+            $observedValue
+        }
     }
-    if (
-        -not $CurrentIdentity.RuntimeTemplateId -and
-        $ObservedIdentity.RuntimeTemplateId
-    ) {
-        return $ObservedIdentity
+    return [PSCustomObject]@{
+        Id = [string]$CurrentIdentity.Id
+        SystemType = [string]$mergedFields["SystemType"]
+        Owner = [string]$mergedFields["Owner"]
+        RuntimeId = [string]$mergedFields["RuntimeId"]
+        RuntimeTemplateId = [string]$mergedFields["RuntimeTemplateId"]
     }
-    return $CurrentIdentity
+}
+
+function Test-WindowsSandboxComputeSystemIdentityComplete {
+    param(
+        [AllowNull()]
+        [PSCustomObject]$ComputeSystemIdentity,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$BaselineComputeSystemIds
+    )
+
+    return (
+        $null -ne $ComputeSystemIdentity -and
+        $ComputeSystemIdentity.Id -and
+        $ComputeSystemIdentity.SystemType -ceq "VirtualMachine" -and
+        $ComputeSystemIdentity.Owner -ceq "Madrid" -and
+        $ComputeSystemIdentity.RuntimeId -ceq $ComputeSystemIdentity.Id -and
+        $ComputeSystemIdentity.RuntimeTemplateId -and
+        $BaselineComputeSystemIds -contains
+            $ComputeSystemIdentity.RuntimeTemplateId
+    )
 }
 
 function Request-OwnedWindowsSandboxRemoteSessionClose {
@@ -1066,10 +1103,9 @@ if ($null -ne $script:sandboxTerminalCloseJob) {
 }
 $terminalProcessIdentityObserved = $null -ne $sandboxTerminalProcessIdentity
 $computeSystemIdentityObserved = (
-    $null -ne $sandboxComputeSystemIdentity -and
-    $sandboxComputeSystemIdentity.RuntimeTemplateId -and
-    $baselineComputeSystemIds -contains
-        $sandboxComputeSystemIdentity.RuntimeTemplateId
+    Test-WindowsSandboxComputeSystemIdentityComplete `
+        -ComputeSystemIdentity $sandboxComputeSystemIdentity `
+        -BaselineComputeSystemIds $baselineComputeSystemIds
 )
 $vmWorkerIdentityObserved = $null -ne $vmWorkerIdentity
 $remainingWindowsSandboxProcesses = @(
