@@ -20,6 +20,9 @@ Rectangle {
     property bool diagnosticTasksPageActivated: (
         initialJourneyRoute === "diagnostic_tasks"
     )
+    property bool runMonitoringPageActivated: (
+        initialJourneyRoute === "run_monitoring"
+    )
     property bool evidenceAvailable: evidenceAndFindings !== null
     property bool systemHealthAvailable: systemHealth !== null
     property string diagnosticTasksInventoryState: (
@@ -169,33 +172,36 @@ Rectangle {
     }
 
     function ensureRunItemVisible(item) {
-        if (item === null || !runMonitoringScroll.visible)
+        var page = runMonitoringPageLoader.item
+        if (item === null || page === null || !page.visible)
             return
         var point = item.mapToItem(
-            runMonitoringScroll.contentItem,
+            page.contentItem,
             0,
             0
         )
         var top = point.y - tokens.spaceMd
         var bottom = point.y + item.height + tokens.spaceMd
-        if (top < runMonitoringScroll.contentY)
-            runMonitoringScroll.contentY = Math.max(0, top)
-        else if (bottom > runMonitoringScroll.contentY
-                + runMonitoringScroll.height)
-            runMonitoringScroll.contentY = Math.min(
-                runMonitoringScroll.contentHeight
-                    - runMonitoringScroll.height,
-                bottom - runMonitoringScroll.height
+        if (top < page.contentY)
+            page.contentY = Math.max(0, top)
+        else if (bottom > page.contentY + page.height)
+            page.contentY = Math.min(
+                page.contentHeight - page.height,
+                bottom - page.height
             )
     }
 
     function runFocusFallback() {
-        if (pauseDiagnosticTask.visible && pauseDiagnosticTask.enabled)
-            return pauseDiagnosticTask
-        if (resumeDiagnosticTask.visible && resumeDiagnosticTask.enabled)
-            return resumeDiagnosticTask
-        if (cancelDiagnosticTask.visible && cancelDiagnosticTask.enabled)
-            return cancelDiagnosticTask
+        var page = runMonitoringPageLoader.item
+        if (page !== null
+                && page.pauseControl.visible && page.pauseControl.enabled)
+            return page.pauseControl
+        if (page !== null
+                && page.resumeControl.visible && page.resumeControl.enabled)
+            return page.resumeControl
+        if (page !== null
+                && page.cancelControl.visible && page.cancelControl.enabled)
+            return page.cancelControl
         return runMonitoringRouteNavigation
     }
 
@@ -208,18 +214,22 @@ Rectangle {
     }
 
     function repairRunFocus() {
+        var page = runMonitoringPageLoader.item
         if (strategyLibraryRouteNavigation.activeFocus
                 || scenarioLabRouteNavigation.activeFocus
                 || diagnosticTasksRouteNavigation.activeFocus
                 || runMonitoringRouteNavigation.activeFocus
                 || evidenceAndFindingsRouteNavigation.activeFocus
                 || systemHealthRouteNavigation.activeFocus
-                || (pauseDiagnosticTask.activeFocus
-                    && pauseDiagnosticTask.enabled)
-                || (resumeDiagnosticTask.activeFocus
-                    && resumeDiagnosticTask.enabled)
-                || (cancelDiagnosticTask.activeFocus
-                    && cancelDiagnosticTask.enabled))
+                || (page !== null
+                    && page.pauseControl.activeFocus
+                    && page.pauseControl.enabled)
+                || (page !== null
+                    && page.resumeControl.activeFocus
+                    && page.resumeControl.enabled)
+                || (page !== null
+                    && page.cancelControl.activeFocus
+                    && page.cancelControl.enabled))
             return
         restoreRunFocus()
     }
@@ -282,9 +292,12 @@ Rectangle {
                     || !scenarioLabPageLoader.item.restoreFocus())
                 scenarioLabRouteNavigation.forceActiveFocus()
         }
-        else if (activeRoute === "evidence_and_findings"
-                && evidencePageLoader.item !== null)
-            evidencePageLoader.item.restoreFocus()
+        else if (activeRoute === "evidence_and_findings") {
+            if (evidencePageLoader.item === null)
+                evidenceAndFindingsRouteNavigation.forceActiveFocus()
+            else
+                evidencePageLoader.item.restoreFocus()
+        }
         else if (activeRoute === "diagnostic_tasks") {
             if (diagnosticTasksPageLoader.item === null
                     || !diagnosticTasksPageLoader.item.restoreFocus())
@@ -360,6 +373,8 @@ Rectangle {
     onActiveRouteChanged: {
         if (activeRoute === "diagnostic_tasks")
             diagnosticTasksPageActivated = true
+        if (activeRoute === "run_monitoring")
+            runMonitoringPageActivated = true
         authoritativeFocusPendingRoute = activeRoute
     }
     Component.onCompleted: {
@@ -1153,15 +1168,24 @@ Rectangle {
                 Component.onCompleted: ensureLoaded()
             }
 
-            Flickable {
-                id: runMonitoringScroll
-                objectName: "runMonitoringFlickable"
-                visible: workspace.activeRoute === "run_monitoring"
+            Loader {
+                id: runMonitoringPageLoader
+                objectName: "runMonitoringPageLoader"
                 anchors.fill: parent
-                clip: true
-                contentWidth: width
-                contentHeight: runMonitoringPage.implicitHeight
-                    + tokens.spaceXl * 2
+                active: workspace.runMonitoringPageActivated
+                visible: workspace.activeRoute === "run_monitoring"
+                sourceComponent: Component {
+                    Flickable {
+                        id: runMonitoringScroll
+                        objectName: "runMonitoringFlickable"
+                        readonly property var pauseControl: pauseDiagnosticTask
+                        readonly property var resumeControl: resumeDiagnosticTask
+                        readonly property var cancelControl: cancelDiagnosticTask
+                        anchors.fill: parent
+                        clip: true
+                        contentWidth: width
+                        contentHeight: runMonitoringPage.implicitHeight
+                            + tokens.spaceXl * 2
 
                 ColumnLayout {
                     id: runMonitoringPage
@@ -1667,6 +1691,12 @@ Rectangle {
                     wrapMode: Text.WrapAnywhere
                 }
                 }
+                    }
+                }
+                onLoaded: {
+                    if (workspace.activeRoute === "run_monitoring")
+                        Qt.callLater(workspace.restoreActiveRouteFocus)
+                }
             }
 
             Loader {
@@ -1674,14 +1704,28 @@ Rectangle {
                 objectName: "evidenceAndFindingsPageLoader"
                 anchors.fill: parent
                 active: workspace.evidenceAvailable
-                    && workspace.activeRoute === "evidence_and_findings"
+                    && (initialJourneyRoute === "evidence_and_findings"
+                        || workspace.activeRoute === "evidence_and_findings")
                 visible: workspace.activeRoute === "evidence_and_findings"
-                sourceComponent: Component {
-                    EvidenceAndFindingsPage {
-                        adapter: evidenceAndFindings
-                        tokens: workspace.designSystem
+                asynchronous: initialJourneyRoute === "evidence_and_findings"
+                    && initialJourneyFocusControl.length === 0
+                function ensureLoaded() {
+                    if (active && status === Loader.Null) {
+                        setSource(
+                            Qt.resolvedUrl("EvidenceAndFindingsPage.qml"),
+                            {
+                                "adapter": evidenceAndFindings,
+                                "tokens": workspace.designSystem
+                            }
+                        )
                     }
                 }
+                onActiveChanged: ensureLoaded()
+                onLoaded: {
+                    if (workspace.activeRoute === "evidence_and_findings")
+                        Qt.callLater(workspace.restoreActiveRouteFocus)
+                }
+                Component.onCompleted: ensureLoaded()
             }
 
             Loader {

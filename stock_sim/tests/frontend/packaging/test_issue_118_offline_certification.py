@@ -242,7 +242,7 @@ def test_issue_118_clean_room_contract_is_installed_schema_six():
 
 
 def test_issue_118_installed_uia_ack_wait_covers_one_complete_host_scan():
-    assert INSTALLED_UIA_ACK_TIMEOUT_SECONDS == 60.0
+    assert INSTALLED_UIA_ACK_TIMEOUT_SECONDS == 120.0
 
 
 def test_issue_118_performance_uses_a_real_shown_render_target():

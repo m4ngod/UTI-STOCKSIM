@@ -23,7 +23,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QShowEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QWidget
 
@@ -200,6 +200,24 @@ from .evidence_chart import (
 )
 
 _QML_ROOT = Path(__file__).resolve().parent / "qml"
+_ROUTE_INITIAL_FOCUS_PROPERTIES = {
+    JourneyWorkspaceRoute.STRATEGY_LIBRARY: "strategyLibraryInitialFocusItem",
+    JourneyWorkspaceRoute.SCENARIO_LAB: "scenarioLabInitialFocusItem",
+    JourneyWorkspaceRoute.DIAGNOSTIC_TASKS: "diagnosticTasksInitialFocusItem",
+    JourneyWorkspaceRoute.RUN_MONITORING: "runMonitoringInitialFocusItem",
+    JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS: "evidenceInitialFocusItem",
+    JourneyWorkspaceRoute.SYSTEM_HEALTH: "systemHealthInitialFocusItem",
+}
+_ROUTE_NAVIGATION_OBJECT_NAMES = {
+    JourneyWorkspaceRoute.STRATEGY_LIBRARY: "strategyLibraryRouteNavigation",
+    JourneyWorkspaceRoute.SCENARIO_LAB: "scenarioLabRouteNavigation",
+    JourneyWorkspaceRoute.DIAGNOSTIC_TASKS: "diagnosticTasksRouteNavigation",
+    JourneyWorkspaceRoute.RUN_MONITORING: "runMonitoringRouteNavigation",
+    JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS: (
+        "evidenceAndFindingsRouteNavigation"
+    ),
+    JourneyWorkspaceRoute.SYSTEM_HEALTH: "systemHealthRouteNavigation",
+}
 _MOUNT_GENERATIONS = count(1)
 _MOUNT_GENERATION_LOCK = Lock()
 _JourneySelectionT = TypeVar("_JourneySelectionT")
@@ -7592,6 +7610,13 @@ class JourneyWorkspaceHost(QQuickWidget):
         self.setObjectName("journeyWorkspaceHost")
         self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self._workspace_closed = False
+        self._hidden_page_focus: (
+            tuple[JourneyWorkspaceRoute, QObject] | None
+        ) = None
+        self._hidden_page_focus_restore_pending = False
+        self._last_meaningful_page_focus: (
+            tuple[JourneyWorkspaceRoute, QObject] | None
+        ) = None
         self._accessibility_settings = AccessibilitySettingsQtAdapter(
             accessibility_preferences or detect_accessibility_preferences(),
             parent=self,
@@ -7841,6 +7866,18 @@ class JourneyWorkspaceHost(QQuickWidget):
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
         root = self.rootObject()
         if root is not None:
+            evidence_focus_changed = getattr(
+                root,
+                "evidenceInitialFocusItemChanged",
+                None,
+            )
+            if evidence_focus_changed is not None:
+                evidence_focus_changed.connect(
+                    self._restore_initial_evidence_focus
+                )
+            self.quickWindow().activeFocusItemChanged.connect(
+                self._active_focus_item_changed
+            )
             route_signal = getattr(root, "activeRouteChanged", None)
             if route_signal is not None:
                 route_signal.connect(self._active_route_changed)
@@ -8825,6 +8862,149 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._system_health.set_route_active(
                 route is JourneyWorkspaceRoute.SYSTEM_HEALTH
             )
+
+    @Slot()
+    def _active_focus_item_changed(self) -> None:
+        current = self.quickWindow().activeFocusItem()
+        if current is None:
+            last_focus = self._last_meaningful_page_focus
+            if (
+                self.isHidden()
+                and last_focus is not None
+                and last_focus[0] is self._active_route
+            ):
+                self._hidden_page_focus = last_focus
+            return
+        if self._hidden_page_focus is not None:
+            return
+        current_name = current.objectName()
+        navigation_name = _ROUTE_NAVIGATION_OBJECT_NAMES[self._active_route]
+        if (
+            current_name
+            and current_name != navigation_name
+            and bool(current.property("activeFocusOnTab"))
+        ):
+            self._last_meaningful_page_focus = (
+                self._active_route,
+                current,
+            )
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._restore_focus_after_show)
+
+    def _restore_focus_after_show(self) -> None:
+        if self._workspace_closed or not self.isVisible():
+            return
+        if self._restore_hidden_page_focus():
+            return
+        if self._visible_route_focus_requires_restore():
+            self._restore_visible_route_focus()
+
+    def _restore_hidden_page_focus(self) -> bool:
+        hidden_focus = self._hidden_page_focus
+        root = self.rootObject()
+        if hidden_focus is None:
+            return False
+        route, target = hidden_focus
+        if root is None or route is not self._active_route:
+            self._hidden_page_focus = None
+            return False
+        if not self._force_available_focus_item(target):
+            self._hidden_page_focus = None
+            return False
+        if not self._hidden_page_focus_restore_pending:
+            self._hidden_page_focus_restore_pending = True
+            QTimer.singleShot(25, self._complete_hidden_page_focus_restore)
+        return True
+
+    def _complete_hidden_page_focus_restore(self) -> None:
+        self._hidden_page_focus_restore_pending = False
+        if self._workspace_closed or not self.isVisible():
+            return
+        hidden_focus = self._hidden_page_focus
+        self._hidden_page_focus = None
+        if hidden_focus is None:
+            return
+        if self.rootObject() is None or hidden_focus[0] is not self._active_route:
+            return
+        self._force_available_focus_item(hidden_focus[1])
+
+    @staticmethod
+    def _force_available_focus_item(target: QObject) -> bool:
+        try:
+            force_focus = getattr(target, "forceActiveFocus", None)
+            if (
+                not callable(force_focus)
+                or not bool(target.property("visible"))
+                or not bool(target.property("enabled"))
+            ):
+                return False
+            force_focus()
+        except (RuntimeError, TypeError):
+            return False
+        return True
+
+    def _visible_route_focus_requires_restore(self) -> bool:
+        current = self.quickWindow().activeFocusItem()
+        if current is None:
+            return True
+        if current.objectName() in {
+            "",
+            _ROUTE_NAVIGATION_OBJECT_NAMES[self._active_route],
+        }:
+            return True
+        return not bool(current.property("activeFocusOnTab"))
+
+    def _restore_initial_evidence_focus(self) -> None:
+        if self._active_route is not JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS:
+            return
+        root = self.rootObject()
+        if root is None or not self.isVisible():
+            return
+        if not self._visible_route_focus_requires_restore():
+            return
+        self._restore_visible_route_focus()
+
+    def _restore_visible_route_focus(self) -> None:
+        root = self.rootObject()
+        if self._workspace_closed or root is None or not self.isVisible():
+            return
+        requested_control = str(root.property("requestedFocusControl") or "")
+        target = next(
+            (
+                candidate
+                for candidate in root.findChildren(QObject)
+                if requested_control
+                and candidate.objectName() == requested_control
+            ),
+            None,
+        )
+        if target is None:
+            focus_property = _ROUTE_INITIAL_FOCUS_PROPERTIES[
+                self._active_route
+            ]
+            target = root.property(focus_property)
+        if target is not None and (
+            not bool(target.property("visible"))
+            or not bool(target.property("enabled"))
+        ):
+            target = None
+        if target is None:
+            navigation_name = _ROUTE_NAVIGATION_OBJECT_NAMES[
+                self._active_route
+            ]
+            target = next(
+                (
+                    candidate
+                    for candidate in root.findChildren(QObject)
+                    if candidate.objectName() == navigation_name
+                ),
+                None,
+            )
+        force_focus = getattr(target, "forceActiveFocus", None)
+        if callable(force_focus):
+            force_focus()
 
     @Slot(object)
     def _select_run_monitoring_handoff(
