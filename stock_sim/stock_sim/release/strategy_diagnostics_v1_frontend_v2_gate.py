@@ -1704,16 +1704,17 @@ def _verify_candidate_source(
         if allowed_untracked_root is None
         else allowed_untracked_root.resolve()
     )
-    if allowed_root is not None and not allowed_root.is_relative_to(
-        repository_root
-    ):
-        raise ValueError(
-            "candidate evidence root is outside the candidate Git worktree"
-        )
+    allowed_untracked_tree = (
+        allowed_root
+        if allowed_root is not None
+        and allowed_root.is_relative_to(repository_root)
+        else None
+    )
     unexpected = tuple(
         path
         for path in untracked_paths
-        if allowed_root is None or not path.is_relative_to(allowed_root)
+        if allowed_untracked_tree is None
+        or not path.is_relative_to(allowed_untracked_tree)
     )
     if unexpected:
         raise ValueError(
