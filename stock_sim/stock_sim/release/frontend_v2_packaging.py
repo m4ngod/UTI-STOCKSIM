@@ -68,7 +68,7 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
     for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
-CLEAN_ROOM_REPORT_SCHEMA_VERSION = 5
+CLEAN_ROOM_REPORT_SCHEMA_VERSION = 6
 PACKAGE_SMOKE_REPORT_SCHEMA_VERSION = 4
 RENDERER_GATE_REPORT_SCHEMA_VERSION = 2
 _QML_IMPORT_PATTERN = re.compile(
@@ -2798,6 +2798,62 @@ def verify_clean_room_report(
         and payload.get("widgets_install_succeeded") is not True
     ):
         failures.append("Widgets rollback installation did not succeed")
+
+    dpi_preflight = payload.get("installed_dpi_preflight")
+    if not isinstance(dpi_preflight, dict):
+        failures.append("Installed DPI preflight evidence is unavailable")
+    else:
+        dpi_ratio = dpi_preflight.get("qt_window_device_pixel_ratio")
+        expected_snapshot_identity = (
+            f"uia:{dpi_preflight.get('checkpoint_sequence')}:"
+            f"{dpi_preflight.get('checkpoint')}:"
+            f"{dpi_preflight.get('route')}:"
+            f"{dpi_preflight.get('run_revision')}:"
+            f"{dpi_preflight.get('evidence_revision')}:"
+            f"{dpi_preflight.get('status_object_name')}:"
+            f"{dpi_preflight.get('status_semantic_term')}:"
+            f"scale{dpi_preflight.get('window_scale_percent')}"
+        )
+        if (
+            dpi_preflight.get("schema_version") != 1
+            or dpi_preflight.get("stage") != "installed-dpi-preflight"
+            or dpi_preflight.get("source_commit") != expected_source_commit
+            or dpi_preflight.get("renderer_lane") != "hardware"
+            or dpi_preflight.get("certification_scope")
+            != "installed-dpi-preflight"
+            or dpi_preflight.get("production_path")
+            != list(_PRODUCTION_JOURNEY_PATH)
+            or dpi_preflight.get("production_path_matches") is not True
+            or dpi_preflight.get("checkpoint") != "loading"
+            or dpi_preflight.get("checkpoint_sequence") != 1
+            or dpi_preflight.get("route") != "run_monitoring"
+            or re.fullmatch(
+                r"r\d+", str(dpi_preflight.get("run_revision", ""))
+            )
+            is None
+            or re.fullmatch(
+                r"r\d+", str(dpi_preflight.get("evidence_revision", ""))
+            )
+            is None
+            or dpi_preflight.get("status_object_name")
+            != "runMonitoringRouteNavigation"
+            or dpi_preflight.get("status_semantic_term") != "loading"
+            or dpi_preflight.get("window_scale_percent") != 200
+            or dpi_preflight.get("snapshot_identity")
+            != expected_snapshot_identity
+            or dpi_preflight.get("snapshot_identity_matches") is not True
+            or not isinstance(dpi_ratio, (int, float))
+            or not math.isfinite(float(dpi_ratio))
+            or float(dpi_ratio) != 2.0
+            or dpi_preflight.get("native_window_dpi") != 192
+            or dpi_preflight.get("candidate_exit_code") != 0
+            or dpi_preflight.get("candidate_external_uia_acknowledged")
+            is not True
+            or dpi_preflight.get("candidate_clean_exit") is not True
+            or dpi_preflight.get("passed") is not True
+            or dpi_preflight.get("errors") not in ([], ())
+        ):
+            failures.append("Installed DPI preflight did not pass")
 
     installed_performance = payload.get("installed_performance")
     if not isinstance(installed_performance, dict):

@@ -730,7 +730,7 @@ def clean_room_lane_fixture(root, lane, graphics_api):
     }
 
 
-def clean_room_schema_five_evidence_fixture(source_commit="abc123"):
+def clean_room_schema_six_evidence_fixture(source_commit="abc123"):
     from tests.frontend.performance.test_frontend_v2_performance_certification import (
         passing_performance_lane_report,
     )
@@ -738,6 +738,23 @@ def clean_room_schema_five_evidence_fixture(source_commit="abc123"):
     toolchain_digest = (
         "sha256:" + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
     )
+    production_path = [
+        "DiagnosticsApplication",
+        "FileBackedV1Persistence",
+        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+        "LiveStrategyLibraryAdapter",
+        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+        "LiveScenarioLabAdapter",
+        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+        "LiveDiagnosticTasksAdapter",
+        "LiveStrategyDiagnosticsV1ApplicationAdapter",
+        "EventBridge",
+        "LiveRunMonitoringAdapter",
+        "LiveEvidenceAndFindingsAdapter",
+        "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+        "LiveSystemHealthAdapter",
+        "JourneyWorkspaceHost",
+    ]
     installed_performance = {}
     for lane in ("hardware", "software"):
         report = deepcopy(passing_performance_lane_report(lane))
@@ -781,6 +798,35 @@ def clean_room_schema_five_evidence_fixture(source_commit="abc123"):
             "native_dpi_evidence_source": "GetDpiForWindow",
             "errors": [],
         },
+        "installed_dpi_preflight": {
+            "schema_version": 1,
+            "stage": "installed-dpi-preflight",
+            "source_commit": source_commit,
+            "renderer_lane": "hardware",
+            "certification_scope": "installed-dpi-preflight",
+            "production_path": production_path,
+            "production_path_matches": True,
+            "checkpoint": "loading",
+            "checkpoint_sequence": 1,
+            "snapshot_identity": (
+                "uia:1:loading:run_monitoring:r1:r1:"
+                "runMonitoringRouteNavigation:loading:scale200"
+            ),
+            "snapshot_identity_matches": True,
+            "route": "run_monitoring",
+            "run_revision": "r1",
+            "evidence_revision": "r1",
+            "status_object_name": "runMonitoringRouteNavigation",
+            "status_semantic_term": "loading",
+            "window_scale_percent": 200,
+            "qt_window_device_pixel_ratio": 2.0,
+            "native_window_dpi": 192,
+            "candidate_exit_code": 0,
+            "candidate_external_uia_acknowledged": True,
+            "candidate_clean_exit": True,
+            "passed": True,
+            "errors": [],
+        },
         "installed_performance": installed_performance,
         "fresh_install_migration": deepcopy(migration),
         "copied_wave3_migration": deepcopy(migration),
@@ -809,7 +855,7 @@ def clean_room_schema_five_evidence_fixture(source_commit="abc123"):
 
 
 _clean_room_lane = clean_room_lane_fixture
-_clean_room_schema_five_evidence = clean_room_schema_five_evidence_fixture
+_clean_room_schema_six_evidence = clean_room_schema_six_evidence_fixture
 
 
 def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
@@ -1740,7 +1786,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 ):
     report_path = tmp_path / "clean-room-report.json"
     report_payload = {
-        "schema_version": 5,
+        "schema_version": 6,
         "source_commit": "abc123",
         "archive_sha256": "sha256:package",
         "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1758,7 +1804,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "source_checkout_absent": True,
         "source_checkout_markers": [],
         "install_succeeded": True,
-        **_clean_room_schema_five_evidence(),
+        **_clean_room_schema_six_evidence(),
         "renderer_lanes": {
             lane: _clean_room_lane(tmp_path, lane, graphics_api)
             for lane, graphics_api in (
@@ -1779,7 +1825,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     ) == ()
 
     old_clean_room_schema_report = deepcopy(report_payload)
-    old_clean_room_schema_report["schema_version"] = 4
+    old_clean_room_schema_report["schema_version"] = 5
     report_path.write_text(
         json.dumps(old_clean_room_schema_report),
         encoding="utf-8",
@@ -1789,6 +1835,25 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         expected_source_commit="abc123",
         expected_archive_sha256="sha256:package",
     )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    for field, invalid in (
+        ("qt_window_device_pixel_ratio", 1.0),
+        ("native_window_dpi", 96),
+        ("candidate_clean_exit", False),
+        ("snapshot_identity_matches", False),
+    ):
+        invalid_preflight_report = deepcopy(report_payload)
+        invalid_preflight_report["installed_dpi_preflight"][field] = invalid
+        report_path.write_text(
+            json.dumps(invalid_preflight_report),
+            encoding="utf-8",
+        )
+        assert "Installed DPI preflight did not pass" in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
     report_path.write_text(json.dumps(report_payload), encoding="utf-8")
 
     guest_dpi_override_report = deepcopy(report_payload)
@@ -2111,7 +2176,7 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -2129,7 +2194,7 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
-                **_clean_room_schema_five_evidence(),
+                **_clean_room_schema_six_evidence(),
                 "renderer_lanes": {
                     "hardware": hardware,
                     "software": software,
@@ -2398,7 +2463,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     report.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "source_commit": "abc123",
                 "archive_sha256": qml_sha256,
                 "widgets_archive_sha256": widgets_sha256,
@@ -2418,7 +2483,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "source_checkout_markers": [],
                 "install_succeeded": True,
                 "widgets_install_succeeded": True,
-                **_clean_room_schema_five_evidence(),
+                **_clean_room_schema_six_evidence(),
                 "widgets_rollback": {
                     "exit_code": 0,
                     "source_commit": "abc123",
@@ -3882,7 +3947,7 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
-    assert "schema_version = 5" in script
+    assert "schema_version = 6" in script
     assert "unreadable_element_count" in script
     assert "complete_snapshot_count" in script
     assert "narrator_checkpoint_evidence" in script

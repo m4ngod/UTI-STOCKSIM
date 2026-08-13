@@ -233,6 +233,7 @@ class RendererLane(str, Enum):
 class CertificationScope(str, Enum):
     SOURCE_VALIDATION = "source-validation"
     INSTALLED = "installed"
+    INSTALLED_DPI_PREFLIGHT = "installed-dpi-preflight"
     PACKAGE_ASSEMBLY = "package-assembly"
 
 
@@ -273,6 +274,29 @@ class InstalledWave3SetupEvidence:
     materialization_task_handle_identities: tuple[str, ...]
     materialized_path_identities: tuple[str, ...]
     materialized_scenario_identities: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledDpiPreflightResult:
+    schema_version: int
+    source_commit: str
+    renderer_lane: str
+    certification_scope: str
+    production_path: tuple[str, ...]
+    checkpoint: str
+    checkpoint_sequence: int
+    snapshot_identity: str
+    qt_window_device_pixel_ratio: float
+    external_uia_acknowledged: bool
+    clean_exit: bool
+    passed: bool
+    errors: tuple[str, ...]
+
+
+class _InstalledDpiPreflightReached(Exception):
+    def __init__(self, checkpoint: dict[str, Any]) -> None:
+        super().__init__("installed DPI preflight reached")
+        self.checkpoint = checkpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -2322,6 +2346,98 @@ def run_smoke_journey(
     return finalized
 
 
+def _run_installed_dpi_preflight_report(
+    *,
+    report_path: Path,
+    renderer_lane: RendererLane,
+    source_commit: str,
+    fixture_archive_path: Path,
+    defer_native_teardown: bool,
+) -> int:
+    """Prove the installed Qt window scale before any release-candidate gate."""
+
+    cleanup_errors: list[str] = []
+    lifecycle_checks: list[Callable[[], bool]] = []
+    checkpoint: dict[str, Any] | None = None
+    preflight_failed = False
+    with ExitStack() as cleanup:
+        try:
+            _run_wave2_smoke_journey(
+                report_dir=report_path.parent,
+                renderer_lane=renderer_lane,
+                source_commit=source_commit,
+                capture_images=False,
+                fixture_archive_path=fixture_archive_path,
+                cleanup=cleanup,
+                cleanup_errors=cleanup_errors,
+                lifecycle_checks=lifecycle_checks,
+                defer_native_teardown=defer_native_teardown,
+                issue_118_certification=True,
+                certification_scope=(
+                    CertificationScope.INSTALLED_DPI_PREFLIGHT
+                ),
+                dpi_preflight_only=True,
+            )
+        except _InstalledDpiPreflightReached as reached:
+            checkpoint = reached.checkpoint
+        except Exception:
+            preflight_failed = True
+
+    clean_exit = bool(
+        not cleanup_errors
+        and lifecycle_checks
+        and all(check() for check in lifecycle_checks)
+    )
+    ratio = float(
+        0.0
+        if checkpoint is None
+        else checkpoint.get("window_device_pixel_ratio", 0.0)
+    )
+    passed = bool(
+        not preflight_failed
+        and checkpoint is not None
+        and checkpoint.get("checkpoint") == "loading"
+        and checkpoint.get("sequence") == 1
+        and math.isfinite(ratio)
+        and ratio == 2.0
+        and clean_exit
+    )
+    errors: list[str] = []
+    if checkpoint is None:
+        errors.append(
+            "Installed DPI preflight did not reach the loading checkpoint"
+        )
+    if preflight_failed:
+        errors.append("Installed DPI preflight failed at a redacted boundary")
+    if cleanup_errors or not clean_exit:
+        errors.append("Installed DPI preflight cleanup did not complete")
+    result = InstalledDpiPreflightResult(
+        schema_version=1,
+        source_commit=source_commit,
+        renderer_lane=renderer_lane.value,
+        certification_scope=CertificationScope.INSTALLED_DPI_PREFLIGHT.value,
+        production_path=PRODUCTION_PATH,
+        checkpoint=("" if checkpoint is None else str(checkpoint["checkpoint"])),
+        checkpoint_sequence=(
+            0 if checkpoint is None else int(checkpoint["sequence"])
+        ),
+        snapshot_identity=(
+            "" if checkpoint is None else str(checkpoint["snapshot_identity"])
+        ),
+        qt_window_device_pixel_ratio=ratio,
+        external_uia_acknowledged=checkpoint is not None,
+        clean_exit=clean_exit,
+        passed=passed,
+        errors=tuple(errors),
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(asdict(result), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return 0 if passed else 1
+
+
 def _shutdown_smoke_application(
     errors: list[str],
     *,
@@ -2363,6 +2479,7 @@ def _run_wave2_smoke_journey(
     defer_native_teardown: bool,
     issue_118_certification: bool,
     certification_scope: CertificationScope,
+    dpi_preflight_only: bool = False,
 ) -> PackageSmokeResult:
     return _run_smoke_journey(
         report_dir=report_dir,
@@ -2377,6 +2494,7 @@ def _run_wave2_smoke_journey(
         defer_native_teardown=defer_native_teardown,
         issue_118_certification=issue_118_certification,
         certification_scope=certification_scope,
+        dpi_preflight_only=dpi_preflight_only,
     )
 
 
@@ -2396,6 +2514,7 @@ def _run_smoke_journey(
     certification_scope: CertificationScope = (
         CertificationScope.SOURCE_VALIDATION
     ),
+    dpi_preflight_only: bool = False,
 ) -> PackageSmokeResult:
     from PySide6.QtWidgets import QApplication
 
@@ -2436,7 +2555,11 @@ def _run_smoke_journey(
 
     installed_package_certification = bool(
         "__compiled__" in globals()
-        and certification_scope is CertificationScope.INSTALLED
+        and certification_scope
+        in {
+            CertificationScope.INSTALLED,
+            CertificationScope.INSTALLED_DPI_PREFLIGHT,
+        }
     )
 
     certification_ptrade_host = (
@@ -2956,6 +3079,8 @@ def _run_smoke_journey(
             checkpoint=checkpoint,
             snapshot_identity=snapshot_identity,
         )
+        if dpi_preflight_only:
+            raise _InstalledDpiPreflightReached(checkpoint_evidence)
 
     capture_accessibility("loading")
     accessibility_preferences.append(
@@ -5774,6 +5899,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--smoke-report-dir", type=Path)
     parser.add_argument("--package-assembly-smoke-report-dir", type=Path)
+    parser.add_argument("--installed-dpi-preflight-report", type=Path)
     parser.add_argument("--performance-report", type=Path)
     parser.add_argument(
         "--performance-duration-seconds",
@@ -5802,6 +5928,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for value in (
             arguments.smoke_report_dir,
             arguments.package_assembly_smoke_report_dir,
+            arguments.installed_dpi_preflight_report,
             arguments.performance_report,
             arguments.migration_report,
             arguments.recovery_report,
@@ -5813,6 +5940,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("installed certification report modes are mutually exclusive")
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
+    if arguments.installed_dpi_preflight_report is not None:
+        if "__compiled__" not in globals():
+            parser.error(
+                "--installed-dpi-preflight-report requires the compiled package"
+            )
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None:
+            fixture_archive_path = _installed_wave3_input_fixture_archive_path()
+        return _run_installed_dpi_preflight_report(
+            report_path=arguments.installed_dpi_preflight_report,
+            renderer_lane=renderer_lane,
+            source_commit=arguments.source_commit,
+            fixture_archive_path=fixture_archive_path,
+            defer_native_teardown=True,
+        )
     if arguments.performance_report is not None:
         fixture_archive_path = arguments.fixture_archive
         if fixture_archive_path is None and "__compiled__" in globals():
@@ -5957,6 +6099,7 @@ def _run_process_entry(
             for report_argument in (
                 "--smoke-report-dir",
                 "--package-assembly-smoke-report-dir",
+                "--installed-dpi-preflight-report",
                 "--performance-report",
                 "--migration-report",
                 "--recovery-report",

@@ -901,7 +901,8 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         [Parameter(Mandatory = $true)]
         [string]$SourceCommit,
         [Parameter(Mandatory = $true)]
-        [object]$AccessibilityEnvironment
+        [object]$AccessibilityEnvironment,
+        [switch]$PreflightOnly
     )
 
     $evidence = New-UiAutomationAccessibilityEvidence
@@ -934,11 +935,17 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
             $LaneDirectory,
             "Process"
         )
+        $reportArgument = if ($PreflightOnly) {
+            "--installed-dpi-preflight-report=$(Join-Path $LaneDirectory 'installed-dpi-preflight.json')"
+        }
+        else {
+            "--smoke-report-dir=$LaneDirectory"
+        }
         $process = Start-Process `
             -FilePath $Executable `
             -ArgumentList @(
                 "--renderer-lane=$Lane",
-                "--smoke-report-dir=$LaneDirectory",
+                $reportArgument,
                 "--source-commit=$SourceCommit"
             ) `
             -PassThru
@@ -1167,6 +1174,174 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
     return [ordered]@{
         exit_code = $exitCode
         uia_accessibility = $evidence
+    }
+}
+
+function Test-InstalledDpiPreflightEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$CandidateReport,
+        [Parameter(Mandatory = $true)]
+        [object]$HostEvidence,
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateExitCode,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [object[]]$ExpectedProductionPath
+    )
+
+    $hostCheckpoints = @($HostEvidence.narrator_checkpoint_evidence)
+    $hostCheckpoint = if ($hostCheckpoints.Count -eq 1) {
+        $hostCheckpoints[0]
+    }
+    else {
+        $null
+    }
+    $candidateRatio = [double]$CandidateReport.qt_window_device_pixel_ratio
+    $nativeDpi = if ($null -eq $hostCheckpoint) {
+        0
+    }
+    else {
+        [int]$hostCheckpoint.native_window_dpi
+    }
+    $candidateErrors = @(
+        @($CandidateReport.errors) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    )
+    $hostErrors = @(
+        @($HostEvidence.errors) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    )
+    $actualProductionPath = @(
+        $CandidateReport.production_path | ForEach-Object { [string]$_ }
+    )
+    $expectedPath = @(
+        $ExpectedProductionPath | ForEach-Object { [string]$_ }
+    )
+    $productionPathMatches = (
+        $actualProductionPath.Count -eq $expectedPath.Count -and
+        ($actualProductionPath -join [char]0) -ceq
+            ($expectedPath -join [char]0)
+    )
+    $canonicalHostIdentity = if ($null -eq $hostCheckpoint) {
+        ""
+    }
+    else {
+        "uia:$([int]$hostCheckpoint.sequence):" +
+            "$([string]$hostCheckpoint.checkpoint):" +
+            "$([string]$hostCheckpoint.route):" +
+            "$([string]$hostCheckpoint.run_revision):" +
+            "$([string]$hostCheckpoint.evidence_revision):" +
+            "$([string]$hostCheckpoint.status_object_name):" +
+            "$([string]$hostCheckpoint.status_semantic_term):" +
+            "scale$([int]$hostCheckpoint.window_scale_percent)"
+    }
+    $identityMatches = (
+        $null -ne $hostCheckpoint -and
+        -not [string]::IsNullOrWhiteSpace($canonicalHostIdentity) -and
+        [string]$hostCheckpoint.snapshot_identity -ceq $canonicalHostIdentity -and
+        [string]$CandidateReport.snapshot_identity -ceq
+            $canonicalHostIdentity
+    )
+    $passed = (
+        $CandidateExitCode -eq 0 -and
+        [int]$CandidateReport.schema_version -eq 1 -and
+        [string]$CandidateReport.source_commit -ceq $SourceCommit -and
+        [string]$CandidateReport.renderer_lane -ceq "hardware" -and
+        [string]$CandidateReport.certification_scope -ceq
+            "installed-dpi-preflight" -and
+        $productionPathMatches -and
+        [string]$CandidateReport.checkpoint -ceq "loading" -and
+        [int]$CandidateReport.checkpoint_sequence -eq 1 -and
+        -not [double]::IsNaN($candidateRatio) -and
+        -not [double]::IsInfinity($candidateRatio) -and
+        $candidateRatio -eq 2.0 -and
+        $CandidateReport.external_uia_acknowledged -is [bool] -and
+        $CandidateReport.external_uia_acknowledged -eq $true -and
+        $CandidateReport.clean_exit -is [bool] -and
+        $CandidateReport.clean_exit -eq $true -and
+        $CandidateReport.passed -is [bool] -and
+        $CandidateReport.passed -eq $true -and
+        $candidateErrors.Count -eq 0 -and
+        $hostCheckpoints.Count -eq 1 -and
+        [string]$hostCheckpoint.checkpoint -ceq "loading" -and
+        [int]$hostCheckpoint.sequence -eq 1 -and
+        $identityMatches -and
+        [int]$hostCheckpoint.window_scale_percent -eq 200 -and
+        $nativeDpi -eq 192 -and
+        $hostCheckpoint.passed -is [bool] -and
+        $hostCheckpoint.passed -eq $true -and
+        [int]$HostEvidence.forbidden_action_count -eq 0 -and
+        $hostErrors.Count -eq 0
+    )
+    $reportedCertificationScope = "redacted"
+    if (
+        [string]$CandidateReport.certification_scope -ceq
+            "installed-dpi-preflight"
+    ) {
+        $reportedCertificationScope = "installed-dpi-preflight"
+    }
+    $reportedProductionPath = @("redacted")
+    if ($productionPathMatches) {
+        $reportedProductionPath = @($ExpectedProductionPath)
+    }
+    $reportedSnapshotIdentity = "redacted"
+    if ($identityMatches) {
+        $reportedSnapshotIdentity = $canonicalHostIdentity
+    }
+    return [ordered]@{
+        schema_version = 1
+        stage = "installed-dpi-preflight"
+        source_commit = $SourceCommit
+        renderer_lane = "hardware"
+        certification_scope = $reportedCertificationScope
+        production_path = $reportedProductionPath
+        production_path_matches = $productionPathMatches
+        checkpoint = "loading"
+        checkpoint_sequence = [int]$CandidateReport.checkpoint_sequence
+        snapshot_identity = $reportedSnapshotIdentity
+        snapshot_identity_matches = $identityMatches
+        route = [string]$hostCheckpoint.route
+        run_revision = [string]$hostCheckpoint.run_revision
+        evidence_revision = [string]$hostCheckpoint.evidence_revision
+        status_object_name = [string]$hostCheckpoint.status_object_name
+        status_semantic_term = [string]$hostCheckpoint.status_semantic_term
+        window_scale_percent = [int]$hostCheckpoint.window_scale_percent
+        qt_window_device_pixel_ratio = $candidateRatio
+        native_window_dpi = $nativeDpi
+        candidate_exit_code = $CandidateExitCode
+        candidate_external_uia_acknowledged = (
+            [bool]$CandidateReport.external_uia_acknowledged
+        )
+        candidate_clean_exit = [bool]$CandidateReport.clean_exit
+        passed = $passed
+        errors = @(
+            if (-not $passed) {
+                "Installed DPI preflight did not satisfy the native and Qt scale contract"
+            }
+        )
+    }
+}
+
+function Read-InstalledDpiPreflightCandidateReport {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $candidate = Get-Content `
+            -LiteralPath $Path `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+        if ($candidate -isnot [pscustomobject]) {
+            return $null
+        }
+        return $candidate
+    }
+    catch {
+        return $null
     }
 }
 
@@ -1553,6 +1728,125 @@ if ($widgetsToolchainLock) {
     ).Hash.ToLowerInvariant()
 }
 
+$expectedProductionPath = @(
+    "DiagnosticsApplication",
+    "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+    "LiveStrategyLibraryAdapter",
+    "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+    "LiveScenarioLabAdapter",
+    "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+    "LiveDiagnosticTasksAdapter",
+    "LiveStrategyDiagnosticsV1ApplicationAdapter",
+    "EventBridge",
+    "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
+    "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+    "LiveSystemHealthAdapter",
+    "JourneyWorkspaceHost"
+)
+$installedDpiPreflight = [ordered]@{
+    schema_version = 1
+    stage = "installed-dpi-preflight"
+    source_commit = $SourceCommit
+    renderer_lane = "hardware"
+    certification_scope = ""
+    production_path = @()
+    production_path_matches = $false
+    checkpoint = "loading"
+    checkpoint_sequence = 0
+    snapshot_identity = ""
+    snapshot_identity_matches = $false
+    route = ""
+    run_revision = ""
+    evidence_revision = ""
+    status_object_name = ""
+    status_semantic_term = ""
+    window_scale_percent = 0
+    qt_window_device_pixel_ratio = 0.0
+    native_window_dpi = 0
+    candidate_exit_code = -1
+    candidate_external_uia_acknowledged = $false
+    candidate_clean_exit = $false
+    passed = $false
+    errors = @("Installed DPI preflight was not run")
+}
+if ($installSucceeded) {
+    $installedDpiPreflightDir = Join-Path `
+        $resolvedEvidence `
+        "installed-dpi-preflight"
+    New-Item `
+        -ItemType Directory `
+        -Path $installedDpiPreflightDir `
+        -Force | Out-Null
+    $installedDpiPreflightInvocation = Invoke-InstalledJourneyWithAccessibilityProbe `
+        -Executable $executable.FullName `
+        -Lane "hardware" `
+        -LaneDirectory $installedDpiPreflightDir `
+        -SourceCommit $SourceCommit `
+        -AccessibilityEnvironment $accessibilityEnvironment `
+        -PreflightOnly
+    $installedDpiPreflightCandidatePath = Join-Path `
+        $installedDpiPreflightDir `
+        "installed-dpi-preflight.json"
+    if (Test-Path -LiteralPath $installedDpiPreflightCandidatePath -PathType Leaf) {
+        $installedDpiPreflightCandidate = (
+            Read-InstalledDpiPreflightCandidateReport `
+                -Path $installedDpiPreflightCandidatePath
+        )
+        if ($null -ne $installedDpiPreflightCandidate) {
+            try {
+                $installedDpiPreflight = Test-InstalledDpiPreflightEvidence `
+                    -CandidateReport $installedDpiPreflightCandidate `
+                    -HostEvidence $installedDpiPreflightInvocation.uia_accessibility `
+                    -CandidateExitCode $installedDpiPreflightInvocation.exit_code `
+                    -SourceCommit $SourceCommit `
+                    -ExpectedProductionPath $expectedProductionPath
+            }
+            catch {
+                $installedDpiPreflight.errors = @(
+                    "Installed DPI preflight evidence was unreadable at a redacted boundary"
+                )
+            }
+        }
+        else {
+            $installedDpiPreflight.errors = @(
+                "Installed DPI preflight evidence was unreadable at a redacted boundary"
+            )
+        }
+    }
+}
+$installedDpiPreflightPath = Join-Path `
+    $resolvedEvidence `
+    "installed-dpi-preflight-evidence.json"
+[IO.File]::WriteAllText(
+    $installedDpiPreflightPath,
+    ($installedDpiPreflight | ConvertTo-Json -Depth 12),
+    [Text.UTF8Encoding]::new($false)
+)
+if (-not $installedDpiPreflight.passed) {
+    $preflightFailureReport = [ordered]@{
+        schema_version = 6
+        stage = "installed-dpi-preflight"
+        source_commit = $SourceCommit
+        archive_sha256 = "sha256:$archiveHash"
+        widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
+        operating_system = $operatingSystem
+        architecture = $architecture
+        is_windows_sandbox = $isWindowsSandbox
+        accessibility_environment = $accessibilityEnvironment
+        install_succeeded = $installSucceeded
+        installed_dpi_preflight = $installedDpiPreflight
+        passed = $false
+    }
+    [IO.File]::WriteAllText(
+        (Join-Path $resolvedEvidence "clean-room-report.json"),
+        ($preflightFailureReport | ConvertTo-Json -Depth 12),
+        [Text.UTF8Encoding]::new($false)
+    )
+    exit 1
+}
+
 $freshInstallMigration = [ordered]@{
     source_commit = $SourceCommit
     passed = $false
@@ -1714,23 +2008,6 @@ if ($installSucceeded) {
         "reconnected_evidence|evidence_and_findings|terminal|ready|fresh|fresh",
         "remounted_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
         "remounted_terminal_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
-    )
-    $expectedProductionPath = @(
-        "DiagnosticsApplication",
-        "FileBackedV1Persistence",
-        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
-        "LiveStrategyLibraryAdapter",
-        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
-        "LiveScenarioLabAdapter",
-        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
-        "LiveDiagnosticTasksAdapter",
-        "LiveStrategyDiagnosticsV1ApplicationAdapter",
-        "EventBridge",
-        "LiveRunMonitoringAdapter",
-        "LiveEvidenceAndFindingsAdapter",
-        "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
-        "LiveSystemHealthAdapter",
-        "JourneyWorkspaceHost"
     )
     $expectedRoutes = @(
         "strategy_library",
@@ -2848,7 +3125,7 @@ $candidateWidgetsCandidateRollback = [ordered]@{
 }
 
 $report = [ordered]@{
-    schema_version = 5
+    schema_version = 6
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
@@ -2867,6 +3144,7 @@ $report = [ordered]@{
     source_checkout_absent = $sourceCheckoutAbsent
     source_checkout_markers = $sourceCheckoutMarkers
     accessibility_environment = $accessibilityEnvironment
+    installed_dpi_preflight = $installedDpiPreflight
     install_succeeded = $installSucceeded
     widgets_install_succeeded = $widgetsInstallSucceeded
     widgets_rollback = $widgetsRollback
@@ -2907,6 +3185,7 @@ $gatePassed = (
     $accessibilityEnvironment.native_dpi_evidence_source -eq (
         "GetDpiForWindow"
     ) -and
+    $installedDpiPreflight.passed -and
     $accessibilityEnvironment.errors.Count -eq 0 -and
     $installSucceeded -and
     $widgetsInstallSucceeded -and

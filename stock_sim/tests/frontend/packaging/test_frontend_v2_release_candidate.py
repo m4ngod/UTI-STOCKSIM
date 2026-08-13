@@ -1323,7 +1323,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
 ):
     from tests.frontend.packaging.test_frontend_v2_packaging_contract import (
         clean_room_lane_fixture,
-        clean_room_schema_five_evidence_fixture,
+        clean_room_schema_six_evidence_fixture,
     )
 
     renderer_lanes = {}
@@ -1547,7 +1547,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
         }
 
     # Keep the release-candidate negative cases below, but source the accepted
-    # lane and cross-lane evidence from the same schema-5 builders used by the
+    # lane and cross-lane evidence from the same schema-6 builders used by the
     # clean-room packaging contract.  This prevents the positive fixture from
     # silently lagging newly mandatory installed gates.
     for lane, graphics_api in (
@@ -1557,13 +1557,13 @@ def test_clean_room_report_requires_the_complete_production_journey(
         renderer_lanes[lane].update(
             clean_room_lane_fixture(tmp_path, lane, graphics_api)
         )
-    schema_five_evidence = clean_room_schema_five_evidence_fixture("abc123")
+    schema_six_evidence = clean_room_schema_six_evidence_fixture("abc123")
 
     report_path = tmp_path / "clean-room-report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1581,7 +1581,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
-                **schema_five_evidence,
+                **schema_six_evidence,
                 "renderer_lanes": renderer_lanes,
             }
         ),
@@ -3342,6 +3342,131 @@ def test_source_smoke_report_cannot_claim_installed_certification(
         )
 
 
+def test_compiled_dpi_preflight_uses_packaged_wave3_fixture(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "UTI-Frontend-V2.exe"
+    executable.touch()
+    observed = {}
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "executable", str(executable))
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    monkeypatch.setattr(
+        package_entry,
+        "_run_installed_dpi_preflight_report",
+        lambda **arguments: observed.update(arguments) or 0,
+    )
+
+    report_path = tmp_path / "installed-dpi-preflight.json"
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=hardware",
+                f"--installed-dpi-preflight-report={report_path}",
+                f"--source-commit={'a' * 40}",
+            )
+        )
+        == 0
+    )
+    assert observed == {
+        "report_path": report_path,
+        "renderer_lane": package_entry.RendererLane.HARDWARE,
+        "source_commit": "a" * 40,
+        "fixture_archive_path": (
+            executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+        ),
+        "defer_native_teardown": True,
+    }
+
+    monkeypatch.delitem(package_entry.__dict__, "__compiled__", raising=False)
+    with pytest.raises(SystemExit) as error:
+        package_entry.main(
+            (f"--installed-dpi-preflight-report={tmp_path / 'source.json'}",)
+        )
+    assert error.value.code == 2
+
+
+def test_dpi_preflight_report_requires_real_checkpoint_and_clean_exit(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    checkpoint = {
+        "checkpoint": "loading",
+        "sequence": 1,
+        "snapshot_identity": (
+            "uia:1:loading:run_monitoring:r1:r1:"
+            "runMonitoringRouteNavigation:loading:scale200"
+        ),
+        "window_device_pixel_ratio": 2.0,
+    }
+
+    def reach_preflight(**arguments):
+        arguments["lifecycle_checks"].append(lambda: True)
+        raise package_entry._InstalledDpiPreflightReached(checkpoint)
+
+    monkeypatch.setattr(package_entry, "_run_wave2_smoke_journey", reach_preflight)
+    report_path = tmp_path / "installed-dpi-preflight.json"
+    assert (
+        package_entry._run_installed_dpi_preflight_report(
+            report_path=report_path,
+            renderer_lane=package_entry.RendererLane.HARDWARE,
+            source_commit="a" * 40,
+            fixture_archive_path=tmp_path / "wave3.zip",
+            defer_native_teardown=True,
+        )
+        == 0
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report == {
+        "schema_version": 1,
+        "source_commit": "a" * 40,
+        "renderer_lane": "hardware",
+        "certification_scope": "installed-dpi-preflight",
+        "production_path": list(package_entry.PRODUCTION_PATH),
+        "checkpoint": "loading",
+        "checkpoint_sequence": 1,
+        "snapshot_identity": (
+            "uia:1:loading:run_monitoring:r1:r1:"
+            "runMonitoringRouteNavigation:loading:scale200"
+        ),
+        "qt_window_device_pixel_ratio": 2.0,
+        "external_uia_acknowledged": True,
+        "clean_exit": True,
+        "passed": True,
+        "errors": [],
+    }
+
+    def fail_cleanup(**arguments):
+        arguments["lifecycle_checks"].append(lambda: False)
+        raise package_entry._InstalledDpiPreflightReached(checkpoint)
+
+    monkeypatch.setattr(package_entry, "_run_wave2_smoke_journey", fail_cleanup)
+    assert (
+        package_entry._run_installed_dpi_preflight_report(
+            report_path=report_path,
+            renderer_lane=package_entry.RendererLane.HARDWARE,
+            source_commit="a" * 40,
+            fixture_archive_path=tmp_path / "wave3.zip",
+            defer_native_teardown=True,
+        )
+        == 1
+    )
+    failed = json.loads(report_path.read_text(encoding="utf-8"))
+    assert failed["passed"] is False
+    assert failed["clean_exit"] is False
+    assert failed["errors"] == [
+        "Installed DPI preflight cleanup did not complete"
+    ]
+
+
 def test_compiled_performance_defaults_to_the_packaged_formal_v1_fixture(
     tmp_path,
     monkeypatch,
@@ -4334,6 +4459,7 @@ def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
     "report_argument",
     (
         "--package-assembly-smoke-report-dir=C:/package-assembly",
+        "--installed-dpi-preflight-report=C:/installed-dpi-preflight.json",
         "--performance-report=C:/performance.json",
         "--migration-report=C:/migration.json",
         "--recovery-report=C:/recovery.json",

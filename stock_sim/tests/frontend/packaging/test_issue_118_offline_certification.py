@@ -152,8 +152,8 @@ def test_issue_118_supported_data_copy_never_queries_storage_directly():
     assert "diagnostic_run_orders" not in source
 
 
-def test_issue_118_clean_room_contract_is_installed_schema_five():
-    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 5
+def test_issue_118_clean_room_contract_is_installed_schema_six():
+    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 6
 
     packaging_source = (
         PROJECT_ROOT
@@ -537,6 +537,339 @@ def test_clean_room_installed_journey_does_not_override_windows_dpi():
     ).read_text(encoding="utf-8")
     assert "window_device_pixel_ratio != 2.0" in package_entry
     assert "math.isfinite(window_device_pixel_ratio)" in package_entry
+
+
+def test_clean_room_native_dpi_preflight_precedes_every_certification_gate():
+    source = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    ).read_text(encoding="utf-8")
+
+    preflight = source.index(
+        "$installedDpiPreflightInvocation = "
+        "Invoke-InstalledJourneyWithAccessibilityProbe"
+    )
+    fail_closed = source.index(
+        "if (-not $installedDpiPreflight.passed)",
+        preflight,
+    )
+    migration = source.index("$freshInstallMigration =", preflight)
+    widgets = source.index("$widgetsRollback =", preflight)
+    renderer_loop = source.index(
+        'foreach ($lane in @("hardware", "software"))',
+        preflight,
+    )
+    performance = source.index('"--performance-report=$performancePath"')
+
+    assert preflight < fail_closed < migration < widgets < renderer_loop
+    assert fail_closed < performance
+    assert '--installed-dpi-preflight-report=' in source
+    assert 'stage = "installed-dpi-preflight"' in source
+    assert "exit 1" in source[fail_closed:migration]
+
+
+@pytest.mark.parametrize(
+    (
+        "candidate_ratio",
+        "native_dpi",
+        "candidate_clean_exit",
+        "truncate_identity",
+        "passed",
+    ),
+    (
+        (2.0, 192, True, False, True),
+        (1.0, 192, True, False, False),
+        (2.0, 96, True, False, False),
+        (2.0, 192, False, False, False),
+        (2.0, 192, True, True, False),
+    ),
+)
+def test_clean_room_native_dpi_preflight_binds_candidate_and_host_evidence(
+    tmp_path,
+    candidate_ratio,
+    native_dpi,
+    candidate_clean_exit,
+    truncate_identity,
+    passed,
+):
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the DPI preflight probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Test-InstalledDpiPreflightEvidence"
+    },
+    $true
+)
+if ($null -eq $helper) {
+    throw "DPI preflight verifier helper was unavailable"
+}
+. ([scriptblock]::Create($helper.Extent.Text))
+$candidate = Get-Content -LiteralPath $env:UTI_TEST_CANDIDATE -Raw |
+    ConvertFrom-Json
+$hostEvidence = Get-Content -LiteralPath $env:UTI_TEST_HOST -Raw |
+    ConvertFrom-Json
+$result = Test-InstalledDpiPreflightEvidence `
+    -CandidateReport $candidate `
+    -HostEvidence $hostEvidence `
+    -CandidateExitCode 0 `
+    -SourceCommit ("c" * 40) `
+    -ExpectedProductionPath @("DiagnosticsApplication", "JourneyWorkspaceHost")
+$result | ConvertTo-Json -Depth 12
+'''
+    snapshot_identity = (
+        "uia:1:loading:run_monitoring:r1:r1"
+        if truncate_identity
+        else (
+            "uia:1:loading:run_monitoring:r1:r1:"
+            "runMonitoringRouteNavigation:loading:scale200"
+        )
+    )
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": "c" * 40,
+                "renderer_lane": "hardware",
+                "certification_scope": "installed-dpi-preflight",
+                "production_path": [
+                    "DiagnosticsApplication",
+                    "JourneyWorkspaceHost",
+                ],
+                "checkpoint": "loading",
+                "checkpoint_sequence": 1,
+                "snapshot_identity": snapshot_identity,
+                "qt_window_device_pixel_ratio": candidate_ratio,
+                "external_uia_acknowledged": True,
+                "clean_exit": candidate_clean_exit,
+                "passed": candidate_clean_exit and candidate_ratio == 2.0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    host_path = tmp_path / "host.json"
+    host_path.write_text(
+        json.dumps(
+            {
+                "narrator_checkpoint_evidence": [
+                    {
+                        "checkpoint": "loading",
+                        "sequence": 1,
+                        "snapshot_identity": snapshot_identity,
+                        "route": "run_monitoring",
+                        "run_revision": "r1",
+                        "evidence_revision": "r1",
+                        "status_object_name": "runMonitoringRouteNavigation",
+                        "status_semantic_term": "loading",
+                        "native_window_dpi": native_dpi,
+                        "window_scale_percent": 200,
+                        "passed": True,
+                    }
+                ],
+                "forbidden_action_count": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+            "UTI_TEST_CANDIDATE": str(candidate_path),
+            "UTI_TEST_HOST": str(host_path),
+        },
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["passed"] is passed
+    assert result["qt_window_device_pixel_ratio"] == candidate_ratio
+    assert result["native_window_dpi"] == native_dpi
+    assert result["checkpoint"] == "loading"
+    assert result["checkpoint_sequence"] == 1
+    assert result["snapshot_identity"] == (
+        "redacted" if truncate_identity else snapshot_identity
+    )
+    assert result["production_path_matches"] is True
+    assert result["source_commit"] == "c" * 40
+
+
+def test_clean_room_native_dpi_preflight_reader_redacts_malformed_json(tmp_path):
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the DPI preflight probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    malformed = tmp_path / "installed-dpi-preflight.json"
+    malformed.write_text('{"credential":"must-not-leak"', encoding="utf-8")
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:UTI_TEST_CLEAN_ROOM_SCRIPT,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Read-InstalledDpiPreflightCandidateReport"
+    },
+    $true
+)
+. ([scriptblock]::Create($helper.Extent.Text))
+$result = Read-InstalledDpiPreflightCandidateReport `
+    -Path $env:UTI_TEST_MALFORMED_PREFLIGHT
+if ($null -eq $result) { "REDACTED_FAILURE" } else { "UNEXPECTED_SUCCESS" }
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+            "UTI_TEST_MALFORMED_PREFLIGHT": str(malformed),
+        },
+    )
+    assert completed.stdout.strip() == "REDACTED_FAILURE"
+    assert completed.stderr == ""
+    assert "must-not-leak" not in completed.stdout
+
+
+def test_clean_room_native_dpi_preflight_redacts_parseable_invalid_identity(
+    tmp_path,
+):
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the DPI preflight probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    secret = "credential-must-not-leak"
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": "c" * 40,
+                "renderer_lane": "hardware",
+                "certification_scope": secret,
+                "production_path": [secret],
+                "checkpoint": "loading",
+                "checkpoint_sequence": 1,
+                "snapshot_identity": secret,
+                "qt_window_device_pixel_ratio": 2.0,
+                "external_uia_acknowledged": True,
+                "clean_exit": True,
+                "passed": True,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    canonical_identity = (
+        "uia:1:loading:run_monitoring:r1:r1:"
+        "runMonitoringRouteNavigation:loading:scale200"
+    )
+    host_path = tmp_path / "host.json"
+    host_path.write_text(
+        json.dumps(
+            {
+                "narrator_checkpoint_evidence": [
+                    {
+                        "checkpoint": "loading",
+                        "sequence": 1,
+                        "snapshot_identity": canonical_identity,
+                        "route": "run_monitoring",
+                        "run_revision": "r1",
+                        "evidence_revision": "r1",
+                        "status_object_name": "runMonitoringRouteNavigation",
+                        "status_semantic_term": "loading",
+                        "native_window_dpi": 192,
+                        "window_scale_percent": 200,
+                        "passed": True,
+                    }
+                ],
+                "forbidden_action_count": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:UTI_TEST_CLEAN_ROOM_SCRIPT,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Test-InstalledDpiPreflightEvidence"
+    },
+    $true
+)
+. ([scriptblock]::Create($helper.Extent.Text))
+$candidate = Get-Content -LiteralPath $env:UTI_TEST_CANDIDATE -Raw |
+    ConvertFrom-Json
+$hostEvidence = Get-Content -LiteralPath $env:UTI_TEST_HOST -Raw |
+    ConvertFrom-Json
+Test-InstalledDpiPreflightEvidence `
+    -CandidateReport $candidate `
+    -HostEvidence $hostEvidence `
+    -CandidateExitCode 0 `
+    -SourceCommit ("c" * 40) `
+    -ExpectedProductionPath @("DiagnosticsApplication", "JourneyWorkspaceHost") |
+    ConvertTo-Json -Depth 12 -Compress
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+            "UTI_TEST_CANDIDATE": str(candidate_path),
+            "UTI_TEST_HOST": str(host_path),
+        },
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["passed"] is False
+    assert result["certification_scope"] == "redacted"
+    assert result["production_path"] == ["redacted"]
+    assert result["snapshot_identity"] == "redacted"
+    assert secret not in completed.stdout
 
 
 @pytest.mark.parametrize(
