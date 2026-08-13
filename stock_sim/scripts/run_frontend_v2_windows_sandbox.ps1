@@ -479,6 +479,18 @@ function Get-WindowsSandboxComputeSystemSnapshot {
     )
 }
 
+function Test-WindowsSandboxComputeSystemOwner {
+    param(
+        [AllowEmptyString()]
+        [string]$Owner
+    )
+
+    return (
+        $Owner -ceq "Madrid" -or
+        $Owner -ceq "WindowsSandbox"
+    )
+}
+
 function Get-NewWindowsSandboxComputeSystemIdentity {
     param(
         [Parameter(Mandatory = $true)]
@@ -503,7 +515,9 @@ function Get-NewWindowsSandboxComputeSystemIdentity {
     if (
         ($candidate.SystemType -and
             $candidate.SystemType -cne "VirtualMachine") -or
-        ($candidate.Owner -and $candidate.Owner -cne "Madrid") -or
+        ($candidate.Owner -and
+            -not (Test-WindowsSandboxComputeSystemOwner `
+                -Owner $candidate.Owner)) -or
         ($candidate.RuntimeId -and
             $candidate.RuntimeId -cne $candidate.Id)
     ) {
@@ -584,7 +598,8 @@ function Test-WindowsSandboxComputeSystemIdentityComplete {
         $null -ne $ComputeSystemIdentity -and
         $ComputeSystemIdentity.Id -and
         $ComputeSystemIdentity.SystemType -ceq "VirtualMachine" -and
-        $ComputeSystemIdentity.Owner -ceq "Madrid" -and
+        (Test-WindowsSandboxComputeSystemOwner `
+            -Owner $ComputeSystemIdentity.Owner) -and
         $ComputeSystemIdentity.RuntimeId -ceq $ComputeSystemIdentity.Id -and
         $ComputeSystemIdentity.RuntimeTemplateId -and
         $BaselineComputeSystemIds -contains

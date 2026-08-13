@@ -1209,7 +1209,9 @@ def test_sandbox_host_requires_exclusive_hcs_and_vm_worker_ownership():
 
     assert "hcsdiag.exe" in script
     assert 'SystemType -cne "VirtualMachine"' in script
-    assert 'Owner -cne "Madrid"' in script
+    assert "Test-WindowsSandboxComputeSystemOwner" in script
+    assert '$Owner -ceq "Madrid"' in script
+    assert '$Owner -ceq "WindowsSandbox"' in script
     assert "RuntimeId" in script
     assert "Windows Sandbox compute-system ownership was ambiguous." in script
     assert "Windows Sandbox VM worker ownership was ambiguous." in script
@@ -1240,6 +1242,7 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 )
 $helpers = @(
     "Get-WindowsSandboxComputeSystemSnapshot",
+    "Test-WindowsSandboxComputeSystemOwner",
     "Get-NewWindowsSandboxComputeSystemIdentity",
     "Merge-WindowsSandboxComputeSystemIdentity",
     "Test-WindowsSandboxComputeSystemIdentityComplete"
@@ -1313,6 +1316,32 @@ $stableComplete = Test-WindowsSandboxComputeSystemIdentityComplete `
     -ComputeSystemIdentity $boundStable `
     -BaselineComputeSystemIds @($baseline)
 $stableRuntimeTemplateId = [string]$stable.RuntimeTemplateId
+$storeCandidate = [PSCustomObject]@{
+    Id = "store-candidate"
+    SystemType = "VirtualMachine"
+    Owner = "WindowsSandbox"
+    RuntimeId = "store-candidate"
+    RuntimeTemplateId = $baseline[0]
+}
+$script:snapshot = @($storeCandidate)
+$store = Get-NewWindowsSandboxComputeSystemIdentity `
+    -BaselineComputeSystemIds @($baseline)
+$storeComplete = Test-WindowsSandboxComputeSystemIdentityComplete `
+    -ComputeSystemIdentity $store `
+    -BaselineComputeSystemIds @($baseline)
+$ownerlessCandidate = [PSCustomObject]@{
+    Id = "ownerless-candidate"
+    SystemType = "VirtualMachine"
+    Owner = ""
+    RuntimeId = "ownerless-candidate"
+    RuntimeTemplateId = $baseline[0]
+}
+$script:snapshot = @($ownerlessCandidate)
+$ownerless = Get-NewWindowsSandboxComputeSystemIdentity `
+    -BaselineComputeSystemIds @($baseline)
+$ownerlessComplete = Test-WindowsSandboxComputeSystemIdentityComplete `
+    -ComputeSystemIdentity $ownerless `
+    -BaselineComputeSystemIds @($baseline)
 $identityFieldConflicts = @()
 foreach ($identityFieldConflict in @(
     [PSCustomObject]@{
@@ -1326,6 +1355,27 @@ foreach ($identityFieldConflict in @(
         Id = "candidate"
         SystemType = ""
         Owner = "foreign-owner"
+        RuntimeId = ""
+        RuntimeTemplateId = ""
+    },
+    [PSCustomObject]@{
+        Id = "candidate"
+        SystemType = ""
+        Owner = "madrid"
+        RuntimeId = ""
+        RuntimeTemplateId = ""
+    },
+    [PSCustomObject]@{
+        Id = "candidate"
+        SystemType = ""
+        Owner = "windowssandbox"
+        RuntimeId = ""
+        RuntimeTemplateId = ""
+    },
+    [PSCustomObject]@{
+        Id = "candidate"
+        SystemType = ""
+        Owner = "WindowsSandbox "
         RuntimeId = ""
         RuntimeTemplateId = ""
     },
@@ -1395,6 +1445,38 @@ try {
 catch {
     $templateDrift = $_.Exception.Message
 }
+$storeOwnerDriftCandidate = [PSCustomObject]@{
+    Id = "candidate"
+    SystemType = "VirtualMachine"
+    Owner = "WindowsSandbox"
+    RuntimeId = "candidate"
+    RuntimeTemplateId = $baseline[0]
+}
+try {
+    Merge-WindowsSandboxComputeSystemIdentity `
+        -CurrentIdentity $boundStable `
+        -ObservedIdentity $storeOwnerDriftCandidate | Out-Null
+    $storeOwnerDrift = "not-rejected"
+}
+catch {
+    $storeOwnerDrift = $_.Exception.Message
+}
+$legacyOwnerDriftCandidate = [PSCustomObject]@{
+    Id = "store-candidate"
+    SystemType = "VirtualMachine"
+    Owner = "Madrid"
+    RuntimeId = "store-candidate"
+    RuntimeTemplateId = $baseline[0]
+}
+try {
+    Merge-WindowsSandboxComputeSystemIdentity `
+        -CurrentIdentity $store `
+        -ObservedIdentity $legacyOwnerDriftCandidate | Out-Null
+    $legacyOwnerDrift = "not-rejected"
+}
+catch {
+    $legacyOwnerDrift = $_.Exception.Message
+}
 @(
     $boundSparse.Id,
     [string]$boundSparse.SystemType,
@@ -1410,10 +1492,18 @@ catch {
     $boundStable.Id,
     $stableRuntimeTemplateId,
     $stableComplete,
+    $store.Id,
+    [string]$store.Owner,
+    $storeComplete,
+    $ownerless.Id,
+    [string]$ownerless.Owner,
+    $ownerlessComplete,
     $identityFieldConflicts,
     $foreign,
     $replacement,
-    $templateDrift
+    $templateDrift,
+    $storeOwnerDrift,
+    $legacyOwnerDrift
 ) | ConvertTo-Json -Compress
 """
     completed = subprocess.run(
@@ -1444,11 +1534,22 @@ catch {
         "candidate",
         "baseline-template",
         True,
+        "store-candidate",
+        "WindowsSandbox",
+        True,
+        "ownerless-candidate",
+        "",
+        False,
         [
             "Windows Sandbox compute-system ownership was ambiguous.",
             "Windows Sandbox compute-system ownership was ambiguous.",
             "Windows Sandbox compute-system ownership was ambiguous.",
+            "Windows Sandbox compute-system ownership was ambiguous.",
+            "Windows Sandbox compute-system ownership was ambiguous.",
+            "Windows Sandbox compute-system ownership was ambiguous.",
         ],
+        "Windows Sandbox compute-system ownership was ambiguous.",
+        "Windows Sandbox compute-system ownership was ambiguous.",
         "Windows Sandbox compute-system ownership was ambiguous.",
         "Windows Sandbox compute-system ownership was ambiguous.",
         "Windows Sandbox compute-system ownership was ambiguous.",
