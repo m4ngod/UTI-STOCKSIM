@@ -685,6 +685,17 @@ def _publish_staging_directory(staging: Path, destination: Path) -> None:
     staging.replace(destination)
 
 
+def _native_filesystem_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    resolved = str(path.resolve(strict=False))
+    if resolved.startswith("\\\\?\\"):
+        return Path(resolved)
+    if resolved.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + resolved[2:])
+    return Path("\\\\?\\" + resolved)
+
+
 class ParquetMarketPathArtifactStore:
     """Content-addressed local Parquet adapter hidden behind the store port."""
 
@@ -694,11 +705,11 @@ class ParquetMarketPathArtifactStore:
         *,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self._root = root
+        self._root = _native_filesystem_path(root)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._cache_health = unobserved_market_path_cache_health()
         self._cache_root = os.path.normcase(
-            str(root.resolve(strict=False))
+            str(self._root)
         )
         self._trusted_fingerprints: OrderedDict[
             str,
@@ -2157,7 +2168,8 @@ def _manifest_payload(path: MaterializedMarketPath) -> Mapping[str, object]:
 
 
 def _duckdb_string(path: Path) -> str:
-    return "'" + str(path).replace("'", "''") + "'"
+    filesystem_path = str(_native_filesystem_path(path))
+    return "'" + filesystem_path.replace("'", "''") + "'"
 
 
 class ScenarioMaterializer:

@@ -810,6 +810,31 @@ def test_content_addressed_path_survives_artifact_store_restart(tmp_path: Path) 
     assert cache_path.stat().st_size < authoritative_size
 
 
+def test_parquet_store_round_trips_beyond_legacy_windows_path_limit(
+    tmp_path: Path,
+) -> None:
+    artifact_suffix = (
+        Path("0" * 64) / "instrument_states.parquet"
+    )
+    minimum_root_length = 270 - len(str(artifact_suffix)) - 1
+    padding_length = max(
+        1,
+        minimum_root_length - len(str(tmp_path / "market-paths-long-")),
+    )
+    root = tmp_path / ("market-paths-long-" + "x" * padding_length)
+    instrument_states_path = root / artifact_suffix
+    assert len(str(instrument_states_path)) >= 270
+
+    materialized = ScenarioMaterializer(
+        source=InMemoryHistoricalMarketDataSource((_two_bar_world(),)),
+        artifact_store=ParquetMarketPathArtifactStore(root),
+    ).materialize_baseline(_segment(), seed=17)
+
+    reopened_store = ParquetMarketPathArtifactStore(root)
+    assert reopened_store.get(materialized.artifact_hash) == materialized
+    assert reopened_store.list_paths() == (materialized,)
+
+
 def test_parquet_store_retries_transient_directory_publish_conflict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
