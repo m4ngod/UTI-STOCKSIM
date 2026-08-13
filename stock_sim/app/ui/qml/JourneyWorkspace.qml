@@ -1140,8 +1140,10 @@ Rectangle {
                 }
                 onActiveChanged: ensureLoaded()
                 onLoaded: {
-                    if (active && workspace.activeRoute === "scenario_lab")
+                    if (active && workspace.activeRoute === "scenario_lab") {
                         scenarioLab.refresh()
+                        Qt.callLater(workspace.restoreActiveRouteFocus)
+                    }
                 }
                 Component.onCompleted: ensureLoaded()
             }

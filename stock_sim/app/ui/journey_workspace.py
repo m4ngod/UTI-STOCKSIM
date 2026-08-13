@@ -7614,6 +7614,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             tuple[JourneyWorkspaceRoute, QObject] | None
         ) = None
         self._hidden_page_focus_restore_pending = False
+        self._initial_show_focus_pending = True
         self._last_meaningful_page_focus: (
             tuple[JourneyWorkspaceRoute, QObject] | None
         ) = None
@@ -8896,6 +8897,10 @@ class JourneyWorkspaceHost(QQuickWidget):
     def _restore_focus_after_show(self) -> None:
         if self._workspace_closed or not self.isVisible():
             return
+        if self._initial_show_focus_pending:
+            self._initial_show_focus_pending = False
+            if self._restore_requested_route_focus():
+                return
         if self._restore_hidden_page_focus():
             return
         if self._visible_route_focus_requires_restore():
@@ -8966,19 +8971,43 @@ class JourneyWorkspaceHost(QQuickWidget):
             return
         self._restore_visible_route_focus()
 
+    def _restore_requested_route_focus(self) -> bool:
+        root = self.rootObject()
+        if root is None:
+            return False
+        if (
+            str(root.property("requestedFocusRoute") or "")
+            != self._active_route.value
+        ):
+            return False
+        control = str(root.property("requestedFocusControl") or "")
+        identity = str(root.property("requestedFocusIdentity") or "")
+        if not control or (identity and identity not in control):
+            return False
+        target = self._find_visual_item(root, control)
+        return target is not None and self._force_available_focus_item(target)
+
+    @staticmethod
+    def _find_visual_item(root: QObject, object_name: str) -> QObject | None:
+        pending = [root]
+        while pending:
+            candidate = pending.pop()
+            if candidate.objectName() == object_name:
+                return candidate
+            child_items = getattr(candidate, "childItems", None)
+            if callable(child_items):
+                pending.extend(child_items())
+        return None
+
     def _restore_visible_route_focus(self) -> None:
         root = self.rootObject()
         if self._workspace_closed or root is None or not self.isVisible():
             return
         requested_control = str(root.property("requestedFocusControl") or "")
-        target = next(
-            (
-                candidate
-                for candidate in root.findChildren(QObject)
-                if requested_control
-                and candidate.objectName() == requested_control
-            ),
-            None,
+        target = (
+            None
+            if not requested_control
+            else self._find_visual_item(root, requested_control)
         )
         if target is None:
             focus_property = _ROUTE_INITIAL_FOCUS_PROPERTIES[
@@ -8994,14 +9023,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             navigation_name = _ROUTE_NAVIGATION_OBJECT_NAMES[
                 self._active_route
             ]
-            target = next(
-                (
-                    candidate
-                    for candidate in root.findChildren(QObject)
-                    if candidate.objectName() == navigation_name
-                ),
-                None,
-            )
+            target = self._find_visual_item(root, navigation_name)
         force_focus = getattr(target, "forceActiveFocus", None)
         if callable(force_focus):
             force_focus()

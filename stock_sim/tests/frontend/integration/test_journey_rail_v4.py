@@ -495,7 +495,9 @@ def test_copied_wave_3_bookmark_restores_the_exact_reference_path_focus(
     )
     host.resize(1280, 720)
     host.show()
-    target = _quick_item(host.rootObject(), f"scenarioLabPath-{path_identity}")
+    target_name = f"scenarioLabPath-{path_identity}"
+    _wait_for(app, lambda: _has_quick_item(host.rootObject(), target_name))
+    target = _quick_item(host.rootObject(), target_name)
     _wait_for(app, lambda: target.property("activeFocus") is True)
 
     assert restored.migrated is True

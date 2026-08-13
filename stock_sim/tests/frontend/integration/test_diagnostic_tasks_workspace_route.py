@@ -3553,6 +3553,11 @@ def test_workspace_route_exit_disposes_subscription_and_remounts_page(
     assert diagnostic_loader is not None
 
     assert root.property("activeRoute") == "evidence_and_findings"
+    for _ in range(300):
+        if root.findChild(QObject, "evidenceResearchFlickable") is not None:
+            break
+        app.processEvents()
+        QTest.qWait(5)
     assert root.findChild(QObject, "evidenceResearchFlickable") is not None
     assert diagnostic_loader.property("item") is None
     assert host._evidence_and_findings._subscription is not None
