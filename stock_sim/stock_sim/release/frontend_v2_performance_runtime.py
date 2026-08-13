@@ -1368,6 +1368,7 @@ class _QtPerformanceProbe(QObject):
         self._pending_input: tuple[QQuickItem, str, int] | None = None
         self._terminal_sent_ns: int | None = None
         self._finished = False
+        self._final_observed_fixture: dict[str, int] | None = None
         self.errors: list[str] = []
         self.read_only_context_visible = False
         self.manual_action_count = _manual_action_count(self._root)
@@ -1434,6 +1435,11 @@ class _QtPerformanceProbe(QObject):
 
     @property
     def observed_fixture(self) -> dict[str, int]:
+        if self._final_observed_fixture is not None:
+            return dict(self._final_observed_fixture)
+        return self._current_observed_fixture()
+
+    def _current_observed_fixture(self) -> dict[str, int]:
         return {
             "source_points": self._adapter.chartSourcePointCount,
             "visible_points": int(self._renderer.property("samplePointCount") or 0),
@@ -1737,16 +1743,48 @@ class _QtPerformanceProbe(QObject):
         if self._finished:
             return
         self._finished = True
-        self._terminal_timeout.stop()
-        self._watchdog.stop()
-        self._source_timer.stop()
-        self._stall_timer.stop()
-        self._memory_timer.stop()
-        self._input_timer.stop()
-        self._sample_memory()
-        for error in self._host.errors():
-            self.errors.append(error.toString())
-        self._on_finished()
+        try:
+            self._final_observed_fixture = (
+                self._current_observed_fixture()
+            )
+        except BaseException as error:
+            self._final_observed_fixture = {}
+            self.errors.append(
+                "Final performance fixture capture failed: "
+                f"{type(error).__name__}"
+            )
+        finally:
+            for timer in (
+                self._terminal_timeout,
+                self._watchdog,
+                self._source_timer,
+                self._stall_timer,
+                self._memory_timer,
+                self._input_timer,
+            ):
+                try:
+                    timer.stop()
+                except BaseException as error:
+                    self.errors.append(
+                        "Performance timer shutdown failed: "
+                        f"{type(error).__name__}"
+                    )
+            try:
+                self._sample_memory()
+            except BaseException as error:
+                self.errors.append(
+                    "Final performance memory sample failed: "
+                    f"{type(error).__name__}"
+                )
+            try:
+                for error in self._host.errors():
+                    self.errors.append(error.toString())
+            except BaseException as error:
+                self.errors.append(
+                    "Final performance render error capture failed: "
+                    f"{type(error).__name__}"
+                )
+            self._on_finished()
 
     def _bind_qml_items(self) -> None:
         """Bind the current Evidence route objects after any route remount."""
@@ -2076,13 +2114,16 @@ def _qml_observes_identity_graph(
 def _qml_observes_ready_inventory(
     host: JourneyWorkspaceHost,
     app: QApplication,
+    *,
+    process_events: bool = True,
 ) -> bool:
     root = host.rootObject()
     adapter = host._diagnostic_tasks
     if root is None or adapter is None:
         return False
-    app.processEvents()
-    app.processEvents()
+    if process_events:
+        app.processEvents()
+        app.processEvents()
     route = root.findChild(
         QObject,
         "diagnosticTasksRouteNavigation",
@@ -2553,10 +2594,26 @@ def run_performance_lane(
     observed_fixture: Mapping[str, int] | None = None
     cleanup_errors: list[str] = []
     finished = [False]
+    qml_observed_after_load = False
+    final_qml_observation_errors: list[str] = []
 
     def quit_app() -> None:
-        finished[0] = True
-        app.quit()
+        nonlocal qml_observed_after_load
+        try:
+            if host is not None:
+                qml_observed_after_load = _qml_observes_ready_inventory(
+                    host,
+                    app,
+                    process_events=False,
+                )
+        except BaseException as error:
+            final_qml_observation_errors.append(
+                "Final performance QML inventory capture failed: "
+                f"{type(error).__name__}"
+            )
+        finally:
+            finished[0] = True
+            app.quit()
 
     def prepare_feature_load() -> None:
         nonlocal wave2_qml_observation_graph
@@ -2704,10 +2761,6 @@ def run_performance_lane(
             REFERENCE_MEASUREMENT_PROTOCOL.window_height,
         )
         window.move(-10_000, -10_000)
-        window.setAttribute(
-            Qt.WidgetAttribute.WA_DontShowOnScreen,
-            True,
-        )
         startup_markers.window_show_started_ns = perf_counter_ns()
         window.show()
         startup_markers.window_show_returned_ns = perf_counter_ns()
@@ -2752,13 +2805,10 @@ def run_performance_lane(
             app.quit,
         )
         app.exec()
+        probe.errors.extend(final_qml_observation_errors)
         if not finished[0]:
             probe.errors.append("Performance lane watchdog expired")
         observed_fixture = probe.observed_fixture
-        qml_observed_after_load = _qml_observes_ready_inventory(
-            host,
-            app,
-        )
         wave2_diagnostic_tasks["observed_after_load"] = (
             qml_observed_after_load
         )

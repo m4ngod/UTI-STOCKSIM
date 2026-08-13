@@ -243,6 +243,55 @@ def test_measurement_setup_failure_is_redacted_and_finishes_before_sampling(
     ]
 
 
+def test_finish_preserves_primary_error_when_final_fixture_capture_fails():
+    events = []
+
+    class Timer:
+        def __init__(self, name):
+            self.name = name
+
+        def stop(self):
+            events.append(f"stop:{self.name}")
+
+    def fail_fixture_capture():
+        raise RuntimeError("sensitive destroyed QML wrapper")
+
+    probe = SimpleNamespace(
+        _finished=False,
+        _final_observed_fixture=None,
+        _current_observed_fixture=fail_fixture_capture,
+        _terminal_timeout=Timer("terminal"),
+        _watchdog=Timer("watchdog"),
+        _source_timer=Timer("source"),
+        _stall_timer=Timer("stall"),
+        _memory_timer=Timer("memory"),
+        _input_timer=Timer("input"),
+        _sample_memory=lambda: events.append("sample-memory"),
+        _host=SimpleNamespace(errors=lambda: ()),
+        _on_finished=lambda: events.append("finished"),
+        errors=["primary performance failure"],
+    )
+
+    frontend_v2_performance_runtime._QtPerformanceProbe._finish(probe)
+
+    assert probe._finished is True
+    assert probe._final_observed_fixture == {}
+    assert events == [
+        "stop:terminal",
+        "stop:watchdog",
+        "stop:source",
+        "stop:stall",
+        "stop:memory",
+        "stop:input",
+        "sample-memory",
+        "finished",
+    ]
+    assert probe.errors == [
+        "primary performance failure",
+        "Final performance fixture capture failed: RuntimeError",
+    ]
+
+
 def test_runtime_release_decision_delegates_to_central_validator(monkeypatch):
     report = {
         "lane": "hardware",

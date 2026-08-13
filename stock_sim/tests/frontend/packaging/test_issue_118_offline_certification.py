@@ -12,6 +12,7 @@ import pytest
 
 from stock_sim.release.frontend_v2_package_entry import (
     ACTIVE_JOURNEY_ROUTES,
+    INSTALLED_UIA_ACK_TIMEOUT_SECONDS,
     PRODUCTION_PATH,
     PackageSmokeResult,
     _run_installed_migration_report,
@@ -238,6 +239,22 @@ def test_issue_118_clean_room_contract_is_installed_schema_six():
         clean_room_source
     )
     assert "<AudioOutput>Disable</AudioOutput>" in sandbox_source
+
+
+def test_issue_118_installed_uia_ack_wait_covers_one_complete_host_scan():
+    assert INSTALLED_UIA_ACK_TIMEOUT_SECONDS == 60.0
+
+
+def test_issue_118_performance_uses_a_real_shown_render_target():
+    performance_runtime_source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_performance_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "window.show()" in performance_runtime_source
+    assert "WA_DontShowOnScreen" not in performance_runtime_source
 
 
 def test_clean_room_uia_object_name_resolver_accepts_only_known_suffixes():

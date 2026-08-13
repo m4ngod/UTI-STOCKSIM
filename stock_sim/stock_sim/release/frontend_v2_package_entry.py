@@ -69,6 +69,7 @@ WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
     "resolve_execution_assumptions",
     "select_formal_scenario_set",
 )
+INSTALLED_UIA_ACK_TIMEOUT_SECONDS = 60.0
 
 # Compiled smoke terminates the process immediately after its report is
 # accepted. Keep deferred PySide/SQLAlchemy owners strongly reachable until
@@ -2951,7 +2952,7 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Installed UIA checkpoint acknowledgement was pre-existing"
             )
-        deadline = monotonic() + 30.0
+        deadline = monotonic() + INSTALLED_UIA_ACK_TIMEOUT_SECONDS
         while monotonic() < deadline and not ack_path.is_file():
             app.processEvents()
             sleep(0.05)
