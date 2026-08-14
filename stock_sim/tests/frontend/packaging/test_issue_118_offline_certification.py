@@ -154,8 +154,8 @@ def test_issue_118_supported_data_copy_never_queries_storage_directly():
     assert "diagnostic_run_orders" not in source
 
 
-def test_issue_118_clean_room_contract_is_installed_schema_seven():
-    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 7
+def test_issue_118_clean_room_contract_is_installed_schema_eight():
+    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 8
 
     packaging_source = (
         PROJECT_ROOT
@@ -1028,7 +1028,7 @@ def test_clean_room_records_installed_preflight_stage_without_executables(
     report = json.loads(
         (evidence_root / "clean-room-report.json").read_text(encoding="utf-8")
     )
-    assert report["schema_version"] == 7
+    assert report["schema_version"] == 8
     assert report["stage"] == "installed-dpi-preflight"
     assert report["install_succeeded"] is False
     assert report["passed"] is False
@@ -1454,7 +1454,7 @@ def test_sandbox_guest_runner_waits_for_host_result_acknowledgment(
     if not writes_clean_room_report:
         boundary_report = json.loads(report_path.read_text(encoding="utf-8"))
         assert boundary_report == {
-            "schema_version": 7,
+            "schema_version": 8,
             "stage": "package-extraction",
             "source_commit": "c" * 40,
             "archive_sha256": "sha256:" + "a" * 64,

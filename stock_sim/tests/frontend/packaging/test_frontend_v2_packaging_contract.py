@@ -730,7 +730,7 @@ def clean_room_lane_fixture(root, lane, graphics_api):
     }
 
 
-def clean_room_schema_seven_evidence_fixture(source_commit="abc123"):
+def clean_room_schema_eight_evidence_fixture(source_commit="abc123"):
     from tests.frontend.performance.test_frontend_v2_performance_certification import (
         passing_performance_lane_report,
     )
@@ -791,6 +791,8 @@ def clean_room_schema_seven_evidence_fixture(source_commit="abc123"):
         for lane in ("hardware", "software")
     }
     return {
+        "network_adapters_enabled": [],
+        "network_default_route_count": 0,
         "package_installation": {
             "storage_kind": "guest_local_filesystem",
             "candidate_guest_local": True,
@@ -862,7 +864,7 @@ def clean_room_schema_seven_evidence_fixture(source_commit="abc123"):
 
 
 _clean_room_lane = clean_room_lane_fixture
-_clean_room_schema_seven_evidence = clean_room_schema_seven_evidence_fixture
+_clean_room_schema_eight_evidence = clean_room_schema_eight_evidence_fixture
 
 
 def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
@@ -1794,13 +1796,22 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 ):
     report_path = tmp_path / "clean-room-report.json"
     report_payload = {
-        "schema_version": 7,
+        "schema_version": 8,
         "source_commit": "abc123",
         "archive_sha256": "sha256:package",
         "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
         "architecture": "AMD64",
         "user_name": "WDAGUtilityAccount",
         "is_windows_sandbox": True,
+        "certification_environment": {
+            "schema_version": 1,
+            "kind": "windows-sandbox",
+            "windows_sandbox": True,
+            "native_boot_vhdx": False,
+            "system_drive": "C:",
+            "accessible_filesystem_drive_count": 1,
+            "unexpected_accessible_filesystem_drives": [],
+        },
         "network_enumeration_succeeded": True,
         "network_adapters_up": [],
         "python_on_path": False,
@@ -1812,7 +1823,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "source_checkout_absent": True,
         "source_checkout_markers": [],
         "install_succeeded": True,
-        **_clean_room_schema_seven_evidence(),
+        **_clean_room_schema_eight_evidence(),
         "renderer_lanes": {
             lane: _clean_room_lane(tmp_path, lane, graphics_api)
             for lane, graphics_api in (
@@ -1833,7 +1844,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     ) == ()
 
     old_clean_room_schema_report = deepcopy(report_payload)
-    old_clean_room_schema_report["schema_version"] = 6
+    old_clean_room_schema_report["schema_version"] = 7
     report_path.write_text(
         json.dumps(old_clean_room_schema_report),
         encoding="utf-8",
@@ -1844,6 +1855,71 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         expected_archive_sha256="sha256:package",
     )
     report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    enabled_network_report = deepcopy(report_payload)
+    enabled_network_report["network_adapters_enabled"] = [
+        "enabled-network-adapter"
+    ]
+    report_path.write_text(
+        json.dumps(enabled_network_report),
+        encoding="utf-8",
+    )
+    assert "Clean-room network adapters remain enabled" in (
+        verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    missing_up_adapter_inventory = deepcopy(report_payload)
+    missing_up_adapter_inventory.pop("network_adapters_up")
+    report_path.write_text(
+        json.dumps(missing_up_adapter_inventory),
+        encoding="utf-8",
+    )
+    assert "Clean-room network is enabled" in verify_clean_room_report(
+        report_path,
+        expected_source_commit="abc123",
+        expected_archive_sha256="sha256:package",
+    )
+
+    accessible_host_volume_report = deepcopy(report_payload)
+    accessible_host_volume_report["certification_environment"].update(
+        {
+            "accessible_filesystem_drive_count": 2,
+            "unexpected_accessible_filesystem_drives": [
+                "unexpected-filesystem-drive"
+            ],
+        }
+    )
+    report_path.write_text(
+        json.dumps(accessible_host_volume_report),
+        encoding="utf-8",
+    )
+    assert "Clean-room certification environment is invalid" in (
+        verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
+    boolean_drive_count_report = deepcopy(report_payload)
+    boolean_drive_count_report["certification_environment"][
+        "accessible_filesystem_drive_count"
+    ] = True
+    report_path.write_text(
+        json.dumps(boolean_drive_count_report),
+        encoding="utf-8",
+    )
+    assert "Clean-room certification environment is invalid" in (
+        verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
 
     mapped_package_report = deepcopy(report_payload)
     mapped_package_report["package_installation"].update(
@@ -2212,13 +2288,22 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 7,
+                "schema_version": 8,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
                 "architecture": "AMD64",
                 "user_name": "WDAGUtilityAccount",
                 "is_windows_sandbox": True,
+                "certification_environment": {
+                    "schema_version": 1,
+                    "kind": "windows-sandbox",
+                    "windows_sandbox": True,
+                    "native_boot_vhdx": False,
+                    "system_drive": "C:",
+                    "accessible_filesystem_drive_count": 1,
+                    "unexpected_accessible_filesystem_drives": [],
+                },
                 "network_enumeration_succeeded": True,
                 "network_adapters_up": [],
                 "python_on_path": False,
@@ -2230,7 +2315,7 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
-                **_clean_room_schema_seven_evidence(),
+                **_clean_room_schema_eight_evidence(),
                 "renderer_lanes": {
                     "hardware": hardware,
                     "software": software,
@@ -2499,14 +2584,23 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     report.write_text(
         json.dumps(
             {
-                "schema_version": 7,
+                "schema_version": 8,
                 "source_commit": "abc123",
                 "archive_sha256": qml_sha256,
                 "widgets_archive_sha256": widgets_sha256,
                 "operating_system": "Microsoft Windows 11 Pro",
-                    "architecture": "AMD64",
-                    "user_name": "WDAGUtilityAccount",
-                    "is_windows_sandbox": True,
+                "architecture": "AMD64",
+                "user_name": "WDAGUtilityAccount",
+                "is_windows_sandbox": True,
+                "certification_environment": {
+                    "schema_version": 1,
+                    "kind": "windows-sandbox",
+                    "windows_sandbox": True,
+                    "native_boot_vhdx": False,
+                    "system_drive": "C:",
+                    "accessible_filesystem_drive_count": 1,
+                    "unexpected_accessible_filesystem_drives": [],
+                },
                 "network_enumeration_succeeded": True,
                 "network_adapters_up": [],
                 "python_on_path": False,
@@ -2519,7 +2613,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "source_checkout_markers": [],
                 "install_succeeded": True,
                 "widgets_install_succeeded": True,
-                **_clean_room_schema_seven_evidence(),
+                **_clean_room_schema_eight_evidence(),
                 "widgets_rollback": {
                     "exit_code": 0,
                     "source_commit": "abc123",
@@ -3983,7 +4077,7 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
-    assert "schema_version = 7" in script
+    assert "schema_version = 8" in script
     assert "unreadable_element_count" in script
     assert "complete_snapshot_count" in script
     assert "narrator_checkpoint_evidence" in script

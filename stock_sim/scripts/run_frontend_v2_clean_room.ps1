@@ -1771,25 +1771,88 @@ $isWindowsSandbox = (
     $userName -eq "WDAGUtilityAccount" -and
     (Test-Path -LiteralPath "C:\Users\WDAGUtilityAccount")
 )
+$systemDrive = $env:SystemDrive.TrimEnd("\")
+$accessibleFilesystemDrives = @(
+    Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+        Where-Object { $_.Root -match "^[A-Za-z]:\\$" } |
+        ForEach-Object { $_.Root.TrimEnd("\") } |
+        Sort-Object -Unique
+)
+$unexpectedAccessibleFilesystemDrives = @(
+    $accessibleFilesystemDrives |
+        Where-Object {
+            -not [string]::Equals(
+                $_,
+                $systemDrive,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        } |
+        ForEach-Object { "unexpected-filesystem-drive" }
+)
+$certificationEnvironmentKind = if ($isWindowsSandbox) {
+    "windows-sandbox"
+}
+else {
+    "unsupported"
+}
+$certificationEnvironment = [ordered]@{
+    schema_version = 1
+    kind = $certificationEnvironmentKind
+    windows_sandbox = $isWindowsSandbox
+    native_boot_vhdx = $false
+    system_drive = $systemDrive
+    accessible_filesystem_drive_count = (
+        $accessibleFilesystemDrives.Count
+    )
+    unexpected_accessible_filesystem_drives = (
+        $unexpectedAccessibleFilesystemDrives
+    )
+}
+$certificationEnvironmentVerified = (
+    $systemDrive -ceq "C:" -and
+    $accessibleFilesystemDrives.Count -eq 1 -and
+    $unexpectedAccessibleFilesystemDrives.Count -eq 0 -and
+    $certificationEnvironmentKind -ceq "windows-sandbox" -and
+    $isWindowsSandbox
+)
 $networkEnumerationSucceeded = $false
 $networkAdaptersUp = @()
+$networkAdaptersEnabled = @()
+$networkDefaultRouteCount = -1
 try {
+    $networkAdapters = @(Get-NetAdapter -ErrorAction Stop)
     $networkAdaptersUp = @(
-        Get-NetAdapter -ErrorAction Stop |
+        $networkAdapters |
             Where-Object { $_.Status -eq "Up" } |
             ForEach-Object { $_.Name }
     )
+    $networkAdaptersEnabled = @(
+        $networkAdapters |
+            Where-Object { $_.Status -ne "Disabled" } |
+            ForEach-Object { "enabled-network-adapter" }
+    )
+    $networkDefaultRouteCount = @(
+        Get-NetRoute -ErrorAction Stop |
+            Where-Object {
+                $_.DestinationPrefix -in @("0.0.0.0/0", "::/0")
+            }
+    ).Count
     $networkEnumerationSucceeded = $true
 }
 catch {
-    $networkAdaptersUp = @("inventory-failed: $($_.Exception.Message)")
+    $networkAdaptersUp = @("inventory-failed")
+    $networkAdaptersEnabled = @("inventory-failed")
+    $networkDefaultRouteCount = -1
 }
 $pythonCommands = @(
     Get-Command python, py -CommandType Application -ErrorAction SilentlyContinue |
         Where-Object { $_.Source -notmatch "\\WindowsApps\\" }
 )
 $compilerCommands = @(
-    Get-Command cl, gcc, clang -CommandType Application -ErrorAction SilentlyContinue
+    Get-Command `
+        cl, gcc, clang, msbuild, cmake, ninja `
+        -CommandType Application `
+        -ErrorAction SilentlyContinue
 )
 $uninstallRoots = @(
     "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -1844,7 +1907,10 @@ $cacheCandidates = @(
     (Join-Path $env:APPDATA "Python"),
     (Join-Path $env:USERPROFILE ".cache"),
     (Join-Path $env:USERPROFILE ".cache\pip"),
-    (Join-Path $env:USERPROFILE ".cache\uv")
+    (Join-Path $env:USERPROFILE ".cache\uv"),
+    (Join-Path $env:USERPROFILE ".nuget\packages"),
+    (Join-Path $env:ProgramData "chocolatey\cache"),
+    (Join-Path $env:ProgramData "pip\Cache")
 )
 $dependencyCachePaths = @(
     @(
@@ -1873,6 +1939,58 @@ $sourceCheckoutMarkers = @(
             $candidate = Join-Path $probeRoot $marker
             if (Test-Path -LiteralPath $candidate) {
                 $candidate.Replace("\", "/")
+            }
+        }
+    }
+    if (-not $certificationEnvironmentVerified) {
+        "environment-isolation-not-established"
+    }
+    else {
+        foreach ($driveRoot in $accessibleFilesystemDrives) {
+            $rootPath = "$driveRoot\"
+            $gitCheckoutMarker = Get-ChildItem `
+                -LiteralPath $rootPath `
+                -Directory `
+                -Filter ".git" `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $gitCheckoutMarker) {
+                "git-source-checkout-marker"
+            }
+            $pythonProjectCandidates = @(
+                Get-ChildItem `
+                    -LiteralPath $rootPath `
+                    -File `
+                    -Filter "pyproject.toml" `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue | Select-Object -First 32
+            )
+            foreach ($projectFile in $pythonProjectCandidates) {
+                $projectRoot = $projectFile.Directory.FullName
+                if (
+                    (
+                        Test-Path -LiteralPath (
+                            Join-Path $projectRoot "tests"
+                        )
+                    ) -and
+                    (
+                        (
+                            Test-Path -LiteralPath (
+                                Join-Path $projectRoot "app"
+                            )
+                        ) -or
+                        (
+                            Test-Path -LiteralPath (
+                                Join-Path $projectRoot "stock_sim"
+                            )
+                        )
+                    )
+                ) {
+                    "python-source-checkout-marker"
+                    break
+                }
             }
         }
     }
@@ -2059,7 +2177,7 @@ $installedDpiPreflightPath = Join-Path `
 )
 if (-not $installedDpiPreflight.passed) {
     $preflightFailureReport = [ordered]@{
-        schema_version = 7
+        schema_version = 8
         stage = "installed-dpi-preflight"
         source_commit = $SourceCommit
         archive_sha256 = "sha256:$archiveHash"
@@ -2067,6 +2185,11 @@ if (-not $installedDpiPreflight.passed) {
         operating_system = $operatingSystem
         architecture = $architecture
         is_windows_sandbox = $isWindowsSandbox
+        certification_environment = $certificationEnvironment
+        network_enumeration_succeeded = $networkEnumerationSucceeded
+        network_adapters_up = $networkAdaptersUp
+        network_adapters_enabled = $networkAdaptersEnabled
+        network_default_route_count = $networkDefaultRouteCount
         accessibility_environment = $accessibilityEnvironment
         package_installation = $packageInstallation
         install_succeeded = $installSucceeded
@@ -3359,7 +3482,7 @@ $candidateWidgetsCandidateRollback = [ordered]@{
 }
 
 $report = [ordered]@{
-    schema_version = 7
+    schema_version = 8
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
@@ -3367,8 +3490,11 @@ $report = [ordered]@{
     architecture = $architecture
     user_name = $userName
     is_windows_sandbox = $isWindowsSandbox
+    certification_environment = $certificationEnvironment
     network_enumeration_succeeded = $networkEnumerationSucceeded
     network_adapters_up = $networkAdaptersUp
+    network_adapters_enabled = $networkAdaptersEnabled
+    network_default_route_count = $networkDefaultRouteCount
     python_on_path = [bool]$pythonCommands
     python_installations = $pythonInstallations
     compiler_on_path = [bool]$compilerCommands
@@ -3403,9 +3529,11 @@ $reportJson = $report | ConvertTo-Json -Depth 12
 $gatePassed = (
     $operatingSystem -match "Windows 11" -and
     $architecture -match "AMD64|x86_64" -and
-    $isWindowsSandbox -and
+    $certificationEnvironmentVerified -and
     $networkEnumerationSucceeded -and
     $networkAdaptersUp.Count -eq 0 -and
+    $networkAdaptersEnabled.Count -eq 0 -and
+    $networkDefaultRouteCount -eq 0 -and
     -not $pythonCommands -and
     $pythonInstallations.Count -eq 0 -and
     -not $compilerCommands -and

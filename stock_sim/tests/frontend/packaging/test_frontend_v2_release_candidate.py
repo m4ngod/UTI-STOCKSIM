@@ -1323,7 +1323,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
 ):
     from tests.frontend.packaging.test_frontend_v2_packaging_contract import (
         clean_room_lane_fixture,
-        clean_room_schema_seven_evidence_fixture,
+        clean_room_schema_eight_evidence_fixture,
     )
 
     renderer_lanes = {}
@@ -1557,19 +1557,28 @@ def test_clean_room_report_requires_the_complete_production_journey(
         renderer_lanes[lane].update(
             clean_room_lane_fixture(tmp_path, lane, graphics_api)
         )
-    schema_seven_evidence = clean_room_schema_seven_evidence_fixture("abc123")
+    schema_eight_evidence = clean_room_schema_eight_evidence_fixture("abc123")
 
     report_path = tmp_path / "clean-room-report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 7,
+                "schema_version": 8,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
                 "architecture": "AMD64",
                 "user_name": "WDAGUtilityAccount",
                 "is_windows_sandbox": True,
+                "certification_environment": {
+                    "schema_version": 1,
+                    "kind": "windows-sandbox",
+                    "windows_sandbox": True,
+                    "native_boot_vhdx": False,
+                    "system_drive": "C:",
+                    "accessible_filesystem_drive_count": 1,
+                    "unexpected_accessible_filesystem_drives": [],
+                },
                 "network_enumeration_succeeded": True,
                 "network_adapters_up": [],
                 "python_on_path": False,
@@ -1581,7 +1590,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
-                **schema_seven_evidence,
+                **schema_eight_evidence,
                 "renderer_lanes": renderer_lanes,
             }
         ),
@@ -1786,7 +1795,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
     compromised["is_windows_sandbox"] = False
     report_path.write_text(json.dumps(compromised), encoding="utf-8")
     assert (
-        "Clean-room report was not produced by Windows Sandbox"
+        "Clean-room certification environment is invalid"
         in verify_clean_room_report(
             report_path,
             expected_source_commit="abc123",

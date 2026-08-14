@@ -68,7 +68,7 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
     for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
-CLEAN_ROOM_REPORT_SCHEMA_VERSION = 7
+CLEAN_ROOM_REPORT_SCHEMA_VERSION = 8
 PACKAGE_SMOKE_REPORT_SCHEMA_VERSION = 4
 RENDERER_GATE_REPORT_SCHEMA_VERSION = 2
 _QML_IMPORT_PATTERN = re.compile(
@@ -2742,17 +2742,49 @@ def verify_clean_room_report(
         "x86_64",
     }:
         failures.append("Clean-room architecture is not x64")
-    if (
-        payload.get("is_windows_sandbox") is not True
-        or payload.get("user_name") != "WDAGUtilityAccount"
-    ):
-        failures.append(
-            "Clean-room report was not produced by Windows Sandbox"
+    certification_environment = payload.get("certification_environment")
+    if not isinstance(certification_environment, Mapping):
+        failures.append("Clean-room certification environment is unavailable")
+    elif certification_environment.get("schema_version") != 1:
+        failures.append("Unsupported clean-room environment schema")
+    else:
+        environment_kind = certification_environment.get("kind")
+        accessible_filesystem_drive_count = certification_environment.get(
+            "accessible_filesystem_drive_count"
         )
+        common_environment_verified = (
+            certification_environment.get("system_drive") == "C:"
+            and isinstance(accessible_filesystem_drive_count, int)
+            and not isinstance(accessible_filesystem_drive_count, bool)
+            and accessible_filesystem_drive_count == 1
+            and certification_environment.get(
+                "unexpected_accessible_filesystem_drives"
+            )
+            == []
+        )
+        environment_verified = (
+            environment_kind == "windows-sandbox"
+            and payload.get("is_windows_sandbox") is True
+            and payload.get("user_name") == "WDAGUtilityAccount"
+            and certification_environment.get("windows_sandbox") is True
+            and certification_environment.get("native_boot_vhdx") is False
+            and common_environment_verified
+        )
+        if not environment_verified:
+            failures.append("Clean-room certification environment is invalid")
     if payload.get("network_enumeration_succeeded") is not True:
         failures.append("Network adapter inventory was not established")
-    if payload.get("network_adapters_up"):
+    if payload.get("network_adapters_up") != []:
         failures.append("Clean-room network is enabled")
+    if payload.get("network_adapters_enabled") != []:
+        failures.append("Clean-room network adapters remain enabled")
+    network_default_route_count = payload.get("network_default_route_count")
+    if (
+        not isinstance(network_default_route_count, int)
+        or isinstance(network_default_route_count, bool)
+        or network_default_route_count != 0
+    ):
+        failures.append("Clean-room network has a default route")
     if payload.get("python_on_path") is not False:
         failures.append("Python is available on PATH")
     if payload.get("python_installations") != []:

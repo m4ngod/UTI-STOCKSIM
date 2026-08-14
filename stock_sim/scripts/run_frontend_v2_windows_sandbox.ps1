@@ -139,7 +139,7 @@ if (-not (Test-Path -LiteralPath $cleanRoomReportPath -PathType Leaf)) {
         }
     }
     $boundaryFailureReport = [ordered]@{
-        schema_version = 7
+        schema_version = 8
         stage = $failureStage
         source_commit = "__SOURCE_COMMIT__"
         archive_sha256 = "__ARCHIVE_SHA256__"
