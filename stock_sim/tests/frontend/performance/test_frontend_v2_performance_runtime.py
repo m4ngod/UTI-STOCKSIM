@@ -35,35 +35,26 @@ def test_startup_markers_are_complete_ordered_and_compute_phases():
         window_bindings_ready_ns=5,
         initial_route_ready_ns=6,
         bridge_started_ns=7,
-        fixture_projection_ready_ns=8,
-        window_show_started_ns=9,
-        window_show_returned_ns=11,
-        window_shown_ns=12,
+        window_show_started_ns=8,
+        window_show_returned_ns=9,
+        window_shown_ns=10,
+        fixture_projection_ready_ns=11,
     )
-    phases = markers.phase_durations_ms(usable_visible_ns=10)
+    phases = markers.phase_durations_ms(usable_visible_ns=12)
 
-    assert phases["total_to_usable_visible"] == 0.000009
-    assert phases["projection_ready_to_usable_visible"] == 0.000002
-    assert phases["show_started_to_usable_visible"] == 0.000001
+    assert phases["total_to_usable_visible"] == 0.000011
+    assert phases["projection_ready_to_usable_visible"] == 0.000001
+    assert phases["show_started_to_usable_visible"] == 0.000004
 
-    markers.window_show_returned_ns = 10
-    markers.window_shown_ns = 12
-    phases_after_show_return = markers.phase_durations_ms(
-        usable_visible_ns=11
-    )
-    assert (
-        phases_after_show_return["show_started_to_usable_visible"]
-        == 0.000002
-    )
-    assert (
-        phases_after_show_return["projection_ready_to_usable_visible"]
-        == 0.000003
-    )
-
-    markers.window_show_returned_ns = 11
-    markers.window_shown_ns = 10
+    markers.fixture_projection_ready_ns = 7
     with pytest.raises(RuntimeError, match="out of order"):
-        markers.phase_durations_ms(usable_visible_ns=10)
+        markers.phase_durations_ms(usable_visible_ns=12)
+
+    markers.fixture_projection_ready_ns = 11
+    markers.window_show_returned_ns = 10
+    markers.window_shown_ns = 9
+    with pytest.raises(RuntimeError, match="out of order"):
+        markers.phase_durations_ms(usable_visible_ns=12)
 
 
 def test_performance_fixture_persists_evidence_as_its_initial_route(tmp_path):
@@ -717,6 +708,8 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
         abs=0.001,
     )
     assert startup["window_create"] > 0
+    assert startup["bridge_started_to_show_started"] >= 0
+    assert startup["shown_to_projection_ready"] >= 0
     assert startup["show_started_to_usable_visible"] >= 0
     assert all(value >= 0 for value in startup.values())
     assert report["fixture"] == {

@@ -179,13 +179,13 @@ class _PerformanceStartupMarkers:
             ("window_bindings_ready", self.window_bindings_ready_ns),
             ("initial_route_ready", self.initial_route_ready_ns),
             ("bridge_started", self.bridge_started_ns),
+            ("window_show_started", self.window_show_started_ns),
+            ("window_show_returned", self.window_show_returned_ns),
+            ("window_shown", self.window_shown_ns),
             (
                 "fixture_projection_ready",
                 self.fixture_projection_ready_ns,
             ),
-            ("window_show_started", self.window_show_started_ns),
-            ("window_show_returned", self.window_show_returned_ns),
-            ("window_shown", self.window_shown_ns),
         )
         all_markers = (
             *fixed_order_markers,
@@ -223,10 +223,10 @@ class _PerformanceStartupMarkers:
             window_bindings_ready_ns,
             initial_route_ready_ns,
             bridge_started_ns,
-            fixture_projection_ready_ns,
             window_show_started_ns,
             window_show_returned_ns,
             window_shown_ns,
+            fixture_projection_ready_ns,
         ) = fixed_order_values
         if usable_visible_ns < max(
             fixture_projection_ready_ns,
@@ -276,8 +276,8 @@ class _PerformanceStartupMarkers:
                 bridge_started_ns,
                 fixture_projection_ready_ns,
             ),
-            "projection_ready_to_show_started": elapsed_ms(
-                fixture_projection_ready_ns,
+            "bridge_started_to_show_started": elapsed_ms(
+                bridge_started_ns,
                 window_show_started_ns,
             ),
             "window_show_call": elapsed_ms(
@@ -291,6 +291,10 @@ class _PerformanceStartupMarkers:
             "show_return_to_events_processed": elapsed_ms(
                 window_show_returned_ns,
                 window_shown_ns,
+            ),
+            "shown_to_projection_ready": elapsed_ms(
+                window_shown_ns,
+                fixture_projection_ready_ns,
             ),
             "projection_ready_to_usable_visible": elapsed_ms(
                 fixture_projection_ready_ns,
@@ -2759,6 +2763,11 @@ def run_performance_lane(
             REFERENCE_MEASUREMENT_PROTOCOL.window_height,
         )
         window.move(-10_000, -10_000)
+        startup_markers.window_show_started_ns = perf_counter_ns()
+        window.show()
+        startup_markers.window_show_returned_ns = perf_counter_ns()
+        app.processEvents()
+        startup_markers.window_shown_ns = perf_counter_ns()
 
         def initial_fixture_projection_ready() -> bool:
             renderer = root.findChild(QObject, "productionEvidenceChart")
@@ -2816,11 +2825,6 @@ def run_performance_lane(
         probe.connect_render_signals()
         host.update()
         host.quickWindow().update()
-        startup_markers.window_show_started_ns = perf_counter_ns()
-        window.show()
-        startup_markers.window_show_returned_ns = perf_counter_ns()
-        app.processEvents()
-        startup_markers.window_shown_ns = perf_counter_ns()
         QTimer.singleShot(
             max(5_000, ceil((duration_seconds + 5.0) * 1_000)),
             app.quit,
