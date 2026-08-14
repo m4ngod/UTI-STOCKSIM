@@ -27,7 +27,6 @@ from typing import Any, cast
 from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
-    QMetaObject,
     QObject,
     Qt,
     QTimer,
@@ -162,17 +161,17 @@ class _PerformanceStartupMarkers:
     window_bindings_ready_ns: int | None = None
     initial_route_ready_ns: int | None = None
     bridge_started_ns: int | None = None
+    fixture_projection_ready_ns: int | None = None
     window_show_started_ns: int | None = None
     window_show_returned_ns: int | None = None
     window_shown_ns: int | None = None
-    fixture_projection_ready_ns: int | None = None
 
     def phase_durations_ms(
         self,
         *,
         usable_visible_ns: int,
     ) -> dict[str, float]:
-        ordered_markers = (
+        fixed_order_markers = (
             ("runtime_started", self.runtime_started_ns),
             ("qapplication_ready", self.qapplication_ready_ns),
             ("window_create_started", self.window_create_started_ns),
@@ -180,18 +179,21 @@ class _PerformanceStartupMarkers:
             ("window_bindings_ready", self.window_bindings_ready_ns),
             ("initial_route_ready", self.initial_route_ready_ns),
             ("bridge_started", self.bridge_started_ns),
-            ("window_show_started", self.window_show_started_ns),
-            ("window_show_returned", self.window_show_returned_ns),
-            ("window_shown", self.window_shown_ns),
             (
                 "fixture_projection_ready",
                 self.fixture_projection_ready_ns,
             ),
+            ("window_show_started", self.window_show_started_ns),
+            ("window_show_returned", self.window_show_returned_ns),
+            ("window_shown", self.window_shown_ns),
+        )
+        all_markers = (
+            *fixed_order_markers,
             ("usable_visible", usable_visible_ns),
         )
         missing = [
             name
-            for name, value in ordered_markers
+            for name, value in all_markers
             if value is None or value <= 0
         ]
         if missing:
@@ -199,12 +201,15 @@ class _PerformanceStartupMarkers:
                 "Performance startup markers are incomplete: "
                 + ", ".join(missing)
             )
-        values = tuple(
-            cast(int, value) for _, value in ordered_markers
+        fixed_order_values = tuple(
+            cast(int, value) for _, value in fixed_order_markers
         )
         if any(
             current < previous
-            for previous, current in zip(values, values[1:])
+            for previous, current in zip(
+                fixed_order_values,
+                fixed_order_values[1:],
+            )
         ):
             raise RuntimeError(
                 "Performance startup markers are out of order"
@@ -218,12 +223,18 @@ class _PerformanceStartupMarkers:
             window_bindings_ready_ns,
             initial_route_ready_ns,
             bridge_started_ns,
+            fixture_projection_ready_ns,
             window_show_started_ns,
             window_show_returned_ns,
             window_shown_ns,
+        ) = fixed_order_values
+        if usable_visible_ns < max(
             fixture_projection_ready_ns,
-            usable_visible_ns,
-        ) = values
+            window_show_started_ns,
+        ):
+            raise RuntimeError(
+                "Performance usable frame marker is out of order"
+            )
 
         def elapsed_ms(start_ns: int, end_ns: int) -> float:
             return round((end_ns - start_ns) / 1_000_000, 6)
@@ -261,28 +272,28 @@ class _PerformanceStartupMarkers:
                 initial_route_ready_ns,
                 bridge_started_ns,
             ),
-            "bridge_started_to_show_started": elapsed_ms(
+            "bridge_started_to_projection_ready": elapsed_ms(
                 bridge_started_ns,
+                fixture_projection_ready_ns,
+            ),
+            "projection_ready_to_show_started": elapsed_ms(
+                fixture_projection_ready_ns,
                 window_show_started_ns,
             ),
             "window_show_call": elapsed_ms(
                 window_show_started_ns,
                 window_show_returned_ns,
             ),
+            "show_started_to_usable_visible": elapsed_ms(
+                window_show_started_ns,
+                usable_visible_ns,
+            ),
             "show_return_to_events_processed": elapsed_ms(
                 window_show_returned_ns,
                 window_shown_ns,
             ),
-            "shown_to_projection_ready": elapsed_ms(
-                window_shown_ns,
-                fixture_projection_ready_ns,
-            ),
             "projection_ready_to_usable_visible": elapsed_ms(
                 fixture_projection_ready_ns,
-                usable_visible_ns,
-            ),
-            "shown_to_usable_visible": elapsed_ms(
-                window_shown_ns,
                 usable_visible_ns,
             ),
         }
@@ -1299,18 +1310,18 @@ class _MetricRecorder:
                 self.terminal_visible_ms = (visible_ns - accepted_ns) / 1_000_000
 
 
-def _canvas_revision_ready_for_composition(renderer: QObject) -> int:
-    """Return only a revision whose latest curve paint is acknowledged."""
+def _scene_graph_revision_ready_for_composition(renderer: QObject) -> int:
+    """Return only an exact revision carried by a complete chart geometry."""
 
     accepted_revision = int(renderer.property("acceptedRevision") or 0)
-    requested_paint = int(renderer.property("paintRequestSequence") or 0)
-    painted_paint = int(renderer.property("paintedPaintSequence") or 0)
-    painted_frame = int(renderer.property("paintedFrameSequence") or 0)
+    frame_sequence = int(renderer.property("frameSequence") or 0)
+    sample_point_count = int(renderer.property("samplePointCount") or 0)
+    series_point_count = int(renderer.property("seriesPointCount") or 0)
     if (
         accepted_revision < 1
-        or requested_paint < 1
-        or painted_paint < requested_paint
-        or painted_frame < 1
+        or frame_sequence < 1
+        or sample_point_count < 1
+        or series_point_count != sample_point_count
     ):
         return 0
     return accepted_revision
@@ -1339,7 +1350,7 @@ class _QtPerformanceProbe(QObject):
         self._root: Any = None
         self._adapter: Any = None
         self._renderer: Any = None
-        self._series_canvas: Any = None
+        self._series_shape: Any = None
         self._candidate_repeater: Any = None
         self._context_panel: Any = None
         self._tab_findings: Any = None
@@ -1383,7 +1394,6 @@ class _QtPerformanceProbe(QObject):
         self._watchdog.setInterval(1)
         self._watchdog.timeout.connect(self._watch)
         self._watchdog.start()
-        QTimer.singleShot(0, self._request_initial_chart_paint)
 
         self._source_timer = QTimer(self)
         self._source_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -1467,7 +1477,7 @@ class _QtPerformanceProbe(QObject):
 
     @Slot()
     def before_synchronize(self) -> None:
-        self._synchronized_revision = _canvas_revision_ready_for_composition(
+        self._synchronized_revision = _scene_graph_revision_ready_for_composition(
             self._renderer
         )
 
@@ -1593,18 +1603,6 @@ class _QtPerformanceProbe(QObject):
             max(1, ceil(self._duration_seconds * 1_000)),
             self._publish_terminal,
         )
-
-    @Slot()
-    def _request_initial_chart_paint(self) -> None:
-        """Cross the threaded Canvas acknowledgement barrier before timing."""
-
-        if not QMetaObject.invokeMethod(  # type: ignore[call-overload]
-            self._series_canvas,
-            "requestPaint",
-        ):
-            self.errors.append(
-                "Initial Evidence Chart paint request was rejected"
-            )
 
     @Slot()
     def _run_measurement_active_load(self) -> None:
@@ -1796,7 +1794,7 @@ class _QtPerformanceProbe(QObject):
         self._root = root
         self._adapter = adapter
         self._renderer = self._required_item("productionEvidenceChart")
-        self._series_canvas = self._required_object(
+        self._series_shape = self._required_object(
             "evidenceChartSeriesShape"
         )
         self._candidate_repeater = self._required_object(
@@ -2761,19 +2759,37 @@ def run_performance_lane(
             REFERENCE_MEASUREMENT_PROTOCOL.window_height,
         )
         window.move(-10_000, -10_000)
-        startup_markers.window_show_started_ns = perf_counter_ns()
-        window.show()
-        startup_markers.window_show_returned_ns = perf_counter_ns()
-        app.processEvents()
-        startup_markers.window_shown_ns = perf_counter_ns()
+
+        def initial_fixture_projection_ready() -> bool:
+            renderer = root.findChild(QObject, "productionEvidenceChart")
+            series_shape = root.findChild(QObject, "evidenceChartSeriesShape")
+            candidate_repeater = root.findChild(
+                QObject,
+                "evidenceCandidateRepeater",
+            )
+            return bool(
+                renderer is not None
+                and series_shape is not None
+                and candidate_repeater is not None
+                and evidence_qt_adapter.presentationState == "ready"
+                and evidence_qt_adapter.chartSourcePointCount
+                == REFERENCE_FIXTURE.source_points
+                and int(renderer.property("samplePointCount") or 0)
+                == REFERENCE_FIXTURE.visible_points
+                and int(renderer.property("seriesPointCount") or 0)
+                == REFERENCE_FIXTURE.visible_points
+                and int(renderer.property("overlayCount") or 0)
+                == REFERENCE_FIXTURE.overlay_count
+                and int(series_shape.property("seriesPointCount") or 0)
+                == REFERENCE_FIXTURE.visible_points
+                and int(candidate_repeater.property("count") or 0)
+                == REFERENCE_FIXTURE.candidate_rows
+            )
+
         try:
             _settle_until(
                 app,
-                lambda: bool(
-                    evidence_qt_adapter.presentationState == "ready"
-                    and evidence_qt_adapter.chartSourcePointCount
-                    == REFERENCE_FIXTURE.source_points
-                ),
+                initial_fixture_projection_ready,
                 "real persisted performance Evidence projection",
                 timeout_seconds=15.0,
             )
@@ -2800,6 +2816,11 @@ def run_performance_lane(
         probe.connect_render_signals()
         host.update()
         host.quickWindow().update()
+        startup_markers.window_show_started_ns = perf_counter_ns()
+        window.show()
+        startup_markers.window_show_returned_ns = perf_counter_ns()
+        app.processEvents()
+        startup_markers.window_shown_ns = perf_counter_ns()
         QTimer.singleShot(
             max(5_000, ceil((duration_seconds + 5.0) * 1_000)),
             app.quit,

@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RENDER_PROBE = """
 import json
 import os
-from PySide6.QtCore import QObject, QMetaObject, QPointF, QUrl
+from PySide6.QtCore import QObject, QPointF, QUrl
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication
 
@@ -59,27 +59,26 @@ item.setProperty("selectedPointX", 0.66)
 item.setProperty("selectedPointY", 0.35)
 series = item.findChild(QObject, "evidenceChartSeriesShape")
 if series is None:
-    raise RuntimeError("EvidenceChart Canvas did not load")
+    raise RuntimeError("EvidenceChart scene-graph series did not load")
 item.setProperty("frameSequence", 100)
 item.setProperty("acceptedRevision", 200)
-series.setProperty("requestedPaintSequence", 10)
-QMetaObject.invokeMethod(series, "capturePaintToken")
-item.setProperty("frameSequence", 101)
-item.setProperty("acceptedRevision", 201)
-series.setProperty("requestedPaintSequence", 11)
-QMetaObject.invokeMethod(series, "capturePaintToken")
-QMetaObject.invokeMethod(series, "acknowledgeOldestPaintToken")
-first_fifo_ack = (
-    item.property("paintedPaintSequence"),
-    item.property("paintedFrameSequence"),
-    item.property("paintedAcceptedRevision"),
-)
-QMetaObject.invokeMethod(series, "acknowledgeOldestPaintToken")
-second_fifo_ack = (
-    item.property("paintedPaintSequence"),
-    item.property("paintedFrameSequence"),
-    item.property("paintedAcceptedRevision"),
-)
+synchronized_revisions = []
+rendered_revisions = []
+
+def before_synchronizing():
+    synchronized_revisions.append(
+        int(item.property("acceptedRevision") or 0)
+        if int(series.property("seriesPointCount") or 0) == 4
+        else 0
+    )
+
+def after_rendering():
+    rendered_revisions.append(
+        synchronized_revisions[-1] if synchronized_revisions else 0
+    )
+
+view.beforeSynchronizing.connect(before_synchronizing)
+view.afterRendering.connect(after_rendering)
 view.show()
 for _ in range(4):
     app.processEvents()
@@ -97,8 +96,10 @@ print(
             "nontransparent": nontransparent,
             "sample_points": item.property("samplePointCount"),
             "overlays": item.property("overlayCount"),
-            "first_fifo_ack": first_fifo_ack,
-            "second_fifo_ack": second_fifo_ack,
+            "series_point_count": series.property("seriesPointCount"),
+            "first_rendered_revision": (
+                rendered_revisions[0] if rendered_revisions else 0
+            ),
         }
     )
 )
@@ -157,6 +158,6 @@ def test_production_chart_renders_deterministically_in_supported_lanes(
     assert observation["image_is_null"] is False
     assert observation["sample_points"] == 4
     assert observation["overlays"] == 3
-    assert observation["first_fifo_ack"] == [10, 100, 200]
-    assert observation["second_fifo_ack"] == [11, 101, 201]
+    assert observation["series_point_count"] == 4
+    assert observation["first_rendered_revision"] == 200
     assert observation["nontransparent"] > 0

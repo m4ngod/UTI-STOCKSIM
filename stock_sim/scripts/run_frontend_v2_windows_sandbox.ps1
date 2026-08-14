@@ -119,6 +119,46 @@ catch {
         [Text.UTF8Encoding]::new($false)
     )
 }
+$cleanRoomReportPath = "C:\ReleaseEvidence\clean-room-report.json"
+if (-not (Test-Path -LiteralPath $cleanRoomReportPath -PathType Leaf)) {
+    $knownFailureStages = @(
+        "guest-local-root-resolution",
+        "archive-validation",
+        "environment-inventory",
+        "package-extraction",
+        "installed-dpi-preflight"
+    )
+    $failureStage = "clean-room-runner-boundary"
+    $cleanRoomStagePath = "C:\ReleaseEvidence\clean-room-stage.txt"
+    if (Test-Path -LiteralPath $cleanRoomStagePath -PathType Leaf) {
+        $observedFailureStage = (
+            Get-Content -LiteralPath $cleanRoomStagePath -Raw -Encoding UTF8
+        ).Trim()
+        if ($knownFailureStages -ccontains $observedFailureStage) {
+            $failureStage = $observedFailureStage
+        }
+    }
+    $boundaryFailureReport = [ordered]@{
+        schema_version = 7
+        stage = $failureStage
+        source_commit = "__SOURCE_COMMIT__"
+        archive_sha256 = "__ARCHIVE_SHA256__"
+        widgets_archive_sha256 = "__WIDGETS_ARCHIVE_SHA256__"
+        passed = $false
+        failure_classification = "preflight-boundary"
+        errors = @(
+            "Clean-room runner failed before machine-readable report at a redacted boundary"
+        )
+    }
+    [IO.File]::WriteAllText(
+        $cleanRoomReportPath,
+        ($boundaryFailureReport | ConvertTo-Json -Depth 4),
+        [Text.UTF8Encoding]::new($false)
+    )
+    if ($exitCode -eq 0) {
+        $exitCode = 1
+    }
+}
 [IO.File]::WriteAllText(
     "C:\ReleaseEvidence\sandbox-exit-code.txt",
     [string]$exitCode,

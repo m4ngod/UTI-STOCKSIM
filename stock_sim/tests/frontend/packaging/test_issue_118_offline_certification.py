@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -516,6 +517,101 @@ $known = @(
     ]
 
 
+def test_clean_room_ignores_only_typed_stale_uia_boundaries():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the Windows clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Test-IsTransientUiAutomationBoundaryFailure"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "typed stale UIA boundary classifier was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+function New-TestErrorRecord([Exception]$Exception) {
+    return [Management.Automation.ErrorRecord]::new(
+        $Exception,
+        "issue118-uia-probe",
+        [Management.Automation.ErrorCategory]::NotSpecified,
+        $null
+    )
+}
+
+$elementUnavailable = New-TestErrorRecord (
+    [System.Windows.Automation.ElementNotAvailableException]::new()
+)
+$elementUnavailableCom = New-TestErrorRecord (
+    [Runtime.InteropServices.COMException]::new(
+        "redacted",
+        [int]0x80040201
+    )
+)
+$nestedElementUnavailable = New-TestErrorRecord (
+    [InvalidOperationException]::new(
+        "redacted",
+        [Runtime.InteropServices.COMException]::new(
+            "redacted",
+            [int]0x80040201
+        )
+    )
+)
+$otherCom = New-TestErrorRecord (
+    [Runtime.InteropServices.COMException]::new(
+        "redacted",
+        [int]0x80004005
+    )
+)
+$messageOnly = New-TestErrorRecord (
+    [InvalidOperationException]::new("Element not available")
+)
+
+@(
+    Test-IsTransientUiAutomationBoundaryFailure `
+        -ErrorRecord $elementUnavailable
+    Test-IsTransientUiAutomationBoundaryFailure `
+        -ErrorRecord $elementUnavailableCom
+    Test-IsTransientUiAutomationBoundaryFailure `
+        -ErrorRecord $nestedElementUnavailable
+    Test-IsTransientUiAutomationBoundaryFailure -ErrorRecord $otherCom
+    Test-IsTransientUiAutomationBoundaryFailure -ErrorRecord $messageOnly
+) | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == [True, True, True, False, False]
+
+
 def test_clean_room_uia_canonical_object_names_reject_duplicates():
     powershell = shutil.which("pwsh")
     if powershell is None:
@@ -757,6 +853,185 @@ def test_clean_room_native_dpi_preflight_precedes_every_certification_gate():
     assert '--installed-dpi-preflight-report=' in source
     assert 'stage = "installed-dpi-preflight"' in source
     assert "exit 1" in source[fail_closed:migration]
+
+
+@pytest.mark.parametrize(
+    (
+        "candidate_bytes",
+        "widgets_bytes",
+        "expected_candidate_sha256",
+        "expected_widgets_sha256",
+        "expected_stage",
+    ),
+    (
+        (
+            b"not-the-locked-candidate",
+            b"not-the-locked-widgets",
+            "a" * 64,
+            "b" * 64,
+            "archive-validation",
+        ),
+        (
+            b"",
+            b"",
+            "e3b0c44298fc1c149afbf4c8996fb924"
+            "27ae41e4649b934ca495991b7852b855",
+            "e3b0c44298fc1c149afbf4c8996fb924"
+            "27ae41e4649b934ca495991b7852b855",
+            "package-extraction",
+        ),
+    ),
+)
+def test_clean_room_records_stage_before_preflight_boundary_failure(
+    tmp_path,
+    candidate_bytes,
+    widgets_bytes,
+    expected_candidate_sha256,
+    expected_widgets_sha256,
+    expected_stage,
+):
+    powershell = Path(
+        r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe"
+    )
+    if not powershell.is_file():
+        pytest.skip("Windows PowerShell 5.1 is required for the guest probe")
+
+    candidate = tmp_path / "candidate.zip"
+    candidate.write_bytes(candidate_bytes)
+    widgets = tmp_path / "widgets.zip"
+    widgets.write_bytes(widgets_bytes)
+    evidence_root = tmp_path / "ReleaseEvidence"
+    local_app_data = tmp_path / "LocalAppData"
+    powershell_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.casefold() != "psmodulepath"
+    }
+    powershell_environment["LOCALAPPDATA"] = str(local_app_data)
+
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(
+                PROJECT_ROOT
+                / "scripts"
+                / "run_frontend_v2_clean_room.ps1"
+            ),
+            "-PackageArchive",
+            str(candidate),
+            "-ExpectedArchiveSha256",
+            "sha256:" + expected_candidate_sha256,
+            "-WidgetsPackageArchive",
+            str(widgets),
+            "-ExpectedWidgetsArchiveSha256",
+            "sha256:" + expected_widgets_sha256,
+            "-SourceCommit",
+            "c" * 40,
+            "-EvidenceDir",
+            str(evidence_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=powershell_environment,
+    )
+
+    assert completed.returncode == 1
+    observed_stage = (evidence_root / "clean-room-stage.txt").read_text(
+        encoding="utf-8"
+    )
+    assert observed_stage == expected_stage, completed.stderr
+    assert not (evidence_root / "clean-room-report.json").exists()
+
+
+def test_clean_room_records_installed_preflight_stage_without_executables(
+    tmp_path,
+):
+    powershell = Path(
+        r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe"
+    )
+    if not powershell.is_file():
+        pytest.skip("Windows PowerShell 5.1 is required for the guest probe")
+
+    candidate_source = tmp_path / "candidate-source"
+    candidate_source.mkdir()
+    (candidate_source / "candidate.txt").write_text("candidate", encoding="utf-8")
+    widgets_source = tmp_path / "widgets-source"
+    widgets_source.mkdir()
+    (widgets_source / "widgets.txt").write_text("widgets", encoding="utf-8")
+    candidate = Path(
+        shutil.make_archive(
+            str(tmp_path / "candidate"),
+            "zip",
+            root_dir=candidate_source,
+        )
+    )
+    widgets = Path(
+        shutil.make_archive(
+            str(tmp_path / "widgets"),
+            "zip",
+            root_dir=widgets_source,
+        )
+    )
+    evidence_root = tmp_path / "ReleaseEvidence"
+    local_app_data = tmp_path / "LocalAppData"
+    powershell_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.casefold() != "psmodulepath"
+    }
+    powershell_environment["LOCALAPPDATA"] = str(local_app_data)
+
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(
+                PROJECT_ROOT
+                / "scripts"
+                / "run_frontend_v2_clean_room.ps1"
+            ),
+            "-PackageArchive",
+            str(candidate),
+            "-ExpectedArchiveSha256",
+            "sha256:" + hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            "-WidgetsPackageArchive",
+            str(widgets),
+            "-ExpectedWidgetsArchiveSha256",
+            "sha256:" + hashlib.sha256(widgets.read_bytes()).hexdigest(),
+            "-SourceCommit",
+            "c" * 40,
+            "-EvidenceDir",
+            str(evidence_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=powershell_environment,
+    )
+
+    assert completed.returncode == 1
+    assert (evidence_root / "clean-room-stage.txt").read_text(
+        encoding="utf-8"
+    ) == "installed-dpi-preflight"
+    report = json.loads(
+        (evidence_root / "clean-room-report.json").read_text(encoding="utf-8")
+    )
+    assert report["schema_version"] == 7
+    assert report["stage"] == "installed-dpi-preflight"
+    assert report["install_succeeded"] is False
+    assert report["passed"] is False
 
 
 @pytest.mark.parametrize(
@@ -1065,18 +1340,20 @@ Test-InstalledDpiPreflightEvidence `
 
 
 @pytest.mark.parametrize(
-    ("clean_room_exit_code", "ack_value"),
+    ("clean_room_exit_code", "ack_value", "writes_clean_room_report"),
     (
-        (0, None),
-        (1, None),
-        (0, "d" * 32),
-        (0, "e" * 32),
+        (0, None, True),
+        (1, None, True),
+        (0, "d" * 32, True),
+        (0, "e" * 32, True),
+        (1, "d" * 32, False),
     ),
 )
 def test_sandbox_guest_runner_waits_for_host_result_acknowledgment(
     tmp_path,
     clean_room_exit_code,
     ack_value,
+    writes_clean_room_report,
 ):
     powershell = shutil.which("pwsh")
     if powershell is None:
@@ -1093,16 +1370,28 @@ def test_sandbox_guest_runner_waits_for_host_result_acknowledgment(
     evidence_root = tmp_path / "ReleaseEvidence"
     evidence_root.mkdir()
     clean_room_runner = evidence_root / "clean-room-runner.ps1"
-    clean_room_runner.write_text(
-        "param([Parameter(ValueFromRemainingArguments=$true)]$Ignored)\n"
-        "[IO.File]::WriteAllText(\n"
-        "    (Join-Path $PSScriptRoot 'clean-room-report.json'),\n"
-        "    '{}',\n"
-        "    [Text.UTF8Encoding]::new($false)\n"
-        ")\n"
-        f"exit {clean_room_exit_code}\n",
-        encoding="utf-8",
-    )
+    if writes_clean_room_report:
+        clean_room_runner.write_text(
+            "param([Parameter(ValueFromRemainingArguments=$true)]$Ignored)\n"
+            "[IO.File]::WriteAllText(\n"
+            "    (Join-Path $PSScriptRoot 'clean-room-report.json'),\n"
+            "    '{}',\n"
+            "    [Text.UTF8Encoding]::new($false)\n"
+            ")\n"
+            f"exit {clean_room_exit_code}\n",
+            encoding="utf-8",
+        )
+    else:
+        clean_room_runner.write_text(
+            "param([Parameter(ValueFromRemainingArguments=$true)]$Ignored)\n"
+            "[IO.File]::WriteAllText(\n"
+            "    (Join-Path $PSScriptRoot 'clean-room-stage.txt'),\n"
+            "    'package-extraction',\n"
+            "    [Text.UTF8Encoding]::new($false)\n"
+            ")\n"
+            f"exit {clean_room_exit_code}\n",
+            encoding="utf-8",
+        )
     escaped_evidence_root = str(evidence_root)
     guest_runner = (
         guest_runner.replace(
@@ -1160,7 +1449,23 @@ def test_sandbox_guest_runner_waits_for_host_result_acknowledgment(
 
     assert process.returncode == 0, stderr
     assert stdout == ""
-    assert (evidence_root / "clean-room-report.json").is_file()
+    report_path = evidence_root / "clean-room-report.json"
+    assert report_path.is_file()
+    if not writes_clean_room_report:
+        boundary_report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert boundary_report == {
+            "schema_version": 7,
+            "stage": "package-extraction",
+            "source_commit": "c" * 40,
+            "archive_sha256": "sha256:" + "a" * 64,
+            "widgets_archive_sha256": "sha256:" + "b" * 64,
+            "passed": False,
+            "failure_classification": "preflight-boundary",
+            "errors": [
+                "Clean-room runner failed before machine-readable report "
+                "at a redacted boundary"
+            ],
+        }
     assert (evidence_root / "sandbox-exit-code.txt").read_text(
         encoding="utf-8"
     ) == str(clean_room_exit_code)

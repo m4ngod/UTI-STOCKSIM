@@ -35,19 +35,35 @@ def test_startup_markers_are_complete_ordered_and_compute_phases():
         window_bindings_ready_ns=5,
         initial_route_ready_ns=6,
         bridge_started_ns=7,
-        window_show_started_ns=8,
-        window_show_returned_ns=9,
-        window_shown_ns=10,
-        fixture_projection_ready_ns=11,
+        fixture_projection_ready_ns=8,
+        window_show_started_ns=9,
+        window_show_returned_ns=11,
+        window_shown_ns=12,
     )
-    phases = markers.phase_durations_ms(usable_visible_ns=12)
+    phases = markers.phase_durations_ms(usable_visible_ns=10)
 
-    assert phases["total_to_usable_visible"] == 0.000011
-    assert phases["projection_ready_to_usable_visible"] == 0.000001
+    assert phases["total_to_usable_visible"] == 0.000009
+    assert phases["projection_ready_to_usable_visible"] == 0.000002
+    assert phases["show_started_to_usable_visible"] == 0.000001
 
-    markers.window_shown_ns = 7
+    markers.window_show_returned_ns = 10
+    markers.window_shown_ns = 12
+    phases_after_show_return = markers.phase_durations_ms(
+        usable_visible_ns=11
+    )
+    assert (
+        phases_after_show_return["show_started_to_usable_visible"]
+        == 0.000002
+    )
+    assert (
+        phases_after_show_return["projection_ready_to_usable_visible"]
+        == 0.000003
+    )
+
+    markers.window_show_returned_ns = 11
+    markers.window_shown_ns = 10
     with pytest.raises(RuntimeError, match="out of order"):
-        markers.phase_durations_ms(usable_visible_ns=12)
+        markers.phase_durations_ms(usable_visible_ns=10)
 
 
 def test_performance_fixture_persists_evidence_as_its_initial_route(tmp_path):
@@ -106,14 +122,14 @@ def test_performance_route_ensure_navigates_from_another_route():
     ]
 
 
-def test_visibility_waits_for_canvas_paint_acknowledgment_before_composition():
+def test_visibility_accepts_only_a_complete_scene_graph_frame_for_composition():
     class Renderer:
         def __init__(self):
             self.values = {
                 "acceptedRevision": 7,
-                "paintRequestSequence": 3,
-                "paintedPaintSequence": 2,
-                "paintedFrameSequence": 10,
+                "frameSequence": 10,
+                "samplePointCount": 0,
+                "seriesPointCount": 0,
             }
 
         def property(self, name):
@@ -123,31 +139,39 @@ def test_visibility_waits_for_canvas_paint_acknowledgment_before_composition():
 
     assert (
         frontend_v2_performance_runtime
-        ._canvas_revision_ready_for_composition(renderer)
+        ._scene_graph_revision_ready_for_composition(renderer)
         == 0
     )
 
-    renderer.values["paintedPaintSequence"] = 3
-    renderer.values["paintedFrameSequence"] = 11
+    renderer.values["samplePointCount"] = 4_000
+    renderer.values["seriesPointCount"] = 4_000
 
     assert (
         frontend_v2_performance_runtime
-        ._canvas_revision_ready_for_composition(renderer)
+        ._scene_graph_revision_ready_for_composition(renderer)
         == 7
     )
 
-    renderer.values["acceptedRevision"] = 8
+    renderer.values["frameSequence"] = 0
     assert (
         frontend_v2_performance_runtime
-        ._canvas_revision_ready_for_composition(renderer)
-        == 8
+        ._scene_graph_revision_ready_for_composition(renderer)
+        == 0
     )
 
-    renderer.values["acceptedRevision"] = 9
-    renderer.values["paintRequestSequence"] = 4
+    renderer.values["frameSequence"] = 11
+    renderer.values["acceptedRevision"] = 0
     assert (
         frontend_v2_performance_runtime
-        ._canvas_revision_ready_for_composition(renderer)
+        ._scene_graph_revision_ready_for_composition(renderer)
+        == 0
+    )
+
+    renderer.values["acceptedRevision"] = 8
+    renderer.values["seriesPointCount"] = 3_999
+    assert (
+        frontend_v2_performance_runtime
+        ._scene_graph_revision_ready_for_composition(renderer)
         == 0
     )
 
@@ -693,7 +717,7 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
         abs=0.001,
     )
     assert startup["window_create"] > 0
-    assert startup["shown_to_usable_visible"] >= 0
+    assert startup["show_started_to_usable_visible"] >= 0
     assert all(value >= 0 for value in startup.values())
     assert report["fixture"] == {
         "identity": "frontend-v2-wave1-windows-v1",

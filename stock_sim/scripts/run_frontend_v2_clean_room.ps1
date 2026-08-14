@@ -19,12 +19,37 @@ function Resolve-NormalizedFullyQualifiedPath {
         [string]$Path
     )
 
-    if (-not [IO.Path]::IsPathFullyQualified($Path)) {
+    $pathRoot = [IO.Path]::GetPathRoot($Path)
+    $pathIsFullyQualified = (
+        [IO.Path]::IsPathRooted($Path) -and
+        -not [string]::IsNullOrWhiteSpace($pathRoot) -and
+        $pathRoot.Length -gt 1 -and
+        $pathRoot -cnotmatch '^[A-Za-z]:$'
+    )
+    if (-not $pathIsFullyQualified) {
         throw "Certification storage paths must be fully qualified."
     }
-    return [IO.Path]::TrimEndingDirectorySeparator(
-        [IO.Path]::GetFullPath($Path)
-    )
+    $normalizedPath = [IO.Path]::GetFullPath($Path)
+    $pathRoot = [IO.Path]::GetPathRoot($normalizedPath)
+    while (
+        $normalizedPath.Length -gt $pathRoot.Length -and
+        (
+            $normalizedPath.EndsWith(
+                [IO.Path]::DirectorySeparatorChar.ToString(),
+                [StringComparison]::Ordinal
+            ) -or
+            $normalizedPath.EndsWith(
+                [IO.Path]::AltDirectorySeparatorChar.ToString(),
+                [StringComparison]::Ordinal
+            )
+        )
+    ) {
+        $normalizedPath = $normalizedPath.Substring(
+            0,
+            $normalizedPath.Length - 1
+        )
+    }
+    return $normalizedPath
 }
 
 function Test-NormalizedPathIsSameOrDescendant {
@@ -121,6 +146,28 @@ function Resolve-GuestLocalCertificationInstallRoots {
         Candidate = $resolvedCandidate
         Widgets = $resolvedWidgets
     }
+}
+
+function Set-CleanRoomStage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            "guest-local-root-resolution",
+            "archive-validation",
+            "environment-inventory",
+            "package-extraction",
+            "installed-dpi-preflight"
+        )]
+        [string]$Stage
+    )
+
+    [IO.File]::WriteAllText(
+        (Join-Path $EvidenceRoot "clean-room-stage.txt"),
+        $Stage,
+        [Text.UTF8Encoding]::new($false)
+    )
 }
 
 function Reset-RendererLaneEvidence {
@@ -270,6 +317,7 @@ function New-UiAutomationAccessibilityEvidence {
         readable_element_count = 0
         unreadable_element_count = 0
         complete_snapshot_count = 0
+        transient_uia_boundary_count = 0
         named_element_count = 0
         focusable_element_count = 0
         focus_observed = $false
@@ -305,6 +353,32 @@ function New-UiAutomationAccessibilityEvidence {
         passed = $false
         errors = @()
     }
+}
+
+function Test-IsTransientUiAutomationBoundaryFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $exception = $ErrorRecord.Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $exception; $depth++) {
+        if (
+            $exception.GetType().FullName -ceq (
+                "System.Windows.Automation.ElementNotAvailableException"
+            )
+        ) {
+            return $true
+        }
+        if (
+            $exception -is [Runtime.InteropServices.COMException] -and
+            [int]$exception.HResult -eq -2147220991
+        ) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
 }
 
 function Get-SafeAutomationId {
@@ -1119,9 +1193,16 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
                     }
                 }
                 catch {
-                    $evidence.errors += (
-                        "Windows UI Automation probe failed at a redacted boundary"
-                    )
+                    if (Test-IsTransientUiAutomationBoundaryFailure $_) {
+                        $evidence.transient_uia_boundary_count = (
+                            [int]$evidence.transient_uia_boundary_count + 1
+                        )
+                    }
+                    else {
+                        $evidence.errors += (
+                            "Windows UI Automation probe failed at a redacted boundary"
+                        )
+                    }
                 }
                 $nextScan = [DateTime]::UtcNow.AddMilliseconds(500)
             }
@@ -1271,6 +1352,9 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         $evidence.narrator_running_during_probe -and
         $narratorCheckpointsPassed -and
         $evidence.complete_snapshot_count -ge 8 -and
+        $evidence.transient_uia_boundary_count -le (
+            $evidence.complete_snapshot_count
+        ) -and
         $evidence.focus_traversal_observed -and
         $evidence.observed_window_dpi_x -eq 192 -and
         $evidence.observed_window_dpi_y -eq 192 -and
@@ -1658,6 +1742,9 @@ if (Test-Path -LiteralPath $resolvedWidgetsInstall) {
     Remove-Item -LiteralPath $resolvedWidgetsInstall -Recurse -Force
 }
 
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "archive-validation"
 $archiveHash = (Get-FileHash -LiteralPath $PackageArchive -Algorithm SHA256).Hash.ToLowerInvariant()
 $normalizedExpected = $ExpectedArchiveSha256.ToLowerInvariant().Replace("sha256:", "")
 if ($archiveHash -ne $normalizedExpected) {
@@ -1673,6 +1760,9 @@ if ($widgetsArchiveHash -ne $normalizedWidgetsExpected) {
     throw "Widgets archive checksum does not match the expected SHA-256."
 }
 
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "environment-inventory"
 $os = Get-CimInstance Win32_OperatingSystem
 $operatingSystem = "$($os.Caption) $($os.Version)"
 $architecture = $env:PROCESSOR_ARCHITECTURE
@@ -1790,6 +1880,9 @@ $sourceCheckoutMarkers = @(
 $sourceCheckoutAbsent = $sourceCheckoutMarkers.Count -eq 0
 $accessibilityEnvironment = Initialize-InstalledAccessibilityEnvironment
 
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "package-extraction"
 Expand-Archive -LiteralPath $PackageArchive -DestinationPath $resolvedInstall
 Expand-Archive `
     -LiteralPath $WidgetsPackageArchive `
@@ -1882,6 +1975,9 @@ $expectedProductionPath = @(
     "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost"
 )
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "installed-dpi-preflight"
 $installedDpiPreflight = [ordered]@{
     schema_version = 1
     stage = "installed-dpi-preflight"
