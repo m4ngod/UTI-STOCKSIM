@@ -8253,18 +8253,26 @@ class JourneyWorkspaceHost(QQuickWidget):
         scenario_selection = self._current_journey_scenario_selection()
         diagnostic_selection = self._current_journey_diagnostic_selection()
         evidence_selection = self._current_journey_evidence_selection()
-        if diagnostic_selection is not None and self._system_health is not None:
+        system_health_diagnostic_selection = (
+            self._system_health_diagnostic_selection(diagnostic_selection)
+        )
+        if (
+            system_health_diagnostic_selection is not None
+            and self._system_health is not None
+        ):
             system_context = SystemHealthContext(
                 diagnostic=SystemHealthDiagnosticContext(
-                    task_id=diagnostic_selection.task_id,
-                    task_revision=diagnostic_selection.task_revision,
+                    task_id=system_health_diagnostic_selection.task_id,
+                    task_revision=system_health_diagnostic_selection.task_revision,
                     configuration_content_id=(
-                        diagnostic_selection.configuration_content_id
+                        system_health_diagnostic_selection.configuration_content_id
                     ),
-                    task_handle_id=diagnostic_selection.task_handle_id,
-                    campaign_id=diagnostic_selection.campaign_id,
-                    campaign_revision=diagnostic_selection.campaign_revision,
-                    run_id=diagnostic_selection.run_id,
+                    task_handle_id=system_health_diagnostic_selection.task_handle_id,
+                    campaign_id=system_health_diagnostic_selection.campaign_id,
+                    campaign_revision=(
+                        system_health_diagnostic_selection.campaign_revision
+                    ),
+                    run_id=system_health_diagnostic_selection.run_id,
                     evidence_package_id=(
                         None
                         if evidence_selection is None
@@ -8391,6 +8399,14 @@ class JourneyWorkspaceHost(QQuickWidget):
             if self._diagnostic_tasks is None
             else self._diagnostic_tasks.journey_selection()
         )
+
+    def _system_health_diagnostic_selection(
+        self,
+        current: JourneyDiagnosticSelection | None,
+    ) -> JourneyDiagnosticSelection | None:
+        if current is not None:
+            return current
+        return self._journey_workspace_bookmark.diagnostic_selection
 
     def _current_journey_evidence_selection(
         self,
@@ -9008,17 +9024,10 @@ class JourneyWorkspaceHost(QQuickWidget):
         root = self.rootObject()
         if self._workspace_closed or root is None or not self.isVisible():
             return
-        requested_control = str(root.property("requestedFocusControl") or "")
-        target = (
-            None
-            if not requested_control
-            else self._find_visual_item(root, requested_control)
-        )
-        if target is None:
-            focus_property = _ROUTE_INITIAL_FOCUS_PROPERTIES[
-                self._active_route
-            ]
-            target = root.property(focus_property)
+        if self._restore_requested_route_focus():
+            return
+        focus_property = _ROUTE_INITIAL_FOCUS_PROPERTIES[self._active_route]
+        target = root.property(focus_property)
         if target is not None and (
             not bool(target.property("visible"))
             or not bool(target.property("enabled"))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -454,7 +455,7 @@ def test_bookmark_focus_token_restores_only_after_authoritative_route_entry(
     _close(context, host)
 
 
-def test_host_requested_focus_restore_marks_the_durable_token_consumed(
+def test_host_visible_route_restore_marks_the_durable_token_consumed(
     tmp_path,
 ) -> None:
     app = _app()
@@ -485,11 +486,51 @@ def test_host_requested_focus_restore_marks_the_durable_token_consumed(
     search = _quick_item(root, "strategyLibrarySearchInput")
     root.setProperty("focusReturnConsumed", False)
 
-    assert host._restore_requested_route_focus() is True
+    host._restore_visible_route_focus()
     assert search.property("activeFocus") is True
     assert root.property("focusReturnConsumed") is True
 
     _close(context, host)
+
+
+def test_system_health_alone_retains_durable_selection_during_transient_empty() -> None:
+    durable = JourneyDiagnosticSelection(
+        task_id=DiagnosticTaskId("DIAGNOSTIC-TASK-DURABLE"),
+        task_revision=7,
+        configuration_content_id=DiagnosticTaskConfigurationContentId(
+            "configuration-durable"
+        ),
+        task_handle_id=TaskHandleId("TASK-HANDLE-DURABLE"),
+        campaign_id=FormalDiagnosticCampaignId("campaign-durable"),
+        campaign_revision=3,
+        run_id=StrategyRunId("run-durable"),
+    )
+    authoritative = JourneyDiagnosticSelection(
+        task_id=durable.task_id,
+        task_revision=8,
+        configuration_content_id=durable.configuration_content_id,
+        task_handle_id=durable.task_handle_id,
+        campaign_id=durable.campaign_id,
+        campaign_revision=4,
+        run_id=durable.run_id,
+    )
+    host = SimpleNamespace(
+        _journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            diagnostic_selection=durable
+        ),
+    )
+
+    assert (
+        JourneyWorkspaceHost._system_health_diagnostic_selection(host, None)
+        == durable
+    )
+    assert (
+        JourneyWorkspaceHost._system_health_diagnostic_selection(
+            host,
+            authoritative,
+        )
+        == authoritative
+    )
 
 
 def test_copied_wave_3_bookmark_restores_the_exact_reference_path_focus(
