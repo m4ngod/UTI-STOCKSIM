@@ -2077,23 +2077,31 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     settle()
     remounted_root = remounted.rootObject()
     assert remounted_root.property("activeRoute") == "evidence_and_findings"
-    remounted_status = remounted_root.findChild(
-        QObject,
-        "evidenceAccessibleStatus",
-    )
-    remounted_interface = QAccessible.queryAccessibleInterface(
-        remounted_status
-    )
-    assert remounted_interface is not None
-    assert settle_until(
-        lambda: expected_identity_text[2]
-        in remounted_interface.text(
+    remounted_evidence_description = [""]
+
+    def remounted_evidence_is_accessible() -> bool:
+        remounted_status = remounted_root.findChild(
+            QObject,
+            "evidenceAccessibleStatus",
+        )
+        if remounted_status is None:
+            return False
+        remounted_interface = QAccessible.queryAccessibleInterface(
+            remounted_status
+        )
+        if remounted_interface is None:
+            return False
+        remounted_evidence_description[0] = remounted_interface.text(
             QAccessible.Text.Description
         )
-    ), remounted_interface.text(QAccessible.Text.Description)
-    assert expected_identity_text[2] in remounted_interface.text(
-        QAccessible.Text.Description
-    )
+        return (
+            expected_identity_text[2]
+            in remounted_evidence_description[0]
+        )
+
+    assert settle_until(
+        remounted_evidence_is_accessible
+    ), remounted_evidence_description[0]
     assert remounted_root.setProperty("activeRoute", "run_monitoring")
     settle()
     assert remounted_root.findChild(
