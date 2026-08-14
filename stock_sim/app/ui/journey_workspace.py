@@ -8985,7 +8985,12 @@ class JourneyWorkspaceHost(QQuickWidget):
         if not control or (identity and identity not in control):
             return False
         target = self._find_visual_item(root, control)
-        return target is not None and self._force_available_focus_item(target)
+        if target is None or not self._force_available_focus_item(target):
+            return False
+        if not bool(target.property("activeFocus")):
+            return False
+        root.setProperty("focusReturnConsumed", True)
+        return bool(root.property("focusReturnConsumed"))
 
     @staticmethod
     def _find_visual_item(root: QObject, object_name: str) -> QObject | None:

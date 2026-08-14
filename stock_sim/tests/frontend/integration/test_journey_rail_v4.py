@@ -454,6 +454,44 @@ def test_bookmark_focus_token_restores_only_after_authoritative_route_entry(
     _close(context, host)
 
 
+def test_host_requested_focus_restore_marks_the_durable_token_consumed(
+    tmp_path,
+) -> None:
+    app = _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.STRATEGY_LIBRARY,
+        presentation=JourneyPresentationSelection(
+            focus_return_token=JourneyFocusReturnToken(
+                JourneyWorkspaceRoute.STRATEGY_LIBRARY,
+                "strategyLibrarySearchInput",
+            )
+        ),
+    )
+    host = _host(
+        context,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+    host.resize(1280, 720)
+    host.show()
+    _settle(app)
+    root = host.rootObject()
+    assert root is not None
+    search = _quick_item(root, "strategyLibrarySearchInput")
+    root.setProperty("focusReturnConsumed", False)
+
+    assert host._restore_requested_route_focus() is True
+    assert search.property("activeFocus") is True
+    assert root.property("focusReturnConsumed") is True
+
+    _close(context, host)
+
+
 def test_copied_wave_3_bookmark_restores_the_exact_reference_path_focus(
     tmp_path,
 ) -> None:
