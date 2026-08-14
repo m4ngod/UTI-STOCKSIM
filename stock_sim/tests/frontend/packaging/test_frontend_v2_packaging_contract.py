@@ -730,7 +730,7 @@ def clean_room_lane_fixture(root, lane, graphics_api):
     }
 
 
-def clean_room_schema_six_evidence_fixture(source_commit="abc123"):
+def clean_room_schema_seven_evidence_fixture(source_commit="abc123"):
     from tests.frontend.performance.test_frontend_v2_performance_certification import (
         passing_performance_lane_report,
     )
@@ -791,6 +791,13 @@ def clean_room_schema_six_evidence_fixture(source_commit="abc123"):
         for lane in ("hardware", "software")
     }
     return {
+        "package_installation": {
+            "storage_kind": "guest_local_filesystem",
+            "candidate_guest_local": True,
+            "widgets_guest_local": True,
+            "execution_from_mapped_evidence": False,
+            "verified": True,
+        },
         "accessibility_environment": {
             "text_scale_configured_before_launch": True,
             "text_scale_registry_percent": 200,
@@ -855,7 +862,7 @@ def clean_room_schema_six_evidence_fixture(source_commit="abc123"):
 
 
 _clean_room_lane = clean_room_lane_fixture
-_clean_room_schema_six_evidence = clean_room_schema_six_evidence_fixture
+_clean_room_schema_seven_evidence = clean_room_schema_seven_evidence_fixture
 
 
 def test_exact_frontend_v2_toolchain_lock_matches_the_running_build_environment():
@@ -1786,7 +1793,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
 ):
     report_path = tmp_path / "clean-room-report.json"
     report_payload = {
-        "schema_version": 6,
+        "schema_version": 7,
         "source_commit": "abc123",
         "archive_sha256": "sha256:package",
         "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1804,7 +1811,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         "source_checkout_absent": True,
         "source_checkout_markers": [],
         "install_succeeded": True,
-        **_clean_room_schema_six_evidence(),
+        **_clean_room_schema_seven_evidence(),
         "renderer_lanes": {
             lane: _clean_room_lane(tmp_path, lane, graphics_api)
             for lane, graphics_api in (
@@ -1825,7 +1832,7 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     ) == ()
 
     old_clean_room_schema_report = deepcopy(report_payload)
-    old_clean_room_schema_report["schema_version"] = 5
+    old_clean_room_schema_report["schema_version"] = 6
     report_path.write_text(
         json.dumps(old_clean_room_schema_report),
         encoding="utf-8",
@@ -1834,6 +1841,34 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
         report_path,
         expected_source_commit="abc123",
         expected_archive_sha256="sha256:package",
+    )
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    mapped_package_report = deepcopy(report_payload)
+    mapped_package_report["package_installation"].update(
+        {
+            "storage_kind": "host_mapped_folder",
+            "execution_from_mapped_evidence": True,
+            "verified": False,
+        }
+    )
+    report_path.write_text(
+        json.dumps(mapped_package_report),
+        encoding="utf-8",
+    )
+    mapped_package_failures = verify_clean_room_report(
+        report_path,
+        expected_source_commit="abc123",
+        expected_archive_sha256="sha256:package",
+    )
+    assert "Package installation storage is not guest-local" in (
+        mapped_package_failures
+    )
+    assert "A package executed from mapped evidence storage" in (
+        mapped_package_failures
+    )
+    assert "Guest-local package installation was not verified" in (
+        mapped_package_failures
     )
     report_path.write_text(json.dumps(report_payload), encoding="utf-8")
 
@@ -2176,7 +2211,7 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 6,
+                "schema_version": 7,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -2194,7 +2229,7 @@ def test_clean_room_report_accepts_lane_local_generated_identities(tmp_path):
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
-                **_clean_room_schema_six_evidence(),
+                **_clean_room_schema_seven_evidence(),
                 "renderer_lanes": {
                     "hardware": hardware,
                     "software": software,
@@ -2463,7 +2498,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
     report.write_text(
         json.dumps(
             {
-                "schema_version": 6,
+                "schema_version": 7,
                 "source_commit": "abc123",
                 "archive_sha256": qml_sha256,
                 "widgets_archive_sha256": widgets_sha256,
@@ -2483,7 +2518,7 @@ def test_release_certification_is_blocked_until_clean_room_evidence_passes(
                 "source_checkout_markers": [],
                 "install_succeeded": True,
                 "widgets_install_succeeded": True,
-                **_clean_room_schema_six_evidence(),
+                **_clean_room_schema_seven_evidence(),
                 "widgets_rollback": {
                     "exit_code": 0,
                     "source_commit": "abc123",
@@ -3947,7 +3982,7 @@ def test_clean_room_script_fails_closed_on_inventory_or_lane_errors():
     assert "states_match" in script
     assert "screenshots_distinct" in script
     assert "$screenshotHashes" in script
-    assert "schema_version = 6" in script
+    assert "schema_version = 7" in script
     assert "unreadable_element_count" in script
     assert "complete_snapshot_count" in script
     assert "narrator_checkpoint_evidence" in script

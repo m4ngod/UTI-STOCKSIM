@@ -153,8 +153,8 @@ def test_issue_118_supported_data_copy_never_queries_storage_directly():
     assert "diagnostic_run_orders" not in source
 
 
-def test_issue_118_clean_room_contract_is_installed_schema_six():
-    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 6
+def test_issue_118_clean_room_contract_is_installed_schema_seven():
+    assert CLEAN_ROOM_REPORT_SCHEMA_VERSION == 7
 
     packaging_source = (
         PROJECT_ROOT
@@ -255,6 +255,181 @@ def test_issue_118_performance_uses_a_real_shown_render_target():
 
     assert "window.show()" in performance_runtime_source
     assert "WA_DontShowOnScreen" not in performance_runtime_source
+
+
+def test_clean_room_resolves_installation_on_guest_local_filesystem():
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$requiredFunctions = @(
+    "Resolve-NormalizedFullyQualifiedPath",
+    "Test-NormalizedPathIsSameOrDescendant",
+    "Resolve-GuestLocalCertificationInstallRoots"
+)
+foreach ($functionName in $requiredFunctions) {
+    $definition = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+        },
+        $true
+    )
+    if ($null -eq $definition) {
+        throw "required guest-local path helper was unavailable"
+    }
+    Invoke-Expression $definition.Extent.Text
+}
+$localAppData = [IO.Path]::GetFullPath(
+    (Join-Path $env:TEMP "issue118-guest-local-appdata")
+)
+$mappedEvidence = [IO.Path]::GetFullPath(
+    (Join-Path $env:TEMP "issue118-host-mapped-evidence")
+)
+$roots = Resolve-GuestLocalCertificationInstallRoots `
+    -LocalAppDataRoot $localAppData `
+    -EvidenceRoot $mappedEvidence `
+    -SourceCommit ("a" * 40)
+$trailingLocalRoots = Resolve-GuestLocalCertificationInstallRoots `
+    -LocalAppDataRoot ($localAppData + [IO.Path]::DirectorySeparatorChar) `
+    -EvidenceRoot ($mappedEvidence + [IO.Path]::DirectorySeparatorChar) `
+    -SourceCommit ("a" * 40)
+$overlapRejected = $false
+try {
+    Resolve-GuestLocalCertificationInstallRoots `
+        -LocalAppDataRoot $localAppData `
+        -EvidenceRoot (Join-Path $roots.Root "mapped-evidence") `
+        -SourceCommit ("a" * 40) | Out-Null
+}
+catch {
+    $overlapRejected = $true
+}
+$ancestorOverlapRejected = $false
+try {
+    Resolve-GuestLocalCertificationInstallRoots `
+        -LocalAppDataRoot $localAppData `
+        -EvidenceRoot ($localAppData + [IO.Path]::DirectorySeparatorChar) `
+        -SourceCommit ("a" * 40) | Out-Null
+}
+catch {
+    $ancestorOverlapRejected = $true
+}
+$driveRoot = [IO.Path]::GetPathRoot($localAppData)
+$driveRootOverlapRejected = $false
+try {
+    Resolve-GuestLocalCertificationInstallRoots `
+        -LocalAppDataRoot $localAppData `
+        -EvidenceRoot $driveRoot `
+        -SourceCommit ("a" * 40) | Out-Null
+}
+catch {
+    $driveRootOverlapRejected = $true
+}
+$relativeRootRejected = $false
+try {
+    Resolve-GuestLocalCertificationInstallRoots `
+        -LocalAppDataRoot "relative-local-appdata" `
+        -EvidenceRoot $mappedEvidence `
+        -SourceCommit ("a" * 40) | Out-Null
+}
+catch {
+    $relativeRootRejected = $true
+}
+$invalidCommitRejected = $false
+try {
+    Resolve-GuestLocalCertificationInstallRoots `
+        -LocalAppDataRoot $localAppData `
+        -EvidenceRoot $mappedEvidence `
+        -SourceCommit "ABC123" | Out-Null
+}
+catch {
+    $invalidCommitRejected = $true
+}
+[pscustomobject]@{
+    storage_kind = $roots.StorageKind
+    root_is_guest_local = $roots.Root.StartsWith(
+        $localAppData + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    candidate_is_guest_local = $roots.Candidate.StartsWith(
+        $roots.Root + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    widgets_is_guest_local = $roots.Widgets.StartsWith(
+        $roots.Root + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    root_uses_mapped_evidence = $roots.Root.StartsWith(
+        $mappedEvidence + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    roots_are_distinct = $roots.Candidate -cne $roots.Widgets
+    trailing_separator_is_idempotent = (
+        $trailingLocalRoots.Root -ceq $roots.Root -and
+        $trailingLocalRoots.Candidate -ceq $roots.Candidate -and
+        $trailingLocalRoots.Widgets -ceq $roots.Widgets
+    )
+    overlap_rejected = $overlapRejected
+    ancestor_overlap_rejected = $ancestorOverlapRejected
+    drive_root_contains_install = (
+        Test-NormalizedPathIsSameOrDescendant `
+            -Path $roots.Root `
+            -Root $driveRoot
+    )
+    drive_root_overlap_rejected = $driveRootOverlapRejected
+    unc_share_root_contains_child = (
+        Test-NormalizedPathIsSameOrDescendant `
+            -Path '\\issue118-host\share\mapped\evidence' `
+            -Root '\\issue118-host\share\'
+    )
+    relative_root_rejected = $relativeRootRejected
+    invalid_commit_rejected = $invalidCommitRejected
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "storage_kind": "guest_local_filesystem",
+        "root_is_guest_local": True,
+        "candidate_is_guest_local": True,
+        "widgets_is_guest_local": True,
+        "root_uses_mapped_evidence": False,
+        "roots_are_distinct": True,
+        "trailing_separator_is_idempotent": True,
+        "overlap_rejected": True,
+        "ancestor_overlap_rejected": True,
+        "drive_root_contains_install": True,
+        "drive_root_overlap_rejected": True,
+        "unc_share_root_contains_child": True,
+        "relative_root_rejected": True,
+        "invalid_commit_rejected": True,
+    }
 
 
 def test_clean_room_uia_object_name_resolver_accepts_only_known_suffixes():

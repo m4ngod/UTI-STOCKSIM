@@ -1323,7 +1323,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
 ):
     from tests.frontend.packaging.test_frontend_v2_packaging_contract import (
         clean_room_lane_fixture,
-        clean_room_schema_six_evidence_fixture,
+        clean_room_schema_seven_evidence_fixture,
     )
 
     renderer_lanes = {}
@@ -1547,7 +1547,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
         }
 
     # Keep the release-candidate negative cases below, but source the accepted
-    # lane and cross-lane evidence from the same schema-6 builders used by the
+    # lane and cross-lane evidence from the same schema-7 builders used by the
     # clean-room packaging contract.  This prevents the positive fixture from
     # silently lagging newly mandatory installed gates.
     for lane, graphics_api in (
@@ -1557,13 +1557,13 @@ def test_clean_room_report_requires_the_complete_production_journey(
         renderer_lanes[lane].update(
             clean_room_lane_fixture(tmp_path, lane, graphics_api)
         )
-    schema_six_evidence = clean_room_schema_six_evidence_fixture("abc123")
+    schema_seven_evidence = clean_room_schema_seven_evidence_fixture("abc123")
 
     report_path = tmp_path / "clean-room-report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 6,
+                "schema_version": 7,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
@@ -1581,7 +1581,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "source_checkout_absent": True,
                 "source_checkout_markers": [],
                 "install_succeeded": True,
-                **schema_six_evidence,
+                **schema_seven_evidence,
                 "renderer_lanes": renderer_lanes,
             }
         ),

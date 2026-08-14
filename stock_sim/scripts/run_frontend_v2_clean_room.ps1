@@ -13,6 +13,116 @@ param(
     [string]$EvidenceDir
 )
 
+function Resolve-NormalizedFullyQualifiedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not [IO.Path]::IsPathFullyQualified($Path)) {
+        throw "Certification storage paths must be fully qualified."
+    }
+    return [IO.Path]::TrimEndingDirectorySeparator(
+        [IO.Path]::GetFullPath($Path)
+    )
+}
+
+function Test-NormalizedPathIsSameOrDescendant {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $normalizedPath = Resolve-NormalizedFullyQualifiedPath -Path $Path
+    $normalizedRoot = Resolve-NormalizedFullyQualifiedPath -Path $Root
+    if ([string]::Equals(
+        $normalizedPath,
+        $normalizedRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        return $true
+    }
+    $rootBoundary = $normalizedRoot
+    if (
+        -not $rootBoundary.EndsWith(
+            [IO.Path]::DirectorySeparatorChar.ToString(),
+            [StringComparison]::Ordinal
+        ) -and
+        -not $rootBoundary.EndsWith(
+            [IO.Path]::AltDirectorySeparatorChar.ToString(),
+            [StringComparison]::Ordinal
+        )
+    ) {
+        $rootBoundary += [IO.Path]::DirectorySeparatorChar
+    }
+    return $normalizedPath.StartsWith(
+        $rootBoundary,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Resolve-GuestLocalCertificationInstallRoots {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LocalAppDataRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit
+    )
+
+    if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw "SourceCommit must be a lowercase 40-character Git commit."
+    }
+    $resolvedLocalAppData = Resolve-NormalizedFullyQualifiedPath `
+        -Path $LocalAppDataRoot
+    $resolvedEvidence = Resolve-NormalizedFullyQualifiedPath -Path $EvidenceRoot
+    $resolvedRoot = Resolve-NormalizedFullyQualifiedPath -Path (
+        (Join-Path `
+            $resolvedLocalAppData `
+            ("UTI-StockSim\Issue118Certification\" + $SourceCommit))
+    )
+    $resolvedCandidate = Resolve-NormalizedFullyQualifiedPath -Path (
+        (Join-Path $resolvedRoot "qml-candidate")
+    )
+    $resolvedWidgets = Resolve-NormalizedFullyQualifiedPath -Path (
+        (Join-Path $resolvedRoot "widgets-rollback")
+    )
+    if (-not (Test-NormalizedPathIsSameOrDescendant `
+        -Path $resolvedRoot `
+        -Root $resolvedLocalAppData
+    )) {
+        throw "Guest-local certification root escaped LocalAppData."
+    }
+    foreach ($packageRoot in @($resolvedCandidate, $resolvedWidgets)) {
+        if (-not (Test-NormalizedPathIsSameOrDescendant `
+            -Path $packageRoot `
+            -Root $resolvedRoot
+        )) {
+            throw "Guest-local package root escaped its certification root."
+        }
+    }
+    $rootsOverlap = (
+        (Test-NormalizedPathIsSameOrDescendant `
+            -Path $resolvedRoot `
+            -Root $resolvedEvidence) -or
+        (Test-NormalizedPathIsSameOrDescendant `
+            -Path $resolvedEvidence `
+            -Root $resolvedRoot)
+    )
+    if ($rootsOverlap) {
+        throw "Guest-local installation and mapped evidence roots overlap."
+    }
+    return [pscustomobject]@{
+        StorageKind = "guest_local_filesystem"
+        Root = $resolvedRoot
+        Candidate = $resolvedCandidate
+        Widgets = $resolvedWidgets
+    }
+}
+
 function Reset-RendererLaneEvidence {
     param(
         [Parameter(Mandatory = $true)]
@@ -1528,24 +1638,19 @@ if ($widgetsArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
     throw "Widgets archive name contains unsafe characters."
 }
 
-$resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDir)
-$installDir = Join-Path $resolvedEvidence "installed"
-$resolvedInstall = [IO.Path]::GetFullPath($installDir)
-$widgetsInstallDir = Join-Path $resolvedEvidence "widgets-installed"
-$resolvedWidgetsInstall = [IO.Path]::GetFullPath($widgetsInstallDir)
-if (-not $resolvedInstall.StartsWith(
-    $resolvedEvidence + [IO.Path]::DirectorySeparatorChar,
-    [StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Refusing to install outside the evidence directory."
-}
-if (-not $resolvedWidgetsInstall.StartsWith(
-    $resolvedEvidence + [IO.Path]::DirectorySeparatorChar,
-    [StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Refusing to install Widgets outside the evidence directory."
-}
+$resolvedEvidence = Resolve-NormalizedFullyQualifiedPath -Path $EvidenceDir
+$installRoots = Resolve-GuestLocalCertificationInstallRoots `
+    -LocalAppDataRoot $env:LOCALAPPDATA `
+    -EvidenceRoot $resolvedEvidence `
+    -SourceCommit $SourceCommit
+$resolvedLocalCertificationRoot = $installRoots.Root
+$resolvedInstall = $installRoots.Candidate
+$resolvedWidgetsInstall = $installRoots.Widgets
 New-Item -ItemType Directory -Force -Path $resolvedEvidence | Out-Null
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $resolvedLocalCertificationRoot | Out-Null
 if (Test-Path -LiteralPath $resolvedInstall) {
     Remove-Item -LiteralPath $resolvedInstall -Recurse -Force
 }
@@ -1699,6 +1804,38 @@ $widgetsExecutable = (
         Select-Object -First 1
 )
 $widgetsInstallSucceeded = [bool]$widgetsExecutable
+$candidateRunsFromGuestLocalStorage = (
+    $installSucceeded -and
+    (Test-NormalizedPathIsSameOrDescendant `
+        -Path $executable.FullName `
+        -Root $resolvedInstall)
+)
+$widgetsRunsFromGuestLocalStorage = (
+    $widgetsInstallSucceeded -and
+    (Test-NormalizedPathIsSameOrDescendant `
+        -Path $widgetsExecutable.FullName `
+        -Root $resolvedWidgetsInstall)
+)
+$packageExecutionFromMappedEvidence = (
+    ($installSucceeded -and (Test-NormalizedPathIsSameOrDescendant `
+        -Path $executable.FullName `
+        -Root $resolvedEvidence)) -or
+    ($widgetsInstallSucceeded -and (Test-NormalizedPathIsSameOrDescendant `
+        -Path $widgetsExecutable.FullName `
+        -Root $resolvedEvidence))
+)
+$packageInstallation = [ordered]@{
+    storage_kind = $installRoots.StorageKind
+    candidate_guest_local = $candidateRunsFromGuestLocalStorage
+    widgets_guest_local = $widgetsRunsFromGuestLocalStorage
+    execution_from_mapped_evidence = $packageExecutionFromMappedEvidence
+    verified = (
+        $installRoots.StorageKind -ceq "guest_local_filesystem" -and
+        $candidateRunsFromGuestLocalStorage -and
+        $widgetsRunsFromGuestLocalStorage -and
+        -not $packageExecutionFromMappedEvidence
+    )
+}
 $candidateToolchainLock = Get-ChildItem `
     -LiteralPath $resolvedInstall `
     -Recurse `
@@ -1826,7 +1963,7 @@ $installedDpiPreflightPath = Join-Path `
 )
 if (-not $installedDpiPreflight.passed) {
     $preflightFailureReport = [ordered]@{
-        schema_version = 6
+        schema_version = 7
         stage = "installed-dpi-preflight"
         source_commit = $SourceCommit
         archive_sha256 = "sha256:$archiveHash"
@@ -1835,6 +1972,7 @@ if (-not $installedDpiPreflight.passed) {
         architecture = $architecture
         is_windows_sandbox = $isWindowsSandbox
         accessibility_environment = $accessibilityEnvironment
+        package_installation = $packageInstallation
         install_succeeded = $installSucceeded
         installed_dpi_preflight = $installedDpiPreflight
         passed = $false
@@ -3125,7 +3263,7 @@ $candidateWidgetsCandidateRollback = [ordered]@{
 }
 
 $report = [ordered]@{
-    schema_version = 6
+    schema_version = 7
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
@@ -3144,6 +3282,7 @@ $report = [ordered]@{
     source_checkout_absent = $sourceCheckoutAbsent
     source_checkout_markers = $sourceCheckoutMarkers
     accessibility_environment = $accessibilityEnvironment
+    package_installation = $packageInstallation
     installed_dpi_preflight = $installedDpiPreflight
     install_succeeded = $installSucceeded
     widgets_install_succeeded = $widgetsInstallSucceeded
@@ -3185,6 +3324,8 @@ $gatePassed = (
     $accessibilityEnvironment.native_dpi_evidence_source -eq (
         "GetDpiForWindow"
     ) -and
+    $packageInstallation.verified -and
+    -not $packageInstallation.execution_from_mapped_evidence -and
     $installedDpiPreflight.passed -and
     $accessibilityEnvironment.errors.Count -eq 0 -and
     $installSucceeded -and

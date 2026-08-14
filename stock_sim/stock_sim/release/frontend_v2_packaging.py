@@ -68,7 +68,7 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
     for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
-CLEAN_ROOM_REPORT_SCHEMA_VERSION = 6
+CLEAN_ROOM_REPORT_SCHEMA_VERSION = 7
 PACKAGE_SMOKE_REPORT_SCHEMA_VERSION = 4
 RENDERER_GATE_REPORT_SCHEMA_VERSION = 2
 _QML_IMPORT_PATTERN = re.compile(
@@ -2769,6 +2769,23 @@ def verify_clean_room_report(
         failures.append("A source checkout is available in the clean room")
     if payload.get("source_checkout_markers") != []:
         failures.append("Source-checkout markers are present")
+    package_installation = payload.get("package_installation")
+    if not isinstance(package_installation, dict):
+        failures.append("Guest-local package installation evidence is unavailable")
+    else:
+        if package_installation.get("storage_kind") != "guest_local_filesystem":
+            failures.append("Package installation storage is not guest-local")
+        if package_installation.get("candidate_guest_local") is not True:
+            failures.append("QML candidate did not run from guest-local storage")
+        if package_installation.get("widgets_guest_local") is not True:
+            failures.append("Widgets rollback did not run from guest-local storage")
+        if (
+            package_installation.get("execution_from_mapped_evidence")
+            is not False
+        ):
+            failures.append("A package executed from mapped evidence storage")
+        if package_installation.get("verified") is not True:
+            failures.append("Guest-local package installation was not verified")
     accessibility_environment = payload.get("accessibility_environment")
     if not isinstance(accessibility_environment, dict):
         failures.append("OS accessibility environment evidence is unavailable")
