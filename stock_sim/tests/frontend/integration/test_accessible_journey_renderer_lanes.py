@@ -292,7 +292,7 @@ def test_accessible_journey_renders_at_200_percent_in_supported_lanes(
         environment["QSG_RENDER_LOOP"] = "basic"
         environment.pop("QSG_RHI_BACKEND", None)
     else:
-        environment.pop("QT_QPA_PLATFORM", None)
+        environment["QT_QPA_PLATFORM"] = "windows:dpiawareness=0"
         environment.pop("QT_QUICK_BACKEND", None)
         environment.pop("QSG_RENDER_LOOP", None)
         environment["QSG_RHI_BACKEND"] = "d3d11"
