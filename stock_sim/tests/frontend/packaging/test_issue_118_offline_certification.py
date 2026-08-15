@@ -1719,6 +1719,89 @@ def test_sandbox_host_requires_exclusive_hcs_and_vm_worker_ownership():
     assert "finally {" in script
 
 
+def test_sandbox_hcs_inventory_parser_expands_multiple_compute_systems():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the HCS parser probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_windows_sandbox.ps1"
+    )
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$scriptPath = $env:UTI_TEST_WINDOWS_SANDBOX_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "ConvertFrom-WindowsSandboxComputeSystemInventory"
+    },
+    $true
+)
+if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+    throw "Sandbox HCS inventory parser was unavailable"
+}
+Invoke-Expression $helper.Extent.Text
+$raw = @'
+[
+  {
+    "Id": "baseline-template",
+    "SystemType": "VirtualMachine",
+    "Owner": "CmService",
+    "RuntimeId": "baseline-template",
+    "State": "SavedAsTemplate"
+  },
+  {
+    "Id": "candidate",
+    "SystemType": "VirtualMachine",
+    "Owner": "WindowsSandbox",
+    "RuntimeId": "candidate",
+    "RuntimeTemplateId": "baseline-template",
+    "State": "Running"
+  }
+]
+'@
+@(ConvertFrom-WindowsSandboxComputeSystemInventory -RawSnapshot $raw) |
+    ConvertTo-Json -Compress
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_WINDOWS_SANDBOX_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [
+        {
+            "Id": "baseline-template",
+            "SystemType": "VirtualMachine",
+            "Owner": "CmService",
+            "RuntimeId": "baseline-template",
+            "RuntimeTemplateId": "",
+        },
+        {
+            "Id": "candidate",
+            "SystemType": "VirtualMachine",
+            "Owner": "WindowsSandbox",
+            "RuntimeId": "candidate",
+            "RuntimeTemplateId": "baseline-template",
+        },
+    ]
+
+
 def test_sandbox_hcs_ownership_waits_for_runtime_template_identity():
     powershell = shutil.which("pwsh")
     if powershell is None:

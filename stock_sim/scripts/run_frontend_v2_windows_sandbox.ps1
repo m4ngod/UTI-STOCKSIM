@@ -493,29 +493,43 @@ function Get-NewWindowsSandboxGuestProcessIdentities {
     return $identities
 }
 
+function ConvertFrom-WindowsSandboxComputeSystemInventory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$RawSnapshot
+    )
+
+    try {
+        $snapshot = (
+            ($RawSnapshot -join [Environment]::NewLine) |
+                ConvertFrom-Json -ErrorAction Stop
+        )
+    }
+    catch {
+        throw "Windows Sandbox compute-system inventory was unreadable."
+    }
+
+    foreach ($item in @($snapshot)) {
+        [PSCustomObject]@{
+            Id = [string]$item.Id
+            SystemType = [string]$item.SystemType
+            Owner = [string]$item.Owner
+            RuntimeId = [string]$item.RuntimeId
+            RuntimeTemplateId = [string]$item.RuntimeTemplateId
+        }
+    }
+}
+
 function Get-WindowsSandboxComputeSystemSnapshot {
     $hcsdiag = Get-Command hcsdiag.exe -ErrorAction Stop
     $rawSnapshot = & $hcsdiag.Source list -raw
     if ($LASTEXITCODE -ne 0) {
         throw "Windows Sandbox compute-system inventory was unavailable."
     }
-    try {
-        $snapshot = @($rawSnapshot | ConvertFrom-Json -ErrorAction Stop)
-    }
-    catch {
-        throw "Windows Sandbox compute-system inventory was unreadable."
-    }
     return @(
-        $snapshot |
-            ForEach-Object {
-                [PSCustomObject]@{
-                    Id = [string]$_.Id
-                    SystemType = [string]$_.SystemType
-                    Owner = [string]$_.Owner
-                    RuntimeId = [string]$_.RuntimeId
-                    RuntimeTemplateId = [string]$_.RuntimeTemplateId
-                }
-            }
+        ConvertFrom-WindowsSandboxComputeSystemInventory `
+            -RawSnapshot $rawSnapshot
     )
 }
 
