@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import fields
 import hashlib
 import json
@@ -11,12 +12,17 @@ import time
 
 import pytest
 
+from stock_sim.release import frontend_v2_package_entry as package_entry
 from stock_sim.release.frontend_v2_package_entry import (
     ACTIVE_JOURNEY_ROUTES,
+    CertificationScope,
+    COMPILED_SMOKE_OBSERVATION_SETTLE_TIMEOUT_SECONDS,
+    DEFAULT_SETTLE_TIMEOUT_SECONDS,
     INSTALLED_UIA_ACK_TIMEOUT_SECONDS,
     PRODUCTION_PATH,
     PackageSmokeResult,
     _run_installed_migration_report,
+    _smoke_observation_settle_timeout_seconds,
 )
 from stock_sim.release.frontend_v2_packaging import (
     CLEAN_ROOM_REPORT_SCHEMA_VERSION,
@@ -244,6 +250,127 @@ def test_issue_118_clean_room_contract_is_installed_schema_eight():
 
 def test_issue_118_installed_uia_ack_wait_covers_one_complete_host_scan():
     assert INSTALLED_UIA_ACK_TIMEOUT_SECONDS == 120.0
+
+
+def test_issue_118_smoke_observation_settle_timeout_is_scope_bound():
+    package_entry_source = (
+        PROJECT_ROOT
+        / "stock_sim"
+        / "release"
+        / "frontend_v2_package_entry.py"
+    ).read_text(encoding="utf-8")
+    module = ast.parse(package_entry_source)
+    smoke_journey = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_smoke_journey"
+    )
+    settle_timeout_assignment = next(
+        node
+        for node in smoke_journey.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "observation_settle_timeout_seconds"
+            for target in node.targets
+        )
+    )
+    settle_timeout_call = settle_timeout_assignment.value
+    observe = next(
+        node
+        for node in smoke_journey.body
+        if isinstance(node, ast.FunctionDef) and node.name == "observe"
+    )
+    settle_call = next(
+        node
+        for node in ast.walk(observe)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_settle_until"
+    )
+    timeout_keyword = next(
+        keyword
+        for keyword in settle_call.keywords
+        if keyword.arg == "timeout_seconds"
+    )
+
+    assert DEFAULT_SETTLE_TIMEOUT_SECONDS == 3.0
+    assert COMPILED_SMOKE_OBSERVATION_SETTLE_TIMEOUT_SECONDS == 10.0
+    assert _smoke_observation_settle_timeout_seconds(
+        CertificationScope.SOURCE_VALIDATION
+    ) == 3.0
+    assert _smoke_observation_settle_timeout_seconds(
+        CertificationScope.INSTALLED_DPI_PREFLIGHT
+    ) == 3.0
+    assert _smoke_observation_settle_timeout_seconds(
+        CertificationScope.INSTALLED
+    ) == 10.0
+    assert _smoke_observation_settle_timeout_seconds(
+        CertificationScope.PACKAGE_ASSEMBLY
+    ) == 10.0
+    assert isinstance(settle_timeout_call, ast.Call)
+    assert isinstance(settle_timeout_call.func, ast.Name)
+    assert (
+        settle_timeout_call.func.id
+        == "_smoke_observation_settle_timeout_seconds"
+    )
+    assert len(settle_timeout_call.args) == 1
+    assert isinstance(settle_timeout_call.args[0], ast.Name)
+    assert settle_timeout_call.args[0].id == "certification_scope"
+    assert isinstance(timeout_keyword.value, ast.Name)
+    assert timeout_keyword.value.id == "observation_settle_timeout_seconds"
+
+
+def test_issue_118_installed_observation_settle_extends_only_the_route_wait(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [0.0]
+
+    class App:
+        @staticmethod
+        def processEvents() -> None:
+            return None
+
+    monkeypatch.setattr(package_entry, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        package_entry,
+        "sleep",
+        lambda _duration: clock.__setitem__(0, clock[0] + 1.0),
+    )
+
+    package_entry._settle_until(
+        App(),
+        lambda: clock[0] >= 4.0,
+        "installed route observation",
+        timeout_seconds=_smoke_observation_settle_timeout_seconds(
+            CertificationScope.INSTALLED
+        ),
+    )
+    assert clock[0] == 4.0
+
+    clock[0] = 0.0
+    with pytest.raises(RuntimeError, match="source route observation"):
+        package_entry._settle_until(
+            App(),
+            lambda: clock[0] >= 4.0,
+            "source route observation",
+            timeout_seconds=_smoke_observation_settle_timeout_seconds(
+                CertificationScope.SOURCE_VALIDATION
+            ),
+        )
+    assert clock[0] == 3.0
+
+    clock[0] = 0.0
+    with pytest.raises(RuntimeError, match="installed route timeout"):
+        package_entry._settle_until(
+            App(),
+            lambda: False,
+            "installed route timeout",
+            timeout_seconds=_smoke_observation_settle_timeout_seconds(
+                CertificationScope.PACKAGE_ASSEMBLY
+            ),
+        )
+    assert clock[0] == 10.0
 
 
 def test_issue_118_performance_uses_a_real_shown_render_target():

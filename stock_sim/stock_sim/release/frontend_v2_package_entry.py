@@ -70,6 +70,8 @@ WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
     "select_formal_scenario_set",
 )
 INSTALLED_UIA_ACK_TIMEOUT_SECONDS = 120.0
+DEFAULT_SETTLE_TIMEOUT_SECONDS = 3.0
+COMPILED_SMOKE_OBSERVATION_SETTLE_TIMEOUT_SECONDS = 10.0
 
 # Compiled smoke terminates the process immediately after its report is
 # accepted. Keep deferred PySide/SQLAlchemy owners strongly reachable until
@@ -3916,6 +3918,10 @@ def _run_smoke_journey(
 
     feature_identity_graph: tuple[str, ...] = ()
 
+    observation_settle_timeout_seconds = (
+        _smoke_observation_settle_timeout_seconds(certification_scope)
+    )
+
     def observe(
         stage: str,
         route: str,
@@ -3955,6 +3961,7 @@ def _run_smoke_journey(
                     f"{evidence_state}/{run_freshness}/"
                     f"{evidence_freshness}"
                 ),
+                timeout_seconds=observation_settle_timeout_seconds,
             )
         except RuntimeError as error:
             raise RuntimeError(
@@ -4930,7 +4937,7 @@ def _settle_until(
     predicate: Callable[[], bool],
     description: str,
     *,
-    timeout_seconds: float = 3.0,
+    timeout_seconds: float = DEFAULT_SETTLE_TIMEOUT_SECONDS,
 ) -> None:
     deadline = monotonic() + timeout_seconds
     while monotonic() < deadline:
@@ -4940,6 +4947,17 @@ def _settle_until(
             return
         sleep(0.01)
     raise RuntimeError(f"Timed out waiting for {description}")
+
+
+def _smoke_observation_settle_timeout_seconds(
+    certification_scope: CertificationScope,
+) -> float:
+    if certification_scope in {
+        CertificationScope.INSTALLED,
+        CertificationScope.PACKAGE_ASSEMBLY,
+    }:
+        return COMPILED_SMOKE_OBSERVATION_SETTLE_TIMEOUT_SECONDS
+    return DEFAULT_SETTLE_TIMEOUT_SECONDS
 
 
 def _observe_state(
