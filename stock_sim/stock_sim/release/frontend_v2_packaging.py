@@ -2918,9 +2918,9 @@ def verify_clean_room_report(
                     f"{lane_name} installed performance evidence is unavailable"
                 )
                 continue
-            if lane_report.get("schema_version") != 3:
+            if lane_report.get("schema_version") != 4:
                 failures.append(
-                    f"{lane_name} installed performance schema must be 3"
+                    f"{lane_name} installed performance schema must be 4"
                 )
                 continue
             failures.extend(

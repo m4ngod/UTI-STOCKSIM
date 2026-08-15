@@ -124,6 +124,7 @@ from .frontend_v2_packaging import (
     running_toolchain,
 )
 from .frontend_v2_performance import (
+    HARDWARE_USABLE_STATE_CALIBRATION,
     PERFORMANCE_THRESHOLDS,
     REAL_V1_PERFORMANCE_PRODUCTION_PATH,
     REFERENCE_FIXTURE,
@@ -2994,7 +2995,7 @@ def _build_report(
         )
     terminal_visible_ms = recorder.terminal_visible_ms
     report: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "status": "smoke" if smoke else "passed",
         "lane": lane,
         "graphics_api": probe.graphics_api,
@@ -3074,6 +3075,10 @@ def _build_report(
         },
         "errors": runtime_errors,
     }
+    if lane == "hardware":
+        report["performance_gate_policy"] = asdict(
+            HARDWARE_USABLE_STATE_CALIBRATION
+        )
     if not smoke:
         local_failures = _runtime_threshold_failures(report)
         if local_failures:

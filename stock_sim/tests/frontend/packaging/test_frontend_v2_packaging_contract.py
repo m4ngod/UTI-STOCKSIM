@@ -2022,22 +2022,26 @@ def test_clean_room_report_requires_offline_windows_without_dev_tools(
     )
     report_path.write_text(json.dumps(report_payload), encoding="utf-8")
 
-    historical_performance_report = deepcopy(report_payload)
-    historical_performance_report["installed_performance"]["hardware"][
-        "schema_version"
-    ] = 2
-    report_path.write_text(
-        json.dumps(historical_performance_report),
-        encoding="utf-8",
-    )
-    assert (
-        "hardware installed performance schema must be 3"
-        in verify_clean_room_report(
-            report_path,
-            expected_source_commit="abc123",
-            expected_archive_sha256="sha256:package",
+    for historical_schema in (2, 3):
+        historical_performance_report = deepcopy(report_payload)
+        historical_performance_report["installed_performance"]["hardware"][
+            "schema_version"
+        ] = historical_schema
+        historical_performance_report["installed_performance"][
+            "hardware"
+        ].pop("performance_gate_policy", None)
+        report_path.write_text(
+            json.dumps(historical_performance_report),
+            encoding="utf-8",
         )
-    )
+        assert (
+            "hardware installed performance schema must be 4"
+            in verify_clean_room_report(
+                report_path,
+                expected_source_commit="abc123",
+                expected_archive_sha256="sha256:package",
+            )
+        )
     report_path.write_text(json.dumps(report_payload), encoding="utf-8")
 
     incomplete_uia_report = deepcopy(report_payload)

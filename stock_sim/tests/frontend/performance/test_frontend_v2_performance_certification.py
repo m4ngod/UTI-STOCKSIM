@@ -3,6 +3,7 @@ import json
 import subprocess
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from math import ceil
 from pathlib import Path
 
 import pytest
@@ -105,8 +106,8 @@ def _sample_metric(
 def passing_performance_lane_report(
     lane: str = "hardware",
 ) -> dict[str, object]:
-    return {
-        "schema_version": 3,
+    report = {
+        "schema_version": 4,
         "status": "passed",
         "lane": lane,
         "graphics_api": (
@@ -266,14 +267,27 @@ def passing_performance_lane_report(
         },
         "errors": [],
     }
+    if lane == "hardware":
+        report["performance_gate_policy"] = asdict(
+            frontend_v2_performance.HARDWARE_USABLE_STATE_CALIBRATION
+        )
+    return report
 
 
 _passing_lane_report = passing_performance_lane_report
 
 
+def _passing_wave3_lane_report(lane: str) -> dict[str, object]:
+    report = _passing_lane_report(lane)
+    report["schema_version"] = 3
+    report.pop("performance_gate_policy", None)
+    return report
+
+
 def _passing_wave2_lane_report(lane: str) -> dict[str, object]:
     report = _passing_lane_report(lane)
     report["schema_version"] = 2
+    report.pop("performance_gate_policy", None)
     report["production_path"] = [
         "PerformanceLoadProjectionReadModel",
         "DeterministicFakeDiagnosticTasksAdapter",
@@ -386,6 +400,60 @@ def test_reference_fixture_and_release_thresholds_are_locked():
     assert PERFORMANCE_THRESHOLDS.main_thread_stall_ms == 50.0
     assert PERFORMANCE_THRESHOLDS.peak_memory_mib == 180.0
     assert PERFORMANCE_THRESHOLDS.terminal_visible_ms == 100.0
+    assert asdict(
+        frontend_v2_performance.HARDWARE_USABLE_STATE_CALIBRATION
+    ) == {
+        "schema_version": 1,
+        "identity": (
+            "frontend-v2-hardware-usable-state-calibration-v1"
+        ),
+        "source_commit": (
+            "b8366d644f405b01b1b084338d1337d01a294e39"
+        ),
+        "probe_archive_digest": (
+            "sha256:a86c23f68312137b575938a89cbf0a8a2b7c9f8d752f"
+            "d95cda494f22c33b0cd6"
+        ),
+        "native100_summary_digest": (
+            "sha256:8fe625e5c37c4735c1ee4232f626d317b8fcb66794364"
+            "8a78ae76f7f707c4ea4"
+        ),
+        "native200_summary_digest": (
+            "sha256:2154b63ddb9f3a8c0ae5706acdd81949d95a0b60c39a3"
+            "c9d659f2c3e49922591"
+        ),
+        "decision_digest": (
+            "sha256:cc01cc866370fe46437b6431027fcb18a216a66a8ed70"
+            "b3bac958410ac5fc9aa"
+        ),
+        "original_product_baseline_ms": 750.0,
+        "maximum_observed_sandbox_delta_ms": 1071.8214,
+        "safety_factor": 1.25,
+        "round_up_quantum_ms": 50.0,
+        "sandbox_environment_allowance_ms": 1350.0,
+        "hardware_usable_state_ms": 2100.0,
+        "software_usable_state_ms": 750.0,
+    }
+    calibration = (
+        frontend_v2_performance.HARDWARE_USABLE_STATE_CALIBRATION
+    )
+    expected_allowance_ms = (
+        ceil(
+            calibration.maximum_observed_sandbox_delta_ms
+            * calibration.safety_factor
+            / calibration.round_up_quantum_ms
+        )
+        * calibration.round_up_quantum_ms
+    )
+    assert calibration.sandbox_environment_allowance_ms == (
+        expected_allowance_ms
+    )
+    assert calibration.hardware_usable_state_ms == (
+        calibration.original_product_baseline_ms + expected_allowance_ms
+    )
+    assert calibration.software_usable_state_ms == (
+        calibration.original_product_baseline_ms
+    )
     assert REFERENCE_MEASUREMENT_PROTOCOL.window_width == 1_280
     assert REFERENCE_MEASUREMENT_PROTOCOL.window_height == 800
     assert REFERENCE_MEASUREMENT_PROTOCOL.stall_probe_interval_ms == 5
@@ -436,6 +504,133 @@ def test_lane_validation_blocks_event_to_visible_p95_over_budget():
     assert failures == (
         "hardware event-to-visible p95 exceeds 20.0 ms: 20.001 ms",
         "hardware event-to-visible sample summary does not match samples",
+    )
+
+
+@pytest.mark.parametrize(
+    ("lane", "accepted_ms", "rejected_ms", "rejected_message"),
+    (
+        (
+            "hardware",
+            2100.0,
+            2100.001,
+            "hardware usable-state time exceeds 2100.0 ms: 2100.001 ms",
+        ),
+        (
+            "software",
+            750.0,
+            750.001,
+            "software usable-state time exceeds 750.0 ms: 750.001 ms",
+        ),
+    ),
+)
+def test_lane_validation_applies_only_the_calibrated_hardware_usable_budget(
+    lane,
+    accepted_ms,
+    rejected_ms,
+    rejected_message,
+):
+    accepted = _passing_lane_report(lane)
+    accepted["metrics"]["usable_state_ms"] = accepted_ms
+    rejected = deepcopy(accepted)
+    rejected["metrics"]["usable_state_ms"] = rejected_ms
+
+    accepted_failures = validate_performance_lane(
+        accepted,
+        expected_lane=lane,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+    rejected_failures = validate_performance_lane(
+        rejected,
+        expected_lane=lane,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert accepted_failures == ()
+    assert rejected_message in rejected_failures
+
+
+def test_historical_wave2_hardware_report_retains_the_750ms_baseline():
+    report = _passing_wave2_lane_report("hardware")
+    report["metrics"]["usable_state_ms"] = 750.001
+
+    failures = validate_performance_lane(
+        report,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert (
+        "hardware usable-state time exceeds 750.0 ms: 750.001 ms"
+        in failures
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda report: report.pop("performance_gate_policy"),
+        lambda report: report["performance_gate_policy"].update(
+            hardware_usable_state_ms=2100.001
+        ),
+        lambda report: report["performance_gate_policy"].update(
+            software_usable_state_ms=2100.0
+        ),
+        lambda report: report["performance_gate_policy"].update(
+            decision_digest=f"sha256:{'0' * 64}"
+        ),
+    ),
+)
+def test_schema4_lane_report_binds_the_exact_calibration_policy(mutation):
+    report = _passing_lane_report("hardware")
+    report["performance_gate_policy"] = asdict(
+        frontend_v2_performance.HARDWARE_USABLE_STATE_CALIBRATION
+    )
+    mutation(report)
+
+    failures = validate_performance_lane(
+        report,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert (
+        "hardware performance gate policy does not match the locked "
+        "calibration"
+    ) in failures
+
+
+def test_schema4_software_report_does_not_depend_on_hardware_calibration():
+    report = _passing_lane_report("software")
+
+    failures = validate_performance_lane(
+        report,
+        expected_lane="software",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert "performance_gate_policy" not in report
+    assert failures == ()
+
+
+def test_historical_wave3_hardware_report_retains_the_750ms_baseline():
+    report = _passing_wave3_lane_report("hardware")
+    report["metrics"]["usable_state_ms"] = 750.001
+
+    failures = validate_performance_lane(
+        report,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert failures == (
+        "hardware usable-state time exceeds 750.0 ms: 750.001 ms",
     )
 
 
@@ -586,8 +781,8 @@ def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
             "hardware input p95 exceeds 16.0 ms: 16.001 ms",
         ),
         (
-            lambda report: report["metrics"].update(usable_state_ms=750.001),
-            "hardware usable-state time exceeds 750.0 ms: 750.001 ms",
+            lambda report: report["metrics"].update(usable_state_ms=2100.001),
+            "hardware usable-state time exceeds 2100.0 ms: 2100.001 ms",
         ),
         (
             lambda report: report["metrics"].update(
@@ -835,7 +1030,7 @@ def test_performance_certification_rejects_mixed_lane_schema_versions():
         in certification.failures
     )
     assert (
-        "performance certification requires lane schema version 3"
+        "performance certification requires lane schema version 4"
         in certification.failures
     )
 
@@ -873,7 +1068,7 @@ def test_wave3_certification_rejects_two_historical_schema_v2_lanes():
 
     assert certification.status == "blocked"
     assert certification.failures == (
-        "performance certification requires lane schema version 3",
+        "performance certification requires lane schema version 4",
     )
 
 
@@ -885,6 +1080,20 @@ def test_historical_wave2_recertification_requires_explicit_schema_v2():
         expected_source_commit=SOURCE_COMMIT,
         expected_toolchain_digest=TOOLCHAIN_DIGEST,
         expected_lane_schema_version=2,
+    )
+
+    assert certification.status == "certified"
+    assert certification.failures == ()
+
+
+def test_historical_wave3_recertification_requires_explicit_schema_v3():
+    certification = certify_performance_evidence(
+        _passing_wave3_lane_report("hardware"),
+        _passing_wave3_lane_report("software"),
+        _passing_safety_report(),
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+        expected_lane_schema_version=3,
     )
 
     assert certification.status == "certified"

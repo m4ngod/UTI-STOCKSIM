@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter_ns
 from types import SimpleNamespace
@@ -697,10 +698,11 @@ def test_software_smoke_runs_the_live_eventbridge_to_qml_seam(tmp_path):
     assert completed.returncode == 0, completed.stderr or completed.stdout
     assert "Internal C++ object" not in completed.stderr
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["status"] == "smoke"
     assert report["lane"] == "software"
     assert report["graphics_api"] == "Software"
+    assert "performance_gate_policy" not in report
     assert report["duration_seconds"] >= 0.75
     startup = report["startup_phases_ms"]
     assert startup["total_to_usable_visible"] == pytest.approx(
@@ -858,9 +860,13 @@ def test_hardware_smoke_runs_the_same_live_qml_seam(tmp_path):
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["schema_version"] == 4
     assert report["status"] == "smoke"
     assert report["lane"] == "hardware"
     assert report["graphics_api"] == "Direct3D11"
+    assert report["performance_gate_policy"] == asdict(
+        frontend_v2_performance_runtime.HARDWARE_USABLE_STATE_CALIBRATION
+    )
     assert report["duration_seconds"] >= 0.75
     assert report["observed_fixture"]["source_points"] == 100_000
     assert report["observed_fixture"]["visible_points"] == 4_000
