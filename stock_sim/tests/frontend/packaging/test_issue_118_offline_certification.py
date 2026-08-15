@@ -1040,14 +1040,16 @@ def test_clean_room_records_installed_preflight_stage_without_executables(
         "native_dpi",
         "candidate_clean_exit",
         "truncate_identity",
+        "host_route",
         "passed",
     ),
     (
-        (2.0, 192, True, False, True),
-        (1.0, 192, True, False, False),
-        (2.0, 96, True, False, False),
-        (2.0, 192, False, False, False),
-        (2.0, 192, True, True, False),
+        (2.0, 192, True, False, "strategy_library", True),
+        (1.0, 192, True, False, "strategy_library", False),
+        (2.0, 96, True, False, "strategy_library", False),
+        (2.0, 192, False, False, "strategy_library", False),
+        (2.0, 192, True, True, "strategy_library", False),
+        (2.0, 192, True, False, "run_monitoring", False),
     ),
 )
 def test_clean_room_native_dpi_preflight_binds_candidate_and_host_evidence(
@@ -1056,6 +1058,7 @@ def test_clean_room_native_dpi_preflight_binds_candidate_and_host_evidence(
     native_dpi,
     candidate_clean_exit,
     truncate_identity,
+    host_route,
     passed,
 ):
     powershell = shutil.which("pwsh")
@@ -1098,10 +1101,10 @@ $result = Test-InstalledDpiPreflightEvidence `
 $result | ConvertTo-Json -Depth 12
 '''
     snapshot_identity = (
-        "uia:1:loading:run_monitoring:r1:r1"
+        f"uia:1:loading:{host_route}:r1:r1"
         if truncate_identity
         else (
-            "uia:1:loading:run_monitoring:r1:r1:"
+            f"uia:1:loading:{host_route}:r1:r1:"
             "runMonitoringRouteNavigation:loading:scale200"
         )
     )
@@ -1138,7 +1141,7 @@ $result | ConvertTo-Json -Depth 12
                         "checkpoint": "loading",
                         "sequence": 1,
                         "snapshot_identity": snapshot_identity,
-                        "route": "run_monitoring",
+                        "route": host_route,
                         "run_revision": "r1",
                         "evidence_revision": "r1",
                         "status_object_name": "runMonitoringRouteNavigation",
@@ -1259,7 +1262,7 @@ def test_clean_room_native_dpi_preflight_redacts_parseable_invalid_identity(
         encoding="utf-8",
     )
     canonical_identity = (
-        "uia:1:loading:run_monitoring:r1:r1:"
+        "uia:1:loading:strategy_library:r1:r1:"
         "runMonitoringRouteNavigation:loading:scale200"
     )
     host_path = tmp_path / "host.json"
@@ -1271,7 +1274,7 @@ def test_clean_room_native_dpi_preflight_redacts_parseable_invalid_identity(
                         "checkpoint": "loading",
                         "sequence": 1,
                         "snapshot_identity": canonical_identity,
-                        "route": "run_monitoring",
+                        "route": "strategy_library",
                         "run_revision": "r1",
                         "evidence_revision": "r1",
                         "status_object_name": "runMonitoringRouteNavigation",
@@ -2556,3 +2559,564 @@ def test_issue_118_installed_migration_modes_use_real_public_persistence(
             )
         else:
             assert report["initial_applied_revisions"] == []
+
+
+def test_clean_room_renderer_lane_evidence_retains_installed_smoke_facts():
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is required for the renderer evidence probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:UTI_TEST_CLEAN_ROOM_SCRIPT,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "New-InstalledRendererLaneEvidence"
+    },
+    $true
+)
+if ($null -eq $helper) {
+    throw "Installed renderer evidence helper was unavailable"
+}
+. ([scriptblock]::Create($helper.Extent.Text))
+$smoke = [pscustomobject][ordered]@{
+    schema_version = 4
+    certification_scope = "installed"
+    renderer_lane = "hardware"
+    diagnostic_task_identity = "diagnostic-task-safe"
+    campaign_identity = "diagnostic-campaign-safe"
+    run_identity = "strategy-run-safe"
+    evidence_package_identity = "diagnostic-evidence-safe"
+    reproduction_manifest_identity = "reproduction-manifest-safe"
+    installed_setup = [ordered]@{
+        source_fixture_marker = "must-not-be-retained"
+    }
+    queued_state_observed = $true
+    running_state_observed = $true
+    partial_state_observed = $true
+    controlled_failure_observed = $true
+    safe_failure_reason_verified = $true
+    retry_idempotency_verified = $true
+    terminal_completion_observed = $true
+    system_health_context_verified = $true
+    system_health_accessibility_verified = $true
+    focus_restoration_verified = $true
+    duplicate_work_count = 0
+    system_health_identity_graph = @(
+        "diagnostic-task-safe",
+        "diagnostic-campaign-safe",
+        "strategy-run-safe",
+        "diagnostic-evidence-safe",
+        "reproduction-manifest-safe"
+    )
+    errors = @()
+}
+$derived = [ordered]@{
+    campaign_identity = "diagnostic-campaign-safe"
+    diagnostic_task_identity = "diagnostic-task-safe"
+    evidence_package_identity = "diagnostic-evidence-safe"
+    errors = @()
+    exit_code = 0
+    reproduction_manifest_identity = "reproduction-manifest-safe"
+    run_identity = "strategy-run-safe"
+    uia_accessibility = [ordered]@{ passed = $true }
+}
+New-InstalledRendererLaneEvidence `
+    -SmokeReport $smoke `
+    -DerivedEvidence $derived `
+    -ExpectedRendererLane "hardware" |
+    ConvertTo-Json -Depth 12 -Compress
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout)
+    assert "installed_setup" not in result
+    assert result == {
+        "schema_version": 4,
+        "certification_scope": "installed",
+        "renderer_lane": "hardware",
+        "queued_state_observed": True,
+        "running_state_observed": True,
+        "partial_state_observed": True,
+        "controlled_failure_observed": True,
+        "safe_failure_reason_verified": True,
+        "retry_idempotency_verified": True,
+        "terminal_completion_observed": True,
+        "system_health_context_verified": True,
+        "system_health_accessibility_verified": True,
+        "focus_restoration_verified": True,
+        "duplicate_work_count": 0,
+        "system_health_identity_graph": [
+            "diagnostic-task-safe",
+            "diagnostic-campaign-safe",
+            "strategy-run-safe",
+            "diagnostic-evidence-safe",
+            "reproduction-manifest-safe",
+        ],
+        "campaign_identity": "diagnostic-campaign-safe",
+        "diagnostic_task_identity": "diagnostic-task-safe",
+        "evidence_package_identity": "diagnostic-evidence-safe",
+        "errors": [],
+        "exit_code": 0,
+        "reproduction_manifest_identity": "reproduction-manifest-safe",
+        "run_identity": "strategy-run-safe",
+        "uia_accessibility": {"passed": True},
+    }
+
+
+def test_clean_room_identity_checkpoint_names_execute_the_real_call_site():
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is required for the checkpoint-name probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:UTI_TEST_CLEAN_ROOM_SCRIPT,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$assignments = @($ast.FindAll(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left -is [Management.Automation.Language.VariableExpressionAst]
+    },
+    $true
+))
+function Get-UniqueAssignment {
+    param([string]$VariableName)
+    $matches = @(
+        $assignments |
+            Where-Object { $_.Left.VariablePath.UserPath -ceq $VariableName }
+    )
+    if ($matches.Count -ne 1) {
+        throw "expected one production assignment"
+    }
+    return $matches[0].Extent.Text
+}
+$productionAssignments = @(
+    Get-UniqueAssignment -VariableName "expectedJourneySignatures"
+    Get-UniqueAssignment -VariableName "expectedIdentityCheckpointNames"
+) -join "`n"
+$expectedNames = & ([scriptblock]::Create(
+    $productionAssignments + "`n@(`$expectedIdentityCheckpointNames)"
+))
+$rawSmokeCheckpointNames = @(
+    "launched_terminal_run",
+    "terminal_evidence",
+    "disconnected_run",
+    "disconnected_evidence",
+    "reconnected_pending_run",
+    "reconnected_pending_evidence",
+    "reconnected_terminal_run",
+    "reconnected_evidence",
+    "remounted_terminal_run",
+    "remounted_terminal_evidence"
+) | Sort-Object
+[ordered]@{
+    expected_names = @($expectedNames)
+    raw_smoke_names_match = (
+        (@($expectedNames) -join [char]0) -ceq
+            ($rawSmokeCheckpointNames -join [char]0)
+    )
+} | ConvertTo-Json -Depth 4 -Compress
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["raw_smoke_names_match"] is True
+    assert len(result["expected_names"]) == 10
+
+
+def test_clean_room_renderer_lane_evidence_rejects_unknown_and_sensitive_data():
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is required for the renderer evidence probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:UTI_TEST_CLEAN_ROOM_SCRIPT,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helper = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "New-InstalledRendererLaneEvidence"
+    },
+    $true
+)
+if ($null -eq $helper) {
+    throw "Installed renderer evidence helper was unavailable"
+}
+. ([scriptblock]::Create($helper.Extent.Text))
+
+$derived = [ordered]@{
+    campaign_identity = "diagnostic-campaign-safe"
+    diagnostic_task_identity = "diagnostic-task-safe"
+    evidence_package_identity = "diagnostic-evidence-safe"
+    errors = @()
+    exit_code = 0
+    reproduction_manifest_identity = "reproduction-manifest-safe"
+    run_identity = "strategy-run-safe"
+    uia_accessibility = [ordered]@{ passed = $true }
+}
+$unknownSecret = "credential-secret-must-not-leak"
+$nestedSecret = "nested-credential-must-not-leak"
+$valueSecret = "SELECT 1 -- value-secret-must-not-leak"
+$derivedSecret = "derived-api-token-must-not-leak"
+function New-ValidSmokeReport {
+    return [pscustomobject][ordered]@{
+        schema_version = 4
+        certification_scope = "installed"
+        renderer_lane = "hardware"
+        diagnostic_task_identity = "diagnostic-task-safe"
+        campaign_identity = "diagnostic-campaign-safe"
+        run_identity = "strategy-run-safe"
+        evidence_package_identity = "diagnostic-evidence-safe"
+        reproduction_manifest_identity = "reproduction-manifest-safe"
+        queued_state_observed = $true
+        running_state_observed = $true
+        partial_state_observed = $true
+        controlled_failure_observed = $true
+        safe_failure_reason_verified = $true
+        retry_idempotency_verified = $true
+        terminal_completion_observed = $true
+        system_health_context_verified = $true
+        system_health_accessibility_verified = $true
+        focus_restoration_verified = $true
+        duplicate_work_count = 0
+        system_health_identity_graph = @(
+            "diagnostic-task-safe",
+            "diagnostic-campaign-safe",
+            "strategy-run-safe",
+            "diagnostic-evidence-safe",
+            "reproduction-manifest-safe"
+        )
+    }
+}
+$unknown = New-ValidSmokeReport
+$unknown | Add-Member -NotePropertyName credential -NotePropertyValue $unknownSecret
+$nested = New-ValidSmokeReport
+$nested.system_health_identity_graph = @(
+    [pscustomobject][ordered]@{ credential_backup = $nestedSecret }
+)
+$sensitiveValue = New-ValidSmokeReport
+$sensitiveValue.system_health_identity_graph = @($valueSecret)
+$derivedSensitive = [ordered]@{
+    campaign_identity = "diagnostic-campaign-safe"
+    diagnostic_task_identity = "diagnostic-task-safe"
+    evidence_package_identity = "diagnostic-evidence-safe"
+    errors = @()
+    exit_code = 0
+    reproduction_manifest_identity = "reproduction-manifest-safe"
+    run_identity = "strategy-run-safe"
+    uia_accessibility = [ordered]@{ apiTokenValue = $derivedSecret }
+}
+$wrongLane = New-ValidSmokeReport
+$wrongLane.renderer_lane = "software"
+
+function Invoke-RejectionProbe {
+    param(
+        [object]$SmokeReport,
+        [System.Collections.IDictionary]$DerivedEvidence = $derived
+    )
+    try {
+        New-InstalledRendererLaneEvidence `
+            -SmokeReport $SmokeReport `
+            -DerivedEvidence $DerivedEvidence `
+            -ExpectedRendererLane "hardware" | Out-Null
+        return [ordered]@{ rejected = $false; error = "" }
+    }
+    catch {
+        return [ordered]@{
+            rejected = $true
+            error = [string]$_.Exception.Message
+        }
+    }
+}
+
+[ordered]@{
+    unknown = Invoke-RejectionProbe -SmokeReport $unknown
+    nested = Invoke-RejectionProbe -SmokeReport $nested
+    value = Invoke-RejectionProbe -SmokeReport $sensitiveValue
+    derived = Invoke-RejectionProbe `
+        -SmokeReport (New-ValidSmokeReport) `
+        -DerivedEvidence $derivedSensitive
+    wrong_lane = Invoke-RejectionProbe -SmokeReport $wrongLane
+} | ConvertTo-Json -Depth 8 -Compress
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "credential-secret-must-not-leak" not in completed.stdout
+    assert "credential-secret-must-not-leak" not in completed.stderr
+    assert "nested-credential-must-not-leak" not in completed.stdout
+    assert "nested-credential-must-not-leak" not in completed.stderr
+    assert "value-secret-must-not-leak" not in completed.stdout
+    assert "value-secret-must-not-leak" not in completed.stderr
+    assert "derived-api-token-must-not-leak" not in completed.stdout
+    assert "derived-api-token-must-not-leak" not in completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {
+        "unknown": {
+            "rejected": True,
+            "error": "Installed renderer smoke evidence was rejected at a redacted boundary.",
+        },
+        "nested": {
+            "rejected": True,
+            "error": "Installed renderer smoke evidence was rejected at a redacted boundary.",
+        },
+        "value": {
+            "rejected": True,
+            "error": "Installed renderer smoke evidence was rejected at a redacted boundary.",
+        },
+        "derived": {
+            "rejected": True,
+            "error": "Installed renderer smoke evidence was rejected at a redacted boundary.",
+        },
+        "wrong_lane": {
+            "rejected": True,
+            "error": "Installed renderer smoke evidence was rejected at a redacted boundary.",
+        },
+    }
+
+
+def test_clean_room_renderer_nested_evidence_rejects_extra_properties():
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is required for the renderer evidence probe")
+
+    script_path = PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    probe = r'''
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:UTI_TEST_CLEAN_ROOM_SCRIPT,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+foreach ($functionName in @(
+    "Test-ExactEvidencePropertyNames",
+    "ConvertTo-ExactEvidenceStringArray",
+    "ConvertTo-InstalledAccessibilityCheckpointEvidence",
+    "ConvertTo-ManualTradingRouteAuditEvidence"
+)) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+        },
+        $true
+    )
+    if ($null -eq $helper) {
+        throw "Installed renderer evidence helper was unavailable"
+    }
+    . ([scriptblock]::Create($helper.Extent.Text))
+}
+
+$checkpointSecret = "checkpoint-extra-must-not-leak"
+$auditSecret = "audit-extra-must-not-leak"
+$node = [pscustomobject][ordered]@{
+    description_present = $true
+    name_present = $true
+    object_name = "statusObject"
+    role = "StatusBar"
+    semantic_terms = @("loading")
+    states = @("visible")
+    visible = $true
+    debug_note = $checkpointSecret
+}
+$checkpoint = [pscustomobject][ordered]@{
+    active_route = "strategy_library"
+    captured_at_utc = "2026-08-16T00:00:00+00:00"
+    chart_narrative_table_revision = [pscustomobject][ordered]@{
+        accepted_revision = 0
+        available = $false
+        same_revision = $false
+    }
+    checkpoint = "loading"
+    contrast = @()
+    evidence_revision = "r1"
+    evidence_state = "loading"
+    high_contrast = $true
+    motion_duration_ms = 0
+    nodes = @($node)
+    non_color_cue_verified = $true
+    non_color_cues = @()
+    reduced_motion = $true
+    rendered_text_nodes = @()
+    route = "strategy_library"
+    run_revision = "r1"
+    run_state = "loading"
+    sequence = 1
+    snapshot_identity = "uia:1:loading"
+    status_object_name = "statusObject"
+    status_semantic_term = "loading"
+    text_scale_percent = 200
+    wcag_2_2_aa_contrast_verified = $true
+    window_device_pixel_ratio = 2.0
+}
+$audit = [pscustomobject][ordered]@{
+    accessible_object_count = 1
+    action_patterns_observed = @()
+    command_binding_surface_count = 0
+    context_menu_surface_count = 0
+    coverage = @("qml_object_tree")
+    declared_signal_surface_count = 0
+    disabled_object_count = 0
+    forbidden_action_count = 0
+    forbidden_actions = @()
+    hidden_object_count = 0
+    interactive_object_count = 1
+    object_count = 1
+    route = "strategy_library"
+    shortcut_surface_count = 0
+    signal_surface_count = 0
+    stage = "running"
+    static_read_only_diagnostics = @()
+    debug_note = $auditSecret
+}
+
+function Invoke-RedactedProbe {
+    param([scriptblock]$Action)
+    try {
+        & $Action | Out-Null
+        return [ordered]@{ rejected = $false; error = "" }
+    }
+    catch {
+        return [ordered]@{
+            rejected = $true
+            error = [string]$_.Exception.Message
+        }
+    }
+}
+$checkpointExtraResult = Invoke-RedactedProbe {
+    ConvertTo-InstalledAccessibilityCheckpointEvidence `
+        -Checkpoints @($checkpoint)
+}
+$node.PSObject.Properties.Remove("debug_note")
+function Invoke-InvalidContrastProbe {
+    param(
+        [object]$Ratio,
+        [object]$RequiredRatio
+    )
+    $checkpoint.contrast = @(
+        [pscustomobject][ordered]@{
+            background = "#000000"
+            background_token = "surface"
+            foreground = "#ffffff"
+            foreground_token = "text"
+            passed = $true
+            ratio = $Ratio
+            required_ratio = $RequiredRatio
+        }
+    )
+    return Invoke-RedactedProbe {
+        ConvertTo-InstalledAccessibilityCheckpointEvidence `
+            -Checkpoints @($checkpoint)
+    }
+}
+[ordered]@{
+    checkpoint = $checkpointExtraResult
+    audit = Invoke-RedactedProbe {
+        ConvertTo-ManualTradingRouteAuditEvidence -Audits @($audit)
+    }
+    contrast_bool = Invoke-InvalidContrastProbe `
+        -Ratio $true `
+        -RequiredRatio 4.5
+    contrast_datetime = Invoke-InvalidContrastProbe `
+        -Ratio ([datetime]"2026-08-16T00:00:00Z") `
+        -RequiredRatio 4.5
+    contrast_nan = Invoke-InvalidContrastProbe `
+        -Ratio ([double]::NaN) `
+        -RequiredRatio 4.5
+    contrast_infinity = Invoke-InvalidContrastProbe `
+        -Ratio 7.0 `
+        -RequiredRatio ([double]::PositiveInfinity)
+} | ConvertTo-Json -Depth 8 -Compress
+'''
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "checkpoint-extra-must-not-leak" not in completed.stdout
+    assert "checkpoint-extra-must-not-leak" not in completed.stderr
+    assert "audit-extra-must-not-leak" not in completed.stdout
+    assert "audit-extra-must-not-leak" not in completed.stderr
+    expected = {
+        "rejected": True,
+        "error": "Installed renderer smoke evidence was rejected at a redacted boundary.",
+    }
+    assert json.loads(completed.stdout) == {
+        "checkpoint": expected,
+        "audit": expected,
+        "contrast_bool": expected,
+        "contrast_datetime": expected,
+        "contrast_nan": expected,
+        "contrast_infinity": expected,
+    }

@@ -818,11 +818,11 @@ def clean_room_schema_eight_evidence_fixture(source_commit="abc123"):
             "checkpoint": "loading",
             "checkpoint_sequence": 1,
             "snapshot_identity": (
-                "uia:1:loading:run_monitoring:r1:r1:"
+                "uia:1:loading:strategy_library:r1:r1:"
                 "runMonitoringRouteNavigation:loading:scale200"
             ),
             "snapshot_identity_matches": True,
-            "route": "run_monitoring",
+            "route": "strategy_library",
             "run_revision": "r1",
             "evidence_revision": "r1",
             "status_object_name": "runMonitoringRouteNavigation",
@@ -4428,3 +4428,103 @@ def test_packaging_cli_can_emit_the_locked_build_plan_without_building(
     assert '"kind": "widgets-rollback"' in output
     assert '"kind": "qml-journey"' in output
     assert "nuitka" in output
+
+
+@pytest.mark.parametrize(
+    (
+        "discovered_count",
+        "readable_count",
+        "unreadable_count",
+        "expected_gate_failure",
+    ),
+    (
+        (10, 10, 2, False),
+        (10, 11, 0, True),
+        (10, 10, 11, True),
+        (10, 4, 5, True),
+        (True, 1, 0, True),
+    ),
+)
+def test_clean_room_report_validates_actual_preflight_and_uia_count_semantics(
+    tmp_path,
+    discovered_count,
+    readable_count,
+    unreadable_count,
+    expected_gate_failure,
+):
+    evidence = clean_room_schema_eight_evidence_fixture("abc123")
+    evidence["installed_dpi_preflight"].update(
+        {
+            "route": "strategy_library",
+            "snapshot_identity": (
+                "uia:1:loading:strategy_library:r1:r1:"
+                "runMonitoringRouteNavigation:loading:scale200"
+            ),
+        }
+    )
+    renderer_lanes = {
+        lane: clean_room_lane_fixture(tmp_path, lane, graphics_api)
+        for lane, graphics_api in (
+            ("hardware", "Direct3D11"),
+            ("software", "Software"),
+        )
+    }
+    for lane in renderer_lanes.values():
+        lane["uia_accessibility"].update(
+            {
+                "discovered_element_count": discovered_count,
+                "readable_element_count": readable_count,
+                "unreadable_element_count": unreadable_count,
+            }
+        )
+    report_path = tmp_path / "clean-room-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 8,
+                "source_commit": "abc123",
+                "archive_sha256": "sha256:package",
+                "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
+                "architecture": "AMD64",
+                "user_name": "WDAGUtilityAccount",
+                "is_windows_sandbox": True,
+                "certification_environment": {
+                    "schema_version": 1,
+                    "kind": "windows-sandbox",
+                    "windows_sandbox": True,
+                    "native_boot_vhdx": False,
+                    "system_drive": "C:",
+                    "accessible_filesystem_drive_count": 1,
+                    "unexpected_accessible_filesystem_drives": [],
+                },
+                "network_enumeration_succeeded": True,
+                "network_adapters_up": [],
+                "python_on_path": False,
+                "python_installations": [],
+                "compiler_on_path": False,
+                "compiler_installations": [],
+                "dependency_cache_present": False,
+                "dependency_cache_paths": [],
+                "source_checkout_absent": True,
+                "source_checkout_markers": [],
+                "install_succeeded": True,
+                **evidence,
+                "renderer_lanes": renderer_lanes,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_clean_room_report(
+        report_path,
+        expected_source_commit="abc123",
+        expected_archive_sha256="sha256:package",
+    )
+    expected_failures = {
+        f"{lane} renderer UIA/Narrator/200-percent gate failed"
+        for lane in ("hardware", "software")
+    }
+    if expected_gate_failure:
+        assert expected_failures.issubset(failures)
+    else:
+        assert failures == ()

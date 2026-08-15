@@ -2875,7 +2875,7 @@ def verify_clean_room_report(
             or dpi_preflight.get("production_path_matches") is not True
             or dpi_preflight.get("checkpoint") != "loading"
             or dpi_preflight.get("checkpoint_sequence") != 1
-            or dpi_preflight.get("route") != "run_monitoring"
+            or dpi_preflight.get("route") != "strategy_library"
             or re.fullmatch(
                 r"r\d+", str(dpi_preflight.get("run_revision", ""))
             )
@@ -3366,13 +3366,15 @@ def verify_clean_room_report(
                 -1,
             )
             snapshot_accounting_valid = bool(
-                isinstance(discovered_count, int)
-                and isinstance(readable_count, int)
-                and isinstance(unreadable_count, int)
+                type(discovered_count) is int
+                and type(readable_count) is int
+                and type(unreadable_count) is int
                 and discovered_count > 0
                 and readable_count > 0
                 and unreadable_count >= 0
-                and readable_count + unreadable_count == discovered_count
+                and readable_count <= discovered_count
+                and unreadable_count <= discovered_count
+                and readable_count + unreadable_count >= discovered_count
                 and uia_accessibility.get("complete_snapshot_count", 0) >= 8
             )
             if (

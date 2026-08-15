@@ -218,6 +218,778 @@ function ConvertTo-ReleaseErrorList {
     }
 }
 
+function Test-ExactEvidencePropertyNames {
+    param(
+        [AllowNull()]
+        [object]$Value,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedNames
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+    $actualNames = @($Value.PSObject.Properties.Name | Sort-Object)
+    $expected = @($ExpectedNames | Sort-Object)
+    return (
+        $actualNames.Count -eq $expected.Count -and
+        ($actualNames -join [char]0) -ceq ($expected -join [char]0)
+    )
+}
+
+function ConvertTo-ExactEvidenceStringArray {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    $items = @($Value)
+    if (@($items | Where-Object { $_ -isnot [string] }).Count -ne 0) {
+        throw (
+            "Installed renderer smoke evidence was rejected at a " +
+            "redacted boundary."
+        )
+    }
+    return @($items | ForEach-Object { [string]$_ })
+}
+
+function ConvertTo-InstalledAccessibilityCheckpointEvidence {
+    param(
+        [AllowNull()]
+        [object]$Checkpoints
+    )
+
+    $checkpointFields = @(
+        "active_route", "captured_at_utc",
+        "chart_narrative_table_revision", "checkpoint", "contrast",
+        "evidence_revision", "evidence_state", "high_contrast",
+        "motion_duration_ms", "nodes", "non_color_cue_verified",
+        "non_color_cues", "reduced_motion", "rendered_text_nodes", "route",
+        "run_revision", "run_state", "sequence", "snapshot_identity",
+        "status_object_name", "status_semantic_term", "text_scale_percent",
+        "wcag_2_2_aa_contrast_verified", "window_device_pixel_ratio"
+    )
+    $nodeFields = @(
+        "description_present", "name_present", "object_name", "role",
+        "semantic_terms", "states", "visible"
+    )
+    $renderedTextFields = @(
+        "item_type", "object_name", "owner_object_names", "positive_area",
+        "semantic_terms", "visible"
+    )
+    $nonColorCueFields = @(
+        "cue_kind", "item_type", "matched_term", "status_object_name"
+    )
+    $contrastFields = @(
+        "background", "background_token", "foreground", "foreground_token",
+        "passed", "ratio", "required_ratio"
+    )
+    $chartRevisionBaseFields = @(
+        "accepted_revision", "available", "same_revision"
+    )
+    $chartRevisionAvailableFields = @(
+        "accepted_revision", "available", "chart", "narrative",
+        "revision_marker", "same_revision", "table"
+    )
+    $nestedFields = @(
+        "chart_narrative_table_revision", "contrast", "nodes",
+        "non_color_cues", "rendered_text_nodes"
+    )
+    $checkpointStringFields = @(
+        "active_route", "captured_at_utc", "checkpoint", "evidence_revision",
+        "evidence_state", "route", "run_revision", "run_state",
+        "snapshot_identity", "status_object_name", "status_semantic_term"
+    )
+    $checkpointBooleanFields = @(
+        "high_contrast", "non_color_cue_verified", "reduced_motion",
+        "wcag_2_2_aa_contrast_verified"
+    )
+    $checkpointIntegerFields = @(
+        "motion_duration_ms", "sequence", "text_scale_percent"
+    )
+    $converted = @()
+    foreach ($checkpoint in @($Checkpoints)) {
+        if (-not (Test-ExactEvidencePropertyNames `
+            -Value $checkpoint `
+            -ExpectedNames $checkpointFields
+        )) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        foreach ($fieldName in $checkpointStringFields) {
+            if ($checkpoint.PSObject.Properties[$fieldName].Value -isnot [string]) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+        }
+        foreach ($fieldName in $checkpointBooleanFields) {
+            if ($checkpoint.PSObject.Properties[$fieldName].Value -isnot [bool]) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+        }
+        foreach ($fieldName in $checkpointIntegerFields) {
+            $value = $checkpoint.PSObject.Properties[$fieldName].Value
+            if ($value -isnot [int] -and $value -isnot [long]) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+        }
+        if (
+            $checkpoint.window_device_pixel_ratio -isnot [int] -and
+            $checkpoint.window_device_pixel_ratio -isnot [long] -and
+            $checkpoint.window_device_pixel_ratio -isnot [single] -and
+            $checkpoint.window_device_pixel_ratio -isnot [double] -and
+            $checkpoint.window_device_pixel_ratio -isnot [decimal]
+        ) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        $checkpointEvidence = [ordered]@{}
+        foreach ($fieldName in $checkpointFields) {
+            if ($fieldName -notin $nestedFields) {
+                $value = $checkpoint.PSObject.Properties[$fieldName].Value
+                if (
+                    $null -eq $value -or
+                    (
+                        $value -isnot [string] -and
+                        $value -isnot [ValueType]
+                    )
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                $checkpointEvidence[$fieldName] = $value
+            }
+        }
+        $checkpointEvidence.nodes = @(
+            foreach ($node in @($checkpoint.nodes)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $node `
+                    -ExpectedNames $nodeFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $node.description_present -isnot [bool] -or
+                    $node.name_present -isnot [bool] -or
+                    $node.object_name -isnot [string] -or
+                    $node.role -isnot [string] -or
+                    $node.visible -isnot [bool]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                [ordered]@{
+                    description_present = $node.description_present
+                    name_present = $node.name_present
+                    object_name = [string]$node.object_name
+                    role = [string]$node.role
+                    semantic_terms = @(
+                        ConvertTo-ExactEvidenceStringArray `
+                            -Value $node.semantic_terms
+                    )
+                    states = @(
+                        ConvertTo-ExactEvidenceStringArray -Value $node.states
+                    )
+                    visible = $node.visible
+                }
+            }
+        )
+        $checkpointEvidence.rendered_text_nodes = @(
+            foreach ($node in @($checkpoint.rendered_text_nodes)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $node `
+                    -ExpectedNames $renderedTextFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $node.item_type -isnot [string] -or
+                    $node.object_name -isnot [string] -or
+                    $node.positive_area -isnot [bool] -or
+                    $node.visible -isnot [bool]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                [ordered]@{
+                    item_type = [string]$node.item_type
+                    object_name = [string]$node.object_name
+                    owner_object_names = @(
+                        ConvertTo-ExactEvidenceStringArray `
+                            -Value $node.owner_object_names
+                    )
+                    positive_area = $node.positive_area
+                    semantic_terms = @(
+                        ConvertTo-ExactEvidenceStringArray `
+                            -Value $node.semantic_terms
+                    )
+                    visible = $node.visible
+                }
+            }
+        )
+        $checkpointEvidence.non_color_cues = @(
+            foreach ($cue in @($checkpoint.non_color_cues)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $cue `
+                    -ExpectedNames $nonColorCueFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $cue.cue_kind -isnot [string] -or
+                    $cue.item_type -isnot [string] -or
+                    $cue.matched_term -isnot [string] -or
+                    $cue.status_object_name -isnot [string]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                [ordered]@{
+                    cue_kind = [string]$cue.cue_kind
+                    item_type = [string]$cue.item_type
+                    matched_term = [string]$cue.matched_term
+                    status_object_name = [string]$cue.status_object_name
+                }
+            }
+        )
+        $checkpointEvidence.contrast = @(
+            foreach ($contrast in @($checkpoint.contrast)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $contrast `
+                    -ExpectedNames $contrastFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $contrast.background -isnot [string] -or
+                    $contrast.background_token -isnot [string] -or
+                    $contrast.foreground -isnot [string] -or
+                    $contrast.foreground_token -isnot [string] -or
+                    $contrast.passed -isnot [bool]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                foreach ($fieldName in @("ratio", "required_ratio")) {
+                    $value = $contrast.PSObject.Properties[$fieldName].Value
+                    $numericTypeIsAllowed = (
+                        $value -is [int] -or
+                        $value -is [long] -or
+                        $value -is [single] -or
+                        $value -is [double] -or
+                        $value -is [decimal]
+                    )
+                    if (-not $numericTypeIsAllowed) {
+                        throw (
+                            "Installed renderer smoke evidence was rejected " +
+                            "at a redacted boundary."
+                        )
+                    }
+                    $numericValue = [double]$value
+                    if (
+                        [double]::IsNaN($numericValue) -or
+                        [double]::IsInfinity($numericValue) -or
+                        $numericValue -le 0.0
+                    ) {
+                        throw (
+                            "Installed renderer smoke evidence was rejected " +
+                            "at a redacted boundary."
+                        )
+                    }
+                }
+                [ordered]@{
+                    background = [string]$contrast.background
+                    background_token = [string]$contrast.background_token
+                    foreground = [string]$contrast.foreground
+                    foreground_token = [string]$contrast.foreground_token
+                    passed = $contrast.passed
+                    ratio = $contrast.ratio
+                    required_ratio = $contrast.required_ratio
+                }
+            }
+        )
+        $chartRevision = $checkpoint.chart_narrative_table_revision
+        $chartRevisionFields = if ($chartRevision.available -eq $true) {
+            $chartRevisionAvailableFields
+        }
+        else {
+            $chartRevisionBaseFields
+        }
+        if (-not (Test-ExactEvidencePropertyNames `
+            -Value $chartRevision `
+            -ExpectedNames $chartRevisionFields
+        )) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        if (
+            $chartRevision.accepted_revision -isnot [int] -and
+            $chartRevision.accepted_revision -isnot [long]
+        ) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        if (
+            $chartRevision.available -isnot [bool] -or
+            $chartRevision.same_revision -isnot [bool]
+        ) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        $checkpointEvidence.chart_narrative_table_revision = [ordered]@{
+            accepted_revision = $chartRevision.accepted_revision
+            available = $chartRevision.available
+            same_revision = $chartRevision.same_revision
+        }
+        if ($chartRevision.available -eq $true) {
+            if (
+                $chartRevision.chart -isnot [bool] -or
+                $chartRevision.narrative -isnot [bool] -or
+                $chartRevision.revision_marker -isnot [string] -or
+                $chartRevision.table -isnot [bool]
+            ) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+            $checkpointEvidence.chart_narrative_table_revision["chart"] = (
+                $chartRevision.chart
+            )
+            $checkpointEvidence.chart_narrative_table_revision["narrative"] = (
+                $chartRevision.narrative
+            )
+            $checkpointEvidence.chart_narrative_table_revision[
+                "revision_marker"
+            ] = (
+                [string]$chartRevision.revision_marker
+            )
+            $checkpointEvidence.chart_narrative_table_revision["table"] = (
+                $chartRevision.table
+            )
+        }
+        $converted += $checkpointEvidence
+    }
+    return $converted
+}
+
+function ConvertTo-ManualTradingRouteAuditEvidence {
+    param(
+        [AllowNull()]
+        [object]$Audits
+    )
+
+    $fields = @(
+        "accessible_object_count", "action_patterns_observed",
+        "command_binding_surface_count", "context_menu_surface_count",
+        "coverage", "declared_signal_surface_count", "disabled_object_count",
+        "forbidden_action_count", "forbidden_actions", "hidden_object_count",
+        "interactive_object_count", "object_count", "route",
+        "shortcut_surface_count", "signal_surface_count", "stage",
+        "static_read_only_diagnostics"
+    )
+    $stringArrayFields = @(
+        "action_patterns_observed", "coverage", "forbidden_actions"
+    )
+    $staticDiagnosticFields = @(
+        "accessible_name_classification", "action_patterns", "enabled",
+        "focusable", "object_name", "role", "trigger_sources", "visible"
+    )
+    $integerFields = @(
+        "accessible_object_count", "command_binding_surface_count",
+        "context_menu_surface_count", "declared_signal_surface_count",
+        "disabled_object_count", "forbidden_action_count",
+        "hidden_object_count", "interactive_object_count", "object_count",
+        "shortcut_surface_count", "signal_surface_count"
+    )
+    $converted = @()
+    foreach ($audit in @($Audits)) {
+        if (-not (Test-ExactEvidencePropertyNames `
+            -Value $audit `
+            -ExpectedNames $fields
+        )) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        $evidence = [ordered]@{}
+        foreach ($fieldName in $fields) {
+            $value = $audit.PSObject.Properties[$fieldName].Value
+            if ($fieldName -in $stringArrayFields) {
+                $evidence[$fieldName] = @(
+                    ConvertTo-ExactEvidenceStringArray -Value $value
+                )
+            }
+            elseif ($fieldName -ceq "static_read_only_diagnostics") {
+                $evidence[$fieldName] = @(
+                    foreach ($diagnostic in @($value)) {
+                        if (-not (Test-ExactEvidencePropertyNames `
+                            -Value $diagnostic `
+                            -ExpectedNames $staticDiagnosticFields
+                        )) {
+                            throw (
+                                "Installed renderer smoke evidence was " +
+                                "rejected at a redacted boundary."
+                            )
+                        }
+                        if (
+                            $diagnostic.accessible_name_classification `
+                                -isnot [string] -or
+                            $diagnostic.enabled -isnot [bool] -or
+                            $diagnostic.focusable -isnot [bool] -or
+                            $diagnostic.object_name -isnot [string] -or
+                            $diagnostic.role -isnot [string] -or
+                            $diagnostic.visible -isnot [bool]
+                        ) {
+                            throw (
+                                "Installed renderer smoke evidence was " +
+                                "rejected at a redacted boundary."
+                            )
+                        }
+                        [ordered]@{
+                            accessible_name_classification = (
+                                [string]$diagnostic.accessible_name_classification
+                            )
+                            action_patterns = @(
+                                ConvertTo-ExactEvidenceStringArray `
+                                    -Value $diagnostic.action_patterns
+                            )
+                            enabled = $diagnostic.enabled
+                            focusable = $diagnostic.focusable
+                            object_name = [string]$diagnostic.object_name
+                            role = [string]$diagnostic.role
+                            trigger_sources = @(
+                                ConvertTo-ExactEvidenceStringArray `
+                                    -Value $diagnostic.trigger_sources
+                            )
+                            visible = $diagnostic.visible
+                        }
+                    }
+                )
+            }
+            elseif ($fieldName -in @("route", "stage")) {
+                if ($value -isnot [string]) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                $evidence[$fieldName] = $value
+            }
+            elseif (
+                $fieldName -notin $integerFields -or
+                ($value -isnot [int] -and $value -isnot [long])
+            ) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+            else {
+                $evidence[$fieldName] = $value
+            }
+        }
+        $converted += $evidence
+    }
+    return $converted
+}
+
+function New-InstalledRendererLaneEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$SmokeReport,
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$DerivedEvidence,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("hardware", "software")]
+        [string]$ExpectedRendererLane
+    )
+
+    $retainedSmokeFieldNames = @(
+        "certification_scope",
+        "controlled_failure_observed",
+        "duplicate_work_count",
+        "focus_restoration_verified",
+        "partial_state_observed",
+        "queued_state_observed",
+        "renderer_lane",
+        "retry_idempotency_verified",
+        "running_state_observed",
+        "safe_failure_reason_verified",
+        "schema_version",
+        "system_health_accessibility_verified",
+        "system_health_context_verified",
+        "system_health_identity_graph",
+        "terminal_completion_observed"
+    )
+    $ignoredSmokeFieldNames = @("installed_setup")
+    $allowedSmokeFieldNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($fieldName in $retainedSmokeFieldNames) {
+        $null = $allowedSmokeFieldNames.Add($fieldName)
+    }
+    foreach ($fieldName in $ignoredSmokeFieldNames) {
+        $null = $allowedSmokeFieldNames.Add($fieldName)
+    }
+    foreach ($fieldName in $DerivedEvidence.Keys) {
+        $null = $allowedSmokeFieldNames.Add([string]$fieldName)
+    }
+
+    foreach ($property in $SmokeReport.PSObject.Properties) {
+        if (-not $allowedSmokeFieldNames.Contains([string]$property.Name)) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+    }
+
+    $retainedBooleanFieldNames = @(
+        "controlled_failure_observed",
+        "focus_restoration_verified",
+        "partial_state_observed",
+        "queued_state_observed",
+        "retry_idempotency_verified",
+        "running_state_observed",
+        "safe_failure_reason_verified",
+        "system_health_accessibility_verified",
+        "system_health_context_verified",
+        "terminal_completion_observed"
+    )
+    $retainedShapeValid = (
+        (
+            $SmokeReport.schema_version -is [int] -or
+            $SmokeReport.schema_version -is [long]
+        ) -and
+        [int64]$SmokeReport.schema_version -eq 4 -and
+        $SmokeReport.certification_scope -is [string] -and
+        $SmokeReport.certification_scope -ceq "installed" -and
+        $SmokeReport.renderer_lane -is [string] -and
+        $SmokeReport.renderer_lane -ceq $ExpectedRendererLane -and
+        (
+            $SmokeReport.duplicate_work_count -is [int] -or
+            $SmokeReport.duplicate_work_count -is [long]
+        ) -and
+        [int64]$SmokeReport.duplicate_work_count -ge 0
+    )
+    foreach ($fieldName in $retainedBooleanFieldNames) {
+        $property = $SmokeReport.PSObject.Properties[$fieldName]
+        if ($null -eq $property -or $property.Value -isnot [bool]) {
+            $retainedShapeValid = $false
+        }
+    }
+    $systemHealthIdentityGraph = @($SmokeReport.system_health_identity_graph)
+    $expectedSystemHealthIdentityGraph = @(
+        [string]$SmokeReport.diagnostic_task_identity,
+        [string]$SmokeReport.campaign_identity,
+        [string]$SmokeReport.run_identity,
+        [string]$SmokeReport.evidence_package_identity,
+        [string]$SmokeReport.reproduction_manifest_identity
+    )
+    if (
+        $systemHealthIdentityGraph.Count -ne 5 -or
+        @(
+            $systemHealthIdentityGraph |
+                Where-Object {
+                    $_ -isnot [string] -or
+                    [string]::IsNullOrWhiteSpace([string]$_)
+                }
+        ).Count -ne 0 -or
+        ($systemHealthIdentityGraph -join [char]0) -cne
+            ($expectedSystemHealthIdentityGraph -join [char]0)
+    ) {
+        $retainedShapeValid = $false
+    }
+    if (-not $retainedShapeValid) {
+        throw (
+            "Installed renderer smoke evidence was rejected at a " +
+            "redacted boundary."
+        )
+    }
+
+    $prohibitedFieldNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($fieldName in @(
+        "credential", "credentials", "api_key", "authorization", "cookie",
+        "database_dsn", "token", "access_token", "refresh_token",
+        "database_url", "database_path", "dsn", "password", "secret",
+        "connection_string", "sql", "arbitrary_command", "shell_command",
+        "executable_command", "raw_traceback", "traceback", "raw_payload",
+        "market_payload", "account_payload", "order_payload", "fill_payload"
+    )) {
+        $normalizedFieldName = [regex]::Replace(
+            $fieldName,
+            "[^A-Za-z0-9]",
+            ""
+        )
+        $null = $prohibitedFieldNames.Add($normalizedFieldName)
+    }
+    $allowedSensitiveFieldNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($fieldName in @("background_token", "foreground_token")) {
+        $normalizedFieldName = [regex]::Replace(
+            $fieldName,
+            "[^A-Za-z0-9]",
+            ""
+        )
+        $null = $allowedSensitiveFieldNames.Add($normalizedFieldName)
+    }
+    $sensitiveValuePatterns = @(
+        "gh[opusr]_[A-Za-z0-9_]{20,}",
+        (
+            "(?:^|[^A-Za-z0-9_-])" +
+                "(?:sk-(?:proj-)?|sk_live_|glpat-)[A-Za-z0-9_-]{16,}"
+        ),
+        "xox[baprs]-[A-Za-z0-9-]{16,}",
+        "eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}",
+        "\bbearer\s+[A-Za-z0-9._~-]+",
+        "\bAKIA[0-9A-Z]{16}\b",
+        "\b(?:postgres(?:ql)?|mysql|sqlite|duckdb)://",
+        "\b[A-Z]:\\",
+        "(?:^|\s)(?:/home/|/Users/|\\\\)[^\s]+",
+        "Traceback \(most recent call last\)",
+        "(?s)\b(?:select|insert|update|delete|drop|alter|create)\b\s+",
+        "\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "\b(?:powershell|pwsh|cmd\.exe|bash)\b.*(?:-command|-c)\b"
+    )
+    $testEvidenceValueIsSafe = {
+        param(
+            [AllowNull()]
+            [object]$Value,
+            [AllowNull()]
+            [string]$FieldName
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($FieldName)) {
+            $normalizedFieldName = [regex]::Replace(
+                $FieldName,
+                "[^A-Za-z0-9]",
+                ""
+            )
+            if (-not $allowedSensitiveFieldNames.Contains(
+                $normalizedFieldName
+            )) {
+                foreach ($prohibitedFieldName in $prohibitedFieldNames) {
+                    if ($normalizedFieldName.IndexOf(
+                        $prohibitedFieldName,
+                        [StringComparison]::OrdinalIgnoreCase
+                    ) -ge 0) {
+                        return $false
+                    }
+                }
+            }
+        }
+        if ($null -eq $Value) {
+            return $true
+        }
+        if ($Value -is [string]) {
+            foreach ($pattern in $sensitiveValuePatterns) {
+                if ([regex]::IsMatch(
+                    $Value,
+                    $pattern,
+                    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+                )) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        if ($Value -is [ValueType]) {
+            return $true
+        }
+        if ($Value -is [Collections.IDictionary]) {
+            foreach ($key in $Value.Keys) {
+                if (-not (& $testEvidenceValueIsSafe `
+                    -Value $Value[$key] `
+                    -FieldName ([string]$key)
+                )) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        if ($Value -is [Collections.IEnumerable]) {
+            foreach ($item in $Value) {
+                if (-not (& $testEvidenceValueIsSafe -Value $item)) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        foreach ($property in $Value.PSObject.Properties) {
+            if (-not (& $testEvidenceValueIsSafe `
+                -Value $property.Value `
+                -FieldName ([string]$property.Name)
+            )) {
+                return $false
+            }
+        }
+        return $true
+    }
+
+    $evidence = [ordered]@{}
+    foreach ($fieldName in $retainedSmokeFieldNames) {
+        $property = $SmokeReport.PSObject.Properties[$fieldName]
+        if ($null -ne $property) {
+            $evidence[$fieldName] = $property.Value
+        }
+    }
+    foreach ($key in $DerivedEvidence.Keys) {
+        $evidence[[string]$key] = $DerivedEvidence[$key]
+    }
+    if (-not (& $testEvidenceValueIsSafe -Value $evidence)) {
+        throw (
+            "Installed renderer smoke evidence was rejected at a " +
+            "redacted boundary."
+        )
+    }
+    return $evidence
+}
+
 function Test-ExactStringArray {
     param(
         [AllowNull()]
@@ -1461,6 +2233,10 @@ function Test-InstalledDpiPreflightEvidence {
         $hostCheckpoints.Count -eq 1 -and
         [string]$hostCheckpoint.checkpoint -ceq "loading" -and
         [int]$hostCheckpoint.sequence -eq 1 -and
+        [string]$hostCheckpoint.route -ceq "strategy_library" -and
+        [string]$hostCheckpoint.status_object_name -ceq
+            "runMonitoringRouteNavigation" -and
+        [string]$hostCheckpoint.status_semantic_term -ceq "loading" -and
         $identityMatches -and
         [int]$hostCheckpoint.window_scale_percent -eq 200 -and
         $nativeDpi -eq 192 -and
@@ -2896,7 +3672,14 @@ if ($installSucceeded) {
                 "breakpoints",
                 "findings"
             )
-            $identitySetsValid = $true
+            $actualIdentitySetNames = @(
+                $smoke.evidence_identity_sets.PSObject.Properties.Name |
+                    Sort-Object
+            )
+            $identitySetsValid = Test-ExactStringArray `
+                -Actual $actualIdentitySetNames `
+                -Expected @($identitySetNames | Sort-Object)
+            $canonicalEvidenceIdentitySets = [ordered]@{}
             $flattenedIdentityGraph = @(
                 $identityValues +
                     @([string]$smoke.diagnostic_task_identity) +
@@ -2916,11 +3699,21 @@ if ($installSucceeded) {
                 }
                 $identitySetValues = @($identityProperty.Value)
                 if (
+                    @(
+                        $identitySetValues |
+                            Where-Object {
+                                $_ -isnot [string] -or
+                                [string]::IsNullOrWhiteSpace([string]$_)
+                            }
+                    ).Count -ne 0 -or
                     $identitySetName -ne "breakpoints" -and
                     $identitySetValues.Count -eq 0
                 ) {
                     $identitySetsValid = $false
                 }
+                $canonicalEvidenceIdentitySets[$identitySetName] = @(
+                    $identitySetValues | ForEach-Object { [string]$_ }
+                )
                 $flattenedIdentityGraph += $identitySetValues
             }
             $flattenedIdentityGraph = @(
@@ -2935,19 +3728,41 @@ if ($installSucceeded) {
                 ($flattenedIdentityGraph -join "|") -eq
                     ($expectedSortedIdentityGraph -join "|")
             )
-            $identityCheckpoints = (
-                $smoke.qml_identity_graph_checkpoints.PSObject.Properties
+            $identityCheckpointNames = @(
+                $smoke.qml_identity_graph_checkpoints.PSObject.Properties.Name |
+                    Sort-Object
             )
-            $identityCheckpointsValid = (
-                @($identityCheckpoints).Count -eq
-                    $expectedJourneySignatures.Count
+            $expectedIdentityCheckpointNames = @(
+                $expectedJourneySignatures |
+                    ForEach-Object { ($_ -split "\|", 2)[0] } |
+                    Sort-Object
             )
-            foreach ($checkpoint in $identityCheckpoints) {
+            $identityCheckpointsValid = Test-ExactStringArray `
+                -Actual $identityCheckpointNames `
+                -Expected $expectedIdentityCheckpointNames
+            $canonicalIdentityCheckpoints = [ordered]@{}
+            foreach ($checkpointName in $expectedIdentityCheckpointNames) {
+                $checkpoint = (
+                    $smoke.qml_identity_graph_checkpoints.PSObject.Properties[
+                        $checkpointName
+                    ]
+                )
                 if (
+                    $null -eq $checkpoint -or
+                    @(
+                        @($checkpoint.Value) |
+                            Where-Object { $_ -isnot [string] }
+                    ).Count -ne 0 -or
                     (@($checkpoint.Value) -join "|") -ne
                     ($expectedIdentityGraph -join "|")
                 ) {
                     $identityCheckpointsValid = $false
+                }
+                if ($null -ne $checkpoint) {
+                    $canonicalIdentityCheckpoints[$checkpointName] = @(
+                        @($checkpoint.Value) |
+                            ForEach-Object { [string]$_ }
+                    )
                 }
             }
             $announcementText = (
@@ -3057,7 +3872,37 @@ if ($installSucceeded) {
                 $releaseBehaviorValid -and
                 $installedWave3JourneyValid
             )
-            $rendererLanes[$lane] = [ordered]@{
+            $canonicalSetupLedger = [ordered]@{}
+            if (
+                $installedSetupLedgerReopenedValid -and
+                $installedWave3JourneyValid
+            ) {
+                foreach ($ledgerKey in $expectedSetupLedger.Keys) {
+                    $canonicalSetupLedger[$ledgerKey] = @(
+                        $expectedSetupLedger[$ledgerKey] |
+                            ForEach-Object { [string]$_ }
+                    )
+                }
+            }
+            $canonicalAccessibilityCheckpoints = @(
+                ConvertTo-InstalledAccessibilityCheckpointEvidence `
+                    -Checkpoints $smoke.accessibility_checkpoints
+            )
+            $canonicalManualTradingRouteAudits = @(
+                ConvertTo-ManualTradingRouteAuditEvidence `
+                    -Audits $manualTradingRouteAudits
+            )
+            $canonicalAccessibilityAnnouncements = @()
+            if (
+                $announcementText.Contains("disconnected") -and
+                $announcementText.Contains("fresh")
+            ) {
+                $canonicalAccessibilityAnnouncements = @(
+                    "disconnected",
+                    "fresh"
+                )
+            }
+            $derivedLaneEvidence = [ordered]@{
                 exit_code = $exitCode
                 graphics_api = $smoke.graphics_api
                 source_commit_matches = (
@@ -3129,7 +3974,7 @@ if ($installSucceeded) {
                 installed_setup_ledger_reopened = (
                     $installedSetupLedgerReopenedValid
                 )
-                reopened_installed_setup_ledger = $actualSetupLedger
+                reopened_installed_setup_ledger = $canonicalSetupLedger
                 formal_scenario_set_identity = (
                     [string]$smoke.formal_scenario_set_identity
                 )
@@ -3218,9 +4063,9 @@ if ($installSucceeded) {
                 expected_identity_graph = $expectedIdentityGraph
                 feature_identity_graph = $featureIdentityGraph
                 qml_identity_graph_checkpoints = (
-                    $smoke.qml_identity_graph_checkpoints
+                    $canonicalIdentityCheckpoints
                 )
-                evidence_identity_sets = $smoke.evidence_identity_sets
+                evidence_identity_sets = $canonicalEvidenceIdentitySets
                 persisted_manifest_identities = (
                     $persistedManifestIdentities
                 )
@@ -3234,8 +4079,8 @@ if ($installSucceeded) {
                     $smoke.accessibility_preferences_verified -is [bool] -and
                     $smoke.accessibility_preferences_verified -eq $true
                 )
-                accessibility_announcements = @(
-                    $smoke.accessibility_announcements
+                accessibility_announcements = (
+                    $canonicalAccessibilityAnnouncements
                 )
                 installed_accessibility_verified = (
                     $smoke.installed_accessibility_verified -is [bool] -and
@@ -3249,11 +4094,11 @@ if ($installSucceeded) {
                     $smoke.chart_narrative_table_revision_verified -is [bool] -and
                     $smoke.chart_narrative_table_revision_verified -eq $true
                 )
-                accessibility_checkpoints = @(
-                    $smoke.accessibility_checkpoints
+                accessibility_checkpoints = (
+                    $canonicalAccessibilityCheckpoints
                 )
                 manual_trading_route_audits = @(
-                    $manualTradingRouteAudits
+                    $canonicalManualTradingRouteAudits
                 )
                 uia_accessibility = $uiaAccessibility
                 old_generation_rejected = (
@@ -3309,6 +4154,10 @@ if ($installSucceeded) {
                     ConvertTo-ReleaseErrorList -Errors $smoke.errors
                 )
             }
+            $rendererLanes[$lane] = New-InstalledRendererLaneEvidence `
+                -SmokeReport $smoke `
+                -DerivedEvidence $derivedLaneEvidence `
+                -ExpectedRendererLane $lane
         }
         else {
             $rendererLanes[$lane] = [ordered]@{

@@ -3412,7 +3412,7 @@ def test_dpi_preflight_report_requires_real_checkpoint_and_clean_exit(
         "checkpoint": "loading",
         "sequence": 1,
         "snapshot_identity": (
-            "uia:1:loading:run_monitoring:r1:r1:"
+            "uia:1:loading:strategy_library:r1:r1:"
             "runMonitoringRouteNavigation:loading:scale200"
         ),
         "window_device_pixel_ratio": 2.0,
@@ -3444,7 +3444,7 @@ def test_dpi_preflight_report_requires_real_checkpoint_and_clean_exit(
         "checkpoint": "loading",
         "checkpoint_sequence": 1,
         "snapshot_identity": (
-            "uia:1:loading:run_monitoring:r1:r1:"
+            "uia:1:loading:strategy_library:r1:r1:"
             "runMonitoringRouteNavigation:loading:scale200"
         ),
         "qt_window_device_pixel_ratio": 2.0,
