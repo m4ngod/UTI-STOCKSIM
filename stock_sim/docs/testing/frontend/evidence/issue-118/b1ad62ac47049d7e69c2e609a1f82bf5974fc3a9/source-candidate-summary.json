@@ -1,0 +1,568 @@
+{
+  "active_feature_registry": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0"
+  ],
+  "all_groups_passed": true,
+  "application_interfaces": [
+    "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",
+    "StrategyDiagnosticsV1ScenarioLabApplication/1.0",
+    "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0",
+    "StrategyDiagnosticsV1ApplicationReadModel/1.0",
+    "StrategyDiagnosticsV1SystemHealthApplication/1.0"
+  ],
+  "candidate_kind": "wave4-six-feature-source-gate",
+  "candidate_source": "b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9",
+  "contract_documents": [
+    {
+      "path": "docs/contracts/integration/strategy-diagnostics-v1-frontend-v2-contract.md",
+      "sha256": "sha256:8f7d78d0aaa9dc27eb3b510b613f3e6047316cc0aa395bf898683b2de26bac97"
+    },
+    {
+      "path": "docs/testing/integration/strategy-diagnostics-v1-frontend-v2-runbook.md",
+      "sha256": "sha256:def1e48c3ad69088b2936e2f529279bad20eb9f49eff74e38b3fe52afcfa3097"
+    }
+  ],
+  "deferred_installed_package_gates": {
+    "pytest_targets": [
+      "tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_installed_smoke_reopens_a_sealed_real_v1_fixture",
+      "tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_installed_wave2_smoke_creates_task_and_campaign_after_install",
+      "tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_release_smoke_main_shuts_down_its_owned_qapplication"
+    ],
+    "status": "pending-issues-118-119"
+  },
+  "failure_classification": "none",
+  "fixture": {
+    "id": "wave4-six-feature-persisted-product-v1",
+    "live_feature_adapter_count": 6,
+    "persistence": "real-writable-files",
+    "production_qml": true,
+    "shared_diagnostics_application": true,
+    "single_app_context": true
+  },
+  "groups": [
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/contract/test_diagnostic_tasks_feature_contract.py",
+        "tests/frontend/contract/test_strategy_library_feature_contract.py",
+        "tests/frontend/contract/test_strategy_library_application_live_contract.py",
+        "tests/frontend/contract/test_strategy_library_live_fake_conformance.py",
+        "tests/frontend/contract/test_scenario_lab_feature_contract.py",
+        "tests/frontend/contract/test_scenario_lab_application_live_contract.py",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py",
+        "tests/frontend/contract/test_diagnostic_tasks_application_live_contract.py",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py",
+        "tests/frontend/contract/test_strategy_diagnostics_v1_feature_pair_conformance.py",
+        "tests/frontend/contract/test_system_health_feature_contract.py",
+        "tests/frontend/contract/test_system_health_application_live_contract.py",
+        "tests/frontend/contract/test_system_health_live_fake_conformance.py",
+        "tests/frontend/contract/test_system_health_diagnostic_context_contract.py",
+        "tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py",
+        "tests/frontend/contract/test_system_health_persistence_version_contract.py",
+        "tests/frontend/contract/test_strategy_diagnostics_v1_frontend_v2_integration_gate.py",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_lost_response_requires_lookup_and_same_key_recovers_acceptance",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_and_fake_reject_before_acceptance_while_disconnected[_live_recovery_harness]",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_diagnostic_tasks_reconnects_with_a_new_generation_only_after_reread",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_quarantines_an_authoritative_read_from_old_generation",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_close_drops_an_inflight_read_without_late_callback",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_ignores_old_generation_batches_but_rereads_current",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_disconnect_after_durable_acceptance_preserves_the_original_handle",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_old_generation_accepted_response_requires_authoritative_recovery",
+        "--deselect=tests/frontend/contract/test_system_health_live_fake_conformance.py::test_system_health_feature_1_0_live_and_fake_share_one_contract_body",
+        "--deselect=tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_live_adapter_resolves_real_persisted_task_campaign_and_run_exactly",
+        "--deselect=tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_deterministic_fake_uses_the_same_contextual_conformance_body",
+        "--deselect=tests/frontend/contract/test_system_health_live_fake_conformance.py::test_disconnect_staleness_and_reconnect_retain_last_reliable_state",
+        "--deselect=tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_live_adapter_preserves_completed_full_identity_graph_and_manifest_lineage",
+        "--deselect=tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_deterministic_fake_uses_the_same_terminal_context_body",
+        "--deselect=tests/frontend/contract/test_system_health_live_fake_conformance.py::test_raw_filename_correlation_is_removed_before_the_feature_seam",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\six-feature-conformance\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g01-bvcz8j_z\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/six-feature-conformance/junit.xml",
+        "sha256": "sha256:a0e4714844eb516a997db6a548cee9a17d7f8e495269bebb80a62972a0a9bcb9",
+        "skipped": 0,
+        "tests": 312
+      },
+      "name": "six-feature-conformance",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/six-feature-conformance/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/six-feature-conformance/stdout.log",
+        "sha256": "sha256:6da5e0933a25288f2d92ce43f68372b36a4570fe6e582d32af4fb23aa13ec924"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/integration/test_diagnostic_tasks_workspace_route.py::test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence",
+        "tests/frontend/integration/test_strategy_library_workspace_route.py::test_live_strategy_library_traces_public_inventory_into_qml",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_materializes_exact_approved_recipe_with_persistent_task_handle",
+        "tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_exact_setup_selection_is_bound_through_approval",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_dependency_change_rejects_approval_without_side_effects",
+        "tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_approved_history_survives_dependency_invalidation_and_replay",
+        "tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_and_fake_share_exact_setup_invalidation_contract",
+        "tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_composition_classifies_complete_formal_and_selective_quick_sets",
+        "tests/frontend/contract/test_diagnostic_setup_selection_context.py::test_setup_composition_fails_closed_for_stale_quick_or_unresolved_scenario",
+        "tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_resolution_and_selection_bind_exact_assumptions_and_activation",
+        "tests/strategy_diagnostics/test_strategy_runs.py::test_ptrade_configuration_requests_and_effective_conditions_are_run_evidence",
+        "tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_invalid_create_and_atomic_acceptance_failure_have_no_side_effect",
+        "tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_revision_validation_approval_persist_and_invalidate",
+        "tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_stale_revision_and_invalid_validation_reject_without_campaign",
+        "tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_validation_emits_typed_findings_for_each_authority_mismatch",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_incomplete_formal_input_is_rejected_before_start_side_effects",
+        "tests/frontend/contract/test_strategy_diagnostics_v1_evidence_and_findings_live_contract.py::test_real_sealed_v1_evidence_is_visible_in_production_qml",
+        "tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_live_create_is_durable_idempotent_and_reopens_without_a_campaign",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_start_exact_approved_revision_persists_one_formal_campaign_and_handoff",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_retry_after_handoff_persistence_failure_does_not_advance_another_case",
+        "tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_concurrent_same_idempotency_claims_one_durable_start_continuation",
+        "tests/frontend/contract/test_diagnostic_tasks_recovery_live_contract.py::test_pre_campaign_commands_replay_after_application_restart",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_lost_response_requires_lookup_and_same_key_recovers_acceptance",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_lifecycle_survives_reopen_and_gates_real_campaign_execution",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_application_reopen_completes_durably_accepted_lifecycle_command",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_later_terminal_command_supersedes_older_queued_lifecycle_handle",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_paused_node_blocks_ordered_runner_until_resume",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_canceled_node_never_reaches_ordered_runner",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_completed_campaign_syncs_terminal_diagnostic_lifecycle",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_final_batch_pause_then_resume_reconciles_completed_campaign",
+        "tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_cancel_target_cannot_reach_order_cancellation",
+        "tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_failed_node_retry_failure_creates_a_new_failed_attempt",
+        "tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_campaign_progress_after_retry_preserves_task_handle_binding",
+        "tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_retry_completion_preserves_a_newer_public_campaign_pause",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_and_fake_reject_before_acceptance_while_disconnected[_live_recovery_harness]",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_diagnostic_tasks_reconnects_with_a_new_generation_only_after_reread",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_quarantines_an_authoritative_read_from_old_generation",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_close_drops_an_inflight_read_without_late_callback",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_live_adapter_ignores_old_generation_batches_but_rereads_current",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_disconnect_after_durable_acceptance_preserves_the_original_handle",
+        "tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py::test_old_generation_accepted_response_requires_authoritative_recovery",
+        "tests/frontend/contract/test_system_health_live_fake_conformance.py::test_system_health_feature_1_0_live_and_fake_share_one_contract_body",
+        "tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_live_adapter_resolves_real_persisted_task_campaign_and_run_exactly",
+        "tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_deterministic_fake_uses_the_same_contextual_conformance_body",
+        "tests/frontend/contract/test_system_health_live_fake_conformance.py::test_disconnect_staleness_and_reconnect_retain_last_reliable_state",
+        "tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_live_adapter_preserves_completed_full_identity_graph_and_manifest_lineage",
+        "tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py::test_deterministic_fake_uses_the_same_terminal_context_body",
+        "tests/frontend/integration/test_journey_rail_v4.py::test_keyboard_traverses_and_activates_the_six_destinations_in_exact_order",
+        "tests/frontend/integration/test_accessible_journey.py::test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation",
+        "tests/frontend/contract/test_system_health_live_fake_conformance.py::test_raw_filename_correlation_is_removed_before_the_feature_seam",
+        "tests/frontend/integration/test_system_health_workspace_route.py::test_system_health_qml_surface_has_no_web_or_control_plane_imports",
+        "tests/frontend/safety/test_no_manual_trading_release_gate.py::test_current_wave1_slice_passes_every_mandatory_safety_surface",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\persisted-application-qml-tracer\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g02-kjf_pnry\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/persisted-application-qml-tracer/junit.xml",
+        "sha256": "sha256:55b0ef45033f47ecaa6bf917f28dafdaf4facaa7a22561c1e845c24d550fcfb7",
+        "skipped": 0,
+        "tests": 64
+      },
+      "name": "persisted-application-qml-tracer",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/persisted-application-qml-tracer/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/persisted-application-qml-tracer/stdout.log",
+        "sha256": "sha256:1c9ea38e45bdac877d12e0e031ae437d5041d25255ad7ac7411b87dea90970b6"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/strategy_diagnostics",
+        "-k",
+        "not importing_root_package_keeps_persistence_lazy",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\strategy-diagnostics-v1-regression\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g03-n4x5u57f\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/strategy-diagnostics-v1-regression/junit.xml",
+        "sha256": "sha256:d13649d3d0d8efba0018ae4672c631e06c859a49b52a21ccd8dde9e43019769c",
+        "skipped": 0,
+        "tests": 390
+      },
+      "name": "strategy-diagnostics-v1-regression",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/strategy-diagnostics-v1-regression/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/strategy-diagnostics-v1-regression/stdout.log",
+        "sha256": "sha256:12f4732f1a7c432d897a3e001da986e157ec4a6a9b7a3b055539dd5cbd727e0a"
+      }
+    },
+    {
+      "command": [
+        "C:\\WINDOWS\\py.EXE",
+        "-3.11",
+        "-m",
+        "pytest",
+        "tests/strategy_diagnostics/test_installation.py::test_importing_root_package_keeps_persistence_lazy",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\strategy-diagnostics-v1-lazy-import-isolation\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g04-r60__vr8\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/strategy-diagnostics-v1-lazy-import-isolation/junit.xml",
+        "sha256": "sha256:1cb27e1a780d1760c59cc4517ebf6baa413bbbdbd805814de35a578467045df2",
+        "skipped": 0,
+        "tests": 1
+      },
+      "name": "strategy-diagnostics-v1-lazy-import-isolation",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/strategy-diagnostics-v1-lazy-import-isolation/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/strategy-diagnostics-v1-lazy-import-isolation/stdout.log",
+        "sha256": "sha256:cf67605e90e9de06f2a11eefc081f730ea09842e11a1d5f9fe004ba8b56fa661"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/contract",
+        "--ignore=tests/frontend/contract/test_diagnostic_tasks_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_library_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_library_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_library_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_scenario_lab_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_scenario_lab_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_diagnostic_tasks_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_diagnostic_tasks_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_strategy_diagnostics_v1_feature_pair_conformance.py",
+        "--ignore=tests/frontend/contract/test_system_health_feature_contract.py",
+        "--ignore=tests/frontend/contract/test_system_health_application_live_contract.py",
+        "--ignore=tests/frontend/contract/test_system_health_live_fake_conformance.py",
+        "--ignore=tests/frontend/contract/test_system_health_diagnostic_context_contract.py",
+        "--ignore=tests/frontend/contract/test_system_health_live_diagnostic_context_contract.py",
+        "--ignore=tests/frontend/contract/test_system_health_persistence_version_contract.py",
+        "--ignore=tests/frontend/contract/test_strategy_diagnostics_v1_frontend_v2_integration_gate.py",
+        "--deselect=tests/frontend/integration/test_strategy_library_workspace_route.py::test_live_strategy_library_traces_public_inventory_into_qml",
+        "--deselect=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_materializes_exact_approved_recipe_with_persistent_task_handle",
+        "--deselect=tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_exact_setup_selection_is_bound_through_approval",
+        "--deselect=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_dependency_change_rejects_approval_without_side_effects",
+        "--deselect=tests/frontend/contract/test_scenario_lab_live_fake_conformance.py::test_shared_approved_history_survives_dependency_invalidation_and_replay",
+        "--deselect=tests/frontend/contract/test_diagnostic_setup_handoff_live_contract.py::test_live_and_fake_share_exact_setup_invalidation_contract",
+        "--deselect=tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_composition_classifies_complete_formal_and_selective_quick_sets",
+        "--deselect=tests/frontend/contract/test_diagnostic_setup_selection_context.py::test_setup_composition_fails_closed_for_stale_quick_or_unresolved_scenario",
+        "--deselect=tests/frontend/contract/test_scenario_lab_formal_scenario_sets_live_contract.py::test_live_resolution_and_selection_bind_exact_assumptions_and_activation",
+        "--deselect=tests/strategy_diagnostics/test_strategy_runs.py::test_ptrade_configuration_requests_and_effective_conditions_are_run_evidence",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_invalid_create_and_atomic_acceptance_failure_have_no_side_effect",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_revision_validation_approval_persist_and_invalidate",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_stale_revision_and_invalid_validation_reject_without_campaign",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_revision_approval_live_contract.py::test_live_validation_emits_typed_findings_for_each_authority_mismatch",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_incomplete_formal_input_is_rejected_before_start_side_effects",
+        "--deselect=tests/frontend/contract/test_strategy_diagnostics_v1_evidence_and_findings_live_contract.py::test_real_sealed_v1_evidence_is_visible_in_production_qml",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_creation_live_contract.py::test_live_create_is_durable_idempotent_and_reopens_without_a_campaign",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_start_exact_approved_revision_persists_one_formal_campaign_and_handoff",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_retry_after_handoff_persistence_failure_does_not_advance_another_case",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_campaign_start_live_contract.py::test_concurrent_same_idempotency_claims_one_durable_start_continuation",
+        "--deselect=tests/frontend/contract/test_diagnostic_tasks_recovery_live_contract.py::test_pre_campaign_commands_replay_after_application_restart",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_lifecycle_survives_reopen_and_gates_real_campaign_execution",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_application_reopen_completes_durably_accepted_lifecycle_command",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_later_terminal_command_supersedes_older_queued_lifecycle_handle",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_paused_node_blocks_ordered_runner_until_resume",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_canceled_node_never_reaches_ordered_runner",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_completed_campaign_syncs_terminal_diagnostic_lifecycle",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_final_batch_pause_then_resume_reconciles_completed_campaign",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_lifecycle_live_contract.py::test_live_cancel_target_cannot_reach_order_cancellation",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_failed_node_retry_failure_creates_a_new_failed_attempt",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_campaign_progress_after_retry_preserves_task_handle_binding",
+        "--deselect=tests/frontend/contract/test_diagnostic_task_failed_node_retry_live_contract.py::test_live_retry_completion_preserves_a_newer_public_campaign_pause",
+        "--deselect=tests/frontend/integration/test_journey_rail_v4.py::test_keyboard_traverses_and_activates_the_six_destinations_in_exact_order",
+        "--deselect=tests/frontend/integration/test_accessible_journey.py::test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation",
+        "--deselect=tests/frontend/integration/test_system_health_workspace_route.py::test_system_health_qml_surface_has_no_web_or_control_plane_imports",
+        "--deselect=tests/frontend/safety/test_no_manual_trading_release_gate.py::test_current_wave1_slice_passes_every_mandatory_safety_surface",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\frontend-v2-contract\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g05-ijs6657e\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-contract/junit.xml",
+        "sha256": "sha256:52169b2620d001a8b51f5d81a0d143837558945b6c71b2f8d6416e7ed5174d4d",
+        "skipped": 0,
+        "tests": 231
+      },
+      "name": "frontend-v2-contract",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-contract/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-contract/stdout.log",
+        "sha256": "sha256:d7ea036daab5f3e52121dc4f143b91e76220041ac22d3c484254ece8dc703a60"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/integration",
+        "tests/frontend/e2e",
+        "--deselect=tests/frontend/integration/test_diagnostic_tasks_workspace_route.py::test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence",
+        "--deselect=tests/frontend/integration/test_strategy_library_workspace_route.py::test_live_strategy_library_traces_public_inventory_into_qml",
+        "--deselect=tests/frontend/integration/test_journey_rail_v4.py::test_keyboard_traverses_and_activates_the_six_destinations_in_exact_order",
+        "--deselect=tests/frontend/integration/test_accessible_journey.py::test_remount_reestablishes_meaningful_keyboard_focus_without_state_mutation",
+        "--deselect=tests/frontend/integration/test_system_health_workspace_route.py::test_system_health_qml_surface_has_no_web_or_control_plane_imports",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\frontend-v2-integration-e2e-accessibility\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g06-6958n02y\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-integration-e2e-accessibility/junit.xml",
+        "sha256": "sha256:6c14ff1c2dd97ab361ea6566e07057d87c4db0aac40b709f20ca286d37c14be5",
+        "skipped": 0,
+        "tests": 170
+      },
+      "name": "frontend-v2-integration-e2e-accessibility",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-integration-e2e-accessibility/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-integration-e2e-accessibility/stdout.log",
+        "sha256": "sha256:3a1b154d50c2d441c652d545c440d2414ccaa824462616bb89889a0c69db1d3e"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/unit",
+        "--ignore=tests/frontend/unit/test_event_bridge.py",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\frontend-v2-unit\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g07-gweqbszw\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-unit/junit.xml",
+        "sha256": "sha256:b02af70e4719f2e8a848c628206ba6860a260d4e11d774c9ff97a13ac8f770ce",
+        "skipped": 1,
+        "tests": 302
+      },
+      "name": "frontend-v2-unit",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-unit/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-unit/stdout.log",
+        "sha256": "sha256:4dc3c7b8d097311d8a85ee7ee3881c4d39c569d5c3db06559149ca6980925861"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/unit/test_event_bridge.py",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\frontend-v2-event-bridge\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g08-iagijotd\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-event-bridge/junit.xml",
+        "sha256": "sha256:a6652e4be8f33ffc8716d90ab6717b8c79b2372b33ef8a200e497396d5da9624",
+        "skipped": 0,
+        "tests": 6
+      },
+      "name": "frontend-v2-event-bridge",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-event-bridge/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-event-bridge/stdout.log",
+        "sha256": "sha256:8efcfa07b590ec0efedba6fb874b32cee77b532db5ba6964b55ec56ce571071c"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/safety",
+        "--deselect=tests/frontend/safety/test_no_manual_trading_release_gate.py::test_current_wave1_slice_passes_every_mandatory_safety_surface",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\frontend-v2-safety\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g09-3c6nahgl\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-safety/junit.xml",
+        "sha256": "sha256:9c73f1244afb6bcbff51b90792b4882982e76908c9acd4d3026ac4316e0b32cb",
+        "skipped": 0,
+        "tests": 29
+      },
+      "name": "frontend-v2-safety",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-safety/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-safety/stdout.log",
+        "sha256": "sha256:265895747ad6669cf9bd2cac4c1554a41d474a266e7839648f7eec778827c8a4"
+      }
+    },
+    {
+      "command": [
+        "F:\\PythonProjects\\stock_sim\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/frontend/performance",
+        "tests/frontend/packaging",
+        "--deselect=tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_installed_smoke_reopens_a_sealed_real_v1_fixture",
+        "--deselect=tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_installed_wave2_smoke_creates_task_and_campaign_after_install",
+        "--deselect=tests/frontend/packaging/test_frontend_v2_release_candidate.py::test_release_smoke_main_shuts_down_its_owned_qapplication",
+        "--junitxml=F:\\PythonProjects\\_codex_issue118_offline_certification\\stock_sim\\docs\\testing\\frontend\\evidence\\issue-118\\b1ad62ac47049d7e69c2e609a1f82bf5974fc3a9\\groups\\frontend-v2-performance-packaging-contract\\junit.xml",
+        "--basetemp=C:\\temp\\uti-g10-e3s6azy_\\pytest",
+        "-o",
+        "addopts=",
+        "-p",
+        "no:cacheprovider",
+        "-q"
+      ],
+      "junit": {
+        "errors": 0,
+        "failures": 0,
+        "path": "groups/frontend-v2-performance-packaging-contract/junit.xml",
+        "sha256": "sha256:36ffcce77eb5771ca7e8d829416cab631eaafecad33fe4e028370155aa3d4a49",
+        "skipped": 0,
+        "tests": 311
+      },
+      "name": "frontend-v2-performance-packaging-contract",
+      "returncode": 0,
+      "stderr": {
+        "path": "groups/frontend-v2-performance-packaging-contract/stderr.log",
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "path": "groups/frontend-v2-performance-packaging-contract/stdout.log",
+        "sha256": "sha256:4f3a00866bacea4c1216356e0554771e20a082bdc82994eed3e3b628caa1814b"
+      }
+    }
+  ],
+  "identity_ledger": {
+    "path": "identity-ledger.json",
+    "sha256": "sha256:fddef37d56e7bf2760d1d3495c5c79a59ea51b29fe4f036500a4b5aee3db40f3"
+  },
+  "migration_chain": "0001-through-0021",
+  "migrations": [
+    "0019_scenario_recipe_dependency_bindings",
+    "0020_scenario_lab_commands_and_materialization_handles",
+    "0021_diagnostic_selection_dependency_invalidation"
+  ],
+  "persisted_tracer_coverage": [
+    "authoritative-strategy-library-slice",
+    "authoritative-scenario-recipe-materialization-and-formal-set",
+    "typed-diagnostic-setup-selection-handoff",
+    "bounded-dependency-change-revalidation-and-reapproval",
+    "quick-experiment-and-execution-assumption-run-facts",
+    "authoritative-input-and-exact-revision",
+    "terminal-evidence-finding-breakpoint-manifest-identities",
+    "command-identity-idempotency-and-recovery",
+    "lifecycle-retry-terminal-and-order-isolation",
+    "connection-generation-disposal-and-no-late-callback",
+    "system-health-live-fake-contract-and-context",
+    "contextual-health-degradation-recovery-and-terminal",
+    "six-route-keyboard-remount-reopen-clean-exit",
+    "accessibility-redaction-and-no-trading-source-gates"
+  ],
+  "release_claim": false,
+  "result": "passed",
+  "schema_version": 1,
+  "seams": {
+    "seam_1_persisted_six_feature_tracer": "passed",
+    "seam_2_six_feature_live_fake_conformance": "passed",
+    "seam_3_installed_offline_certification": "pending-issues-118-119"
+  },
+  "toolchain_lock": {
+    "path": "stock_sim/release/frontend_v2_toolchain.lock.json",
+    "sha256": "sha256:a974f315f524cd444e38ee7df1ae6845daf7a325e75295fc8431ea9abf064f6a"
+  },
+  "wave4_source_gate": "issue-116"
+}
