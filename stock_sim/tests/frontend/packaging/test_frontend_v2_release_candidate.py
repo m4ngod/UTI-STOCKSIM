@@ -2199,7 +2199,8 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     assert "WindowsSandbox.exe" in script
     assert "-WindowStyle Hidden" not in script
     assert "<Networking>Disable</Networking>" in script
-    assert "<VGpu>Enable</VGpu>" in script
+    assert "<VGpu>EnableVendorExtensions</VGpu>" in script
+    assert "<VGpu>Enable</VGpu>" not in script
     assert "<ReadOnly>true</ReadOnly>" in script
     assert "run_frontend_v2_clean_room.ps1" in script
     assert "clean-room-runner.ps1" in script

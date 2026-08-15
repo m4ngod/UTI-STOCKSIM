@@ -240,7 +240,7 @@ $evidenceDirectoryXml = [Security.SecurityElement]::Escape(
 )
 $configuration = @"
 <Configuration>
-  <VGpu>Enable</VGpu>
+  <VGpu>EnableVendorExtensions</VGpu>
   <Networking>Disable</Networking>
   <AudioInput>Disable</AudioInput>
   <AudioOutput>Disable</AudioOutput>

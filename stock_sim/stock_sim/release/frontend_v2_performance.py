@@ -55,26 +55,6 @@ class PerformanceThresholds:
 
 
 @dataclass(frozen=True, slots=True)
-class HardwareUsableStateCalibration:
-    """Immutable identity and result of the authorized #118 calibration."""
-
-    schema_version: int
-    identity: str
-    source_commit: str
-    probe_archive_digest: str
-    native100_summary_digest: str
-    native200_summary_digest: str
-    decision_digest: str
-    original_product_baseline_ms: float
-    maximum_observed_sandbox_delta_ms: float
-    safety_factor: float
-    round_up_quantum_ms: float
-    sandbox_environment_allowance_ms: float
-    hardware_usable_state_ms: float
-    software_usable_state_ms: float
-
-
-@dataclass(frozen=True, slots=True)
 class PerformanceMeasurementProtocol:
     """Locked clocks, endpoints, and sampling windows for #45 evidence."""
 
@@ -125,35 +105,6 @@ PERFORMANCE_THRESHOLDS = PerformanceThresholds(
     main_thread_stall_ms=50.0,
     peak_memory_mib=180.0,
     terminal_visible_ms=100.0,
-)
-
-HARDWARE_USABLE_STATE_CALIBRATION = HardwareUsableStateCalibration(
-    schema_version=1,
-    identity="frontend-v2-hardware-usable-state-calibration-v1",
-    source_commit="b8366d644f405b01b1b084338d1337d01a294e39",
-    probe_archive_digest=(
-        "sha256:a86c23f68312137b575938a89cbf0a8a2b7c9f8d752f"
-        "d95cda494f22c33b0cd6"
-    ),
-    native100_summary_digest=(
-        "sha256:8fe625e5c37c4735c1ee4232f626d317b8fcb66794364"
-        "8a78ae76f7f707c4ea4"
-    ),
-    native200_summary_digest=(
-        "sha256:2154b63ddb9f3a8c0ae5706acdd81949d95a0b60c39a3"
-        "c9d659f2c3e49922591"
-    ),
-    decision_digest=(
-        "sha256:cc01cc866370fe46437b6431027fcb18a216a66a8ed70"
-        "b3bac958410ac5fc9aa"
-    ),
-    original_product_baseline_ms=750.0,
-    maximum_observed_sandbox_delta_ms=1071.8214,
-    safety_factor=1.25,
-    round_up_quantum_ms=50.0,
-    sandbox_environment_allowance_ms=1350.0,
-    hardware_usable_state_ms=2100.0,
-    software_usable_state_ms=750.0,
 )
 
 REFERENCE_MEASUREMENT_PROTOCOL = PerformanceMeasurementProtocol(
@@ -323,18 +274,8 @@ def validate_performance_lane(
         "Direct3D11" if expected_lane == "hardware" else "Software"
     )
     schema_version = report.get("schema_version")
-    if schema_version not in {2, 3, 4}:
+    if schema_version not in {2, 3}:
         failures.append(f"{expected_lane} lane schema version is invalid")
-    if (
-        schema_version == 4
-        and expected_lane == "hardware"
-        and report.get("performance_gate_policy")
-        != asdict(HARDWARE_USABLE_STATE_CALIBRATION)
-    ):
-        failures.append(
-            f"{expected_lane} performance gate policy does not match the "
-            "locked calibration"
-        )
     if report.get("status") != "passed":
         failures.append(f"{expected_lane} lane status is not passed")
     if report.get("lane") != expected_lane:
@@ -413,7 +354,7 @@ def validate_performance_lane(
             renderer_started_at=report.get("started_at"),
         )
     )
-    if schema_version in {3, 4}:
+    if schema_version == 3:
         failures.extend(
             _validate_wave3_setup_load(
                 report,
@@ -432,7 +373,7 @@ def validate_performance_lane(
                 report,
                 expected_lane=expected_lane,
             )
-            if schema_version in {3, 4}
+            if schema_version == 3
             else _validate_historical_wave2_diagnostic_task_load(
                 report,
                 expected_lane=expected_lane,
@@ -486,18 +427,13 @@ def validate_performance_lane(
             f"{input_metric.get('p95_ms')} ms"
         )
 
-    usable_state_threshold_ms = PERFORMANCE_THRESHOLDS.usable_state_ms
-    if schema_version == 4 and expected_lane == "hardware":
-        usable_state_threshold_ms = (
-            HARDWARE_USABLE_STATE_CALIBRATION.hardware_usable_state_ms
-        )
     usable_state_ms = _number(metrics.get("usable_state_ms"))
     if usable_state_ms is None:
         failures.append(f"{expected_lane} usable-state time is unavailable")
-    elif usable_state_ms > usable_state_threshold_ms:
+    elif usable_state_ms > PERFORMANCE_THRESHOLDS.usable_state_ms:
         failures.append(
             f"{expected_lane} usable-state time exceeds "
-            f"{usable_state_threshold_ms:.1f} ms: "
+            f"{PERFORMANCE_THRESHOLDS.usable_state_ms:.1f} ms: "
             f"{metrics.get('usable_state_ms')} ms"
         )
 
@@ -662,12 +598,12 @@ def certify_performance_evidence(
     expected_source_commit: str,
     expected_toolchain_digest: str,
     expected_fixture_archive_digest: str | None = None,
-    expected_lane_schema_version: int = 4,
+    expected_lane_schema_version: int = 3,
 ) -> PerformanceCertification:
     """Bind both retained lanes and the #44 safety gate to one source."""
 
-    if expected_lane_schema_version not in {2, 3, 4}:
-        raise ValueError("Expected lane schema version must be 2, 3, or 4")
+    if expected_lane_schema_version not in {2, 3}:
+        raise ValueError("Expected lane schema version must be 2 or 3")
 
     hardware_digest = _payload_digest(hardware_report)
     software_digest = _payload_digest(software_report)
@@ -730,8 +666,8 @@ def certify_performance_evidence(
             "identify the same inventory workload"
         )
     if (
-        hardware_schema in {3, 4}
-        and software_schema in {3, 4}
+        hardware_schema == 3
+        and software_schema == 3
         and _wave3_workload_identity(
             hardware_report.get("wave3_setup_features")
         )
@@ -781,7 +717,7 @@ def certify_performance_report_files(
     expected_source_commit: str,
     expected_toolchain_digest: str,
     expected_fixture_archive_digest: str | None = None,
-    expected_lane_schema_version: int = 4,
+    expected_lane_schema_version: int = 3,
     output_path: Path,
 ) -> PerformanceCertification:
     """Validate retained lane files and write their bound certification."""
@@ -1579,7 +1515,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
-    "HARDWARE_USABLE_STATE_CALIBRATION",
     "PERFORMANCE_THRESHOLDS",
     "REFERENCE_FIXTURE",
     "REFERENCE_MEASUREMENT_PROTOCOL",
