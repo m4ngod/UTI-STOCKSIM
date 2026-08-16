@@ -2581,15 +2581,16 @@ def test_concurrent_healthy_then_failed_reads_preserve_last_reliable_state() -> 
 
         stored = feature.snapshot(SystemHealthContext())
         assert len(states) == 2
-        assert states[0].presentation is SystemHealthPresentationState.HEALTHY
-        assert states[1].presentation is SystemHealthPresentationState.DEGRADED
-        assert states[1].last_reliable_payload is not None
-        assert states[1].last_reliable_payload[0] == states[0].components[0]
-        assert states[1].last_reliable_payload[1:] == states[1].components[1:]
-        assert [state.revision for state in states] == [1, 2]
+        healthy, degraded = sorted(states, key=lambda state: state.revision)
+        assert healthy.presentation is SystemHealthPresentationState.HEALTHY
+        assert degraded.presentation is SystemHealthPresentationState.DEGRADED
+        assert degraded.last_reliable_payload is not None
+        assert degraded.last_reliable_payload[0] == healthy.components[0]
+        assert degraded.last_reliable_payload[1:] == degraded.components[1:]
+        assert [healthy.revision, degraded.revision] == [1, 2]
         assert stored.revision == 3
         assert stored.last_reliable_payload is not None
-        assert stored.last_reliable_payload[0] == states[0].components[0]
+        assert stored.last_reliable_payload[0] == healthy.components[0]
         assert stored.last_reliable_payload[1:] == stored.components[1:]
     finally:
         release_first_read.set()

@@ -1,0 +1,363 @@
+{
+  "schema_version": 1,
+  "issue": 118,
+  "source_commit": "3cbf9683c76dc935853d37d584973a3432d5131a",
+  "evidence_scope": "clean-offline-windows-installed-with-user-approved-performance-deviation",
+  "acceptance_status": "accepted-with-user-approved-deviation",
+  "active_feature_interfaces": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0"
+  ],
+  "artifacts": {
+    "qml-journey": {
+      "name": "qml-journey-3cbf9683c76d.zip",
+      "size_bytes": 158210835,
+      "sha256": "sha256:39a2362b55562851c9adf3458a5a568064575b09ffd3fddf660281ce80c0533c"
+    },
+    "widgets-rollback": {
+      "name": "widgets-rollback-3cbf9683c76d.zip",
+      "size_bytes": 145315837,
+      "sha256": "sha256:a77c9f33b4d5aa600223034f412a7e0cab7236ebfb84fd903006d3976b5dbe50"
+    }
+  },
+  "raw_machine_certification": {
+    "runner_exit_code": 1,
+    "machine_verifier_passed": false,
+    "clean_room_report": {
+      "schema_version": 8,
+      "size_bytes": 12585029,
+      "sha256": "sha256:b0d28c444c4aa850986001ed6c5155590b4e3fedf49c602a76419aeddc7b7c9c",
+      "retained_outside_git": true
+    },
+    "verifier_failures": [
+      "hardware installed performance hardware lane status is not passed",
+      "hardware installed performance hardware usable-state time exceeds 750.0 ms: 1779.4271 ms",
+      "hardware installed performance hardware lane reported runtime errors",
+      "software installed performance software lane status is not passed",
+      "software installed performance software usable-state time exceeds 750.0 ms: 1286.6223 ms",
+      "software installed performance software lane reported runtime errors"
+    ],
+    "waived_root_failures": [
+      "hardware usable-state time exceeds 750.0 ms: 1779.4271 ms",
+      "software usable-state time exceeds 750.0 ms: 1286.6223 ms"
+    ],
+    "non_waived_failures": [],
+    "sandbox_error_present": false,
+    "guest_result_acknowledged": true,
+    "normal_terminal_window_close_observed": true,
+    "post_close_windows_sandbox_process_count": 0,
+    "post_close_vmwp_process_count": 0,
+    "post_close_non_template_hcs_count": 0
+  },
+  "clean_environment": {
+    "operating_system": "Microsoft Windows 11 Enterprise 10.0.26100",
+    "architecture": "AMD64",
+    "windows_sandbox": true,
+    "native_boot_vhdx": false,
+    "accessible_filesystem_drive_count": 1,
+    "unexpected_accessible_filesystem_drive_count": 0,
+    "network_enumeration_succeeded": true,
+    "network_adapters_up": 0,
+    "network_adapters_enabled": 0,
+    "network_default_route_count": 0,
+    "python_on_path": false,
+    "python_installation_count": 0,
+    "compiler_on_path": false,
+    "compiler_installation_count": 0,
+    "dependency_cache_present": false,
+    "source_checkout_absent": true,
+    "qml_install_succeeded": true,
+    "widgets_install_succeeded": true,
+    "package_installation_verified": true,
+    "execution_from_mapped_evidence": false
+  },
+  "installed_dpi_preflight": {
+    "schema_version": 1,
+    "stage": "installed-dpi-preflight",
+    "renderer_lane": "hardware",
+    "certification_scope": "installed-dpi-preflight",
+    "production_path_matches": true,
+    "checkpoint": "loading",
+    "checkpoint_sequence": 1,
+    "snapshot_identity_matches": true,
+    "route": "strategy_library",
+    "status_object_name": "runMonitoringRouteNavigation",
+    "status_semantic_term": "loading",
+    "window_scale_percent": 200,
+    "qt_window_device_pixel_ratio": 2.0,
+    "native_window_dpi": 192,
+    "external_uia_acknowledged": true,
+    "candidate_exit_code": 0,
+    "candidate_clean_exit": true,
+    "guest_dpi_override_applied": false,
+    "native_dpi_evidence_source": "GetDpiForWindow",
+    "passed": true,
+    "errors": 0,
+    "evidence": {
+      "path": "installed-dpi-preflight-evidence.json",
+      "size_bytes": 2015,
+      "sha256": "sha256:283dcee921f3e48c5348bd3c023094a1838209ca22bec1377ed8f12a1cd6de69"
+    }
+  },
+  "renderer_lanes": {
+    "hardware": {
+      "schema_version": 4,
+      "certification_scope": "installed",
+      "graphics_api": "Direct3D11",
+      "exit_code": 0,
+      "production_path_matches": true,
+      "fixture_kind": "authoritative_writable_wave3_inputs",
+      "queued_running_partial_failure_retry_terminal_observed": true,
+      "focus_restoration_verified": true,
+      "system_health_context_verified": true,
+      "system_health_accessibility_verified": true,
+      "installed_wave3_journey_valid": true,
+      "writable_persistence_verified": true,
+      "application_reopened": true,
+      "background_continuation_verified": true,
+      "task_cancel_order_isolation_verified": true,
+      "old_generation_rejected": true,
+      "authoritative_reconnect_verified": true,
+      "real_v1_identity_valid": true,
+      "routes_rendered": 6,
+      "routes_match": true,
+      "connection_transitions_match": true,
+      "states_match": true,
+      "screenshots": 10,
+      "screenshots_distinct": true,
+      "keyboard_navigation_verified": true,
+      "accessibility_preferences_verified": true,
+      "installed_accessibility_verified": true,
+      "no_color_only_meaning_verified": true,
+      "chart_narrative_table_revision_verified": true,
+      "accessibility_checkpoints": 8,
+      "manual_trading_action_count": 0,
+      "read_only_context_visible": true,
+      "clean_exit": true,
+      "errors": 0
+    },
+    "software": {
+      "schema_version": 4,
+      "certification_scope": "installed",
+      "graphics_api": "Software",
+      "exit_code": 0,
+      "production_path_matches": true,
+      "fixture_kind": "authoritative_writable_wave3_inputs",
+      "queued_running_partial_failure_retry_terminal_observed": true,
+      "focus_restoration_verified": true,
+      "system_health_context_verified": true,
+      "system_health_accessibility_verified": true,
+      "installed_wave3_journey_valid": true,
+      "writable_persistence_verified": true,
+      "application_reopened": true,
+      "background_continuation_verified": true,
+      "task_cancel_order_isolation_verified": true,
+      "old_generation_rejected": true,
+      "authoritative_reconnect_verified": true,
+      "real_v1_identity_valid": true,
+      "routes_rendered": 6,
+      "routes_match": true,
+      "connection_transitions_match": true,
+      "states_match": true,
+      "screenshots": 10,
+      "screenshots_distinct": true,
+      "keyboard_navigation_verified": true,
+      "accessibility_preferences_verified": true,
+      "installed_accessibility_verified": true,
+      "no_color_only_meaning_verified": true,
+      "chart_narrative_table_revision_verified": true,
+      "accessibility_checkpoints": 8,
+      "manual_trading_action_count": 0,
+      "read_only_context_visible": true,
+      "clean_exit": true,
+      "errors": 0
+    }
+  },
+  "installed_performance": {
+    "hardware": {
+      "evidence": {
+        "path": "performance/hardware-sandbox.json",
+        "size_bytes": 470611,
+        "sha256": "sha256:a49028abd7e9b1ea649a572fe3269bf25d79cfc282c8c11c535f7260760b2fe5"
+      },
+      "schema_version": 3,
+      "status": "failed",
+      "installed_exit_code": 1,
+      "graphics_api": "Direct3D11",
+      "duration_seconds": 60.000193,
+      "usable_state_ms": 1779.4271,
+      "usable_state_limit_ms": 750.0,
+      "usable_state_passed": false,
+      "event_to_visible_p95_ms": 11.8089,
+      "event_to_visible_limit_ms": 20.0,
+      "input_p95_ms": 0.9827,
+      "input_limit_ms": 16.0,
+      "main_thread_stalls_over_budget": 0,
+      "max_main_thread_stall_ms": 16.4442,
+      "stall_budget_ms": 50.0,
+      "peak_memory_mib": 79.152344,
+      "peak_memory_limit_mib": 180.0,
+      "revisions_strictly_monotonic": true,
+      "terminal_phase": "completed",
+      "terminal_visible_ms": 7.6749,
+      "terminal_visible_limit_ms": 100.0,
+      "fixture": "100000/4000/3/50/50ms/20fps",
+      "raw_errors": [
+        "hardware usable-state time exceeds 750.0 ms: 1779.4271 ms"
+      ],
+      "waiver_applied": true
+    },
+    "software": {
+      "evidence": {
+        "path": "performance/software-sandbox.json",
+        "size_bytes": 463249,
+        "sha256": "sha256:b6a8f870c0507d1c6b667b29e87e21d6fb248177a734bab4bd93b8e2b3430a19"
+      },
+      "schema_version": 3,
+      "status": "failed",
+      "installed_exit_code": 1,
+      "graphics_api": "Software",
+      "duration_seconds": 60.002421,
+      "usable_state_ms": 1286.6223,
+      "usable_state_limit_ms": 750.0,
+      "usable_state_passed": false,
+      "event_to_visible_p95_ms": 15.2916,
+      "event_to_visible_limit_ms": 20.0,
+      "input_p95_ms": 0.8227,
+      "input_limit_ms": 16.0,
+      "main_thread_stalls_over_budget": 0,
+      "max_main_thread_stall_ms": 15.7182,
+      "stall_budget_ms": 50.0,
+      "peak_memory_mib": 70.921875,
+      "peak_memory_limit_mib": 180.0,
+      "revisions_strictly_monotonic": true,
+      "terminal_phase": "completed",
+      "terminal_visible_ms": 14.1084,
+      "terminal_visible_limit_ms": 100.0,
+      "fixture": "100000/4000/3/50/50ms/20fps",
+      "raw_errors": [
+        "software usable-state time exceeds 750.0 ms: 1286.6223 ms"
+      ],
+      "waiver_applied": true
+    },
+    "all_non_usable_metrics_passed": true
+  },
+  "migration_and_rollback": {
+    "fresh_install": {
+      "kind": "fresh",
+      "passed": true,
+      "exit_code": 0,
+      "schema_migration_verified": true,
+      "bookmark_migration_verified": true,
+      "identity_retention_verified": true,
+      "deterministic": true,
+      "idempotent": true,
+      "reopen_verified": true,
+      "clean_exit": true,
+      "destructive_migration": false,
+      "errors": 0
+    },
+    "copied_wave3": {
+      "kind": "copied-wave3",
+      "passed": true,
+      "exit_code": 0,
+      "schema_migration_verified": true,
+      "bookmark_migration_verified": true,
+      "identity_retention_verified": true,
+      "deterministic": true,
+      "idempotent": true,
+      "reopen_verified": true,
+      "clean_exit": true,
+      "destructive_migration": false,
+      "errors": 0
+    },
+    "candidate_widgets_candidate": {
+      "passed": true,
+      "same_source_commit": true,
+      "same_dependency_lock": true,
+      "identity_retention_verified": true,
+      "reopen_verified": true,
+      "destructive_migration": false,
+      "hardware_lane_passed": true,
+      "software_lane_passed": true,
+      "errors": 0
+    }
+  },
+  "observation_readiness": {
+    "passed": true,
+    "exit_code": 0,
+    "configuration_available": true,
+    "ledger_schema_version": "wave4.daily-observation-ledger.v1",
+    "metric_set_id": "wave4.formal-observation.v1",
+    "observation_window_started": false,
+    "legacy_inventory_available": true,
+    "legacy_route_count": 8,
+    "destructive_migration": false,
+    "errors": 0
+  },
+  "same_artifact_host_diagnostic": {
+    "installed_gate": false,
+    "purpose": "sandbox-display-overhead-differential-only",
+    "evidence": {
+      "path": "performance/hardware-host-diagnostic.json",
+      "size_bytes": 408072,
+      "sha256": "sha256:9c249a7fd09d77b85094eaf24da2e98532b09f5b8c46c4c97c79e8278c5a117f"
+    },
+    "graphics_api": "Direct3D11",
+    "status": "passed",
+    "duration_seconds": 60.004464,
+    "usable_state_ms": 682.9986,
+    "window_show_call_ms": 245.2509,
+    "bridge_started_to_projection_ready_ms": 311.131,
+    "errors": 0
+  },
+  "user_approved_acceptance_deviation": {
+    "authorization_source": "direct-user-message",
+    "authorization_recorded_at_utc": "2026-08-16T16:17:51Z",
+    "user_quote": "本次不考虑750ms门槛了，我认为现在的状态属于可用，不强求把时间压到750ms门槛下，因为sandbox有性能瓶颈",
+    "reason": "The user accepts the current candidate as usable and attributes the two startup overruns to the Windows Sandbox display path.",
+    "applies_only_to": {
+      "issue": 118,
+      "source_commit": "3cbf9683c76dc935853d37d584973a3432d5131a",
+      "qml_archive_sha256": "sha256:39a2362b55562851c9adf3458a5a568064575b09ffd3fddf660281ce80c0533c",
+      "widgets_archive_sha256": "sha256:a77c9f33b4d5aa600223034f412a7e0cab7236ebfb84fd903006d3976b5dbe50",
+      "environment": "clean Windows Sandbox",
+      "metrics": [
+        {
+          "lane": "hardware",
+          "metric": "usable_state_ms",
+          "observed": 1779.4271,
+          "required": 750.0
+        },
+        {
+          "lane": "software",
+          "metric": "usable_state_ms",
+          "observed": 1286.6223,
+          "required": 750.0
+        }
+      ]
+    },
+    "raw_reports_rewritten": false,
+    "raw_failures_reclassified_as_pass": false,
+    "threshold_changed": false,
+    "parent_specs_modified": false,
+    "future_release_precedent": false,
+    "issue_119_authorized": false,
+    "fourteen_day_observation_authorized": false,
+    "residual_risk": "The current candidate does not satisfy the formal 750 ms usable-state requirement inside Windows Sandbox. This acceptance depends on an explicit user-approved deviation."
+  },
+  "claims": {
+    "raw_750ms_gate_passed": false,
+    "raw_machine_verifier_passed": false,
+    "accepted_with_user_approved_deviation": true,
+    "all_non_waived_issue_118_gates_passed": true,
+    "release_claim": false,
+    "issue_119_executed": false,
+    "fourteen_day_observation_started": false,
+    "issue_107_modified": false
+  }
+}

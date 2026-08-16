@@ -662,27 +662,36 @@ class LiveStrategyDiagnosticsV1ApplicationAdapter:
             if selector.manifest_id is not None:
                 raise _not_found("manifest", selector.manifest_id.value)
             return None
-        manifests = self._application.reproduction_manifests(
-            package.evidence_package_id
-        )
-        matching = tuple(
-            item
-            for item in manifests
-            if item.run_id == run.run_id and item.case_id == case.case_id
-        )
         if selector.manifest_id is not None:
-            matching = tuple(
-                item
-                for item in matching
-                if item.manifest_id == selector.manifest_id.value
-            )
-        if not matching:
-            if selector.manifest_id is not None and not self._row_exists(
+            if not self._row_exists(
                 "diagnostic_reproduction_manifests",
                 "manifest_id",
                 selector.manifest_id.value,
             ):
                 raise _not_found("manifest", selector.manifest_id.value)
+            selected = self._application.reproduction_manifest(
+                package.evidence_package_id,
+                selector.manifest_id.value,
+            )
+            if selected is None:
+                raise _identity_failure(
+                    "reproduction-manifest-selection"
+                )
+            matching = (
+                (selected,)
+                if selected.run_id == run.run_id
+                and selected.case_id == case.case_id
+                else ()
+            )
+        else:
+            matching = tuple(
+                item
+                for item in self._application.reproduction_manifests(
+                    package.evidence_package_id
+                )
+                if item.run_id == run.run_id and item.case_id == case.case_id
+            )
+        if not matching:
             if selector.manifest_id is not None:
                 raise _identity_failure("reproduction-manifest-selection")
             raise _integrity_failure("reproduction-manifest-missing")

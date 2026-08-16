@@ -1,0 +1,33 @@
+{
+  "clean_exit": true,
+  "host_class": "MainWindow",
+  "kind": "widgets-rollback",
+  "manual_trading_action_count": 0,
+  "mode": "read-only",
+  "opened_panels": [
+    "diagnostics",
+    "account",
+    "market",
+    "agents",
+    "arena",
+    "leaderboard",
+    "clock",
+    "orders"
+  ],
+  "panel_implementations": {
+    "account": "AccountPanelAdapter",
+    "agents": "AgentsPanelAdapter",
+    "arena": "ArenaPanelAdapter",
+    "clock": "ClockPanelAdapter",
+    "diagnostics": "DiagnosticsPanelAdapter",
+    "leaderboard": "LeaderboardPanelAdapter",
+    "market": "MarketPanelAdapter",
+    "orders": "OrdersPanelAdapter"
+  },
+  "placeholder_panels": [],
+  "real_panel_count": 8,
+  "screenshot": "widgets-rollback.png",
+  "source_commit": "3cbf9683c76dc935853d37d584973a3432d5131a",
+  "supported_data_copy_verified": false,
+  "visible": true
+}

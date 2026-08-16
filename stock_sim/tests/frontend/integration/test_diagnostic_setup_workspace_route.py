@@ -148,3 +148,42 @@ def test_qml_exposes_exact_setup_identity_and_accessible_handoff() -> None:
         "Create one durable task from the exact current Strategy and Scenario "
         "setup selection"
     ) in source
+
+
+def test_first_authoritative_task_state_refreshes_uninitialized_setup_sources(
+) -> None:
+    coordinator = DiagnosticSetupSelectionCoordinator()
+    feature = DeterministicFakeDiagnosticTasksAdapter(
+        setup_selection_provider=coordinator.current,
+    )
+    setup = compose_diagnostic_setup_selection_context(
+        _strategy_context(),
+        _scenario_selection(),
+    )
+    current = {"setup": None}
+    refresh_count = 0
+
+    def refresh_setup_sources() -> None:
+        nonlocal refresh_count
+        refresh_count += 1
+        current["setup"] = setup
+
+    adapter = DiagnosticTasksQtAdapter(
+        feature,
+        setup_selection_provider=lambda: current["setup"],
+        setup_selection_refresh=refresh_setup_sources,
+        setup_selection_coordinator=coordinator,
+        route_active=False,
+    )
+
+    assert coordinator.current() is None
+    adapter.refresh()
+
+    assert refresh_count == 1
+    assert coordinator.current() == setup
+
+    adapter.refresh()
+    assert refresh_count == 1
+
+    adapter.close()
+    feature.close()

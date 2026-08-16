@@ -35,6 +35,15 @@ FocusScope {
             )
     }
 
+    function repairFocusedItemVisibility() {
+        if (statusSummary.activeFocus)
+            ensureItemVisible(statusSummary)
+        else if (diagnosticContextStatus.activeFocus)
+            ensureItemVisible(diagnosticContextStatus)
+        else if (dataSourceStatus.activeFocus)
+            ensureItemVisible(dataSourceStatus)
+    }
+
     Rectangle {
         anchors.fill: parent
         color: tokens.background
@@ -47,6 +56,10 @@ FocusScope {
             contentWidth: width
             contentHeight: content.implicitHeight
             clip: true
+            onContentHeightChanged: {
+                if (page.hasMeaningfulFocus)
+                    Qt.callLater(page.repairFocusedItemVisibility)
+            }
 
             ColumnLayout {
                 id: content

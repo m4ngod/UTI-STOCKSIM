@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -18,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Mapping, Sequence
+from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -65,6 +68,9 @@ _REQUIRED_FORMAL_STRATEGY_SOURCE_DATA_FILES = frozenset(
     for _source, destination in _FORMAL_STRATEGY_SOURCE_DATA_FILES
 )
 MAX_QML_DELTA_BYTES = 50 * 1024 * 1024
+CLEAN_ROOM_REPORT_SCHEMA_VERSION = 8
+PACKAGE_SMOKE_REPORT_SCHEMA_VERSION = 4
+RENDERER_GATE_REPORT_SCHEMA_VERSION = 2
 _QML_IMPORT_PATTERN = re.compile(
     r"^\s*import\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s+"
@@ -109,11 +115,16 @@ _QML_FORBIDDEN_BACKEND_MODULE_PREFIXES = (
 _FORBIDDEN_NETWORK_MODULE_PREFIXES = (
     "aiohttp",
     "app.services.redis_subscriber",
+    "http.server",
     "httpx",
+    "pydoc",
     "redis",
     "requests",
+    "socketserver",
     "urllib3",
     "websockets",
+    "wsgiref.simple_server",
+    "xmlrpc.server",
 )
 _WIDGETS_FORBIDDEN_SEAM_MODULE_PREFIXES = (
     "app.app_context",
@@ -164,7 +175,42 @@ _PRODUCTION_JOURNEY_PATH = (
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
+    "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+    "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
+)
+_ACTIVE_JOURNEY_ROUTES = (
+    "strategy_library",
+    "scenario_lab",
+    "diagnostic_tasks",
+    "run_monitoring",
+    "evidence_and_findings",
+    "system_health",
+)
+_UIA_CHECKPOINT_BINDINGS = {
+    "loading": ("runMonitoringRouteNavigation", "loading"),
+    "empty": ("diagnosticTasksRouteNavigation", "empty"),
+    "failed": ("failedCampaignNodeAttemptHistory", "failed"),
+    "recovering": ("diagnosticTaskRecoveryProgressStatus", "recover"),
+    "partial": ("systemHealthAccessibleStatus", "partial"),
+    "disconnected": ("systemHealthAccessibleStatus", "disconnected"),
+    "stale": ("systemHealthAccessibleStatus", "stale"),
+    "completed": ("runMonitoringRouteNavigation", "terminal"),
+}
+_RUNTIME_SAFETY_STAGES = ("running", "reopened_terminal")
+_RUNTIME_SAFETY_COVERAGE = frozenset(
+    {
+        "qml_object_tree",
+        "accessible_interface",
+        "action_interface",
+        "selection_interface",
+        "value_interface",
+        "shortcut_properties",
+        "qt_signal_surface",
+        "command_binding_properties",
+        "context_menu_roles",
+        "hidden_automation_peers",
+    }
 )
 _WAVE2_RELEASE_FIXTURE_KIND = "authoritative_writable_wave3_inputs"
 _WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
@@ -350,11 +396,55 @@ class LockedPlatform:
 
 
 @dataclass(frozen=True, slots=True)
+class LockedBuildArtifact:
+    filename: str
+    url: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class LockedExecutable:
+    relative_path: str
+    version: str
+    version_line: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class LockedNativeToolchain:
+    compiler_family: str
+    compiler_distribution: str
+    nuitka_install_tree_file_count: int
+    nuitka_install_tree_total_bytes: int
+    nuitka_install_tree_sha256: str
+    compiler_tree_file_count: int
+    compiler_tree_total_bytes: int
+    compiler_tree_sha256: str
+    nuitka_source: LockedBuildArtifact
+    compiler_archive: LockedBuildArtifact
+    compiler: LockedExecutable
+    binary_inspector: LockedExecutable
+
+
+@dataclass(frozen=True, slots=True)
 class FrontendV2ToolchainLock:
     schema_version: int
     platform: LockedPlatform
     toolchain: ToolchainVersions
+    native_toolchain: LockedNativeToolchain
     invalidation_policy: str
+    production_dependencies: dict[str, str] = field(default_factory=dict)
+    build_dependencies: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class LockedNativeToolchainPaths:
+    nuitka_source: Path
+    compiler_archive: Path
+    compiler: Path
+    binary_inspector: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +491,8 @@ class PackageBuildPlan:
     distribution_dir: Path
     executable_name: str
     nuitka_report: Path
+    native_toolchain_attestation: Path
+    isolated_pycache_root: Path
     nuitka_command: tuple[str, ...]
     source_imports: QmlDependencyManifest | None
     resolved_qml_dependencies: QmlDependencyClosure | None
@@ -441,12 +533,14 @@ class PackageEvidence:
     qml_delta_limit_bytes: int
     webengine_files: tuple[str, ...]
     dependency_reports: tuple[ArtifactChecksum, ...]
+    native_toolchain_attestations: tuple[ArtifactChecksum, ...]
     formal_strategy_sources: tuple[ArtifactChecksum, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class RendererLaneEvidence:
     lane: str
+    certification_scope: str
     graphics_api: str
     journey_stages: tuple[str, ...]
     routes_rendered: tuple[str, ...]
@@ -518,6 +612,18 @@ class RendererLaneEvidence:
     accessibility_announcements: tuple[str, ...]
     old_generation_rejected: bool
     authoritative_reconnect_verified: bool
+    queued_state_observed: bool
+    running_state_observed: bool
+    partial_state_observed: bool
+    controlled_failure_observed: bool
+    safe_failure_reason_verified: bool
+    retry_idempotency_verified: bool
+    duplicate_work_count: int
+    terminal_completion_observed: bool
+    system_health_context_verified: bool
+    system_health_identity_graph: tuple[str, ...]
+    system_health_accessibility_verified: bool
+    focus_restoration_verified: bool
     connection_transitions: tuple[str, ...]
     manual_trading_action_count: int
     read_only_context_visible: bool
@@ -528,6 +634,7 @@ class RendererLaneEvidence:
 @dataclass(frozen=True, slots=True)
 class RendererGateEvidence:
     source_commit: str
+    certification_scope: str
     created_at: str
     environment_identity: str
     toolchain_identity: str
@@ -542,6 +649,7 @@ class ReleaseBuildResult:
     safety: NoManualTradingGateReport
     packages: PackageEvidence
     renderers: RendererGateEvidence
+    renderer_gate_report: ArtifactChecksum
     archives: tuple[ArtifactChecksum, ...]
 
 
@@ -661,8 +769,36 @@ EXPECTED_TOOLCHAIN = ToolchainVersions(
     pyside6="6.9.1",
     qt="6.9.1",
     numpy="2.3.1",
-    nuitka="2.6.8",
+    nuitka="4.1.3",
 )
+
+EXPECTED_PRODUCTION_DEPENDENCIES = {
+    "PySide6": "6.9.1",
+    "PySide6-Addons": "6.9.1",
+    "PySide6-Essentials": "6.9.1",
+    "SQLAlchemy": "2.0.49",
+    "asn1crypto": "1.5.1",
+    "duckdb": "1.5.4",
+    "greenlet": "3.4.0",
+    "numpy": "2.3.1",
+    "pg8000": "1.31.5",
+    "psycopg": "3.2.9",
+    "psycopg-binary": "3.2.9",
+    "pydantic": "1.10.26",
+    "pyqtgraph": "0.13.7",
+    "python-dateutil": "2.9.0.post0",
+    "redis": "7.4.0",
+    "scramp": "1.4.8",
+    "shiboken6": "6.9.1",
+    "six": "1.17.0",
+    "typing-extensions": "4.15.0",
+    "tzdata": "2025.2",
+}
+EXPECTED_BUILD_DEPENDENCIES = {
+    "Nuitka": "4.1.3",
+    "ordered-set": "4.1.0",
+    "zstandard": "0.25.0",
+}
 
 
 def load_toolchain_lock(
@@ -671,6 +807,25 @@ def load_toolchain_lock(
     payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     platform = payload["platform"]
     toolchain = payload["toolchain"]
+    native_toolchain = payload["native_toolchain"]
+
+    def locked_artifact(value: Mapping[str, Any]) -> LockedBuildArtifact:
+        return LockedBuildArtifact(
+            filename=str(value["filename"]),
+            url=str(value["url"]),
+            sha256=str(value["sha256"]),
+            size_bytes=int(value["size_bytes"]),
+        )
+
+    def locked_executable(value: Mapping[str, Any]) -> LockedExecutable:
+        return LockedExecutable(
+            relative_path=str(value["relative_path"]),
+            version=str(value["version"]),
+            version_line=str(value["version_line"]),
+            sha256=str(value["sha256"]),
+            size_bytes=int(value["size_bytes"]),
+        )
+
     return FrontendV2ToolchainLock(
         schema_version=int(payload["schema_version"]),
         platform=LockedPlatform(
@@ -684,7 +839,70 @@ def load_toolchain_lock(
             numpy=str(toolchain["numpy"]),
             nuitka=str(toolchain["nuitka"]),
         ),
+        native_toolchain=LockedNativeToolchain(
+            compiler_family=str(native_toolchain["compiler_family"]),
+            compiler_distribution=str(
+                native_toolchain["compiler_distribution"]
+            ),
+            nuitka_install_tree_file_count=int(
+                native_toolchain["nuitka_install_tree_file_count"]
+            ),
+            nuitka_install_tree_total_bytes=int(
+                native_toolchain["nuitka_install_tree_total_bytes"]
+            ),
+            nuitka_install_tree_sha256=str(
+                native_toolchain["nuitka_install_tree_sha256"]
+            ),
+            compiler_tree_file_count=int(
+                native_toolchain["compiler_tree_file_count"]
+            ),
+            compiler_tree_total_bytes=int(
+                native_toolchain["compiler_tree_total_bytes"]
+            ),
+            compiler_tree_sha256=str(
+                native_toolchain["compiler_tree_sha256"]
+            ),
+            nuitka_source=locked_artifact(
+                native_toolchain["nuitka_source"]
+            ),
+            compiler_archive=locked_artifact(
+                native_toolchain["compiler_archive"]
+            ),
+            compiler=locked_executable(native_toolchain["compiler"]),
+            binary_inspector=locked_executable(
+                native_toolchain["binary_inspector"]
+            ),
+        ),
         invalidation_policy=str(payload["invalidation_policy"]),
+        production_dependencies={
+            str(name): str(version)
+            for name, version in payload.get(
+                "production_dependencies",
+                {},
+            ).items()
+        },
+        build_dependencies={
+            str(name): str(version)
+            for name, version in payload.get(
+                "build_dependencies",
+                {},
+            ).items()
+        },
+    )
+
+
+def running_locked_dependencies(
+    lock: FrontendV2ToolchainLock,
+) -> tuple[dict[str, str], dict[str, str]]:
+    def observed(locked: dict[str, str]) -> dict[str, str]:
+        return {
+            name: importlib.metadata.version(name)
+            for name in sorted(locked)
+        }
+
+    return (
+        observed(lock.production_dependencies),
+        observed(lock.build_dependencies),
     )
 
 
@@ -692,14 +910,13 @@ def running_toolchain() -> ToolchainVersions:
     import numpy
     import PySide6
     from PySide6.QtCore import qVersion
-    from nuitka.Version import getNuitkaVersion
 
     return ToolchainVersions(
         python=".".join(str(part) for part in sys.version_info[:3]),
         pyside6=PySide6.__version__,
         qt=qVersion(),
         numpy=numpy.__version__,
-        nuitka=getNuitkaVersion(),
+        nuitka=importlib.metadata.version("Nuitka"),
     )
 
 
@@ -716,6 +933,26 @@ def verify_running_toolchain(
             mismatches.append(
                 f"{field_name}: expected {expected}, observed {actual}"
             )
+    observed_production, observed_build = running_locked_dependencies(lock)
+    for dependency_kind, expected_dependencies, actual_dependencies in (
+        (
+            "production_dependency",
+            lock.production_dependencies,
+            observed_production,
+        ),
+        (
+            "build_dependency",
+            lock.build_dependencies,
+            observed_build,
+        ),
+    ):
+        for name, expected in sorted(expected_dependencies.items()):
+            actual = actual_dependencies.get(name)
+            if actual != expected:
+                mismatches.append(
+                    f"{dependency_kind}[{name}]: expected {expected}, "
+                    f"observed {actual}"
+                )
     observed_platform = running_platform()
     if (
         observed_platform.operating_system
@@ -783,6 +1020,13 @@ def toolchain_evidence_identity(
                 "numpy": lock.toolchain.numpy,
                 "nuitka": lock.toolchain.nuitka,
             },
+            "native_toolchain": asdict(lock.native_toolchain),
+            "production_dependencies": dict(
+                sorted(lock.production_dependencies.items())
+            ),
+            "build_dependencies": dict(
+                sorted(lock.build_dependencies.items())
+            ),
             "invalidation_policy": lock.invalidation_policy,
         },
         ensure_ascii=True,
@@ -937,6 +1181,10 @@ def create_package_build_plans(
         source_imports=None,
         resolved_qml_dependencies=None,
         extra_arguments=(
+            (
+                f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
+                "stock_sim/release/frontend_v2_toolchain.lock.json"
+            ),
             "--include-package=psycopg",
             "--include-package=psycopg_binary",
             *(
@@ -974,6 +1222,15 @@ def create_package_build_plans(
                 f"--include-data-files={TOOLCHAIN_LOCK_PATH}="
                 "stock_sim/release/frontend_v2_toolchain.lock.json"
             ),
+            (
+                "--include-data-files="
+                f"{PROJECT_ROOT / 'stock_sim/release/wave4_daily_observation_ledger.schema.json'}="
+                "stock_sim/release/wave4_daily_observation_ledger.schema.json"
+            ),
+            "--include-module=stock_sim.release.frontend_v2_performance_runtime",
+            "--include-module=stock_sim.release.wave4_rollback_probe",
+            "--include-module=stock_sim.release.wave4_legacy_inventory",
+            "--include-module=stock_sim.release.wave4_observation_ledger",
             (
                 "--include-module=stock_sim.release."
                 "strategy_diagnostics_v1_release_fixture"
@@ -1018,13 +1275,21 @@ def _build_plan(
     resolved_qml_dependencies: QmlDependencyClosure | None,
     extra_arguments: tuple[str, ...],
 ) -> PackageBuildPlan:
+    entry_point = entry_point.resolve()
+    output_root = output_root.resolve()
     nuitka_report = output_root / "nuitka-report.xml"
+    isolated_pycache_root = output_root / "python-pycache"
     command = (
         sys.executable,
+        "-I",
+        "-B",
+        "-X",
+        f"pycache_prefix={isolated_pycache_root}",
         "-m",
         "nuitka",
         str(entry_point),
         "--standalone",
+        "--mingw64",
         "--enable-plugin=pyside6",
         "--jobs=1",
         "--include-module=numpy._core._exceptions",
@@ -1043,6 +1308,10 @@ def _build_plan(
         distribution_dir=output_root / f"{entry_point.stem}.dist",
         executable_name=executable_name,
         nuitka_report=nuitka_report,
+        native_toolchain_attestation=(
+            output_root / "native-toolchain-attestation.json"
+        ),
+        isolated_pycache_root=isolated_pycache_root,
         nuitka_command=command,
         source_imports=source_imports,
         resolved_qml_dependencies=resolved_qml_dependencies,
@@ -1051,6 +1320,8 @@ def _build_plan(
 
 def deploy_scanned_qml_runtime(
     plan: PackageBuildPlan,
+    *,
+    objdump_path: Path | None = None,
 ) -> QmlRuntimeDeployment:
     if (
         plan.kind is not PackageKind.QML_JOURNEY
@@ -1086,7 +1357,8 @@ def deploy_scanned_qml_runtime(
             if source_file.suffix.casefold() == ".dll":
                 plugin_binaries.append(source_file)
 
-    objdump_path = _find_objdump()
+    if objdump_path is None:
+        objdump_path = _find_objdump()
     pyside_binaries = {
         path.name.casefold(): path
         for path in pyside_root.iterdir()
@@ -1147,25 +1419,338 @@ def deploy_scanned_qml_runtime(
     )
 
 
-def _find_objdump() -> Path:
-    from_path = shutil.which("objdump")
-    if from_path:
-        return Path(from_path).resolve()
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        raise FileNotFoundError("LOCALAPPDATA is unavailable")
-    cache_root = Path(local_app_data) / "Nuitka" / "Nuitka" / "Cache"
-    candidates = tuple(
+def _nuitka_downloads_cache_root() -> Path:
+    downloads_cache = os.environ.get("NUITKA_CACHE_DIR_DOWNLOADS")
+    nuitka_cache = os.environ.get("NUITKA_CACHE_DIR")
+    if downloads_cache:
+        cache_root = Path(downloads_cache)
+    elif nuitka_cache:
+        cache_root = Path(nuitka_cache) / "downloads"
+    else:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            raise FileNotFoundError(
+                "Nuitka cache root and LOCALAPPDATA are unavailable"
+            )
+        cache_root = (
+            Path(local_app_data)
+            / "Nuitka"
+            / "Nuitka"
+            / "Cache"
+            / "downloads"
+        )
+    return cache_root.resolve()
+
+
+def _resolve_locked_native_toolchain_paths(
+    lock: FrontendV2ToolchainLock,
+) -> LockedNativeToolchainPaths:
+    nuitka_source_value = os.environ.get(
+        "FRONTEND_V2_NUITKA_SOURCE_ARCHIVE"
+    )
+    if not nuitka_source_value:
+        raise FileNotFoundError(
+            "FRONTEND_V2_NUITKA_SOURCE_ARCHIVE is required for a locked "
+            "production build"
+        )
+    native = lock.native_toolchain
+    distribution_root = (
+        _nuitka_downloads_cache_root()
+        / "gcc"
+        / lock.platform.architecture
+        / native.compiler_distribution
+    )
+    return LockedNativeToolchainPaths(
+        nuitka_source=Path(nuitka_source_value).resolve(),
+        compiler_archive=(
+            distribution_root / native.compiler_archive.filename
+        ).resolve(),
+        compiler=(
+            distribution_root / Path(native.compiler.relative_path)
+        ).resolve(),
+        binary_inspector=(
+            distribution_root
+            / Path(native.binary_inspector.relative_path)
+        ).resolve(),
+    )
+
+
+def _verify_locked_file(
+    *,
+    path: Path,
+    filename: str | None,
+    size_bytes: int,
+    sha256: str,
+    label: str,
+) -> None:
+    if filename is not None and path.name != filename:
+        raise RuntimeError(
+            f"Locked {label} filename mismatch: expected {filename}, "
+            f"observed {path.name}"
+        )
+    if not path.is_file():
+        raise FileNotFoundError(f"Locked {label} is unavailable: {path}")
+    observed_size = path.stat().st_size
+    if observed_size != size_bytes:
+        raise RuntimeError(
+            f"Locked {label} size mismatch: expected {size_bytes}, "
+            f"observed {observed_size}"
+        )
+    observed_sha256 = _sha256_path(path)
+    if observed_sha256 != sha256:
+        raise RuntimeError(
+            f"Locked {label} SHA-256 mismatch: expected {sha256}, "
+            f"observed {observed_sha256}"
+        )
+
+
+def _verify_locked_executable(
+    *,
+    path: Path,
+    locked: LockedExecutable,
+    label: str,
+) -> None:
+    _verify_locked_file(
+        path=path,
+        filename=Path(locked.relative_path).name,
+        size_bytes=locked.size_bytes,
+        sha256=locked.sha256,
+        label=label,
+    )
+    completed = subprocess.run(
+        (str(path), "--version"),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    version_lines = completed.stdout.splitlines()
+    if not version_lines:
+        raise RuntimeError(f"Locked {label} did not report a version")
+    first_line = version_lines[0].strip()
+    if first_line != locked.version_line or locked.version not in first_line:
+        raise RuntimeError(
+            f"Locked {label} version mismatch: expected "
+            f"{locked.version_line!r}, observed {first_line!r}"
+        )
+
+
+def _compiler_tree_identity(root: Path) -> tuple[int, int, str]:
+    files = tuple(
         sorted(
-            cache_root.rglob("objdump.exe"),
-            key=lambda path: (len(path.parts), str(path)),
+            (path for path in root.rglob("*") if path.is_file()),
+            key=lambda path: path.relative_to(root).as_posix(),
         )
     )
-    if not candidates:
-        raise FileNotFoundError(
-            "Nuitka compiler objdump is unavailable for PE dependency scanning"
+    tree_hasher = hashlib.sha256()
+    total_bytes = 0
+    for path in files:
+        relative_path = path.relative_to(root).as_posix()
+        size_bytes = path.stat().st_size
+        total_bytes += size_bytes
+        tree_hasher.update(
+            (
+                f"{_sha256_path(path)} {size_bytes} {relative_path}\n"
+            ).encode("utf-8")
         )
-    return candidates[0]
+    return len(files), total_bytes, f"sha256:{tree_hasher.hexdigest()}"
+
+
+def _running_nuitka_installation_identity(
+) -> tuple[int, int, str, str, str]:
+    distribution = importlib.metadata.distribution("Nuitka")
+    package_root = Path(distribution.locate_file("nuitka")).resolve()
+    package_files = tuple(
+        sorted(
+            (
+                path
+                for path in package_root.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix.casefold() not in {".pyc", ".pyo"}
+            ),
+            key=lambda path: path.relative_to(package_root).as_posix(),
+        )
+    )
+    tree_hasher = hashlib.sha256()
+    total_bytes = 0
+    for path in package_files:
+        relative_path = path.relative_to(package_root).as_posix()
+        size_bytes = path.stat().st_size
+        total_bytes += size_bytes
+        tree_hasher.update(
+            (
+                f"{_sha256_path(path)} {size_bytes} {relative_path}\n"
+            ).encode("utf-8")
+        )
+
+    direct_url_text = distribution.read_text("direct_url.json")
+    if direct_url_text is None:
+        raise RuntimeError(
+            "Locked Nuitka installation has no direct_url archive identity"
+        )
+    direct_url = json.loads(direct_url_text)
+    archive_hashes = direct_url.get("archive_info", {}).get("hashes", {})
+    source_sha256 = str(archive_hashes.get("sha256", ""))
+    source_filename = Path(
+        unquote(urlparse(str(direct_url.get("url", ""))).path)
+    ).name
+    return (
+        len(package_files),
+        total_bytes,
+        f"sha256:{tree_hasher.hexdigest()}",
+        source_filename,
+        f"sha256:{source_sha256}",
+    )
+
+
+def verify_locked_native_toolchain(
+    lock: FrontendV2ToolchainLock,
+) -> LockedNativeToolchainPaths:
+    native = lock.native_toolchain
+    if native.compiler_family != "MinGW64":
+        raise RuntimeError(
+            "Frontend V2 production compiler family must be MinGW64"
+        )
+    paths = _resolve_locked_native_toolchain_paths(lock)
+    observed_nuitka_identity = _running_nuitka_installation_identity()
+    expected_nuitka_identity = (
+        native.nuitka_install_tree_file_count,
+        native.nuitka_install_tree_total_bytes,
+        native.nuitka_install_tree_sha256,
+        native.nuitka_source.filename,
+        native.nuitka_source.sha256,
+    )
+    if observed_nuitka_identity != expected_nuitka_identity:
+        raise RuntimeError(
+            "Locked Nuitka installation identity mismatch: expected "
+            f"{expected_nuitka_identity!r}, observed "
+            f"{observed_nuitka_identity!r}"
+        )
+    for path, artifact, label in (
+        (paths.nuitka_source, native.nuitka_source, "Nuitka source archive"),
+        (
+            paths.compiler_archive,
+            native.compiler_archive,
+            "compiler archive",
+        ),
+    ):
+        _verify_locked_file(
+            path=path,
+            filename=artifact.filename,
+            size_bytes=artifact.size_bytes,
+            sha256=artifact.sha256,
+            label=label,
+        )
+    _verify_locked_executable(
+        path=paths.compiler,
+        locked=native.compiler,
+        label="compiler",
+    )
+    _verify_locked_executable(
+        path=paths.binary_inspector,
+        locked=native.binary_inspector,
+        label="binary inspector",
+    )
+    compiler_tree_root = paths.compiler.parent.parent
+    observed_tree_identity = _compiler_tree_identity(compiler_tree_root)
+    expected_tree_identity = (
+        native.compiler_tree_file_count,
+        native.compiler_tree_total_bytes,
+        native.compiler_tree_sha256,
+    )
+    if observed_tree_identity != expected_tree_identity:
+        raise RuntimeError(
+            "Locked compiler tree identity mismatch: expected "
+            f"{expected_tree_identity!r}, observed {observed_tree_identity!r}"
+        )
+    return paths
+
+
+def _find_objdump(
+    lock: FrontendV2ToolchainLock | None = None,
+) -> Path:
+    retained_lock = lock or load_toolchain_lock()
+    paths = _resolve_locked_native_toolchain_paths(retained_lock)
+    _verify_locked_executable(
+        path=paths.binary_inspector,
+        locked=retained_lock.native_toolchain.binary_inspector,
+        label="binary inspector",
+    )
+    return paths.binary_inspector
+
+
+def _expected_native_toolchain_attestation_payload(
+    *,
+    package_kind: PackageKind,
+    source_commit: str,
+    report_checksum: ArtifactChecksum,
+    distribution_identity: Mapping[str, Any],
+    archive_checksum: ArtifactChecksum,
+    lock: FrontendV2ToolchainLock,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "package_kind": package_kind.value,
+        "source_commit": source_commit,
+        "toolchain_identity": toolchain_evidence_identity(lock),
+        "nuitka_report": asdict(report_checksum),
+        "distribution": dict(distribution_identity),
+        "archive": asdict(archive_checksum),
+        "native_toolchain": asdict(lock.native_toolchain),
+    }
+
+
+def _write_native_toolchain_attestation(
+    *,
+    plan: PackageBuildPlan,
+    archive_checksum: ArtifactChecksum,
+    lock: FrontendV2ToolchainLock,
+) -> None:
+    verify_locked_native_toolchain(lock)
+    report_checksum = _checksum_file(plan.nuitka_report, plan.output_root)
+    inventory = _inventory_package(plan)
+    payload = _expected_native_toolchain_attestation_payload(
+        package_kind=plan.kind,
+        source_commit=plan.source_commit,
+        report_checksum=report_checksum,
+        distribution_identity={
+            "file_count": inventory.file_count,
+            "total_bytes": inventory.total_bytes,
+            "tree_sha256": inventory.tree_sha256,
+        },
+        archive_checksum=archive_checksum,
+        lock=lock,
+    )
+    plan.native_toolchain_attestation.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _verify_isolated_pycache_root(plan: PackageBuildPlan) -> None:
+    plan.isolated_pycache_root.mkdir(parents=True, exist_ok=True)
+    retained_files = tuple(
+        sorted(
+            (
+                path
+                for path in plan.isolated_pycache_root.rglob("*")
+                if path.is_file()
+            ),
+            key=lambda path: path.relative_to(
+                plan.isolated_pycache_root
+            ).as_posix(),
+        )
+    )
+    if retained_files:
+        raise RuntimeError(
+            "Nuitka isolated Python bytecode cache is not empty: "
+            + ", ".join(
+                path.relative_to(plan.isolated_pycache_root).as_posix()
+                for path in retained_files
+            )
+        )
 
 
 def _inspect_binary_dependencies(
@@ -1190,6 +1775,7 @@ def _inspect_binary_dependencies(
 def write_package_evidence(
     *,
     plans: tuple[PackageBuildPlan, PackageBuildPlan],
+    archives: tuple[ArtifactChecksum, ArtifactChecksum],
     evidence_dir: Path,
 ) -> PackageEvidence:
     plans_by_kind = {plan.kind: plan for plan in plans}
@@ -1228,6 +1814,19 @@ def write_package_evidence(
             + ", ".join(webengine_files)
         )
     lock = load_toolchain_lock()
+    archives_by_kind: dict[PackageKind, ArtifactChecksum] = {}
+    for kind in PackageKind:
+        matches = tuple(
+            archive
+            for archive in archives
+            if archive.relative_path.startswith(f"{kind.value}-")
+            and archive.relative_path.endswith(".zip")
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"Exactly one {kind.value} archive checksum is required"
+            )
+        archives_by_kind[kind] = matches[0]
     package_roots = {
         plan.output_root.parent.resolve()
         for plan in plans
@@ -1237,6 +1836,39 @@ def write_package_evidence(
     packages_root = package_roots.pop()
     dependency_reports = tuple(
         _checksum_file(plan.nuitka_report, packages_root)
+        for plan in sorted(plans, key=lambda item: item.kind.value)
+    )
+    for plan in plans:
+        inventory = (
+            widgets_inventory
+            if plan.kind is PackageKind.WIDGETS_ROLLBACK
+            else qml_inventory
+        )
+        expected_attestation = _expected_native_toolchain_attestation_payload(
+            package_kind=plan.kind,
+            source_commit=plan.source_commit,
+            report_checksum=_checksum_file(
+                plan.nuitka_report,
+                plan.output_root,
+            ),
+            distribution_identity={
+                "file_count": inventory.file_count,
+                "total_bytes": inventory.total_bytes,
+                "tree_sha256": inventory.tree_sha256,
+            },
+            archive_checksum=archives_by_kind[plan.kind],
+            lock=lock,
+        )
+        observed_attestation = _load_json_mapping(
+            plan.native_toolchain_attestation
+        )
+        if observed_attestation != expected_attestation:
+            raise RuntimeError(
+                "Native toolchain attestation does not match the "
+                f"production lock/report: {plan.kind.value}"
+            )
+    native_toolchain_attestations = tuple(
+        _checksum_file(plan.native_toolchain_attestation, packages_root)
         for plan in sorted(plans, key=lambda item: item.kind.value)
     )
     qml_distribution = plans_by_kind[
@@ -1258,6 +1890,7 @@ def write_package_evidence(
         qml_delta_limit_bytes=MAX_QML_DELTA_BYTES,
         webengine_files=webengine_files,
         dependency_reports=dependency_reports,
+        native_toolchain_attestations=native_toolchain_attestations,
         formal_strategy_sources=formal_strategy_sources,
     )
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -1277,6 +1910,10 @@ def write_package_evidence(
         "webengine_files": webengine_files,
         "dependency_reports": tuple(
             asdict(report) for report in dependency_reports
+        ),
+        "native_toolchain_attestations": tuple(
+            asdict(attestation)
+            for attestation in native_toolchain_attestations
         ),
         "formal_strategy_sources": tuple(
             asdict(source) for source in formal_strategy_sources
@@ -1305,23 +1942,21 @@ def write_package_evidence(
     return evidence
 
 
-def _inventory_package(plan: PackageBuildPlan) -> PackageInventory:
-    executable = plan.distribution_dir / plan.executable_name
-    if not executable.is_file():
-        raise FileNotFoundError(
-            f"Package executable is unavailable: {executable}"
-        )
+def _inventory_distribution(
+    *,
+    kind: PackageKind,
+    source_commit: str,
+    distribution_dir: Path,
+) -> PackageInventory:
     files = tuple(
-        _checksum_file(path, plan.distribution_dir)
+        _checksum_file(path, distribution_dir)
         for path in sorted(
             (
                 candidate
-                for candidate in plan.distribution_dir.rglob("*")
+                for candidate in distribution_dir.rglob("*")
                 if candidate.is_file()
             ),
-            key=lambda path: path.relative_to(
-                plan.distribution_dir
-            ).as_posix(),
+            key=lambda path: path.relative_to(distribution_dir).as_posix(),
         )
     )
     tree_hasher = hashlib.sha256()
@@ -1333,12 +1968,25 @@ def _inventory_package(plan: PackageBuildPlan) -> PackageInventory:
             ).encode("utf-8")
         )
     return PackageInventory(
-        kind=plan.kind,
-        source_commit=plan.source_commit,
+        kind=kind,
+        source_commit=source_commit,
         file_count=len(files),
         total_bytes=sum(checksum.size_bytes for checksum in files),
         tree_sha256=f"sha256:{tree_hasher.hexdigest()}",
         files=files,
+    )
+
+
+def _inventory_package(plan: PackageBuildPlan) -> PackageInventory:
+    executable = plan.distribution_dir / plan.executable_name
+    if not executable.is_file():
+        raise FileNotFoundError(
+            f"Package executable is unavailable: {executable}"
+        )
+    return _inventory_distribution(
+        kind=plan.kind,
+        source_commit=plan.source_commit,
+        distribution_dir=plan.distribution_dir,
     )
 
 
@@ -1361,6 +2009,12 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     raise TypeError(f"Cannot serialize {type(value).__name__}")
+
+
+def _json_projection(value: Any) -> Any:
+    return json.loads(
+        json.dumps(value, sort_keys=True, default=_json_default)
+    )
 
 
 _REOPENED_SETUP_LEDGER_KEYS = (
@@ -1496,6 +2150,8 @@ def _expected_reopened_setup_ledger(
 
 def _installed_wave2_smoke_failures(
     payload: Mapping[str, Any],
+    *,
+    require_installed_window_scale: bool = True,
 ) -> tuple[str, ...]:
     failures: list[str] = []
     if payload.get("fixture_kind") != _WAVE2_RELEASE_FIXTURE_KIND:
@@ -1788,6 +2444,61 @@ def _installed_wave2_smoke_failures(
         failures.append(
             "persistent TaskHandle identities are incomplete or invalid"
         )
+    for field_name, label in (
+        ("queued_state_observed", "queued task state"),
+        ("running_state_observed", "running task state"),
+        ("partial_state_observed", "partial task state"),
+        ("controlled_failure_observed", "controlled task failure"),
+        ("safe_failure_reason_verified", "safe failure reason"),
+        ("retry_idempotency_verified", "idempotent task retry"),
+        ("terminal_completion_observed", "terminal task completion"),
+        ("system_health_context_verified", "System Health context"),
+        (
+            "system_health_accessibility_verified",
+            "System Health accessibility",
+        ),
+        ("focus_restoration_verified", "route focus restoration"),
+    ):
+        if payload.get(field_name) is not True:
+            failures.append(f"{label} was not verified")
+    if payload.get("duplicate_work_count") != 0:
+        failures.append("Diagnostic Task retry produced duplicate work")
+    if require_installed_window_scale:
+        accessibility_checkpoints = payload.get("accessibility_checkpoints")
+        if (
+            not isinstance(accessibility_checkpoints, (list, tuple))
+            or len(accessibility_checkpoints) < 8
+            or any(
+                not isinstance(checkpoint, Mapping)
+                or not isinstance(
+                    checkpoint.get("window_device_pixel_ratio"),
+                    (int, float),
+                )
+                or not math.isfinite(
+                    float(checkpoint.get("window_device_pixel_ratio", 0))
+                )
+                or float(checkpoint.get("window_device_pixel_ratio", 0))
+                != 2.0
+                for checkpoint in accessibility_checkpoints
+            )
+        ):
+            failures.append(
+                "installed accessibility checkpoints did not prove 200 "
+                "percent Qt window scaling"
+            )
+    expected_health_graph = (
+        diagnostic_task_identity,
+        payload.get("campaign_identity"),
+        payload.get("run_identity"),
+        payload.get("evidence_package_identity"),
+        payload.get("reproduction_manifest_identity"),
+    )
+    if tuple(payload.get("system_health_identity_graph", ())) != (
+        expected_health_graph
+    ):
+        failures.append(
+            "System Health did not retain the exact Task/Run/Evidence/Manifest graph"
+        )
     return tuple(failures)
 
 
@@ -2008,7 +2719,7 @@ def verify_clean_room_report(
         report_path.read_text(encoding="utf-8-sig")
     )
     failures = []
-    if payload.get("schema_version") != 3:
+    if payload.get("schema_version") != CLEAN_ROOM_REPORT_SCHEMA_VERSION:
         failures.append("Unsupported clean-room report schema")
     if payload.get("source_commit") != expected_source_commit:
         failures.append("Clean-room source commit does not match")
@@ -2031,17 +2742,49 @@ def verify_clean_room_report(
         "x86_64",
     }:
         failures.append("Clean-room architecture is not x64")
-    if (
-        payload.get("is_windows_sandbox") is not True
-        or payload.get("user_name") != "WDAGUtilityAccount"
-    ):
-        failures.append(
-            "Clean-room report was not produced by Windows Sandbox"
+    certification_environment = payload.get("certification_environment")
+    if not isinstance(certification_environment, Mapping):
+        failures.append("Clean-room certification environment is unavailable")
+    elif certification_environment.get("schema_version") != 1:
+        failures.append("Unsupported clean-room environment schema")
+    else:
+        environment_kind = certification_environment.get("kind")
+        accessible_filesystem_drive_count = certification_environment.get(
+            "accessible_filesystem_drive_count"
         )
+        common_environment_verified = (
+            certification_environment.get("system_drive") == "C:"
+            and isinstance(accessible_filesystem_drive_count, int)
+            and not isinstance(accessible_filesystem_drive_count, bool)
+            and accessible_filesystem_drive_count == 1
+            and certification_environment.get(
+                "unexpected_accessible_filesystem_drives"
+            )
+            == []
+        )
+        environment_verified = (
+            environment_kind == "windows-sandbox"
+            and payload.get("is_windows_sandbox") is True
+            and payload.get("user_name") == "WDAGUtilityAccount"
+            and certification_environment.get("windows_sandbox") is True
+            and certification_environment.get("native_boot_vhdx") is False
+            and common_environment_verified
+        )
+        if not environment_verified:
+            failures.append("Clean-room certification environment is invalid")
     if payload.get("network_enumeration_succeeded") is not True:
         failures.append("Network adapter inventory was not established")
-    if payload.get("network_adapters_up"):
+    if payload.get("network_adapters_up") != []:
         failures.append("Clean-room network is enabled")
+    if payload.get("network_adapters_enabled") != []:
+        failures.append("Clean-room network adapters remain enabled")
+    network_default_route_count = payload.get("network_default_route_count")
+    if (
+        not isinstance(network_default_route_count, int)
+        or isinstance(network_default_route_count, bool)
+        or network_default_route_count != 0
+    ):
+        failures.append("Clean-room network has a default route")
     if payload.get("python_on_path") is not False:
         failures.append("Python is available on PATH")
     if payload.get("python_installations") != []:
@@ -2054,6 +2797,49 @@ def verify_clean_room_report(
         failures.append("A dependency cache is present")
     if payload.get("dependency_cache_paths") != []:
         failures.append("Dependency cache paths are present")
+    if payload.get("source_checkout_absent") is not True:
+        failures.append("A source checkout is available in the clean room")
+    if payload.get("source_checkout_markers") != []:
+        failures.append("Source-checkout markers are present")
+    package_installation = payload.get("package_installation")
+    if not isinstance(package_installation, dict):
+        failures.append("Guest-local package installation evidence is unavailable")
+    else:
+        if package_installation.get("storage_kind") != "guest_local_filesystem":
+            failures.append("Package installation storage is not guest-local")
+        if package_installation.get("candidate_guest_local") is not True:
+            failures.append("QML candidate did not run from guest-local storage")
+        if package_installation.get("widgets_guest_local") is not True:
+            failures.append("Widgets rollback did not run from guest-local storage")
+        if (
+            package_installation.get("execution_from_mapped_evidence")
+            is not False
+        ):
+            failures.append("A package executed from mapped evidence storage")
+        if package_installation.get("verified") is not True:
+            failures.append("Guest-local package installation was not verified")
+    accessibility_environment = payload.get("accessibility_environment")
+    if not isinstance(accessibility_environment, dict):
+        failures.append("OS accessibility environment evidence is unavailable")
+    else:
+        if (
+            accessibility_environment.get(
+                "text_scale_configured_before_launch"
+            )
+            is not True
+        ):
+            failures.append("OS text scaling was not configured before launch")
+        if accessibility_environment.get("text_scale_registry_percent") != 200:
+            failures.append("OS text scaling was not configured to 200 percent")
+        if accessibility_environment.get("guest_dpi_override_applied") is not False:
+            failures.append("Guest DPI override evidence is not explicitly false")
+        if (
+            accessibility_environment.get("native_dpi_evidence_source")
+            != "GetDpiForWindow"
+        ):
+            failures.append("Native window DPI evidence source is unsupported")
+        if accessibility_environment.get("errors") not in ([], ()):
+            failures.append("OS accessibility configuration reported errors")
     if payload.get("install_succeeded") is not True:
         failures.append("QML package installation did not succeed")
     if (
@@ -2061,6 +2847,211 @@ def verify_clean_room_report(
         and payload.get("widgets_install_succeeded") is not True
     ):
         failures.append("Widgets rollback installation did not succeed")
+
+    dpi_preflight = payload.get("installed_dpi_preflight")
+    if not isinstance(dpi_preflight, dict):
+        failures.append("Installed DPI preflight evidence is unavailable")
+    else:
+        dpi_ratio = dpi_preflight.get("qt_window_device_pixel_ratio")
+        expected_snapshot_identity = (
+            f"uia:{dpi_preflight.get('checkpoint_sequence')}:"
+            f"{dpi_preflight.get('checkpoint')}:"
+            f"{dpi_preflight.get('route')}:"
+            f"{dpi_preflight.get('run_revision')}:"
+            f"{dpi_preflight.get('evidence_revision')}:"
+            f"{dpi_preflight.get('status_object_name')}:"
+            f"{dpi_preflight.get('status_semantic_term')}:"
+            f"scale{dpi_preflight.get('window_scale_percent')}"
+        )
+        if (
+            dpi_preflight.get("schema_version") != 1
+            or dpi_preflight.get("stage") != "installed-dpi-preflight"
+            or dpi_preflight.get("source_commit") != expected_source_commit
+            or dpi_preflight.get("renderer_lane") != "hardware"
+            or dpi_preflight.get("certification_scope")
+            != "installed-dpi-preflight"
+            or dpi_preflight.get("production_path")
+            != list(_PRODUCTION_JOURNEY_PATH)
+            or dpi_preflight.get("production_path_matches") is not True
+            or dpi_preflight.get("checkpoint") != "loading"
+            or dpi_preflight.get("checkpoint_sequence") != 1
+            or dpi_preflight.get("route") != "strategy_library"
+            or re.fullmatch(
+                r"r\d+", str(dpi_preflight.get("run_revision", ""))
+            )
+            is None
+            or re.fullmatch(
+                r"r\d+", str(dpi_preflight.get("evidence_revision", ""))
+            )
+            is None
+            or dpi_preflight.get("status_object_name")
+            != "runMonitoringRouteNavigation"
+            or dpi_preflight.get("status_semantic_term") != "loading"
+            or dpi_preflight.get("window_scale_percent") != 200
+            or dpi_preflight.get("snapshot_identity")
+            != expected_snapshot_identity
+            or dpi_preflight.get("snapshot_identity_matches") is not True
+            or not isinstance(dpi_ratio, (int, float))
+            or not math.isfinite(float(dpi_ratio))
+            or float(dpi_ratio) != 2.0
+            or dpi_preflight.get("native_window_dpi") != 192
+            or dpi_preflight.get("candidate_exit_code") != 0
+            or dpi_preflight.get("candidate_external_uia_acknowledged")
+            is not True
+            or dpi_preflight.get("candidate_clean_exit") is not True
+            or dpi_preflight.get("passed") is not True
+            or dpi_preflight.get("errors") not in ([], ())
+        ):
+            failures.append("Installed DPI preflight did not pass")
+
+    installed_performance = payload.get("installed_performance")
+    if not isinstance(installed_performance, dict):
+        failures.append("Installed performance evidence is unavailable")
+    else:
+        from .frontend_v2_performance import validate_performance_lane
+
+        toolchain_digest = _sha256_path(TOOLCHAIN_LOCK_PATH)
+        for lane_name in ("hardware", "software"):
+            lane_report = installed_performance.get(lane_name)
+            if not isinstance(lane_report, dict):
+                failures.append(
+                    f"{lane_name} installed performance evidence is unavailable"
+                )
+                continue
+            if lane_report.get("schema_version") != 3:
+                failures.append(
+                    f"{lane_name} installed performance schema must be 3"
+                )
+                continue
+            failures.extend(
+                f"{lane_name} installed performance {failure}"
+                for failure in validate_performance_lane(
+                    lane_report,
+                    expected_lane=lane_name,
+                    expected_source_commit=expected_source_commit,
+                    expected_toolchain_digest=toolchain_digest,
+                )
+            )
+
+    for block_name, required_true_fields in (
+        (
+            "fresh_install_migration",
+            (
+                "passed",
+                "schema_migration_verified",
+                "bookmark_migration_verified",
+                "deterministic",
+                "idempotent",
+                "identity_retention_verified",
+                "reopen_verified",
+            ),
+        ),
+        (
+            "copied_wave3_migration",
+            (
+                "passed",
+                "schema_migration_verified",
+                "bookmark_migration_verified",
+                "deterministic",
+                "idempotent",
+                "identity_retention_verified",
+                "reopen_verified",
+            ),
+        ),
+        (
+            "candidate_widgets_candidate_rollback",
+            (
+                "passed",
+                "same_source_commit",
+                "same_dependency_lock",
+                "identity_retention_verified",
+                "reopen_verified",
+            ),
+        ),
+        (
+            "observation_ledger_readiness",
+            (
+                "passed",
+                "legacy_inventory_available",
+                "observation_ledger_configuration_available",
+            ),
+        ),
+    ):
+        block = payload.get(block_name)
+        if not isinstance(block, dict):
+            failures.append(
+                f"{block_name.replace('_', ' ')} evidence is unavailable"
+            )
+            continue
+        if block.get("source_commit") != expected_source_commit:
+            failures.append(
+                f"{block_name.replace('_', ' ')} source commit does not match"
+            )
+        for field_name in required_true_fields:
+            if block.get(field_name) is not True:
+                failures.append(
+                    f"{block_name.replace('_', ' ')} {field_name.replace('_', ' ')} "
+                    "was not verified"
+                )
+        if block.get("destructive_migration") is not False:
+            failures.append(
+                f"{block_name.replace('_', ' ')} did not prove a non-destructive migration"
+            )
+    ledger = payload.get("observation_ledger_readiness")
+    if isinstance(ledger, dict):
+        legacy_route_count = ledger.get("legacy_route_count")
+        if (
+            not isinstance(legacy_route_count, int)
+            or isinstance(legacy_route_count, bool)
+            or legacy_route_count < 1
+        ):
+            failures.append("Observation ledger legacy route count is unavailable")
+        if ledger.get("observation_window_started") is not False:
+            failures.append(
+                "Issue #118 must not start the formal observation window"
+            )
+    rollback = payload.get("candidate_widgets_candidate_rollback")
+    if isinstance(rollback, dict):
+        rollback_lanes = rollback.get("renderer_lanes")
+        if not isinstance(rollback_lanes, dict):
+            failures.append(
+                "Candidate-to-Widgets rollback renderer lanes are unavailable"
+            )
+        else:
+            for lane_name in ("hardware", "software"):
+                lane_rollback = rollback_lanes.get(lane_name)
+                if not isinstance(lane_rollback, dict):
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback is unavailable"
+                    )
+                    continue
+                if lane_rollback.get("lane") != lane_name:
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback lane does not match"
+                    )
+                if lane_rollback.get("source_commit") != expected_source_commit:
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback source does not match"
+                    )
+                for field_name in (
+                    "passed",
+                    "same_source_commit",
+                    "same_dependency_lock",
+                    "identity_retention_verified",
+                    "task_handle_continuity_verified",
+                    "order_state_continuity_verified",
+                    "reopen_verified",
+                ):
+                    if lane_rollback.get(field_name) is not True:
+                        failures.append(
+                            f"{lane_name} candidate-to-Widgets rollback "
+                            f"{field_name.replace('_', ' ')} was not verified"
+                        )
+                if lane_rollback.get("destructive_migration") is not False:
+                    failures.append(
+                        f"{lane_name} candidate-to-Widgets rollback did not prove "
+                        "a non-destructive migration"
+                    )
 
     lanes = payload.get("renderer_lanes")
     if not isinstance(lanes, dict):
@@ -2079,6 +3070,14 @@ def verify_clean_room_report(
             continue
         if lane.get("exit_code") != 0:
             failures.append(f"{lane_name} renderer lane failed")
+        if lane.get("schema_version") != PACKAGE_SMOKE_REPORT_SCHEMA_VERSION:
+            failures.append(
+                f"{lane_name} renderer smoke report schema is unsupported"
+            )
+        if lane.get("certification_scope") != "installed":
+            failures.append(
+                f"{lane_name} renderer report is not installed certification"
+            )
         if lane.get("graphics_api") != expected_api:
             failures.append(
                 f"{lane_name} renderer used {lane.get('graphics_api')!r}"
@@ -2109,15 +3108,9 @@ def verify_clean_room_report(
                 f"{lane_name} renderer did not complete the connection, "
                 "remount, and close journey"
             )
-        if tuple(lane.get("routes_rendered", ())) != (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
+        if tuple(lane.get("routes_rendered", ())) != _ACTIVE_JOURNEY_ROUTES:
             failures.append(
-                f"{lane_name} renderer did not render all five active routes"
+                f"{lane_name} renderer did not render all six active routes"
             )
         observations = lane.get("observations")
         observed_journey = (
@@ -2152,6 +3145,268 @@ def verify_clean_room_report(
             failures.append(
                 f"{lane_name} renderer exposed an unapproved action"
             )
+        runtime_safety_audits = lane.get("manual_trading_route_audits")
+        if not isinstance(runtime_safety_audits, list):
+            failures.append(
+                f"{lane_name} renderer runtime safety audits are unavailable"
+            )
+        else:
+            observed_route_stages: set[tuple[str, str]] = set()
+            for audit in runtime_safety_audits:
+                if not isinstance(audit, dict):
+                    failures.append(
+                        f"{lane_name} renderer runtime safety audit is invalid"
+                    )
+                    continue
+                observed_route_stages.add(
+                    (str(audit.get("stage", "")), str(audit.get("route", "")))
+                )
+                if set(audit.get("coverage") or ()) != _RUNTIME_SAFETY_COVERAGE:
+                    failures.append(
+                        f"{lane_name} renderer runtime safety coverage is incomplete"
+                    )
+                if audit.get("object_count", 0) <= 0 or audit.get(
+                    "accessible_object_count", 0
+                ) <= 0:
+                    failures.append(
+                        f"{lane_name} renderer runtime object tree was not scanned"
+                    )
+                if audit.get("forbidden_action_count") != 0 or audit.get(
+                    "forbidden_actions"
+                ) not in ([], ()):
+                    failures.append(
+                        f"{lane_name} renderer exposed a manual-trading capability"
+                    )
+            expected_route_stages = {
+                (stage, route)
+                for stage in _RUNTIME_SAFETY_STAGES
+                for route in _ACTIVE_JOURNEY_ROUTES
+            }
+            if (
+                len(runtime_safety_audits) != len(expected_route_stages)
+                or observed_route_stages != expected_route_stages
+            ):
+                failures.append(
+                    f"{lane_name} renderer runtime safety route coverage is incomplete"
+                )
+        uia_accessibility = lane.get("uia_accessibility")
+        if not isinstance(uia_accessibility, dict):
+            failures.append(
+                f"{lane_name} renderer UIA accessibility evidence is unavailable"
+            )
+        else:
+            required_semantics = {
+                "loading",
+                "empty",
+                "stale",
+                "disconnected",
+                "partial",
+                "failed",
+                "recovering",
+                "completed",
+                "progress",
+                "error",
+                "health",
+                "fresh",
+                "recovery",
+            }
+            observed_semantics = uia_accessibility.get("semantic_terms")
+            semantics_valid = bool(
+                isinstance(observed_semantics, dict)
+                and set(observed_semantics) == required_semantics
+                and all(observed_semantics.values())
+            )
+            narrator_checkpoints = uia_accessibility.get(
+                "narrator_checkpoint_evidence"
+            )
+            narrator_checkpoint_mappings_valid = bool(
+                isinstance(narrator_checkpoints, list)
+                and all(
+                    isinstance(checkpoint, Mapping)
+                    for checkpoint in narrator_checkpoints
+                )
+            )
+            required_narrator_checkpoints = (
+                "loading",
+                "empty",
+                "failed",
+                "recovering",
+                "partial",
+                "disconnected",
+                "stale",
+                "completed",
+            )
+            checkpoint_timestamps: list[datetime] = []
+            if narrator_checkpoint_mappings_valid:
+                for checkpoint in narrator_checkpoints:
+                    try:
+                        captured_at = datetime.fromisoformat(
+                            str(checkpoint.get("captured_at_utc", ""))
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        checkpoint_timestamps = []
+                        break
+                    if captured_at.tzinfo is None:
+                        checkpoint_timestamps = []
+                        break
+                    checkpoint_timestamps.append(captured_at)
+            checkpoint_identities = (
+                tuple(
+                    str(checkpoint.get("snapshot_identity", ""))
+                    for checkpoint in narrator_checkpoints
+                )
+                if narrator_checkpoint_mappings_valid
+                else ()
+            )
+            checkpoint_scan_sequences = (
+                tuple(
+                    checkpoint.get("scan_sequence")
+                    for checkpoint in narrator_checkpoints
+                )
+                if narrator_checkpoint_mappings_valid
+                else ()
+            )
+            narrator_checkpoints_valid = bool(
+                narrator_checkpoint_mappings_valid
+                and len(narrator_checkpoints)
+                == len(required_narrator_checkpoints)
+                and tuple(
+                    str(checkpoint.get("checkpoint", ""))
+                    for checkpoint in narrator_checkpoints
+                )
+                == required_narrator_checkpoints
+                and tuple(
+                    checkpoint.get("sequence")
+                    for checkpoint in narrator_checkpoints
+                )
+                == tuple(range(1, len(required_narrator_checkpoints) + 1))
+                and all(checkpoint_identities)
+                and len(set(checkpoint_identities))
+                == len(checkpoint_identities)
+                and all(
+                    isinstance(sequence, int)
+                    for sequence in checkpoint_scan_sequences
+                )
+                and all(
+                    later > earlier
+                    for earlier, later in zip(
+                        checkpoint_scan_sequences,
+                        checkpoint_scan_sequences[1:],
+                    )
+                )
+                and len(checkpoint_timestamps)
+                == len(required_narrator_checkpoints)
+                and all(
+                    later > earlier
+                    for earlier, later in zip(
+                        checkpoint_timestamps,
+                        checkpoint_timestamps[1:],
+                    )
+                )
+                and all(
+                    isinstance(checkpoint, Mapping)
+                    and checkpoint.get("route") in _ACTIVE_JOURNEY_ROUTES
+                    and (
+                        checkpoint.get("status_object_name"),
+                        checkpoint.get("status_semantic_term"),
+                    )
+                    == _UIA_CHECKPOINT_BINDINGS[
+                        str(checkpoint.get("checkpoint", ""))
+                    ]
+                    and checkpoint.get("snapshot_identity")
+                    == (
+                        f"uia:{checkpoint.get('sequence')}:"
+                        f"{checkpoint.get('checkpoint')}:"
+                        f"{checkpoint.get('route')}:"
+                        f"{checkpoint.get('run_revision')}:"
+                        f"{checkpoint.get('evidence_revision')}:"
+                        f"{checkpoint.get('status_object_name')}:"
+                        f"{checkpoint.get('status_semantic_term')}:"
+                        f"scale{checkpoint.get('window_scale_percent')}"
+                    )
+                    and re.fullmatch(
+                        r"r\d+",
+                        str(checkpoint.get("run_revision", "")),
+                    )
+                    is not None
+                    and re.fullmatch(
+                        r"r\d+",
+                        str(checkpoint.get("evidence_revision", "")),
+                    )
+                    is not None
+                    and checkpoint.get("lifecycle_state_observed") is True
+                    and checkpoint.get("narrator_running") is True
+                    and checkpoint.get("focus_traversal_observed") is True
+                    and isinstance(
+                        checkpoint.get("window_scale_percent"),
+                        (int, float),
+                    )
+                    and math.isfinite(
+                        float(checkpoint.get("window_scale_percent", 0))
+                    )
+                    and checkpoint.get("window_scale_percent") == 200
+                    and checkpoint.get("native_window_dpi") == 192
+                    and checkpoint.get("complete_snapshot") is True
+                    and checkpoint.get("named_element_count", 0) > 0
+                    and bool(checkpoint.get("control_types"))
+                    and checkpoint.get("passed") is True
+                    for checkpoint in narrator_checkpoints
+                )
+            )
+            discovered_count = uia_accessibility.get(
+                "discovered_element_count",
+                -1,
+            )
+            readable_count = uia_accessibility.get(
+                "readable_element_count",
+                -1,
+            )
+            unreadable_count = uia_accessibility.get(
+                "unreadable_element_count",
+                -1,
+            )
+            snapshot_accounting_valid = bool(
+                type(discovered_count) is int
+                and type(readable_count) is int
+                and type(unreadable_count) is int
+                and discovered_count > 0
+                and readable_count > 0
+                and unreadable_count >= 0
+                and readable_count <= discovered_count
+                and unreadable_count <= discovered_count
+                and readable_count + unreadable_count >= discovered_count
+                and uia_accessibility.get("complete_snapshot_count", 0) >= 8
+            )
+            if (
+                uia_accessibility.get("passed") is not True
+                or uia_accessibility.get("provider_available") is not True
+                or uia_accessibility.get("scan_count", 0) <= 0
+                or uia_accessibility.get("named_element_count", 0) <= 0
+                or uia_accessibility.get("focusable_element_count", 0) <= 0
+                or uia_accessibility.get("focus_observed") is not True
+                or not uia_accessibility.get("control_types")
+                or not uia_accessibility.get("action_patterns")
+                or uia_accessibility.get("narrator_started") is not True
+                or uia_accessibility.get("narrator_running_during_probe")
+                is not True
+                or uia_accessibility.get("focus_traversal_observed") is not True
+                or not narrator_checkpoints_valid
+                or not snapshot_accounting_valid
+                or uia_accessibility.get("observed_window_dpi_x") != 192
+                or uia_accessibility.get("observed_window_dpi_y") != 192
+                or uia_accessibility.get("observed_scale_percent") != 200
+                or uia_accessibility.get(
+                    "observed_qt_window_scale_percent",
+                    0,
+                ) != 200
+                or uia_accessibility.get("forbidden_action_count") != 0
+                or uia_accessibility.get("forbidden_actions") not in ([], ())
+                or not semantics_valid
+                or uia_accessibility.get("errors") not in ([], ())
+            ):
+                failures.append(
+                    f"{lane_name} renderer UIA/Narrator/200-percent gate failed"
+                )
         if lane.get("read_only_context_visible") is not True:
             failures.append(
                 f"{lane_name} renderer did not retain read-only "
@@ -2410,6 +3665,7 @@ def write_renderer_evidence(
     lock = load_toolchain_lock()
     evidence = RendererGateEvidence(
         source_commit=source_commit,
+        certification_scope="package-assembly",
         created_at=datetime.now(timezone.utc).isoformat(),
         environment_identity=(
             f"{socket.gethostname()}|{platform.platform()}|"
@@ -2424,18 +3680,115 @@ def write_renderer_evidence(
         PROJECT_QML_ROOT
     )
     payload = {
-        "schema_version": 1,
+        "schema_version": RENDERER_GATE_REPORT_SCHEMA_VERSION,
         **asdict(evidence),
         "toolchain_lock": asdict(lock),
         "qml_source_imports": asdict(source_imports),
         "qml_dependency_closure": asdict(dependency_closure),
     }
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / "renderer-gate-report.json").write_text(
+    report_path = evidence_dir / "renderer-gate-report.json"
+    report_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    report_failures = verify_renderer_gate_report(
+        report_path,
+        expected_source_commit=source_commit,
+        expected_candidate_renderers=asdict(evidence),
+    )
+    if report_failures:
+        raise RuntimeError(
+            "Renderer gate report verification failed: "
+            + "; ".join(report_failures)
+        )
     return evidence
+
+
+def verify_renderer_gate_report(
+    report_path: Path,
+    *,
+    expected_source_commit: str,
+    expected_candidate_renderers: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    payload = _load_json_mapping(report_path)
+    failures: list[str] = []
+    if payload.get("schema_version") != RENDERER_GATE_REPORT_SCHEMA_VERSION:
+        failures.append("Renderer gate report schema is unsupported")
+    if payload.get("source_commit") != expected_source_commit:
+        failures.append("Renderer gate source commit does not match")
+    if payload.get("certification_scope") != "package-assembly":
+        failures.append("Renderer gate scope is not package-assembly")
+    lock = load_toolchain_lock()
+    if payload.get("toolchain_identity") != toolchain_evidence_identity(lock):
+        failures.append("Renderer gate toolchain identity does not match")
+    if payload.get("toolchain_lock") != _json_projection(asdict(lock)):
+        failures.append("Renderer gate toolchain lock does not match")
+    if payload.get("qml_source_imports") != _json_projection(
+        asdict(scan_qml_dependencies(PROJECT_QML_ROOT))
+    ):
+        failures.append("Renderer gate QML source imports do not match")
+    if payload.get("qml_dependency_closure") != _json_projection(
+        asdict(resolve_qml_dependency_closure(PROJECT_QML_ROOT))
+    ):
+        failures.append("Renderer gate QML dependency closure does not match")
+    projection: dict[str, Any] = {}
+    for evidence_field in fields(RendererGateEvidence):
+        if evidence_field.name not in payload:
+            failures.append(
+                f"Renderer gate {evidence_field.name} is unavailable"
+            )
+            continue
+        projection[evidence_field.name] = payload[evidence_field.name]
+    if (
+        expected_candidate_renderers is not None
+        and projection
+        != _json_projection(dict(expected_candidate_renderers))
+    ):
+        failures.append(
+            "Renderer gate projection does not match candidate evidence"
+        )
+    for lane_name, expected_graphics_api in (
+        ("hardware", "Direct3D11"),
+        ("software", "Software"),
+    ):
+        lane = payload.get(lane_name)
+        if not isinstance(lane, Mapping):
+            failures.append(f"Renderer gate {lane_name} lane is unavailable")
+            continue
+        for lane_field in fields(RendererLaneEvidence):
+            if lane_field.name not in lane:
+                failures.append(
+                    f"Renderer gate {lane_name} {lane_field.name} is unavailable"
+                )
+        if lane.get("certification_scope") != "package-assembly":
+            failures.append(
+                f"Renderer gate {lane_name} scope is not package-assembly"
+            )
+        if lane.get("lane") != lane_name:
+            failures.append(f"Renderer gate {lane_name} identity does not match")
+        if lane.get("graphics_api") != expected_graphics_api:
+            failures.append(
+                f"Renderer gate {lane_name} graphics API does not match"
+            )
+        if tuple(lane.get("production_path", ())) != _PRODUCTION_JOURNEY_PATH:
+            failures.append(
+                f"Renderer gate {lane_name} production path does not match"
+            )
+        if tuple(lane.get("journey_stages", ())) != tuple(
+            stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
+        ):
+            failures.append(
+                f"Renderer gate {lane_name} journey stages do not match"
+            )
+        if (
+            lane.get("clean_exit") is not True
+            or lane.get("errors") not in ([], ())
+        ):
+            failures.append(
+                f"Renderer gate {lane_name} lifecycle did not pass"
+            )
+    return tuple(failures)
 
 
 def _load_renderer_lane(
@@ -2461,9 +3814,17 @@ def _load_renderer_lane(
         if isinstance(observation, dict)
     )
     errors = tuple(str(error) for error in payload.get("errors", ()))
+    if payload.get("schema_version") != PACKAGE_SMOKE_REPORT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{expected_lane} renderer smoke report schema is unsupported"
+        )
     if payload.get("renderer_lane") != expected_lane:
         raise RuntimeError(
             f"Expected {expected_lane} renderer report at {report_path}"
+        )
+    if payload.get("certification_scope") != "package-assembly":
+        raise RuntimeError(
+            f"{expected_lane} renderer report is not package-assembly smoke"
         )
     if payload.get("graphics_api") != expected_graphics_api:
         raise RuntimeError(
@@ -2483,16 +3844,12 @@ def _load_renderer_lane(
         payload.get("connection_transitions", ())
     )
     real_v1_failures = _real_v1_smoke_failures(payload)
-    installed_wave2_failures = _installed_wave2_smoke_failures(payload)
+    installed_wave2_failures = _installed_wave2_smoke_failures(
+        payload,
+        require_installed_window_scale=False,
+    )
     if (
-        routes_rendered
-        != (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        )
+        routes_rendered != _ACTIVE_JOURNEY_ROUTES
         or production_path != _PRODUCTION_JOURNEY_PATH
         or connection_transitions
         != _EXPECTED_CONNECTION_TRANSITIONS
@@ -2514,6 +3871,7 @@ def _load_renderer_lane(
         )
     return RendererLaneEvidence(
         lane=expected_lane,
+        certification_scope="package-assembly",
         graphics_api=expected_graphics_api,
         journey_stages=tuple(
             stage for stage, *_ in _EXPECTED_CLEAN_ROOM_JOURNEY
@@ -2683,6 +4041,20 @@ def _load_renderer_lane(
         ),
         old_generation_rejected=True,
         authoritative_reconnect_verified=True,
+        queued_state_observed=True,
+        running_state_observed=True,
+        partial_state_observed=True,
+        controlled_failure_observed=True,
+        safe_failure_reason_verified=True,
+        retry_idempotency_verified=True,
+        duplicate_work_count=0,
+        terminal_completion_observed=True,
+        system_health_context_verified=True,
+        system_health_identity_graph=tuple(
+            str(value) for value in payload["system_health_identity_graph"]
+        ),
+        system_health_accessibility_verified=True,
+        focus_restoration_verified=True,
         connection_transitions=connection_transitions,
         manual_trading_action_count=0,
         read_only_context_visible=True,
@@ -2698,6 +4070,36 @@ def audit_nuitka_dependency_report(
 ) -> tuple[str, ...]:
     root = _parse_nuitka_dependency_report(report_path)
     findings = []
+    lock = load_toolchain_lock()
+    if root.attrib.get("nuitka_version") != lock.toolchain.nuitka:
+        findings.append(
+            "Nuitka version does not match the production lock: expected "
+            f"{lock.toolchain.nuitka}, observed "
+            f"{root.attrib.get('nuitka_version')!r}"
+        )
+    scons_environment = root.find("./scons_environment")
+    expected_compiler_identity = {
+        "c_compiler": lock.native_toolchain.compiler_family,
+        "the_cc_name": "gcc",
+        "the_compiler": "gcc",
+    }
+    if scons_environment is None or any(
+        scons_environment.attrib.get(name) != expected
+        for name, expected in expected_compiler_identity.items()
+    ):
+        observed_compiler_identity = (
+            None
+            if scons_environment is None
+            else {
+                name: scons_environment.attrib.get(name)
+                for name in expected_compiler_identity
+            }
+        )
+        findings.append(
+            "Nuitka native compiler identity does not match the production "
+            f"lock: expected {expected_compiler_identity!r}, observed "
+            f"{observed_compiler_identity!r}"
+        )
     if root.attrib.get("mode") != "standalone":
         findings.append("Nuitka report is not a standalone build")
     if root.attrib.get("completion") != "yes":
@@ -2962,17 +4364,21 @@ def build_frontend_v2_release(
             "Frontend V2 safety gate failed: "
             + "; ".join(surface_findings)
         )
+    lock = load_toolchain_lock()
+    native_toolchain_paths = verify_locked_native_toolchain(lock)
     plans = create_package_build_plans(
         output_root=output_root / "packages",
         source_commit=source_commit,
     )
 
     for plan in plans:
+        _verify_isolated_pycache_root(plan)
         subprocess.run(
             plan.nuitka_command,
             cwd=PROJECT_ROOT,
             check=True,
         )
+        _verify_isolated_pycache_root(plan)
         dependency_findings = audit_nuitka_dependency_report(
             plan.nuitka_report,
             package_kind=plan.kind,
@@ -3000,7 +4406,11 @@ def build_frontend_v2_release(
         for plan in plans
         if plan.kind is PackageKind.WIDGETS_ROLLBACK
     )
-    deploy_scanned_qml_runtime(qml_plan)
+    deploy_scanned_qml_runtime(
+        qml_plan,
+        objdump_path=native_toolchain_paths.binary_inspector,
+    )
+    stage_packaged_formal_v1_release_fixture(qml_plan)
     stage_packaged_wave2_release_input_fixture(qml_plan)
 
     smoke_root = output_root / "evidence" / "smoke"
@@ -3014,22 +4424,11 @@ def build_frontend_v2_release(
             (
                 "--renderer-lane",
                 lane,
-                "--smoke-report-dir",
+                "--package-assembly-smoke-report-dir",
                 str(smoke_root / lane),
             ),
         )
 
-    evidence_dir = output_root / "evidence"
-    package_evidence = write_package_evidence(
-        plans=plans,
-        evidence_dir=evidence_dir,
-    )
-    renderer_evidence = write_renderer_evidence(
-        hardware_report=smoke_root / "hardware" / "smoke-report.json",
-        software_report=smoke_root / "software" / "smoke-report.json",
-        source_commit=source_commit,
-        evidence_dir=evidence_dir,
-    )
     archive_dir = output_root / "archives"
     archives = tuple(
         create_deterministic_package_archive(
@@ -3038,12 +4437,45 @@ def build_frontend_v2_release(
         )
         for plan in plans
     )
+    for plan in plans:
+        archive_matches = tuple(
+            archive
+            for archive in archives
+            if archive.relative_path.startswith(f"{plan.kind.value}-")
+        )
+        if len(archive_matches) != 1:
+            raise RuntimeError(
+                f"Final {plan.kind.value} archive identity is ambiguous"
+            )
+        _write_native_toolchain_attestation(
+            plan=plan,
+            archive_checksum=archive_matches[0],
+            lock=lock,
+        )
+
+    evidence_dir = output_root / "evidence"
+    package_evidence = write_package_evidence(
+        plans=plans,
+        archives=archives,
+        evidence_dir=evidence_dir,
+    )
+    renderer_evidence = write_renderer_evidence(
+        hardware_report=smoke_root / "hardware" / "smoke-report.json",
+        software_report=smoke_root / "software" / "smoke-report.json",
+        source_commit=source_commit,
+        evidence_dir=evidence_dir,
+    )
+    renderer_gate_report = _checksum_file(
+        evidence_dir / "renderer-gate-report.json",
+        evidence_dir,
+    )
     result = ReleaseBuildResult(
         source_commit=source_commit,
         output_root=str(output_root.resolve()),
         safety=safety_evidence,
         packages=package_evidence,
         renderers=renderer_evidence,
+        renderer_gate_report=renderer_gate_report,
         archives=archives,
     )
     (evidence_dir / "release-candidate-summary.json").write_text(
@@ -3283,6 +4715,178 @@ def verify_packaged_dependency_evidence(
             f"release pair: expected {sorted(expected_paths)!r}, "
             f"observed {sorted(observed_paths)!r}"
         )
+    retained_attestations = packages.get("native_toolchain_attestations")
+    expected_attestation_paths = {
+        f"{kind.value}/native-toolchain-attestation.json"
+        for kind in PackageKind
+    }
+    observed_attestation_paths: set[str] = set()
+    lock = load_toolchain_lock()
+    retained_archives = candidate.get("archives")
+    archive_checksums_by_kind: dict[PackageKind, ArtifactChecksum] = {}
+    if not isinstance(retained_archives, list):
+        findings.append("Candidate archive inventory is unavailable")
+    else:
+        archives_root = (output_root / "archives").resolve()
+        for kind in PackageKind:
+            matches = tuple(
+                archive
+                for archive in retained_archives
+                if isinstance(archive, dict)
+                and str(archive.get("relative_path", "")).startswith(
+                    f"{kind.value}-"
+                )
+                and str(archive.get("relative_path", "")).endswith(".zip")
+            )
+            if len(matches) != 1:
+                findings.append(
+                    f"Candidate {kind.value} archive identity is ambiguous"
+                )
+                continue
+            retained_archive = matches[0]
+            archive_path = (
+                archives_root / str(retained_archive["relative_path"])
+            ).resolve()
+            try:
+                archive_path.relative_to(archives_root)
+            except ValueError:
+                findings.append(
+                    f"Candidate {kind.value} archive escapes archive root"
+                )
+                continue
+            if not archive_path.is_file():
+                findings.append(
+                    f"Candidate {kind.value} archive is unavailable"
+                )
+                continue
+            observed_archive = _checksum_file(
+                archive_path,
+                archives_root,
+            )
+            if (
+                observed_archive.sha256 != retained_archive.get("sha256")
+                or observed_archive.size_bytes
+                != retained_archive.get("size_bytes")
+            ):
+                findings.append(
+                    f"Candidate {kind.value} archive checksum does not match"
+                )
+                continue
+            archive_checksums_by_kind[kind] = observed_archive
+    if not isinstance(retained_attestations, list):
+        findings.append(
+            "Native toolchain attestation inventory is unavailable"
+        )
+    else:
+        for retained_attestation in retained_attestations:
+            if not isinstance(retained_attestation, dict):
+                findings.append(
+                    "Native toolchain attestation inventory is invalid"
+                )
+                continue
+            relative_path = str(
+                retained_attestation.get("relative_path", "")
+            )
+            observed_attestation_paths.add(relative_path)
+            attestation_path = (packages_root / relative_path).resolve()
+            try:
+                attestation_path.relative_to(packages_root)
+            except ValueError:
+                findings.append(
+                    "Native toolchain attestation escapes package root: "
+                    f"{relative_path}"
+                )
+                continue
+            if not attestation_path.is_file():
+                findings.append(
+                    "Native toolchain attestation is unavailable: "
+                    f"{relative_path}"
+                )
+                continue
+            observed_attestation = _checksum_file(
+                attestation_path,
+                packages_root,
+            )
+            if (
+                observed_attestation.sha256
+                != retained_attestation.get("sha256")
+                or observed_attestation.size_bytes
+                != retained_attestation.get("size_bytes")
+            ):
+                findings.append(
+                    "Native toolchain attestation checksum does not match "
+                    f"candidate evidence: {relative_path}"
+                )
+                continue
+            try:
+                package_kind = PackageKind(relative_path.split("/", 1)[0])
+            except ValueError:
+                findings.append(
+                    "Native toolchain attestation package kind is invalid: "
+                    f"{relative_path}"
+                )
+                continue
+            report_path = packages_root / package_kind.value / "nuitka-report.xml"
+            if not report_path.is_file():
+                findings.append(
+                    "Native toolchain attestation report is unavailable: "
+                    f"{package_kind.value}"
+                )
+                continue
+            archive_checksum = archive_checksums_by_kind.get(package_kind)
+            if archive_checksum is None:
+                continue
+            distribution_dir = packages_root / package_kind.value / (
+                "frontend_widgets_rollback_entry.dist"
+                if package_kind is PackageKind.WIDGETS_ROLLBACK
+                else "frontend_v2_package_entry.dist"
+            )
+            if not distribution_dir.is_dir():
+                findings.append(
+                    "Native toolchain attestation distribution is "
+                    f"unavailable: {package_kind.value}"
+                )
+                continue
+            distribution_inventory = _inventory_distribution(
+                kind=package_kind,
+                source_commit=str(candidate.get("source_commit", "")),
+                distribution_dir=distribution_dir,
+            )
+            expected_payload = _expected_native_toolchain_attestation_payload(
+                package_kind=package_kind,
+                source_commit=str(candidate.get("source_commit", "")),
+                report_checksum=_checksum_file(
+                    report_path,
+                    packages_root / package_kind.value,
+                ),
+                distribution_identity={
+                    "file_count": distribution_inventory.file_count,
+                    "total_bytes": distribution_inventory.total_bytes,
+                    "tree_sha256": distribution_inventory.tree_sha256,
+                },
+                archive_checksum=archive_checksum,
+                lock=lock,
+            )
+            try:
+                observed_payload = _load_json_mapping(attestation_path)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                findings.append(
+                    "Native toolchain attestation is unreadable: "
+                    f"{package_kind.value}: {type(error).__name__}"
+                )
+                continue
+            if observed_payload != expected_payload:
+                findings.append(
+                    "Native toolchain attestation does not match the "
+                    f"production lock/report: {package_kind.value}"
+                )
+        if observed_attestation_paths != expected_attestation_paths:
+            findings.append(
+                "Native toolchain attestation inventory does not match the "
+                f"release pair: expected "
+                f"{sorted(expected_attestation_paths)!r}, observed "
+                f"{sorted(observed_attestation_paths)!r}"
+            )
     retained_sources = packages.get("formal_strategy_sources")
     expected_source_paths = {
         (
@@ -3369,6 +4973,42 @@ def certify_frontend_v2_release(
     if candidate.get("source_commit") != source_commit:
         raise RuntimeError(
             "Release candidate source commit does not match certification"
+        )
+    renderer_gate_path = evidence_dir / "renderer-gate-report.json"
+    if not renderer_gate_path.is_file():
+        raise FileNotFoundError(
+            "Release candidate renderer gate evidence is unavailable: "
+            f"{renderer_gate_path}"
+        )
+    retained_renderer_gate_report = candidate.get("renderer_gate_report")
+    if not isinstance(retained_renderer_gate_report, Mapping):
+        raise RuntimeError(
+            "Release candidate renderer gate checksum is unavailable"
+        )
+    observed_renderer_gate_report = _checksum_file(
+        renderer_gate_path,
+        evidence_dir,
+    )
+    if asdict(observed_renderer_gate_report) != dict(
+        retained_renderer_gate_report
+    ):
+        raise RuntimeError(
+            "Release candidate renderer gate checksum does not match"
+        )
+    candidate_renderers = candidate.get("renderers")
+    if not isinstance(candidate_renderers, Mapping):
+        raise RuntimeError(
+            "Release candidate renderer projection is unavailable"
+        )
+    renderer_gate_failures = verify_renderer_gate_report(
+        renderer_gate_path,
+        expected_source_commit=source_commit,
+        expected_candidate_renderers=candidate_renderers,
+    )
+    if renderer_gate_failures:
+        raise RuntimeError(
+            "Renderer gate candidate verification failed: "
+            + "; ".join(renderer_gate_failures)
         )
     safety_failures = verify_safety_gate_evidence(
         candidate,
@@ -3928,6 +5568,10 @@ __all__ = [
     "AccessibilityGateEvidence",
     "CleanRoomCertification",
     "FrontendV2ToolchainLock",
+    "LockedBuildArtifact",
+    "LockedExecutable",
+    "LockedNativeToolchain",
+    "LockedNativeToolchainPaths",
     "MandatoryReleaseGateEvidence",
     "PackageEvidence",
     "PerformanceGateEvidence",
@@ -3945,6 +5589,8 @@ __all__ = [
     "verify_safety_gate_evidence",
     "verify_clean_room_report",
     "verify_running_toolchain",
+    "verify_locked_native_toolchain",
+    "verify_renderer_gate_report",
     "write_mandatory_release_gate_evidence",
 ]
 

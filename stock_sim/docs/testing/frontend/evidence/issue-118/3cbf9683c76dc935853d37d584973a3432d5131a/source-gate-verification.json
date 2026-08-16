@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "source_commit": "3cbf9683c76dc935853d37d584973a3432d5131a",
+  "evidence_scope": "source-gate-safe-projection",
+  "result": "passed",
+  "release_claim": false,
+  "active_feature_registry": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0"
+  ],
+  "application_interfaces": [
+    "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",
+    "StrategyDiagnosticsV1ScenarioLabApplication/1.0",
+    "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0",
+    "StrategyDiagnosticsV1ApplicationReadModel/1.0",
+    "StrategyDiagnosticsV1SystemHealthApplication/1.0"
+  ],
+  "groups": [
+    {
+      "name": "six-feature-conformance",
+      "returncode": 0,
+      "passed": 312,
+      "skipped": 0,
+      "deselected": 17,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:ed0c60d352b79900b2b2e222ccf0bf099e1cffc401a7673c0f459325589d3ceb",
+      "stdout_sha256": "sha256:6176a40a444f61b14aee1a75716ac4fbc871770fb362e8e195c1f22a15468",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "persisted-application-qml-tracer",
+      "returncode": 0,
+      "passed": 64,
+      "skipped": 0,
+      "deselected": 0,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:3b2b8d8696ecc1e86fc34785de79e288de928cdfcdd33666c4bea11e994edbbf",
+      "stdout_sha256": "sha256:0f7570154abb7e8306fe5cea8fbf4aacb93ac50d2117ddfe390d3c181e20b648",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "strategy-diagnostics-v1-regression",
+      "returncode": 0,
+      "passed": 390,
+      "skipped": 0,
+      "deselected": 1,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:c2cbe8161025f6d0c6da34d4ad12711c251212057cc0b098f087625bd257d243",
+      "stdout_sha256": "sha256:8b89e2ffeb767fdb64fcc8d80bda498f46b2af11b923f4b063f471c0209c1d0c",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "strategy-diagnostics-v1-lazy-import-isolation",
+      "returncode": 0,
+      "passed": 1,
+      "skipped": 0,
+      "deselected": 0,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:4f0d1211e0c1a8d58c7b0006f1cf1917421a4819a9383bf67da27944f4724325",
+      "stdout_sha256": "sha256:c04e2b0cb422076a9061585b98001ad776057a2b114fe79e9970a8724464cdf0",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-v2-contract",
+      "returncode": 0,
+      "passed": 231,
+      "skipped": 0,
+      "deselected": 30,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:239b56c4c78281ab9089452d6583c63159f63e2bce74315ce3f3ff89d4d4641c",
+      "stdout_sha256": "sha256:09c0c670c52742ceda7632e53e9630688fcdf21bd843a4fe656c753e7186ddf8",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-v2-integration-e2e-accessibility",
+      "returncode": 0,
+      "passed": 170,
+      "skipped": 0,
+      "deselected": 5,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:7a21f498dd7de7dea18bc943aee93689abc77d162e7f2f0650612b0e7ad041d4",
+      "stdout_sha256": "sha256:b80c6630c2b0be11be4abcb62be0a22819fc1b3ccb974762d3c8feee94e74d15",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-v2-unit",
+      "returncode": 0,
+      "passed": 301,
+      "skipped": 1,
+      "deselected": 0,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:dfebef31b023904755651f52f990d51d70d258f059161c33d08a40903afa5ad0",
+      "stdout_sha256": "sha256:3ff4f349494237d07afc86b340e59f037c3b8298676eb7b80313621a8c95c164",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-v2-event-bridge",
+      "returncode": 0,
+      "passed": 6,
+      "skipped": 0,
+      "deselected": 0,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:5301618390e728a58e00a1d262b00d7feb8f2af4b786794090f8b228fdca087f",
+      "stdout_sha256": "sha256:34b3fded933cbff48e3d98ece997b827d24cd8bf00bd770c90febeb16cc8b4c9",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-v2-safety",
+      "returncode": 0,
+      "passed": 29,
+      "skipped": 0,
+      "deselected": 1,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:d779096d9c542f3b7b53d884770b6325aa28eed4fa1670fc2da31c1ca3294c98",
+      "stdout_sha256": "sha256:e5b43d8a58baf6f694ab3931b28b5d72dbeecb7076020b06cfbbed5224f764e6",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-v2-performance-packaging-contract",
+      "returncode": 0,
+      "passed": 324,
+      "skipped": 0,
+      "deselected": 3,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "sha256:74db47b4e85929331b4d54e3cfb53b902b647d84422b07c78b99f5f5a4f871a9",
+      "stdout_sha256": "sha256:0e149903b5ae0d3e242fc65b14e5b1a328a4c05d59c3de8e961e7c81590efc4e",
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "canonical_external_evidence": [
+    {
+      "name": "gate-result.json",
+      "size_bytes": 28730,
+      "sha256": "sha256:73f286caeee358f19837132261fe134e1f831c7e1efe9381917c8ff22e7d8c29"
+    },
+    {
+      "name": "source-candidate-summary.json",
+      "size_bytes": 37211,
+      "sha256": "sha256:e5187b0a946d5f8c3d29e10faad4f8a3f013cf6a5b70d93d64bdd383fada9cd4"
+    },
+    {
+      "name": "identity-ledger.json",
+      "size_bytes": 173175,
+      "sha256": "sha256:14a5ff81f1110785bfaf3ea5d30ed81ea8e07e6333e54e654e8b479387002176"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "size_bytes": 3811,
+      "sha256": "sha256:e699e9e8a84bab6da6d7fa64ef8aedbd99f89449a380fcd0b4246f5899a23d91"
+    }
+  ],
+  "totals": {
+    "groups": 10,
+    "passed": 1828,
+    "skipped": 1,
+    "deselected": 57,
+    "failures": 0,
+    "errors": 0
+  }
+}

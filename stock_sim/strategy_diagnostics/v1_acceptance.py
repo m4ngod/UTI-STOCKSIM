@@ -136,6 +136,7 @@ V1_ALLOWED_APPLICATION_COMMANDS = (
     "recipe_authoring_capabilities",
     "recommend_historical_segments",
     "reproduce_strategy_run",
+    "reproduction_manifest",
     "reproduction_manifests",
     "reproduction_status",
     "resume_diagnostic_campaign",

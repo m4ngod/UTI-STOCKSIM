@@ -102,7 +102,9 @@ def _sample_metric(
     }
 
 
-def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
+def passing_performance_lane_report(
+    lane: str = "hardware",
+) -> dict[str, object]:
     return {
         "schema_version": 3,
         "status": "passed",
@@ -138,20 +140,9 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
         "started_at": "2026-07-26T12:00:00+00:00",
         "ended_at": "2026-07-26T12:01:00+00:00",
         "duration_seconds": 60.0,
-        "production_path": [
-            "PerformanceLoadProjectionReadModel",
-            "DeterministicFakeStrategyLibraryAdapter",
-            "DeterministicFakeScenarioLabAdapter",
-            "DeterministicFakeDiagnosticTasksAdapter",
-            "EventBridge",
-            "LiveRunMonitoringAdapter",
-            "LiveEvidenceAndFindingsAdapter",
-            "JourneyWorkspaceHost",
-            "StrategyLibraryPage.qml",
-            "ScenarioLabPage.qml",
-            "DiagnosticTasksPage.qml",
-            "EvidenceChart.qml",
-        ],
+        "production_path": list(
+            frontend_v2_performance.WAVE3_PERFORMANCE_PRODUCTION_PATH
+        ),
         "integrated_v1_probe": _passing_real_v1_probe(),
         "machine": {
             "operating_system": "Windows 11",
@@ -166,7 +157,7 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
             "pyside6": "6.9.1",
             "qt": "6.9.1",
             "numpy": "2.3.1",
-            "nuitka": "2.6.8",
+            "nuitka": "4.1.3",
         },
         "metrics": {
             "event_to_visible": _sample_metric(
@@ -195,8 +186,8 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
                 "ScenarioLabFeature/1.0",
             ],
             "adapters": [
-                "DeterministicFakeStrategyLibraryAdapter",
-                "DeterministicFakeScenarioLabAdapter",
+                "LiveStrategyLibraryAdapter",
+                "LiveScenarioLabAdapter",
             ],
             "routes": ["strategy_library", "scenario_lab"],
             "presentation_states": {
@@ -216,7 +207,9 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
                 "scenario_lab": True,
             },
             "observed_before_load": True,
-            "executed_during_active_load": True,
+            "prepared_before_measurement": True,
+            "observed_during_active_load": True,
+            "executed_during_active_load": False,
             "accepted_setup_commands": [
                 "compare_formal_strategy_set",
                 "select_formal_strategy_set",
@@ -236,46 +229,29 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
             "application_interface": (
                 "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
             ),
-            "adapter": "DeterministicFakeDiagnosticTasksAdapter",
-            "accepted_command_ids": [
-                "performance-create-diagnostic-task",
-                "performance-validate-diagnostic-task",
-                "performance-approve-diagnostic-task",
-                "performance-start-diagnostic-campaign",
-            ],
-            "result_command_ids": [
-                "performance-create-diagnostic-task",
-                "performance-validate-diagnostic-task",
-                "performance-approve-diagnostic-task",
-                "performance-start-diagnostic-campaign",
-            ],
-            "accepted_command_observed": True,
-            "task_handle_observed": True,
-            "task_handle_ids": [
-                "diagnostic-task-handle-performance",
-            ],
-            "handoff_observed": True,
-            "terminal_observed": True,
-            "executed_during_active_load": True,
-            "source_events_before_command": 2,
+            "adapter": "LiveDiagnosticTasksAdapter",
+            "mode": "read_only_live_inventory_observation",
+            "inventory_counts": {
+                "strategies": 2,
+                "approved_recipes": 14,
+                "market_scenarios": 14,
+            },
+            "accepted_command_ids": [],
+            "result_command_ids": [],
+            "accepted_command_observed": False,
+            "task_handle_observed": False,
+            "task_handle_ids": [],
+            "handoff_observed": False,
+            "terminal_observed": False,
+            "prepared_before_measurement": True,
+            "observed_during_active_load": True,
+            "executed_during_active_load": False,
+            "source_events_before_command": 0,
             "source_events_after_command": 2,
             "observed_before_load": True,
             "observed_after_load": True,
-            "task_lifecycle": "completed",
-            "identity_graph": [
-                "performance-create-diagnostic-task",
-                "performance-validate-diagnostic-task",
-                "performance-approve-diagnostic-task",
-                "performance-start-diagnostic-campaign",
-                "diagnostic-task-performance",
-                "diagnostic-task-handle-performance",
-                "formal-diagnostic-campaign-performance",
-                "campaign-node-performance",
-                "campaign-attempt-performance",
-                "strategy-run-performance",
-                "diagnostic-evidence-package-performance",
-                "reproduction-manifest-performance",
-            ],
+            "task_lifecycle": "not_started",
+            "identity_graph": [],
         },
         "terminal": {
             "phase": "completed",
@@ -292,6 +268,9 @@ def _passing_lane_report(lane: str = "hardware") -> dict[str, object]:
     }
 
 
+_passing_lane_report = passing_performance_lane_report
+
+
 def _passing_wave2_lane_report(lane: str) -> dict[str, object]:
     report = _passing_lane_report(lane)
     report["schema_version"] = 2
@@ -305,6 +284,41 @@ def _passing_wave2_lane_report(lane: str) -> dict[str, object]:
         "EvidenceChart.qml",
     ]
     del report["wave3_setup_features"]
+    report["wave2_diagnostic_tasks"] = {
+        "feature_interface": "DiagnosticTasksFeature/1.0",
+        "application_interface": (
+            "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
+        ),
+        "adapter": "DeterministicFakeDiagnosticTasksAdapter",
+        "accepted_command_ids": list(
+            frontend_v2_performance.WAVE2_PERFORMANCE_COMMAND_IDS
+        ),
+        "result_command_ids": list(
+            frontend_v2_performance.WAVE2_PERFORMANCE_COMMAND_IDS
+        ),
+        "accepted_command_observed": True,
+        "task_handle_observed": True,
+        "task_handle_ids": ["diagnostic-task-handle-performance"],
+        "handoff_observed": True,
+        "terminal_observed": True,
+        "executed_during_active_load": True,
+        "source_events_before_command": 2,
+        "source_events_after_command": 2,
+        "observed_before_load": True,
+        "observed_after_load": True,
+        "task_lifecycle": "completed",
+        "identity_graph": [
+            *frontend_v2_performance.WAVE2_PERFORMANCE_COMMAND_IDS,
+            "diagnostic-task-performance",
+            "diagnostic-task-handle-performance",
+            "formal-diagnostic-campaign-performance",
+            "campaign-node-performance",
+            "campaign-attempt-performance",
+            "strategy-run-performance",
+            "diagnostic-evidence-package-performance",
+            "reproduction-manifest-performance",
+        ],
+    }
     return report
 
 
@@ -426,18 +440,7 @@ def test_lane_validation_blocks_event_to_visible_p95_over_budget():
 
 
 def test_lane_validation_preserves_historical_wave2_schema_v2_reports():
-    report = _passing_lane_report()
-    report["schema_version"] = 2
-    report["production_path"] = [
-        "PerformanceLoadProjectionReadModel",
-        "DeterministicFakeDiagnosticTasksAdapter",
-        "EventBridge",
-        "LiveRunMonitoringAdapter",
-        "LiveEvidenceAndFindingsAdapter",
-        "JourneyWorkspaceHost",
-        "EvidenceChart.qml",
-    ]
-    del report["wave3_setup_features"]
+    report = _passing_wave2_lane_report("hardware")
 
     failures = validate_performance_lane(
         report,
@@ -447,6 +450,21 @@ def test_lane_validation_preserves_historical_wave2_schema_v2_reports():
     )
 
     assert failures == ()
+
+
+def test_lane_validation_rejects_withdrawn_schema4_calibration_reports():
+    report = _passing_lane_report("hardware")
+    report["schema_version"] = 4
+    report["performance_gate_policy"] = {"hardware_usable_state_ms": 2100.0}
+
+    failures = validate_performance_lane(
+        report,
+        expected_lane="hardware",
+        expected_source_commit=SOURCE_COMMIT,
+        expected_toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+
+    assert "hardware lane schema version is invalid" in failures
 
 
 def test_lane_validation_recomputes_raw_sample_digest_and_summary():
@@ -616,11 +634,11 @@ def test_measurement_source_checkout_binds_head_and_cleanliness(tmp_path):
             lambda report: report["terminal"].update(observed=False),
             "hardware terminal revision was not observed",
         ),
-        (
-            lambda report: report["wave2_diagnostic_tasks"].update(
-                task_handle_observed=False
-            ),
-            "hardware Wave 2 TaskHandle observation is incomplete",
+            (
+                lambda report: report["wave2_diagnostic_tasks"].update(
+                    observed_during_active_load=False
+                ),
+                "hardware live Diagnostic Tasks observation is incomplete",
         ),
         (
             lambda report: report["terminal"].update(visible_ms=100.001),
@@ -800,8 +818,7 @@ def test_performance_certification_rejects_mismatched_wave2_workloads():
     hardware = _passing_lane_report("hardware")
     software = _passing_lane_report("software")
     wave2 = software["wave2_diagnostic_tasks"]
-    identity_graph = wave2["identity_graph"]
-    identity_graph[-1] = "different-reproduction-manifest-performance"
+    wave2["inventory_counts"]["market_scenarios"] = 13
 
     certification = certify_performance_evidence(
         hardware,
@@ -813,8 +830,8 @@ def test_performance_certification_rejects_mismatched_wave2_workloads():
 
     assert certification.status == "blocked"
     assert (
-        "hardware and software Wave 2 probes do not identify the "
-        "same Diagnostic Task workload"
+        "hardware and software live Diagnostic Tasks probes do not "
+        "identify the same inventory workload"
     ) in certification.failures
 
 
@@ -929,12 +946,12 @@ def test_performance_certification_blocks_malformed_wave2_sequence():
 
     assert certification.status == "blocked"
     assert (
-        "hardware Wave 2 TaskHandle observation is incomplete"
+        "hardware live Diagnostic Tasks observation is incomplete"
         in certification.failures
     )
     assert (
-        "hardware and software Wave 2 probes do not identify the "
-        "same Diagnostic Task workload"
+        "hardware and software live Diagnostic Tasks probes do not "
+        "identify the same inventory workload"
     ) in certification.failures
 
 

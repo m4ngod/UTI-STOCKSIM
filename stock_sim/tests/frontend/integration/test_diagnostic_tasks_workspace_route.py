@@ -10,7 +10,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QMetaObject, QObject, QPointF, Qt
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QMetaObject,
+    QObject,
+    QPointF,
+    Qt,
+)
 from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QSignalSpy, QTest
@@ -118,6 +125,20 @@ from tests.strategy_diagnostics.test_recipe_lifecycle import (
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _release_closed_qml_hosts_between_tests():
+    yield
+    app = QApplication.instance()
+    if app is None:
+        return
+    # MainWindow.close() unloads the QML source. Drain the resulting Qt-owned
+    # deferred deletes before the next parameterized window processes events;
+    # otherwise a stale Qt Quick wrapper can be dereferenced on Windows.
+    app.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 @dataclass
@@ -425,8 +446,7 @@ def test_reopen_rereads_task_handoffs_without_overriding_last_route(
     )
     diagnostic_tasks.advance_evidence_available(approved.task_id)
     task_context = DiagnosticTasksContext(task_id=approved.task_id)
-    diagnostic_tasks.snapshot(task_context)
-    task = diagnostic_tasks.snapshot(task_context).task
+    task = diagnostic_tasks.snapshot(DiagnosticTasksContext.workspace()).task
     assert task is not None
     expected_run = RunMonitoringContext.for_run(
         RunMonitoringSelection(
@@ -1046,11 +1066,38 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     diagnostic_page = root.findChild(QObject, "diagnosticTasksPage")
     assert diagnostic_page is not None
     diagnostic_projection = diagnostic_page.property("adapter")
+    assert diagnostic_projection.failedAttemptPresent is False
+    empty_attempt_history = root.findChild(
+        QObject,
+        "failedCampaignNodeAttemptHistory",
+    )
+    assert empty_attempt_history is not None
+    empty_attempt_interface = QAccessible.queryAccessibleInterface(
+        empty_attempt_history
+    )
+    assert empty_attempt_interface is not None
+    empty_attempt_text = " ".join(
+        (
+            empty_attempt_interface.text(QAccessible.Text.Name),
+            empty_attempt_interface.text(QAccessible.Text.Description),
+            diagnostic_projection.failedNodeRetryText,
+        )
+    ).casefold()
+    assert "failed" not in empty_attempt_text
     announcement_spy = QSignalSpy(diagnostic_projection.announcementChanged)
 
     def settle() -> None:
         app.processEvents()
         app.processEvents()
+
+    def settle_until(predicate) -> bool:
+        for _ in range(1_000):
+            settle()
+            if predicate():
+                return True
+            QTest.qWait(5)
+        settle()
+        return bool(predicate())
 
     def traverse_to(
         object_name: str,
@@ -1231,9 +1278,12 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         run_monitoring_status
     )
     assert run_monitoring_accessible is not None
-    assert "completeness partial" in run_monitoring_accessible.text(
-        QAccessible.Text.Name
-    ).casefold()
+    assert settle_until(
+        lambda: "completeness partial"
+        in run_monitoring_accessible.text(
+            QAccessible.Text.Name
+        ).casefold()
+    )
     assert (
         failed_run_snapshot.processed_node_count
         < failed_run_snapshot.total_node_count
@@ -1291,6 +1341,25 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
         assert background_task.task_id == running_task_identity
         assert background_task.handoff.campaign_id == running_campaign_identity
         assert background_task.lifecycle is DiagnosticTaskLifecycle.RUNNING
+        if route_name == "diagnostic_tasks":
+            assert diagnostic_projection.failedAttemptPresent is True
+            failed_attempt_history = root.findChild(
+                QObject,
+                "failedCampaignNodeAttemptHistory",
+            )
+            assert failed_attempt_history is not None
+            failed_attempt_interface = QAccessible.queryAccessibleInterface(
+                failed_attempt_history
+            )
+            assert failed_attempt_interface is not None
+            assert "failed" in " ".join(
+                (
+                    failed_attempt_interface.text(QAccessible.Text.Name),
+                    failed_attempt_interface.text(
+                        QAccessible.Text.Description
+                    ),
+                )
+            ).casefold()
 
     assert root.setProperty("activeRoute", "system_health")
     settle()
@@ -2008,17 +2077,31 @@ def test_live_qml_tracer_recovers_retries_and_reopens_exact_evidence(
     settle()
     remounted_root = remounted.rootObject()
     assert remounted_root.property("activeRoute") == "evidence_and_findings"
-    remounted_status = remounted_root.findChild(
-        QObject,
-        "evidenceAccessibleStatus",
-    )
-    remounted_interface = QAccessible.queryAccessibleInterface(
-        remounted_status
-    )
-    assert remounted_interface is not None
-    assert expected_identity_text[2] in remounted_interface.text(
-        QAccessible.Text.Description
-    )
+    remounted_evidence_description = [""]
+
+    def remounted_evidence_is_accessible() -> bool:
+        remounted_status = remounted_root.findChild(
+            QObject,
+            "evidenceAccessibleStatus",
+        )
+        if remounted_status is None:
+            return False
+        remounted_interface = QAccessible.queryAccessibleInterface(
+            remounted_status
+        )
+        if remounted_interface is None:
+            return False
+        remounted_evidence_description[0] = remounted_interface.text(
+            QAccessible.Text.Description
+        )
+        return (
+            expected_identity_text[2]
+            in remounted_evidence_description[0]
+        )
+
+    assert settle_until(
+        remounted_evidence_is_accessible
+    ), remounted_evidence_description[0]
     assert remounted_root.setProperty("activeRoute", "run_monitoring")
     settle()
     assert remounted_root.findChild(
@@ -3478,6 +3561,11 @@ def test_workspace_route_exit_disposes_subscription_and_remounts_page(
     assert diagnostic_loader is not None
 
     assert root.property("activeRoute") == "evidence_and_findings"
+    for _ in range(300):
+        if root.findChild(QObject, "evidenceResearchFlickable") is not None:
+            break
+        app.processEvents()
+        QTest.qWait(5)
     assert root.findChild(QObject, "evidenceResearchFlickable") is not None
     assert diagnostic_loader.property("item") is None
     assert host._evidence_and_findings._subscription is not None
@@ -3568,7 +3656,10 @@ def test_qml_create_persists_task_handle_across_remount_and_application_reopen(
     assert "diagnostic-task-" in task_text
     assert " · r2 · draft · " in task_text
     assert "diagnostic-task-handle-" in handle_text
-    assert " · completed · 100% · diagnostic_task_created · " in handle_text
+    assert (
+        " · phase completed · progress 100% · "
+        "result diagnostic_task_created · "
+    ) in handle_text
     window.close()
     run_monitoring.close()
 

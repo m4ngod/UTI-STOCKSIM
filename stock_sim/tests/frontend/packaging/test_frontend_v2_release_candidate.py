@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -114,7 +116,7 @@ EXPECTED_JOURNEY = (
 )
 
 
-def test_clean_room_route_failure_names_all_five_active_routes() -> None:
+def test_clean_room_route_failure_names_all_six_active_routes() -> None:
     source = (
         PROJECT_ROOT
         / "stock_sim"
@@ -122,7 +124,8 @@ def test_clean_room_route_failure_names_all_five_active_routes() -> None:
         / "frontend_v2_packaging.py"
     ).read_text(encoding="utf-8")
 
-    assert "did not render all five active routes" in source
+    assert "did not render all six active routes" in source
+    assert "did not render all five active routes" not in source
     assert "did not render all four active routes" not in source
     assert "did not render all three active routes" not in source
 _IDENTITY_SETS = {
@@ -988,6 +991,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "diagnostic_tasks",
         "run_monitoring",
         "evidence_and_findings",
+        "system_health",
     )
     assert result.connection_transitions == (
         "connected",
@@ -1082,6 +1086,65 @@ def test_smoke_observation_snapshots_state_before_frame_capture(
             route="evidence_and_findings",
             capture_images=True,
         )
+
+
+def test_release_focus_probe_uses_public_evidence_focus_property():
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    class FocusItem:
+        def property(self, name):
+            return name in {"visible", "activeFocus", "focusVisible"}
+
+    class Root:
+        def __init__(self):
+            self.requested_properties = []
+
+        def property(self, name):
+            self.requested_properties.append(name)
+            if name == "evidenceInitialFocusItem":
+                return FocusItem()
+            return None
+
+    root = Root()
+
+    assert package_entry._route_focus_is_visible(
+        root,
+        "evidence_and_findings",
+    )
+    assert root.requested_properties == ["evidenceInitialFocusItem"]
+
+
+def test_public_accessibility_snapshot_exposes_reconnect_freshness():
+    from types import SimpleNamespace
+
+    from app.ui.journey_workspace import JourneyWorkspaceHost
+
+    class Adapter:
+        def __init__(self, **properties):
+            self._properties = properties
+
+        def property(self, name):
+            return self._properties.get(name)
+
+    host = SimpleNamespace(
+        _active_route=SimpleNamespace(value="run_monitoring"),
+        _run_monitoring=Adapter(
+            presentationState="ready",
+            freshness="stale",
+            revisionText="run-r1",
+        ),
+        _evidence_and_findings=Adapter(
+            freshness="stale",
+            revisionText="evidence-r1",
+        ),
+        _diagnostic_tasks=Adapter(),
+        _system_health=Adapter(),
+    )
+
+    snapshot = JourneyWorkspaceHost.accessibility_snapshot(host)
+
+    assert snapshot.run_freshness == "stale"
+    assert snapshot.evidence_freshness == "stale"
 
 
 def test_v2_app_context_uses_only_the_read_only_runtime_boundary(
@@ -1258,6 +1321,11 @@ raise SystemExit(
 def test_clean_room_report_requires_the_complete_production_journey(
     tmp_path,
 ):
+    from tests.frontend.packaging.test_frontend_v2_packaging_contract import (
+        clean_room_lane_fixture,
+        clean_room_schema_eight_evidence_fixture,
+    )
+
     renderer_lanes = {}
     for lane, graphics_api in (
         ("hardware", "Direct3D11"),
@@ -1478,17 +1546,39 @@ def test_clean_room_report_requires_the_complete_production_journey(
             "errors": [],
         }
 
+    # Keep the release-candidate negative cases below, but source the accepted
+    # lane and cross-lane evidence from the same schema-7 builders used by the
+    # clean-room packaging contract.  This prevents the positive fixture from
+    # silently lagging newly mandatory installed gates.
+    for lane, graphics_api in (
+        ("hardware", "Direct3D11"),
+        ("software", "Software"),
+    ):
+        renderer_lanes[lane].update(
+            clean_room_lane_fixture(tmp_path, lane, graphics_api)
+        )
+    schema_eight_evidence = clean_room_schema_eight_evidence_fixture("abc123")
+
     report_path = tmp_path / "clean-room-report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 8,
                 "source_commit": "abc123",
                 "archive_sha256": "sha256:package",
                 "operating_system": "Microsoft Windows 11 Pro 10.0.26100",
                 "architecture": "AMD64",
                 "user_name": "WDAGUtilityAccount",
                 "is_windows_sandbox": True,
+                "certification_environment": {
+                    "schema_version": 1,
+                    "kind": "windows-sandbox",
+                    "windows_sandbox": True,
+                    "native_boot_vhdx": False,
+                    "system_drive": "C:",
+                    "accessible_filesystem_drive_count": 1,
+                    "unexpected_accessible_filesystem_drives": [],
+                },
                 "network_enumeration_succeeded": True,
                 "network_adapters_up": [],
                 "python_on_path": False,
@@ -1497,7 +1587,10 @@ def test_clean_room_report_requires_the_complete_production_journey(
                 "compiler_installations": [],
                 "dependency_cache_present": False,
                 "dependency_cache_paths": [],
+                "source_checkout_absent": True,
+                "source_checkout_markers": [],
                 "install_succeeded": True,
+                **schema_eight_evidence,
                 "renderer_lanes": renderer_lanes,
             }
         ),
@@ -1702,7 +1795,7 @@ def test_clean_room_report_requires_the_complete_production_journey(
     compromised["is_windows_sandbox"] = False
     report_path.write_text(json.dumps(compromised), encoding="utf-8")
     assert (
-        "Clean-room report was not produced by Windows Sandbox"
+        "Clean-room certification environment is invalid"
         in verify_clean_room_report(
             report_path,
             expected_source_commit="abc123",
@@ -1787,7 +1880,7 @@ def _write_accessibility_junit(
     )
 
 
-def _copy_performance_evidence(root):
+def _write_passing_performance_evidence_fixture(root):
     source_commit = "1acb1b76c9d4d389d49087a401512499f223fd72"
     source = (
         PROJECT_ROOT
@@ -1806,80 +1899,33 @@ def _copy_performance_evidence(root):
         "sha256:"
         + hashlib.sha256(fixture_archive.read_bytes()).hexdigest()
     )
-    for name in (
-        "hardware.json",
-        "software.json",
-        "no-manual-trading.json",
-    ):
-        copy2(source / name, target / name)
+    copy2(
+        source / "no-manual-trading.json",
+        target / "no-manual-trading.json",
+    )
+    from tests.frontend.performance import (
+        test_frontend_v2_performance_certification as performance_fixtures,
+    )
+
     hardware_path = target / "hardware.json"
     software_path = target / "software.json"
-    hardware = json.loads(hardware_path.read_text(encoding="utf-8"))
-    software = json.loads(software_path.read_text(encoding="utf-8"))
+    hardware = json.loads(
+        json.dumps(
+            performance_fixtures.passing_performance_lane_report("hardware")
+        )
+    )
+    software = json.loads(
+        json.dumps(
+            performance_fixtures.passing_performance_lane_report("software")
+        )
+    )
+    toolchain_digest = (
+        "sha256:"
+        + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
+    )
     for report in (hardware, software):
-        report["schema_version"] = 3
-        report["production_path"] = [
-            "PerformanceLoadProjectionReadModel",
-            "DeterministicFakeStrategyLibraryAdapter",
-            "DeterministicFakeScenarioLabAdapter",
-            "DeterministicFakeDiagnosticTasksAdapter",
-            "EventBridge",
-            "LiveRunMonitoringAdapter",
-            "LiveEvidenceAndFindingsAdapter",
-            "JourneyWorkspaceHost",
-            "StrategyLibraryPage.qml",
-            "ScenarioLabPage.qml",
-            "DiagnosticTasksPage.qml",
-            "EvidenceChart.qml",
-        ]
-        report["wave3_setup_features"] = {
-            "feature_interfaces": [
-                "StrategyLibraryFeature/1.0",
-                "ScenarioLabFeature/1.0",
-            ],
-            "adapters": [
-                "DeterministicFakeStrategyLibraryAdapter",
-                "DeterministicFakeScenarioLabAdapter",
-            ],
-            "routes": ["strategy_library", "scenario_lab"],
-            "presentation_states": {
-                "strategy_library": "ready",
-                "scenario_lab": "ready",
-            },
-            "freshness": {
-                "strategy_library": "fresh",
-                "scenario_lab": "fresh",
-            },
-            "qml_status_roles": {
-                "strategy_library": "StatusBar",
-                "scenario_lab": "StatusBar",
-            },
-            "initial_focus_observed": {
-                "strategy_library": True,
-                "scenario_lab": True,
-            },
-            "observed_before_load": True,
-            "executed_during_active_load": True,
-            "accepted_setup_commands": [
-                "compare_formal_strategy_set",
-                "select_formal_strategy_set",
-                "compose_visible_scenario_set",
-            ],
-            "accepted_revisions": {
-                "strategy_library": [2, 3],
-                "scenario_lab": [2, 3],
-            },
-            "comparison_count": 2,
-            "strategy_selection_status": "current",
-            "scenario_set_count": 1,
-            "scenario_set_eligibility": "formal_campaign_eligible",
-        }
-        report["wave2_diagnostic_tasks"] = (
-            _passing_wave2_performance_load()
-        )
-        report["integrated_v1_probe"] = (
-            _passing_real_v1_performance_probe()
-        )
+        report["source_commit"] = source_commit
+        report["toolchain_lock_digest"] = toolchain_digest
         report["integrated_v1_probe"][
             "fixture_archive_digest"
         ] = fixture_archive_digest
@@ -1894,16 +1940,13 @@ def _copy_performance_evidence(root):
     safety = json.loads(
         (target / "no-manual-trading.json").read_text(encoding="utf-8")
     )
-    toolchain_digest = (
-        "sha256:"
-        + hashlib.sha256(TOOLCHAIN_LOCK_PATH.read_bytes()).hexdigest()
-    )
     certification = certify_performance_evidence(
         hardware,
         software,
         safety,
         expected_source_commit=source_commit,
         expected_toolchain_digest=toolchain_digest,
+        expected_fixture_archive_digest=fixture_archive_digest,
     )
     (target / "certification.json").write_text(
         json.dumps(asdict(certification)),
@@ -1915,7 +1958,9 @@ def _copy_performance_evidence(root):
 def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -1970,7 +2015,9 @@ def test_mandatory_release_gates_are_recomputed_and_bound_to_one_build(
 def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     base_name = (
         "test_shared_default_and_high_contrast_tokens_meet_wcag_aa_ratios"
@@ -2007,7 +2054,9 @@ def test_mandatory_release_gates_accept_parameterized_accessibility_cases(
 def test_mandatory_release_gates_fail_closed_on_missing_accessibility_coverage(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2037,7 +2086,9 @@ def test_mandatory_release_gates_fail_closed_on_missing_accessibility_coverage(
 def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2077,7 +2128,9 @@ def test_mandatory_release_gates_reject_a_tampered_performance_aggregate(
 def test_mandatory_release_gates_reject_a_tampered_v1_fixture_archive(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2108,7 +2161,9 @@ def test_mandatory_release_gates_reject_a_tampered_v1_fixture_archive(
 def test_mandatory_release_gates_reject_unbound_accessibility_evidence(
     tmp_path,
 ):
-    source_commit, performance_dir = _copy_performance_evidence(tmp_path)
+    source_commit, performance_dir = (
+        _write_passing_performance_evidence_fixture(tmp_path)
+    )
     accessibility_junit = tmp_path / "accessibility.xml"
     _write_accessibility_junit(
         accessibility_junit,
@@ -2142,23 +2197,97 @@ def test_windows_sandbox_runner_is_offline_bounded_and_self_terminating():
     ).read_text(encoding="utf-8")
 
     assert "WindowsSandbox.exe" in script
+    assert "-WindowStyle Hidden" not in script
     assert "<Networking>Disable</Networking>" in script
-    assert "<VGpu>Enable</VGpu>" in script
+    assert "<VGpu>EnableVendorExtensions</VGpu>" in script
+    assert "<VGpu>Enable</VGpu>" not in script
     assert "<ReadOnly>true</ReadOnly>" in script
     assert "run_frontend_v2_clean_room.ps1" in script
+    assert "clean-room-runner.ps1" in script
+    assert "C:\\ReleaseEvidence\\clean-room-runner.ps1" in script
+    assert "C:\\ReleaseScripts" not in script
+    assert "$candidateInputStage" in script
+    assert "$widgetsInputStage" in script
+    assert script.count("<MappedFolder>") == 3
     assert "WidgetsPackageArchive" in script
     assert "ExpectedWidgetsArchiveSha256" in script
     assert "C:\\ReleaseInputWidgets" in script
-    assert "1200" in script
+    assert "3600" in script
     assert "sandbox-exit-code.txt" in script
+    assert "sandbox-result-ack.txt" in script
+    assert "sandbox-result-ack-received.txt" in script
+    assert '$resultAckToken = [Guid]::NewGuid().ToString("N")' in script
+    assert "$resultAckDeadline" in script
+    assert "$observedResultAck -ceq $expectedResultAck" in script
+    assert "$observedResultAckReceived -ceq $expectedResultAck" in script
+    assert "Windows Sandbox result acknowledgment was not received." in script
+    assert "Windows Sandbox did not confirm the result acknowledgment." in script
     assert "shutdown.exe /s /t 0" in script
     assert "Test-Path -LiteralPath $exitCodePath" in script
     assert "Start-Sleep -Milliseconds 500" in script
     assert "WaitForExit" not in script
-    assert "$sandboxShutdownDeadline" in script
-    assert "$remainingSandboxProcesses" in script
+    assert "$sandboxGuestShutdownDeadline" in script
+    assert "$sandboxTerminalCloseDeadline" in script
+    assert "$sandboxExitedBeforeResult" in script
+    assert "$sandboxLaunchGraceDeadline" in script
+    assert "$sandboxProcess.HasExited" in script
+    assert "$sandboxLauncherIdentity" in script
+    assert "StartTimeUtc" in script
+    assert "function Stop-OwnedWindowsSandboxLauncher" in script
+    assert script.count("Stop-OwnedWindowsSandboxLauncher") == 2
+    assert script.count("Stop-Process") == 1
+    assert "function Get-OwnedWindowsSandboxTerminalProcess" in script
+    assert "function Test-OwnedWindowsProcessIdentityAlive" in script
+    assert "function Test-OwnedWindowsSandboxGuestProcessesStopped" in script
+    assert "function Request-OwnedWindowsSandboxTerminalClose" in script
+    assert "[int]$candidate.ParentProcessId -eq" in script
+    assert "$LauncherIdentity.ProcessId" in script
+    assert "$sandboxTerminalProcessIdentity" in script
+    assert "$existingSandboxProcessIds" not in script
+    assert "WindowsSandboxRemoteSession.exe" in script
+    assert "WindowsSandboxServer.exe" in script
+    assert "WindowsSandboxClient.exe" in script
+    assert '"vmwp.exe"' in script
+    assert "Windows Sandbox exited before producing certification result" in script
+    assert (
+        "Windows Sandbox terminal process remained active after normal close."
+    ) in script
+    assert script.index("$sandboxGuestShutdownDeadline") < script.index(
+        'if ($sandboxExitCode -ne "0")'
+    )
+    assert script.index(
+        "[IO.File]::WriteAllText(\n            $resultAckPath"
+    ) < script.index("$sandboxGuestShutdownDeadline")
+    assert script.index("$reportVisibilityDeadline") < script.index(
+        "[IO.File]::WriteAllText(\n            $resultAckPath"
+    )
+    assert script.index("$resultAckReceivedDeadline") < script.index(
+        "$sandboxGuestShutdownDeadline"
+    )
+    assert script.index("$resultAckDeadline") < script.index(
+        "shutdown.exe /s /t 0"
+    )
+    assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
+        "if ($null -ne $resultAckWriteFailure)"
+    )
+    assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
+        "Windows Sandbox terminal process ownership was not observed."
+    )
+    assert script.index('if ($sandboxExitCode -ne "0")') < script.index(
+        "Windows Sandbox terminal process remained active after normal close."
+    )
+    assert script.index(
+        "Windows Sandbox did not produce clean-room-report.json."
+    ) < script.index(
+        "Windows Sandbox terminal process remained active after normal close."
+    )
+    assert "A Hyper-V VM worker already exists." in script
+    assert "Windows Sandbox compute-system ownership was not observed." in script
+    assert "Windows Sandbox VM worker ownership was not observed." in script
     assert "TimeoutSeconds" in script
     assert "clean-room-report.json" in script
+    assert "Windows Sandbox certification failed at a redacted boundary." in script
+    assert "Exception.ToString" not in script
     assert "'^[0-9a-f]{40}$'" in script
     assert "'^sha256:[0-9a-f]{64}$'" in script
     assert "'^[A-Za-z0-9][A-Za-z0-9._-]*$'" in script
@@ -2177,7 +2306,8 @@ def test_default_installed_entry_uses_the_production_app_context():
     assert "get_evidence_and_findings_snapshot" not in source
     assert "create_file_backed_formal_v1_release_fixture" in source
     assert "open_sealed_formal_v1_release_fixture" in source
-    assert "_installed_fixture_archive_path" in source
+    assert "_installed_formal_v1_fixture_archive_path" in source
+    assert "_installed_wave3_input_fixture_archive_path" in source
     assert "--ptrade-host-worker" not in source
     assert "SubprocessPTradeStrategyHost" not in source
     assert "LiveStrategyDiagnosticsV1ApplicationAdapter" in source
@@ -2265,7 +2395,7 @@ def test_packaged_no_trading_inventory_fails_closed_without_semantics():
     approved_action = Item(
         objectName="approvedAction",
         activeFocusOnTab=True,
-        accessibleName="Open Diagnostic Tasks",
+        accessibleName="Open Diagnostic Tasks, inventory degraded",
     )
     missing_semantics = Item(
         objectName="unknownKeyboardAction",
@@ -2279,6 +2409,548 @@ def test_packaged_no_trading_inventory_fails_closed_without_semantics():
     assert _unapproved_interactive_action_count(
         Root((approved_action, missing_semantics, known_text_input))
     ) == 1
+
+
+def test_packaged_interactive_route_names_follow_typed_presentations():
+    from app.features.diagnostic_tasks import (
+        DiagnosticTasksPresentationState,
+    )
+    from app.features.run_monitoring import RunMonitoringPresentationState
+    from stock_sim.release.frontend_v2_package_entry import (
+        _APPROVED_INTERACTIVE_NAMES,
+    )
+
+    for presentation in DiagnosticTasksPresentationState:
+        assert _APPROVED_INTERACTIVE_NAMES.fullmatch(
+            "Open Diagnostic Tasks, inventory " + presentation.value
+        )
+    assert _APPROVED_INTERACTIVE_NAMES.fullmatch(
+        "Open Diagnostic Tasks, inventory unavailable"
+    )
+    for presentation in RunMonitoringPresentationState:
+        assert _APPROVED_INTERACTIVE_NAMES.fullmatch(
+            "Open Run Monitoring, current state " + presentation.value
+        )
+    assert not _APPROVED_INTERACTIVE_NAMES.fullmatch(
+        "Open Diagnostic Tasks, inventory arbitrary"
+    )
+    assert not _APPROVED_INTERACTIVE_NAMES.fullmatch(
+        "Open Run Monitoring, current state recovered"
+    )
+
+
+def test_installed_manual_trading_audit_uses_role_and_capability():
+    from stock_sim.release.frontend_v2_runtime_safety import (
+        classify_manual_trading_surface,
+    )
+
+    assert classify_manual_trading_surface(
+        accessible_text="Buy shares",
+        object_name="hiddenBuyAutomationPeer",
+        role="Button",
+        action_patterns=("Invoke",),
+        trigger_sources=("signal:clicked",),
+        focusable=False,
+    ) == "forbidden_manual_trading"
+    assert classify_manual_trading_surface(
+        accessible_text="Buy / Sell diagnostic evidence",
+        object_name="readOnlyExecutionNarrative",
+        role="StaticText",
+        action_patterns=(),
+        trigger_sources=(),
+        focusable=False,
+    ) == "static_read_only_diagnostic"
+    assert classify_manual_trading_surface(
+        accessible_text="Buy / Sell diagnostic evidence",
+        object_name="shortcutBackdoor",
+        role="StaticText",
+        action_patterns=(),
+        trigger_sources=("shortcut:shortcut",),
+        focusable=False,
+    ) == "forbidden_manual_trading"
+    assert classify_manual_trading_surface(
+        accessible_text="Cancel order",
+        object_name="disabledContextMenuPeer",
+        role="MenuItem",
+        action_patterns=(),
+        trigger_sources=("context-menu:MenuItem",),
+        focusable=False,
+    ) == "forbidden_manual_trading"
+
+
+def test_installed_manual_trading_audit_scans_qobject_meta_surface_without_uia(
+    monkeypatch,
+):
+    from PySide6.QtCore import Property, QObject, Signal
+
+    from stock_sim.release import frontend_v2_runtime_safety as runtime_safety
+
+    class HiddenOrderAction(QObject):
+        triggered = Signal()
+
+        @Property(str, constant=True)
+        def commandName(self):
+            return "Buy shares"
+
+        @Property(bool, constant=True)
+        def visible(self):
+            return False
+
+        @Property(bool, constant=True)
+        def enabled(self):
+            return False
+
+    root = QObject()
+    root.setObjectName("journeyRoot")
+    hidden_action = HiddenOrderAction(root)
+    hidden_action.setObjectName("opaqueAutomationPeer")
+    hidden_action.triggered.connect(lambda: None)
+    monkeypatch.setattr(
+        runtime_safety.QAccessible,
+        "queryAccessibleInterface",
+        lambda _item: None,
+    )
+
+    audit = runtime_safety.capture_no_manual_trading_route_audit(
+        root,
+        route="diagnostic_tasks",
+        stage="running",
+    )
+
+    assert audit["forbidden_action_count"] == 1
+    assert audit["hidden_object_count"] >= 1
+    assert audit["disabled_object_count"] >= 1
+    assert audit["forbidden_actions"] == [
+        {
+            "object_name": "opaqueAutomationPeer",
+            "role": "HiddenOrderAction",
+            "accessible_name_classification": "forbidden_manual_trading",
+            "action_patterns": [],
+            "trigger_sources": [
+                "command-binding:commandName",
+                "signal:triggered",
+            ],
+            "enabled": False,
+            "visible": False,
+            "focusable": False,
+        }
+    ]
+
+
+def test_installed_manual_trading_audit_does_not_treat_unbound_text_signal_as_action(
+    monkeypatch,
+):
+    from PySide6.QtCore import Property, QObject, Signal
+
+    from stock_sim.release import frontend_v2_runtime_safety as runtime_safety
+
+    class StaticDiagnosticText(QObject):
+        linkActivated = Signal(str)
+
+        @Property(str, constant=True)
+        def accessibleName(self):
+            return "Buy / Sell diagnostic evidence"
+
+    root = QObject()
+    static_text = StaticDiagnosticText(root)
+    static_text.setObjectName("readOnlyExecutionNarrative")
+    monkeypatch.setattr(
+        runtime_safety.QAccessible,
+        "queryAccessibleInterface",
+        lambda _item: None,
+    )
+
+    audit = runtime_safety.capture_no_manual_trading_route_audit(
+        root,
+        route="evidence_and_findings",
+        stage="running",
+    )
+
+    assert audit["declared_signal_surface_count"] == 1
+    assert audit["signal_surface_count"] == 0
+    assert audit["forbidden_action_count"] == 0
+    assert audit["static_read_only_diagnostics"] == [
+        {
+            "object_name": "readOnlyExecutionNarrative",
+            "role": "StaticDiagnosticText",
+            "accessible_name_classification": "static_read_only_diagnostic",
+            "action_patterns": [],
+            "trigger_sources": [],
+            "enabled": True,
+            "visible": True,
+            "focusable": False,
+        }
+    ]
+
+
+def test_installed_accessibility_rejects_hidden_state_text_and_color_only_cues():
+    from stock_sim.release.frontend_v2_accessibility import (
+        ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        REQUIRED_ACCESSIBILITY_STATES,
+        validate_installed_accessibility_checkpoints,
+    )
+
+    state_terms = {
+        "loading": "loading",
+        "empty": "empty",
+        "stale": "stale",
+        "disconnected": "disconnected",
+        "partial": "partial",
+        "failed": "failed error",
+        "recovering": "recover recovery",
+        "completed": "terminal completed",
+    }
+    checkpoints = []
+    for sequence, state in enumerate(REQUIRED_ACCESSIBILITY_STATES, start=1):
+        status_object_name, status_semantic_term = (
+            ACCESSIBILITY_CHECKPOINT_BINDINGS[state]
+        )
+        checkpoints.append(
+            {
+                "checkpoint": state,
+                "sequence": sequence,
+                "snapshot_identity": (
+                    f"uia:{sequence}:{state}:diagnostic_tasks:r3:r4"
+                ),
+                "captured_at_utc": (
+                    f"2030-01-01T00:00:{sequence:02d}+00:00"
+                ),
+                "route": "diagnostic_tasks",
+                "run_revision": "r3",
+                "evidence_revision": "r4",
+                "status_object_name": status_object_name,
+                "status_semantic_term": status_semantic_term,
+                "run_state": "",
+                "evidence_state": "",
+                "text_scale_percent": 200,
+                "window_device_pixel_ratio": 1.0,
+                "high_contrast": True,
+                "reduced_motion": True,
+                "motion_duration_ms": 0,
+                "wcag_2_2_aa_contrast_verified": True,
+                "nodes": [
+                    {
+                        "object_name": status_object_name,
+                        "role": "StatusBar",
+                        "name_present": True,
+                        "description_present": False,
+                        "semantic_terms": [
+                            *state_terms[state].split(),
+                            "progress",
+                            "health",
+                            "fresh",
+                            "recovery",
+                            "recover",
+                            "error",
+                        ],
+                        "visible": state != "loading",
+                    },
+                    {
+                        "role": "StaticText",
+                        "name_present": True,
+                        "description_present": False,
+                        "semantic_terms": [
+                            "progress",
+                            "health",
+                            "fresh",
+                            "recovery",
+                            "recover",
+                            "error",
+                        ],
+                        "visible": True,
+                    },
+                ],
+                "non_color_cues": [],
+                "rendered_text_nodes": [],
+                "non_color_cue_verified": False,
+                "chart_narrative_table_revision": {
+                    "same_revision": state == "completed",
+                },
+            }
+        )
+
+    failures = validate_installed_accessibility_checkpoints(checkpoints)
+
+    assert (
+        "Installed loading checkpoint target did not expose its state"
+        in failures
+    )
+    assert "Installed accessibility states relied on color-only meaning" in failures
+    assert "Installed Qt window scale was not 200 percent" in failures
+
+
+def test_installed_accessibility_accepts_complete_200_percent_qt_scale():
+    from stock_sim.release.frontend_v2_accessibility import (
+        ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        ORDERED_ACCESSIBILITY_CHECKPOINTS,
+        validate_installed_accessibility_checkpoints,
+    )
+
+    checkpoints = []
+    for sequence, state in enumerate(
+        ORDERED_ACCESSIBILITY_CHECKPOINTS,
+        start=1,
+    ):
+        status_object_name, status_semantic_term = (
+            ACCESSIBILITY_CHECKPOINT_BINDINGS[state]
+        )
+        checkpoints.append(
+            {
+                "checkpoint": state,
+                "sequence": sequence,
+                "snapshot_identity": f"snapshot-{sequence}",
+                "captured_at_utc": (
+                    f"2030-01-01T00:00:{sequence:02d}+00:00"
+                ),
+                "route": "diagnostic_tasks",
+                "run_revision": "r3",
+                "evidence_revision": "r4",
+                "status_object_name": status_object_name,
+                "status_semantic_term": status_semantic_term,
+                "text_scale_percent": 200,
+                "window_device_pixel_ratio": 2.0,
+                "high_contrast": True,
+                "reduced_motion": True,
+                "motion_duration_ms": 0,
+                "wcag_2_2_aa_contrast_verified": True,
+                "nodes": [
+                    {
+                        "object_name": status_object_name,
+                        "role": "StatusBar",
+                        "name_present": True,
+                        "description_present": False,
+                        "visible": True,
+                        "semantic_terms": [
+                            status_semantic_term,
+                            "progress",
+                            "error",
+                            "health",
+                            "fresh",
+                            "recover",
+                        ],
+                    }
+                ],
+                "rendered_text_nodes": [
+                    {
+                        "visible": True,
+                        "owner_object_names": [status_object_name],
+                        "semantic_terms": [status_semantic_term],
+                    }
+                ],
+                "non_color_cue_verified": True,
+                "non_color_cues": [
+                    {
+                        "cue_kind": "rendered_qquick_text",
+                        "status_object_name": status_object_name,
+                        "matched_term": status_semantic_term,
+                    }
+                ],
+                "chart_narrative_table_revision": {
+                    "same_revision": state == "completed",
+                },
+            }
+        )
+
+    assert validate_installed_accessibility_checkpoints(checkpoints) == ()
+
+    for invalid_ratio in (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        1.999,
+        2.001,
+    ):
+        checkpoints[0]["window_device_pixel_ratio"] = invalid_ratio
+        assert (
+            "Installed Qt window scale was not 200 percent"
+            in validate_installed_accessibility_checkpoints(checkpoints)
+        )
+
+    checkpoints[0]["window_device_pixel_ratio"] = 1.0
+    assert validate_installed_accessibility_checkpoints(
+        checkpoints,
+        require_installed_window_scale=False,
+    ) == ()
+    checkpoints[0]["non_color_cues"] = []
+    assert (
+        "Installed accessibility states relied on color-only meaning"
+        in validate_installed_accessibility_checkpoints(
+            checkpoints,
+            require_installed_window_scale=False,
+        )
+    )
+
+
+def test_installed_accessibility_rejects_non_finite_qt_window_scale():
+    from stock_sim.release.frontend_v2_packaging import (
+        _installed_wave2_smoke_failures,
+    )
+
+    for invalid_ratio in (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        1.999,
+        2.001,
+    ):
+        failures = _installed_wave2_smoke_failures(
+            {
+                "accessibility_checkpoints": [
+                    {"window_device_pixel_ratio": invalid_ratio}
+                    for _ in range(8)
+                ]
+            }
+        )
+        assert (
+            "installed accessibility checkpoints did not prove 200 percent "
+            "Qt window scaling"
+        ) in failures
+
+
+def test_installed_accessibility_checkpoint_clock_is_strictly_monotonic():
+    from stock_sim.release.frontend_v2_accessibility import (
+        InstalledAccessibilityCheckpointClock,
+    )
+
+    baseline = datetime(2030, 1, 1, tzinfo=UTC)
+    observed_wall_times = iter(
+        (baseline, baseline, baseline - timedelta(seconds=1))
+    )
+    clock = InstalledAccessibilityCheckpointClock(
+        now_utc=lambda: next(observed_wall_times)
+    )
+
+    assert clock.capture() == baseline
+    assert clock.capture() == baseline + timedelta(microseconds=1)
+    assert clock.capture() == baseline + timedelta(microseconds=2)
+
+
+def test_system_health_release_uses_public_bounded_lifecycle_contract():
+    from stock_sim.release.frontend_v2_package_entry import (
+        _close_system_health_feature_for_release,
+        _system_health_release_is_stopped,
+    )
+
+    class SystemHealthFeature:
+        release_stopped = False
+
+        def __init__(self):
+            self.requested_timeout = None
+
+        def close_and_wait(self, *, timeout_seconds):
+            self.requested_timeout = timeout_seconds
+            self.release_stopped = True
+            return True
+
+    feature = SystemHealthFeature()
+
+    _close_system_health_feature_for_release(feature)
+
+    assert feature.requested_timeout == 5.0
+    assert _system_health_release_is_stopped(feature) is True
+
+
+def test_installed_manual_trading_audit_covers_six_routes_and_hidden_peers():
+    from stock_sim.release.frontend_v2_runtime_safety import (
+        REQUIRED_RUNTIME_SAFETY_COVERAGE,
+        REQUIRED_RUNTIME_SAFETY_ROUTES,
+        REQUIRED_RUNTIME_SAFETY_STAGES,
+        validate_no_manual_trading_route_audits,
+    )
+
+    audits = tuple(
+        {
+            "route": route,
+            "stage": stage,
+            "coverage": list(REQUIRED_RUNTIME_SAFETY_COVERAGE),
+            "object_count": 10,
+            "accessible_object_count": 5,
+            "interactive_object_count": 2,
+            "hidden_object_count": 3,
+            "disabled_object_count": 1,
+            "forbidden_action_count": 0,
+            "forbidden_actions": [],
+            "static_read_only_diagnostics": [],
+        }
+        for stage in REQUIRED_RUNTIME_SAFETY_STAGES
+        for route in REQUIRED_RUNTIME_SAFETY_ROUTES
+    )
+
+    assert validate_no_manual_trading_route_audits(audits) == ()
+    assert validate_no_manual_trading_route_audits(audits[:-1])
+    unsafe = [dict(item) for item in audits]
+    unsafe[0]["forbidden_action_count"] = 1
+    unsafe[0]["forbidden_actions"] = [
+        {
+            "object_name": "hiddenSellPeer",
+            "role": "Button",
+            "accessible_name_classification": "forbidden_manual_trading",
+            "action_patterns": ["Invoke"],
+            "trigger_sources": ["signal:clicked"],
+            "enabled": False,
+            "visible": False,
+            "focusable": False,
+        }
+    ]
+    assert validate_no_manual_trading_route_audits(tuple(unsafe))
+
+
+def test_temporary_persistence_cleanup_retries_without_masking_primary_failure(
+    tmp_path,
+):
+    from contextlib import ExitStack
+    from functools import partial
+
+    from stock_sim.release.frontend_v2_package_entry import (
+        _cleanup_temporary_persistence_root,
+        _record_cleanup,
+    )
+
+    retry_root = tmp_path / "retry-root"
+    retry_root.mkdir()
+    attempts = 0
+
+    def transient_remove(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("transient SQLite handle")
+        path.rmdir()
+
+    _cleanup_temporary_persistence_root(
+        retry_root,
+        remove_tree=transient_remove,
+        collect_cycles=lambda: 0,
+        pause=lambda _seconds: None,
+        max_attempts=3,
+    )
+    assert attempts == 3
+    assert not retry_root.exists()
+
+    blocked_root = tmp_path / "blocked-root"
+    blocked_root.mkdir()
+    cleanup_errors = []
+    with pytest.raises(ValueError, match="primary gate failure"):
+        with ExitStack() as cleanup:
+            cleanup.callback(
+                _record_cleanup,
+                cleanup_errors,
+                "temporary persistence root",
+                partial(
+                    _cleanup_temporary_persistence_root,
+                    blocked_root,
+                    remove_tree=lambda _path: (_ for _ in ()).throw(
+                        PermissionError("persistent SQLite handle")
+                    ),
+                    collect_cycles=lambda: 0,
+                    pause=lambda _seconds: None,
+                    max_attempts=2,
+                ),
+            )
+            raise ValueError("primary gate failure")
+    assert cleanup_errors == [
+        "temporary persistence root cleanup failed: RuntimeError"
+    ]
 
 
 def test_release_certification_does_not_expand_the_application_command_api():
@@ -2319,6 +2991,7 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
     observed = {}
 
     class PassingSmoke:
+        certification_scope = "installed"
         errors = ()
         clean_exit = True
         manual_trading_action_count = 0
@@ -2415,6 +3088,31 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         application_reopened = True
         background_continuation_verified = True
         task_cancel_order_isolation_verified = True
+        queued_state_observed = True
+        running_state_observed = True
+        partial_state_observed = True
+        controlled_failure_observed = True
+        safe_failure_reason_verified = True
+        retry_idempotency_verified = True
+        duplicate_work_count = 0
+        terminal_completion_observed = True
+        routes_rendered = (
+            "strategy_library",
+            "scenario_lab",
+            "diagnostic_tasks",
+            "run_monitoring",
+            "evidence_and_findings",
+            "system_health",
+        )
+        keyboard_navigation_verified = True
+        system_health_context_verified = True
+        system_health_accessibility_verified = True
+        system_health_identity_graph = ("diagnostic-task-installed",)
+        focus_restoration_verified = True
+        installed_accessibility_verified = True
+        no_color_only_meaning_verified = True
+        chart_narrative_table_revision_verified = True
+        accessibility_checkpoints = tuple(range(8))
 
     def record_smoke(**arguments):
         observed.update(arguments)
@@ -2436,7 +3134,85 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
     )
     assert observed["defer_native_teardown"] is True
+    assert "installed_package_certification" not in observed
 
+    class PackageAssemblySmoke(PassingSmoke):
+        certification_scope = "package-assembly"
+        installed_accessibility_verified = False
+
+    observed.clear()
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **arguments: (
+            observed.update(arguments) or PackageAssemblySmoke()
+        ),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                "--package-assembly-smoke-report-dir="
+                f"{tmp_path / 'package-assembly'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 0
+    )
+    assert observed["certification_scope"] == "package-assembly"
+
+    for incomplete_assembly_smoke in (
+        type(
+            "AssemblyWithoutNonColorCues",
+            (PackageAssemblySmoke,),
+            {"no_color_only_meaning_verified": False},
+        ),
+        type(
+            "AssemblyWithoutSynchronizedViews",
+            (PackageAssemblySmoke,),
+            {"chart_narrative_table_revision_verified": False},
+        ),
+        type(
+            "AssemblyWithoutLifecycleCheckpoints",
+            (PackageAssemblySmoke,),
+            {"accessibility_checkpoints": ()},
+        ),
+    ):
+        monkeypatch.setattr(
+            package_entry,
+            "run_smoke_journey",
+            lambda **_arguments: incomplete_assembly_smoke(),
+        )
+        assert (
+            package_entry.main(
+                (
+                    "--renderer-lane=software",
+                    "--package-assembly-smoke-report-dir="
+                    f"{tmp_path / incomplete_assembly_smoke.__name__}",
+                    f"--source-commit={'a' * 40}",
+                    "--no-images",
+                )
+            )
+            == 1
+        )
+
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **_arguments: PackageAssemblySmoke(),
+    )
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'installed'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 1
+    )
     class MissingRecipeFamilySmoke(PassingSmoke):
         installed_materialized_scenario_identities = (
             PassingSmoke.installed_materialized_scenario_identities[:-1]
@@ -2523,6 +3299,275 @@ def test_compiled_smoke_defaults_to_the_packaged_wave2_input_fixture(
         )
         == 1
     )
+
+
+def test_source_smoke_report_cannot_claim_installed_certification(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    observed = {}
+    production_run_smoke_journey = package_entry.run_smoke_journey
+
+    class SourceSmoke:
+        certification_scope = "source-validation"
+        errors = ()
+
+    monkeypatch.delitem(
+        package_entry.__dict__,
+        "__compiled__",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        package_entry,
+        "run_smoke_journey",
+        lambda **arguments: observed.update(arguments) or SourceSmoke(),
+    )
+
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--smoke-report-dir={tmp_path / 'source'}",
+                f"--source-commit={'a' * 40}",
+                "--no-images",
+            )
+        )
+        == 0
+    )
+    assert (
+        observed["certification_scope"]
+        is package_entry.CertificationScope.SOURCE_VALIDATION
+    )
+    with pytest.raises(
+        ValueError,
+        match="Source smoke cannot claim a compiled certification scope",
+    ):
+        production_run_smoke_journey(
+            report_dir=tmp_path / "forged-installed",
+            renderer_lane=package_entry.RendererLane.SOFTWARE,
+            capture_images=False,
+            certification_scope=package_entry.CertificationScope.INSTALLED,
+        )
+
+
+def test_compiled_dpi_preflight_uses_packaged_wave3_fixture(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "UTI-Frontend-V2.exe"
+    executable.touch()
+    observed = {}
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "executable", str(executable))
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    monkeypatch.setattr(
+        package_entry,
+        "_run_installed_dpi_preflight_report",
+        lambda **arguments: observed.update(arguments) or 0,
+    )
+
+    report_path = tmp_path / "installed-dpi-preflight.json"
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=hardware",
+                f"--installed-dpi-preflight-report={report_path}",
+                f"--source-commit={'a' * 40}",
+            )
+        )
+        == 0
+    )
+    assert observed == {
+        "report_path": report_path,
+        "renderer_lane": package_entry.RendererLane.HARDWARE,
+        "source_commit": "a" * 40,
+        "fixture_archive_path": (
+            executable.parent / WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE
+        ),
+        "defer_native_teardown": True,
+    }
+
+    monkeypatch.delitem(package_entry.__dict__, "__compiled__", raising=False)
+    with pytest.raises(SystemExit) as error:
+        package_entry.main(
+            (f"--installed-dpi-preflight-report={tmp_path / 'source.json'}",)
+        )
+    assert error.value.code == 2
+
+
+def test_dpi_preflight_report_requires_real_checkpoint_and_clean_exit(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+
+    checkpoint = {
+        "checkpoint": "loading",
+        "sequence": 1,
+        "snapshot_identity": (
+            "uia:1:loading:strategy_library:r1:r1:"
+            "runMonitoringRouteNavigation:loading:scale200"
+        ),
+        "window_device_pixel_ratio": 2.0,
+    }
+
+    def reach_preflight(**arguments):
+        arguments["lifecycle_checks"].append(lambda: True)
+        raise package_entry._InstalledDpiPreflightReached(checkpoint)
+
+    monkeypatch.setattr(package_entry, "_run_wave2_smoke_journey", reach_preflight)
+    report_path = tmp_path / "installed-dpi-preflight.json"
+    assert (
+        package_entry._run_installed_dpi_preflight_report(
+            report_path=report_path,
+            renderer_lane=package_entry.RendererLane.HARDWARE,
+            source_commit="a" * 40,
+            fixture_archive_path=tmp_path / "wave3.zip",
+            defer_native_teardown=True,
+        )
+        == 0
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report == {
+        "schema_version": 1,
+        "source_commit": "a" * 40,
+        "renderer_lane": "hardware",
+        "certification_scope": "installed-dpi-preflight",
+        "production_path": list(package_entry.PRODUCTION_PATH),
+        "checkpoint": "loading",
+        "checkpoint_sequence": 1,
+        "snapshot_identity": (
+            "uia:1:loading:strategy_library:r1:r1:"
+            "runMonitoringRouteNavigation:loading:scale200"
+        ),
+        "qt_window_device_pixel_ratio": 2.0,
+        "external_uia_acknowledged": True,
+        "clean_exit": True,
+        "passed": True,
+        "errors": [],
+    }
+
+    def fail_cleanup(**arguments):
+        arguments["lifecycle_checks"].append(lambda: False)
+        raise package_entry._InstalledDpiPreflightReached(checkpoint)
+
+    monkeypatch.setattr(package_entry, "_run_wave2_smoke_journey", fail_cleanup)
+    assert (
+        package_entry._run_installed_dpi_preflight_report(
+            report_path=report_path,
+            renderer_lane=package_entry.RendererLane.HARDWARE,
+            source_commit="a" * 40,
+            fixture_archive_path=tmp_path / "wave3.zip",
+            defer_native_teardown=True,
+        )
+        == 1
+    )
+    failed = json.loads(report_path.read_text(encoding="utf-8"))
+    assert failed["passed"] is False
+    assert failed["clean_exit"] is False
+    assert failed["errors"] == [
+        "Installed DPI preflight cleanup did not complete"
+    ]
+
+
+def test_compiled_performance_defaults_to_the_packaged_formal_v1_fixture(
+    tmp_path,
+    monkeypatch,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "installed" / "UTI-Frontend-V2.exe"
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    observed = {}
+
+    def record_performance(**arguments):
+        observed.update(arguments)
+        return 0
+
+    monkeypatch.setattr(
+        package_entry,
+        "_run_installed_performance_report",
+        record_performance,
+    )
+
+    report_path = tmp_path / "performance.json"
+    assert (
+        package_entry.main(
+            (
+                "--renderer-lane=software",
+                f"--performance-report={report_path}",
+                "--performance-duration-seconds=60",
+                f"--source-commit={'a' * 40}",
+            )
+        )
+        == 0
+    )
+    assert observed["fixture_archive_path"] == (
+        executable.parent / FORMAL_V1_RELEASE_FIXTURE_ARCHIVE
+    )
+
+
+@pytest.mark.parametrize("migration_kind", ("fresh", "copied-wave3"))
+def test_compiled_migration_defaults_to_the_packaged_wave3_input_fixture(
+    tmp_path,
+    monkeypatch,
+    migration_kind,
+):
+    from stock_sim.release import frontend_v2_package_entry as package_entry
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
+    )
+
+    executable = tmp_path / "installed" / "UTI-Frontend-V2.exe"
+    monkeypatch.setitem(package_entry.__dict__, "__compiled__", object())
+    monkeypatch.setattr(package_entry.sys, "argv", [str(executable)])
+    observed = {}
+
+    def record_migration(**arguments):
+        observed.update(arguments)
+        return 0
+
+    monkeypatch.setattr(
+        package_entry,
+        "_run_installed_migration_report",
+        record_migration,
+    )
+
+    assert (
+        package_entry.main(
+            (
+                f"--migration-report={tmp_path / 'migration.json'}",
+                f"--migration-kind={migration_kind}",
+                f"--migration-work-root={tmp_path / 'migration-work'}",
+                f"--source-commit={'a' * 40}",
+            )
+        )
+        == 0
+    )
+    assert observed["migration_kind"] == migration_kind
+    assert observed["fixture_archive_path"] == (
+        executable.parent / WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE
+    )
+
+
+def test_production_build_stages_both_installed_fixture_archives():
+    from stock_sim.release.frontend_v2_packaging import build_frontend_v2_release
+
+    source = inspect.getsource(build_frontend_v2_release)
+
+    assert "stage_packaged_formal_v1_release_fixture(qml_plan)" in source
+    assert "stage_packaged_wave2_release_input_fixture(qml_plan)" in source
 
 
 def test_release_smoke_stops_bridge_before_final_fixture_disposal(
@@ -2929,6 +3974,7 @@ def test_compiled_fixture_persistence_is_owned_by_the_report_directory(
         persistence_root = _packaged_fixture_persistence_root(
             report_dir=report_dir,
             cleanup=cleanup,
+            cleanup_errors=[],
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=True,
             temporary_directory_prefix="uti-wave2-runtime-",
@@ -2962,6 +4008,10 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
         def close(self):
             events.append(self.name)
             self._closed = True
+
+        @property
+        def release_stopped(self):
+            return self._closed
 
     class Host:
         _workspace_closed = False
@@ -3009,6 +4059,7 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
             "diagnostic_tasks_feature": Feature("diagnostic-feature"),
             "run_monitoring_feature": Feature("run-feature"),
             "evidence_and_findings_feature": Feature("evidence-feature"),
+            "system_health_feature": Feature("system-feature"),
         },
     )()
     host = Host()
@@ -3033,6 +4084,7 @@ def test_release_smoke_quiesces_qml_before_closing_live_features():
         "diagnostic-feature",
         "run-feature",
         "evidence-feature",
+        "system-feature",
         "process-events",
     ]
     assert _mount_is_closed(context, window, host) is True
@@ -3413,6 +4465,38 @@ def test_only_compiled_smoke_bypasses_interpreter_static_teardown():
     assert terminated == [0]
 
 
+@pytest.mark.parametrize(
+    "report_argument",
+    (
+        "--package-assembly-smoke-report-dir=C:/package-assembly",
+        "--installed-dpi-preflight-report=C:/installed-dpi-preflight.json",
+        "--performance-report=C:/performance.json",
+        "--migration-report=C:/migration.json",
+        "--recovery-report=C:/recovery.json",
+        "--observation-readiness-report=C:/readiness.json",
+    ),
+)
+def test_all_compiled_issue_118_reports_bypass_static_teardown(
+    report_argument,
+):
+    from stock_sim.release.frontend_v2_package_entry import (
+        _run_process_entry,
+    )
+
+    terminated: list[int] = []
+    with pytest.raises(
+        RuntimeError,
+        match="OS-level process termination unexpectedly returned",
+    ):
+        _run_process_entry(
+            compiled=True,
+            arguments=(report_argument,),
+            run=lambda: 0,
+            terminate=terminated.append,
+        )
+    assert terminated == [0]
+
+
 def test_successful_compiled_smoke_exits_before_python_stream_teardown(
     monkeypatch,
 ):
@@ -3513,7 +4597,9 @@ def test_compiled_smoke_system_exit_zero_flushes_diagnostics(
     ]
 
 
-def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
+def test_compiled_smoke_failure_is_redacted_and_bypasses_static_teardown(
+    capsys,
+):
     from stock_sim.release.frontend_v2_package_entry import (
         _run_process_entry,
     )
@@ -3535,7 +4621,13 @@ def test_compiled_smoke_failure_still_bypasses_static_teardown(capsys):
         )
 
     assert terminated == [1]
-    assert "RuntimeError: smoke failed before returning" in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert stderr == (
+        "Installed certification failed at a redacted process boundary.\n"
+    )
+    assert "RuntimeError" not in stderr
+    assert "smoke failed before returning" not in stderr
+    assert "Traceback" not in stderr
 
 
 def test_compiled_smoke_preserves_argparse_exit_code():

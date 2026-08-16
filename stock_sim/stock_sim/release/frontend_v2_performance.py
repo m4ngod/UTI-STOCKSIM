@@ -140,18 +140,23 @@ WAVE2_PERFORMANCE_PRODUCTION_PATH = (
 )
 
 WAVE3_PERFORMANCE_PRODUCTION_PATH = (
-    "PerformanceLoadProjectionReadModel",
-    "DeterministicFakeStrategyLibraryAdapter",
-    "DeterministicFakeScenarioLabAdapter",
-    "DeterministicFakeDiagnosticTasksAdapter",
+    "DiagnosticsApplication",
+    "FileBackedV1Persistence",
+    "PackagedPerformanceFixtureReadModel",
+    "AppContext",
+    "LiveStrategyLibraryAdapter",
+    "LiveScenarioLabAdapter",
+    "LiveDiagnosticTasksAdapter",
     "EventBridge",
     "LiveRunMonitoringAdapter",
     "LiveEvidenceAndFindingsAdapter",
+    "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
     "StrategyLibraryPage.qml",
     "ScenarioLabPage.qml",
     "DiagnosticTasksPage.qml",
     "EvidenceChart.qml",
+    "SystemHealthPage.qml",
 )
 
 WAVE2_PERFORMANCE_COMMAND_IDS = (
@@ -363,9 +368,16 @@ def validate_performance_lane(
             f"{expected_lane} Wave 2 performance production path does not match"
         )
     failures.extend(
-        _validate_wave2_diagnostic_task_load(
-            report,
-            expected_lane=expected_lane,
+        (
+            _validate_wave2_diagnostic_task_load(
+                report,
+                expected_lane=expected_lane,
+            )
+            if schema_version == 3
+            else _validate_historical_wave2_diagnostic_task_load(
+                report,
+                expected_lane=expected_lane,
+            )
         )
     )
 
@@ -650,8 +662,8 @@ def certify_performance_evidence(
         software_report.get("wave2_diagnostic_tasks")
     ):
         failures.append(
-            "hardware and software Wave 2 probes do not identify the "
-            "same Diagnostic Task workload"
+            "hardware and software live Diagnostic Tasks probes do not "
+            "identify the same inventory workload"
         )
     if (
         hardware_schema == 3
@@ -878,7 +890,7 @@ def _validate_real_v1_performance_probe(
     return tuple(failures)
 
 
-def _validate_wave2_diagnostic_task_load(
+def _validate_historical_wave2_diagnostic_task_load(
     report: Mapping[str, Any],
     *,
     expected_lane: str,
@@ -945,6 +957,69 @@ def _validate_wave2_diagnostic_task_load(
     return tuple(failures)
 
 
+def _validate_wave2_diagnostic_task_load(
+    report: Mapping[str, Any],
+    *,
+    expected_lane: str,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    load = _mapping(report.get("wave2_diagnostic_tasks"))
+    if (
+        load.get("feature_interface") != "DiagnosticTasksFeature/1.0"
+        or load.get("application_interface")
+        != "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0"
+        or load.get("adapter") != "LiveDiagnosticTasksAdapter"
+    ):
+        failures.append(
+            f"{expected_lane} Wave 2 Diagnostic Tasks contract does not match"
+        )
+    observation_flags = (
+        "observed_before_load",
+        "observed_during_active_load",
+        "observed_after_load",
+        "prepared_before_measurement",
+    )
+    inventory_counts = _mapping(load.get("inventory_counts"))
+    if (
+        load.get("mode") != "read_only_live_inventory_observation"
+        or load.get("accepted_command_ids") != []
+        or load.get("result_command_ids") != []
+        or any(load.get(name) is not True for name in observation_flags)
+        or load.get("executed_during_active_load") is not False
+        or load.get("accepted_command_observed") is not False
+        or load.get("task_handle_observed") is not False
+        or load.get("handoff_observed") is not False
+        or load.get("terminal_observed") is not False
+        or load.get("task_lifecycle") != "not_started"
+        or any(
+            _positive_count(inventory_counts.get(name)) is None
+            for name in (
+                "strategies",
+                "approved_recipes",
+                "market_scenarios",
+            )
+        )
+    ):
+        failures.append(
+            f"{expected_lane} live Diagnostic Tasks observation is incomplete"
+        )
+    identity_graph = load.get("identity_graph")
+    task_handle_ids = load.get("task_handle_ids")
+    source_events_after = _positive_count(
+        load.get("source_events_after_command")
+    )
+    if (
+        identity_graph != []
+        or task_handle_ids != []
+        or load.get("source_events_before_command") != 0
+        or source_events_after is None
+    ):
+        failures.append(
+            f"{expected_lane} live Diagnostic Tasks sampling evidence is invalid"
+        )
+    return tuple(failures)
+
+
 def _validate_wave3_setup_load(
     report: Mapping[str, Any],
     *,
@@ -963,8 +1038,8 @@ def _validate_wave3_setup_load(
         != ["StrategyLibraryFeature/1.0", "ScenarioLabFeature/1.0"]
         or setup.get("adapters")
         != [
-            "DeterministicFakeStrategyLibraryAdapter",
-            "DeterministicFakeScenarioLabAdapter",
+            "LiveStrategyLibraryAdapter",
+            "LiveScenarioLabAdapter",
         ]
         or setup.get("routes")
         != ["strategy_library", "scenario_lab"]
@@ -994,7 +1069,9 @@ def _validate_wave3_setup_load(
         for pair in revision_pairs
     )
     if (
-        setup.get("executed_during_active_load") is not True
+        setup.get("prepared_before_measurement") is not True
+        or setup.get("observed_during_active_load") is not True
+        or setup.get("executed_during_active_load") is not False
         or setup.get("accepted_setup_commands")
         != [
             "compare_formal_strategy_set",
@@ -1026,6 +1103,8 @@ def _wave3_workload_identity(value: Any) -> tuple[Any, ...]:
         tuple(sorted(_mapping(setup.get("qml_status_roles")).items())),
         tuple(sorted(_mapping(setup.get("initial_focus_observed")).items())),
         setup.get("observed_before_load"),
+        setup.get("prepared_before_measurement"),
+        setup.get("observed_during_active_load"),
         setup.get("executed_during_active_load"),
         _sequence_identity(setup.get("accepted_setup_commands")),
         tuple(
@@ -1048,6 +1127,10 @@ def _wave2_workload_identity(value: Any) -> tuple[Any, ...]:
         load.get("feature_interface"),
         load.get("application_interface"),
         load.get("adapter"),
+        load.get("mode"),
+        tuple(sorted(_mapping(load.get("inventory_counts")).items())),
+        load.get("prepared_before_measurement"),
+        load.get("observed_during_active_load"),
         _sequence_identity(load.get("accepted_command_ids")),
         _sequence_identity(load.get("result_command_ids")),
         _sequence_identity(load.get("task_handle_ids")),
@@ -1218,6 +1301,7 @@ def prepare_sealed_v1_performance_fixture(
 
 
 def _configure_renderer_environment(lane: str) -> None:
+    os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     if lane == "software":
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
         os.environ["QT_QUICK_BACKEND"] = "software"
@@ -1407,18 +1491,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("; ".join(source_failures))
     _configure_renderer_environment(arguments.lane)
     from .frontend_v2_performance_runtime import (
-        capture_real_v1_performance_preflight,
         run_performance_lane,
     )
 
-    integrated_v1_evidence = (
-        None
-        if arguments.smoke
-        else capture_real_v1_performance_preflight(
-            fixture_archive_path=arguments.fixture_archive,
-            expected_source_commit=arguments.source_commit,
-        )
-    )
     process_started_ns = perf_counter_ns()
     report = run_performance_lane(
         lane=arguments.lane,
@@ -1426,7 +1501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_commit=arguments.source_commit,
         smoke=arguments.smoke,
         process_started_ns=process_started_ns,
-        integrated_v1_evidence=integrated_v1_evidence,
+        fixture_archive_path=arguments.fixture_archive,
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(

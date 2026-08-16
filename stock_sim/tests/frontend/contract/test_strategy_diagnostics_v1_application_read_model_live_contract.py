@@ -35,6 +35,7 @@ from strategy_diagnostics.market_paths import (
     InMemoryMarketPathArtifactStore,
     MaterializedMarketPath,
 )
+from strategy_diagnostics.reproduction_storage import SqlReproductionRepository
 from strategy_diagnostics.strategy_runs import (
     SqlStrategyRunRepository,
     _LedgerPosition,
@@ -348,6 +349,129 @@ def test_live_adapter_reopens_file_backed_v1_and_preserves_exact_identities(
         for curve in candidate.curves
         for point in curve.points
     }.issubset(metric_ids)
+    engine.dispose()
+
+
+def test_exact_manifest_selector_does_not_enumerate_manifest_collection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    application, engine, campaign, selected_run, package, manifest = (
+        _persist_formal_v1(
+            tmp_path / "diagnostics.sqlite3",
+            tmp_path / "artifacts",
+        )
+    )
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+        clock=lambda: NOW,
+    )
+    selector = V1JourneySelector(
+        campaign_id=FormalDiagnosticCampaignId(campaign.campaign_id),
+        run_id=StrategyRunId(selected_run.run_id),
+        evidence_package_id=DiagnosticEvidencePackageId(
+            package.evidence_package_id
+        ),
+        manifest_id=ReproductionManifestId(manifest.manifest_id),
+    )
+
+    def reject_collection_scan(_evidence_package_id: str):
+        raise AssertionError(
+            "An exact Manifest selector must not enumerate its collection"
+        )
+
+    monkeypatch.setattr(
+        application,
+        "reproduction_manifests",
+        reject_collection_scan,
+    )
+
+    resolved = adapter.resolve_journey(selector)
+    assert resolved.availability is ApplicationReadAvailability.READY
+    assert resolved.value is not None
+    assert resolved.value.evidence_package_id == selector.evidence_package_id
+    assert (
+        resolved.value.evidence_context.selection.reproduction_manifest_id
+        == selector.manifest_id
+    )
+    engine.dispose()
+
+
+def test_exact_manifest_selector_classifies_missing_identity(
+    tmp_path: Path,
+) -> None:
+    application, engine, campaign, selected_run, package, _manifest = (
+        _persist_formal_v1(
+            tmp_path / "diagnostics.sqlite3",
+            tmp_path / "artifacts",
+        )
+    )
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+        clock=lambda: NOW,
+    )
+
+    result = adapter.resolve_journey(
+        V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(campaign.campaign_id),
+            run_id=StrategyRunId(selected_run.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                package.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(
+                "reproduction-manifest-missing"
+            ),
+        )
+    )
+
+    assert result.availability is ApplicationReadAvailability.NOT_FOUND
+    assert result.error is not None
+    assert result.error.code == "strategy_diagnostics_selection_not_found"
+    assert not result.error.retryable
+    engine.dispose()
+
+
+def test_exact_manifest_selector_classifies_foreign_package_as_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    application, engine, campaign, selected_run, package, manifest = (
+        _persist_formal_v1(
+            tmp_path / "diagnostics.sqlite3",
+            tmp_path / "artifacts",
+        )
+    )
+    foreign_hash = "f" * 64
+    foreign_manifest = replace(
+        manifest,
+        evidence_package_id=f"diagnostic-evidence-{foreign_hash[:24]}",
+        evidence_artifact_hash=foreign_hash,
+    )
+    SqlReproductionRepository(engine).add_manifests((foreign_manifest,))
+    adapter = LiveStrategyDiagnosticsV1ApplicationAdapter(
+        application,
+        engine,
+        clock=lambda: NOW,
+    )
+
+    result = adapter.resolve_journey(
+        V1JourneySelector(
+            campaign_id=FormalDiagnosticCampaignId(campaign.campaign_id),
+            run_id=StrategyRunId(selected_run.run_id),
+            evidence_package_id=DiagnosticEvidencePackageId(
+                package.evidence_package_id
+            ),
+            manifest_id=ReproductionManifestId(
+                foreign_manifest.manifest_id
+            ),
+        )
+    )
+
+    assert result.availability is ApplicationReadAvailability.FAILED
+    assert result.error is not None
+    assert result.error.code == "strategy_diagnostics_identity_mismatch"
+    assert not result.error.retryable
     engine.dispose()
 
 

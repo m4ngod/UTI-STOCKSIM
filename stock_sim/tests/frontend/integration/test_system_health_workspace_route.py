@@ -7,6 +7,7 @@ import shutil
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
 from threading import enumerate as enumerate_threads
 from threading import get_ident
 from types import SimpleNamespace
@@ -65,6 +66,7 @@ from app.features import (
     StartFormalDiagnosticCampaign,
     StrategyRunId,
     StrategyDiagnosticsV1ApplicationReadModel,
+    SYSTEM_HEALTH_INTERFACE_VERSION,
     SystemHealthContext,
     SystemHealthDiagnosticContext,
     SystemHealthDiagnosticContextVersion,
@@ -247,6 +249,242 @@ def test_qt_adapter_switches_typed_context_and_disposes_previous_subscription() 
 
         assert adapter.diagnosticIdentityText == "No current Diagnostic Task"
         assert adapter.diagnosticContextTerminal is False
+    finally:
+        adapter.close()
+        feature.close()
+
+
+def test_qt_adapter_retries_one_transient_subscription_failure() -> None:
+    app = _app()
+    delegate = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+
+    class FailOnceSystemHealthFeature:
+        def __init__(self) -> None:
+            self.subscribe_calls = 0
+
+        @property
+        def interface_version(self):
+            return delegate.interface_version
+
+        def subscribe(self, context, observer):
+            self.subscribe_calls += 1
+            if self.subscribe_calls == 1:
+                raise RuntimeError("transient subscription boundary")
+            return delegate.subscribe(context, observer)
+
+        def close(self) -> None:
+            delegate.close()
+
+    feature = FailOnceSystemHealthFeature()
+    adapter = SystemHealthQtAdapter(
+        cast(SystemHealthFeature, feature),
+        context=SystemHealthContext(diagnostic=_exact_context()),
+    )
+    try:
+        _wait_until(
+            app,
+            lambda: adapter.diagnosticContextResolution == "exact_match",
+            timeout_ms=5000,
+        )
+
+        assert feature.subscribe_calls == 2
+    finally:
+        adapter.close()
+        feature.close()
+
+
+def test_qt_adapter_suppresses_delayed_subscription_failure_after_close() -> None:
+    app = _app()
+    subscribe_started = Event()
+    release_failure = Event()
+    failure_returned = Event()
+    retry_emissions: list[int] = []
+
+    class DelayedFailureSystemHealthFeature:
+        @property
+        def interface_version(self):
+            return SYSTEM_HEALTH_INTERFACE_VERSION
+
+        def subscribe(self, context, observer):
+            del context, observer
+            subscribe_started.set()
+            release_failure.wait(timeout=2.0)
+            failure_returned.set()
+            raise RuntimeError("delayed subscription boundary")
+
+        def close(self) -> None:
+            return
+
+    feature = DelayedFailureSystemHealthFeature()
+    adapter = SystemHealthQtAdapter(
+        cast(SystemHealthFeature, feature),
+        context=SystemHealthContext(diagnostic=_exact_context()),
+    )
+    adapter.subscriptionRetryRequested.connect(
+        lambda generation: retry_emissions.append(generation),
+        Qt.ConnectionType.DirectConnection,
+    )
+    try:
+        assert subscribe_started.wait(timeout=1.0)
+        adapter.close()
+        release_failure.set()
+        assert failure_returned.wait(timeout=1.0)
+        QTest.qWait(100)
+        app.processEvents()
+
+        assert retry_emissions == []
+    finally:
+        release_failure.set()
+        adapter.close()
+
+
+def test_qt_adapter_bounds_permanent_subscription_failures() -> None:
+    app = _app()
+
+    class PermanentlyFailingSystemHealthFeature:
+        def __init__(self) -> None:
+            self.subscribe_calls = 0
+
+        @property
+        def interface_version(self):
+            return SYSTEM_HEALTH_INTERFACE_VERSION
+
+        def subscribe(self, context, observer):
+            del context, observer
+            self.subscribe_calls += 1
+            raise RuntimeError("permanent subscription boundary")
+
+        def close(self) -> None:
+            return
+
+    feature = PermanentlyFailingSystemHealthFeature()
+    adapter = SystemHealthQtAdapter(
+        cast(SystemHealthFeature, feature),
+        context=SystemHealthContext(diagnostic=_exact_context()),
+    )
+    try:
+        _wait_until(app, lambda: feature.subscribe_calls == 4)
+        QTest.qWait(200)
+        app.processEvents()
+
+        assert feature.subscribe_calls == 4
+        assert adapter.phase == "loading"
+        assert adapter.diagnosticContextResolution == "no_current_task"
+    finally:
+        adapter.close()
+
+
+def test_qt_adapter_discards_retry_from_an_old_context_generation() -> None:
+    app = _app()
+    delegate = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+    first_failure = Event()
+
+    class FirstGenerationFailsSystemHealthFeature:
+        def __init__(self) -> None:
+            self.contexts: list[SystemHealthContext] = []
+
+        @property
+        def interface_version(self):
+            return delegate.interface_version
+
+        def subscribe(self, context, observer):
+            self.contexts.append(context)
+            if len(self.contexts) == 1:
+                first_failure.set()
+                raise RuntimeError("old generation subscription boundary")
+            return delegate.subscribe(context, observer)
+
+        def close(self) -> None:
+            delegate.close()
+
+    initial_context = SystemHealthContext(diagnostic=_exact_context())
+    replacement_context = SystemHealthContext(
+        diagnostic=replace(_exact_context(), task_revision=113)
+    )
+    feature = FirstGenerationFailsSystemHealthFeature()
+    adapter = SystemHealthQtAdapter(
+        cast(SystemHealthFeature, feature),
+        context=initial_context,
+    )
+    try:
+        assert first_failure.wait(timeout=1.0)
+        adapter.set_context(replacement_context)
+        _wait_until(
+            app,
+            lambda: adapter.diagnosticContextResolution == "exact_match",
+        )
+        QTest.qWait(100)
+        app.processEvents()
+
+        assert feature.contexts == [initial_context, replacement_context]
+    finally:
+        adapter.close()
+        feature.close()
+
+
+def test_qt_adapter_workers_capture_context_before_thread_start(
+    monkeypatch,
+) -> None:
+    from app.ui import journey_workspace as journey_workspace_module
+
+    app = _app()
+    delegate = DeterministicFakeSystemHealthAdapter(initially_healthy=True)
+    scheduled_workers = []
+
+    class DeferredThread:
+        def __init__(self, *, target, args, **_kwargs) -> None:
+            self._target = target
+            self._args = args
+
+        def start(self) -> None:
+            scheduled_workers.append(
+                lambda: self._target(*self._args)
+            )
+
+    class RecordingSystemHealthFeature:
+        def __init__(self) -> None:
+            self.subscribed_contexts: list[SystemHealthContext] = []
+            self.snapshot_contexts: list[SystemHealthContext] = []
+
+        @property
+        def interface_version(self):
+            return delegate.interface_version
+
+        def subscribe(self, context, observer):
+            self.subscribed_contexts.append(context)
+            return delegate.subscribe(context, observer)
+
+        def snapshot(self, context):
+            self.snapshot_contexts.append(context)
+            return delegate.snapshot(context)
+
+        def close(self) -> None:
+            delegate.close()
+
+    monkeypatch.setattr(journey_workspace_module, "Thread", DeferredThread)
+    initial_context = SystemHealthContext(diagnostic=_exact_context())
+    replacement_context = SystemHealthContext(
+        diagnostic=replace(_exact_context(), task_revision=113)
+    )
+    feature = RecordingSystemHealthFeature()
+    adapter = SystemHealthQtAdapter(
+        cast(SystemHealthFeature, feature),
+        context=initial_context,
+    )
+    try:
+        adapter.refresh()
+        adapter.set_context(replacement_context)
+        assert len(scheduled_workers) == 3
+
+        for worker in scheduled_workers:
+            worker()
+        app.processEvents()
+
+        assert feature.subscribed_contexts == [
+            initial_context,
+            replacement_context,
+        ]
+        assert feature.snapshot_contexts == [initial_context]
     finally:
         adapter.close()
         feature.close()

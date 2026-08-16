@@ -803,6 +803,16 @@ class ReproductionService:
     ) -> tuple[ReproductionManifest, ...]:
         return self._repository.list_manifests(evidence_package_id)
 
+    def manifest_for(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> ReproductionManifest | None:
+        manifest = self._repository.get_manifest(manifest_id)
+        if manifest.evidence_package_id != evidence_package_id:
+            return None
+        return manifest
+
     def manifest_format_identity(
         self,
         evidence_package_id: str,

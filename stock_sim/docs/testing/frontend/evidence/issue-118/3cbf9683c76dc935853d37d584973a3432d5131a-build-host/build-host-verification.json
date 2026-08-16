@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "source_commit": "3cbf9683c76dc935853d37d584973a3432d5131a",
+  "evidence_scope": "package-assembly-build-host",
+  "installed_certification": false,
+  "release_claim": false,
+  "performance_waiver_applied": false,
+  "archives": [
+    {
+      "name": "qml-journey-3cbf9683c76d.zip",
+      "size_bytes": 158210835,
+      "sha256": "sha256:39a2362b55562851c9adf3458a5a568064575b09ffd3fddf660281ce80c0533c"
+    },
+    {
+      "name": "widgets-rollback-3cbf9683c76d.zip",
+      "size_bytes": 145315837,
+      "sha256": "sha256:a77c9f33b4d5aa600223034f412a7e0cab7236ebfb84fd903006d3976b5dbe50"
+    }
+  ],
+  "canonical_external_evidence": {
+    "release_candidate_summary": {
+      "retained_outside_git": true,
+      "size_bytes": 2883218,
+      "sha256": "sha256:6a0b23baaa8fc007c78ca7831bab4e8a15c4e5391ebc1d0122dbc27aa206720e"
+    },
+    "renderer_gate_report": {
+      "retained_outside_git": true,
+      "size_bytes": 1986718,
+      "sha256": "sha256:9a132170800f3e962cefce4850c0e0c5a26e3ef11c6c28a80631ce3ea0a9ef24"
+    }
+  },
+  "dependency_manifest": {
+    "path": "dependency-manifest.json",
+    "size_bytes": 835693,
+    "sha256": "sha256:e7dc3276b8c301883b3728844eeae97531dd7db73bacd01983d3804dc7bcdc9c"
+  },
+  "distribution_inventory": {
+    "path": "distribution-SHA256SUMS.txt",
+    "entry_count": 3885,
+    "unique_path_count": 3885,
+    "duplicate_path_count": 0,
+    "missing_count": 0,
+    "mismatch_count": 0,
+    "independently_recomputed": true,
+    "result": "passed",
+    "sha256": "sha256:980801e481c9b5e2ee6a8e32304dac07be1da83b6aca86e438927f4240deff02"
+  },
+  "packages": {
+    "qml-journey": {
+      "file_count": 2142,
+      "total_bytes": 446268298,
+      "tree_sha256": "sha256:7cd68d9b1c79c304cc11d56a1970c30cf1669d15f61ca916e2c6a262009aada9"
+    },
+    "widgets-rollback": {
+      "file_count": 1743,
+      "total_bytes": 405352676,
+      "tree_sha256": "sha256:f056bd6bbe639a876ee31771e197245ed7eb0968a14aa4e4f6656359d511a074"
+    }
+  },
+  "package_gates": {
+    "qml_delta_bytes": 40915622,
+    "qml_delta_limit_bytes": 52428800,
+    "webengine_file_count": 0,
+    "hardware": {
+      "certification_scope": "package-assembly",
+      "graphics_api": "Direct3D11",
+      "routes_rendered": 6,
+      "manual_trading_action_count": 0,
+      "clean_exit": true,
+      "errors": 0
+    },
+    "software": {
+      "certification_scope": "package-assembly",
+      "graphics_api": "Software",
+      "routes_rendered": 6,
+      "manual_trading_action_count": 0,
+      "clean_exit": true,
+      "errors": 0
+    }
+  },
+  "toolchain_identity": "sha256:dea775b6fa19a4d1967be09ed4630503cd0480d87931869c1fe79076807129d0"
+}

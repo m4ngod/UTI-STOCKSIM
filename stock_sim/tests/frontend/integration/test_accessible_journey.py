@@ -41,9 +41,15 @@ from app.features import (
     StrategyLibraryContext,
     SystemHealthContext,
 )
-from app.journey_recovery import JourneyWorkspaceRoute
+from app.journey_recovery import (
+    JourneyFocusReturnToken,
+    JourneyPresentationSelection,
+    JourneyWorkspaceBookmark,
+    JourneyWorkspaceRoute,
+)
 from app.ui.accessibility import AccessibilityPreferences
 from app.ui.journey_workspace import JourneyWorkspaceHost
+from app.ui.main_window import MainWindow
 
 
 def _app() -> QApplication:
@@ -77,6 +83,9 @@ def _mounted_host(
     preferences: AccessibilityPreferences | None = None,
     run_context: RunMonitoringContext | None = None,
     system_health_feature: DeterministicFakeSystemHealthAdapter | None = None,
+    initial_route: str = "run_monitoring",
+    evidence_ready: bool = True,
+    show_host: bool = True,
 ) -> tuple[
     JourneyWorkspaceHost,
     DeterministicFakeRunMonitoringAdapter,
@@ -97,7 +106,8 @@ def _mounted_host(
         run_feature.advance_to_empty(selected_run_context)
     else:
         run_feature.advance_to_running(selected_run_context)
-    evidence_feature.advance_to_completed(_evidence_context())
+    if evidence_ready:
+        evidence_feature.advance_to_completed(_evidence_context())
     host = JourneyWorkspaceHost(
         run_feature,
         context=selected_run_context,
@@ -112,10 +122,11 @@ def _mounted_host(
         system_health_feature=selected_system_health_feature,
         system_health_context=SystemHealthContext(),
         accessibility_preferences=preferences,
-        initial_route="run_monitoring",
+        initial_route=initial_route,
     )
     host.resize(1280, 720)
-    host.show()
+    if show_host:
+        host.show()
     app.processEvents()
     host._accessibility_feature_owners = (
         strategy_feature,
@@ -181,11 +192,16 @@ def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
     progress = root.findChild(QObject, "runMonitoringAccessibleProgress")
     pause = root.findChild(QObject, "pauseDiagnosticTask")
     route = root.findChild(QObject, "runMonitoringRouteNavigation")
+    diagnostic_route = root.findChild(
+        QObject,
+        "diagnosticTasksRouteNavigation",
+    )
 
     status_interface = _interface(status)
     progress_interface = _interface(progress)
     pause_interface = _interface(pause)
     route_interface = _interface(route)
+    diagnostic_route_interface = _interface(diagnostic_route)
 
     assert status_interface.role() == QAccessible.Role.StatusBar
     assert "active" in status_interface.text(QAccessible.Text.Name).casefold()
@@ -204,6 +220,12 @@ def test_narrator_sees_named_state_progress_commands_and_no_trading_actions():
     ).casefold()
     assert bool(route_interface.state().selected) is True
     assert bool(route_interface.state().focusable) is True
+    assert str(root.property("screenState")).casefold() in (
+        route_interface.text(QAccessible.Text.Name).casefold()
+    )
+    assert str(root.property("diagnosticTasksInventoryState")).casefold() in (
+        diagnostic_route_interface.text(QAccessible.Text.Name).casefold()
+    )
     assert QAccessibleActionInterface.pressAction() in (
         route_interface.actionInterface().actionNames()
     )
@@ -790,7 +812,11 @@ def test_200_percent_text_scale_scrolls_focused_content_and_reduces_motion():
     )
     assert health_grid.property("columns") == 1
     health_source.forceActiveFocus()
-    _settle(app)
+    _wait_for(
+        lambda: health_scroll.property("contentY") > 0,
+        app,
+        "System Health did not scroll the focused data-source status into view",
+    )
     assert health_source.property("activeFocus") is True
     assert health_scroll.property("contentY") > 0
     health_top = health_source.mapToItem(root, QPointF(0, 0)).y()
@@ -1008,6 +1034,182 @@ def test_all_six_routes_restore_meaningful_focus_after_authoritative_return():
         assert restored.property("focusVisible") is True
         assert restored.property("visible") is True
         assert restored.property("enabled") is True
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_initial_evidence_route_loads_asynchronously_with_safe_public_focus():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host(
+        initial_route="evidence_and_findings",
+    )
+    root = host.rootObject()
+    loader = root.findChild(QObject, "evidenceAndFindingsPageLoader")
+    route = root.findChild(QQuickItem, "evidenceAndFindingsRouteNavigation")
+
+    assert loader is not None
+    assert loader.property("asynchronous") is True
+    _wait_for(
+        lambda: root.property("evidenceInitialFocusItem") is not None
+        and root.property("evidenceInitialFocusItem").property("activeFocus"),
+        app,
+        "Initial Evidence route did not restore public focus after loading",
+    )
+    assert route.property("visible") is True
+    assert root.findChild(QObject, "evidenceAccessibleStatus") is not None
+    assert root.findChild(QObject, "runMonitoringFlickable") is None
+
+    assert host.activate_route(JourneyWorkspaceRoute.RUN_MONITORING)
+    _wait_for(
+        lambda: root.findChild(QObject, "runMonitoringFlickable") is not None
+        and root.property("runMonitoringInitialFocusItem") is not None
+        and root.property("runMonitoringInitialFocusItem").property("activeFocus"),
+        app,
+        "Deferred Run Monitoring route did not load and restore public focus",
+    )
+    assert root.findChild(QObject, "pauseDiagnosticTask") is not None
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_initial_evidence_route_restores_page_focus_after_late_state():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host(
+        initial_route="evidence_and_findings",
+        evidence_ready=False,
+    )
+    root = host.rootObject()
+    route = root.findChild(QQuickItem, "evidenceAndFindingsRouteNavigation")
+
+    _wait_for(
+        lambda: route.property("activeFocus"),
+        app,
+        "Initial Evidence loading did not retain a safe public route focus",
+    )
+    assert root.property("evidenceInitialFocusItem") is None
+
+    evidence_feature.advance_to_completed(_evidence_context())
+    _wait_for(
+        lambda: root.property("evidenceInitialFocusItem") is not None
+        and root.property("evidenceInitialFocusItem").property("activeFocus")
+        and root.property("evidenceInitialFocusItem").property("focusVisible"),
+        app,
+        "Authoritative Evidence state did not restore visible page focus",
+    )
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_initial_evidence_route_restores_focus_when_shown_after_async_load():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host(
+        initial_route="evidence_and_findings",
+        show_host=False,
+    )
+    root = host.rootObject()
+    _wait_for(
+        lambda: root.property("evidenceInitialFocusItem") is not None,
+        app,
+        "Hidden initial Evidence route did not finish loading",
+    )
+    target = root.property("evidenceInitialFocusItem")
+    loader = root.findChild(QObject, "evidenceAndFindingsPageLoader")
+    assert loader.property("asynchronous") is True
+    target.setFocus(False)
+    assert not target.property("activeFocus")
+
+    host.show()
+    _wait_for(
+        lambda: target.property("activeFocus")
+        and target.property("focusVisible"),
+        app,
+        "Parent window show did not restore visible Evidence page focus",
+    )
+
+    _close(host, run_feature, evidence_feature)
+
+
+def test_show_preserves_meaningful_evidence_page_focus():
+    app = _app()
+    host, run_feature, evidence_feature = _mounted_host(
+        initial_route="evidence_and_findings",
+    )
+    root = host.rootObject()
+    _wait_for(
+        lambda: root.property("evidenceSecondCandidateFocusItem") is not None,
+        app,
+        "Evidence candidate controls did not finish loading",
+    )
+    target = root.property("evidenceSecondCandidateFocusItem")
+    target.forceActiveFocus()
+    app.processEvents()
+    assert target.property("activeFocus") is True
+
+    host.hide()
+    app.processEvents()
+    host.show()
+    _wait_for(
+        lambda: target.property("activeFocus"),
+        app,
+        "Window show did not preserve the meaningful Evidence page focus",
+    )
+    _close(host, run_feature, evidence_feature)
+
+
+def test_initial_evidence_focus_token_preserves_exact_synchronous_restore():
+    app = _app()
+    run_feature = DeterministicFakeRunMonitoringAdapter()
+    evidence_feature = DeterministicFakeEvidenceAndFindingsAdapter()
+    run_feature.advance_to_running(_run_context())
+    evidence_feature.advance_to_completed(_evidence_context())
+    window = MainWindow(
+        journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+            presentation=JourneyPresentationSelection(
+                focus_return_token=JourneyFocusReturnToken(
+                    route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS,
+                    control="evidenceCandidate-MODEL-B17",
+                    identity="MODEL-B17",
+                ),
+            ),
+        ),
+        run_monitoring_feature=run_feature,
+        run_monitoring_context=_run_context(),
+        evidence_and_findings_feature=evidence_feature,
+        evidence_and_findings_context=_evidence_context(),
+        frontend_v2_enabled=True,
+    )
+    host = window.centralWidget()
+    root = host.rootObject()
+    loader = root.findChild(QObject, "evidenceAndFindingsPageLoader")
+
+    assert loader.property("asynchronous") is False
+    window.show()
+    _wait_for(
+        lambda: root.property("evidenceInitialFocusItem") is not None
+        and root.property("evidenceInitialFocusItem").objectName()
+        == "evidenceCandidate-MODEL-B17"
+        and root.property("evidenceInitialFocusItem").property("activeFocus"),
+        app,
+        "Exact persisted Evidence focus token was not restored",
+    )
+
+    host.close_adapter()
+    window.close()
+    run_feature.close()
+    evidence_feature.close()
+
+
+def test_noninitial_evidence_route_preserves_synchronous_route_semantics():
+    host, run_feature, evidence_feature = _mounted_host()
+    root = host.rootObject()
+    loader = root.findChild(QObject, "evidenceAndFindingsPageLoader")
+
+    assert loader is not None
+    assert loader.property("asynchronous") is False
+    assert host.activate_route(JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS)
+    assert root.property("evidenceInitialFocusItem") is not None
+    assert root.findChild(QObject, "evidenceAccessibleStatus") is not None
 
     _close(host, run_feature, evidence_feature)
 

@@ -1,0 +1,77 @@
+{
+  "archives": [
+    {
+      "name": "qml-journey-b594ec5e532f.zip",
+      "sha256": "sha256:b49d74245dcb305bd1e6cefbe5dc58f80223c665e782437bb13051160a12fb84",
+      "size_bytes": 158209950
+    },
+    {
+      "name": "widgets-rollback-b594ec5e532f.zip",
+      "sha256": "sha256:cba4c65fe9102414b4be3af6bcb01b9acbb9abff749adbd0889c257512a55fef",
+      "size_bytes": 145315832
+    }
+  ],
+  "canonical_external_evidence": {
+    "release_candidate_summary": {
+      "retained_outside_git": true,
+      "sha256": "sha256:14c08617bb10136711450bb946664647ba588b0817e4b729124f3505af5222f1",
+      "size_bytes": 2883304
+    },
+    "renderer_gate_report": {
+      "retained_outside_git": true,
+      "sha256": "sha256:41fde4bd1967f565fe57ec5ee3ff2625c0c44f710cf19fcaafe053d66724efb4",
+      "size_bytes": 1986807
+    }
+  },
+  "dependency_manifest": {
+    "path": "dependency-manifest.json",
+    "sha256": "sha256:e4cf62810af05296eab24b06a324aee76aa4919df7690d007802c6a226bbacd9",
+    "size_bytes": 835693
+  },
+  "distribution_inventory": {
+    "entry_count": 3885,
+    "independently_recomputed": true,
+    "mismatch_count": 0,
+    "path": "distribution-SHA256SUMS.txt",
+    "result": "passed",
+    "sha256": "sha256:083b9efb35dfb922a1c6fdaf50ec11900d966660cb8d0995daa9d9a963a4bef2"
+  },
+  "evidence_scope": "package-assembly-build-host",
+  "installed_certification": false,
+  "package_gates": {
+    "hardware": {
+      "clean_exit": true,
+      "errors": 0,
+      "graphics_api": "Direct3D11",
+      "manual_trading_action_count": 0,
+      "routes_rendered": 6
+    },
+    "qml_delta_bytes": 40915575,
+    "qml_delta_limit_bytes": 52428800,
+    "software": {
+      "clean_exit": true,
+      "errors": 0,
+      "graphics_api": "Software",
+      "manual_trading_action_count": 0,
+      "routes_rendered": 6
+    },
+    "webengine_file_count": 0
+  },
+  "packages": {
+    "qml-journey": {
+      "file_count": 2142,
+      "total_bytes": 446268320,
+      "tree_sha256": "sha256:e8f0910a0aef17e47edf9de4fd908423b06e9255274012414b1e3d161675a388"
+    },
+    "widgets-rollback": {
+      "file_count": 1743,
+      "total_bytes": 405352745,
+      "tree_sha256": "sha256:7d99680e11a8d47031e0215c043a153c484b3148142dfe1eb8d14811e3f7fe38"
+    }
+  },
+  "performance_waiver_applied": false,
+  "release_claim": false,
+  "schema_version": 1,
+  "source_commit": "b594ec5e532fe205dbfa9875904d97319bea4d32",
+  "toolchain_identity": "sha256:dea775b6fa19a4d1967be09ed4630503cd0480d87931869c1fe79076807129d0"
+}

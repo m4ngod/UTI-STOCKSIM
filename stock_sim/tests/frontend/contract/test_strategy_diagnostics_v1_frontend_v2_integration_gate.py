@@ -999,6 +999,61 @@ def test_candidate_source_verification_scans_the_git_toplevel(
         )
 
 
+def test_candidate_source_verification_accepts_external_evidence_without_allowing_untracked_source(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    project_root = repository_root / "stock_sim"
+    project_root.mkdir(parents=True)
+    (project_root / "tracked.txt").write_text(
+        "candidate source\n",
+        encoding="utf-8",
+    )
+    for command in (
+        ("git", "init", "--initial-branch=master"),
+        ("git", "config", "user.email", "wave4@example.invalid"),
+        ("git", "config", "user.name", "Wave 4 Gate"),
+        ("git", "add", "."),
+        ("git", "commit", "-m", "candidate"),
+    ):
+        subprocess.run(
+            command,
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        )
+    source_commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    evidence_root = tmp_path / "external-evidence" / source_commit
+    evidence_root.mkdir(parents=True)
+    (evidence_root / "junit.xml").write_text(
+        "<testsuite />\n",
+        encoding="utf-8",
+    )
+
+    gate_module._verify_candidate_source(
+        project_root,
+        source_commit,
+        allowed_untracked_root=evidence_root,
+    )
+
+    (project_root / "unexpected.txt").write_text(
+        "must still be rejected\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unexpected untracked files"):
+        gate_module._verify_candidate_source(
+            project_root,
+            source_commit,
+            allowed_untracked_root=evidence_root,
+        )
+
+
 def test_evidence_mode_requires_a_full_source_sha_and_complete_gate(
     tmp_path: Path,
 ) -> None:

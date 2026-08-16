@@ -175,7 +175,8 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.max(
                     112,
-                    tokens.titleSize + tokens.bodySize * 2 + tokens.spaceLg * 2
+                    diagnosticTasksStatusLayout.implicitHeight
+                        + tokens.spaceLg * 2
                 )
                 radius: tokens.radiusMd
                 color: tokens.surface
@@ -189,6 +190,7 @@ Item {
                 onActiveFocusChanged: if (activeFocus) page.rememberFocus(this)
 
                 ColumnLayout {
+                    id: diagnosticTasksStatusLayout
                     anchors.fill: parent
                     anchors.margins: tokens.spaceLg
                     spacing: tokens.spaceXs
@@ -206,6 +208,7 @@ Item {
                         font.pixelSize: tokens.bodySize
                         wrapMode: Text.WrapAnywhere
                     }
+
                 }
             }
 
@@ -341,8 +344,12 @@ Item {
                 color: tokens.surface
                 border.color: tokens.border
                 Accessible.role: Accessible.Grouping
-                Accessible.name: "Durable Diagnostic Task configuration validation and approval"
-                Accessible.description: adapter.setupSelectionText + ". " + adapter.taskStatusText + ". " + adapter.validationStatusText + ". " + adapter.approvalStatusText
+                Accessible.name: "Durable Diagnostic Task configuration "
+                    + "validation and approval"
+                Accessible.description: adapter.setupSelectionText + ". "
+                    + adapter.taskStatusText + ". "
+                    + adapter.validationStatusText + ". "
+                    + adapter.approvalStatusText
 
                 ColumnLayout {
                     id: creationContent
@@ -365,12 +372,30 @@ Item {
                         wrapMode: Text.WrapAnywhere
                     }
 
-                    Text {
+                    Rectangle {
+                        objectName: "diagnosticTaskRecoveryProgressStatus"
                         Layout.fillWidth: true
-                        text: adapter.taskHandleText
-                        color: tokens.textMuted
-                        font.pixelSize: tokens.labelSize
-                        wrapMode: Text.WrapAnywhere
+                        Layout.preferredHeight: Math.max(
+                            tokens.controlHeight,
+                            diagnosticTaskRecoveryProgressText.implicitHeight
+                                + tokens.spaceSm * 2
+                        )
+                        radius: tokens.radiusSm
+                        color: tokens.surfaceRaised
+                        border.color: tokens.border
+                        Accessible.role: Accessible.StatusBar
+                        Accessible.name: adapter.taskHandleText
+
+                        Text {
+                            id: diagnosticTaskRecoveryProgressText
+                            anchors.fill: parent
+                            anchors.margins: tokens.spaceSm
+                            text: adapter.taskHandleText
+                            color: tokens.textPrimary
+                            font.pixelSize: tokens.labelSize
+                            wrapMode: Text.WrapAnywhere
+                            Accessible.ignored: true
+                        }
                     }
 
                     DiagnosticCommandButton {
@@ -858,8 +883,12 @@ Item {
                         font.pixelSize: tokens.labelSize
                         wrapMode: Text.WrapAnywhere
                         Accessible.role: Accessible.StaticText
-                        Accessible.name: "Failed Campaign node attempt history"
-                        Accessible.description: text
+                        Accessible.name: adapter.failedAttemptPresent
+                            ? "Failed Campaign node attempt history"
+                            : "Campaign node attempt history unavailable"
+                        Accessible.description: adapter.failedAttemptPresent
+                            ? text
+                            : "No Campaign node attempt history is available."
                     }
 
                     DiagnosticCommandButton {

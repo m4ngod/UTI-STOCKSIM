@@ -5,19 +5,26 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import os
 import re
+import shutil
 import sys
 import tempfile
-import traceback
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from datetime import UTC, datetime
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from time import monotonic, sleep
+from threading import current_thread
+from time import monotonic, perf_counter_ns, sleep
 from typing import Any
+
+from stock_sim.release.frontend_v2_interactive_actions import (
+    APPROVED_INTERACTIVE_NAMES as _APPROVED_INTERACTIVE_NAMES,
+)
 
 PRODUCTION_PATH = (
     "DiagnosticsApplication",
@@ -35,6 +42,14 @@ PRODUCTION_PATH = (
     "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
     "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost",
+)
+ACTIVE_JOURNEY_ROUTES = (
+    "strategy_library",
+    "scenario_lab",
+    "diagnostic_tasks",
+    "run_monitoring",
+    "evidence_and_findings",
+    "system_health",
 )
 WAVE2_ACCEPTED_COMMAND_KINDS = (
     "create_diagnostic_task",
@@ -54,6 +69,9 @@ WAVE3_ACCEPTED_SETUP_COMMAND_KINDS = (
     "resolve_execution_assumptions",
     "select_formal_scenario_set",
 )
+INSTALLED_UIA_ACK_TIMEOUT_SECONDS = 120.0
+DEFAULT_SETTLE_TIMEOUT_SECONDS = 3.0
+COMPILED_SMOKE_OBSERVATION_SETTLE_TIMEOUT_SECONDS = 10.0
 
 # Compiled smoke terminates the process immediately after its report is
 # accepted. Keep deferred PySide/SQLAlchemy owners strongly reachable until
@@ -174,68 +192,6 @@ EXPECTED_JOURNEY = (
         "fresh",
     ),
 )
-_APPROVED_INTERACTIVE_NAMES = re.compile(
-    r"^(?:"
-    r"Open Strategy Library|"
-    r"Open Scenario Lab|"
-    r"Compare formal set|"
-    r"Select exact formal set|"
-    r"Scenario Recipe Draft name|"
-    r"Select admitted Historical Market Segment|"
-    r"Select registered Scenario transformation|"
-    r"Closed transformation first parameter value|"
-    r"Select optional second registered Scenario transformation|"
-    r"Closed second transformation first parameter value|"
-    r"Requested commission basis points|"
-    r"Requested slippage basis points|"
-    r"Requested maximum fill fraction|"
-    r"Requested execution latency nodes|"
-    r"Scenario decision cadence minutes|"
-    r"Scenario materialization seed|"
-    r"Market Rule Profile version identity|"
-    r"Allow requested partial fills|"
-    r"Create exact immutable Scenario Recipe Draft|"
-    r"Create exact immutable Compound Scenario Recipe Draft|"
-    r"Audited AI Scenario Recipe intent|"
-    r"Create audited AI-assisted Scenario Recipe Draft|"
-    r"Create immutable successor Recipe Draft revision|"
-    r"Select Recipe Draft .+ for successor revision|"
-    r"Validate exact Recipe Draft revision \d+|"
-    r"Approve exact Recipe validation .+|"
-    r"Materialize exact Approved Recipe .+|"
-    r"Compose visible Campaign Cases into a Scenario Set|"
-    r"Resolve requested and effective execution assumptions|"
-    r"Select immutable Formal Scenario Set context|"
-    r"Open Diagnostic Tasks|"
-    r"Open Run Monitoring|"
-    r"Open Evidence and Findings|"
-    r"Open System Health|"
-    r"Create Diagnostic Task|"
-    r"Correct Configuration|"
-    r"Validate Configuration|"
-    r"Approve Configuration|"
-    r"Start Formal Diagnostic Campaign|"
-    r"(?:Pause|Resume|Cancel) Diagnostic Task lifecycle|"
-    r"(?:Pause|Resume|Cancel) Formal Diagnostic Campaign lifecycle|"
-    r"(?:Pause|Resume|Cancel) Campaign node lifecycle|"
-    r"Retry failed Campaign node attempt|"
-    r"Pause diagnostic task|"
-    r"Resume diagnostic task|"
-    r"Cancel diagnostic task|"
-    r"Search authoritative Strategy inventory|"
-    r"Filter Strategy availability|"
-    r"Inspect details for .+|"
-    r"Select candidate .+|"
-    r"Select finding .+|"
-    r"Select chart overlay .+|"
-    r"Select Sensitivity Breakpoint .+|"
-    r"Select diagnostic evidence point|"
-    r"Filter evidence by risk|"
-    r"Sort evidence by coverage|"
-    r"Focus compound stress evidence|"
-    r"Show (?:findings|assumptions|provenance|context) tab"
-    r")$"
-)
 _PACKAGED_NON_ACTION_FOCUS_OBJECT_NAMES = frozenset(
     {
         "diagnosticTaskApprovalActorInput",
@@ -277,6 +233,13 @@ class RendererLane(str, Enum):
     SOFTWARE = "software"
 
 
+class CertificationScope(str, Enum):
+    SOURCE_VALIDATION = "source-validation"
+    INSTALLED = "installed"
+    INSTALLED_DPI_PREFLIGHT = "installed-dpi-preflight"
+    PACKAGE_ASSEMBLY = "package-assembly"
+
+
 @dataclass(frozen=True, slots=True)
 class SmokeStateObservation:
     stage: str
@@ -314,6 +277,29 @@ class InstalledWave3SetupEvidence:
     materialization_task_handle_identities: tuple[str, ...]
     materialized_path_identities: tuple[str, ...]
     materialized_scenario_identities: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledDpiPreflightResult:
+    schema_version: int
+    source_commit: str
+    renderer_lane: str
+    certification_scope: str
+    production_path: tuple[str, ...]
+    checkpoint: str
+    checkpoint_sequence: int
+    snapshot_identity: str
+    qt_window_device_pixel_ratio: float
+    external_uia_acknowledged: bool
+    clean_exit: bool
+    passed: bool
+    errors: tuple[str, ...]
+
+
+class _InstalledDpiPreflightReached(Exception):
+    def __init__(self, checkpoint: dict[str, Any]) -> None:
+        super().__init__("installed DPI preflight reached")
+        self.checkpoint = checkpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,9 +386,31 @@ class PackageSmokeResult:
     application_reopened: bool = False
     background_continuation_verified: bool = False
     task_cancel_order_isolation_verified: bool = False
+    queued_state_observed: bool = False
+    running_state_observed: bool = False
+    partial_state_observed: bool = False
+    controlled_failure_observed: bool = False
+    safe_failure_reason_verified: bool = False
+    retry_idempotency_verified: bool = False
+    duplicate_work_count: int = -1
+    terminal_completion_observed: bool = False
+    system_health_context_verified: bool = False
+    system_health_identity_graph: tuple[str, ...] = ()
+    system_health_accessibility_verified: bool = False
+    focus_restoration_verified: bool = False
+    accessibility_checkpoints: tuple[dict[str, Any], ...] = ()
+    installed_accessibility_verified: bool = False
+    no_color_only_meaning_verified: bool = False
+    chart_narrative_table_revision_verified: bool = False
+    manual_trading_route_audits: tuple[dict[str, Any], ...] = ()
+    certification_scope: str = CertificationScope.SOURCE_VALIDATION.value
 
 
 def configure_renderer_environment(renderer_lane: RendererLane) -> None:
+    # The production QML customizes every control surface.  Pinning the
+    # non-native Basic style avoids the Windows native-style fallback path and
+    # keeps the two renderer lanes on the same QML control implementation.
+    os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     if renderer_lane is RendererLane.SOFTWARE:
         os.environ["QT_QUICK_BACKEND"] = "software"
         os.environ["QSG_RHI_BACKEND"] = "software"
@@ -712,9 +720,8 @@ def _navigate_route(
         "scenario_lab": "scenarioLabRouteNavigation",
         "diagnostic_tasks": "diagnosticTasksRouteNavigation",
         "run_monitoring": "runMonitoringRouteNavigation",
-        "evidence_and_findings": (
-            "evidenceAndFindingsRouteNavigation"
-        ),
+        "evidence_and_findings": "evidenceAndFindingsRouteNavigation",
+        "system_health": "systemHealthRouteNavigation",
     }[route]
     target = _find_quick_item(root, object_name)
     if target is None:
@@ -736,6 +743,26 @@ def _navigate_route(
             lambda: root.property("activeRoute") == route,
             f"keyboard navigation to {route}",
         )
+
+
+def _route_focus_is_visible(root: Any, route: str) -> bool:
+    focus_property = {
+        "strategy_library": "strategyLibraryInitialFocusItem",
+        "scenario_lab": "scenarioLabInitialFocusItem",
+        "diagnostic_tasks": "diagnosticTasksInitialFocusItem",
+        "run_monitoring": "runMonitoringInitialFocusItem",
+        "evidence_and_findings": "evidenceInitialFocusItem",
+        "system_health": "systemHealthInitialFocusItem",
+    }.get(route)
+    if focus_property is None:
+        return False
+    item = root.property(focus_property)
+    return bool(
+        item is not None
+        and item.property("visible")
+        and item.property("activeFocus")
+        and item.property("focusVisible")
+    )
 
 
 def _qml_semantic_values(item: Any) -> tuple[str, ...]:
@@ -1048,6 +1075,7 @@ def _start_installed_wave2_commands(
     root: Any,
     context: Any,
     application: Any,
+    expect_controlled_failure: bool = False,
 ) -> tuple[Any, tuple[str, ...], InstalledWave3SetupEvidence]:
     from PySide6.QtCore import Qt
     from PySide6.QtQuick import QQuickItem
@@ -1619,13 +1647,29 @@ def _start_installed_wave2_commands(
         ),
         None,
     )
-    if first_incomplete is not None:
+    controlled_failed_nodes = tuple(
+        node
+        for node in running.handoff.campaign_nodes
+        if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+    )
+    expected_incomplete = bool(
+        expect_controlled_failure
+        and first_incomplete is not None
+        and len(controlled_failed_nodes) == 1
+    )
+    if first_incomplete is not None and not expected_incomplete:
+        last_attempt = (
+            None
+            if not first_incomplete.attempts
+            else first_incomplete.attempts[-1]
+        )
         raise RuntimeError(
-            "Installed Campaign start produced an incomplete first node: "
-            + json.dumps(
-                first_incomplete.attempts[-1].to_dict(),
-                sort_keys=True,
-            )
+            "Installed Campaign start produced an unexpected incomplete "
+            "node; safe_summary="
+            f"layer={first_incomplete.layer!r}, "
+            f"case_status={first_incomplete.status!r}, "
+            "attempt_status="
+            f"{None if last_attempt is None else last_attempt.status!r}"
         )
     if started_campaign.status == "completed":
         raise RuntimeError(
@@ -1900,6 +1944,237 @@ def _assert_running_wave2_public_state(
     return task
 
 
+def _retry_installed_controlled_failure(
+    *,
+    app: Any,
+    host: Any,
+    root: Any,
+    context: Any,
+    task: Any,
+    capture_accessibility: Callable[[str], None] | None = None,
+) -> tuple[Any, bool, bool, int]:
+    """Observe and retry one real failed Campaign node via its typed Feature."""
+
+    from app.features import (
+        DiagnosticCommandId,
+        DiagnosticCommandIdempotencyKey,
+        DiagnosticTaskId,
+        DiagnosticTaskLifecycle,
+        DiagnosticTasksCommandDisposition,
+        DiagnosticTasksContext,
+        RetryFailedCampaignNode,
+        TaskPhase,
+    )
+
+    failed_nodes = tuple(
+        node
+        for node in task.handoff.campaign_nodes
+        if node.lifecycle is DiagnosticTaskLifecycle.FAILED
+    )
+    if len(failed_nodes) != 1:
+        raise RuntimeError(
+            "Issue #118 certification requires exactly one controlled "
+            "failed Campaign node"
+        )
+    failed_node = failed_nodes[0]
+    if not failed_node.attempts:
+        raise RuntimeError("Controlled failed Campaign node has no attempt")
+    failed_attempt = failed_node.attempts[-1]
+    failure = failed_attempt.failure
+    safe_failure_text = "" if failure is None else (
+        f"{failure.code} {failure.message}"
+    )
+    forbidden_failure_markers = (
+        "traceback",
+        "sqlite://",
+        ".sqlite3",
+        "token=",
+        "password=",
+        "secret=",
+        "select ",
+        "insert ",
+        "update ",
+        "delete ",
+        "powershell",
+        "cmd.exe",
+        "\\users\\",
+    )
+    safe_failure_reason_verified = bool(
+        failure is not None
+        and failure.code.strip()
+        and failure.message.strip()
+        and failure.retryable
+        and not any(
+            marker in safe_failure_text.casefold()
+            for marker in forbidden_failure_markers
+        )
+    )
+    if not safe_failure_reason_verified:
+        raise RuntimeError(
+            "Controlled Campaign failure did not expose a safe redacted reason"
+        )
+
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="diagnostic_tasks",
+    )
+    projection = host._diagnostic_tasks
+    if projection is None:
+        raise RuntimeError("Diagnostic Tasks QML Adapter is unavailable")
+    projection.refresh()
+    _settle_until(
+        app,
+        lambda: bool(
+            root.property("activeRoute") == "diagnostic_tasks"
+            and projection.property("presentationState")
+            in {"ready", "partial"}
+        ),
+        "controlled Diagnostic Task failure presentation",
+    )
+    accessible_failure = _accessible_announcement(
+        root,
+        "diagnosticTasksAccessibleSummary",
+    ).casefold()
+    accessible_history = _accessible_announcement(
+        root,
+        "failedCampaignNodeAttemptHistory",
+    ).casefold()
+    if (
+        "fail" not in accessible_failure
+        or failure.code.casefold() not in accessible_history
+        or failure.message.casefold() not in accessible_history
+    ):
+        raise RuntimeError(
+            "Controlled Diagnostic Task failure was not exposed accessibly"
+        )
+    retry_control = _find_quick_item(root, "retryFailedCampaignNodeButton")
+    if retry_control is None or not retry_control.property("enabled"):
+        raise RuntimeError(
+            "Retry failed Campaign node keyboard control was unavailable"
+        )
+    _focus_with_keyboard(
+        app=app,
+        host=host,
+        target=retry_control,
+    )
+    _settle_until(
+        app,
+        lambda: bool(retry_control.property("activeFocus")),
+        "visible failed Campaign attempt history",
+    )
+    if capture_accessibility is not None:
+        capture_accessibility("failed")
+
+    feature = context.diagnostic_tasks_feature
+    retry_command = RetryFailedCampaignNode(
+        command_id=DiagnosticCommandId(
+            "issue-118-installed-retry-command"
+        ),
+        idempotency_key=DiagnosticCommandIdempotencyKey(
+            "issue-118-installed-retry-idempotency"
+        ),
+        task_id=task.task_id,
+        campaign_node_id=failed_node.campaign_node_id,
+        failed_attempt_id=failed_attempt.attempt_id,
+        expected_revision=failed_node.revision,
+    )
+    accepted = feature.retry_failed_campaign_node(retry_command)
+    replay = feature.retry_failed_campaign_node(
+        replace(
+            retry_command,
+            command_id=DiagnosticCommandId(
+                "issue-118-installed-retry-lost-response"
+            ),
+        )
+    )
+    retry_idempotency_verified = bool(
+        accepted.disposition
+        is DiagnosticTasksCommandDisposition.ASYNCHRONOUS_ACCEPTANCE
+        and accepted.task_handle is not None
+        and accepted.task_handle.phase is TaskPhase.QUEUED
+        and accepted.affected_campaign_attempt_id is not None
+        and replay.disposition
+        is DiagnosticTasksCommandDisposition.IDEMPOTENT_REPLAY
+        and replay.task_handle is not None
+        and replay.task_handle.identity == accepted.task_handle.identity
+        and replay.affected_campaign_attempt_id
+        == accepted.affected_campaign_attempt_id
+    )
+    if not retry_idempotency_verified:
+        raise RuntimeError(
+            "DiagnosticTasksFeature retry was not an idempotent queued handoff"
+        )
+    projection.refresh()
+    app.processEvents()
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="run_monitoring",
+    )
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="diagnostic_tasks",
+    )
+    def recovery_status_is_visible() -> bool:
+        snapshot = host.accessibility_snapshot()
+        recovery_text = snapshot.diagnostic_task_handle_text.casefold()
+        return bool(
+            root.property("activeRoute") == "diagnostic_tasks"
+            and _route_focus_is_visible(root, "diagnostic_tasks")
+            and snapshot.diagnostic_tasks_presentation in {"ready", "partial"}
+            and "recover" in recovery_text
+            and "progress" in recovery_text
+        )
+
+    _settle_until(
+        app,
+        recovery_status_is_visible,
+        "visible Diagnostic Task recovery progress after retry",
+    )
+    if capture_accessibility is not None:
+        capture_accessibility("recovering")
+
+    workspace = DiagnosticTasksContext(
+        task_id=DiagnosticTaskId(task.task_id.value)
+    )
+    feature.snapshot(workspace)
+    retried = feature.snapshot(workspace).task
+    if retried is None:
+        raise RuntimeError("Retried Diagnostic Task is unavailable")
+    retried_node = next(
+        (
+            node
+            for node in retried.handoff.campaign_nodes
+            if node.campaign_node_id == failed_node.campaign_node_id
+        ),
+        None,
+    )
+    if retried_node is None:
+        raise RuntimeError("Retried Campaign node is unavailable")
+    unique_attempt_ids = {
+        attempt.attempt_id for attempt in retried_node.attempts
+    }
+    duplicate_work_count = (
+        len(retried_node.attempts) - len(unique_attempt_ids)
+    )
+    if (
+        len(retried_node.attempts) != len(failed_node.attempts) + 1
+        or duplicate_work_count != 0
+    ):
+        raise RuntimeError("Diagnostic Task retry produced duplicate work")
+    return (
+        retried,
+        safe_failure_reason_verified,
+        retry_idempotency_verified,
+        duplicate_work_count,
+    )
+
+
 def _completed_wave2_fixture(
     *,
     input_fixture: Any,
@@ -1976,6 +2251,7 @@ def _packaged_fixture_persistence_root(
     *,
     report_dir: Path,
     cleanup: ExitStack,
+    cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
     defer_native_teardown: bool,
     temporary_directory_prefix: str,
@@ -1983,11 +2259,13 @@ def _packaged_fixture_persistence_root(
     if defer_native_teardown:
         return report_dir / "v1-persistence"
     runtime_root = Path(
-        cleanup.enter_context(
-            tempfile.TemporaryDirectory(
-                prefix=temporary_directory_prefix,
-            )
-        )
+        tempfile.mkdtemp(prefix=temporary_directory_prefix)
+    )
+    cleanup.callback(
+        _record_cleanup,
+        cleanup_errors,
+        "temporary persistence root",
+        partial(_cleanup_temporary_persistence_root, runtime_root),
     )
     lifecycle_checks.append(_path_absent_check(runtime_root))
     return runtime_root / "v1-persistence"
@@ -2001,10 +2279,22 @@ def run_smoke_journey(
     capture_images: bool = True,
     fixture_archive_path: Path | None = None,
     defer_native_teardown: bool = False,
+    issue_118_certification: bool = True,
+    certification_scope: CertificationScope = (
+        CertificationScope.SOURCE_VALIDATION
+    ),
 ) -> PackageSmokeResult:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
+
+    if (
+        "__compiled__" not in globals()
+        and certification_scope is not CertificationScope.SOURCE_VALIDATION
+    ):
+        raise ValueError(
+            "Source smoke cannot claim a compiled certification scope"
+        )
 
     cleanup_errors: list[str] = []
     lifecycle_checks: list[Callable[[], bool]] = []
@@ -2024,6 +2314,8 @@ def run_smoke_journey(
                 cleanup_errors=cleanup_errors,
                 lifecycle_checks=lifecycle_checks,
                 defer_native_teardown=defer_native_teardown,
+                issue_118_certification=issue_118_certification,
+                certification_scope=certification_scope,
             )
         else:
             result = _run_smoke_journey(
@@ -2055,6 +2347,98 @@ def run_smoke_journey(
         report_dir / "smoke-report.json",
     )
     return finalized
+
+
+def _run_installed_dpi_preflight_report(
+    *,
+    report_path: Path,
+    renderer_lane: RendererLane,
+    source_commit: str,
+    fixture_archive_path: Path,
+    defer_native_teardown: bool,
+) -> int:
+    """Prove the installed Qt window scale before any release-candidate gate."""
+
+    cleanup_errors: list[str] = []
+    lifecycle_checks: list[Callable[[], bool]] = []
+    checkpoint: dict[str, Any] | None = None
+    preflight_failed = False
+    with ExitStack() as cleanup:
+        try:
+            _run_wave2_smoke_journey(
+                report_dir=report_path.parent,
+                renderer_lane=renderer_lane,
+                source_commit=source_commit,
+                capture_images=False,
+                fixture_archive_path=fixture_archive_path,
+                cleanup=cleanup,
+                cleanup_errors=cleanup_errors,
+                lifecycle_checks=lifecycle_checks,
+                defer_native_teardown=defer_native_teardown,
+                issue_118_certification=True,
+                certification_scope=(
+                    CertificationScope.INSTALLED_DPI_PREFLIGHT
+                ),
+                dpi_preflight_only=True,
+            )
+        except _InstalledDpiPreflightReached as reached:
+            checkpoint = reached.checkpoint
+        except Exception:
+            preflight_failed = True
+
+    clean_exit = bool(
+        not cleanup_errors
+        and lifecycle_checks
+        and all(check() for check in lifecycle_checks)
+    )
+    ratio = float(
+        0.0
+        if checkpoint is None
+        else checkpoint.get("window_device_pixel_ratio", 0.0)
+    )
+    passed = bool(
+        not preflight_failed
+        and checkpoint is not None
+        and checkpoint.get("checkpoint") == "loading"
+        and checkpoint.get("sequence") == 1
+        and math.isfinite(ratio)
+        and ratio == 2.0
+        and clean_exit
+    )
+    errors: list[str] = []
+    if checkpoint is None:
+        errors.append(
+            "Installed DPI preflight did not reach the loading checkpoint"
+        )
+    if preflight_failed:
+        errors.append("Installed DPI preflight failed at a redacted boundary")
+    if cleanup_errors or not clean_exit:
+        errors.append("Installed DPI preflight cleanup did not complete")
+    result = InstalledDpiPreflightResult(
+        schema_version=1,
+        source_commit=source_commit,
+        renderer_lane=renderer_lane.value,
+        certification_scope=CertificationScope.INSTALLED_DPI_PREFLIGHT.value,
+        production_path=PRODUCTION_PATH,
+        checkpoint=("" if checkpoint is None else str(checkpoint["checkpoint"])),
+        checkpoint_sequence=(
+            0 if checkpoint is None else int(checkpoint["sequence"])
+        ),
+        snapshot_identity=(
+            "" if checkpoint is None else str(checkpoint["snapshot_identity"])
+        ),
+        qt_window_device_pixel_ratio=ratio,
+        external_uia_acknowledged=checkpoint is not None,
+        clean_exit=clean_exit,
+        passed=passed,
+        errors=tuple(errors),
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(asdict(result), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return 0 if passed else 1
 
 
 def _shutdown_smoke_application(
@@ -2096,6 +2480,9 @@ def _run_wave2_smoke_journey(
     cleanup_errors: list[str],
     lifecycle_checks: list[Callable[[], bool]],
     defer_native_teardown: bool,
+    issue_118_certification: bool,
+    certification_scope: CertificationScope,
+    dpi_preflight_only: bool = False,
 ) -> PackageSmokeResult:
     return _run_smoke_journey(
         report_dir=report_dir,
@@ -2108,6 +2495,9 @@ def _run_wave2_smoke_journey(
         lifecycle_checks=lifecycle_checks,
         wave2_mode=True,
         defer_native_teardown=defer_native_teardown,
+        issue_118_certification=issue_118_certification,
+        certification_scope=certification_scope,
+        dpi_preflight_only=dpi_preflight_only,
     )
 
 
@@ -2123,6 +2513,11 @@ def _run_smoke_journey(
     lifecycle_checks: list[Callable[[], bool]],
     wave2_mode: bool = False,
     defer_native_teardown: bool = False,
+    issue_118_certification: bool = False,
+    certification_scope: CertificationScope = (
+        CertificationScope.SOURCE_VALIDATION
+    ),
+    dpi_preflight_only: bool = False,
 ) -> PackageSmokeResult:
     from PySide6.QtWidgets import QApplication
 
@@ -2138,7 +2533,19 @@ def _run_smoke_journey(
     from app.features.diagnostic_setup import (
         DiagnosticSetupSelectionCoordinator,
     )
+    from stock_sim.release.frontend_v2_accessibility import (
+        ACCESSIBILITY_CHECKPOINT_BINDINGS,
+        InstalledAccessibilityCheckpointClock,
+        capture_installed_accessibility_checkpoint,
+        summarize_installed_accessibility_checkpoints,
+        validate_installed_accessibility_checkpoints,
+    )
+    from stock_sim.release.frontend_v2_runtime_safety import (
+        capture_no_manual_trading_route_audit,
+        validate_no_manual_trading_route_audits,
+    )
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        ReleaseCertificationFailFirstPTradeStrategyHost,
         create_file_backed_formal_v1_release_fixture,
         create_file_backed_wave2_release_input_fixture,
         extract_sealed_formal_v1_release_fixture_archive,
@@ -2147,6 +2554,21 @@ def _run_smoke_journey(
         open_sealed_wave2_release_input_fixture,
         reopen_active_wave2_release_input_fixture,
         reopen_completed_wave2_release_fixture,
+    )
+
+    installed_package_certification = bool(
+        "__compiled__" in globals()
+        and certification_scope
+        in {
+            CertificationScope.INSTALLED,
+            CertificationScope.INSTALLED_DPI_PREFLIGHT,
+        }
+    )
+
+    certification_ptrade_host = (
+        ReleaseCertificationFailFirstPTradeStrategyHost()
+        if wave2_mode and issue_118_certification
+        else None
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -2158,11 +2580,13 @@ def _run_smoke_journey(
                 persistence_root / "strategy-diagnostics-v1.sqlite3"
             ),
             artifact_root=persistence_root / "artifacts",
+            ptrade_host=certification_ptrade_host,
         )
     elif wave2_mode:
         persistence_root = _packaged_fixture_persistence_root(
             report_dir=report_dir,
             cleanup=cleanup,
+            cleanup_errors=cleanup_errors,
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=defer_native_teardown,
             temporary_directory_prefix="uti-wave3-runtime-",
@@ -2178,6 +2602,7 @@ def _run_smoke_journey(
         fixture = open_sealed_wave2_release_input_fixture(
             bundle_root=persistence_root,
             expected_source_commit=source_commit,
+            ptrade_host=certification_ptrade_host,
         )
     elif fixture_archive_path is None:
         persistence_root = report_dir / "v1-persistence"
@@ -2191,6 +2616,7 @@ def _run_smoke_journey(
         persistence_root = _packaged_fixture_persistence_root(
             report_dir=report_dir,
             cleanup=cleanup,
+            cleanup_errors=cleanup_errors,
             lifecycle_checks=lifecycle_checks,
             defer_native_teardown=defer_native_teardown,
             temporary_directory_prefix="uti-v1-runtime-",
@@ -2343,7 +2769,38 @@ def _run_smoke_journey(
     qml_identity_graph_checkpoints: dict[str, tuple[str, ...]] = {}
     accessibility_announcements: list[str] = []
     accessibility_preferences: list[bool] = []
+    accessibility_checkpoints: list[dict[str, Any]] = []
+    accessibility_checkpoint_clock = (
+        InstalledAccessibilityCheckpointClock()
+    )
+    manual_trading_route_audits: list[dict[str, Any]] = []
     keyboard_routes: set[str] = set()
+
+    def capture_manual_trading_audit(*, route: str, stage: str) -> None:
+        if not issue_118_certification:
+            return
+        audit = capture_no_manual_trading_route_audit(
+            root,
+            route=route,
+            stage=stage,
+        )
+        manual_trading_route_audits.append(audit)
+        if audit.get("forbidden_action_count", 0) > 0:
+            raise RuntimeError(
+                "Installed no-manual-trading capability detected; "
+                "redacted provenance: "
+                + json.dumps(
+                    {
+                        "route": audit.get("route"),
+                        "stage": audit.get("stage"),
+                        "forbidden_actions": audit.get(
+                            "forbidden_actions",
+                            [],
+                        ),
+                    },
+                    sort_keys=True,
+                )
+            )
 
     def feature_authority_signature() -> tuple[object, ...]:
         run_state = context.run_monitoring_feature.snapshot(
@@ -2442,6 +2899,193 @@ def _run_smoke_journey(
     root = host.rootObject()
     if root is None:
         raise RuntimeError("Journey Workspace root object is unavailable")
+
+    def _checkpoint_matches_current_projection(
+        checkpoint: str,
+        snapshot: Any,
+    ) -> bool:
+        if checkpoint == "loading":
+            return snapshot.run_presentation == "loading"
+        if checkpoint == "empty":
+            return snapshot.diagnostic_tasks_presentation == "empty"
+        if checkpoint == "failed":
+            return snapshot.diagnostic_failed_attempt_present
+        if checkpoint == "recovering":
+            recovery_text = snapshot.diagnostic_task_handle_text.casefold()
+            return "recover" in recovery_text and "progress" in recovery_text
+        if checkpoint == "partial":
+            return snapshot.system_health_completeness == "partial"
+        if checkpoint == "disconnected":
+            return bool(
+                snapshot.system_health_data_source_connection
+                == "disconnected"
+                or snapshot.system_health_freshness == "disconnected"
+            )
+        if checkpoint == "stale":
+            return bool(
+                snapshot.system_health_data_source_freshness == "stale"
+                or snapshot.system_health_freshness == "stale"
+            )
+        if checkpoint == "completed":
+            return snapshot.run_presentation == "terminal"
+        return False
+
+    def _wait_for_external_uia_ack(
+        *,
+        sequence: int,
+        checkpoint: str,
+        snapshot_identity: str,
+    ) -> None:
+        configured_root = os.environ.get(
+            "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR",
+            "",
+        ).strip()
+        if not configured_root:
+            return
+        ack_root = Path(configured_root).resolve()
+        if ack_root != report_dir.resolve():
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement root is invalid"
+            )
+        ack_path = ack_root / (
+            f"uia-checkpoint-{sequence:02d}-{checkpoint}.json"
+        )
+        if ack_path.exists():
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement was pre-existing"
+            )
+        deadline = monotonic() + INSTALLED_UIA_ACK_TIMEOUT_SECONDS
+        while monotonic() < deadline and not ack_path.is_file():
+            app.processEvents()
+            sleep(0.05)
+        if not ack_path.is_file():
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement timed out"
+            )
+        try:
+            acknowledgement = json.loads(
+                ack_path.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement is invalid"
+            ) from error
+        if (
+            acknowledgement.get("snapshot_identity") != snapshot_identity
+            or acknowledgement.get("checkpoint") != checkpoint
+            or acknowledgement.get("sequence") != sequence
+            or acknowledgement.get("passed") is not True
+        ):
+            raise RuntimeError(
+                "Installed UIA checkpoint acknowledgement did not match"
+            )
+
+    def capture_accessibility(checkpoint: str) -> None:
+        if not (wave2_mode and issue_118_certification):
+            return
+        sequence = len(accessibility_checkpoints) + 1
+        route = str(root.property("activeRoute") or "")
+        snapshot = host.accessibility_snapshot()
+        run_revision = snapshot.run_revision
+        evidence_revision = snapshot.evidence_revision
+        if (
+            re.fullmatch(r"r\d+", run_revision) is None
+            or re.fullmatch(r"r\d+", evidence_revision) is None
+        ):
+            raise RuntimeError(
+                "Installed accessibility projection revision was invalid"
+            )
+        if not _checkpoint_matches_current_projection(checkpoint, snapshot):
+            raise RuntimeError(
+                "Installed accessibility checkpoint did not match the "
+                "current public product projection"
+            )
+        try:
+            status_object_name, status_semantic_term = (
+                ACCESSIBILITY_CHECKPOINT_BINDINGS[checkpoint]
+            )
+        except KeyError as error:
+            raise RuntimeError(
+                "Installed accessibility checkpoint binding was unavailable"
+            ) from error
+        quick_window = root.window()
+        window_device_pixel_ratio = (
+            0.0
+            if quick_window is None
+            else float(quick_window.devicePixelRatio())
+        )
+        if installed_package_certification and (
+            not math.isfinite(window_device_pixel_ratio)
+            or window_device_pixel_ratio != 2.0
+        ):
+            raise RuntimeError(
+                "Installed accessibility Qt window scale was not 200 percent"
+            )
+        window_scale_percent = int(round(window_device_pixel_ratio * 100.0))
+        snapshot_identity = (
+            f"uia:{sequence}:{checkpoint}:{route}:"
+            f"{run_revision}:{evidence_revision}:"
+            f"{status_object_name}:{status_semantic_term}:"
+            f"scale{window_scale_percent}"
+        )
+        marker_properties = {
+            "installedAccessibilityCheckpointSequence": sequence,
+            "installedAccessibilityCheckpointState": checkpoint,
+            "installedAccessibilityCheckpointRoute": route,
+            "installedAccessibilityRunRevision": run_revision,
+            "installedAccessibilityEvidenceRevision": evidence_revision,
+            "installedAccessibilityStatusObjectName": status_object_name,
+            "installedAccessibilityStatusSemanticTerm": (
+                status_semantic_term
+            ),
+            "installedAccessibilityWindowScalePercent": (
+                window_scale_percent
+            ),
+        }
+        if not all(
+            root.setProperty(name, value)
+            for name, value in marker_properties.items()
+        ):
+            raise RuntimeError(
+                "Installed accessibility checkpoint marker is unavailable"
+            )
+        app.processEvents()
+        checkpoint_evidence = capture_installed_accessibility_checkpoint(
+            root,
+            checkpoint=checkpoint,
+            sequence=sequence,
+            snapshot_identity=snapshot_identity,
+            route=route,
+            run_revision=run_revision,
+            evidence_revision=evidence_revision,
+            status_object_name=status_object_name,
+            status_semantic_term=status_semantic_term,
+            captured_at_utc=accessibility_checkpoint_clock.capture(),
+        )
+        accessibility_checkpoints.append(checkpoint_evidence)
+        if (
+            checkpoint_evidence.get("non_color_cue_verified") is not True
+            or not checkpoint_evidence.get("non_color_cues")
+        ):
+            raise RuntimeError(
+                "Installed accessibility checkpoint lacked a visible "
+                "non-color semantic cue; redacted checkpoint summary: "
+                + json.dumps(
+                    summarize_installed_accessibility_checkpoints(
+                        (checkpoint_evidence,)
+                    ),
+                    sort_keys=True,
+                )
+            )
+        _wait_for_external_uia_ack(
+            sequence=sequence,
+            checkpoint=checkpoint,
+            snapshot_identity=snapshot_identity,
+        )
+        if dpi_preflight_only:
+            raise _InstalledDpiPreflightReached(checkpoint_evidence)
+
+    capture_accessibility("loading")
     accessibility_preferences.append(
         _accessibility_preferences_verified(root)
     )
@@ -2482,6 +3126,7 @@ def _run_smoke_journey(
         ),
         "authoritative Scenario Lab route",
     )
+    capture_accessibility("empty")
 
     diagnostic_task_identity = ""
     accepted_command_kinds: tuple[str, ...] = ()
@@ -2491,6 +3136,18 @@ def _run_smoke_journey(
     application_reopened = False
     writable_persistence_verified = False
     background_continuation_verified = False
+    focus_restoration_verified = False
+    system_health_context_verified = False
+    system_health_identity_graph: tuple[str, ...] = ()
+    system_health_accessibility_verified = False
+    queued_state_observed = False
+    running_state_observed = False
+    partial_state_observed = False
+    controlled_failure_observed = False
+    safe_failure_reason_verified = False
+    retry_idempotency_verified = False
+    duplicate_work_count = -1
+    terminal_completion_observed = False
     if wave2_mode:
         input_fixture: Any = fixture
         (
@@ -2503,8 +3160,38 @@ def _run_smoke_journey(
             root=root,
             context=context,
             application=input_fixture.application,
+            expect_controlled_failure=issue_118_certification,
         )
         diagnostic_task_identity = running_task.task_id.value
+        if issue_118_certification:
+            controlled_failure_observed = bool(
+                any(
+                    node.lifecycle.value == "failed"
+                    for node in running_task.handoff.campaign_nodes
+                )
+            )
+            if not controlled_failure_observed:
+                raise RuntimeError(
+                    "Issue #118 certification did not observe the controlled "
+                    "Campaign failure"
+                )
+            (
+                running_task,
+                safe_failure_reason_verified,
+                retry_idempotency_verified,
+                duplicate_work_count,
+            ) = _retry_installed_controlled_failure(
+                app=app,
+                host=host,
+                root=root,
+                context=context,
+                task=running_task,
+                capture_accessibility=capture_accessibility,
+            )
+            queued_state_observed = retry_idempotency_verified
+            running_state_observed = bool(
+                running_task.lifecycle.value == "running"
+            )
         task_handle_identities = tuple(
             handle.identity.value
             for handle in running_task.task_handles
@@ -2522,13 +3209,7 @@ def _run_smoke_journey(
             task_handle_identities=task_handle_identities,
         )
 
-        for route in (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
+        for route in ACTIVE_JOURNEY_ROUTES:
             _navigate_route(
                 app=app,
                 host=host,
@@ -2548,16 +3229,14 @@ def _run_smoke_journey(
                 campaign_id=campaign_id,
                 task_handle_identities=task_handle_identities,
             )
+            capture_manual_trading_audit(
+                route=route,
+                stage="running",
+            )
 
         preterminal_generation = bridge.connection_generation
         bridge.mark_disconnected()
-        for route in (
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ):
+        for route in ACTIVE_JOURNEY_ROUTES:
             _navigate_route(
                 app=app,
                 host=host,
@@ -2576,8 +3255,24 @@ def _run_smoke_journey(
                 campaign_id=campaign_id,
                 task_handle_identities=task_handle_identities,
             )
+        partial_state_observed = bool(
+            root.property("screenState") == "partial"
+            or root.property("evidenceScreenState") == "partial"
+            or host._run_monitoring.property("freshness")
+            in {"last_reliable", "disconnected"}
+            or host._evidence_and_findings.property("freshness")
+            in {"last_reliable", "disconnected"}
+        )
+        if not partial_state_observed:
+            raise RuntimeError(
+                "Installed disconnect did not expose a partial/last-reliable state"
+            )
+        capture_accessibility("partial")
+        capture_accessibility("disconnected")
 
         preterminal_connection = bridge.mark_reconnected()
+        app.processEvents()
+        capture_accessibility("stale")
         monitoring_context = host._diagnostic_tasks.monitoring_context()
         monitoring_selection = (
             None
@@ -2615,6 +3310,8 @@ def _run_smoke_journey(
                 "typed Feature state"
             )
 
+        route_before_reopen = str(root.property("activeRoute"))
+
         fixture = (
             _reopen_active_installed_wave2_fixture_after_frontend_quiescence(
                 close_mount=close_initial_mount,
@@ -2629,6 +3326,7 @@ def _run_smoke_journey(
                     bundle_root=persistence_root,
                     diagnostic_task_id=diagnostic_task_identity,
                     campaign_id=campaign_id,
+                    ptrade_host=certification_ptrade_host,
                 ),
                 cleanup_errors=cleanup_errors,
             )
@@ -2698,6 +3396,7 @@ def _run_smoke_journey(
             completed_backend_handoff.reproduction_manifest_id
         )
         background_continuation_verified = True
+        terminal_completion_observed = True
 
         _close_release_fixture(
             input_fixture,
@@ -2835,6 +3534,15 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Terminal remounted Journey Workspace is unavailable"
             )
+        _settle_until(
+            app,
+            lambda: bool(
+                root.property("activeRoute") == route_before_reopen
+                and _route_focus_is_visible(root, route_before_reopen)
+            ),
+            "terminal route and focus restoration",
+        )
+        focus_restoration_verified = True
         accessibility_preferences.append(
             _accessibility_preferences_verified(root)
         )
@@ -3210,6 +3918,10 @@ def _run_smoke_journey(
 
     feature_identity_graph: tuple[str, ...] = ()
 
+    observation_settle_timeout_seconds = (
+        _smoke_observation_settle_timeout_seconds(certification_scope)
+    )
+
     def observe(
         stage: str,
         route: str,
@@ -3249,6 +3961,7 @@ def _run_smoke_journey(
                     f"{evidence_state}/{run_freshness}/"
                     f"{evidence_freshness}"
                 ),
+                timeout_seconds=observation_settle_timeout_seconds,
             )
         except RuntimeError as error:
             raise RuntimeError(
@@ -3436,6 +4149,30 @@ def _run_smoke_journey(
             "A stale EventBridge generation changed the typed Feature state"
         )
 
+    # Leave the route-scoped Evidence subscription before publishing the
+    # current-generation invalidation.  Publishing while Evidence is active
+    # races its queued Qt delivery against the subsequent route change and can
+    # expose either stale or fresh at the Run checkpoint.
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="run_monitoring",
+    )
+
+    def reconnect_route_is_stale() -> bool:
+        snapshot = host.accessibility_snapshot()
+        return bool(
+            root.property("activeRoute") == "run_monitoring"
+            and snapshot.run_freshness == "stale"
+            and snapshot.evidence_freshness == "stale"
+        )
+
+    _settle_until(
+        app,
+        reconnect_route_is_stale,
+        "reconnected Run route before current-generation invalidation",
+    )
     bridge.on_snapshot(
         {"run_id": run_id},
         generation=connection.generation,
@@ -3472,6 +4209,7 @@ def _run_smoke_journey(
     )
 
     if not wave2_mode:
+        route_before_reopen = str(root.property("activeRoute"))
         _quiesce_installed_wave2_mount(
             close_mount=close_initial_mount,
             cleanup_errors=cleanup_errors,
@@ -3510,6 +4248,15 @@ def _run_smoke_journey(
             raise RuntimeError(
                 "Remounted Journey Workspace root object is unavailable"
             )
+        _settle_until(
+            app,
+            lambda: bool(
+                root.property("activeRoute") == route_before_reopen
+                and _route_focus_is_visible(root, route_before_reopen)
+            ),
+            "sealed V1 route and focus restoration",
+        )
+        focus_restoration_verified = True
         accessibility_preferences.append(
             _accessibility_preferences_verified(root)
         )
@@ -3517,6 +4264,122 @@ def _run_smoke_journey(
     prime_evidence_route()
     observe(*EXPECTED_JOURNEY[8])
     observe(*EXPECTED_JOURNEY[9])
+    capture_accessibility("completed")
+
+    if wave2_mode and issue_118_certification:
+        for route in ACTIVE_JOURNEY_ROUTES:
+            _navigate_route(
+                app=app,
+                host=host,
+                root=root,
+                route=route,
+            )
+            keyboard_routes.add(route)
+            expected_route = route
+            _settle_until(
+                app,
+                lambda: root.property("activeRoute") == expected_route,
+                f"reopened terminal safety audit {route} route",
+            )
+            capture_manual_trading_audit(
+                route=route,
+                stage="reopened_terminal",
+            )
+
+    _navigate_route(
+        app=app,
+        host=host,
+        root=root,
+        route="system_health",
+    )
+    keyboard_routes.add("system_health")
+    system_health_adapter = host._system_health
+    if system_health_adapter is None:
+        raise RuntimeError("System Health Adapter is unavailable")
+    expected_health_resolution = (
+        "completed" if wave2_mode else "no_current_task"
+    )
+    try:
+        _settle_until(
+            app,
+            lambda: bool(
+                root.property("activeRoute") == "system_health"
+                and system_health_adapter.property("phase") != "loading"
+                and system_health_adapter.property(
+                    "diagnosticContextResolution"
+                )
+                == expected_health_resolution
+                and (
+                    not wave2_mode
+                    or system_health_adapter.property(
+                        "diagnosticContextTerminal"
+                    )
+                )
+            ),
+            "installed System Health diagnostic context",
+            timeout_seconds=10.0,
+        )
+    except RuntimeError as error:
+        raise RuntimeError(
+            f"{error}; observed route={root.property('activeRoute')!r}, "
+            f"phase={system_health_adapter.property('phase')!r}, "
+            "resolution="
+            f"{system_health_adapter.property('diagnosticContextResolution')!r}, "
+            "terminal="
+            f"{system_health_adapter.property('diagnosticContextTerminal')!r}, "
+            "identity="
+            f"{system_health_adapter.property('diagnosticIdentityText')!r}"
+        ) from error
+    system_health_identity_graph = (
+        ()
+        if not wave2_mode
+        else (
+            diagnostic_task_identity,
+            campaign_id,
+            run_id,
+            evidence_package_id,
+            manifest_id,
+        )
+    )
+    system_health_identity_text = str(
+        system_health_adapter.property("diagnosticIdentityText")
+    )
+    system_health_context_verified = bool(
+        system_health_adapter.property("diagnosticContextResolution")
+        == expected_health_resolution
+        and (
+            not wave2_mode
+            or all(
+                identity in system_health_identity_text
+                for identity in system_health_identity_graph
+            )
+        )
+    )
+    system_health_accessible_text = _accessible_announcement(
+        root,
+        "diagnosticContextAccessibleStatus",
+    )
+    system_health_accessibility_verified = bool(
+        expected_health_resolution.replace("_", " ")
+        in system_health_accessible_text.casefold()
+        and (
+            not wave2_mode
+            or all(
+                identity in system_health_accessible_text
+                for identity in system_health_identity_graph
+            )
+        )
+    )
+    if not system_health_context_verified:
+        raise RuntimeError(
+            "System Health did not preserve the installed "
+            "Task/Run/Evidence/Manifest context"
+        )
+    if not system_health_accessibility_verified:
+        raise RuntimeError(
+            "System Health diagnostic context is not accessible"
+        )
+    accessibility_announcements.append(system_health_accessible_text)
 
     remounted_feature_graph = _feature_identity_graph(
         context=context,
@@ -3529,11 +4392,46 @@ def _run_smoke_journey(
         )
 
     graphics_api = _graphics_api_name(host)
-    manual_action_count = _unapproved_interactive_action_count(root)
+    accessibility_failures = (
+        validate_installed_accessibility_checkpoints(
+            accessibility_checkpoints,
+            require_installed_window_scale=installed_package_certification,
+        )
+        if wave2_mode and issue_118_certification
+        else ()
+    )
+    if accessibility_failures:
+        raise RuntimeError(
+            "Installed accessibility gate failed: "
+            + "; ".join(accessibility_failures)
+            + "; redacted checkpoint summary: "
+            + json.dumps(
+                summarize_installed_accessibility_checkpoints(
+                    accessibility_checkpoints
+                ),
+                sort_keys=True,
+            )
+        )
+    manual_trading_failures = (
+        validate_no_manual_trading_route_audits(
+            manual_trading_route_audits
+        )
+        if wave2_mode and issue_118_certification
+        else ()
+    )
+    if manual_trading_failures:
+        raise RuntimeError(
+            "Installed no-manual-trading gate failed: "
+            + "; ".join(manual_trading_failures)
+        )
+    manual_action_count = sum(
+        int(audit["forbidden_action_count"])
+        for audit in manual_trading_route_audits
+    )
     read_only_context_visible = _read_only_context_visible(host)
 
     result = PackageSmokeResult(
-        schema_version=3,
+        schema_version=4,
         source_commit=source_commit,
         renderer_lane=renderer_lane,
         graphics_api=graphics_api,
@@ -3564,13 +4462,9 @@ def _run_smoke_journey(
             sorted(manifest.run_id for manifest in fixture.manifests)
         ),
         raw_artifact_hashes=fixture.raw_artifact_hashes,
-        keyboard_navigation_verified=keyboard_routes == {
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        },
+        keyboard_navigation_verified=(
+            keyboard_routes == set(ACTIVE_JOURNEY_ROUTES)
+        ),
         accessibility_preferences_verified=bool(
             accessibility_preferences
             and all(accessibility_preferences)
@@ -3578,17 +4472,31 @@ def _run_smoke_journey(
         accessibility_announcements=tuple(
             accessibility_announcements
         ),
+        accessibility_checkpoints=tuple(accessibility_checkpoints),
+        installed_accessibility_verified=bool(
+            installed_package_certification and not accessibility_failures
+        ),
+        no_color_only_meaning_verified=bool(accessibility_checkpoints)
+        and all(
+            checkpoint.get("non_color_cue_verified") is True
+            and bool(checkpoint.get("non_color_cues"))
+            for checkpoint in accessibility_checkpoints
+        ),
+        chart_narrative_table_revision_verified=bool(
+            accessibility_checkpoints
+            and accessibility_checkpoints[-1][
+                "chart_narrative_table_revision"
+            ]["same_revision"]
+        ),
+        manual_trading_route_audits=tuple(
+            manual_trading_route_audits
+        ),
+        certification_scope=certification_scope.value,
         old_generation_rejected=old_generation_rejected,
         authoritative_reconnect_verified=(
             authoritative_reconnect_verified
         ),
-        routes_rendered=(
-            "strategy_library",
-            "scenario_lab",
-            "diagnostic_tasks",
-            "run_monitoring",
-            "evidence_and_findings",
-        ),
+        routes_rendered=ACTIVE_JOURNEY_ROUTES,
         connection_transitions=(
             "connected",
             "disconnected",
@@ -3735,6 +4643,20 @@ def _run_smoke_journey(
         task_cancel_order_isolation_verified=(
             cancel_order_isolation_verified
         ),
+        system_health_context_verified=system_health_context_verified,
+        system_health_identity_graph=system_health_identity_graph,
+        system_health_accessibility_verified=(
+            system_health_accessibility_verified
+        ),
+        focus_restoration_verified=focus_restoration_verified,
+        queued_state_observed=queued_state_observed,
+        running_state_observed=running_state_observed,
+        partial_state_observed=partial_state_observed,
+        controlled_failure_observed=controlled_failure_observed,
+        safe_failure_reason_verified=safe_failure_reason_verified,
+        retry_idempotency_verified=retry_idempotency_verified,
+        duplicate_work_count=duplicate_work_count,
+        terminal_completion_observed=terminal_completion_observed,
     )
     _record_cleanup(
         cleanup_errors,
@@ -3778,6 +4700,11 @@ def _close_mount(
         "scenario_lab_feature",
         None,
     )
+    system_health_feature = getattr(
+        context,
+        "system_health_feature",
+        None,
+    )
     close_actions = [
         ("MainWindow hide", window.hide),
         ("Qt event drain before QML teardown", app.processEvents),
@@ -3814,6 +4741,12 @@ def _close_mount(
                 "Evidence and Findings Feature",
                 context.evidence_and_findings_feature.close,
             ),
+            (
+                "System Health Feature",
+                lambda: _close_system_health_feature_for_release(
+                    system_health_feature
+                ),
+            ),
             ("Qt event drain after Feature teardown", app.processEvents),
         ]
     )
@@ -3826,6 +4759,19 @@ def _close_mount(
             )
     if errors is None and observed_errors:
         raise RuntimeError("; ".join(observed_errors))
+
+
+def _close_system_health_feature_for_release(feature: Any) -> None:
+    if feature is None:
+        return
+    close_and_wait = getattr(feature, "close_and_wait", None)
+    if callable(close_and_wait):
+        stopped = bool(close_and_wait(timeout_seconds=5.0))
+    else:
+        feature.close()
+        stopped = True
+    if not stopped:
+        raise RuntimeError("System Health release worker did not stop")
 
 
 def _schedule_closed_mount_release(
@@ -3861,6 +4807,33 @@ def _record_cleanup(
         action()
     except BaseException as error:
         errors.append(f"{label} cleanup failed: {type(error).__name__}")
+
+
+def _cleanup_temporary_persistence_root(
+    path: Path,
+    *,
+    remove_tree: Callable[[Path], Any] = shutil.rmtree,
+    collect_cycles: Callable[[], Any] = gc.collect,
+    pause: Callable[[float], Any] = sleep,
+    max_attempts: int = 20,
+) -> None:
+    """Remove a closed SQLite fixture without replacing a primary failure."""
+
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    for attempt in range(max_attempts):
+        if not path.exists():
+            return
+        collect_cycles()
+        try:
+            remove_tree(path)
+        except OSError:
+            if attempt + 1 < max_attempts:
+                pause(min(0.05 * (attempt + 1), 0.25))
+            continue
+        if not path.exists():
+            return
+    raise RuntimeError("Temporary persistence root remained in use")
 
 
 def _path_absent_check(path: Path) -> Callable[[], bool]:
@@ -3920,6 +4893,9 @@ def _mount_is_closed(
             "_closed",
             False,
         )
+        and _owned_executor_is_stopped(
+            getattr(context, "scenario_lab_feature", None)
+        )
         and getattr(context.diagnostic_tasks_feature, "_closed", False)
         and getattr(context.run_monitoring_feature, "_closed", False)
         and _owned_executor_is_stopped(context.run_monitoring_feature)
@@ -3930,6 +4906,9 @@ def _mount_is_closed(
         )
         and _owned_executor_is_stopped(
             context.evidence_and_findings_feature
+        )
+        and _system_health_release_is_stopped(
+            getattr(context, "system_health_feature", None)
         )
         and not window.isVisible()
     )
@@ -3947,12 +4926,18 @@ def _owned_executor_is_stopped(feature: Any) -> bool:
     )
 
 
+def _system_health_release_is_stopped(feature: Any) -> bool:
+    if feature is None:
+        return True
+    return bool(getattr(feature, "release_stopped", False))
+
+
 def _settle_until(
     app: Any,
     predicate: Callable[[], bool],
     description: str,
     *,
-    timeout_seconds: float = 3.0,
+    timeout_seconds: float = DEFAULT_SETTLE_TIMEOUT_SECONDS,
 ) -> None:
     deadline = monotonic() + timeout_seconds
     while monotonic() < deadline:
@@ -3962,6 +4947,17 @@ def _settle_until(
             return
         sleep(0.01)
     raise RuntimeError(f"Timed out waiting for {description}")
+
+
+def _smoke_observation_settle_timeout_seconds(
+    certification_scope: CertificationScope,
+) -> float:
+    if certification_scope in {
+        CertificationScope.INSTALLED,
+        CertificationScope.PACKAGE_ASSEMBLY,
+    }:
+        return COMPILED_SMOKE_OBSERVATION_SETTLE_TIMEOUT_SECONDS
+    return DEFAULT_SETTLE_TIMEOUT_SECONDS
 
 
 def _observe_state(
@@ -4220,7 +5216,18 @@ def _run_interactive() -> int:
     return int(app.exec())
 
 
-def _installed_fixture_archive_path() -> Path:
+def _installed_formal_v1_fixture_archive_path() -> Path:
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
+    )
+
+    return (
+        Path(sys.argv[0]).resolve().parent
+        / str(FORMAL_V1_RELEASE_FIXTURE_ARCHIVE)
+    )
+
+
+def _installed_wave3_input_fixture_archive_path() -> Path:
     from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
         WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE,
     )
@@ -4229,6 +5236,364 @@ def _installed_fixture_archive_path() -> Path:
         Path(sys.argv[0]).resolve().parent
         / str(WAVE3_RELEASE_INPUT_FIXTURE_ARCHIVE)
     )
+
+
+def _write_certification_report(
+    report_path: Path,
+    payload: dict[str, Any],
+) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _run_installed_performance_report(
+    *,
+    report_path: Path,
+    renderer_lane: RendererLane,
+    duration_seconds: float,
+    source_commit: str,
+    fixture_archive_path: Path,
+) -> int:
+    from stock_sim.release.frontend_v2_performance import (
+        REFERENCE_FIXTURE,
+    )
+    from stock_sim.release.frontend_v2_performance_runtime import (
+        run_performance_lane,
+    )
+
+    if duration_seconds < REFERENCE_FIXTURE.duration_seconds:
+        raise RuntimeError(
+            "An installed certifying performance lane must run continuously "
+            f"for at least {REFERENCE_FIXTURE.duration_seconds} seconds"
+        )
+    if not fixture_archive_path.is_file():
+        raise RuntimeError(
+            "The packaged real V1 performance fixture archive is unavailable"
+        )
+    report = run_performance_lane(
+        lane=renderer_lane.value,
+        duration_seconds=duration_seconds,
+        source_commit=source_commit,
+        smoke=False,
+        process_started_ns=perf_counter_ns(),
+        fixture_archive_path=fixture_archive_path,
+    )
+    _write_certification_report(report_path, report)
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report.get("status") == "passed" else 1
+
+
+def _wave3_bookmark_payload() -> str:
+    return json.dumps(
+        {
+            "schema_version": "1.0",
+            "last_route": "diagnostic_tasks",
+            "diagnostic_task_id": "diagnostic-task-wave3-installed",
+            "scenario_focus_target": "market_scenario",
+            "scenario_focus_identity": "market-scenario-wave3-installed",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _file_inventory(root: Path) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+    )
+
+
+def _run_installed_migration_report(
+    *,
+    report_path: Path,
+    migration_kind: str,
+    work_root: Path,
+    source_commit: str,
+    fixture_archive_path: Path,
+) -> int:
+    from app.journey_recovery import restore_journey_workspace_bookmark
+    from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+        create_file_backed_wave2_release_input_fixture,
+        extract_sealed_wave2_release_input_fixture_archive,
+        open_sealed_wave2_release_input_fixture,
+        reopen_file_backed_wave2_release_input_fixture,
+    )
+    from strategy_diagnostics.persistence import DIAGNOSTIC_SCHEMA_REVISION
+
+    if work_root.exists() and any(work_root.iterdir()):
+        raise RuntimeError("The installed migration work root must be empty")
+    work_root.mkdir(parents=True, exist_ok=True)
+    first_identities: tuple[str, ...]
+    second_identities: tuple[str, ...]
+    reopen_verified = False
+    initial_inventory: tuple[str, ...]
+    final_inventory: tuple[str, ...]
+    clean_exit = False
+    schema_migration_verified = False
+    source_schema_revision = ""
+    initial_applied_revisions: tuple[str, ...] = ()
+    first_reopen_applied_revisions: tuple[str, ...] = ()
+    second_reopen_applied_revisions: tuple[str, ...] = ()
+    if migration_kind == "fresh":
+        fresh_root = work_root / "fresh-install"
+        database_path = fresh_root / "strategy-diagnostics-v1.sqlite3"
+        artifact_root = fresh_root / "artifacts"
+        first = create_file_backed_wave2_release_input_fixture(
+            database_path=database_path,
+            artifact_root=artifact_root,
+        )
+        try:
+            first_identities = first.authoritative_input_identities
+            initial_migration = first.initialization_migration
+            first_reopen_migration = first.reopen_migration
+        finally:
+            first.close()
+        first_closed = first.closed
+        initial_inventory = _file_inventory(fresh_root)
+        second = reopen_file_backed_wave2_release_input_fixture(
+            database_path=database_path,
+            artifact_root=artifact_root,
+        )
+        try:
+            second_identities = second.authoritative_input_identities
+            second_reopen_migration = second.reopen_migration
+        finally:
+            second.close()
+        reopen_verified = first_closed and second.closed
+        final_inventory = _file_inventory(fresh_root)
+        clean_exit = reopen_verified
+        if initial_migration is not None:
+            source_schema_revision = initial_migration.current_revision
+            initial_applied_revisions = initial_migration.applied_revisions
+        first_reopen_applied_revisions = (
+            first_reopen_migration.applied_revisions
+        )
+        second_reopen_applied_revisions = (
+            second_reopen_migration.applied_revisions
+        )
+        schema_migration_verified = bool(
+            initial_migration is not None
+            and initial_migration.current_revision == DIAGNOSTIC_SCHEMA_REVISION
+            and initial_applied_revisions
+            and initial_applied_revisions[-1] == DIAGNOSTIC_SCHEMA_REVISION
+            and first_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and not first_reopen_applied_revisions
+            and second_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and not second_reopen_applied_revisions
+        )
+    elif migration_kind == "copied-wave3":
+        copied_root = work_root / "copied-wave3"
+        extract_sealed_wave2_release_input_fixture_archive(
+            archive_path=fixture_archive_path,
+            bundle_root=copied_root,
+        )
+        initial_inventory = _file_inventory(copied_root)
+        first = open_sealed_wave2_release_input_fixture(
+            bundle_root=copied_root,
+            expected_source_commit=source_commit,
+        )
+        try:
+            first_identities = first.authoritative_input_identities
+            first_reopen_migration = first.reopen_migration
+        finally:
+            first.close()
+        second = open_sealed_wave2_release_input_fixture(
+            bundle_root=copied_root,
+            expected_source_commit=source_commit,
+        )
+        try:
+            second_identities = second.authoritative_input_identities
+            second_reopen_migration = second.reopen_migration
+        finally:
+            second.close()
+        reopen_verified = first.closed and second.closed
+        final_inventory = _file_inventory(copied_root)
+        clean_exit = reopen_verified
+        source_schema_revision = first_reopen_migration.current_revision
+        first_reopen_applied_revisions = (
+            first_reopen_migration.applied_revisions
+        )
+        second_reopen_applied_revisions = (
+            second_reopen_migration.applied_revisions
+        )
+        schema_migration_verified = bool(
+            first_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and second_reopen_migration.current_revision
+            == DIAGNOSTIC_SCHEMA_REVISION
+            and not first_reopen_applied_revisions
+            and not second_reopen_applied_revisions
+        )
+    else:
+        raise RuntimeError("Unsupported installed migration kind")
+
+    first_bookmark = restore_journey_workspace_bookmark(
+        _wave3_bookmark_payload()
+    )
+    second_bookmark = restore_journey_workspace_bookmark(
+        first_bookmark.canonical_payload
+    )
+    identity_retention_verified = bool(
+        first_identities
+        and first_identities == second_identities
+    )
+    bookmark_migration_verified = bool(
+        first_bookmark.migrated
+        and not second_bookmark.migrated
+        and first_bookmark.bookmark == second_bookmark.bookmark
+        and first_bookmark.canonical_payload
+        == second_bookmark.canonical_payload
+    )
+    non_destructive = set(initial_inventory).issubset(final_inventory)
+    passed = bool(
+        schema_migration_verified
+        and identity_retention_verified
+        and bookmark_migration_verified
+        and reopen_verified
+        and clean_exit
+        and non_destructive
+    )
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": migration_kind,
+        "source_commit": source_commit,
+        "passed": passed,
+        "schema_revision": DIAGNOSTIC_SCHEMA_REVISION,
+        "schema_migration_verified": schema_migration_verified,
+        "source_schema_revision": source_schema_revision,
+        "target_schema_revision": DIAGNOSTIC_SCHEMA_REVISION,
+        "initial_applied_revisions": list(initial_applied_revisions),
+        "first_reopen_applied_revisions": list(
+            first_reopen_applied_revisions
+        ),
+        "second_reopen_applied_revisions": list(
+            second_reopen_applied_revisions
+        ),
+        "bookmark_migration_verified": bookmark_migration_verified,
+        "deterministic": identity_retention_verified,
+        "idempotent": bool(
+            schema_migration_verified
+            and not second_reopen_applied_revisions
+            and reopen_verified
+            and not second_bookmark.migrated
+        ),
+        "identity_retention_verified": identity_retention_verified,
+        "reopen_verified": reopen_verified,
+        "destructive_migration": not non_destructive,
+        "authoritative_input_identities": list(first_identities),
+        "initial_file_inventory": list(initial_inventory),
+        "final_file_inventory": list(final_inventory),
+        "bookmark_route": first_bookmark.bookmark.last_route.value,
+        "bookmark_task_identity": (
+            None
+            if first_bookmark.bookmark.diagnostic_task_id is None
+            else first_bookmark.bookmark.diagnostic_task_id.value
+        ),
+        "clean_exit": clean_exit,
+        "errors": [] if passed else ["Installed migration probe failed"],
+    }
+    _write_certification_report(report_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if passed else 1
+
+
+def _run_installed_recovery_report(
+    *,
+    report_path: Path,
+    source_commit: str,
+    bundle_root: Path,
+    campaign_id: str,
+    evidence_package_id: str,
+    selected_manifest_id: str,
+    diagnostic_task_id: str,
+) -> int:
+    from stock_sim.release.wave4_rollback_probe import (
+        run_candidate_authoritative_recovery_probe,
+    )
+
+    probe = run_candidate_authoritative_recovery_probe(
+        bundle_root=bundle_root,
+        campaign_id=campaign_id,
+        evidence_package_id=evidence_package_id,
+        selected_manifest_id=selected_manifest_id,
+        diagnostic_task_id=diagnostic_task_id,
+    )
+    payload = {
+        "schema_version": 1,
+        "source_commit": source_commit,
+        **asdict(probe),
+    }
+    _write_certification_report(report_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if probe.clean_exit else 1
+
+
+def _run_installed_observation_readiness_report(
+    *,
+    report_path: Path,
+    source_commit: str,
+) -> int:
+    from stock_sim.release.wave4_legacy_inventory import (
+        build_legacy_route_inventory,
+    )
+    from stock_sim.release.wave4_observation_ledger import (
+        DAILY_LEDGER_JSON_SCHEMA_PATH,
+        DAILY_LEDGER_SCHEMA_VERSION,
+        EXPECTED_CHECKPOINT_IDS,
+        METRIC_SET_ID,
+        REQUIRED_FEATURE_ROUTES,
+    )
+
+    captured_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    inventory = build_legacy_route_inventory(
+        source_commit=source_commit,
+        captured_at=captured_at,
+    )
+    schema_available = DAILY_LEDGER_JSON_SCHEMA_PATH.is_file()
+    configuration_available = bool(
+        schema_available
+        and DAILY_LEDGER_SCHEMA_VERSION
+        and METRIC_SET_ID
+        and EXPECTED_CHECKPOINT_IDS
+        and REQUIRED_FEATURE_ROUTES == ACTIVE_JOURNEY_ROUTES
+    )
+    legacy_route_count = inventory.get("legacy_route_count")
+    inventory_available = bool(
+        isinstance(legacy_route_count, int)
+        and not isinstance(legacy_route_count, bool)
+        and legacy_route_count > 0
+        and inventory.get("widgets_shell_status") == "retained"
+        and inventory.get("deletion_authorized") is False
+    )
+    passed = inventory_available and configuration_available
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "source_commit": source_commit,
+        "passed": passed,
+        "legacy_inventory_available": inventory_available,
+        "legacy_route_count": legacy_route_count,
+        "legacy_inventory": inventory,
+        "observation_ledger_configuration_available": configuration_available,
+        "observation_ledger_schema_version": DAILY_LEDGER_SCHEMA_VERSION,
+        "observation_metric_set_id": METRIC_SET_ID,
+        "required_feature_routes": list(REQUIRED_FEATURE_ROUTES),
+        "expected_checkpoint_ids": list(EXPECTED_CHECKPOINT_IDS),
+        "observation_window_started": False,
+        "destructive_migration": False,
+        "errors": [] if passed else ["Observation-ledger readiness is incomplete"],
+    }
+    _write_certification_report(report_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if passed else 1
 
 
 def _installed_recipe_family_is_complete(result: PackageSmokeResult) -> bool:
@@ -4359,9 +5724,14 @@ def _compiled_smoke_failures(
     result: PackageSmokeResult,
     *,
     shutdown_errors: Sequence[str],
+    certification_scope: CertificationScope = CertificationScope.INSTALLED,
 ) -> tuple[str, ...]:
     failures = [*shutdown_errors, *result.errors]
     checks = (
+        (
+            result.certification_scope == certification_scope.value,
+            "installed Journey certification scope did not match",
+        ),
         (result.clean_exit, "installed Journey did not exit cleanly"),
         (
             result.manual_trading_action_count == 0,
@@ -4488,6 +5858,51 @@ def _compiled_smoke_failures(
             result.task_cancel_order_isolation_verified,
             "Diagnostic Task cancel/order isolation was not verified",
         ),
+        (result.queued_state_observed, "queued task state was not observed"),
+        (result.running_state_observed, "running task state was not observed"),
+        (result.partial_state_observed, "partial task state was not observed"),
+        (
+            result.controlled_failure_observed,
+            "controlled task failure was not observed",
+        ),
+        (
+            result.safe_failure_reason_verified,
+            "safe redacted task failure reason was not verified",
+        ),
+        (
+            result.retry_idempotency_verified
+            and result.duplicate_work_count == 0,
+            "DiagnosticTasksFeature retry was not idempotent",
+        ),
+        (
+            result.terminal_completion_observed,
+            "terminal task completion was not observed",
+        ),
+        (
+            result.routes_rendered == ACTIVE_JOURNEY_ROUTES
+            and result.keyboard_navigation_verified,
+            "installed Journey did not complete all six keyboard routes",
+        ),
+        (
+            result.system_health_context_verified
+            and result.system_health_accessibility_verified
+            and bool(result.system_health_identity_graph),
+            "System Health did not preserve the exact installed context",
+        ),
+        (
+            result.focus_restoration_verified,
+            "installed route focus was not restored after reopen",
+        ),
+        (
+            (
+                certification_scope is CertificationScope.PACKAGE_ASSEMBLY
+                or result.installed_accessibility_verified
+            )
+            and result.no_color_only_meaning_verified
+            and result.chart_narrative_table_revision_verified
+            and len(result.accessibility_checkpoints) >= 8,
+            "installed accessibility checkpoints are incomplete",
+        ),
     )
     failures.extend(message for passed, message in checks if not passed)
     return tuple(failures)
@@ -4502,38 +5917,177 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=RendererLane.HARDWARE.value,
     )
     parser.add_argument("--smoke-report-dir", type=Path)
+    parser.add_argument("--package-assembly-smoke-report-dir", type=Path)
+    parser.add_argument("--installed-dpi-preflight-report", type=Path)
+    parser.add_argument("--performance-report", type=Path)
+    parser.add_argument(
+        "--performance-duration-seconds",
+        type=float,
+        default=60.0,
+    )
+    parser.add_argument("--migration-report", type=Path)
+    parser.add_argument(
+        "--migration-kind",
+        choices=("fresh", "copied-wave3"),
+    )
+    parser.add_argument("--migration-work-root", type=Path)
+    parser.add_argument("--recovery-report", type=Path)
+    parser.add_argument("--observation-readiness-report", type=Path)
+    parser.add_argument("--supported-data-copy", type=Path)
+    parser.add_argument("--campaign-id")
+    parser.add_argument("--evidence-package-id")
+    parser.add_argument("--selected-manifest-id")
+    parser.add_argument("--diagnostic-task-id")
     parser.add_argument("--fixture-archive", type=Path)
     parser.add_argument("--source-commit", default="unbound")
     parser.add_argument("--no-images", action="store_true")
     arguments = parser.parse_args(raw_arguments)
+    report_modes = tuple(
+        value
+        for value in (
+            arguments.smoke_report_dir,
+            arguments.package_assembly_smoke_report_dir,
+            arguments.installed_dpi_preflight_report,
+            arguments.performance_report,
+            arguments.migration_report,
+            arguments.recovery_report,
+            arguments.observation_readiness_report,
+        )
+        if value is not None
+    )
+    if len(report_modes) > 1:
+        parser.error("installed certification report modes are mutually exclusive")
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
-    if arguments.smoke_report_dir is not None:
+    if arguments.installed_dpi_preflight_report is not None:
+        if "__compiled__" not in globals():
+            parser.error(
+                "--installed-dpi-preflight-report requires the compiled package"
+            )
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None:
+            fixture_archive_path = _installed_wave3_input_fixture_archive_path()
+        return _run_installed_dpi_preflight_report(
+            report_path=arguments.installed_dpi_preflight_report,
+            renderer_lane=renderer_lane,
+            source_commit=arguments.source_commit,
+            fixture_archive_path=fixture_archive_path,
+            defer_native_teardown=True,
+        )
+    if arguments.performance_report is not None:
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and "__compiled__" in globals():
+            fixture_archive_path = _installed_formal_v1_fixture_archive_path()
+        if fixture_archive_path is None:
+            parser.error("--fixture-archive is required outside the package")
+        return _run_installed_performance_report(
+            report_path=arguments.performance_report,
+            renderer_lane=renderer_lane,
+            duration_seconds=arguments.performance_duration_seconds,
+            source_commit=arguments.source_commit,
+            fixture_archive_path=fixture_archive_path,
+        )
+    if arguments.migration_report is not None:
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and "__compiled__" in globals():
+            fixture_archive_path = _installed_wave3_input_fixture_archive_path()
+        if arguments.migration_kind is None:
+            parser.error("--migration-kind is required with --migration-report")
+        if arguments.migration_work_root is None:
+            parser.error(
+                "--migration-work-root is required with --migration-report"
+            )
+        if fixture_archive_path is None:
+            parser.error("--fixture-archive is required outside the package")
+        return _run_installed_migration_report(
+            report_path=arguments.migration_report,
+            migration_kind=arguments.migration_kind,
+            work_root=arguments.migration_work_root,
+            source_commit=arguments.source_commit,
+            fixture_archive_path=fixture_archive_path,
+        )
+    if arguments.recovery_report is not None:
+        recovery_values = (
+            arguments.supported_data_copy,
+            arguments.campaign_id,
+            arguments.evidence_package_id,
+            arguments.selected_manifest_id,
+            arguments.diagnostic_task_id,
+        )
+        if any(value is None for value in recovery_values):
+            parser.error(
+                "supported data-copy and durable identity arguments are "
+                "required with --recovery-report"
+            )
+        return _run_installed_recovery_report(
+            report_path=arguments.recovery_report,
+            source_commit=arguments.source_commit,
+            bundle_root=arguments.supported_data_copy,
+            campaign_id=arguments.campaign_id,
+            evidence_package_id=arguments.evidence_package_id,
+            selected_manifest_id=arguments.selected_manifest_id,
+            diagnostic_task_id=arguments.diagnostic_task_id,
+        )
+    if arguments.observation_readiness_report is not None:
+        return _run_installed_observation_readiness_report(
+            report_path=arguments.observation_readiness_report,
+            source_commit=arguments.source_commit,
+        )
+    smoke_report_dir = (
+        arguments.package_assembly_smoke_report_dir
+        if arguments.package_assembly_smoke_report_dir is not None
+        else arguments.smoke_report_dir
+    )
+    if smoke_report_dir is not None:
+        compiled_package = "__compiled__" in globals()
+        certification_scope = (
+            CertificationScope.PACKAGE_ASSEMBLY
+            if arguments.package_assembly_smoke_report_dir is not None
+            else (
+                CertificationScope.INSTALLED
+                if compiled_package
+                else CertificationScope.SOURCE_VALIDATION
+            )
+        )
+        if (
+            certification_scope is CertificationScope.PACKAGE_ASSEMBLY
+            and not compiled_package
+        ):
+            parser.error(
+                "--package-assembly-smoke-report-dir requires the compiled "
+                "package"
+            )
+        fixture_archive_path = arguments.fixture_archive
+        if fixture_archive_path is None and compiled_package:
+            fixture_archive_path = _installed_wave3_input_fixture_archive_path()
         from PySide6.QtWidgets import QApplication
 
         owns_application = QApplication.instance() is None
-        fixture_archive_path = arguments.fixture_archive
-        if fixture_archive_path is None and "__compiled__" in globals():
-            fixture_archive_path = _installed_fixture_archive_path()
         shutdown_errors: list[str] = []
         try:
             result = run_smoke_journey(
-                report_dir=arguments.smoke_report_dir,
+                report_dir=smoke_report_dir,
                 renderer_lane=renderer_lane,
                 source_commit=arguments.source_commit,
                 capture_images=not arguments.no_images,
                 fixture_archive_path=fixture_archive_path,
-                defer_native_teardown="__compiled__" in globals(),
+                defer_native_teardown=compiled_package,
+                certification_scope=certification_scope,
             )
         finally:
             if owns_application:
                 _shutdown_smoke_application(
                     shutdown_errors,
-                    run_qt_teardown="__compiled__" not in globals(),
+                    run_qt_teardown=not compiled_package,
                 )
-        failures = _compiled_smoke_failures(
-            result,
-            shutdown_errors=shutdown_errors,
+        failures = (
+            _compiled_smoke_failures(
+                result,
+                shutdown_errors=shutdown_errors,
+                certification_scope=certification_scope,
+            )
+            if compiled_package
+            else tuple((*shutdown_errors, *result.errors))
         )
         if failures:
             print(
@@ -4555,15 +6109,24 @@ def _run_process_entry(
     suspend_cyclic_gc: Callable[[], None] = gc.disable,
     resume_cyclic_gc: Callable[[], None] = gc.enable,
 ) -> None:
-    compiled_smoke = bool(
+    compiled_certification = bool(
         compiled
         and any(
-            argument == "--smoke-report-dir"
-            or argument.startswith("--smoke-report-dir=")
+            argument == report_argument
+            or argument.startswith(report_argument + "=")
             for argument in arguments
+            for report_argument in (
+                "--smoke-report-dir",
+                "--package-assembly-smoke-report-dir",
+                "--installed-dpi-preflight-report",
+                "--performance-report",
+                "--migration-report",
+                "--recovery-report",
+                "--observation-readiness-report",
+            )
         )
     )
-    if not compiled_smoke:
+    if not compiled_certification:
         raise SystemExit(run())
 
     cyclic_gc_was_suspended = cyclic_gc_enabled()
@@ -4582,13 +6145,19 @@ def _run_process_entry(
         else:
             exit_code = 1
             try:
-                print(error.code, file=sys.stderr)
+                print(
+                    "Installed certification rejected invalid arguments.",
+                    file=sys.stderr,
+                )
             except BaseException:
                 pass
     except BaseException:
         exit_code = 1
         try:
-            traceback.print_exc(file=sys.stderr)
+            print(
+                "Installed certification failed at a redacted process boundary.",
+                file=sys.stderr,
+            )
         except BaseException:
             pass
 

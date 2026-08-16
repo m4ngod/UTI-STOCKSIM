@@ -574,7 +574,9 @@ def test_first_incompatible_cache_observation_keeps_typed_state_without_generati
         )
         assert component.generation is None
     finally:
-        feature.close()
+        assert feature.close_and_wait(timeout_seconds=1.0) is True
+        assert feature.closed is True
+        assert feature.release_stopped is True
 
 
 def test_sql_queue_health_uses_one_bounded_active_target_projection(tmp_path) -> None:
@@ -709,7 +711,7 @@ def test_version_health_reads_the_exact_registry_lock_and_format_identities() ->
         ("SystemHealthFeature", "1.0"),
     )
     assert version.dependency_lock_identity == (
-        "sha256:f53b1b7245e48a33420ee7a2657c7d7bedc35a61cefbe0fc86ce0a1232bfaf1f"
+        "sha256:a974f315f524cd444e38ee7df1ae6845daf7a325e75295fc8431ea9abf064f6a"
     )
     assert version.release_manifest_compatibility is (
         HealthCompatibilityState.COMPATIBLE

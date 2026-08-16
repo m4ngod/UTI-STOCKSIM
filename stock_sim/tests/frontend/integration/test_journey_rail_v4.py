@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -242,8 +243,10 @@ class _ObservedFeature:
         self.inner = inner
         self.subscribe_count = 0
         self.dispose_count = 0
+        self.snapshot_count = 0
 
     def snapshot(self, context):
+        self.snapshot_count += 1
         return self.inner.snapshot(context)
 
     def subscribe(self, context, observer):
@@ -452,6 +455,84 @@ def test_bookmark_focus_token_restores_only_after_authoritative_route_entry(
     _close(context, host)
 
 
+def test_host_visible_route_restore_marks_the_durable_token_consumed(
+    tmp_path,
+) -> None:
+    app = _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.STRATEGY_LIBRARY,
+        presentation=JourneyPresentationSelection(
+            focus_return_token=JourneyFocusReturnToken(
+                JourneyWorkspaceRoute.STRATEGY_LIBRARY,
+                "strategyLibrarySearchInput",
+            )
+        ),
+    )
+    host = _host(
+        context,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+    host.resize(1280, 720)
+    host.show()
+    _settle(app)
+    root = host.rootObject()
+    assert root is not None
+    search = _quick_item(root, "strategyLibrarySearchInput")
+    root.setProperty("focusReturnConsumed", False)
+
+    host._restore_visible_route_focus()
+    assert search.property("activeFocus") is True
+    assert root.property("focusReturnConsumed") is True
+
+    _close(context, host)
+
+
+def test_system_health_alone_retains_durable_selection_during_transient_empty() -> None:
+    durable = JourneyDiagnosticSelection(
+        task_id=DiagnosticTaskId("DIAGNOSTIC-TASK-DURABLE"),
+        task_revision=7,
+        configuration_content_id=DiagnosticTaskConfigurationContentId(
+            "configuration-durable"
+        ),
+        task_handle_id=TaskHandleId("TASK-HANDLE-DURABLE"),
+        campaign_id=FormalDiagnosticCampaignId("campaign-durable"),
+        campaign_revision=3,
+        run_id=StrategyRunId("run-durable"),
+    )
+    authoritative = JourneyDiagnosticSelection(
+        task_id=durable.task_id,
+        task_revision=8,
+        configuration_content_id=durable.configuration_content_id,
+        task_handle_id=durable.task_handle_id,
+        campaign_id=durable.campaign_id,
+        campaign_revision=4,
+        run_id=durable.run_id,
+    )
+    host = SimpleNamespace(
+        _journey_workspace_bookmark=JourneyWorkspaceBookmark(
+            diagnostic_selection=durable
+        ),
+    )
+
+    assert (
+        JourneyWorkspaceHost._system_health_diagnostic_selection(host, None)
+        == durable
+    )
+    assert (
+        JourneyWorkspaceHost._system_health_diagnostic_selection(
+            host,
+            authoritative,
+        )
+        == authoritative
+    )
+
+
 def test_copied_wave_3_bookmark_restores_the_exact_reference_path_focus(
     tmp_path,
 ) -> None:
@@ -493,7 +574,9 @@ def test_copied_wave_3_bookmark_restores_the_exact_reference_path_focus(
     )
     host.resize(1280, 720)
     host.show()
-    target = _quick_item(host.rootObject(), f"scenarioLabPath-{path_identity}")
+    target_name = f"scenarioLabPath-{path_identity}"
+    _wait_for(app, lambda: _has_quick_item(host.rootObject(), target_name))
+    target = _quick_item(host.rootObject(), target_name)
     _wait_for(app, lambda: target.property("activeFocus") is True)
 
     assert restored.migrated is True
@@ -924,6 +1007,115 @@ def test_bookmarked_evidence_selection_waits_for_authoritative_feature_state(
     assert host.journey_context.evidence_selection == durable
     assert host.journey_context.presentation.selected_identity == finding.identity.value
     assert host.journey_context.presentation.view_mode is JourneyViewMode.DETAILS
+
+    _close(context, host)
+
+
+def test_evidence_revisions_do_not_reread_inactive_diagnostic_inventory(
+    tmp_path,
+) -> None:
+    app = _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    observed_diagnostic = _ObservedFeature(context.diagnostic_tasks_feature)
+    evidence_context = EvidenceAndFindingsContext.for_selection(
+        EvidenceAndFindingsSelection(
+            campaign_id=FormalDiagnosticCampaignId("campaign-fast-evidence-118"),
+            run_id=StrategyRunId("run-fast-evidence-118"),
+            strategy_id=StrategyUnderTestId("strategy-fast-evidence-118"),
+            market_scenario_id=MarketScenarioId("scenario-fast-evidence-118"),
+            approved_recipe_id=ApprovedScenarioRecipeId("recipe-fast-evidence-118"),
+            reproduction_manifest_id=ReproductionManifestId(
+                "manifest-fast-evidence-118"
+            ),
+        )
+    )
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+    host = _host(
+        context,
+        diagnostic_tasks_feature=observed_diagnostic,
+        evidence_context=evidence_context,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+    host.show()
+    _settle(app)
+    reads_before_evidence = observed_diagnostic.snapshot_count
+
+    context.evidence_and_findings_feature.advance_to_completed(evidence_context)
+    _wait_for(app, lambda: host.journey_context.evidence_selection is not None)
+
+    assert observed_diagnostic.snapshot_count == reads_before_evidence
+    assert host.activate_route(JourneyWorkspaceRoute.DIAGNOSTIC_TASKS) is True
+    _settle(app)
+    assert observed_diagnostic.snapshot_count == reads_before_evidence + 1
+
+    _close(context, host)
+
+
+def test_host_construction_reads_each_setup_feature_once(tmp_path) -> None:
+    _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    observed_strategy = _ObservedFeature(context.strategy_library_feature)
+    observed_scenario = _ObservedFeature(context.scenario_lab_feature)
+    observed_diagnostic = _ObservedFeature(context.diagnostic_tasks_feature)
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+    )
+
+    host = _host(
+        context,
+        strategy_library_feature=observed_strategy,
+        scenario_lab_feature=observed_scenario,
+        diagnostic_tasks_feature=observed_diagnostic,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+
+    assert observed_strategy.snapshot_count == 1
+    assert observed_scenario.snapshot_count == 1
+    assert observed_diagnostic.snapshot_count == 1
+
+    _close(context, host)
+
+
+def test_scenario_dependency_reread_has_one_authoritative_follow_up_per_feature(
+    tmp_path,
+) -> None:
+    _app()
+    context = build_app_context(
+        settings_path=str(tmp_path / "settings.json"),
+        run_monitoring_mode="fake",
+        runtime_gateway=object(),
+    )
+    observed_strategy = _ObservedFeature(context.strategy_library_feature)
+    observed_scenario = _ObservedFeature(context.scenario_lab_feature)
+    observed_diagnostic = _ObservedFeature(context.diagnostic_tasks_feature)
+    bookmark = JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.SCENARIO_LAB,
+    )
+
+    host = _host(
+        context,
+        strategy_library_feature=observed_strategy,
+        scenario_lab_feature=observed_scenario,
+        diagnostic_tasks_feature=observed_diagnostic,
+        journey_workspace_bookmark=bookmark,
+        initial_route=bookmark.last_route.value,
+    )
+
+    assert observed_strategy.snapshot_count == 2
+    assert observed_scenario.snapshot_count == 2
+    assert observed_diagnostic.snapshot_count == 2
 
     _close(context, host)
 

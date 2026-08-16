@@ -2999,6 +2999,20 @@ class DiagnosticsApplication:
             self._reproduction.manifests_for(evidence_package_id),
         )
 
+    def reproduction_manifest(
+        self,
+        evidence_package_id: str,
+        manifest_id: str,
+    ) -> ReproductionManifest | None:
+        """Read one exact Manifest without enumerating sibling identities."""
+
+        self.status()
+        self._diagnostic_evidence.get(evidence_package_id)
+        return self._reproduction.manifest_for(
+            evidence_package_id,
+            manifest_id,
+        )
+
     def read_reproduction_manifest_format_identity(
         self,
         evidence_package_id: str,

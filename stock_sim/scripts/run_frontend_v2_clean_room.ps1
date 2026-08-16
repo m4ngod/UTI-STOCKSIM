@@ -1,17 +1,177 @@
+[CmdletBinding(DefaultParameterSetName = "Certification")]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$PackageArchive,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$ExpectedArchiveSha256,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$WidgetsPackageArchive,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$ExpectedWidgetsArchiveSha256,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$SourceCommit,
-    [Parameter(Mandatory = $true)]
-    [string]$EvidenceDir
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
+    [string]$EvidenceDir,
+    [Parameter(Mandatory = $true, ParameterSetName = "UiAutomationScan")]
+    [string]$UiAutomationScanRequest
 )
+
+function Resolve-NormalizedFullyQualifiedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $pathRoot = [IO.Path]::GetPathRoot($Path)
+    $pathIsFullyQualified = (
+        [IO.Path]::IsPathRooted($Path) -and
+        -not [string]::IsNullOrWhiteSpace($pathRoot) -and
+        $pathRoot.Length -gt 1 -and
+        $pathRoot -cnotmatch '^[A-Za-z]:$'
+    )
+    if (-not $pathIsFullyQualified) {
+        throw "Certification storage paths must be fully qualified."
+    }
+    $normalizedPath = [IO.Path]::GetFullPath($Path)
+    $pathRoot = [IO.Path]::GetPathRoot($normalizedPath)
+    while (
+        $normalizedPath.Length -gt $pathRoot.Length -and
+        (
+            $normalizedPath.EndsWith(
+                [IO.Path]::DirectorySeparatorChar.ToString(),
+                [StringComparison]::Ordinal
+            ) -or
+            $normalizedPath.EndsWith(
+                [IO.Path]::AltDirectorySeparatorChar.ToString(),
+                [StringComparison]::Ordinal
+            )
+        )
+    ) {
+        $normalizedPath = $normalizedPath.Substring(
+            0,
+            $normalizedPath.Length - 1
+        )
+    }
+    return $normalizedPath
+}
+
+function Test-NormalizedPathIsSameOrDescendant {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $normalizedPath = Resolve-NormalizedFullyQualifiedPath -Path $Path
+    $normalizedRoot = Resolve-NormalizedFullyQualifiedPath -Path $Root
+    if ([string]::Equals(
+        $normalizedPath,
+        $normalizedRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        return $true
+    }
+    $rootBoundary = $normalizedRoot
+    if (
+        -not $rootBoundary.EndsWith(
+            [IO.Path]::DirectorySeparatorChar.ToString(),
+            [StringComparison]::Ordinal
+        ) -and
+        -not $rootBoundary.EndsWith(
+            [IO.Path]::AltDirectorySeparatorChar.ToString(),
+            [StringComparison]::Ordinal
+        )
+    ) {
+        $rootBoundary += [IO.Path]::DirectorySeparatorChar
+    }
+    return $normalizedPath.StartsWith(
+        $rootBoundary,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Resolve-GuestLocalCertificationInstallRoots {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LocalAppDataRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit
+    )
+
+    if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw "SourceCommit must be a lowercase 40-character Git commit."
+    }
+    $resolvedLocalAppData = Resolve-NormalizedFullyQualifiedPath `
+        -Path $LocalAppDataRoot
+    $resolvedEvidence = Resolve-NormalizedFullyQualifiedPath -Path $EvidenceRoot
+    $resolvedRoot = Resolve-NormalizedFullyQualifiedPath -Path (
+        (Join-Path `
+            $resolvedLocalAppData `
+            ("UTI-StockSim\Issue118Certification\" + $SourceCommit))
+    )
+    $resolvedCandidate = Resolve-NormalizedFullyQualifiedPath -Path (
+        (Join-Path $resolvedRoot "qml-candidate")
+    )
+    $resolvedWidgets = Resolve-NormalizedFullyQualifiedPath -Path (
+        (Join-Path $resolvedRoot "widgets-rollback")
+    )
+    if (-not (Test-NormalizedPathIsSameOrDescendant `
+        -Path $resolvedRoot `
+        -Root $resolvedLocalAppData
+    )) {
+        throw "Guest-local certification root escaped LocalAppData."
+    }
+    foreach ($packageRoot in @($resolvedCandidate, $resolvedWidgets)) {
+        if (-not (Test-NormalizedPathIsSameOrDescendant `
+            -Path $packageRoot `
+            -Root $resolvedRoot
+        )) {
+            throw "Guest-local package root escaped its certification root."
+        }
+    }
+    $rootsOverlap = (
+        (Test-NormalizedPathIsSameOrDescendant `
+            -Path $resolvedRoot `
+            -Root $resolvedEvidence) -or
+        (Test-NormalizedPathIsSameOrDescendant `
+            -Path $resolvedEvidence `
+            -Root $resolvedRoot)
+    )
+    if ($rootsOverlap) {
+        throw "Guest-local installation and mapped evidence roots overlap."
+    }
+    return [pscustomobject]@{
+        StorageKind = "guest_local_filesystem"
+        Root = $resolvedRoot
+        Candidate = $resolvedCandidate
+        Widgets = $resolvedWidgets
+    }
+}
+
+function Set-CleanRoomStage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            "guest-local-root-resolution",
+            "archive-validation",
+            "environment-inventory",
+            "package-extraction",
+            "installed-dpi-preflight"
+        )]
+        [string]$Stage
+    )
+
+    [IO.File]::WriteAllText(
+        (Join-Path $EvidenceRoot "clean-room-stage.txt"),
+        $Stage,
+        [Text.UTF8Encoding]::new($false)
+    )
+}
 
 function Reset-RendererLaneEvidence {
     param(
@@ -61,6 +221,778 @@ function ConvertTo-ReleaseErrorList {
     }
 }
 
+function Test-ExactEvidencePropertyNames {
+    param(
+        [AllowNull()]
+        [object]$Value,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedNames
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+    $actualNames = @($Value.PSObject.Properties.Name | Sort-Object)
+    $expected = @($ExpectedNames | Sort-Object)
+    return (
+        $actualNames.Count -eq $expected.Count -and
+        ($actualNames -join [char]0) -ceq ($expected -join [char]0)
+    )
+}
+
+function ConvertTo-ExactEvidenceStringArray {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    $items = @($Value)
+    if (@($items | Where-Object { $_ -isnot [string] }).Count -ne 0) {
+        throw (
+            "Installed renderer smoke evidence was rejected at a " +
+            "redacted boundary."
+        )
+    }
+    return @($items | ForEach-Object { [string]$_ })
+}
+
+function ConvertTo-InstalledAccessibilityCheckpointEvidence {
+    param(
+        [AllowNull()]
+        [object]$Checkpoints
+    )
+
+    $checkpointFields = @(
+        "active_route", "captured_at_utc",
+        "chart_narrative_table_revision", "checkpoint", "contrast",
+        "evidence_revision", "evidence_state", "high_contrast",
+        "motion_duration_ms", "nodes", "non_color_cue_verified",
+        "non_color_cues", "reduced_motion", "rendered_text_nodes", "route",
+        "run_revision", "run_state", "sequence", "snapshot_identity",
+        "status_object_name", "status_semantic_term", "text_scale_percent",
+        "wcag_2_2_aa_contrast_verified", "window_device_pixel_ratio"
+    )
+    $nodeFields = @(
+        "description_present", "name_present", "object_name", "role",
+        "semantic_terms", "states", "visible"
+    )
+    $renderedTextFields = @(
+        "item_type", "object_name", "owner_object_names", "positive_area",
+        "semantic_terms", "visible"
+    )
+    $nonColorCueFields = @(
+        "cue_kind", "item_type", "matched_term", "status_object_name"
+    )
+    $contrastFields = @(
+        "background", "background_token", "foreground", "foreground_token",
+        "passed", "ratio", "required_ratio"
+    )
+    $chartRevisionBaseFields = @(
+        "accepted_revision", "available", "same_revision"
+    )
+    $chartRevisionAvailableFields = @(
+        "accepted_revision", "available", "chart", "narrative",
+        "revision_marker", "same_revision", "table"
+    )
+    $nestedFields = @(
+        "chart_narrative_table_revision", "contrast", "nodes",
+        "non_color_cues", "rendered_text_nodes"
+    )
+    $checkpointStringFields = @(
+        "active_route", "captured_at_utc", "checkpoint", "evidence_revision",
+        "evidence_state", "route", "run_revision", "run_state",
+        "snapshot_identity", "status_object_name", "status_semantic_term"
+    )
+    $checkpointBooleanFields = @(
+        "high_contrast", "non_color_cue_verified", "reduced_motion",
+        "wcag_2_2_aa_contrast_verified"
+    )
+    $checkpointIntegerFields = @(
+        "motion_duration_ms", "sequence", "text_scale_percent"
+    )
+    $converted = @()
+    foreach ($checkpoint in @($Checkpoints)) {
+        if (-not (Test-ExactEvidencePropertyNames `
+            -Value $checkpoint `
+            -ExpectedNames $checkpointFields
+        )) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        foreach ($fieldName in $checkpointStringFields) {
+            if ($checkpoint.PSObject.Properties[$fieldName].Value -isnot [string]) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+        }
+        foreach ($fieldName in $checkpointBooleanFields) {
+            if ($checkpoint.PSObject.Properties[$fieldName].Value -isnot [bool]) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+        }
+        foreach ($fieldName in $checkpointIntegerFields) {
+            $value = $checkpoint.PSObject.Properties[$fieldName].Value
+            if ($value -isnot [int] -and $value -isnot [long]) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+        }
+        if (
+            $checkpoint.window_device_pixel_ratio -isnot [int] -and
+            $checkpoint.window_device_pixel_ratio -isnot [long] -and
+            $checkpoint.window_device_pixel_ratio -isnot [single] -and
+            $checkpoint.window_device_pixel_ratio -isnot [double] -and
+            $checkpoint.window_device_pixel_ratio -isnot [decimal]
+        ) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        $checkpointEvidence = [ordered]@{}
+        foreach ($fieldName in $checkpointFields) {
+            if ($fieldName -notin $nestedFields) {
+                $value = $checkpoint.PSObject.Properties[$fieldName].Value
+                if (
+                    $null -eq $value -or
+                    (
+                        $value -isnot [string] -and
+                        $value -isnot [ValueType]
+                    )
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                $checkpointEvidence[$fieldName] = $value
+            }
+        }
+        $checkpointEvidence.nodes = @(
+            foreach ($node in @($checkpoint.nodes)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $node `
+                    -ExpectedNames $nodeFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $node.description_present -isnot [bool] -or
+                    $node.name_present -isnot [bool] -or
+                    $node.object_name -isnot [string] -or
+                    $node.role -isnot [string] -or
+                    $node.visible -isnot [bool]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                [ordered]@{
+                    description_present = $node.description_present
+                    name_present = $node.name_present
+                    object_name = [string]$node.object_name
+                    role = [string]$node.role
+                    semantic_terms = @(
+                        ConvertTo-ExactEvidenceStringArray `
+                            -Value $node.semantic_terms
+                    )
+                    states = @(
+                        ConvertTo-ExactEvidenceStringArray -Value $node.states
+                    )
+                    visible = $node.visible
+                }
+            }
+        )
+        $checkpointEvidence.rendered_text_nodes = @(
+            foreach ($node in @($checkpoint.rendered_text_nodes)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $node `
+                    -ExpectedNames $renderedTextFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $node.item_type -isnot [string] -or
+                    $node.object_name -isnot [string] -or
+                    $node.positive_area -isnot [bool] -or
+                    $node.visible -isnot [bool]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                [ordered]@{
+                    item_type = [string]$node.item_type
+                    object_name = [string]$node.object_name
+                    owner_object_names = @(
+                        ConvertTo-ExactEvidenceStringArray `
+                            -Value $node.owner_object_names
+                    )
+                    positive_area = $node.positive_area
+                    semantic_terms = @(
+                        ConvertTo-ExactEvidenceStringArray `
+                            -Value $node.semantic_terms
+                    )
+                    visible = $node.visible
+                }
+            }
+        )
+        $checkpointEvidence.non_color_cues = @(
+            foreach ($cue in @($checkpoint.non_color_cues)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $cue `
+                    -ExpectedNames $nonColorCueFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $cue.cue_kind -isnot [string] -or
+                    $cue.item_type -isnot [string] -or
+                    $cue.matched_term -isnot [string] -or
+                    $cue.status_object_name -isnot [string]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                [ordered]@{
+                    cue_kind = [string]$cue.cue_kind
+                    item_type = [string]$cue.item_type
+                    matched_term = [string]$cue.matched_term
+                    status_object_name = [string]$cue.status_object_name
+                }
+            }
+        )
+        $checkpointEvidence.contrast = @(
+            foreach ($contrast in @($checkpoint.contrast)) {
+                if (-not (Test-ExactEvidencePropertyNames `
+                    -Value $contrast `
+                    -ExpectedNames $contrastFields
+                )) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                if (
+                    $contrast.background -isnot [string] -or
+                    $contrast.background_token -isnot [string] -or
+                    $contrast.foreground -isnot [string] -or
+                    $contrast.foreground_token -isnot [string] -or
+                    $contrast.passed -isnot [bool]
+                ) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                foreach ($fieldName in @("ratio", "required_ratio")) {
+                    $value = $contrast.PSObject.Properties[$fieldName].Value
+                    $numericTypeIsAllowed = (
+                        $value -is [int] -or
+                        $value -is [long] -or
+                        $value -is [single] -or
+                        $value -is [double] -or
+                        $value -is [decimal]
+                    )
+                    if (-not $numericTypeIsAllowed) {
+                        throw (
+                            "Installed renderer smoke evidence was rejected " +
+                            "at a redacted boundary."
+                        )
+                    }
+                    $numericValue = [double]$value
+                    if (
+                        [double]::IsNaN($numericValue) -or
+                        [double]::IsInfinity($numericValue) -or
+                        $numericValue -le 0.0
+                    ) {
+                        throw (
+                            "Installed renderer smoke evidence was rejected " +
+                            "at a redacted boundary."
+                        )
+                    }
+                }
+                [ordered]@{
+                    background = [string]$contrast.background
+                    background_token = [string]$contrast.background_token
+                    foreground = [string]$contrast.foreground
+                    foreground_token = [string]$contrast.foreground_token
+                    passed = $contrast.passed
+                    ratio = $contrast.ratio
+                    required_ratio = $contrast.required_ratio
+                }
+            }
+        )
+        $chartRevision = $checkpoint.chart_narrative_table_revision
+        $chartRevisionFields = if ($chartRevision.available -eq $true) {
+            $chartRevisionAvailableFields
+        }
+        else {
+            $chartRevisionBaseFields
+        }
+        if (-not (Test-ExactEvidencePropertyNames `
+            -Value $chartRevision `
+            -ExpectedNames $chartRevisionFields
+        )) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        if (
+            $chartRevision.accepted_revision -isnot [int] -and
+            $chartRevision.accepted_revision -isnot [long]
+        ) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        if (
+            $chartRevision.available -isnot [bool] -or
+            $chartRevision.same_revision -isnot [bool]
+        ) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        $checkpointEvidence.chart_narrative_table_revision = [ordered]@{
+            accepted_revision = $chartRevision.accepted_revision
+            available = $chartRevision.available
+            same_revision = $chartRevision.same_revision
+        }
+        if ($chartRevision.available -eq $true) {
+            if (
+                $chartRevision.chart -isnot [bool] -or
+                $chartRevision.narrative -isnot [bool] -or
+                $chartRevision.revision_marker -isnot [string] -or
+                $chartRevision.table -isnot [bool]
+            ) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+            $checkpointEvidence.chart_narrative_table_revision["chart"] = (
+                $chartRevision.chart
+            )
+            $checkpointEvidence.chart_narrative_table_revision["narrative"] = (
+                $chartRevision.narrative
+            )
+            $checkpointEvidence.chart_narrative_table_revision[
+                "revision_marker"
+            ] = (
+                [string]$chartRevision.revision_marker
+            )
+            $checkpointEvidence.chart_narrative_table_revision["table"] = (
+                $chartRevision.table
+            )
+        }
+        $converted += $checkpointEvidence
+    }
+    return $converted
+}
+
+function ConvertTo-ManualTradingRouteAuditEvidence {
+    param(
+        [AllowNull()]
+        [object]$Audits
+    )
+
+    $fields = @(
+        "accessible_object_count", "action_patterns_observed",
+        "command_binding_surface_count", "context_menu_surface_count",
+        "coverage", "declared_signal_surface_count", "disabled_object_count",
+        "forbidden_action_count", "forbidden_actions", "hidden_object_count",
+        "interactive_object_count", "object_count", "route",
+        "shortcut_surface_count", "signal_surface_count", "stage",
+        "static_read_only_diagnostics"
+    )
+    $stringArrayFields = @(
+        "action_patterns_observed", "coverage", "forbidden_actions"
+    )
+    $staticDiagnosticFields = @(
+        "accessible_name_classification", "action_patterns", "enabled",
+        "focusable", "object_name", "role", "trigger_sources", "visible"
+    )
+    $integerFields = @(
+        "accessible_object_count", "command_binding_surface_count",
+        "context_menu_surface_count", "declared_signal_surface_count",
+        "disabled_object_count", "forbidden_action_count",
+        "hidden_object_count", "interactive_object_count", "object_count",
+        "shortcut_surface_count", "signal_surface_count"
+    )
+    $converted = @()
+    foreach ($audit in @($Audits)) {
+        if (-not (Test-ExactEvidencePropertyNames `
+            -Value $audit `
+            -ExpectedNames $fields
+        )) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+        $evidence = [ordered]@{}
+        foreach ($fieldName in $fields) {
+            $value = $audit.PSObject.Properties[$fieldName].Value
+            if ($fieldName -in $stringArrayFields) {
+                $evidence[$fieldName] = @(
+                    ConvertTo-ExactEvidenceStringArray -Value $value
+                )
+            }
+            elseif ($fieldName -ceq "static_read_only_diagnostics") {
+                $evidence[$fieldName] = @(
+                    foreach ($diagnostic in @($value)) {
+                        if (-not (Test-ExactEvidencePropertyNames `
+                            -Value $diagnostic `
+                            -ExpectedNames $staticDiagnosticFields
+                        )) {
+                            throw (
+                                "Installed renderer smoke evidence was " +
+                                "rejected at a redacted boundary."
+                            )
+                        }
+                        if (
+                            $diagnostic.accessible_name_classification `
+                                -isnot [string] -or
+                            $diagnostic.enabled -isnot [bool] -or
+                            $diagnostic.focusable -isnot [bool] -or
+                            $diagnostic.object_name -isnot [string] -or
+                            $diagnostic.role -isnot [string] -or
+                            $diagnostic.visible -isnot [bool]
+                        ) {
+                            throw (
+                                "Installed renderer smoke evidence was " +
+                                "rejected at a redacted boundary."
+                            )
+                        }
+                        [ordered]@{
+                            accessible_name_classification = (
+                                [string]$diagnostic.accessible_name_classification
+                            )
+                            action_patterns = @(
+                                ConvertTo-ExactEvidenceStringArray `
+                                    -Value $diagnostic.action_patterns
+                            )
+                            enabled = $diagnostic.enabled
+                            focusable = $diagnostic.focusable
+                            object_name = [string]$diagnostic.object_name
+                            role = [string]$diagnostic.role
+                            trigger_sources = @(
+                                ConvertTo-ExactEvidenceStringArray `
+                                    -Value $diagnostic.trigger_sources
+                            )
+                            visible = $diagnostic.visible
+                        }
+                    }
+                )
+            }
+            elseif ($fieldName -in @("route", "stage")) {
+                if ($value -isnot [string]) {
+                    throw (
+                        "Installed renderer smoke evidence was rejected at a " +
+                        "redacted boundary."
+                    )
+                }
+                $evidence[$fieldName] = $value
+            }
+            elseif (
+                $fieldName -notin $integerFields -or
+                ($value -isnot [int] -and $value -isnot [long])
+            ) {
+                throw (
+                    "Installed renderer smoke evidence was rejected at a " +
+                    "redacted boundary."
+                )
+            }
+            else {
+                $evidence[$fieldName] = $value
+            }
+        }
+        $converted += $evidence
+    }
+    return $converted
+}
+
+function New-InstalledRendererLaneEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$SmokeReport,
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$DerivedEvidence,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("hardware", "software")]
+        [string]$ExpectedRendererLane
+    )
+
+    $retainedSmokeFieldNames = @(
+        "certification_scope",
+        "controlled_failure_observed",
+        "duplicate_work_count",
+        "focus_restoration_verified",
+        "partial_state_observed",
+        "queued_state_observed",
+        "renderer_lane",
+        "retry_idempotency_verified",
+        "running_state_observed",
+        "safe_failure_reason_verified",
+        "schema_version",
+        "system_health_accessibility_verified",
+        "system_health_context_verified",
+        "system_health_identity_graph",
+        "terminal_completion_observed"
+    )
+    $ignoredSmokeFieldNames = @("installed_setup")
+    $allowedSmokeFieldNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($fieldName in $retainedSmokeFieldNames) {
+        $null = $allowedSmokeFieldNames.Add($fieldName)
+    }
+    foreach ($fieldName in $ignoredSmokeFieldNames) {
+        $null = $allowedSmokeFieldNames.Add($fieldName)
+    }
+    foreach ($fieldName in $DerivedEvidence.Keys) {
+        $null = $allowedSmokeFieldNames.Add([string]$fieldName)
+    }
+
+    foreach ($property in $SmokeReport.PSObject.Properties) {
+        if (-not $allowedSmokeFieldNames.Contains([string]$property.Name)) {
+            throw (
+                "Installed renderer smoke evidence was rejected at a " +
+                "redacted boundary."
+            )
+        }
+    }
+
+    $retainedBooleanFieldNames = @(
+        "controlled_failure_observed",
+        "focus_restoration_verified",
+        "partial_state_observed",
+        "queued_state_observed",
+        "retry_idempotency_verified",
+        "running_state_observed",
+        "safe_failure_reason_verified",
+        "system_health_accessibility_verified",
+        "system_health_context_verified",
+        "terminal_completion_observed"
+    )
+    $retainedShapeValid = (
+        (
+            $SmokeReport.schema_version -is [int] -or
+            $SmokeReport.schema_version -is [long]
+        ) -and
+        [int64]$SmokeReport.schema_version -eq 4 -and
+        $SmokeReport.certification_scope -is [string] -and
+        $SmokeReport.certification_scope -ceq "installed" -and
+        $SmokeReport.renderer_lane -is [string] -and
+        $SmokeReport.renderer_lane -ceq $ExpectedRendererLane -and
+        (
+            $SmokeReport.duplicate_work_count -is [int] -or
+            $SmokeReport.duplicate_work_count -is [long]
+        ) -and
+        [int64]$SmokeReport.duplicate_work_count -ge 0
+    )
+    foreach ($fieldName in $retainedBooleanFieldNames) {
+        $property = $SmokeReport.PSObject.Properties[$fieldName]
+        if ($null -eq $property -or $property.Value -isnot [bool]) {
+            $retainedShapeValid = $false
+        }
+    }
+    $systemHealthIdentityGraph = @($SmokeReport.system_health_identity_graph)
+    $expectedSystemHealthIdentityGraph = @(
+        [string]$SmokeReport.diagnostic_task_identity,
+        [string]$SmokeReport.campaign_identity,
+        [string]$SmokeReport.run_identity,
+        [string]$SmokeReport.evidence_package_identity,
+        [string]$SmokeReport.reproduction_manifest_identity
+    )
+    if (
+        $systemHealthIdentityGraph.Count -ne 5 -or
+        @(
+            $systemHealthIdentityGraph |
+                Where-Object {
+                    $_ -isnot [string] -or
+                    [string]::IsNullOrWhiteSpace([string]$_)
+                }
+        ).Count -ne 0 -or
+        ($systemHealthIdentityGraph -join [char]0) -cne
+            ($expectedSystemHealthIdentityGraph -join [char]0)
+    ) {
+        $retainedShapeValid = $false
+    }
+    if (-not $retainedShapeValid) {
+        throw (
+            "Installed renderer smoke evidence was rejected at a " +
+            "redacted boundary."
+        )
+    }
+
+    $prohibitedFieldNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($fieldName in @(
+        "credential", "credentials", "api_key", "authorization", "cookie",
+        "database_dsn", "token", "access_token", "refresh_token",
+        "database_url", "database_path", "dsn", "password", "secret",
+        "connection_string", "sql", "arbitrary_command", "shell_command",
+        "executable_command", "raw_traceback", "traceback", "raw_payload",
+        "market_payload", "account_payload", "order_payload", "fill_payload"
+    )) {
+        $normalizedFieldName = [regex]::Replace(
+            $fieldName,
+            "[^A-Za-z0-9]",
+            ""
+        )
+        $null = $prohibitedFieldNames.Add($normalizedFieldName)
+    }
+    $allowedSensitiveFieldNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($fieldName in @("background_token", "foreground_token")) {
+        $normalizedFieldName = [regex]::Replace(
+            $fieldName,
+            "[^A-Za-z0-9]",
+            ""
+        )
+        $null = $allowedSensitiveFieldNames.Add($normalizedFieldName)
+    }
+    $sensitiveValuePatterns = @(
+        "gh[opusr]_[A-Za-z0-9_]{20,}",
+        (
+            "(?:^|[^A-Za-z0-9_-])" +
+                "(?:sk-(?:proj-)?|sk_live_|glpat-)[A-Za-z0-9_-]{16,}"
+        ),
+        "xox[baprs]-[A-Za-z0-9-]{16,}",
+        "eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}",
+        "\bbearer\s+[A-Za-z0-9._~-]+",
+        "\bAKIA[0-9A-Z]{16}\b",
+        "\b(?:postgres(?:ql)?|mysql|sqlite|duckdb)://",
+        "\b[A-Z]:\\",
+        "(?:^|\s)(?:/home/|/Users/|\\\\)[^\s]+",
+        "Traceback \(most recent call last\)",
+        "(?s)\b(?:select|insert|update|delete|drop|alter|create)\b\s+",
+        "\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "\b(?:powershell|pwsh|cmd\.exe|bash)\b.*(?:-command|-c)\b"
+    )
+    $testEvidenceValueIsSafe = {
+        param(
+            [AllowNull()]
+            [object]$Value,
+            [AllowNull()]
+            [string]$FieldName
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($FieldName)) {
+            $normalizedFieldName = [regex]::Replace(
+                $FieldName,
+                "[^A-Za-z0-9]",
+                ""
+            )
+            if (-not $allowedSensitiveFieldNames.Contains(
+                $normalizedFieldName
+            )) {
+                foreach ($prohibitedFieldName in $prohibitedFieldNames) {
+                    if ($normalizedFieldName.IndexOf(
+                        $prohibitedFieldName,
+                        [StringComparison]::OrdinalIgnoreCase
+                    ) -ge 0) {
+                        return $false
+                    }
+                }
+            }
+        }
+        if ($null -eq $Value) {
+            return $true
+        }
+        if ($Value -is [string]) {
+            foreach ($pattern in $sensitiveValuePatterns) {
+                if ([regex]::IsMatch(
+                    $Value,
+                    $pattern,
+                    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+                )) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        if ($Value -is [ValueType]) {
+            return $true
+        }
+        if ($Value -is [Collections.IDictionary]) {
+            foreach ($key in $Value.Keys) {
+                if (-not (& $testEvidenceValueIsSafe `
+                    -Value $Value[$key] `
+                    -FieldName ([string]$key)
+                )) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        if ($Value -is [Collections.IEnumerable]) {
+            foreach ($item in $Value) {
+                if (-not (& $testEvidenceValueIsSafe -Value $item)) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        foreach ($property in $Value.PSObject.Properties) {
+            if (-not (& $testEvidenceValueIsSafe `
+                -Value $property.Value `
+                -FieldName ([string]$property.Name)
+            )) {
+                return $false
+            }
+        }
+        return $true
+    }
+
+    $evidence = [ordered]@{}
+    foreach ($fieldName in $retainedSmokeFieldNames) {
+        $property = $SmokeReport.PSObject.Properties[$fieldName]
+        if ($null -ne $property) {
+            $evidence[$fieldName] = $property.Value
+        }
+    }
+    foreach ($key in $DerivedEvidence.Keys) {
+        $evidence[[string]$key] = $DerivedEvidence[$key]
+    }
+    if (-not (& $testEvidenceValueIsSafe -Value $evidence)) {
+        throw (
+            "Installed renderer smoke evidence was rejected at a " +
+            "redacted boundary."
+        )
+    }
+    return $evidence
+}
+
 function Test-ExactStringArray {
     param(
         [AllowNull()]
@@ -78,10 +1010,2297 @@ function Test-ExactStringArray {
     )
 }
 
+function Test-DurableIdentityMap {
+    param(
+        [AllowNull()]
+        [object]$Actual,
+        [AllowNull()]
+        [object]$Expected
+    )
+
+    $expectedKinds = @(
+        "Strategy", "Recipe", "Task", "Campaign",
+        "Run", "Evidence", "Finding", "Manifest"
+    )
+    if ($null -eq $Actual -or $null -eq $Expected) {
+        return $false
+    }
+    $actualKinds = @($Actual.PSObject.Properties.Name | Sort-Object)
+    if (-not (Test-ExactStringArray `
+        -Actual $actualKinds `
+        -Expected @($expectedKinds | Sort-Object)
+    )) {
+        return $false
+    }
+    foreach ($kind in $expectedKinds) {
+        $actualProperty = $Actual.PSObject.Properties[$kind]
+        $expectedProperty = $Expected.PSObject.Properties[$kind]
+        if (
+            $null -eq $actualProperty -or
+            $null -eq $expectedProperty -or
+            -not (Test-ExactStringArray `
+                -Actual $actualProperty.Value `
+                -Expected $expectedProperty.Value
+            )
+        ) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Initialize-InstalledAccessibilityEnvironment {
+    $result = [ordered]@{
+        text_scale_configured_before_launch = $false
+        text_scale_registry_percent = 0
+        guest_dpi_override_applied = $false
+        native_dpi_evidence_source = "GetDpiForWindow"
+        errors = @()
+    }
+    try {
+        $accessibilityKey = "HKCU:\Software\Microsoft\Accessibility"
+        New-Item -Path $accessibilityKey -Force | Out-Null
+        Set-ItemProperty `
+            -Path $accessibilityKey `
+            -Name "TextScaleFactor" `
+            -Type DWord `
+            -Value 200
+        $accessibility = Get-ItemProperty -Path $accessibilityKey
+        $result.text_scale_registry_percent = (
+            [int]$accessibility.TextScaleFactor
+        )
+        $result.text_scale_configured_before_launch = (
+            $result.text_scale_registry_percent -eq 200
+        )
+    }
+    catch {
+        $result.errors = @(
+            "OS accessibility configuration failed at a redacted boundary"
+        )
+    }
+    return $result
+}
+
+function New-UiAutomationAccessibilityEvidence {
+    return [ordered]@{
+        provider_available = $false
+        scan_count = 0
+        window_discovery_attempt_count = 0
+        main_window_handle_observed = $false
+        process_id_automation_element_count_max = 0
+        discovered_element_count = 0
+        readable_element_count = 0
+        unreadable_element_count = 0
+        complete_snapshot_count = 0
+        transient_uia_boundary_count = 0
+        named_element_count = 0
+        focusable_element_count = 0
+        focus_observed = $false
+        control_types = @()
+        action_patterns = @()
+        semantic_terms = [ordered]@{
+            loading = $false
+            empty = $false
+            stale = $false
+            disconnected = $false
+            partial = $false
+            failed = $false
+            recovering = $false
+            completed = $false
+            progress = $false
+            error = $false
+            health = $false
+            fresh = $false
+            recovery = $false
+        }
+        narrator_started = $false
+        narrator_running_during_probe = $false
+        narrator_checkpoint_evidence = @()
+        focus_traversal_observed = $false
+        observed_window_dpi_x = 0
+        observed_window_dpi_y = 0
+        observed_scale_percent = 0
+        window_dpi_observation_failure_count = 0
+        observed_qt_window_scale_percent = 0
+        forbidden_action_count = 0
+        forbidden_actions = @()
+        static_read_only_diagnostics = @()
+        passed = $false
+        errors = @()
+    }
+}
+
+function Test-IsTransientUiAutomationBoundaryFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $exception = $ErrorRecord.Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $exception; $depth++) {
+        if (
+            $exception.GetType().FullName -ceq (
+                "System.Windows.Automation.ElementNotAvailableException"
+            )
+        ) {
+            return $true
+        }
+        if (
+            $exception -is [Runtime.InteropServices.COMException] -and
+            [int]$exception.HResult -eq -2147220991
+        ) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
+function Get-SafeAutomationId {
+    param([AllowNull()][object]$Value)
+
+    $candidate = [string]$Value
+    if ($candidate -cmatch '^[A-Za-z0-9_.:-]{1,160}$') {
+        return $candidate
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return "unnamed"
+    }
+    return "redacted"
+}
+
+$script:getDpiForWindowDelegate = $null
+
+function Get-CompilerFreeWindowDpi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$WindowHandle
+    )
+
+    if ($script:getDpiForWindowDelegate -eq $null) {
+        $unsafeNativeMethods = @(
+            [AppDomain]::CurrentDomain.GetAssemblies() |
+                ForEach-Object {
+                    try {
+                        $_.GetTypes()
+                    }
+                    catch {
+                    }
+                } |
+                Where-Object {
+                    $_.FullName -eq "Microsoft.Win32.UnsafeNativeMethods" -and
+                    $_.Assembly.GetName().Name -eq "System"
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $unsafeNativeMethods) {
+            throw "Compiler-free native DPI resolver was unavailable"
+        }
+        $bindingFlags = [Reflection.BindingFlags](
+            [Reflection.BindingFlags]::Static -bor
+            [Reflection.BindingFlags]::NonPublic -bor
+            [Reflection.BindingFlags]::Public
+        )
+        $getModuleHandle = $unsafeNativeMethods.GetMethod(
+            "GetModuleHandle",
+            $bindingFlags,
+            $null,
+            [Type[]]@([string]),
+            $null
+        )
+        $getProcAddress = $unsafeNativeMethods.GetMethod(
+            "GetProcAddress",
+            $bindingFlags,
+            $null,
+            [Type[]]@([IntPtr], [string]),
+            $null
+        )
+        if ($null -eq $getModuleHandle -or $null -eq $getProcAddress) {
+            throw "Compiler-free native export resolver was unavailable"
+        }
+        $user32 = [IntPtr]$getModuleHandle.Invoke(
+            $null,
+            [object[]]@("user32.dll")
+        )
+        $getDpiForWindow = [IntPtr]$getProcAddress.Invoke(
+            $null,
+            [object[]]@($user32, "GetDpiForWindow")
+        )
+        if (
+            $user32 -eq [IntPtr]::Zero -or
+            $getDpiForWindow -eq [IntPtr]::Zero
+        ) {
+            throw "GetDpiForWindow export was unavailable"
+        }
+
+        $assemblyName = New-Object Reflection.AssemblyName(
+            "Issue118CompilerFreeNativeDelegates"
+        )
+        $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+            $assemblyName,
+            [Reflection.Emit.AssemblyBuilderAccess]::Run
+        )
+        $module = $assembly.DefineDynamicModule(
+            "Issue118CompilerFreeNativeDelegates"
+        )
+        $delegateTypeBuilder = $module.DefineType(
+            "Issue118GetDpiForWindowDelegate",
+            [Reflection.TypeAttributes](
+                [Reflection.TypeAttributes]::Class -bor
+                [Reflection.TypeAttributes]::Public -bor
+                [Reflection.TypeAttributes]::Sealed
+            ),
+            [MulticastDelegate]
+        )
+        $constructor = $delegateTypeBuilder.DefineConstructor(
+            [Reflection.MethodAttributes](
+                [Reflection.MethodAttributes]::RTSpecialName -bor
+                [Reflection.MethodAttributes]::HideBySig -bor
+                [Reflection.MethodAttributes]::Public
+            ),
+            [Reflection.CallingConventions]::Standard,
+            [Type[]]@([object], [IntPtr])
+        )
+        $constructor.SetImplementationFlags(
+            [Reflection.MethodImplAttributes]::Runtime
+        )
+        $invoke = $delegateTypeBuilder.DefineMethod(
+            "Invoke",
+            [Reflection.MethodAttributes](
+                [Reflection.MethodAttributes]::Public -bor
+                [Reflection.MethodAttributes]::HideBySig -bor
+                [Reflection.MethodAttributes]::NewSlot -bor
+                [Reflection.MethodAttributes]::Virtual
+            ),
+            [uint32],
+            [Type[]]@([IntPtr])
+        )
+        $invoke.SetImplementationFlags(
+            [Reflection.MethodImplAttributes]::Runtime
+        )
+        $delegateType = $delegateTypeBuilder.CreateType()
+        $script:getDpiForWindowDelegate = (
+            [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(
+                $getDpiForWindow,
+                $delegateType
+            )
+        )
+    }
+    $dpi = [uint32]$script:getDpiForWindowDelegate.DynamicInvoke(
+        [object[]]@($WindowHandle)
+    )
+    if ($dpi -eq 0) {
+        throw "Window DPI observation returned zero"
+    }
+    return [int]$dpi
+}
+
+function Resolve-KnownUiAutomationObjectName {
+    param(
+        [AllowNull()]
+        [object]$Value,
+        [Parameter(Mandatory = $true)]
+        [string[]]$KnownObjectNames
+    )
+
+    $candidate = [string]$Value
+    if ($candidate -cnotmatch '^[A-Za-z0-9_.:-]{1,160}$') {
+        return ""
+    }
+    foreach ($objectName in $KnownObjectNames) {
+        if (
+            $candidate -ceq $objectName -or
+            $candidate.EndsWith(".$objectName", [StringComparison]::Ordinal)
+        ) {
+            return $objectName
+        }
+    }
+    return ""
+}
+
+function Register-UniqueCanonicalUiAutomationObjectName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CanonicalObjectName,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ObservationCounts
+    )
+
+    $observationCount = 1
+    if ($ObservationCounts.ContainsKey($CanonicalObjectName)) {
+        $observationCount = (
+            [int]$ObservationCounts[$CanonicalObjectName] + 1
+        )
+    }
+    $ObservationCounts[$CanonicalObjectName] = $observationCount
+    return $observationCount -eq 1
+}
+
+function Test-UiAutomationActionPatternProbeRequired {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ControlType,
+        [Parameter(Mandatory = $true)]
+        [bool]$Focusable,
+        [Parameter(Mandatory = $true)]
+        [bool]$MatchesForbiddenCapability
+    )
+
+    return [bool](
+        $Focusable -or
+        $MatchesForbiddenCapability -or
+        $ControlType -in @(
+            "Button", "CheckBox", "ComboBox", "Edit", "Hyperlink",
+            "ListItem", "MenuItem", "RadioButton", "Slider", "Spinner",
+            "TabItem", "TreeItem"
+        )
+    )
+}
+
+function Merge-UiAutomationSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Evidence,
+        [Parameter(Mandatory = $true)]
+        [object]$RootElement,
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$WindowHandle,
+        [Parameter(Mandatory = $true)]
+        [bool]$NarratorRunning,
+        [Parameter(Mandatory = $true)]
+        [bool]$FocusTraversalObserved,
+        [Parameter(Mandatory = $true)]
+        [string]$CheckpointAckDirectory,
+        [switch]$SuppressCheckpointAck,
+        [switch]$UseCachedProperties
+    )
+
+    if ($UseCachedProperties) {
+        $cacheRequest = [System.Windows.Automation.CacheRequest]::new()
+        $cacheRequest.TreeScope = [System.Windows.Automation.TreeScope]::Element
+        $cacheRequest.TreeFilter = (
+            [System.Windows.Automation.Automation]::RawViewCondition
+        )
+        foreach ($property in @(
+            [System.Windows.Automation.AutomationElement]::NameProperty,
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.AutomationElement]::IsEnabledProperty,
+            [System.Windows.Automation.AutomationElement]::IsOffscreenProperty,
+            [System.Windows.Automation.AutomationElement]::IsKeyboardFocusableProperty,
+            [System.Windows.Automation.AutomationElement]::HasKeyboardFocusProperty,
+            [System.Windows.Automation.AutomationElement]::HelpTextProperty,
+            [System.Windows.Automation.AutomationElement]::ItemStatusProperty,
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty
+        )) {
+            $cacheRequest.Add($property)
+        }
+        foreach ($pattern in @(
+            [System.Windows.Automation.InvokePattern]::Pattern,
+            [System.Windows.Automation.TogglePattern]::Pattern,
+            [System.Windows.Automation.SelectionItemPattern]::Pattern,
+            [System.Windows.Automation.ValuePattern]::Pattern,
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern
+        )) {
+            $cacheRequest.Add($pattern)
+        }
+        $cacheActivation = $cacheRequest.Activate()
+        try {
+            $cachedRoot = $RootElement.GetUpdatedCache($cacheRequest)
+            $descendants = $RootElement.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition
+            )
+        }
+        finally {
+            $cacheActivation.Dispose()
+        }
+        $elements = @($cachedRoot)
+    }
+    else {
+        $elements = @($RootElement)
+        $descendants = $RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+    }
+    foreach ($element in $descendants) {
+        $elements += $element
+    }
+    $snapshotDiscovered = $elements.Count
+    $snapshotReadable = 0
+    $snapshotUnreadable = 0
+    $snapshotNamed = 0
+    $snapshotControlTypes = @()
+    $checkpointMarker = $null
+    $snapshotSemanticByAutomationId = @{}
+    $canonicalAutomationIdObservationCounts = @{}
+    $checkpointBindings = @{
+        loading = @{
+            target = "runMonitoringRouteNavigation"
+            term = "loading"
+        }
+        empty = @{
+            target = "diagnosticTasksRouteNavigation"
+            term = "empty"
+        }
+        failed = @{
+            target = "failedCampaignNodeAttemptHistory"
+            term = "failed"
+        }
+        recovering = @{
+            target = "diagnosticTaskRecoveryProgressStatus"
+            term = "recover"
+        }
+        partial = @{
+            target = "systemHealthAccessibleStatus"
+            term = "partial"
+        }
+        disconnected = @{
+            target = "systemHealthAccessibleStatus"
+            term = "disconnected"
+        }
+        stale = @{
+            target = "systemHealthAccessibleStatus"
+            term = "stale"
+        }
+        completed = @{
+            target = "runMonitoringRouteNavigation"
+            term = "terminal"
+        }
+    }
+    $knownAutomationObjectNames = @(
+        "installedAccessibilityCheckpointMarker"
+        $checkpointBindings.Values |
+            ForEach-Object { [string]$_.target }
+    ) | Sort-Object -Unique
+    $semanticAliases = [ordered]@{
+        loading = @("loading", "waiting")
+        empty = @("empty", "no current", "unavailable")
+        stale = @("stale", "refresh")
+        disconnected = @("disconnected", "last reliable")
+        partial = @("partial", "last reliable")
+        failed = @("failed", "failure", "error")
+        recovering = @("recover", "retry", "queued")
+        completed = @("completed", "complete", "terminal", "sealed")
+        progress = @("progress")
+        error = @("error", "failure")
+        health = @("health")
+        fresh = @("fresh")
+        recovery = @("recovery", "recover", "retry")
+    }
+    $controlTypes = @($Evidence.control_types)
+    $actionPatterns = @($Evidence.action_patterns)
+    $forbidden = @($Evidence.forbidden_actions)
+    $staticDiagnostics = @($Evidence.static_read_only_diagnostics)
+    $forbiddenPattern = (
+        '(?i)(?:\b(?:buy|sell)\b|' +
+        '\bmanual[ _-]*(?:order|trading)\b|' +
+        '\b(?:submit|place|cancel|replace|bulk)[ _-]*order\b|' +
+        '\border[ _-]*(?:entry|submit|place|cancel|replace|bulk)\b|' +
+        '\bbroker[ _-]*(?:connection|connect)?\b|' +
+        '\breal[ _-]*money\b)'
+    )
+    foreach ($element in $elements) {
+        try {
+            $current = if ($UseCachedProperties) {
+                $element.Cached
+            }
+            else {
+                $element.Current
+            }
+            $snapshotReadable++
+            $name = [string]$current.Name
+            $automationId = [string]$current.AutomationId
+            $canonicalAutomationId = Resolve-KnownUiAutomationObjectName `
+                -Value $automationId `
+                -KnownObjectNames $knownAutomationObjectNames
+            $resolvedCanonicalAutomationId = $canonicalAutomationId
+            $canonicalAutomationIdAmbiguous = $false
+            $controlType = (
+                [string]$current.ControlType.ProgrammaticName
+            ).Replace("ControlType.", "")
+            $enabled = [bool]$current.IsEnabled
+            $visible = -not [bool]$current.IsOffscreen
+            $focusable = [bool]$current.IsKeyboardFocusable
+            $focused = [bool]$current.HasKeyboardFocus
+            if (
+                $visible -and
+                -not [string]::IsNullOrWhiteSpace($canonicalAutomationId) -and
+                -not (Register-UniqueCanonicalUiAutomationObjectName `
+                    -CanonicalObjectName $canonicalAutomationId `
+                    -ObservationCounts (
+                        $canonicalAutomationIdObservationCounts
+                    ))
+            ) {
+                $Evidence.errors += (
+                    "UI Automation canonical object identity was ambiguous"
+                )
+                [void]$snapshotSemanticByAutomationId.Remove(
+                    $canonicalAutomationId
+                )
+                if (
+                    $canonicalAutomationId -eq
+                        "installedAccessibilityCheckpointMarker"
+                ) {
+                    $checkpointMarker = $null
+                }
+                $canonicalAutomationId = ""
+                $canonicalAutomationIdAmbiguous = $true
+            }
+            if (-not [string]::IsNullOrWhiteSpace($name)) {
+                $Evidence.named_element_count++
+                $snapshotNamed++
+            }
+            if ($focusable) {
+                $Evidence.focusable_element_count++
+            }
+            if ($focused) {
+                $Evidence.focus_observed = $true
+            }
+            if (-not [string]::IsNullOrWhiteSpace($controlType)) {
+                $controlTypes += $controlType
+                $snapshotControlTypes += $controlType
+            }
+            if (
+                $canonicalAutomationId -eq "installedAccessibilityCheckpointMarker"
+            ) {
+                $markerPattern = (
+                    '^Installed checkpoint sequence=(?<sequence>\d+) ' +
+                    'state=(?<state>loading|empty|failed|recovering|partial|' +
+                    'disconnected|stale|completed) ' +
+                    'route=(?<route>[a-z_]+) ' +
+                    'run_revision=(?<run_revision>r\d+) ' +
+                    'evidence_revision=(?<evidence_revision>r\d+) ' +
+                    'target=(?<target>[A-Za-z0-9_.:-]+) ' +
+                    'term=(?<term>[a-z]+) ' +
+                    'window_scale_percent=(?<window_scale_percent>\d+)$'
+                )
+                if ($visible) {
+                    if ($name -match $markerPattern) {
+                        $markerState = [string]$Matches.state
+                        $expectedBinding = $checkpointBindings[$markerState]
+                        if (
+                            $null -ne $expectedBinding -and
+                            [string]$Matches.target -eq
+                                [string]$expectedBinding.target -and
+                            [string]$Matches.term -eq
+                                [string]$expectedBinding.term
+                        ) {
+                            $checkpointMarker = [ordered]@{
+                                sequence = [int]$Matches.sequence
+                                checkpoint = $markerState
+                                route = [string]$Matches.route
+                                run_revision = [string]$Matches.run_revision
+                                evidence_revision = [string]$Matches.evidence_revision
+                                status_object_name = [string]$Matches.target
+                                status_semantic_term = [string]$Matches.term
+                                window_scale_percent = (
+                                    [int]$Matches.window_scale_percent
+                                )
+                            }
+                        }
+                        else {
+                            $Evidence.errors += (
+                                "Installed accessibility checkpoint binding was invalid"
+                            )
+                        }
+                    }
+                    else {
+                        $Evidence.errors += (
+                            "Installed accessibility checkpoint marker was invalid"
+                        )
+                    }
+                }
+                continue
+            }
+            $classificationText = "$name $automationId"
+            $matchesForbiddenCapability = (
+                $classificationText -match $forbiddenPattern
+            )
+            $patterns = @()
+            if (Test-UiAutomationActionPatternProbeRequired `
+                -ControlType $controlType `
+                -Focusable $focusable `
+                -MatchesForbiddenCapability $matchesForbiddenCapability
+            ) {
+                foreach ($patternSpec in @(
+                    @("Invoke", [System.Windows.Automation.InvokePattern]::Pattern),
+                    @("Toggle", [System.Windows.Automation.TogglePattern]::Pattern),
+                    @("Selection", [System.Windows.Automation.SelectionItemPattern]::Pattern),
+                    @("Value", [System.Windows.Automation.ValuePattern]::Pattern),
+                    @("ExpandCollapse", [System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+                )) {
+                    $patternObject = $null
+                    $patternAvailable = if ($UseCachedProperties) {
+                        $element.TryGetCachedPattern(
+                            $patternSpec[1],
+                            [ref]$patternObject
+                        )
+                    }
+                    else {
+                        $element.TryGetCurrentPattern(
+                            $patternSpec[1],
+                            [ref]$patternObject
+                        )
+                    }
+                    if ($patternAvailable) {
+                        $patterns += [string]$patternSpec[0]
+                        $actionPatterns += [string]$patternSpec[0]
+                    }
+                }
+            }
+            $semanticText = @(
+                $name,
+                [string]$current.HelpText,
+                [string]$current.ItemStatus
+            ) -join " "
+            $semanticText = $semanticText.ToLowerInvariant()
+            if ($visible) {
+                if (
+                    -not [string]::IsNullOrWhiteSpace($automationId) -and
+                    -not (
+                        $canonicalAutomationIdAmbiguous -and
+                        $automationId -ceq $resolvedCanonicalAutomationId
+                    )
+                ) {
+                    $snapshotSemanticByAutomationId[$automationId] = (
+                        $semanticText
+                    )
+                }
+                if (-not [string]::IsNullOrWhiteSpace($canonicalAutomationId)) {
+                    $snapshotSemanticByAutomationId[$canonicalAutomationId] = (
+                        $semanticText
+                    )
+                }
+                foreach ($semanticKey in $semanticAliases.Keys) {
+                    foreach ($alias in $semanticAliases[$semanticKey]) {
+                        if ($semanticText.Contains($alias)) {
+                            $Evidence.semantic_terms[$semanticKey] = $true
+                            break
+                        }
+                    }
+                }
+            }
+            if ($matchesForbiddenCapability) {
+                $actionable = (
+                    $patterns.Count -gt 0 -or
+                    $focusable -or
+                    (Test-UiAutomationActionPatternProbeRequired `
+                        -ControlType $controlType `
+                        -Focusable $false `
+                        -MatchesForbiddenCapability $false)
+                )
+                $safeSurface = [ordered]@{
+                    automation_id = Get-SafeAutomationId $automationId
+                    control_type = $controlType
+                    accessible_name_classification = if ($actionable) {
+                        "forbidden_manual_trading"
+                    } else {
+                        "static_read_only_diagnostic"
+                    }
+                    action_patterns = $patterns
+                    trigger_sources = @("windows-ui-automation")
+                    enabled = $enabled
+                    visible = $visible
+                    focusable = $focusable
+                }
+                if ($actionable) {
+                    $forbidden += $safeSurface
+                }
+                else {
+                    $staticDiagnostics += $safeSurface
+                }
+            }
+        }
+        catch {
+            $snapshotUnreadable++
+        }
+    }
+    $Evidence.discovered_element_count += $snapshotDiscovered
+    $Evidence.readable_element_count += $snapshotReadable
+    $Evidence.unreadable_element_count += $snapshotUnreadable
+    $completeSnapshot = (
+        $snapshotDiscovered -gt 0 -and
+        $snapshotUnreadable -eq 0 -and
+        $snapshotReadable -eq $snapshotDiscovered
+    )
+    if ($completeSnapshot) {
+        $Evidence.complete_snapshot_count++
+    }
+    $windowDpi = 0
+    try {
+        $windowDpi = Get-CompilerFreeWindowDpi `
+            -WindowHandle $WindowHandle
+        $Evidence.observed_window_dpi_x = $windowDpi
+        $Evidence.observed_window_dpi_y = $windowDpi
+        $Evidence.observed_scale_percent = [int][Math]::Round(
+            ([double]$windowDpi / 96.0) * 100.0
+        )
+    }
+    catch {
+        $Evidence.window_dpi_observation_failure_count = (
+            [int]$Evidence.window_dpi_observation_failure_count + 1
+        )
+    }
+    if ($null -ne $checkpointMarker) {
+        $checkpoint = [string]$checkpointMarker.checkpoint
+        $snapshotIdentity = (
+            "uia:$($checkpointMarker.sequence):${checkpoint}:" +
+            "$($checkpointMarker.route):$($checkpointMarker.run_revision):" +
+            "$($checkpointMarker.evidence_revision):" +
+            "$($checkpointMarker.status_object_name):" +
+            "$($checkpointMarker.status_semantic_term):" +
+            "scale$($checkpointMarker.window_scale_percent)"
+        )
+        $targetSemanticText = [string](
+            $snapshotSemanticByAutomationId[
+                [string]$checkpointMarker.status_object_name
+            ]
+        )
+        $targetStateObserved = [bool](
+            -not [string]::IsNullOrWhiteSpace($targetSemanticText) -and
+            $targetSemanticText.Contains(
+                [string]$checkpointMarker.status_semantic_term
+            )
+        )
+        $scanSequence = $Evidence.scan_count + 1
+        $checkpointEvidence = [ordered]@{
+            checkpoint = $checkpoint
+            sequence = [int]$checkpointMarker.sequence
+            snapshot_identity = $snapshotIdentity
+            scan_sequence = $scanSequence
+            captured_at_utc = [DateTime]::UtcNow.ToString("o")
+            route = [string]$checkpointMarker.route
+            run_revision = [string]$checkpointMarker.run_revision
+            evidence_revision = [string]$checkpointMarker.evidence_revision
+            status_object_name = [string]$checkpointMarker.status_object_name
+            status_semantic_term = [string]$checkpointMarker.status_semantic_term
+            window_scale_percent = [int]$checkpointMarker.window_scale_percent
+            native_window_dpi = [int]$windowDpi
+            lifecycle_state_observed = $targetStateObserved
+            narrator_running = $NarratorRunning
+            focus_traversal_observed = $FocusTraversalObserved
+            complete_snapshot = $completeSnapshot
+            named_element_count = $snapshotNamed
+            control_types = @($snapshotControlTypes | Sort-Object -Unique)
+            passed = (
+                $NarratorRunning -and
+                $FocusTraversalObserved -and
+                $completeSnapshot -and
+                $targetStateObserved -and
+                $snapshotNamed -gt 0 -and
+                $snapshotControlTypes.Count -gt 0 -and
+                [int]$checkpointMarker.window_scale_percent -eq 200 -and
+                [int]$windowDpi -eq 192
+            )
+        }
+        $existingCheckpoint = @(
+            $Evidence.narrator_checkpoint_evidence |
+                Where-Object {
+                    $_.checkpoint -eq $checkpoint -and
+                    [int]$_.sequence -eq [int]$checkpointMarker.sequence
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $existingCheckpoint) {
+            $Evidence.narrator_checkpoint_evidence += $checkpointEvidence
+        }
+        elseif (
+            -not [bool]$existingCheckpoint.passed -and
+            [bool]$checkpointEvidence.passed
+        ) {
+            $Evidence.narrator_checkpoint_evidence = @(
+                $Evidence.narrator_checkpoint_evidence |
+                    Where-Object {
+                        $_.checkpoint -ne $checkpoint -or
+                        [int]$_.sequence -ne [int]$checkpointMarker.sequence
+                    }
+            ) + @($checkpointEvidence)
+        }
+        if ([bool]$checkpointEvidence.passed) {
+            $Evidence.observed_qt_window_scale_percent = [Math]::Max(
+                [int]$Evidence.observed_qt_window_scale_percent,
+                [int]$checkpointEvidence.window_scale_percent
+            )
+            if (-not [bool]$SuppressCheckpointAck) {
+                $ackPath = Join-Path `
+                    $CheckpointAckDirectory `
+                    ("uia-checkpoint-{0:D2}-{1}.json" -f `
+                        [int]$checkpointMarker.sequence, $checkpoint)
+                if (-not (Test-Path -LiteralPath $ackPath)) {
+                    [ordered]@{
+                        sequence = [int]$checkpointMarker.sequence
+                        checkpoint = $checkpoint
+                        snapshot_identity = $snapshotIdentity
+                        passed = $true
+                    } | ConvertTo-Json -Depth 4 | Set-Content `
+                        -LiteralPath $ackPath `
+                        -Encoding UTF8
+                }
+            }
+        }
+    }
+    $Evidence.provider_available = $true
+    $Evidence.scan_count++
+    $Evidence.control_types = @($controlTypes | Sort-Object -Unique)
+    $Evidence.action_patterns = @($actionPatterns | Sort-Object -Unique)
+    $Evidence.forbidden_actions = $forbidden
+    $Evidence.forbidden_action_count = $forbidden.Count
+    $Evidence.static_read_only_diagnostics = $staticDiagnostics
+}
+
+function Find-InstalledProcessAutomationWindow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$Evidence
+    )
+
+    $Evidence.window_discovery_attempt_count = (
+        [int]$Evidence.window_discovery_attempt_count + 1
+    )
+    $Process.Refresh()
+    $mainWindowHandle = [IntPtr]$Process.MainWindowHandle
+    if ($mainWindowHandle -ne [IntPtr]::Zero) {
+        $Evidence.main_window_handle_observed = $true
+        $rootElement = (
+            [System.Windows.Automation.AutomationElement]::FromHandle(
+                $mainWindowHandle
+            )
+        )
+        if ($null -ne $rootElement) {
+            return [pscustomobject]@{
+                root_element = $rootElement
+                window_handle = $mainWindowHandle
+            }
+        }
+    }
+
+    $processCondition = (
+        [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+            $Process.Id
+        )
+    )
+    foreach (
+        $treeScope in @(
+            [System.Windows.Automation.TreeScope]::Children,
+            [System.Windows.Automation.TreeScope]::Descendants
+        )
+    ) {
+        $automationWindows = (
+            [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                $treeScope,
+                $processCondition
+            )
+        )
+        $Evidence.process_id_automation_element_count_max = [Math]::Max(
+            [int]$Evidence.process_id_automation_element_count_max,
+            [int]$automationWindows.Count
+        )
+        foreach ($candidate in $automationWindows) {
+            $nativeWindowHandle = [IntPtr]$candidate.Current.NativeWindowHandle
+            if ($nativeWindowHandle -ne [IntPtr]::Zero) {
+                return [pscustomobject]@{
+                    root_element = $candidate
+                    window_handle = $nativeWindowHandle
+                }
+            }
+        }
+    }
+    return $null
+}
+
+function New-InstalledNarratorSession {
+    return [ordered]@{
+        process_id = 0
+        process_start_time_utc_ticks = [long]0
+        start_attempted = $false
+        stopped = $false
+    }
+}
+
+function Test-InstalledNarratorSessionRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession
+    )
+
+    if (
+        -not [bool]$NarratorSession.start_attempted -or
+        [bool]$NarratorSession.stopped -or
+        [int]$NarratorSession.process_id -le 0 -or
+        [long]$NarratorSession.process_start_time_utc_ticks -le 0
+    ) {
+        return $false
+    }
+    try {
+        $ownedProcess = Get-Process `
+            -Id ([int]$NarratorSession.process_id) `
+            -ErrorAction Stop
+        $ownedProcess.Refresh()
+        return (
+            $ownedProcess.ProcessName -ceq "Narrator" -and
+            -not $ownedProcess.HasExited -and
+            $ownedProcess.StartTime.ToUniversalTime().Ticks -eq
+                [long]$NarratorSession.process_start_time_utc_ticks
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Start-InstalledNarratorSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession
+    )
+
+    if ([bool]$NarratorSession.stopped) {
+        throw "Owned Narrator session was already stopped"
+    }
+    if ([bool]$NarratorSession.start_attempted) {
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session terminated before certification completed"
+        }
+        return
+    }
+    $preExistingNarrators = @(
+        Get-Process -Name "Narrator" -ErrorAction SilentlyContinue
+    )
+    if ($preExistingNarrators.Count -ne 0) {
+        throw "Narrator was already running before ownership was established"
+    }
+    $ownedProcess = Start-Process `
+        -FilePath "$env:WINDIR\System32\Narrator.exe" `
+        -PassThru
+    try {
+        $ownedProcess.Refresh()
+        $NarratorSession.process_id = [int]$ownedProcess.Id
+        $NarratorSession.process_start_time_utc_ticks = [long](
+            $ownedProcess.StartTime.ToUniversalTime().Ticks
+        )
+        $NarratorSession.start_attempted = $true
+        Start-Sleep -Milliseconds 1500
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session did not remain running"
+        }
+    }
+    catch {
+        if (
+            $null -ne $ownedProcess -and
+            -not $ownedProcess.HasExited
+        ) {
+            Stop-Process `
+                -Id $ownedProcess.Id `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Stop-InstalledNarratorSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession
+    )
+
+    if ([bool]$NarratorSession.stopped) {
+        return
+    }
+    if (Test-InstalledNarratorSessionRunning $NarratorSession) {
+        Stop-Process `
+            -Id ([int]$NarratorSession.process_id) `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+    $NarratorSession.stopped = $true
+}
+
+function Invoke-InstalledUiAutomationScan {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateProcessId,
+        [Parameter(Mandatory = $true)]
+        [long]$CandidateProcessStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)]
+        [string]$LaneDirectory,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [Parameter(Mandatory = $true)]
+        [int]$ScanSequenceBase,
+        [switch]$UseCachedProperties
+    )
+
+    $evidence = New-UiAutomationAccessibilityEvidence
+    $evidence.scan_count = $ScanSequenceBase
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session was unavailable to the UIA scan"
+        }
+        $process = Get-Process `
+            -Id $CandidateProcessId `
+            -ErrorAction Stop
+        $process.Refresh()
+        if (
+            $process.HasExited -or
+            $process.StartTime.ToUniversalTime().Ticks -ne
+                $CandidateProcessStartTimeUtcTicks
+        ) {
+            throw "Installed candidate process identity changed during UIA scan"
+        }
+        $automationWindow = Find-InstalledProcessAutomationWindow `
+            -Process $process `
+            -Evidence $evidence
+        if ($null -ne $automationWindow) {
+            $rootElement = $automationWindow.root_element
+            $windowHandle = [IntPtr]$automationWindow.window_handle
+            $narratorRunning = (
+                Test-InstalledNarratorSessionRunning `
+                    -NarratorSession $NarratorSession
+            )
+            $evidence.narrator_started = $narratorRunning
+            $focusTraversalObserved = $false
+            try {
+                $rootElement.SetFocus()
+                Start-Sleep -Milliseconds 50
+                $focusedElement = (
+                    [System.Windows.Automation.AutomationElement]::FocusedElement
+                )
+                $focusTraversalObserved = (
+                    $null -ne $focusedElement -and
+                    [int]$focusedElement.Current.ProcessId -eq $process.Id
+                )
+            }
+            catch {
+                $focusTraversalObserved = $false
+            }
+            $evidence.focus_traversal_observed = $focusTraversalObserved
+            Merge-UiAutomationSnapshot `
+                -Evidence $evidence `
+                -RootElement $rootElement `
+                -WindowHandle $windowHandle `
+                -NarratorRunning $narratorRunning `
+                -FocusTraversalObserved $focusTraversalObserved `
+                -CheckpointAckDirectory $LaneDirectory `
+                -SuppressCheckpointAck `
+                -UseCachedProperties:$UseCachedProperties
+        }
+    }
+    catch {
+        if (Test-IsTransientUiAutomationBoundaryFailure $_) {
+            $evidence.transient_uia_boundary_count = (
+                [int]$evidence.transient_uia_boundary_count + 1
+            )
+        }
+        else {
+            $evidence.errors += (
+                "Windows UI Automation scan failed at a redacted boundary"
+            )
+        }
+    }
+    return $evidence
+}
+
+function Merge-InstalledUiAutomationScanEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Evidence,
+        [Parameter(Mandatory = $true)]
+        [object]$ScanEvidence
+    )
+
+    foreach ($fieldName in @(
+        "window_discovery_attempt_count",
+        "discovered_element_count",
+        "readable_element_count",
+        "unreadable_element_count",
+        "complete_snapshot_count",
+        "transient_uia_boundary_count",
+        "named_element_count",
+        "focusable_element_count",
+        "window_dpi_observation_failure_count"
+    )) {
+        $Evidence[$fieldName] = (
+            [int]$Evidence[$fieldName] + [int]$ScanEvidence.$fieldName
+        )
+    }
+    $Evidence.scan_count = [Math]::Max(
+        [int]$Evidence.scan_count,
+        [int]$ScanEvidence.scan_count
+    )
+    $Evidence.process_id_automation_element_count_max = [Math]::Max(
+        [int]$Evidence.process_id_automation_element_count_max,
+        [int]$ScanEvidence.process_id_automation_element_count_max
+    )
+    foreach ($fieldName in @(
+        "provider_available",
+        "main_window_handle_observed",
+        "focus_observed",
+        "narrator_started",
+        "focus_traversal_observed"
+    )) {
+        $Evidence[$fieldName] = (
+            [bool]$Evidence[$fieldName] -or
+            [bool]$ScanEvidence.$fieldName
+        )
+    }
+    $Evidence.control_types = @(
+        @($Evidence.control_types) + @($ScanEvidence.control_types) |
+            Sort-Object -Unique
+    )
+    $Evidence.action_patterns = @(
+        @($Evidence.action_patterns) + @($ScanEvidence.action_patterns) |
+            Sort-Object -Unique
+    )
+    $scanSemanticEntries = if (
+        $ScanEvidence.semantic_terms -is [System.Collections.IDictionary]
+    ) {
+        @(
+            foreach ($keyValue in @($ScanEvidence.semantic_terms.Keys)) {
+                [pscustomobject]@{
+                    name = [string]$keyValue
+                    value = $ScanEvidence.semantic_terms[$keyValue]
+                }
+            }
+        )
+    }
+    elseif ($ScanEvidence.semantic_terms -is [pscustomobject]) {
+        @(
+            foreach (
+                $property in $ScanEvidence.semantic_terms.PSObject.Properties
+            ) {
+                [pscustomobject]@{
+                    name = [string]$property.Name
+                    value = $property.Value
+                }
+            }
+        )
+    }
+    else {
+        throw "UI Automation scan semantic evidence was malformed"
+    }
+    $expectedSemanticKeys = @(
+        $Evidence.semantic_terms.Keys |
+            ForEach-Object { [string]$_ }
+    )
+    $observedSemanticKeys = @(
+        $scanSemanticEntries |
+            ForEach-Object { [string]$_.name }
+    )
+    if (
+        $expectedSemanticKeys.Count -ne $observedSemanticKeys.Count -or
+        @(
+            Compare-Object `
+                -ReferenceObject $expectedSemanticKeys `
+                -DifferenceObject $observedSemanticKeys `
+                -CaseSensitive
+        ).Count -ne 0
+    ) {
+        throw "UI Automation scan semantic evidence was incomplete"
+    }
+    foreach ($entry in $scanSemanticEntries) {
+        if ($entry.value -isnot [bool]) {
+            throw "UI Automation scan semantic evidence was malformed"
+        }
+        $semanticKey = [string]$entry.name
+        $Evidence.semantic_terms[$semanticKey] = (
+            [bool]$Evidence.semantic_terms[$semanticKey] -or
+            [bool]$entry.value
+        )
+    }
+    foreach ($checkpoint in @($ScanEvidence.narrator_checkpoint_evidence)) {
+        $existingCheckpoint = @(
+            $Evidence.narrator_checkpoint_evidence |
+                Where-Object {
+                    [string]$_.checkpoint -ceq
+                        [string]$checkpoint.checkpoint -and
+                    [int]$_.sequence -eq [int]$checkpoint.sequence
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $existingCheckpoint) {
+            $Evidence.narrator_checkpoint_evidence += $checkpoint
+        }
+        elseif (
+            -not [bool]$existingCheckpoint.passed -and
+            [bool]$checkpoint.passed
+        ) {
+            $Evidence.narrator_checkpoint_evidence = @(
+                $Evidence.narrator_checkpoint_evidence |
+                    Where-Object {
+                        [string]$_.checkpoint -cne
+                            [string]$checkpoint.checkpoint -or
+                        [int]$_.sequence -ne [int]$checkpoint.sequence
+                    }
+            ) + @($checkpoint)
+        }
+    }
+    foreach ($fieldName in @(
+        "observed_window_dpi_x",
+        "observed_window_dpi_y",
+        "observed_scale_percent",
+        "observed_qt_window_scale_percent"
+    )) {
+        $Evidence[$fieldName] = [Math]::Max(
+            [int]$Evidence[$fieldName],
+            [int]$ScanEvidence.$fieldName
+        )
+    }
+    $Evidence.forbidden_actions = @(
+        @($Evidence.forbidden_actions) + @($ScanEvidence.forbidden_actions)
+    )
+    $Evidence.forbidden_action_count = @(
+        $Evidence.forbidden_actions
+    ).Count
+    $Evidence.static_read_only_diagnostics = @(
+        @($Evidence.static_read_only_diagnostics) +
+            @($ScanEvidence.static_read_only_diagnostics)
+    )
+    $Evidence.errors = @($Evidence.errors) + @($ScanEvidence.errors)
+}
+
+function Write-InstalledUiAutomationCheckpointAcknowledgements {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$ScanEvidence,
+        [Parameter(Mandatory = $true)]
+        [string]$CheckpointAckDirectory
+    )
+
+    $validCheckpoints = @(
+        "loading", "empty", "failed", "recovering", "partial",
+        "disconnected", "stale", "completed"
+    )
+    foreach ($checkpoint in @($ScanEvidence.narrator_checkpoint_evidence)) {
+        if (
+            $checkpoint.passed -isnot [bool] -or
+            -not [bool]$checkpoint.passed -or
+            [string]$checkpoint.checkpoint -cnotin $validCheckpoints -or
+            [int]$checkpoint.sequence -lt 1 -or
+            [int]$checkpoint.sequence -gt 8 -or
+            [string]$checkpoint.snapshot_identity -cnotmatch '^uia:'
+        ) {
+            continue
+        }
+        $ackPath = Join-Path `
+            $CheckpointAckDirectory `
+            ("uia-checkpoint-{0:D2}-{1}.json" -f `
+                [int]$checkpoint.sequence,
+                [string]$checkpoint.checkpoint)
+        if (-not (Test-Path -LiteralPath $ackPath)) {
+            [ordered]@{
+                sequence = [int]$checkpoint.sequence
+                checkpoint = [string]$checkpoint.checkpoint
+                snapshot_identity = [string]$checkpoint.snapshot_identity
+                passed = $true
+            } | ConvertTo-Json -Depth 4 | Set-Content `
+                -LiteralPath $ackPath `
+                -Encoding UTF8
+        }
+    }
+}
+
+function Invoke-InstalledJourneyWithAccessibilityProbe {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Executable,
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [string]$LaneDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [object]$AccessibilityEnvironment,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [switch]$PreflightOnly
+    )
+
+    $evidence = New-UiAutomationAccessibilityEvidence
+    $exitCode = -1
+    $process = $null
+    $ackEnvironmentName = "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR"
+    $ackEnvironmentExisted = Test-Path "Env:\$ackEnvironmentName"
+    $previousAckEnvironment = if ($ackEnvironmentExisted) {
+        [Environment]::GetEnvironmentVariable($ackEnvironmentName, "Process")
+    }
+    else {
+        $null
+    }
+    try {
+        Start-InstalledNarratorSession -NarratorSession $NarratorSession
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session was unavailable to the UIA probe"
+        }
+        $preExistingAcks = @(
+            Get-ChildItem `
+                -LiteralPath $LaneDirectory `
+                -Filter "uia-checkpoint-*.json" `
+                -File `
+                -ErrorAction SilentlyContinue
+        )
+        if ($preExistingAcks.Count -ne 0) {
+            throw "Installed UIA checkpoint acknowledgement was pre-existing"
+        }
+        [Environment]::SetEnvironmentVariable(
+            $ackEnvironmentName,
+            $LaneDirectory,
+            "Process"
+        )
+        $reportArgument = if ($PreflightOnly) {
+            "--installed-dpi-preflight-report=$(Join-Path $LaneDirectory 'installed-dpi-preflight.json')"
+        }
+        else {
+            "--smoke-report-dir=$LaneDirectory"
+        }
+        $process = Start-Process `
+            -FilePath $Executable `
+            -ArgumentList @(
+                "--renderer-lane=$Lane",
+                $reportArgument,
+                "--source-commit=$SourceCommit"
+            ) `
+            -PassThru
+        $process.Refresh()
+        $candidateProcessStartTimeUtcTicks = [long](
+            $process.StartTime.ToUniversalTime().Ticks
+        )
+        $deadline = [DateTime]::UtcNow.AddSeconds(900)
+        $nextScan = [DateTime]::MinValue
+        while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+            $process.Refresh()
+            if ([DateTime]::UtcNow -ge $nextScan) {
+                try {
+                    $scanResult = if ([int]$evidence.scan_count -eq 0) {
+                        [ordered]@{
+                            scan_evidence = (
+                                Invoke-InstalledUiAutomationScan `
+                                    -CandidateProcessId ([int]$process.Id) `
+                                    -CandidateProcessStartTimeUtcTicks (
+                                        $candidateProcessStartTimeUtcTicks
+                                    ) `
+                                    -LaneDirectory $LaneDirectory `
+                                    -NarratorSession $NarratorSession `
+                                    -ScanSequenceBase 0
+                            )
+                            failure_kind = "none"
+                        }
+                    }
+                    else {
+                        Invoke-InstalledUiAutomationScanInFreshPowerShell `
+                            -CandidateProcessId ([int]$process.Id) `
+                            -CandidateProcessStartTimeUtcTicks (
+                                $candidateProcessStartTimeUtcTicks
+                            ) `
+                            -Lane $Lane `
+                            -LaneDirectory $LaneDirectory `
+                            -SourceCommit $SourceCommit `
+                            -NarratorSession $NarratorSession `
+                            -ScanSequenceBase ([int]$evidence.scan_count)
+                    }
+                    if ($null -ne $scanResult.scan_evidence) {
+                        Merge-InstalledUiAutomationScanEvidence `
+                            -Evidence $evidence `
+                            -ScanEvidence $scanResult.scan_evidence
+                        Write-InstalledUiAutomationCheckpointAcknowledgements `
+                            -ScanEvidence $scanResult.scan_evidence `
+                            -CheckpointAckDirectory $LaneDirectory
+                    }
+                    else {
+                        $failureKind = [string]$scanResult.failure_kind
+                        if ($failureKind -cnotin @(
+                            "control_setup",
+                            "child_start",
+                            "child_wait",
+                            "result_read"
+                        )) {
+                            $failureKind = "unknown"
+                        }
+                        $evidence.errors += (
+                            "Windows UI Automation child scan failed at the " +
+                            "$failureKind boundary"
+                        )
+                    }
+                }
+                catch {
+                    if (Test-IsTransientUiAutomationBoundaryFailure $_) {
+                        $evidence.transient_uia_boundary_count = (
+                            [int]$evidence.transient_uia_boundary_count + 1
+                        )
+                    }
+                    else {
+                        $evidence.errors += (
+                            "Windows UI Automation probe failed at a redacted boundary"
+                        )
+                    }
+                }
+                if (@($evidence.narrator_checkpoint_evidence).Count -ge 8) {
+                    $nextScan = [DateTime]::MaxValue
+                }
+                else {
+                    $nextScan = [DateTime]::UtcNow.AddMilliseconds(500)
+                }
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            $evidence.errors += "Installed journey exceeded 900 seconds"
+        }
+        else {
+            $exitCode = $process.ExitCode
+        }
+    }
+    catch {
+        $evidence.errors += (
+            "Installed UIA/Narrator journey failed at a redacted boundary"
+        )
+    }
+    finally {
+        if ($ackEnvironmentExisted) {
+            [Environment]::SetEnvironmentVariable(
+                $ackEnvironmentName,
+                $previousAckEnvironment,
+                "Process"
+            )
+        }
+        else {
+            Remove-Item `
+                "Env:\$ackEnvironmentName" `
+                -ErrorAction SilentlyContinue
+        }
+    }
+    if (
+        $evidence.scan_count -eq 0 -and
+        "Installed UIA window was not discovered" -notin $evidence.errors
+    ) {
+        $evidence.errors += "Installed UIA window was not discovered"
+    }
+    $allSemanticTerms = $true
+    foreach ($property in $evidence.semantic_terms.GetEnumerator()) {
+        $allSemanticTerms = $allSemanticTerms -and [bool]$property.Value
+    }
+    $requiredNarratorCheckpoints = @(
+        "loading", "empty", "failed", "recovering", "partial",
+        "disconnected", "stale", "completed"
+    )
+    $requiredNarratorBindings = @(
+        @("runMonitoringRouteNavigation", "loading"),
+        @("diagnosticTasksRouteNavigation", "empty"),
+        @("failedCampaignNodeAttemptHistory", "failed"),
+        @("diagnosticTaskRecoveryProgressStatus", "recover"),
+        @("systemHealthAccessibleStatus", "partial"),
+        @("systemHealthAccessibleStatus", "disconnected"),
+        @("systemHealthAccessibleStatus", "stale"),
+        @("runMonitoringRouteNavigation", "terminal")
+    )
+    $checkpointEvidence = @($evidence.narrator_checkpoint_evidence)
+    $narratorCheckpointsPassed = (
+        $checkpointEvidence.Count -eq $requiredNarratorCheckpoints.Count
+    )
+    $previousScanSequence = 0
+    $previousCapturedAt = [DateTime]::MinValue
+    $snapshotIdentities = @{}
+    $validRoutes = @(
+        "strategy_library", "scenario_lab", "diagnostic_tasks",
+        "run_monitoring", "evidence_and_findings", "system_health"
+    )
+    for (
+        $checkpointIndex = 0;
+        $checkpointIndex -lt $checkpointEvidence.Count;
+        $checkpointIndex++
+    ) {
+        $checkpoint = $checkpointEvidence[$checkpointIndex]
+        $expectedSequence = $checkpointIndex + 1
+        $capturedAt = [DateTime]::MinValue
+        $timestampValid = [DateTime]::TryParse(
+            [string]$checkpoint.captured_at_utc,
+            [ref]$capturedAt
+        )
+        $identity = [string]$checkpoint.snapshot_identity
+        $identityUnique = (
+            -not [string]::IsNullOrWhiteSpace($identity) -and
+            -not $snapshotIdentities.ContainsKey($identity)
+        )
+        if ($identityUnique) {
+            $snapshotIdentities[$identity] = $true
+        }
+        $expectedBinding = $requiredNarratorBindings[$checkpointIndex]
+        $expectedIdentity = (
+            "uia:${expectedSequence}:" +
+            "$($requiredNarratorCheckpoints[$checkpointIndex]):" +
+            "$($checkpoint.route):$($checkpoint.run_revision):" +
+            "$($checkpoint.evidence_revision):" +
+            "$($expectedBinding[0]):$($expectedBinding[1]):" +
+            "scale$([int]$checkpoint.window_scale_percent)"
+        )
+        $narratorCheckpointsPassed = (
+            $narratorCheckpointsPassed -and
+            [string]$checkpoint.checkpoint -eq
+                $requiredNarratorCheckpoints[$checkpointIndex] -and
+            [int]$checkpoint.sequence -eq $expectedSequence -and
+            $identityUnique -and
+            $identity -eq $expectedIdentity -and
+            [string]$checkpoint.status_object_name -eq
+                [string]$expectedBinding[0] -and
+            [string]$checkpoint.status_semantic_term -eq
+                [string]$expectedBinding[1] -and
+            [int]$checkpoint.window_scale_percent -eq 200 -and
+            [int]$checkpoint.native_window_dpi -eq 192 -and
+            [int]$checkpoint.scan_sequence -gt $previousScanSequence -and
+            $timestampValid -and
+            $capturedAt -gt $previousCapturedAt -and
+            [string]$checkpoint.route -in $validRoutes -and
+            [string]$checkpoint.run_revision -cmatch '^r\d+$' -and
+            [string]$checkpoint.evidence_revision -cmatch '^r\d+$' -and
+            [bool]$checkpoint.lifecycle_state_observed -and
+            [bool]$checkpoint.narrator_running -and
+            [bool]$checkpoint.focus_traversal_observed -and
+            [bool]$checkpoint.complete_snapshot -and
+            [int]$checkpoint.named_element_count -gt 0 -and
+            @($checkpoint.control_types).Count -gt 0 -and
+            [bool]$checkpoint.passed
+        )
+        $previousScanSequence = [int]$checkpoint.scan_sequence
+        if ($timestampValid) {
+            $previousCapturedAt = $capturedAt
+        }
+    }
+    $evidence.narrator_running_during_probe = $narratorCheckpointsPassed
+    $evidence.passed = (
+        $AccessibilityEnvironment.text_scale_configured_before_launch -and
+        $AccessibilityEnvironment.text_scale_registry_percent -eq 200 -and
+        -not $AccessibilityEnvironment.guest_dpi_override_applied -and
+        $AccessibilityEnvironment.native_dpi_evidence_source -eq (
+            "GetDpiForWindow"
+        ) -and
+        $evidence.provider_available -and
+        $evidence.scan_count -gt 0 -and
+        $evidence.named_element_count -gt 0 -and
+        $evidence.focusable_element_count -gt 0 -and
+        $evidence.focus_observed -and
+        $evidence.control_types.Count -gt 0 -and
+        $evidence.action_patterns.Count -gt 0 -and
+        $evidence.narrator_started -and
+        $evidence.narrator_running_during_probe -and
+        $narratorCheckpointsPassed -and
+        $evidence.complete_snapshot_count -ge 8 -and
+        $evidence.transient_uia_boundary_count -le (
+            $evidence.complete_snapshot_count
+        ) -and
+        $evidence.focus_traversal_observed -and
+        $evidence.observed_window_dpi_x -eq 192 -and
+        $evidence.observed_window_dpi_y -eq 192 -and
+        $evidence.observed_scale_percent -eq 200 -and
+        $evidence.observed_qt_window_scale_percent -eq 200 -and
+        $evidence.forbidden_action_count -eq 0 -and
+        $evidence.forbidden_actions.Count -eq 0 -and
+        $allSemanticTerms -and
+        $evidence.errors.Count -eq 0
+    )
+    return [ordered]@{
+        exit_code = $exitCode
+        uia_accessibility = $evidence
+    }
+}
+
+function Read-InstalledUiAutomationScanRequest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $resolvedRequestPath = Resolve-NormalizedFullyQualifiedPath -Path $Path
+    $requestLeaf = Split-Path -Leaf $resolvedRequestPath
+    if (
+        $requestLeaf -cnotmatch (
+            '^installed-uia-scan-([0-9a-f]{32})-request\.json$'
+        ) -or
+        -not (Test-Path -LiteralPath $resolvedRequestPath -PathType Leaf)
+    ) {
+        throw "Installed journey probe request was unavailable"
+    }
+    $probeId = $Matches[1]
+    try {
+        $request = Get-Content `
+            -LiteralPath $resolvedRequestPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Installed journey probe request was unreadable"
+    }
+    $requestNames = @(
+        "schema_version",
+        "candidate_process_id",
+        "candidate_process_start_time_utc_ticks",
+        "lane",
+        "lane_directory",
+        "source_commit",
+        "narrator_process_id",
+        "narrator_process_start_time_utc_ticks",
+        "scan_sequence_base",
+        "result_path"
+    )
+    if (
+        $request -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $request `
+            -ExpectedNames $requestNames) -or
+        $request.schema_version -isnot [int] -or
+        [int]$request.schema_version -ne 1 -or
+        $request.candidate_process_id -isnot [int] -or
+        [int]$request.candidate_process_id -le 0 -or
+        $request.candidate_process_start_time_utc_ticks -isnot [long] -or
+        [long]$request.candidate_process_start_time_utc_ticks -le 0 -or
+        $request.lane -isnot [string] -or
+        [string]$request.lane -cnotin @("hardware", "software") -or
+        $request.lane_directory -isnot [string] -or
+        $request.source_commit -isnot [string] -or
+        [string]$request.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
+        $request.narrator_process_id -isnot [int] -or
+        [int]$request.narrator_process_id -le 0 -or
+        $request.narrator_process_start_time_utc_ticks -isnot [long] -or
+        [long]$request.narrator_process_start_time_utc_ticks -le 0 -or
+        $request.scan_sequence_base -isnot [int] -or
+        [int]$request.scan_sequence_base -lt 0 -or
+        $request.result_path -isnot [string]
+    ) {
+        throw "Installed journey probe request did not match its contract"
+    }
+    $resolvedLaneDirectory = Resolve-NormalizedFullyQualifiedPath `
+        -Path ([string]$request.lane_directory)
+    $resolvedResultPath = Resolve-NormalizedFullyQualifiedPath `
+        -Path ([string]$request.result_path)
+    $expectedResultLeaf = (
+        "installed-uia-scan-$probeId-result.json"
+    )
+    if (
+        -not (Test-Path `
+            -LiteralPath $resolvedLaneDirectory `
+            -PathType Container) -or
+        (Split-Path -Parent $resolvedResultPath) -cne
+            (Split-Path -Parent $resolvedRequestPath) -or
+        (Split-Path -Leaf $resolvedResultPath) -cne $expectedResultLeaf -or
+        (Test-Path -LiteralPath $resolvedResultPath)
+    ) {
+        throw "Installed journey probe paths did not match their contract"
+    }
+    $request.lane_directory = $resolvedLaneDirectory
+    $request.result_path = $resolvedResultPath
+    return $request
+}
+
+function Read-InstalledUiAutomationScanResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateProcessId,
+        [Parameter(Mandatory = $true)]
+        [long]$CandidateProcessStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)]
+        [int]$ScanSequenceBase
+    )
+
+    try {
+        $result = Get-Content `
+            -LiteralPath $Path `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Installed journey probe result was unreadable"
+    }
+    if (
+        $result -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $result `
+            -ExpectedNames @(
+                "schema_version",
+                "purpose",
+                "source_commit",
+                "lane",
+                "candidate_process_id",
+                "candidate_process_start_time_utc_ticks",
+                "narrator_process_id",
+                "narrator_process_start_time_utc_ticks",
+                "scan_sequence_base",
+                "scan_evidence"
+            )) -or
+        $result.schema_version -isnot [int] -or
+        [int]$result.schema_version -ne 1 -or
+        $result.purpose -isnot [string] -or
+        [string]$result.purpose -cne "installed-uia-tree-scan" -or
+        $result.source_commit -isnot [string] -or
+        [string]$result.source_commit -cne $SourceCommit -or
+        $result.lane -isnot [string] -or
+        [string]$result.lane -cne $Lane -or
+        $result.candidate_process_id -isnot [int] -or
+        [int]$result.candidate_process_id -ne $CandidateProcessId -or
+        $result.candidate_process_start_time_utc_ticks -isnot [long] -or
+        [long]$result.candidate_process_start_time_utc_ticks -ne
+            $CandidateProcessStartTimeUtcTicks -or
+        $result.narrator_process_id -isnot [int] -or
+        [int]$result.narrator_process_id -ne
+            [int]$NarratorSession.process_id -or
+        $result.narrator_process_start_time_utc_ticks -isnot [long] -or
+        [long]$result.narrator_process_start_time_utc_ticks -ne
+            [long]$NarratorSession.process_start_time_utc_ticks -or
+        $result.scan_sequence_base -isnot [int] -or
+        [int]$result.scan_sequence_base -ne $ScanSequenceBase -or
+        $result.scan_evidence -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $result.scan_evidence `
+            -ExpectedNames @((New-UiAutomationAccessibilityEvidence).Keys)) -or
+        $result.scan_evidence.scan_count -isnot [int] -or
+        [int]$result.scan_evidence.scan_count -lt $ScanSequenceBase -or
+        [int]$result.scan_evidence.scan_count -gt ($ScanSequenceBase + 1) -or
+        $result.scan_evidence.semantic_terms -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $result.scan_evidence.semantic_terms `
+            -ExpectedNames @(
+                (New-UiAutomationAccessibilityEvidence).semantic_terms.Keys
+            )) -or
+        @(
+            $result.scan_evidence.semantic_terms.PSObject.Properties.Value |
+                Where-Object { $_ -isnot [bool] }
+        ).Count -ne 0 -or
+        @(
+            @($result.scan_evidence.errors) |
+                Where-Object { $_ -isnot [string] }
+        ).Count -ne 0
+    ) {
+        throw "Installed journey probe result did not match its contract"
+    }
+    return $result.scan_evidence
+}
+
+function Invoke-InstalledUiAutomationScanInFreshPowerShell {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateProcessId,
+        [Parameter(Mandatory = $true)]
+        [long]$CandidateProcessStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [string]$LaneDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [Parameter(Mandatory = $true)]
+        [int]$ScanSequenceBase
+    )
+
+    $controlDirectory = $null
+    $failureKind = "control_setup"
+    try {
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session was unavailable"
+        }
+        $probeId = [Guid]::NewGuid().ToString("N")
+        $controlRoot = Join-Path `
+            ([IO.Path]::GetTempPath()) `
+            "UTI-StockSim-Issue118-JourneyProbes"
+        New-Item -ItemType Directory -Path $controlRoot -Force | Out-Null
+        $controlDirectory = Join-Path $controlRoot $probeId
+        if (Test-Path -LiteralPath $controlDirectory) {
+            throw "Installed journey probe control directory already existed"
+        }
+        New-Item `
+            -ItemType Directory `
+            -Path $controlDirectory | Out-Null
+        $requestPath = Join-Path `
+            $controlDirectory `
+            "installed-uia-scan-$probeId-request.json"
+        $resultPath = Join-Path `
+            $controlDirectory `
+            "installed-uia-scan-$probeId-result.json"
+        $request = [ordered]@{
+            schema_version = 1
+            candidate_process_id = $CandidateProcessId
+            candidate_process_start_time_utc_ticks = (
+                $CandidateProcessStartTimeUtcTicks
+            )
+            lane = $Lane
+            lane_directory = Resolve-NormalizedFullyQualifiedPath `
+                -Path $LaneDirectory
+            source_commit = $SourceCommit
+            narrator_process_id = [int]$NarratorSession.process_id
+            narrator_process_start_time_utc_ticks = (
+                [long]$NarratorSession.process_start_time_utc_ticks
+            )
+            scan_sequence_base = $ScanSequenceBase
+            result_path = $resultPath
+        }
+        [IO.File]::WriteAllText(
+            $requestPath,
+            ($request | ConvertTo-Json -Depth 20),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $childPowerShell = (
+            "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        )
+        if (-not (Test-Path -LiteralPath $childPowerShell -PathType Leaf)) {
+            throw "Installed journey probe PowerShell was unavailable"
+        }
+        $escapedScriptPath = $PSCommandPath.Replace("'", "''")
+        $escapedRequestPath = $requestPath.Replace("'", "''")
+        $childCommand = (
+            "& '$escapedScriptPath' -UiAutomationScanRequest " +
+            "'$escapedRequestPath'"
+        )
+        $encodedCommand = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($childCommand)
+        )
+        $failureKind = "child_start"
+        $childProcess = Start-Process `
+            -FilePath $childPowerShell `
+            -ArgumentList @(
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                $encodedCommand
+            ) `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+        $failureKind = "child_wait"
+        if ([int]$childProcess.ExitCode -ne 0) {
+            throw "Installed UI Automation scan child process failed"
+        }
+        $failureKind = "result_read"
+        $scanEvidence = Read-InstalledUiAutomationScanResult `
+                -Path $resultPath `
+                -SourceCommit $SourceCommit `
+                -Lane $Lane `
+                -NarratorSession $NarratorSession `
+                -CandidateProcessId $CandidateProcessId `
+                -CandidateProcessStartTimeUtcTicks (
+                    $CandidateProcessStartTimeUtcTicks
+                ) `
+                -ScanSequenceBase $ScanSequenceBase
+        return [ordered]@{
+            scan_evidence = $scanEvidence
+            failure_kind = "none"
+        }
+    }
+    catch {
+        return [ordered]@{
+            scan_evidence = $null
+            failure_kind = $failureKind
+        }
+    }
+    finally {
+        if (
+            $null -ne $controlDirectory -and
+            (Test-Path -LiteralPath $controlDirectory -PathType Container)
+        ) {
+            Remove-Item `
+                -LiteralPath $controlDirectory `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-InstalledDpiPreflightEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$CandidateReport,
+        [Parameter(Mandatory = $true)]
+        [object]$HostEvidence,
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateExitCode,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [object[]]$ExpectedProductionPath
+    )
+
+    $hostCheckpoints = @($HostEvidence.narrator_checkpoint_evidence)
+    $hostCheckpoint = if ($hostCheckpoints.Count -eq 1) {
+        $hostCheckpoints[0]
+    }
+    else {
+        $null
+    }
+    $candidateRatio = [double]$CandidateReport.qt_window_device_pixel_ratio
+    $nativeDpi = if ($null -eq $hostCheckpoint) {
+        0
+    }
+    else {
+        [int]$hostCheckpoint.native_window_dpi
+    }
+    $candidateErrors = @(
+        @($CandidateReport.errors) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    )
+    $hostErrors = @(
+        @($HostEvidence.errors) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    )
+    $actualProductionPath = @(
+        $CandidateReport.production_path | ForEach-Object { [string]$_ }
+    )
+    $expectedPath = @(
+        $ExpectedProductionPath | ForEach-Object { [string]$_ }
+    )
+    $productionPathMatches = (
+        $actualProductionPath.Count -eq $expectedPath.Count -and
+        ($actualProductionPath -join [char]0) -ceq
+            ($expectedPath -join [char]0)
+    )
+    $canonicalHostIdentity = if ($null -eq $hostCheckpoint) {
+        ""
+    }
+    else {
+        "uia:$([int]$hostCheckpoint.sequence):" +
+            "$([string]$hostCheckpoint.checkpoint):" +
+            "$([string]$hostCheckpoint.route):" +
+            "$([string]$hostCheckpoint.run_revision):" +
+            "$([string]$hostCheckpoint.evidence_revision):" +
+            "$([string]$hostCheckpoint.status_object_name):" +
+            "$([string]$hostCheckpoint.status_semantic_term):" +
+            "scale$([int]$hostCheckpoint.window_scale_percent)"
+    }
+    $identityMatches = (
+        $null -ne $hostCheckpoint -and
+        -not [string]::IsNullOrWhiteSpace($canonicalHostIdentity) -and
+        [string]$hostCheckpoint.snapshot_identity -ceq $canonicalHostIdentity -and
+        [string]$CandidateReport.snapshot_identity -ceq
+            $canonicalHostIdentity
+    )
+    $passed = (
+        $CandidateExitCode -eq 0 -and
+        [int]$CandidateReport.schema_version -eq 1 -and
+        [string]$CandidateReport.source_commit -ceq $SourceCommit -and
+        [string]$CandidateReport.renderer_lane -ceq "hardware" -and
+        [string]$CandidateReport.certification_scope -ceq
+            "installed-dpi-preflight" -and
+        $productionPathMatches -and
+        [string]$CandidateReport.checkpoint -ceq "loading" -and
+        [int]$CandidateReport.checkpoint_sequence -eq 1 -and
+        -not [double]::IsNaN($candidateRatio) -and
+        -not [double]::IsInfinity($candidateRatio) -and
+        $candidateRatio -eq 2.0 -and
+        $CandidateReport.external_uia_acknowledged -is [bool] -and
+        $CandidateReport.external_uia_acknowledged -eq $true -and
+        $CandidateReport.clean_exit -is [bool] -and
+        $CandidateReport.clean_exit -eq $true -and
+        $CandidateReport.passed -is [bool] -and
+        $CandidateReport.passed -eq $true -and
+        $candidateErrors.Count -eq 0 -and
+        $hostCheckpoints.Count -eq 1 -and
+        [string]$hostCheckpoint.checkpoint -ceq "loading" -and
+        [int]$hostCheckpoint.sequence -eq 1 -and
+        [string]$hostCheckpoint.route -ceq "strategy_library" -and
+        [string]$hostCheckpoint.status_object_name -ceq
+            "runMonitoringRouteNavigation" -and
+        [string]$hostCheckpoint.status_semantic_term -ceq "loading" -and
+        $identityMatches -and
+        [int]$hostCheckpoint.window_scale_percent -eq 200 -and
+        $nativeDpi -eq 192 -and
+        $hostCheckpoint.passed -is [bool] -and
+        $hostCheckpoint.passed -eq $true -and
+        [int]$HostEvidence.forbidden_action_count -eq 0 -and
+        $hostErrors.Count -eq 0
+    )
+    $reportedCertificationScope = "redacted"
+    if (
+        [string]$CandidateReport.certification_scope -ceq
+            "installed-dpi-preflight"
+    ) {
+        $reportedCertificationScope = "installed-dpi-preflight"
+    }
+    $reportedProductionPath = @("redacted")
+    if ($productionPathMatches) {
+        $reportedProductionPath = @($ExpectedProductionPath)
+    }
+    $reportedSnapshotIdentity = "redacted"
+    if ($identityMatches) {
+        $reportedSnapshotIdentity = $canonicalHostIdentity
+    }
+    return [ordered]@{
+        schema_version = 1
+        stage = "installed-dpi-preflight"
+        source_commit = $SourceCommit
+        renderer_lane = "hardware"
+        certification_scope = $reportedCertificationScope
+        production_path = $reportedProductionPath
+        production_path_matches = $productionPathMatches
+        checkpoint = "loading"
+        checkpoint_sequence = [int]$CandidateReport.checkpoint_sequence
+        snapshot_identity = $reportedSnapshotIdentity
+        snapshot_identity_matches = $identityMatches
+        route = [string]$hostCheckpoint.route
+        run_revision = [string]$hostCheckpoint.run_revision
+        evidence_revision = [string]$hostCheckpoint.evidence_revision
+        status_object_name = [string]$hostCheckpoint.status_object_name
+        status_semantic_term = [string]$hostCheckpoint.status_semantic_term
+        window_scale_percent = [int]$hostCheckpoint.window_scale_percent
+        qt_window_device_pixel_ratio = $candidateRatio
+        native_window_dpi = $nativeDpi
+        candidate_exit_code = $CandidateExitCode
+        candidate_external_uia_acknowledged = (
+            [bool]$CandidateReport.external_uia_acknowledged
+        )
+        candidate_clean_exit = [bool]$CandidateReport.clean_exit
+        passed = $passed
+        errors = @(
+            if (-not $passed) {
+                "Installed DPI preflight did not satisfy the native and Qt scale contract"
+            }
+        )
+    }
+}
+
+function Read-InstalledDpiPreflightCandidateReport {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $candidate = Get-Content `
+            -LiteralPath $Path `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+        if ($candidate -isnot [pscustomobject]) {
+            return $null
+        }
+        return $candidate
+    }
+    catch {
+        return $null
+    }
+}
+
+function Invoke-InstalledRollbackLane {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$CandidateExecutable,
+        [Parameter(Mandatory = $true)]
+        [string]$WidgetsExecutable,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [string]$CandidateDependencyLockSha256,
+        [Parameter(Mandatory = $true)]
+        [string]$WidgetsDependencyLockSha256
+    )
+
+    $failed = [ordered]@{
+        lane = $Lane
+        source_commit = $SourceCommit
+        passed = $false
+        same_source_commit = $false
+        same_dependency_lock = $false
+        identity_retention_verified = $false
+        task_handle_continuity_verified = $false
+        order_state_continuity_verified = $false
+        reopen_verified = $false
+        destructive_migration = $true
+        errors = @("Installed rollback lane was not completed")
+    }
+    $smokePath = Join-Path $EvidenceRoot "$Lane\smoke-report.json"
+    $sourcePersistence = Join-Path $EvidenceRoot "$Lane\v1-persistence"
+    if (
+        -not (Test-Path -LiteralPath $smokePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $sourcePersistence -PathType Container)
+    ) {
+        return $failed
+    }
+    $smoke = Get-Content -LiteralPath $smokePath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $laneRoot = Join-Path $EvidenceRoot "installed-rollback-$Lane"
+    $supportedCopy = Join-Path $laneRoot "supported-data-copy"
+    New-Item -ItemType Directory -Path $laneRoot | Out-Null
+    Copy-Item `
+        -LiteralPath $sourcePersistence `
+        -Destination $supportedCopy `
+        -Recurse
+
+    $commonArguments = @(
+        "--supported-data-copy=$supportedCopy",
+        "--campaign-id=$([string]$smoke.campaign_identity)",
+        "--evidence-package-id=$([string]$smoke.evidence_package_identity)",
+        "--selected-manifest-id=$([string]$smoke.reproduction_manifest_identity)",
+        "--diagnostic-task-id=$([string]$smoke.diagnostic_task_identity)",
+        "--source-commit=$SourceCommit"
+    )
+    $beforePath = Join-Path $laneRoot "candidate-before.json"
+    & $CandidateExecutable "--recovery-report=$beforePath" @commonArguments
+    $beforeExitCode = $LASTEXITCODE
+
+    $widgetsDir = Join-Path $laneRoot "widgets"
+    New-Item -ItemType Directory -Path $widgetsDir | Out-Null
+    & $WidgetsExecutable "--smoke-report-dir=$widgetsDir" @commonArguments
+    $widgetsExitCode = $LASTEXITCODE
+    $widgetsPath = Join-Path $widgetsDir "smoke-report.json"
+
+    $afterPath = Join-Path $laneRoot "candidate-after.json"
+    & $CandidateExecutable "--recovery-report=$afterPath" @commonArguments
+    $afterExitCode = $LASTEXITCODE
+    if (
+        -not (Test-Path -LiteralPath $beforePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $widgetsPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $afterPath -PathType Leaf)
+    ) {
+        return $failed
+    }
+
+    $before = Get-Content -LiteralPath $beforePath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $widgets = Get-Content -LiteralPath $widgetsPath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $after = Get-Content -LiteralPath $afterPath -Raw -Encoding utf8 |
+        ConvertFrom-Json
+    $expected = [pscustomobject][ordered]@{
+        Strategy = @([string]$smoke.strategy_identity)
+        Recipe = @([string]$smoke.approved_recipe_identity)
+        Task = @([string]$smoke.diagnostic_task_identity)
+        Campaign = @([string]$smoke.campaign_identity)
+        Run = @([string]$smoke.run_identity)
+        Evidence = @([string]$smoke.evidence_package_identity)
+        Finding = @($smoke.evidence_identity_sets.findings)
+        Manifest = @([string]$smoke.reproduction_manifest_identity)
+    }
+    $identitiesMatch = (
+        (Test-DurableIdentityMap -Actual $before.durable_identities -Expected $expected) -and
+        (Test-DurableIdentityMap -Actual $widgets.durable_identities -Expected $expected) -and
+        (Test-DurableIdentityMap -Actual $after.durable_identities -Expected $expected)
+    )
+    $taskHandlesMatch = (
+        (Test-ExactStringArray -Actual $before.task_handle_identities -Expected $smoke.task_handle_identities) -and
+        (Test-ExactStringArray -Actual $widgets.task_handle_identities -Expected $smoke.task_handle_identities) -and
+        (Test-ExactStringArray -Actual $after.task_handle_identities -Expected $smoke.task_handle_identities)
+    )
+    $orderStateMatches = (
+        [string]$before.order_state_sha256 -eq
+            [string]$widgets.order_state_sha256 -and
+        [string]$before.order_state_sha256 -eq
+            [string]$after.order_state_sha256 -and
+        [int]$before.order_count -eq [int]$widgets.order_count -and
+        [int]$before.order_count -eq [int]$after.order_count
+    )
+    $sameSourceCommit = (
+        [string]$before.source_commit -eq $SourceCommit -and
+        [string]$widgets.source_commit -eq $SourceCommit -and
+        [string]$after.source_commit -eq $SourceCommit
+    )
+    $sameDependencyLock = (
+        -not [string]::IsNullOrWhiteSpace($CandidateDependencyLockSha256) -and
+        $CandidateDependencyLockSha256 -eq $WidgetsDependencyLockSha256
+    )
+    $reopenVerified = (
+        $beforeExitCode -eq 0 -and
+        $widgetsExitCode -eq 0 -and
+        $afterExitCode -eq 0 -and
+        $before.clean_exit -eq $true -and
+        $widgets.clean_exit -eq $true -and
+        $widgets.supported_data_copy_verified -eq $true -and
+        $after.clean_exit -eq $true
+    )
+    $passed = (
+        $identitiesMatch -and
+        $taskHandlesMatch -and
+        $orderStateMatches -and
+        $sameSourceCommit -and
+        $sameDependencyLock -and
+        $reopenVerified
+    )
+    return [ordered]@{
+        lane = $Lane
+        source_commit = $SourceCommit
+        passed = $passed
+        same_source_commit = $sameSourceCommit
+        same_dependency_lock = $sameDependencyLock
+        identity_retention_verified = $identitiesMatch
+        task_handle_continuity_verified = $taskHandlesMatch
+        order_state_continuity_verified = $orderStateMatches
+        reopen_verified = $reopenVerified
+        destructive_migration = $false
+        candidate_before = $before
+        retained_widgets = $widgets
+        candidate_after = $after
+        errors = @(
+            if (-not $passed) {
+                "Installed $Lane rollback lane failed"
+            }
+        )
+    }
+}
+
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
+
+if ($PSCmdlet.ParameterSetName -ceq "UiAutomationScan") {
+    $scanRequest = Read-InstalledUiAutomationScanRequest `
+        -Path $UiAutomationScanRequest
+    $scanNarratorSession = [ordered]@{
+        process_id = [int]$scanRequest.narrator_process_id
+        process_start_time_utc_ticks = (
+            [long]$scanRequest.narrator_process_start_time_utc_ticks
+        )
+        start_attempted = $true
+        stopped = $false
+    }
+    $scanEvidence = Invoke-InstalledUiAutomationScan `
+        -CandidateProcessId ([int]$scanRequest.candidate_process_id) `
+        -CandidateProcessStartTimeUtcTicks (
+            [long]$scanRequest.candidate_process_start_time_utc_ticks
+        ) `
+        -LaneDirectory ([string]$scanRequest.lane_directory) `
+        -NarratorSession $scanNarratorSession `
+        -ScanSequenceBase ([int]$scanRequest.scan_sequence_base) `
+        -UseCachedProperties
+    $scanResult = [ordered]@{
+        schema_version = 1
+        purpose = "installed-uia-tree-scan"
+        source_commit = [string]$scanRequest.source_commit
+        lane = [string]$scanRequest.lane
+        candidate_process_id = [int]$scanRequest.candidate_process_id
+        candidate_process_start_time_utc_ticks = (
+            [long]$scanRequest.candidate_process_start_time_utc_ticks
+        )
+        narrator_process_id = [int]$scanNarratorSession.process_id
+        narrator_process_start_time_utc_ticks = (
+            [long]$scanNarratorSession.process_start_time_utc_ticks
+        )
+        scan_sequence_base = [int]$scanRequest.scan_sequence_base
+        scan_evidence = $scanEvidence
+    }
+    [IO.File]::WriteAllText(
+        [string]$scanRequest.result_path,
+        ($scanResult | ConvertTo-Json -Depth 100),
+        [Text.UTF8Encoding]::new($false)
+    )
+    exit 0
+}
 
 if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
     throw "SourceCommit must be a lowercase 40-character Git commit."
@@ -101,24 +3320,19 @@ if ($widgetsArchiveName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
     throw "Widgets archive name contains unsafe characters."
 }
 
-$resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDir)
-$installDir = Join-Path $resolvedEvidence "installed"
-$resolvedInstall = [IO.Path]::GetFullPath($installDir)
-$widgetsInstallDir = Join-Path $resolvedEvidence "widgets-installed"
-$resolvedWidgetsInstall = [IO.Path]::GetFullPath($widgetsInstallDir)
-if (-not $resolvedInstall.StartsWith(
-    $resolvedEvidence + [IO.Path]::DirectorySeparatorChar,
-    [StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Refusing to install outside the evidence directory."
-}
-if (-not $resolvedWidgetsInstall.StartsWith(
-    $resolvedEvidence + [IO.Path]::DirectorySeparatorChar,
-    [StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Refusing to install Widgets outside the evidence directory."
-}
+$resolvedEvidence = Resolve-NormalizedFullyQualifiedPath -Path $EvidenceDir
+$installRoots = Resolve-GuestLocalCertificationInstallRoots `
+    -LocalAppDataRoot $env:LOCALAPPDATA `
+    -EvidenceRoot $resolvedEvidence `
+    -SourceCommit $SourceCommit
+$resolvedLocalCertificationRoot = $installRoots.Root
+$resolvedInstall = $installRoots.Candidate
+$resolvedWidgetsInstall = $installRoots.Widgets
 New-Item -ItemType Directory -Force -Path $resolvedEvidence | Out-Null
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $resolvedLocalCertificationRoot | Out-Null
 if (Test-Path -LiteralPath $resolvedInstall) {
     Remove-Item -LiteralPath $resolvedInstall -Recurse -Force
 }
@@ -126,6 +3340,9 @@ if (Test-Path -LiteralPath $resolvedWidgetsInstall) {
     Remove-Item -LiteralPath $resolvedWidgetsInstall -Recurse -Force
 }
 
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "archive-validation"
 $archiveHash = (Get-FileHash -LiteralPath $PackageArchive -Algorithm SHA256).Hash.ToLowerInvariant()
 $normalizedExpected = $ExpectedArchiveSha256.ToLowerInvariant().Replace("sha256:", "")
 if ($archiveHash -ne $normalizedExpected) {
@@ -141,6 +3358,9 @@ if ($widgetsArchiveHash -ne $normalizedWidgetsExpected) {
     throw "Widgets archive checksum does not match the expected SHA-256."
 }
 
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "environment-inventory"
 $os = Get-CimInstance Win32_OperatingSystem
 $operatingSystem = "$($os.Caption) $($os.Version)"
 $architecture = $env:PROCESSOR_ARCHITECTURE
@@ -149,25 +3369,88 @@ $isWindowsSandbox = (
     $userName -eq "WDAGUtilityAccount" -and
     (Test-Path -LiteralPath "C:\Users\WDAGUtilityAccount")
 )
+$systemDrive = $env:SystemDrive.TrimEnd("\")
+$accessibleFilesystemDrives = @(
+    Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+        Where-Object { $_.Root -match "^[A-Za-z]:\\$" } |
+        ForEach-Object { $_.Root.TrimEnd("\") } |
+        Sort-Object -Unique
+)
+$unexpectedAccessibleFilesystemDrives = @(
+    $accessibleFilesystemDrives |
+        Where-Object {
+            -not [string]::Equals(
+                $_,
+                $systemDrive,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        } |
+        ForEach-Object { "unexpected-filesystem-drive" }
+)
+$certificationEnvironmentKind = if ($isWindowsSandbox) {
+    "windows-sandbox"
+}
+else {
+    "unsupported"
+}
+$certificationEnvironment = [ordered]@{
+    schema_version = 1
+    kind = $certificationEnvironmentKind
+    windows_sandbox = $isWindowsSandbox
+    native_boot_vhdx = $false
+    system_drive = $systemDrive
+    accessible_filesystem_drive_count = (
+        $accessibleFilesystemDrives.Count
+    )
+    unexpected_accessible_filesystem_drives = (
+        $unexpectedAccessibleFilesystemDrives
+    )
+}
+$certificationEnvironmentVerified = (
+    $systemDrive -ceq "C:" -and
+    $accessibleFilesystemDrives.Count -eq 1 -and
+    $unexpectedAccessibleFilesystemDrives.Count -eq 0 -and
+    $certificationEnvironmentKind -ceq "windows-sandbox" -and
+    $isWindowsSandbox
+)
 $networkEnumerationSucceeded = $false
 $networkAdaptersUp = @()
+$networkAdaptersEnabled = @()
+$networkDefaultRouteCount = -1
 try {
+    $networkAdapters = @(Get-NetAdapter -ErrorAction Stop)
     $networkAdaptersUp = @(
-        Get-NetAdapter -ErrorAction Stop |
+        $networkAdapters |
             Where-Object { $_.Status -eq "Up" } |
             ForEach-Object { $_.Name }
     )
+    $networkAdaptersEnabled = @(
+        $networkAdapters |
+            Where-Object { $_.Status -ne "Disabled" } |
+            ForEach-Object { "enabled-network-adapter" }
+    )
+    $networkDefaultRouteCount = @(
+        Get-NetRoute -ErrorAction Stop |
+            Where-Object {
+                $_.DestinationPrefix -in @("0.0.0.0/0", "::/0")
+            }
+    ).Count
     $networkEnumerationSucceeded = $true
 }
 catch {
-    $networkAdaptersUp = @("inventory-failed: $($_.Exception.Message)")
+    $networkAdaptersUp = @("inventory-failed")
+    $networkAdaptersEnabled = @("inventory-failed")
+    $networkDefaultRouteCount = -1
 }
 $pythonCommands = @(
     Get-Command python, py -CommandType Application -ErrorAction SilentlyContinue |
         Where-Object { $_.Source -notmatch "\\WindowsApps\\" }
 )
 $compilerCommands = @(
-    Get-Command cl, gcc, clang -CommandType Application -ErrorAction SilentlyContinue
+    Get-Command `
+        cl, gcc, clang, msbuild, cmake, ninja `
+        -CommandType Application `
+        -ErrorAction SilentlyContinue
 )
 $uninstallRoots = @(
     "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -222,7 +3505,10 @@ $cacheCandidates = @(
     (Join-Path $env:APPDATA "Python"),
     (Join-Path $env:USERPROFILE ".cache"),
     (Join-Path $env:USERPROFILE ".cache\pip"),
-    (Join-Path $env:USERPROFILE ".cache\uv")
+    (Join-Path $env:USERPROFILE ".cache\uv"),
+    (Join-Path $env:USERPROFILE ".nuget\packages"),
+    (Join-Path $env:ProgramData "chocolatey\cache"),
+    (Join-Path $env:ProgramData "pip\Cache")
 )
 $dependencyCachePaths = @(
     @(
@@ -230,7 +3516,89 @@ $dependencyCachePaths = @(
     ) | Sort-Object -Unique
 )
 $dependencyCachePresent = $dependencyCachePaths.Count -gt 0
+$sourceCheckoutMarkers = @(
+    if (Test-Path -LiteralPath "C:\ReleaseScripts") {
+        "C:/ReleaseScripts"
+    }
+    foreach ($probeRoot in @(
+        "C:\ReleaseEvidence",
+        "C:\ReleaseInputQml",
+        "C:\ReleaseInputWidgets"
+    )) {
+        foreach ($marker in @(
+            ".git",
+            "pyproject.toml",
+            "pytest.ini",
+            "tests",
+            "docs",
+            "app",
+            "strategy_diagnostics"
+        )) {
+            $candidate = Join-Path $probeRoot $marker
+            if (Test-Path -LiteralPath $candidate) {
+                $candidate.Replace("\", "/")
+            }
+        }
+    }
+    if (-not $certificationEnvironmentVerified) {
+        "environment-isolation-not-established"
+    }
+    else {
+        foreach ($driveRoot in $accessibleFilesystemDrives) {
+            $rootPath = "$driveRoot\"
+            $gitCheckoutMarker = Get-ChildItem `
+                -LiteralPath $rootPath `
+                -Directory `
+                -Filter ".git" `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $gitCheckoutMarker) {
+                "git-source-checkout-marker"
+            }
+            $pythonProjectCandidates = @(
+                Get-ChildItem `
+                    -LiteralPath $rootPath `
+                    -File `
+                    -Filter "pyproject.toml" `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue | Select-Object -First 32
+            )
+            foreach ($projectFile in $pythonProjectCandidates) {
+                $projectRoot = $projectFile.Directory.FullName
+                if (
+                    (
+                        Test-Path -LiteralPath (
+                            Join-Path $projectRoot "tests"
+                        )
+                    ) -and
+                    (
+                        (
+                            Test-Path -LiteralPath (
+                                Join-Path $projectRoot "app"
+                            )
+                        ) -or
+                        (
+                            Test-Path -LiteralPath (
+                                Join-Path $projectRoot "stock_sim"
+                            )
+                        )
+                    )
+                ) {
+                    "python-source-checkout-marker"
+                    break
+                }
+            }
+        }
+    }
+)
+$sourceCheckoutAbsent = $sourceCheckoutMarkers.Count -eq 0
+$accessibilityEnvironment = Initialize-InstalledAccessibilityEnvironment
 
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "package-extraction"
 Expand-Archive -LiteralPath $PackageArchive -DestinationPath $resolvedInstall
 Expand-Archive `
     -LiteralPath $WidgetsPackageArchive `
@@ -245,6 +3613,289 @@ $widgetsExecutable = (
         Select-Object -First 1
 )
 $widgetsInstallSucceeded = [bool]$widgetsExecutable
+$candidateRunsFromGuestLocalStorage = (
+    $installSucceeded -and
+    (Test-NormalizedPathIsSameOrDescendant `
+        -Path $executable.FullName `
+        -Root $resolvedInstall)
+)
+$widgetsRunsFromGuestLocalStorage = (
+    $widgetsInstallSucceeded -and
+    (Test-NormalizedPathIsSameOrDescendant `
+        -Path $widgetsExecutable.FullName `
+        -Root $resolvedWidgetsInstall)
+)
+$packageExecutionFromMappedEvidence = (
+    ($installSucceeded -and (Test-NormalizedPathIsSameOrDescendant `
+        -Path $executable.FullName `
+        -Root $resolvedEvidence)) -or
+    ($widgetsInstallSucceeded -and (Test-NormalizedPathIsSameOrDescendant `
+        -Path $widgetsExecutable.FullName `
+        -Root $resolvedEvidence))
+)
+$packageInstallation = [ordered]@{
+    storage_kind = $installRoots.StorageKind
+    candidate_guest_local = $candidateRunsFromGuestLocalStorage
+    widgets_guest_local = $widgetsRunsFromGuestLocalStorage
+    execution_from_mapped_evidence = $packageExecutionFromMappedEvidence
+    verified = (
+        $installRoots.StorageKind -ceq "guest_local_filesystem" -and
+        $candidateRunsFromGuestLocalStorage -and
+        $widgetsRunsFromGuestLocalStorage -and
+        -not $packageExecutionFromMappedEvidence
+    )
+}
+$candidateToolchainLock = Get-ChildItem `
+    -LiteralPath $resolvedInstall `
+    -Recurse `
+    -File `
+    -Filter "frontend_v2_toolchain.lock.json" |
+    Select-Object -First 1
+$widgetsToolchainLock = Get-ChildItem `
+    -LiteralPath $resolvedWidgetsInstall `
+    -Recurse `
+    -File `
+    -Filter "frontend_v2_toolchain.lock.json" |
+    Select-Object -First 1
+$candidateDependencyLockSha256 = ""
+$widgetsDependencyLockSha256 = ""
+if ($candidateToolchainLock) {
+    $candidateDependencyLockSha256 = "sha256:" + (
+        Get-FileHash `
+            -LiteralPath $candidateToolchainLock.FullName `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+}
+if ($widgetsToolchainLock) {
+    $widgetsDependencyLockSha256 = "sha256:" + (
+        Get-FileHash `
+            -LiteralPath $widgetsToolchainLock.FullName `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+}
+
+$expectedProductionPath = @(
+    "DiagnosticsApplication",
+    "FileBackedV1Persistence",
+    "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
+    "LiveStrategyLibraryAdapter",
+    "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
+    "LiveScenarioLabAdapter",
+    "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
+    "LiveDiagnosticTasksAdapter",
+    "LiveStrategyDiagnosticsV1ApplicationAdapter",
+    "EventBridge",
+    "LiveRunMonitoringAdapter",
+    "LiveEvidenceAndFindingsAdapter",
+    "LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter",
+    "LiveSystemHealthAdapter",
+    "JourneyWorkspaceHost"
+)
+$narratorSession = New-InstalledNarratorSession
+$gatePassed = $false
+try {
+    :certification do {
+Set-CleanRoomStage `
+    -EvidenceRoot $resolvedEvidence `
+    -Stage "installed-dpi-preflight"
+$installedDpiPreflight = [ordered]@{
+    schema_version = 1
+    stage = "installed-dpi-preflight"
+    source_commit = $SourceCommit
+    renderer_lane = "hardware"
+    certification_scope = ""
+    production_path = @()
+    production_path_matches = $false
+    checkpoint = "loading"
+    checkpoint_sequence = 0
+    snapshot_identity = ""
+    snapshot_identity_matches = $false
+    route = ""
+    run_revision = ""
+    evidence_revision = ""
+    status_object_name = ""
+    status_semantic_term = ""
+    window_scale_percent = 0
+    qt_window_device_pixel_ratio = 0.0
+    native_window_dpi = 0
+    candidate_exit_code = -1
+    candidate_external_uia_acknowledged = $false
+    candidate_clean_exit = $false
+    passed = $false
+    errors = @("Installed DPI preflight was not run")
+}
+if ($installSucceeded) {
+    $installedDpiPreflightDir = Join-Path `
+        $resolvedEvidence `
+        "installed-dpi-preflight"
+    New-Item `
+        -ItemType Directory `
+        -Path $installedDpiPreflightDir `
+        -Force | Out-Null
+    $installedDpiPreflightInvocation = Invoke-InstalledJourneyWithAccessibilityProbe `
+        -Executable $executable.FullName `
+        -Lane "hardware" `
+        -LaneDirectory $installedDpiPreflightDir `
+        -SourceCommit $SourceCommit `
+        -AccessibilityEnvironment $accessibilityEnvironment `
+        -NarratorSession $narratorSession `
+        -PreflightOnly
+    $installedDpiPreflightCandidatePath = Join-Path `
+        $installedDpiPreflightDir `
+        "installed-dpi-preflight.json"
+    if (Test-Path -LiteralPath $installedDpiPreflightCandidatePath -PathType Leaf) {
+        $installedDpiPreflightCandidate = (
+            Read-InstalledDpiPreflightCandidateReport `
+                -Path $installedDpiPreflightCandidatePath
+        )
+        if ($null -ne $installedDpiPreflightCandidate) {
+            try {
+                $installedDpiPreflight = Test-InstalledDpiPreflightEvidence `
+                    -CandidateReport $installedDpiPreflightCandidate `
+                    -HostEvidence $installedDpiPreflightInvocation.uia_accessibility `
+                    -CandidateExitCode $installedDpiPreflightInvocation.exit_code `
+                    -SourceCommit $SourceCommit `
+                    -ExpectedProductionPath $expectedProductionPath
+            }
+            catch {
+                $installedDpiPreflight.errors = @(
+                    "Installed DPI preflight evidence was unreadable at a redacted boundary"
+                )
+            }
+        }
+        else {
+            $installedDpiPreflight.errors = @(
+                "Installed DPI preflight evidence was unreadable at a redacted boundary"
+            )
+        }
+    }
+}
+$installedDpiPreflightPath = Join-Path `
+    $resolvedEvidence `
+    "installed-dpi-preflight-evidence.json"
+[IO.File]::WriteAllText(
+    $installedDpiPreflightPath,
+    ($installedDpiPreflight | ConvertTo-Json -Depth 12),
+    [Text.UTF8Encoding]::new($false)
+)
+if (-not $installedDpiPreflight.passed) {
+    $preflightFailureReport = [ordered]@{
+        schema_version = 8
+        stage = "installed-dpi-preflight"
+        source_commit = $SourceCommit
+        archive_sha256 = "sha256:$archiveHash"
+        widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
+        operating_system = $operatingSystem
+        architecture = $architecture
+        is_windows_sandbox = $isWindowsSandbox
+        certification_environment = $certificationEnvironment
+        network_enumeration_succeeded = $networkEnumerationSucceeded
+        network_adapters_up = $networkAdaptersUp
+        network_adapters_enabled = $networkAdaptersEnabled
+        network_default_route_count = $networkDefaultRouteCount
+        accessibility_environment = $accessibilityEnvironment
+        package_installation = $packageInstallation
+        install_succeeded = $installSucceeded
+        installed_dpi_preflight = $installedDpiPreflight
+        passed = $false
+    }
+    [IO.File]::WriteAllText(
+        (Join-Path $resolvedEvidence "clean-room-report.json"),
+        ($preflightFailureReport | ConvertTo-Json -Depth 12),
+        [Text.UTF8Encoding]::new($false)
+    )
+    break certification
+}
+
+$freshInstallMigration = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    schema_migration_verified = $false
+    bookmark_migration_verified = $false
+    deterministic = $false
+    idempotent = $false
+    identity_retention_verified = $false
+    reopen_verified = $false
+    destructive_migration = $true
+    errors = @("Fresh install migration probe was not run")
+}
+$copiedWave3Migration = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    schema_migration_verified = $false
+    bookmark_migration_verified = $false
+    deterministic = $false
+    idempotent = $false
+    identity_retention_verified = $false
+    reopen_verified = $false
+    destructive_migration = $true
+    errors = @("Copied Wave 3 migration probe was not run")
+}
+$observationLedgerReadiness = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $false
+    legacy_inventory_available = $false
+    legacy_route_count = 0
+    observation_ledger_configuration_available = $false
+    observation_window_started = $false
+    destructive_migration = $false
+    errors = @("Observation-ledger readiness probe was not run")
+}
+if ($installSucceeded) {
+    $migrationEvidenceDir = Join-Path $resolvedEvidence "migration"
+    New-Item -ItemType Directory -Path $migrationEvidenceDir | Out-Null
+    $freshReportPath = Join-Path $migrationEvidenceDir "fresh-install.json"
+    & $executable.FullName `
+        "--migration-report=$freshReportPath" `
+        "--migration-kind=fresh" `
+        "--migration-work-root=$(Join-Path $migrationEvidenceDir 'fresh-work')" `
+        "--source-commit=$SourceCommit"
+    $freshExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $freshReportPath -PathType Leaf) {
+        $freshInstallMigration = Get-Content `
+            -LiteralPath $freshReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $freshInstallMigration | Add-Member `
+            -NotePropertyName exit_code `
+            -NotePropertyValue $freshExitCode `
+            -Force
+    }
+    $copiedReportPath = Join-Path $migrationEvidenceDir "copied-wave3.json"
+    & $executable.FullName `
+        "--migration-report=$copiedReportPath" `
+        "--migration-kind=copied-wave3" `
+        "--migration-work-root=$(Join-Path $migrationEvidenceDir 'copied-work')" `
+        "--source-commit=$SourceCommit"
+    $copiedExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $copiedReportPath -PathType Leaf) {
+        $copiedWave3Migration = Get-Content `
+            -LiteralPath $copiedReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $copiedWave3Migration | Add-Member `
+            -NotePropertyName exit_code `
+            -NotePropertyValue $copiedExitCode `
+            -Force
+    }
+    $readinessReportPath = Join-Path `
+        $migrationEvidenceDir `
+        "observation-ledger-readiness.json"
+    & $executable.FullName `
+        "--observation-readiness-report=$readinessReportPath" `
+        "--source-commit=$SourceCommit"
+    $readinessExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $readinessReportPath -PathType Leaf) {
+        $observationLedgerReadiness = Get-Content `
+            -LiteralPath $readinessReportPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json
+        $observationLedgerReadiness | Add-Member `
+            -NotePropertyName exit_code `
+            -NotePropertyValue $readinessExitCode `
+            -Force
+    }
+}
 $widgetsRollback = [ordered]@{
     exit_code = -1
     source_commit = ""
@@ -304,6 +3955,7 @@ if ($widgetsInstallSucceeded) {
     }
 }
 $rendererLanes = [ordered]@{}
+$installedPerformance = [ordered]@{}
 if ($installSucceeded) {
     $expectedJourneySignatures = @(
         "launched_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
@@ -317,27 +3969,13 @@ if ($installSucceeded) {
         "remounted_terminal_run|run_monitoring|terminal|ready|fresh|fresh",
         "remounted_terminal_evidence|evidence_and_findings|terminal|ready|fresh|fresh"
     )
-    $expectedProductionPath = @(
-        "DiagnosticsApplication",
-        "FileBackedV1Persistence",
-        "LiveStrategyDiagnosticsV1StrategyLibraryApplicationAdapter",
-        "LiveStrategyLibraryAdapter",
-        "LiveStrategyDiagnosticsV1ScenarioLabApplicationAdapter",
-        "LiveScenarioLabAdapter",
-        "LiveStrategyDiagnosticsV1DiagnosticTasksApplicationAdapter",
-        "LiveDiagnosticTasksAdapter",
-        "LiveStrategyDiagnosticsV1ApplicationAdapter",
-        "EventBridge",
-        "LiveRunMonitoringAdapter",
-        "LiveEvidenceAndFindingsAdapter",
-        "JourneyWorkspaceHost"
-    )
     $expectedRoutes = @(
         "strategy_library",
         "scenario_lab",
         "diagnostic_tasks",
         "run_monitoring",
-        "evidence_and_findings"
+        "evidence_and_findings",
+        "system_health"
     )
     $expectedAcceptedCommandKinds = @(
         "create_diagnostic_task",
@@ -379,11 +4017,50 @@ if ($installSucceeded) {
         Reset-RendererLaneEvidence `
             -EvidenceRoot $resolvedEvidence `
             -LaneDirectory $laneDir
+        $journeyInvocation = Invoke-InstalledJourneyWithAccessibilityProbe `
+            -Executable $executable.FullName `
+            -Lane $lane `
+            -LaneDirectory $laneDir `
+            -SourceCommit $SourceCommit `
+            -AccessibilityEnvironment $accessibilityEnvironment `
+            -NarratorSession $narratorSession
+        $exitCode = [int]$journeyInvocation.exit_code
+        $uiaAccessibility = $journeyInvocation.uia_accessibility
+        $uiaAccessibilityPath = Join-Path `
+            $laneDir `
+            "uia-accessibility.json"
+        [IO.File]::WriteAllText(
+            $uiaAccessibilityPath,
+            ($uiaAccessibility | ConvertTo-Json -Depth 20),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $performancePath = Join-Path $laneDir "performance.json"
         & $executable.FullName `
             "--renderer-lane=$lane" `
-            "--smoke-report-dir=$laneDir" `
+            "--performance-report=$performancePath" `
+            "--performance-duration-seconds=60" `
             "--source-commit=$SourceCommit"
-        $exitCode = $LASTEXITCODE
+        $performanceExitCode = $LASTEXITCODE
+        if (Test-Path -LiteralPath $performancePath -PathType Leaf) {
+            $performanceReport = Get-Content `
+                -LiteralPath $performancePath `
+                -Raw `
+                -Encoding utf8 | ConvertFrom-Json
+            $performanceReport | Add-Member `
+                -NotePropertyName installed_exit_code `
+                -NotePropertyValue $performanceExitCode `
+                -Force
+            $installedPerformance[$lane] = $performanceReport
+        }
+        else {
+            $installedPerformance[$lane] = [ordered]@{
+                status = "failed"
+                lane = $lane
+                source_commit = $SourceCommit
+                installed_exit_code = $performanceExitCode
+                errors = @("Installed performance report was not produced")
+            }
+        }
         $smokePath = Join-Path $laneDir "smoke-report.json"
         if (Test-Path -LiteralPath $smokePath) {
             $smoke = Get-Content -LiteralPath $smokePath -Raw -Encoding utf8 |
@@ -823,7 +4500,14 @@ if ($installSucceeded) {
                 "breakpoints",
                 "findings"
             )
-            $identitySetsValid = $true
+            $actualIdentitySetNames = @(
+                $smoke.evidence_identity_sets.PSObject.Properties.Name |
+                    Sort-Object
+            )
+            $identitySetsValid = Test-ExactStringArray `
+                -Actual $actualIdentitySetNames `
+                -Expected @($identitySetNames | Sort-Object)
+            $canonicalEvidenceIdentitySets = [ordered]@{}
             $flattenedIdentityGraph = @(
                 $identityValues +
                     @([string]$smoke.diagnostic_task_identity) +
@@ -843,11 +4527,21 @@ if ($installSucceeded) {
                 }
                 $identitySetValues = @($identityProperty.Value)
                 if (
+                    @(
+                        $identitySetValues |
+                            Where-Object {
+                                $_ -isnot [string] -or
+                                [string]::IsNullOrWhiteSpace([string]$_)
+                            }
+                    ).Count -ne 0 -or
                     $identitySetName -ne "breakpoints" -and
                     $identitySetValues.Count -eq 0
                 ) {
                     $identitySetsValid = $false
                 }
+                $canonicalEvidenceIdentitySets[$identitySetName] = @(
+                    $identitySetValues | ForEach-Object { [string]$_ }
+                )
                 $flattenedIdentityGraph += $identitySetValues
             }
             $flattenedIdentityGraph = @(
@@ -862,29 +4556,121 @@ if ($installSucceeded) {
                 ($flattenedIdentityGraph -join "|") -eq
                     ($expectedSortedIdentityGraph -join "|")
             )
-            $identityCheckpoints = (
-                $smoke.qml_identity_graph_checkpoints.PSObject.Properties
+            $identityCheckpointNames = @(
+                $smoke.qml_identity_graph_checkpoints.PSObject.Properties.Name |
+                    Sort-Object
             )
-            $identityCheckpointsValid = (
-                @($identityCheckpoints).Count -eq
-                    $expectedJourneySignatures.Count
+            $expectedIdentityCheckpointNames = @(
+                $expectedJourneySignatures |
+                    ForEach-Object { ($_ -split "\|", 2)[0] } |
+                    Sort-Object
             )
-            foreach ($checkpoint in $identityCheckpoints) {
+            $identityCheckpointsValid = Test-ExactStringArray `
+                -Actual $identityCheckpointNames `
+                -Expected $expectedIdentityCheckpointNames
+            $canonicalIdentityCheckpoints = [ordered]@{}
+            foreach ($checkpointName in $expectedIdentityCheckpointNames) {
+                $checkpoint = (
+                    $smoke.qml_identity_graph_checkpoints.PSObject.Properties[
+                        $checkpointName
+                    ]
+                )
                 if (
+                    $null -eq $checkpoint -or
+                    @(
+                        @($checkpoint.Value) |
+                            Where-Object { $_ -isnot [string] }
+                    ).Count -ne 0 -or
                     (@($checkpoint.Value) -join "|") -ne
                     ($expectedIdentityGraph -join "|")
                 ) {
                     $identityCheckpointsValid = $false
                 }
+                if ($null -ne $checkpoint) {
+                    $canonicalIdentityCheckpoints[$checkpointName] = @(
+                        @($checkpoint.Value) |
+                            ForEach-Object { [string]$_ }
+                    )
+                }
             }
             $announcementText = (
                 @($smoke.accessibility_announcements) -join " "
             ).ToLowerInvariant()
+            $manualTradingRouteAudits = @(
+                $smoke.manual_trading_route_audits
+            )
+            $expectedSafetyRouteStages = @(
+                foreach ($safetyStage in @(
+                    "running",
+                    "reopened_terminal"
+                )) {
+                    foreach ($safetyRoute in $expectedRoutes) {
+                        "$safetyStage|$safetyRoute"
+                    }
+                }
+            )
+            $observedSafetyRouteStages = @(
+                $manualTradingRouteAudits |
+                    ForEach-Object {
+                        "$([string]$_.stage)|$([string]$_.route)"
+                    }
+            )
+            $requiredSafetyCoverage = @(
+                "qml_object_tree",
+                "accessible_interface",
+                "action_interface",
+                "selection_interface",
+                "value_interface",
+                "shortcut_properties",
+                "qt_signal_surface",
+                "command_binding_properties",
+                "context_menu_roles",
+                "hidden_automation_peers"
+            )
+            $manualTradingAuditValid = (
+                $manualTradingRouteAudits.Count -eq 12 -and
+                (@($observedSafetyRouteStages | Sort-Object) -join "|") -eq
+                    (@($expectedSafetyRouteStages | Sort-Object) -join "|")
+            )
+            foreach ($safetyAudit in $manualTradingRouteAudits) {
+                $coverage = @($safetyAudit.coverage | Sort-Object)
+                $manualTradingAuditValid = (
+                    $manualTradingAuditValid -and
+                    [int]$safetyAudit.object_count -gt 0 -and
+                    [int]$safetyAudit.accessible_object_count -gt 0 -and
+                    [int]$safetyAudit.forbidden_action_count -eq 0 -and
+                    @($safetyAudit.forbidden_actions).Count -eq 0 -and
+                    ($coverage -join "|") -eq
+                        (@($requiredSafetyCoverage | Sort-Object) -join "|")
+                )
+            }
+            $installedScaleCheckpointsValid = (
+                @($smoke.accessibility_checkpoints).Count -ge 8 -and
+                @(
+                    $smoke.accessibility_checkpoints |
+                        Where-Object {
+                            $ratio = [double]$_.window_device_pixel_ratio
+                            [double]::IsNaN($ratio) -or
+                            [double]::IsInfinity($ratio) -or
+                            $ratio -ne 2.0
+                        }
+                ).Count -eq 0
+            )
             $releaseBehaviorValid = (
                 $smoke.keyboard_navigation_verified -is [bool] -and
                 $smoke.keyboard_navigation_verified -eq $true -and
                 $smoke.accessibility_preferences_verified -is [bool] -and
                 $smoke.accessibility_preferences_verified -eq $true -and
+                $smoke.installed_accessibility_verified -is [bool] -and
+                $smoke.installed_accessibility_verified -eq $true -and
+                $smoke.no_color_only_meaning_verified -is [bool] -and
+                $smoke.no_color_only_meaning_verified -eq $true -and
+                $smoke.chart_narrative_table_revision_verified -is [bool] -and
+                $smoke.chart_narrative_table_revision_verified -eq $true -and
+                $installedScaleCheckpointsValid -and
+                $manualTradingAuditValid -and
+                $uiaAccessibility.passed -is [bool] -and
+                $uiaAccessibility.passed -eq $true -and
                 $smoke.old_generation_rejected -is [bool] -and
                 $smoke.old_generation_rejected -eq $true -and
                 $smoke.authoritative_reconnect_verified -is [bool] -and
@@ -914,7 +4700,37 @@ if ($installSucceeded) {
                 $releaseBehaviorValid -and
                 $installedWave3JourneyValid
             )
-            $rendererLanes[$lane] = [ordered]@{
+            $canonicalSetupLedger = [ordered]@{}
+            if (
+                $installedSetupLedgerReopenedValid -and
+                $installedWave3JourneyValid
+            ) {
+                foreach ($ledgerKey in $expectedSetupLedger.Keys) {
+                    $canonicalSetupLedger[$ledgerKey] = @(
+                        $expectedSetupLedger[$ledgerKey] |
+                            ForEach-Object { [string]$_ }
+                    )
+                }
+            }
+            $canonicalAccessibilityCheckpoints = @(
+                ConvertTo-InstalledAccessibilityCheckpointEvidence `
+                    -Checkpoints $smoke.accessibility_checkpoints
+            )
+            $canonicalManualTradingRouteAudits = @(
+                ConvertTo-ManualTradingRouteAuditEvidence `
+                    -Audits $manualTradingRouteAudits
+            )
+            $canonicalAccessibilityAnnouncements = @()
+            if (
+                $announcementText.Contains("disconnected") -and
+                $announcementText.Contains("fresh")
+            ) {
+                $canonicalAccessibilityAnnouncements = @(
+                    "disconnected",
+                    "fresh"
+                )
+            }
+            $derivedLaneEvidence = [ordered]@{
                 exit_code = $exitCode
                 graphics_api = $smoke.graphics_api
                 source_commit_matches = (
@@ -986,7 +4802,7 @@ if ($installSucceeded) {
                 installed_setup_ledger_reopened = (
                     $installedSetupLedgerReopenedValid
                 )
-                reopened_installed_setup_ledger = $actualSetupLedger
+                reopened_installed_setup_ledger = $canonicalSetupLedger
                 formal_scenario_set_identity = (
                     [string]$smoke.formal_scenario_set_identity
                 )
@@ -1075,9 +4891,9 @@ if ($installSucceeded) {
                 expected_identity_graph = $expectedIdentityGraph
                 feature_identity_graph = $featureIdentityGraph
                 qml_identity_graph_checkpoints = (
-                    $smoke.qml_identity_graph_checkpoints
+                    $canonicalIdentityCheckpoints
                 )
-                evidence_identity_sets = $smoke.evidence_identity_sets
+                evidence_identity_sets = $canonicalEvidenceIdentitySets
                 persisted_manifest_identities = (
                     $persistedManifestIdentities
                 )
@@ -1091,9 +4907,28 @@ if ($installSucceeded) {
                     $smoke.accessibility_preferences_verified -is [bool] -and
                     $smoke.accessibility_preferences_verified -eq $true
                 )
-                accessibility_announcements = @(
-                    $smoke.accessibility_announcements
+                accessibility_announcements = (
+                    $canonicalAccessibilityAnnouncements
                 )
+                installed_accessibility_verified = (
+                    $smoke.installed_accessibility_verified -is [bool] -and
+                    $smoke.installed_accessibility_verified -eq $true
+                )
+                no_color_only_meaning_verified = (
+                    $smoke.no_color_only_meaning_verified -is [bool] -and
+                    $smoke.no_color_only_meaning_verified -eq $true
+                )
+                chart_narrative_table_revision_verified = (
+                    $smoke.chart_narrative_table_revision_verified -is [bool] -and
+                    $smoke.chart_narrative_table_revision_verified -eq $true
+                )
+                accessibility_checkpoints = (
+                    $canonicalAccessibilityCheckpoints
+                )
+                manual_trading_route_audits = @(
+                    $canonicalManualTradingRouteAudits
+                )
+                uia_accessibility = $uiaAccessibility
                 old_generation_rejected = (
                     $smoke.old_generation_rejected -is [bool] -and
                     $smoke.old_generation_rejected -eq $true
@@ -1147,6 +4982,10 @@ if ($installSucceeded) {
                     ConvertTo-ReleaseErrorList -Errors $smoke.errors
                 )
             }
+            $rendererLanes[$lane] = New-InstalledRendererLaneEvidence `
+                -SmokeReport $smoke `
+                -DerivedEvidence $derivedLaneEvidence `
+                -ExpectedRendererLane $lane
         }
         else {
             $rendererLanes[$lane] = [ordered]@{
@@ -1222,6 +5061,12 @@ if ($installSucceeded) {
                 keyboard_navigation_verified = $false
                 accessibility_preferences_verified = $false
                 accessibility_announcements = @()
+                installed_accessibility_verified = $false
+                no_color_only_meaning_verified = $false
+                chart_narrative_table_revision_verified = $false
+                accessibility_checkpoints = @()
+                manual_trading_route_audits = @()
+                uia_accessibility = $uiaAccessibility
                 old_generation_rejected = $false
                 authoritative_reconnect_verified = $false
                 real_v1_identity_valid = $false
@@ -1242,8 +5087,79 @@ if ($installSucceeded) {
     }
 }
 
+$rollbackLanes = [ordered]@{}
+foreach ($lane in @("hardware", "software")) {
+    if ($installSucceeded -and $widgetsInstallSucceeded) {
+        $rollbackLanes[$lane] = Invoke-InstalledRollbackLane `
+            -Lane $lane `
+            -EvidenceRoot $resolvedEvidence `
+            -CandidateExecutable $executable.FullName `
+            -WidgetsExecutable $widgetsExecutable.FullName `
+            -SourceCommit $SourceCommit `
+            -CandidateDependencyLockSha256 $candidateDependencyLockSha256 `
+            -WidgetsDependencyLockSha256 $widgetsDependencyLockSha256
+    }
+    else {
+        $rollbackLanes[$lane] = [ordered]@{
+            lane = $lane
+            source_commit = $SourceCommit
+            passed = $false
+            same_source_commit = $false
+            same_dependency_lock = $false
+            identity_retention_verified = $false
+            task_handle_continuity_verified = $false
+            order_state_continuity_verified = $false
+            reopen_verified = $false
+            destructive_migration = $true
+            errors = @("Installed $lane rollback lane was not run")
+        }
+    }
+}
+$hardwareRollbackLane = $rollbackLanes.hardware
+$softwareRollbackLane = $rollbackLanes.software
+$rollbackBothLanesPassed = (
+    $hardwareRollbackLane.passed -and
+    $softwareRollbackLane.passed
+)
+$candidateWidgetsCandidateRollback = [ordered]@{
+    source_commit = $SourceCommit
+    passed = $rollbackBothLanesPassed
+    same_source_commit = (
+        $hardwareRollbackLane.same_source_commit -and
+        $softwareRollbackLane.same_source_commit
+    )
+    same_dependency_lock = (
+        $hardwareRollbackLane.same_dependency_lock -and
+        $softwareRollbackLane.same_dependency_lock
+    )
+    identity_retention_verified = (
+        $hardwareRollbackLane.identity_retention_verified -and
+        $softwareRollbackLane.identity_retention_verified
+    )
+    reopen_verified = (
+        $hardwareRollbackLane.reopen_verified -and
+        $softwareRollbackLane.reopen_verified
+    )
+    destructive_migration = (
+        $hardwareRollbackLane.destructive_migration -or
+        $softwareRollbackLane.destructive_migration
+    )
+    renderer_lanes = [ordered]@{
+        hardware = $hardwareRollbackLane
+        software = $softwareRollbackLane
+    }
+    errors = @(
+        if (-not $hardwareRollbackLane.passed) {
+            "Hardware rollback lane failed"
+        }
+        if (-not $softwareRollbackLane.passed) {
+            "Software rollback lane failed"
+        }
+    )
+}
+
 $report = [ordered]@{
-    schema_version = 3
+    schema_version = 8
     source_commit = $SourceCommit
     archive_sha256 = "sha256:$archiveHash"
     widgets_archive_sha256 = "sha256:$widgetsArchiveHash"
@@ -1251,17 +5167,32 @@ $report = [ordered]@{
     architecture = $architecture
     user_name = $userName
     is_windows_sandbox = $isWindowsSandbox
+    certification_environment = $certificationEnvironment
     network_enumeration_succeeded = $networkEnumerationSucceeded
     network_adapters_up = $networkAdaptersUp
+    network_adapters_enabled = $networkAdaptersEnabled
+    network_default_route_count = $networkDefaultRouteCount
     python_on_path = [bool]$pythonCommands
     python_installations = $pythonInstallations
     compiler_on_path = [bool]$compilerCommands
     compiler_installations = $compilerInstallations
     dependency_cache_present = $dependencyCachePresent
     dependency_cache_paths = $dependencyCachePaths
+    source_checkout_absent = $sourceCheckoutAbsent
+    source_checkout_markers = $sourceCheckoutMarkers
+    accessibility_environment = $accessibilityEnvironment
+    package_installation = $packageInstallation
+    installed_dpi_preflight = $installedDpiPreflight
     install_succeeded = $installSucceeded
     widgets_install_succeeded = $widgetsInstallSucceeded
     widgets_rollback = $widgetsRollback
+    installed_performance = $installedPerformance
+    fresh_install_migration = $freshInstallMigration
+    copied_wave3_migration = $copiedWave3Migration
+    candidate_widgets_candidate_rollback = (
+        $candidateWidgetsCandidateRollback
+    )
+    observation_ledger_readiness = $observationLedgerReadiness
     renderer_lanes = $rendererLanes
 }
 $reportPath = Join-Path $resolvedEvidence "clean-room-report.json"
@@ -1275,15 +5206,29 @@ $reportJson = $report | ConvertTo-Json -Depth 12
 $gatePassed = (
     $operatingSystem -match "Windows 11" -and
     $architecture -match "AMD64|x86_64" -and
-    $isWindowsSandbox -and
+    $certificationEnvironmentVerified -and
     $networkEnumerationSucceeded -and
     $networkAdaptersUp.Count -eq 0 -and
+    $networkAdaptersEnabled.Count -eq 0 -and
+    $networkDefaultRouteCount -eq 0 -and
     -not $pythonCommands -and
     $pythonInstallations.Count -eq 0 -and
     -not $compilerCommands -and
     $compilerInstallations.Count -eq 0 -and
     -not $dependencyCachePresent -and
     $dependencyCachePaths.Count -eq 0 -and
+    $sourceCheckoutAbsent -and
+    $sourceCheckoutMarkers.Count -eq 0 -and
+    $accessibilityEnvironment.text_scale_configured_before_launch -and
+    $accessibilityEnvironment.text_scale_registry_percent -eq 200 -and
+    -not $accessibilityEnvironment.guest_dpi_override_applied -and
+    $accessibilityEnvironment.native_dpi_evidence_source -eq (
+        "GetDpiForWindow"
+    ) -and
+    $packageInstallation.verified -and
+    -not $packageInstallation.execution_from_mapped_evidence -and
+    $installedDpiPreflight.passed -and
+    $accessibilityEnvironment.errors.Count -eq 0 -and
     $installSucceeded -and
     $widgetsInstallSucceeded -and
     $widgetsRollback.exit_code -eq 0 -and
@@ -1299,6 +5244,45 @@ $gatePassed = (
     ).Count -eq 3 -and
     $widgetsRollback.clean_exit -and
     $widgetsRollback.errors.Count -eq 0 -and
+    $freshInstallMigration.exit_code -eq 0 -and
+    $freshInstallMigration.passed -and
+    $freshInstallMigration.schema_migration_verified -and
+    $freshInstallMigration.bookmark_migration_verified -and
+    $freshInstallMigration.deterministic -and
+    $freshInstallMigration.idempotent -and
+    $freshInstallMigration.identity_retention_verified -and
+    $freshInstallMigration.reopen_verified -and
+    -not $freshInstallMigration.destructive_migration -and
+    $copiedWave3Migration.exit_code -eq 0 -and
+    $copiedWave3Migration.passed -and
+    $copiedWave3Migration.schema_migration_verified -and
+    $copiedWave3Migration.bookmark_migration_verified -and
+    $copiedWave3Migration.deterministic -and
+    $copiedWave3Migration.idempotent -and
+    $copiedWave3Migration.identity_retention_verified -and
+    $copiedWave3Migration.reopen_verified -and
+    -not $copiedWave3Migration.destructive_migration -and
+    $candidateWidgetsCandidateRollback.passed -and
+    $candidateWidgetsCandidateRollback.same_source_commit -and
+    $candidateWidgetsCandidateRollback.same_dependency_lock -and
+    $candidateWidgetsCandidateRollback.identity_retention_verified -and
+    $candidateWidgetsCandidateRollback.reopen_verified -and
+    -not $candidateWidgetsCandidateRollback.destructive_migration -and
+    $observationLedgerReadiness.exit_code -eq 0 -and
+    $observationLedgerReadiness.passed -and
+    $observationLedgerReadiness.legacy_inventory_available -and
+    $observationLedgerReadiness.legacy_route_count -ge 1 -and
+    $observationLedgerReadiness.observation_ledger_configuration_available -and
+    -not $observationLedgerReadiness.observation_window_started -and
+    -not $observationLedgerReadiness.destructive_migration -and
+    $installedPerformance.hardware.installed_exit_code -eq 0 -and
+    $installedPerformance.hardware.status -eq "passed" -and
+    $installedPerformance.hardware.lane -eq "hardware" -and
+    $installedPerformance.hardware.graphics_api -eq "Direct3D11" -and
+    $installedPerformance.software.installed_exit_code -eq 0 -and
+    $installedPerformance.software.status -eq "passed" -and
+    $installedPerformance.software.lane -eq "software" -and
+    $installedPerformance.software.graphics_api -eq "Software" -and
     $rendererLanes.hardware.exit_code -eq 0 -and
     $rendererLanes.hardware.graphics_api -eq "Direct3D11" -and
     $rendererLanes.hardware.source_commit_matches -and
@@ -1310,6 +5294,8 @@ $gatePassed = (
     $rendererLanes.hardware.states_match -and
     $rendererLanes.hardware.screenshots_distinct -and
     $rendererLanes.hardware.manual_trading_action_count -eq 0 -and
+    @($rendererLanes.hardware.manual_trading_route_audits).Count -eq 12 -and
+    $rendererLanes.hardware.uia_accessibility.passed -and
     $rendererLanes.hardware.read_only_context_visible -and
     $rendererLanes.hardware.clean_exit -and
     $rendererLanes.hardware.errors.Count -eq 0 -and
@@ -1324,12 +5310,19 @@ $gatePassed = (
     $rendererLanes.software.states_match -and
     $rendererLanes.software.screenshots_distinct -and
     $rendererLanes.software.manual_trading_action_count -eq 0 -and
+    @($rendererLanes.software.manual_trading_route_audits).Count -eq 12 -and
+    $rendererLanes.software.uia_accessibility.passed -and
     $rendererLanes.software.read_only_context_visible -and
     $rendererLanes.software.clean_exit -and
     $rendererLanes.software.errors.Count -eq 0 -and
     ($rendererLanes.hardware.accepted_command_kinds -join "|") -eq
         ($rendererLanes.software.accepted_command_kinds -join "|")
 )
+    } while ($false)
+}
+finally {
+    Stop-InstalledNarratorSession -NarratorSession $narratorSession
+}
 if (-not $gatePassed) {
     exit 1
 }
