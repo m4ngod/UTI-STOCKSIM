@@ -4,6 +4,14 @@
   "source_commit": "3cbf9683c76dc935853d37d584973a3432d5131a",
   "evidence_scope": "clean-offline-windows-installed-with-user-approved-performance-deviation",
   "acceptance_status": "accepted-with-user-approved-deviation",
+  "active_feature_interfaces": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0"
+  ],
   "artifacts": {
     "qml-journey": {
       "name": "qml-journey-3cbf9683c76d.zip",

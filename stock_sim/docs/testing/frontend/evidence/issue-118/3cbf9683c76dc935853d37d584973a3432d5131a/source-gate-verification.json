@@ -4,6 +4,21 @@
   "evidence_scope": "source-gate-safe-projection",
   "result": "passed",
   "release_claim": false,
+  "active_feature_registry": [
+    "StrategyLibraryFeature/1.0",
+    "ScenarioLabFeature/1.0",
+    "DiagnosticTasksFeature/1.0",
+    "RunMonitoringFeature/1.2",
+    "EvidenceAndFindingsFeature/1.1",
+    "SystemHealthFeature/1.0"
+  ],
+  "application_interfaces": [
+    "StrategyDiagnosticsV1StrategyLibraryApplication/1.0",
+    "StrategyDiagnosticsV1ScenarioLabApplication/1.0",
+    "StrategyDiagnosticsV1DiagnosticTasksApplication/1.0",
+    "StrategyDiagnosticsV1ApplicationReadModel/1.0",
+    "StrategyDiagnosticsV1SystemHealthApplication/1.0"
+  ],
   "groups": [
     {
       "name": "six-feature-conformance",
