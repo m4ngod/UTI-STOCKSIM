@@ -1,16 +1,19 @@
+[CmdletBinding(DefaultParameterSetName = "Certification")]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$PackageArchive,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$ExpectedArchiveSha256,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$WidgetsPackageArchive,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$ExpectedWidgetsArchiveSha256,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
     [string]$SourceCommit,
-    [Parameter(Mandatory = $true)]
-    [string]$EvidenceDir
+    [Parameter(Mandatory = $true, ParameterSetName = "Certification")]
+    [string]$EvidenceDir,
+    [Parameter(Mandatory = $true, ParameterSetName = "UiAutomationScan")]
+    [string]$UiAutomationScanRequest
 )
 
 function Resolve-NormalizedFullyQualifiedPath {
@@ -1366,14 +1369,60 @@ function Merge-UiAutomationSnapshot {
         [Parameter(Mandatory = $true)]
         [bool]$FocusTraversalObserved,
         [Parameter(Mandatory = $true)]
-        [string]$CheckpointAckDirectory
+        [string]$CheckpointAckDirectory,
+        [switch]$SuppressCheckpointAck,
+        [switch]$UseCachedProperties
     )
 
-    $elements = @($RootElement)
-    $descendants = $RootElement.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition
-    )
+    if ($UseCachedProperties) {
+        $cacheRequest = [System.Windows.Automation.CacheRequest]::new()
+        $cacheRequest.TreeScope = [System.Windows.Automation.TreeScope]::Element
+        $cacheRequest.TreeFilter = (
+            [System.Windows.Automation.Automation]::RawViewCondition
+        )
+        foreach ($property in @(
+            [System.Windows.Automation.AutomationElement]::NameProperty,
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.AutomationElement]::IsEnabledProperty,
+            [System.Windows.Automation.AutomationElement]::IsOffscreenProperty,
+            [System.Windows.Automation.AutomationElement]::IsKeyboardFocusableProperty,
+            [System.Windows.Automation.AutomationElement]::HasKeyboardFocusProperty,
+            [System.Windows.Automation.AutomationElement]::HelpTextProperty,
+            [System.Windows.Automation.AutomationElement]::ItemStatusProperty,
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty
+        )) {
+            $cacheRequest.Add($property)
+        }
+        foreach ($pattern in @(
+            [System.Windows.Automation.InvokePattern]::Pattern,
+            [System.Windows.Automation.TogglePattern]::Pattern,
+            [System.Windows.Automation.SelectionItemPattern]::Pattern,
+            [System.Windows.Automation.ValuePattern]::Pattern,
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern
+        )) {
+            $cacheRequest.Add($pattern)
+        }
+        $cacheActivation = $cacheRequest.Activate()
+        try {
+            $cachedRoot = $RootElement.GetUpdatedCache($cacheRequest)
+            $descendants = $RootElement.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition
+            )
+        }
+        finally {
+            $cacheActivation.Dispose()
+        }
+        $elements = @($cachedRoot)
+    }
+    else {
+        $elements = @($RootElement)
+        $descendants = $RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+    }
     foreach ($element in $descendants) {
         $elements += $element
     }
@@ -1453,7 +1502,12 @@ function Merge-UiAutomationSnapshot {
     )
     foreach ($element in $elements) {
         try {
-            $current = $element.Current
+            $current = if ($UseCachedProperties) {
+                $element.Cached
+            }
+            else {
+                $element.Current
+            }
             $snapshotReadable++
             $name = [string]$current.Name
             $automationId = [string]$current.AutomationId
@@ -1577,10 +1631,19 @@ function Merge-UiAutomationSnapshot {
                     @("ExpandCollapse", [System.Windows.Automation.ExpandCollapsePattern]::Pattern)
                 )) {
                     $patternObject = $null
-                    if ($element.TryGetCurrentPattern(
-                        $patternSpec[1],
-                        [ref]$patternObject
-                    )) {
+                    $patternAvailable = if ($UseCachedProperties) {
+                        $element.TryGetCachedPattern(
+                            $patternSpec[1],
+                            [ref]$patternObject
+                        )
+                    }
+                    else {
+                        $element.TryGetCurrentPattern(
+                            $patternSpec[1],
+                            [ref]$patternObject
+                        )
+                    }
+                    if ($patternAvailable) {
                         $patterns += [string]$patternSpec[0]
                         $actionPatterns += [string]$patternSpec[0]
                     }
@@ -1758,19 +1821,21 @@ function Merge-UiAutomationSnapshot {
                 [int]$Evidence.observed_qt_window_scale_percent,
                 [int]$checkpointEvidence.window_scale_percent
             )
-            $ackPath = Join-Path `
-                $CheckpointAckDirectory `
-                ("uia-checkpoint-{0:D2}-{1}.json" -f `
-                    [int]$checkpointMarker.sequence, $checkpoint)
-            if (-not (Test-Path -LiteralPath $ackPath)) {
-                [ordered]@{
-                    sequence = [int]$checkpointMarker.sequence
-                    checkpoint = $checkpoint
-                    snapshot_identity = $snapshotIdentity
-                    passed = $true
-                } | ConvertTo-Json -Depth 4 | Set-Content `
-                    -LiteralPath $ackPath `
-                    -Encoding UTF8
+            if (-not [bool]$SuppressCheckpointAck) {
+                $ackPath = Join-Path `
+                    $CheckpointAckDirectory `
+                    ("uia-checkpoint-{0:D2}-{1}.json" -f `
+                        [int]$checkpointMarker.sequence, $checkpoint)
+                if (-not (Test-Path -LiteralPath $ackPath)) {
+                    [ordered]@{
+                        sequence = [int]$checkpointMarker.sequence
+                        checkpoint = $checkpoint
+                        snapshot_identity = $snapshotIdentity
+                        passed = $true
+                    } | ConvertTo-Json -Depth 4 | Set-Content `
+                        -LiteralPath $ackPath `
+                        -Encoding UTF8
+                }
             }
         }
     }
@@ -1846,6 +1911,399 @@ function Find-InstalledProcessAutomationWindow {
     return $null
 }
 
+function New-InstalledNarratorSession {
+    return [ordered]@{
+        process_id = 0
+        process_start_time_utc_ticks = [long]0
+        start_attempted = $false
+        stopped = $false
+    }
+}
+
+function Test-InstalledNarratorSessionRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession
+    )
+
+    if (
+        -not [bool]$NarratorSession.start_attempted -or
+        [bool]$NarratorSession.stopped -or
+        [int]$NarratorSession.process_id -le 0 -or
+        [long]$NarratorSession.process_start_time_utc_ticks -le 0
+    ) {
+        return $false
+    }
+    try {
+        $ownedProcess = Get-Process `
+            -Id ([int]$NarratorSession.process_id) `
+            -ErrorAction Stop
+        $ownedProcess.Refresh()
+        return (
+            $ownedProcess.ProcessName -ceq "Narrator" -and
+            -not $ownedProcess.HasExited -and
+            $ownedProcess.StartTime.ToUniversalTime().Ticks -eq
+                [long]$NarratorSession.process_start_time_utc_ticks
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Start-InstalledNarratorSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession
+    )
+
+    if ([bool]$NarratorSession.stopped) {
+        throw "Owned Narrator session was already stopped"
+    }
+    if ([bool]$NarratorSession.start_attempted) {
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session terminated before certification completed"
+        }
+        return
+    }
+    $preExistingNarrators = @(
+        Get-Process -Name "Narrator" -ErrorAction SilentlyContinue
+    )
+    if ($preExistingNarrators.Count -ne 0) {
+        throw "Narrator was already running before ownership was established"
+    }
+    $ownedProcess = Start-Process `
+        -FilePath "$env:WINDIR\System32\Narrator.exe" `
+        -PassThru
+    try {
+        $ownedProcess.Refresh()
+        $NarratorSession.process_id = [int]$ownedProcess.Id
+        $NarratorSession.process_start_time_utc_ticks = [long](
+            $ownedProcess.StartTime.ToUniversalTime().Ticks
+        )
+        $NarratorSession.start_attempted = $true
+        Start-Sleep -Milliseconds 1500
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session did not remain running"
+        }
+    }
+    catch {
+        if (
+            $null -ne $ownedProcess -and
+            -not $ownedProcess.HasExited
+        ) {
+            Stop-Process `
+                -Id $ownedProcess.Id `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Stop-InstalledNarratorSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession
+    )
+
+    if ([bool]$NarratorSession.stopped) {
+        return
+    }
+    if (Test-InstalledNarratorSessionRunning $NarratorSession) {
+        Stop-Process `
+            -Id ([int]$NarratorSession.process_id) `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+    $NarratorSession.stopped = $true
+}
+
+function Invoke-InstalledUiAutomationScan {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateProcessId,
+        [Parameter(Mandatory = $true)]
+        [long]$CandidateProcessStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)]
+        [string]$LaneDirectory,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [Parameter(Mandatory = $true)]
+        [int]$ScanSequenceBase,
+        [switch]$UseCachedProperties
+    )
+
+    $evidence = New-UiAutomationAccessibilityEvidence
+    $evidence.scan_count = $ScanSequenceBase
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session was unavailable to the UIA scan"
+        }
+        $process = Get-Process `
+            -Id $CandidateProcessId `
+            -ErrorAction Stop
+        $process.Refresh()
+        if (
+            $process.HasExited -or
+            $process.StartTime.ToUniversalTime().Ticks -ne
+                $CandidateProcessStartTimeUtcTicks
+        ) {
+            throw "Installed candidate process identity changed during UIA scan"
+        }
+        $automationWindow = Find-InstalledProcessAutomationWindow `
+            -Process $process `
+            -Evidence $evidence
+        if ($null -ne $automationWindow) {
+            $rootElement = $automationWindow.root_element
+            $windowHandle = [IntPtr]$automationWindow.window_handle
+            $narratorRunning = (
+                Test-InstalledNarratorSessionRunning `
+                    -NarratorSession $NarratorSession
+            )
+            $evidence.narrator_started = $narratorRunning
+            $focusTraversalObserved = $false
+            try {
+                $rootElement.SetFocus()
+                Start-Sleep -Milliseconds 50
+                $focusedElement = (
+                    [System.Windows.Automation.AutomationElement]::FocusedElement
+                )
+                $focusTraversalObserved = (
+                    $null -ne $focusedElement -and
+                    [int]$focusedElement.Current.ProcessId -eq $process.Id
+                )
+            }
+            catch {
+                $focusTraversalObserved = $false
+            }
+            $evidence.focus_traversal_observed = $focusTraversalObserved
+            Merge-UiAutomationSnapshot `
+                -Evidence $evidence `
+                -RootElement $rootElement `
+                -WindowHandle $windowHandle `
+                -NarratorRunning $narratorRunning `
+                -FocusTraversalObserved $focusTraversalObserved `
+                -CheckpointAckDirectory $LaneDirectory `
+                -SuppressCheckpointAck `
+                -UseCachedProperties:$UseCachedProperties
+        }
+    }
+    catch {
+        if (Test-IsTransientUiAutomationBoundaryFailure $_) {
+            $evidence.transient_uia_boundary_count = (
+                [int]$evidence.transient_uia_boundary_count + 1
+            )
+        }
+        else {
+            $evidence.errors += (
+                "Windows UI Automation scan failed at a redacted boundary"
+            )
+        }
+    }
+    return $evidence
+}
+
+function Merge-InstalledUiAutomationScanEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Evidence,
+        [Parameter(Mandatory = $true)]
+        [object]$ScanEvidence
+    )
+
+    foreach ($fieldName in @(
+        "window_discovery_attempt_count",
+        "discovered_element_count",
+        "readable_element_count",
+        "unreadable_element_count",
+        "complete_snapshot_count",
+        "transient_uia_boundary_count",
+        "named_element_count",
+        "focusable_element_count",
+        "window_dpi_observation_failure_count"
+    )) {
+        $Evidence[$fieldName] = (
+            [int]$Evidence[$fieldName] + [int]$ScanEvidence.$fieldName
+        )
+    }
+    $Evidence.scan_count = [Math]::Max(
+        [int]$Evidence.scan_count,
+        [int]$ScanEvidence.scan_count
+    )
+    $Evidence.process_id_automation_element_count_max = [Math]::Max(
+        [int]$Evidence.process_id_automation_element_count_max,
+        [int]$ScanEvidence.process_id_automation_element_count_max
+    )
+    foreach ($fieldName in @(
+        "provider_available",
+        "main_window_handle_observed",
+        "focus_observed",
+        "narrator_started",
+        "focus_traversal_observed"
+    )) {
+        $Evidence[$fieldName] = (
+            [bool]$Evidence[$fieldName] -or
+            [bool]$ScanEvidence.$fieldName
+        )
+    }
+    $Evidence.control_types = @(
+        @($Evidence.control_types) + @($ScanEvidence.control_types) |
+            Sort-Object -Unique
+    )
+    $Evidence.action_patterns = @(
+        @($Evidence.action_patterns) + @($ScanEvidence.action_patterns) |
+            Sort-Object -Unique
+    )
+    $scanSemanticEntries = if (
+        $ScanEvidence.semantic_terms -is [System.Collections.IDictionary]
+    ) {
+        @(
+            foreach ($keyValue in @($ScanEvidence.semantic_terms.Keys)) {
+                [pscustomobject]@{
+                    name = [string]$keyValue
+                    value = $ScanEvidence.semantic_terms[$keyValue]
+                }
+            }
+        )
+    }
+    elseif ($ScanEvidence.semantic_terms -is [pscustomobject]) {
+        @(
+            foreach (
+                $property in $ScanEvidence.semantic_terms.PSObject.Properties
+            ) {
+                [pscustomobject]@{
+                    name = [string]$property.Name
+                    value = $property.Value
+                }
+            }
+        )
+    }
+    else {
+        throw "UI Automation scan semantic evidence was malformed"
+    }
+    $expectedSemanticKeys = @(
+        $Evidence.semantic_terms.Keys |
+            ForEach-Object { [string]$_ }
+    )
+    $observedSemanticKeys = @(
+        $scanSemanticEntries |
+            ForEach-Object { [string]$_.name }
+    )
+    if (
+        $expectedSemanticKeys.Count -ne $observedSemanticKeys.Count -or
+        @(
+            Compare-Object `
+                -ReferenceObject $expectedSemanticKeys `
+                -DifferenceObject $observedSemanticKeys `
+                -CaseSensitive
+        ).Count -ne 0
+    ) {
+        throw "UI Automation scan semantic evidence was incomplete"
+    }
+    foreach ($entry in $scanSemanticEntries) {
+        if ($entry.value -isnot [bool]) {
+            throw "UI Automation scan semantic evidence was malformed"
+        }
+        $semanticKey = [string]$entry.name
+        $Evidence.semantic_terms[$semanticKey] = (
+            [bool]$Evidence.semantic_terms[$semanticKey] -or
+            [bool]$entry.value
+        )
+    }
+    foreach ($checkpoint in @($ScanEvidence.narrator_checkpoint_evidence)) {
+        $existingCheckpoint = @(
+            $Evidence.narrator_checkpoint_evidence |
+                Where-Object {
+                    [string]$_.checkpoint -ceq
+                        [string]$checkpoint.checkpoint -and
+                    [int]$_.sequence -eq [int]$checkpoint.sequence
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $existingCheckpoint) {
+            $Evidence.narrator_checkpoint_evidence += $checkpoint
+        }
+        elseif (
+            -not [bool]$existingCheckpoint.passed -and
+            [bool]$checkpoint.passed
+        ) {
+            $Evidence.narrator_checkpoint_evidence = @(
+                $Evidence.narrator_checkpoint_evidence |
+                    Where-Object {
+                        [string]$_.checkpoint -cne
+                            [string]$checkpoint.checkpoint -or
+                        [int]$_.sequence -ne [int]$checkpoint.sequence
+                    }
+            ) + @($checkpoint)
+        }
+    }
+    foreach ($fieldName in @(
+        "observed_window_dpi_x",
+        "observed_window_dpi_y",
+        "observed_scale_percent",
+        "observed_qt_window_scale_percent"
+    )) {
+        $Evidence[$fieldName] = [Math]::Max(
+            [int]$Evidence[$fieldName],
+            [int]$ScanEvidence.$fieldName
+        )
+    }
+    $Evidence.forbidden_actions = @(
+        @($Evidence.forbidden_actions) + @($ScanEvidence.forbidden_actions)
+    )
+    $Evidence.forbidden_action_count = @(
+        $Evidence.forbidden_actions
+    ).Count
+    $Evidence.static_read_only_diagnostics = @(
+        @($Evidence.static_read_only_diagnostics) +
+            @($ScanEvidence.static_read_only_diagnostics)
+    )
+    $Evidence.errors = @($Evidence.errors) + @($ScanEvidence.errors)
+}
+
+function Write-InstalledUiAutomationCheckpointAcknowledgements {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$ScanEvidence,
+        [Parameter(Mandatory = $true)]
+        [string]$CheckpointAckDirectory
+    )
+
+    $validCheckpoints = @(
+        "loading", "empty", "failed", "recovering", "partial",
+        "disconnected", "stale", "completed"
+    )
+    foreach ($checkpoint in @($ScanEvidence.narrator_checkpoint_evidence)) {
+        if (
+            $checkpoint.passed -isnot [bool] -or
+            -not [bool]$checkpoint.passed -or
+            [string]$checkpoint.checkpoint -cnotin $validCheckpoints -or
+            [int]$checkpoint.sequence -lt 1 -or
+            [int]$checkpoint.sequence -gt 8 -or
+            [string]$checkpoint.snapshot_identity -cnotmatch '^uia:'
+        ) {
+            continue
+        }
+        $ackPath = Join-Path `
+            $CheckpointAckDirectory `
+            ("uia-checkpoint-{0:D2}-{1}.json" -f `
+                [int]$checkpoint.sequence,
+                [string]$checkpoint.checkpoint)
+        if (-not (Test-Path -LiteralPath $ackPath)) {
+            [ordered]@{
+                sequence = [int]$checkpoint.sequence
+                checkpoint = [string]$checkpoint.checkpoint
+                snapshot_identity = [string]$checkpoint.snapshot_identity
+                passed = $true
+            } | ConvertTo-Json -Depth 4 | Set-Content `
+                -LiteralPath $ackPath `
+                -Encoding UTF8
+        }
+    }
+}
+
 function Invoke-InstalledJourneyWithAccessibilityProbe {
     param(
         [Parameter(Mandatory = $true)]
@@ -1858,13 +2316,14 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         [string]$SourceCommit,
         [Parameter(Mandatory = $true)]
         [object]$AccessibilityEnvironment,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
         [switch]$PreflightOnly
     )
 
     $evidence = New-UiAutomationAccessibilityEvidence
     $exitCode = -1
     $process = $null
-    $narratorProcesses = @()
     $ackEnvironmentName = "UTI_STOCKSIM_UIA_CHECKPOINT_ACK_DIR"
     $ackEnvironmentExisted = Test-Path "Env:\$ackEnvironmentName"
     $previousAckEnvironment = if ($ackEnvironmentExisted) {
@@ -1874,8 +2333,10 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         $null
     }
     try {
-        Add-Type -AssemblyName UIAutomationClient
-        Add-Type -AssemblyName UIAutomationTypes
+        Start-InstalledNarratorSession -NarratorSession $NarratorSession
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session was unavailable to the UIA probe"
+        }
         $preExistingAcks = @(
             Get-ChildItem `
                 -LiteralPath $LaneDirectory `
@@ -1905,63 +2366,65 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
                 "--source-commit=$SourceCommit"
             ) `
             -PassThru
+        $process.Refresh()
+        $candidateProcessStartTimeUtcTicks = [long](
+            $process.StartTime.ToUniversalTime().Ticks
+        )
         $deadline = [DateTime]::UtcNow.AddSeconds(900)
         $nextScan = [DateTime]::MinValue
-        $narratorAttempted = $false
         while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             $process.Refresh()
             if ([DateTime]::UtcNow -ge $nextScan) {
                 try {
-                    $automationWindow = (
-                        Find-InstalledProcessAutomationWindow `
-                            -Process $process `
-                            -Evidence $evidence
-                    )
-                    if ($null -ne $automationWindow) {
-                        $rootElement = $automationWindow.root_element
-                        $windowHandle = [IntPtr]$automationWindow.window_handle
-                        if (-not $narratorAttempted) {
-                            $narratorAttempted = $true
-                            Start-Process `
-                                -FilePath "$env:WINDIR\System32\Narrator.exe" `
-                                -PassThru | Out-Null
-                            Start-Sleep -Milliseconds 1500
-                        }
-                        $narratorProcesses = @(
-                            Get-Process `
-                                -Name "Narrator" `
-                                -ErrorAction SilentlyContinue
-                        )
-                        $narratorRunning = $narratorProcesses.Count -gt 0
-                        $evidence.narrator_started = (
-                            $evidence.narrator_started -or $narratorRunning
-                        )
-                        $focusTraversalObserved = $false
-                        try {
-                            $rootElement.SetFocus()
-                            Start-Sleep -Milliseconds 50
-                            $focusedElement = (
-                                [System.Windows.Automation.AutomationElement]::FocusedElement
+                    $scanResult = if ([int]$evidence.scan_count -eq 0) {
+                        [ordered]@{
+                            scan_evidence = (
+                                Invoke-InstalledUiAutomationScan `
+                                    -CandidateProcessId ([int]$process.Id) `
+                                    -CandidateProcessStartTimeUtcTicks (
+                                        $candidateProcessStartTimeUtcTicks
+                                    ) `
+                                    -LaneDirectory $LaneDirectory `
+                                    -NarratorSession $NarratorSession `
+                                    -ScanSequenceBase 0
                             )
-                            $focusTraversalObserved = (
-                                $null -ne $focusedElement -and
-                                [int]$focusedElement.Current.ProcessId -eq $process.Id
-                            )
+                            failure_kind = "none"
                         }
-                        catch {
-                            $focusTraversalObserved = $false
-                        }
-                        $evidence.focus_traversal_observed = (
-                            $evidence.focus_traversal_observed -or
-                            $focusTraversalObserved
-                        )
-                        Merge-UiAutomationSnapshot `
+                    }
+                    else {
+                        Invoke-InstalledUiAutomationScanInFreshPowerShell `
+                            -CandidateProcessId ([int]$process.Id) `
+                            -CandidateProcessStartTimeUtcTicks (
+                                $candidateProcessStartTimeUtcTicks
+                            ) `
+                            -Lane $Lane `
+                            -LaneDirectory $LaneDirectory `
+                            -SourceCommit $SourceCommit `
+                            -NarratorSession $NarratorSession `
+                            -ScanSequenceBase ([int]$evidence.scan_count)
+                    }
+                    if ($null -ne $scanResult.scan_evidence) {
+                        Merge-InstalledUiAutomationScanEvidence `
                             -Evidence $evidence `
-                            -RootElement $rootElement `
-                            -WindowHandle $windowHandle `
-                            -NarratorRunning $narratorRunning `
-                            -FocusTraversalObserved $focusTraversalObserved `
+                            -ScanEvidence $scanResult.scan_evidence
+                        Write-InstalledUiAutomationCheckpointAcknowledgements `
+                            -ScanEvidence $scanResult.scan_evidence `
                             -CheckpointAckDirectory $LaneDirectory
+                    }
+                    else {
+                        $failureKind = [string]$scanResult.failure_kind
+                        if ($failureKind -cnotin @(
+                            "control_setup",
+                            "child_start",
+                            "child_wait",
+                            "result_read"
+                        )) {
+                            $failureKind = "unknown"
+                        }
+                        $evidence.errors += (
+                            "Windows UI Automation child scan failed at the " +
+                            "$failureKind boundary"
+                        )
                     }
                 }
                 catch {
@@ -1976,7 +2439,12 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
                         )
                     }
                 }
-                $nextScan = [DateTime]::UtcNow.AddMilliseconds(500)
+                if (@($evidence.narrator_checkpoint_evidence).Count -ge 8) {
+                    $nextScan = [DateTime]::MaxValue
+                }
+                else {
+                    $nextScan = [DateTime]::UtcNow.AddMilliseconds(500)
+                }
             }
             Start-Sleep -Milliseconds 100
         }
@@ -1994,8 +2462,6 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
         )
     }
     finally {
-        $narratorProcesses |
-            Stop-Process -Force -ErrorAction SilentlyContinue
         if ($ackEnvironmentExisted) {
             [Environment]::SetEnvironmentVariable(
                 $ackEnvironmentName,
@@ -2140,6 +2606,318 @@ function Invoke-InstalledJourneyWithAccessibilityProbe {
     return [ordered]@{
         exit_code = $exitCode
         uia_accessibility = $evidence
+    }
+}
+
+function Read-InstalledUiAutomationScanRequest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $resolvedRequestPath = Resolve-NormalizedFullyQualifiedPath -Path $Path
+    $requestLeaf = Split-Path -Leaf $resolvedRequestPath
+    if (
+        $requestLeaf -cnotmatch (
+            '^installed-uia-scan-([0-9a-f]{32})-request\.json$'
+        ) -or
+        -not (Test-Path -LiteralPath $resolvedRequestPath -PathType Leaf)
+    ) {
+        throw "Installed journey probe request was unavailable"
+    }
+    $probeId = $Matches[1]
+    try {
+        $request = Get-Content `
+            -LiteralPath $resolvedRequestPath `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Installed journey probe request was unreadable"
+    }
+    $requestNames = @(
+        "schema_version",
+        "candidate_process_id",
+        "candidate_process_start_time_utc_ticks",
+        "lane",
+        "lane_directory",
+        "source_commit",
+        "narrator_process_id",
+        "narrator_process_start_time_utc_ticks",
+        "scan_sequence_base",
+        "result_path"
+    )
+    if (
+        $request -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $request `
+            -ExpectedNames $requestNames) -or
+        $request.schema_version -isnot [int] -or
+        [int]$request.schema_version -ne 1 -or
+        $request.candidate_process_id -isnot [int] -or
+        [int]$request.candidate_process_id -le 0 -or
+        $request.candidate_process_start_time_utc_ticks -isnot [long] -or
+        [long]$request.candidate_process_start_time_utc_ticks -le 0 -or
+        $request.lane -isnot [string] -or
+        [string]$request.lane -cnotin @("hardware", "software") -or
+        $request.lane_directory -isnot [string] -or
+        $request.source_commit -isnot [string] -or
+        [string]$request.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
+        $request.narrator_process_id -isnot [int] -or
+        [int]$request.narrator_process_id -le 0 -or
+        $request.narrator_process_start_time_utc_ticks -isnot [long] -or
+        [long]$request.narrator_process_start_time_utc_ticks -le 0 -or
+        $request.scan_sequence_base -isnot [int] -or
+        [int]$request.scan_sequence_base -lt 0 -or
+        $request.result_path -isnot [string]
+    ) {
+        throw "Installed journey probe request did not match its contract"
+    }
+    $resolvedLaneDirectory = Resolve-NormalizedFullyQualifiedPath `
+        -Path ([string]$request.lane_directory)
+    $resolvedResultPath = Resolve-NormalizedFullyQualifiedPath `
+        -Path ([string]$request.result_path)
+    $expectedResultLeaf = (
+        "installed-uia-scan-$probeId-result.json"
+    )
+    if (
+        -not (Test-Path `
+            -LiteralPath $resolvedLaneDirectory `
+            -PathType Container) -or
+        (Split-Path -Parent $resolvedResultPath) -cne
+            (Split-Path -Parent $resolvedRequestPath) -or
+        (Split-Path -Leaf $resolvedResultPath) -cne $expectedResultLeaf -or
+        (Test-Path -LiteralPath $resolvedResultPath)
+    ) {
+        throw "Installed journey probe paths did not match their contract"
+    }
+    $request.lane_directory = $resolvedLaneDirectory
+    $request.result_path = $resolvedResultPath
+    return $request
+}
+
+function Read-InstalledUiAutomationScanResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateProcessId,
+        [Parameter(Mandatory = $true)]
+        [long]$CandidateProcessStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)]
+        [int]$ScanSequenceBase
+    )
+
+    try {
+        $result = Get-Content `
+            -LiteralPath $Path `
+            -Raw `
+            -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Installed journey probe result was unreadable"
+    }
+    if (
+        $result -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $result `
+            -ExpectedNames @(
+                "schema_version",
+                "purpose",
+                "source_commit",
+                "lane",
+                "candidate_process_id",
+                "candidate_process_start_time_utc_ticks",
+                "narrator_process_id",
+                "narrator_process_start_time_utc_ticks",
+                "scan_sequence_base",
+                "scan_evidence"
+            )) -or
+        $result.schema_version -isnot [int] -or
+        [int]$result.schema_version -ne 1 -or
+        $result.purpose -isnot [string] -or
+        [string]$result.purpose -cne "installed-uia-tree-scan" -or
+        $result.source_commit -isnot [string] -or
+        [string]$result.source_commit -cne $SourceCommit -or
+        $result.lane -isnot [string] -or
+        [string]$result.lane -cne $Lane -or
+        $result.candidate_process_id -isnot [int] -or
+        [int]$result.candidate_process_id -ne $CandidateProcessId -or
+        $result.candidate_process_start_time_utc_ticks -isnot [long] -or
+        [long]$result.candidate_process_start_time_utc_ticks -ne
+            $CandidateProcessStartTimeUtcTicks -or
+        $result.narrator_process_id -isnot [int] -or
+        [int]$result.narrator_process_id -ne
+            [int]$NarratorSession.process_id -or
+        $result.narrator_process_start_time_utc_ticks -isnot [long] -or
+        [long]$result.narrator_process_start_time_utc_ticks -ne
+            [long]$NarratorSession.process_start_time_utc_ticks -or
+        $result.scan_sequence_base -isnot [int] -or
+        [int]$result.scan_sequence_base -ne $ScanSequenceBase -or
+        $result.scan_evidence -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $result.scan_evidence `
+            -ExpectedNames @((New-UiAutomationAccessibilityEvidence).Keys)) -or
+        $result.scan_evidence.scan_count -isnot [int] -or
+        [int]$result.scan_evidence.scan_count -lt $ScanSequenceBase -or
+        [int]$result.scan_evidence.scan_count -gt ($ScanSequenceBase + 1) -or
+        $result.scan_evidence.semantic_terms -isnot [pscustomobject] -or
+        -not (Test-ExactEvidencePropertyNames `
+            -Value $result.scan_evidence.semantic_terms `
+            -ExpectedNames @(
+                (New-UiAutomationAccessibilityEvidence).semantic_terms.Keys
+            )) -or
+        @(
+            $result.scan_evidence.semantic_terms.PSObject.Properties.Value |
+                Where-Object { $_ -isnot [bool] }
+        ).Count -ne 0 -or
+        @(
+            @($result.scan_evidence.errors) |
+                Where-Object { $_ -isnot [string] }
+        ).Count -ne 0
+    ) {
+        throw "Installed journey probe result did not match its contract"
+    }
+    return $result.scan_evidence
+}
+
+function Invoke-InstalledUiAutomationScanInFreshPowerShell {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$CandidateProcessId,
+        [Parameter(Mandatory = $true)]
+        [long]$CandidateProcessStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)]
+        [string]$Lane,
+        [Parameter(Mandatory = $true)]
+        [string]$LaneDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceCommit,
+        [Parameter(Mandatory = $true)]
+        [object]$NarratorSession,
+        [Parameter(Mandatory = $true)]
+        [int]$ScanSequenceBase
+    )
+
+    $controlDirectory = $null
+    $failureKind = "control_setup"
+    try {
+        if (-not (Test-InstalledNarratorSessionRunning $NarratorSession)) {
+            throw "Owned Narrator session was unavailable"
+        }
+        $probeId = [Guid]::NewGuid().ToString("N")
+        $controlRoot = Join-Path `
+            ([IO.Path]::GetTempPath()) `
+            "UTI-StockSim-Issue118-JourneyProbes"
+        New-Item -ItemType Directory -Path $controlRoot -Force | Out-Null
+        $controlDirectory = Join-Path $controlRoot $probeId
+        if (Test-Path -LiteralPath $controlDirectory) {
+            throw "Installed journey probe control directory already existed"
+        }
+        New-Item `
+            -ItemType Directory `
+            -Path $controlDirectory | Out-Null
+        $requestPath = Join-Path `
+            $controlDirectory `
+            "installed-uia-scan-$probeId-request.json"
+        $resultPath = Join-Path `
+            $controlDirectory `
+            "installed-uia-scan-$probeId-result.json"
+        $request = [ordered]@{
+            schema_version = 1
+            candidate_process_id = $CandidateProcessId
+            candidate_process_start_time_utc_ticks = (
+                $CandidateProcessStartTimeUtcTicks
+            )
+            lane = $Lane
+            lane_directory = Resolve-NormalizedFullyQualifiedPath `
+                -Path $LaneDirectory
+            source_commit = $SourceCommit
+            narrator_process_id = [int]$NarratorSession.process_id
+            narrator_process_start_time_utc_ticks = (
+                [long]$NarratorSession.process_start_time_utc_ticks
+            )
+            scan_sequence_base = $ScanSequenceBase
+            result_path = $resultPath
+        }
+        [IO.File]::WriteAllText(
+            $requestPath,
+            ($request | ConvertTo-Json -Depth 20),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $childPowerShell = (
+            "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        )
+        if (-not (Test-Path -LiteralPath $childPowerShell -PathType Leaf)) {
+            throw "Installed journey probe PowerShell was unavailable"
+        }
+        $escapedScriptPath = $PSCommandPath.Replace("'", "''")
+        $escapedRequestPath = $requestPath.Replace("'", "''")
+        $childCommand = (
+            "& '$escapedScriptPath' -UiAutomationScanRequest " +
+            "'$escapedRequestPath'"
+        )
+        $encodedCommand = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($childCommand)
+        )
+        $failureKind = "child_start"
+        $childProcess = Start-Process `
+            -FilePath $childPowerShell `
+            -ArgumentList @(
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                $encodedCommand
+            ) `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+        $failureKind = "child_wait"
+        if ([int]$childProcess.ExitCode -ne 0) {
+            throw "Installed UI Automation scan child process failed"
+        }
+        $failureKind = "result_read"
+        $scanEvidence = Read-InstalledUiAutomationScanResult `
+                -Path $resultPath `
+                -SourceCommit $SourceCommit `
+                -Lane $Lane `
+                -NarratorSession $NarratorSession `
+                -CandidateProcessId $CandidateProcessId `
+                -CandidateProcessStartTimeUtcTicks (
+                    $CandidateProcessStartTimeUtcTicks
+                ) `
+                -ScanSequenceBase $ScanSequenceBase
+        return [ordered]@{
+            scan_evidence = $scanEvidence
+            failure_kind = "none"
+        }
+    }
+    catch {
+        return [ordered]@{
+            scan_evidence = $null
+            failure_kind = $failureKind
+        }
+    }
+    finally {
+        if (
+            $null -ne $controlDirectory -and
+            (Test-Path -LiteralPath $controlDirectory -PathType Container)
+        ) {
+            Remove-Item `
+                -LiteralPath $controlDirectory `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -2479,6 +3257,50 @@ $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
+
+if ($PSCmdlet.ParameterSetName -ceq "UiAutomationScan") {
+    $scanRequest = Read-InstalledUiAutomationScanRequest `
+        -Path $UiAutomationScanRequest
+    $scanNarratorSession = [ordered]@{
+        process_id = [int]$scanRequest.narrator_process_id
+        process_start_time_utc_ticks = (
+            [long]$scanRequest.narrator_process_start_time_utc_ticks
+        )
+        start_attempted = $true
+        stopped = $false
+    }
+    $scanEvidence = Invoke-InstalledUiAutomationScan `
+        -CandidateProcessId ([int]$scanRequest.candidate_process_id) `
+        -CandidateProcessStartTimeUtcTicks (
+            [long]$scanRequest.candidate_process_start_time_utc_ticks
+        ) `
+        -LaneDirectory ([string]$scanRequest.lane_directory) `
+        -NarratorSession $scanNarratorSession `
+        -ScanSequenceBase ([int]$scanRequest.scan_sequence_base) `
+        -UseCachedProperties
+    $scanResult = [ordered]@{
+        schema_version = 1
+        purpose = "installed-uia-tree-scan"
+        source_commit = [string]$scanRequest.source_commit
+        lane = [string]$scanRequest.lane
+        candidate_process_id = [int]$scanRequest.candidate_process_id
+        candidate_process_start_time_utc_ticks = (
+            [long]$scanRequest.candidate_process_start_time_utc_ticks
+        )
+        narrator_process_id = [int]$scanNarratorSession.process_id
+        narrator_process_start_time_utc_ticks = (
+            [long]$scanNarratorSession.process_start_time_utc_ticks
+        )
+        scan_sequence_base = [int]$scanRequest.scan_sequence_base
+        scan_evidence = $scanEvidence
+    }
+    [IO.File]::WriteAllText(
+        [string]$scanRequest.result_path,
+        ($scanResult | ConvertTo-Json -Depth 100),
+        [Text.UTF8Encoding]::new($false)
+    )
+    exit 0
+}
 
 if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') {
     throw "SourceCommit must be a lowercase 40-character Git commit."
@@ -2869,6 +3691,10 @@ $expectedProductionPath = @(
     "LiveSystemHealthAdapter",
     "JourneyWorkspaceHost"
 )
+$narratorSession = New-InstalledNarratorSession
+$gatePassed = $false
+try {
+    :certification do {
 Set-CleanRoomStage `
     -EvidenceRoot $resolvedEvidence `
     -Stage "installed-dpi-preflight"
@@ -2912,6 +3738,7 @@ if ($installSucceeded) {
         -LaneDirectory $installedDpiPreflightDir `
         -SourceCommit $SourceCommit `
         -AccessibilityEnvironment $accessibilityEnvironment `
+        -NarratorSession $narratorSession `
         -PreflightOnly
     $installedDpiPreflightCandidatePath = Join-Path `
         $installedDpiPreflightDir `
@@ -2977,7 +3804,7 @@ if (-not $installedDpiPreflight.passed) {
         ($preflightFailureReport | ConvertTo-Json -Depth 12),
         [Text.UTF8Encoding]::new($false)
     )
-    exit 1
+    break certification
 }
 
 $freshInstallMigration = [ordered]@{
@@ -3195,7 +4022,8 @@ if ($installSucceeded) {
             -Lane $lane `
             -LaneDirectory $laneDir `
             -SourceCommit $SourceCommit `
-            -AccessibilityEnvironment $accessibilityEnvironment
+            -AccessibilityEnvironment $accessibilityEnvironment `
+            -NarratorSession $narratorSession
         $exitCode = [int]$journeyInvocation.exit_code
         $uiaAccessibility = $journeyInvocation.uia_accessibility
         $uiaAccessibilityPath = Join-Path `
@@ -4490,6 +5318,11 @@ $gatePassed = (
     ($rendererLanes.hardware.accepted_command_kinds -join "|") -eq
         ($rendererLanes.software.accepted_command_kinds -join "|")
 )
+    } while ($false)
+}
+finally {
+    Stop-InstalledNarratorSession -NarratorSession $narratorSession
+}
 if (-not $gatePassed) {
     exit 1
 }

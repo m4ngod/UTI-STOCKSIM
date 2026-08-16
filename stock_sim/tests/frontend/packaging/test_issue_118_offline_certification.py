@@ -252,6 +252,1245 @@ def test_issue_118_installed_uia_ack_wait_covers_one_complete_host_scan():
     assert INSTALLED_UIA_ACK_TIMEOUT_SECONDS == 120.0
 
 
+def test_clean_room_owns_one_narrator_session_across_all_installed_journeys():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$commands = @(
+    $ast.FindAll(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst]
+        },
+        $true
+    )
+)
+$journeyCalls = @(
+    $commands |
+        Where-Object {
+            $_.GetCommandName() -ceq (
+                "Invoke-InstalledJourneyWithAccessibilityProbe"
+            )
+        }
+)
+$journeySessionBindings = @(
+    $journeyCalls |
+        Where-Object {
+            $_.Extent.Text -cmatch (
+                '(?s)-NarratorSession\s+\$narratorSession'
+            )
+        }
+)
+[ordered]@{
+    journey_call_count = $journeyCalls.Count
+    journey_session_binding_count = $journeySessionBindings.Count
+    narrator_session_create_count = @(
+        $commands |
+            Where-Object {
+                $_.GetCommandName() -ceq "New-InstalledNarratorSession"
+            }
+    ).Count
+    narrator_session_start_count = @(
+        $commands |
+            Where-Object {
+                $_.GetCommandName() -ceq "Start-InstalledNarratorSession"
+            }
+    ).Count
+    narrator_session_stop_count = @(
+        $commands |
+            Where-Object {
+                $_.GetCommandName() -ceq "Stop-InstalledNarratorSession"
+            }
+    ).Count
+    narrator_executable_literal_count = @(
+        $tokens |
+            Where-Object { $_.Text -ceq '"$env:WINDIR\System32\Narrator.exe"' }
+    ).Count
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "journey_call_count": 2,
+        "journey_session_binding_count": 2,
+        "narrator_session_create_count": 1,
+        "narrator_session_start_count": 1,
+        "narrator_session_stop_count": 1,
+        "narrator_executable_literal_count": 1,
+    }
+
+
+def test_clean_room_runs_later_uia_scans_in_fresh_windows_powershell():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$commands = @(
+    $ast.FindAll(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst]
+        },
+        $true
+    )
+)
+$freshProcessCalls = @(
+    $commands |
+        Where-Object {
+            $_.GetCommandName() -ceq (
+                "Invoke-InstalledUiAutomationScanInFreshPowerShell"
+            )
+        }
+)
+$directProbeCalls = @(
+    $commands |
+        Where-Object {
+            $_.GetCommandName() -ceq (
+                "Invoke-InstalledUiAutomationScan"
+            )
+        }
+)
+$journeyProbeParameter = @(
+    $ast.ParamBlock.Parameters |
+        Where-Object {
+            $_.Name.VariablePath.UserPath -ceq "UiAutomationScanRequest"
+        }
+)
+[ordered]@{
+    fresh_process_call_count = $freshProcessCalls.Count
+    fresh_process_session_binding_count = @(
+        $freshProcessCalls |
+            Where-Object {
+                $_.Extent.Text -cmatch (
+                    '(?s)-NarratorSession\s+\$NarratorSession'
+                )
+            }
+    ).Count
+    direct_probe_call_count = $directProbeCalls.Count
+    journey_probe_parameter_count = $journeyProbeParameter.Count
+    child_powershell_literal_count = @(
+        $tokens |
+            Where-Object {
+                $_.Text -ceq (
+                    '"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"'
+                )
+            }
+    ).Count
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "fresh_process_call_count": 1,
+        "fresh_process_session_binding_count": 1,
+        "direct_probe_call_count": 2,
+        "journey_probe_parameter_count": 1,
+        "child_powershell_literal_count": 1,
+    }
+
+
+def test_clean_room_activates_uia_in_parent_then_isolates_later_scans():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "clean-room script did not parse"
+}
+$journeyFunction = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq "Invoke-InstalledJourneyWithAccessibilityProbe"
+    },
+    $true
+)
+$freshScanFunction = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq (
+                "Invoke-InstalledUiAutomationScanInFreshPowerShell"
+            )
+    },
+    $true
+)
+$commands = @(
+    $ast.FindAll(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst]
+        },
+        $true
+    )
+)
+$journeyCommands = @(
+    $journeyFunction.Body.FindAll(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst]
+        },
+        $true
+    )
+)
+$freshScanCommands = @(
+    $freshScanFunction.Body.FindAll(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst]
+        },
+        $true
+    )
+)
+$journeyDirectScanCalls = @(
+    $journeyCommands |
+        Where-Object {
+            $_.GetCommandName() -ceq "Invoke-InstalledUiAutomationScan"
+        }
+)
+[ordered]@{
+    fresh_scan_call_count = @(
+        $journeyCommands |
+            Where-Object {
+                $_.GetCommandName() -ceq (
+                    "Invoke-InstalledUiAutomationScanInFreshPowerShell"
+                )
+            }
+    ).Count
+    all_direct_scan_call_count = @(
+        $commands |
+            Where-Object {
+                $_.GetCommandName() -ceq "Invoke-InstalledUiAutomationScan"
+            }
+    ).Count
+    parent_activation_scan_call_count = $journeyDirectScanCalls.Count
+    parent_activation_uses_cache_count = @(
+        $journeyDirectScanCalls |
+            Where-Object {
+                $_.Extent.Text -cmatch '(?m)^\s*-UseCachedProperties\s*$'
+            }
+    ).Count
+    cached_direct_scan_call_count = @(
+        $commands |
+            Where-Object {
+                $_.GetCommandName() -ceq "Invoke-InstalledUiAutomationScan" -and
+                    $_.Extent.Text -cmatch (
+                        '(?m)^\s*-UseCachedProperties\s*$'
+                    )
+            }
+    ).Count
+    scan_request_parameter_count = @(
+        $ast.ParamBlock.Parameters |
+            Where-Object {
+                $_.Name.VariablePath.UserPath -ceq (
+                    "UiAutomationScanRequest"
+                )
+            }
+    ).Count
+    fresh_scan_start_process_count = @(
+        $freshScanCommands |
+            Where-Object { $_.GetCommandName() -ceq "Start-Process" }
+    ).Count
+    fresh_scan_wait_switch_count = @(
+        $freshScanCommands |
+            Where-Object {
+                $_.GetCommandName() -ceq "Start-Process" -and
+                    $_.Extent.Text -cmatch '(?m)^\s*-Wait\s'
+            }
+    ).Count
+    fresh_scan_stop_process_count = @(
+        $freshScanCommands |
+            Where-Object { $_.GetCommandName() -ceq "Stop-Process" }
+    ).Count
+    scan_timeout_assignment_count = @(
+        $ast.FindAll(
+            {
+                param($node)
+                $node -is (
+                    [Management.Automation.Language.AssignmentStatementAst]
+                ) -and
+                    $node.Left.Extent.Text -ceq (
+                        '$script:installedUiAutomationScanTimeoutMilliseconds'
+                    )
+            },
+            $true
+        )
+    ).Count
+    completed_checkpoint_scan_stop_count = @(
+        $journeyFunction.Body.FindAll(
+            {
+                param($node)
+                $node -is (
+                    [Management.Automation.Language.AssignmentStatementAst]
+                ) -and
+                    $node.Left.Extent.Text -ceq '$nextScan' -and
+                    $node.Right.Extent.Text -ceq '[DateTime]::MaxValue'
+            },
+            $true
+        )
+    ).Count
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "fresh_scan_call_count": 1,
+        "all_direct_scan_call_count": 2,
+        "parent_activation_scan_call_count": 1,
+        "parent_activation_uses_cache_count": 0,
+        "cached_direct_scan_call_count": 1,
+        "scan_request_parameter_count": 1,
+        "fresh_scan_start_process_count": 1,
+        "fresh_scan_wait_switch_count": 1,
+        "fresh_scan_stop_process_count": 0,
+        "scan_timeout_assignment_count": 0,
+        "completed_checkpoint_scan_stop_count": 1,
+    }
+
+
+def test_clean_room_uia_tree_scan_bulk_caches_public_properties_and_patterns():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$merge = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq "Merge-UiAutomationSnapshot"
+    },
+    $true
+)
+if ($null -eq $merge -or $parseErrors.Count -ne 0) {
+    throw "UI Automation snapshot helper was unavailable"
+}
+$memberNames = @(
+    $merge.Body.FindAll(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.MemberExpressionAst]
+        },
+        $true
+    ) |
+        ForEach-Object { [string]$_.Member.Value }
+)
+    $mergeText = $merge.Extent.Text
+[ordered]@{
+    cache_switch_parameter_count = @(
+        $merge.Body.ParamBlock.Parameters |
+            Where-Object {
+                $_.Name.VariablePath.UserPath -ceq "UseCachedProperties"
+            }
+    ).Count
+    cache_request_count = @(
+        [regex]::Matches(
+            $mergeText,
+            '\[System\.Windows\.Automation\.CacheRequest\]'
+        )
+    ).Count
+    cached_property_reads = @(
+        $memberNames | Where-Object { $_ -ceq "Cached" }
+    ).Count
+    current_property_reads = @(
+        $memberNames | Where-Object { $_ -ceq "Current" }
+    ).Count
+    cached_pattern_calls = @(
+        $memberNames | Where-Object { $_ -ceq "TryGetCachedPattern" }
+    ).Count
+    current_pattern_calls = @(
+        $memberNames | Where-Object { $_ -ceq "TryGetCurrentPattern" }
+    ).Count
+    required_property_count = @(
+        @(
+            "NameProperty",
+            "AutomationIdProperty",
+            "ControlTypeProperty",
+            "IsEnabledProperty",
+            "IsOffscreenProperty",
+            "IsKeyboardFocusableProperty",
+            "HasKeyboardFocusProperty",
+            "HelpTextProperty",
+            "ItemStatusProperty",
+            "ProcessIdProperty"
+        ) |
+            Where-Object { $mergeText.Contains($_) }
+    ).Count
+    required_pattern_count = @(
+        @(
+            "InvokePattern",
+            "TogglePattern",
+            "SelectionItemPattern",
+            "ValuePattern",
+            "ExpandCollapsePattern"
+        ) |
+            Where-Object { $mergeText.Contains($_) }
+    ).Count
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "cache_switch_parameter_count": 1,
+        "cache_request_count": 1,
+        "cached_property_reads": 1,
+        "current_property_reads": 1,
+        "cached_pattern_calls": 1,
+        "current_pattern_calls": 1,
+        "required_property_count": 10,
+        "required_pattern_count": 5,
+    }
+
+
+def test_clean_room_merges_uia_semantics_across_exact_dictionary_shapes():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$merge = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq "Merge-InstalledUiAutomationScanEvidence"
+    },
+    $true
+)
+if ($null -eq $merge -or $parseErrors.Count -ne 0) {
+    throw "UI Automation evidence merge helper was unavailable"
+}
+    $mergeText = $merge.Extent.Text
+[ordered]@{
+    dictionary_shape_count = @(
+        [regex]::Matches(
+            $mergeText,
+            'semantic_terms\s+-is\s+\[System\.Collections\.IDictionary\]'
+        )
+    ).Count
+    json_shape_count = @(
+        [regex]::Matches(
+            $mergeText,
+            'semantic_terms\s+-is\s+\[pscustomobject\]'
+        )
+    ).Count
+    property_projection_count = @(
+        [regex]::Matches(
+            $mergeText,
+            '\$ScanEvidence\.semantic_terms\.PSObject\.Properties'
+        )
+    ).Count
+    exact_key_comparison_count = @(
+        [regex]::Matches(
+            $mergeText,
+            'Compare-Object[\s\S]*-CaseSensitive'
+        )
+    ).Count
+    fragile_contains_key_count = @(
+        [regex]::Matches(
+            $mergeText,
+            '\.ContainsKey\(\$semanticKey\)'
+        )
+    ).Count
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "dictionary_shape_count": 1,
+        "json_shape_count": 1,
+        "property_projection_count": 1,
+        "exact_key_comparison_count": 1,
+        "fragile_contains_key_count": 0,
+    }
+
+
+def test_clean_room_merges_ordered_uia_semantics_from_parent_scan():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+foreach ($helperName in @(
+    "New-UiAutomationAccessibilityEvidence",
+    "Merge-InstalledUiAutomationScanEvidence"
+)) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $helperName
+        },
+        $true
+    )
+    if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+        throw "UI Automation evidence merge helper was unavailable"
+    }
+    Invoke-Expression $helper.Extent.Text
+}
+$evidence = New-UiAutomationAccessibilityEvidence
+$delta = New-UiAutomationAccessibilityEvidence
+$delta.semantic_terms.loading = $true
+$accepted = $true
+try {
+    Merge-InstalledUiAutomationScanEvidence `
+        -Evidence $evidence `
+        -ScanEvidence $delta
+}
+catch {
+    $accepted = $false
+}
+$missingKeyRejected = $false
+$missingKeyDelta = New-UiAutomationAccessibilityEvidence
+$missingKeyDelta.semantic_terms.Remove("recovery")
+try {
+    Merge-InstalledUiAutomationScanEvidence `
+        -Evidence (New-UiAutomationAccessibilityEvidence) `
+        -ScanEvidence $missingKeyDelta
+}
+catch {
+    $missingKeyRejected = $true
+}
+$malformedValueRejected = $false
+$malformedValueDelta = New-UiAutomationAccessibilityEvidence
+$malformedValueDelta.semantic_terms.loading = "true"
+try {
+    Merge-InstalledUiAutomationScanEvidence `
+        -Evidence (New-UiAutomationAccessibilityEvidence) `
+        -ScanEvidence $malformedValueDelta
+}
+catch {
+    $malformedValueRejected = $true
+}
+[ordered]@{
+    accepted = $accepted
+    source_type = [string]$delta.semantic_terms.GetType().FullName
+    semantic_loading = [bool]$evidence.semantic_terms.loading
+    missing_key_rejected = $missingKeyRejected
+    malformed_value_rejected = $malformedValueRejected
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "accepted": True,
+        "source_type": "System.Collections.Specialized.OrderedDictionary",
+        "semantic_loading": True,
+        "missing_key_rejected": True,
+        "malformed_value_rejected": True,
+    }
+
+
+def test_clean_room_retains_qt_scale_when_checkpoint_ack_is_suppressed():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$merge = $ast.Find(
+    {
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq "Merge-UiAutomationSnapshot"
+    },
+    $true
+)
+if ($null -eq $merge -or $parseErrors.Count -ne 0) {
+    throw "UI Automation snapshot merge helper was unavailable"
+}
+$suppressAckIf = $merge.FindAll(
+    {
+        param($node)
+        if ($node -isnot [Management.Automation.Language.IfStatementAst]) {
+            return $false
+        }
+        foreach ($clause in $node.Clauses) {
+            if ($clause.Item1.Extent.Text -cmatch '\$SuppressCheckpointAck') {
+                return $true
+            }
+        }
+        return $false
+    },
+    $true
+) | Select-Object -First 1
+if ($null -eq $suppressAckIf) {
+    throw "Suppressed checkpoint ACK branch was unavailable"
+}
+[ordered]@{
+    scale_assignment_count = @(
+        [regex]::Matches(
+            $merge.Extent.Text,
+            '\$Evidence\.observed_qt_window_scale_percent\s*='
+        )
+    ).Count
+    scale_assignment_inside_suppressed_ack_count = @(
+        [regex]::Matches(
+            $suppressAckIf.Extent.Text,
+            '\$Evidence\.observed_qt_window_scale_percent\s*='
+        )
+    ).Count
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "scale_assignment_count": 1,
+        "scale_assignment_inside_suppressed_ack_count": 0,
+    }
+
+
+def test_clean_room_fresh_uia_child_request_is_exact_and_path_bounded(
+    tmp_path,
+):
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe_id = "0123456789abcdef0123456789abcdef"
+    control_dir = tmp_path / probe_id
+    control_dir.mkdir()
+    lane_dir = tmp_path / "lane"
+    lane_dir.mkdir()
+    request_path = (
+        control_dir
+        / f"installed-uia-scan-{probe_id}-request.json"
+    )
+    result_path = (
+        control_dir
+        / f"installed-uia-scan-{probe_id}-result.json"
+    )
+    valid_request = {
+        "schema_version": 1,
+        "candidate_process_id": 31337,
+        "candidate_process_start_time_utc_ticks": 638000000000000001,
+        "lane": "hardware",
+        "lane_directory": str(lane_dir),
+        "source_commit": "a" * 40,
+        "narrator_process_id": 4242,
+        "narrator_process_start_time_utc_ticks": 638000000000000000,
+        "scan_sequence_base": 2,
+        "result_path": str(result_path),
+    }
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+foreach ($helperName in @(
+    "Resolve-NormalizedFullyQualifiedPath",
+    "Test-ExactEvidencePropertyNames",
+    "Read-InstalledUiAutomationScanRequest"
+)) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $helperName
+        },
+        $true
+    )
+    if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+        throw "journey probe request helper was unavailable"
+    }
+    Invoke-Expression $helper.Extent.Text
+}
+try {
+    $request = Read-InstalledUiAutomationScanRequest `
+        -Path $env:UTI_TEST_JOURNEY_PROBE_REQUEST
+    [ordered]@{
+        accepted = $true
+        lane = [string]$request.lane
+        scan_sequence_base = [int]$request.scan_sequence_base
+        candidate_process_id = [int]$request.candidate_process_id
+        narrator_process_id = [int]$request.narrator_process_id
+    } | ConvertTo-Json -Compress
+}
+catch {
+    [ordered]@{
+        accepted = $false
+        lane = ""
+        scan_sequence_base = -1
+        candidate_process_id = 0
+        narrator_process_id = 0
+    } | ConvertTo-Json -Compress
+}
+"""
+
+    def invoke(request):
+        request_path.write_text(json.dumps(request), encoding="utf-8")
+        completed = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                **os.environ,
+                "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+                "UTI_TEST_JOURNEY_PROBE_REQUEST": str(request_path),
+            },
+        )
+        return json.loads(completed.stdout)
+
+    assert invoke(valid_request) == {
+        "accepted": True,
+        "lane": "hardware",
+        "scan_sequence_base": 2,
+        "candidate_process_id": 31337,
+        "narrator_process_id": 4242,
+    }
+
+    extra_top_level = {**valid_request, "credential_backup": "secret"}
+    assert invoke(extra_top_level)["accepted"] is False
+
+    invalid_sequence_type = {
+        **valid_request,
+        "scan_sequence_base": False,
+    }
+    assert invoke(invalid_sequence_type)["accepted"] is False
+
+    escaped_result = {
+        **valid_request,
+        "result_path": str(tmp_path / "escaped-result.json"),
+    }
+    assert invoke(escaped_result)["accepted"] is False
+
+
+def test_clean_room_uia_scan_result_binds_process_and_evidence_shape(tmp_path):
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    result_path = tmp_path / "scan-result.json"
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+foreach ($helperName in @(
+    "Test-ExactEvidencePropertyNames",
+    "New-UiAutomationAccessibilityEvidence",
+    "Read-InstalledUiAutomationScanResult"
+)) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $helperName
+        },
+        $true
+    )
+    if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+        throw "UI Automation scan result helper was unavailable"
+    }
+    Invoke-Expression $helper.Extent.Text
+}
+$session = [ordered]@{
+    process_id = 4242
+    process_start_time_utc_ticks = [long]638000000000000000
+    start_attempted = $true
+    stopped = $false
+}
+$evidence = New-UiAutomationAccessibilityEvidence
+$evidence.scan_count = 3
+$result = [ordered]@{
+    schema_version = 1
+    purpose = "installed-uia-tree-scan"
+    source_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    lane = "hardware"
+    candidate_process_id = 31337
+    candidate_process_start_time_utc_ticks = [long]638000000000000001
+    narrator_process_id = 4242
+    narrator_process_start_time_utc_ticks = [long]638000000000000000
+    scan_sequence_base = 2
+    scan_evidence = $evidence
+}
+$result | ConvertTo-Json -Depth 100 | Set-Content `
+    -LiteralPath $env:UTI_TEST_UIA_SCAN_RESULT `
+    -Encoding UTF8
+$accepted = Read-InstalledUiAutomationScanResult `
+    -Path $env:UTI_TEST_UIA_SCAN_RESULT `
+    -SourceCommit "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" `
+    -Lane "hardware" `
+    -NarratorSession $session `
+    -CandidateProcessId 31337 `
+    -CandidateProcessStartTimeUtcTicks ([long]638000000000000001) `
+    -ScanSequenceBase 2
+$result.narrator_process_id = 4243
+$result | ConvertTo-Json -Depth 100 | Set-Content `
+    -LiteralPath $env:UTI_TEST_UIA_SCAN_RESULT `
+    -Encoding UTF8
+$driftRejected = $false
+try {
+    Read-InstalledUiAutomationScanResult `
+        -Path $env:UTI_TEST_UIA_SCAN_RESULT `
+        -SourceCommit "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" `
+        -Lane "hardware" `
+        -NarratorSession $session `
+        -CandidateProcessId 31337 `
+        -CandidateProcessStartTimeUtcTicks ([long]638000000000000001) `
+        -ScanSequenceBase 2 | Out-Null
+}
+catch {
+    $driftRejected = $true
+}
+[ordered]@{
+    scan_count = [int]$accepted.scan_count
+    narrator_drift_rejected = $driftRejected
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+            "UTI_TEST_UIA_SCAN_RESULT": str(result_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "scan_count": 3,
+        "narrator_drift_rejected": True,
+    }
+
+
+def test_clean_room_merges_scan_delta_before_writing_candidate_ack(tmp_path):
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+foreach ($helperName in @(
+    "New-UiAutomationAccessibilityEvidence",
+    "Merge-InstalledUiAutomationScanEvidence",
+    "Write-InstalledUiAutomationCheckpointAcknowledgements"
+)) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $helperName
+        },
+        $true
+    )
+    if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+        throw "UI Automation scan merge helper was unavailable"
+    }
+    Invoke-Expression $helper.Extent.Text
+}
+$evidence = New-UiAutomationAccessibilityEvidence
+$delta = New-UiAutomationAccessibilityEvidence
+$delta.provider_available = $true
+$delta.scan_count = 1
+$delta.complete_snapshot_count = 1
+$delta.named_element_count = 4
+$delta.semantic_terms.loading = $true
+$delta.narrator_checkpoint_evidence = @(
+    [pscustomobject]@{
+        checkpoint = "loading"
+        sequence = 1
+        snapshot_identity = (
+            "uia:1:loading:strategy_library:r1:r1:" +
+            "runMonitoringRouteNavigation:loading:scale200"
+        )
+        passed = $true
+    }
+)
+$delta = $delta | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+Merge-InstalledUiAutomationScanEvidence `
+    -Evidence $evidence `
+    -ScanEvidence $delta
+Write-InstalledUiAutomationCheckpointAcknowledgements `
+    -ScanEvidence $delta `
+    -CheckpointAckDirectory $env:UTI_TEST_UIA_ACK_DIR
+$ackPath = Join-Path `
+    $env:UTI_TEST_UIA_ACK_DIR `
+    "uia-checkpoint-01-loading.json"
+$ack = Get-Content -LiteralPath $ackPath -Raw -Encoding UTF8 |
+    ConvertFrom-Json
+[ordered]@{
+    scan_count = [int]$evidence.scan_count
+    complete_snapshot_count = [int]$evidence.complete_snapshot_count
+    semantic_loading = [bool]$evidence.semantic_terms.loading
+    checkpoint_count = @($evidence.narrator_checkpoint_evidence).Count
+    ack_passed = [bool]$ack.passed
+    ack_identity = [string]$ack.snapshot_identity
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+            "UTI_TEST_UIA_ACK_DIR": str(tmp_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "scan_count": 1,
+        "complete_snapshot_count": 1,
+        "semantic_loading": True,
+        "checkpoint_count": 1,
+        "ack_passed": True,
+        "ack_identity": (
+            "uia:1:loading:strategy_library:r1:r1:"
+            "runMonitoringRouteNavigation:loading:scale200"
+        ),
+    }
+
+
+def test_clean_room_narrator_session_reuses_and_stops_only_exact_owned_process():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the clean-room probe")
+
+    script_path = (
+        PROJECT_ROOT / "scripts" / "run_frontend_v2_clean_room.ps1"
+    )
+    probe = r"""
+$scriptPath = $env:UTI_TEST_CLEAN_ROOM_SCRIPT
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$helperNames = @(
+    "New-InstalledNarratorSession",
+    "Test-InstalledNarratorSessionRunning",
+    "Start-InstalledNarratorSession",
+    "Stop-InstalledNarratorSession"
+)
+foreach ($helperName in $helperNames) {
+    $helper = $ast.Find(
+        {
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $helperName
+        },
+        $true
+    )
+    if ($null -eq $helper -or $parseErrors.Count -ne 0) {
+        throw "Narrator ownership helper was unavailable"
+    }
+    Invoke-Expression $helper.Extent.Text
+}
+
+function New-FakeNarratorProcess {
+    $process = [pscustomobject]@{
+        Id = 4242
+        ProcessName = "Narrator"
+        HasExited = $false
+        StartTime = [DateTime]::UtcNow
+    }
+    $process | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+    return $process
+}
+
+$script:fakeProcess = New-FakeNarratorProcess
+$script:fakeVisible = $false
+$script:startCount = 0
+$script:stopCount = 0
+function Get-Process {
+    param($Name, $Id, $ErrorAction)
+    if ($PSBoundParameters.ContainsKey("Name")) {
+        if ($script:fakeVisible -and -not $script:fakeProcess.HasExited) {
+            return $script:fakeProcess
+        }
+        return
+    }
+    if (
+        $script:fakeVisible -and
+        -not $script:fakeProcess.HasExited -and
+        [int]$Id -eq [int]$script:fakeProcess.Id
+    ) {
+        return $script:fakeProcess
+    }
+    throw "process unavailable"
+}
+function Start-Process {
+    param($FilePath, [switch]$PassThru)
+    $script:startCount += 1
+    $script:fakeVisible = $true
+    return $script:fakeProcess
+}
+function Stop-Process {
+    param($Id, [switch]$Force, $ErrorAction)
+    if ([int]$Id -ne [int]$script:fakeProcess.Id) {
+        throw "wrong process"
+    }
+    $script:stopCount += 1
+    $script:fakeProcess.HasExited = $true
+}
+function Start-Sleep {
+    param($Milliseconds)
+}
+
+$session = New-InstalledNarratorSession
+Start-InstalledNarratorSession -NarratorSession $session
+Start-InstalledNarratorSession -NarratorSession $session
+$runningBeforeStop = Test-InstalledNarratorSessionRunning $session
+Stop-InstalledNarratorSession -NarratorSession $session
+$runningAfterStop = Test-InstalledNarratorSessionRunning $session
+$restartRejected = $false
+try {
+    Start-InstalledNarratorSession -NarratorSession $session
+}
+catch {
+    $restartRejected = $true
+}
+
+$firstResult = [ordered]@{
+    start_count = $script:startCount
+    stop_count = $script:stopCount
+    running_before_stop = $runningBeforeStop
+    running_after_stop = $runningAfterStop
+    stopped = [bool]$session.stopped
+    restart_rejected = $restartRejected
+}
+
+$script:fakeProcess = New-FakeNarratorProcess
+$script:fakeVisible = $false
+$script:startCount = 0
+$script:stopCount = 0
+$driftedSession = New-InstalledNarratorSession
+Start-InstalledNarratorSession -NarratorSession $driftedSession
+$script:fakeProcess.StartTime = $script:fakeProcess.StartTime.AddSeconds(1)
+Stop-InstalledNarratorSession -NarratorSession $driftedSession
+
+$script:fakeProcess = New-FakeNarratorProcess
+$script:fakeVisible = $true
+$preExistingSession = New-InstalledNarratorSession
+$preExistingRejected = $false
+try {
+    Start-InstalledNarratorSession -NarratorSession $preExistingSession
+}
+catch {
+    $preExistingRejected = $true
+}
+
+[ordered]@{
+    first = $firstResult
+    identity_drift_stop_count = $script:stopCount
+    pre_existing_rejected = $preExistingRejected
+} | ConvertTo-Json -Depth 5 -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-Command", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "UTI_TEST_CLEAN_ROOM_SCRIPT": str(script_path),
+        },
+    )
+
+    assert json.loads(completed.stdout) == {
+        "first": {
+            "start_count": 1,
+            "stop_count": 1,
+            "running_before_stop": True,
+            "running_after_stop": False,
+            "stopped": True,
+            "restart_rejected": True,
+        },
+        "identity_drift_stop_count": 0,
+        "pre_existing_rejected": True,
+    }
+
+
 def test_issue_118_smoke_observation_settle_timeout_is_scope_bound():
     package_entry_source = (
         PROJECT_ROOT
@@ -974,12 +2213,22 @@ def test_clean_room_native_dpi_preflight_precedes_every_certification_gate():
         preflight,
     )
     performance = source.index('"--performance-report=$performancePath"')
+    narrator_cleanup = source.index(
+        "Stop-InstalledNarratorSession -NarratorSession $narratorSession",
+        renderer_loop,
+    )
+    final_gate_exit = source.index(
+        "if (-not $gatePassed)",
+        narrator_cleanup,
+    )
 
     assert preflight < fail_closed < migration < widgets < renderer_loop
     assert fail_closed < performance
+    assert renderer_loop < narrator_cleanup < final_gate_exit
     assert '--installed-dpi-preflight-report=' in source
     assert 'stage = "installed-dpi-preflight"' in source
-    assert "exit 1" in source[fail_closed:migration]
+    assert "break certification" in source[fail_closed:migration]
+    assert "exit 1" in source[final_gate_exit:]
 
 
 @pytest.mark.parametrize(
