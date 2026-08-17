@@ -123,12 +123,89 @@ _REQUIRED_ADMISSION_CHECKS = (
     "duplicates",
     "timestamps",
 )
+_RELEASE_MARKET_INSTRUMENTS = (
+    ("sh.600000", "banking", "sh-main"),
+    ("sh.600001", "banking", "sh-main"),
+    ("sz.000001", "technology", "sz-main"),
+    ("sz.000002", "technology", "sz-main"),
+)
+_RELEASE_MARKET_CLOSES_BY_TIME = (
+    (datetime(2024, 1, 2, 9, 35), ("10", "10", "10", "10")),
+    (datetime(2024, 1, 2, 9, 40), ("10", "10", "10", "10")),
+    (datetime(2024, 1, 2, 9, 45), ("10", "10", "10", "10")),
+    (datetime(2024, 1, 2, 9, 50), ("9.90", "10", "10", "10")),
+    (datetime(2024, 1, 2, 9, 55), ("9.75", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 0), ("9.82", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 5), ("9.84", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 10), ("9.80", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 15), ("9.72", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 20), ("9.70", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 25), ("9.75", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 30), ("9.85", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 35), ("9.90", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 40), ("9.92", "10", "10", "10")),
+    (datetime(2024, 1, 2, 10, 45), ("9.94", "10", "10", "10")),
+)
+
+
+def _build_release_market_bars() -> tuple[FiveMinuteBar, ...]:
+    previous_closes = {
+        instrument: Decimal("10")
+        for instrument, _industry, _board in _RELEASE_MARKET_INSTRUMENTS
+    }
+    bars: list[FiveMinuteBar] = []
+    for end_time, closes in _RELEASE_MARKET_CLOSES_BY_TIME:
+        for (instrument, _industry, _board), close_text in zip(
+            _RELEASE_MARKET_INSTRUMENTS,
+            closes,
+            strict=True,
+        ):
+            opening = previous_closes[instrument]
+            close = Decimal(close_text)
+            bars.append(
+                FiveMinuteBar(
+                    instrument=instrument,
+                    end_time=end_time,
+                    open=opening,
+                    high=max(opening, close),
+                    low=min(opening, close),
+                    close=close,
+                    # The materializer expands each five-minute source bar
+                    # into finer execution nodes. Keep enough source liquidity
+                    # for the real 1,000-share production order to survive that
+                    # allocation and produce private fill evidence.
+                    volume=10_000,
+                    amount=close * 10_000,
+                )
+            )
+            previous_closes[instrument] = close
+    return tuple(bars)
+
+
+def _release_market_bars_content_hash(
+    bars: tuple[FiveMinuteBar, ...],
+) -> str:
+    payload = tuple(bar.to_dict() for bar in bars)
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 class DeterministicReleaseMarketSource:
     """Small deterministic historical source with cross-sectional structure."""
 
     def __init__(self) -> None:
+        self._bars = _build_release_market_bars()
+        self._bars_artifact = SourceArtifact(
+            "market-structure-bars",
+            _release_market_bars_content_hash(self._bars),
+            len(self._bars),
+        )
         selection = HistoricalSegmentSelection(
             market="mainland-a-share",
             start_date=date(2024, 1, 2),
@@ -142,19 +219,13 @@ class DeterministicReleaseMarketSource:
                     provenance=SourceProvenance(
                         provider="local-release-fixture",
                         dataset="strategy-diagnostics-v1-frontend-v2",
-                        version="v1",
+                        version="v2",
                         observed_at=RELEASE_FIXTURE_CLOCK,
                     ),
-                    artifacts=(
-                        SourceArtifact(
-                            "market-structure-bars",
-                            "d" * 64,
-                            60,
-                        ),
-                    ),
+                    artifacts=(self._bars_artifact,),
                     eligible_instrument_count=4,
                     trading_day_count=1,
-                    bar_count=60,
+                    bar_count=len(self._bars),
                     checks=tuple(
                         AdmissionCheck(code, True, f"{code} passed")
                         for code in _REQUIRED_ADMISSION_CHECKS
@@ -172,80 +243,20 @@ class DeterministicReleaseMarketSource:
             return None
         return replace(
             inspection,
-            artifacts=(
-                SourceArtifact(
-                    "market-structure-bars",
-                    "d" * 64,
-                    60,
-                ),
-            ),
+            artifacts=(self._bars_artifact,),
             eligible_instrument_count=4,
-            bar_count=60,
+            bar_count=len(self._bars),
         )
 
     def load_scenario_data_world(
         self,
         segment: object,
     ) -> ScenarioDataWorldInput:
-        instruments = (
-            ("sh.600000", "banking", "sh-main"),
-            ("sh.600001", "banking", "sh-main"),
-            ("sz.000001", "technology", "sz-main"),
-            ("sz.000002", "technology", "sz-main"),
-        )
-        closes_by_time = (
-            (datetime(2024, 1, 2, 9, 35), ("10", "10", "10", "10")),
-            (datetime(2024, 1, 2, 9, 40), ("10", "10", "10", "10")),
-            (datetime(2024, 1, 2, 9, 45), ("10", "10", "10", "10")),
-            (datetime(2024, 1, 2, 9, 50), ("9.90", "10", "10", "10")),
-            (datetime(2024, 1, 2, 9, 55), ("9.75", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 0), ("9.82", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 5), ("9.84", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 10), ("9.80", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 15), ("9.72", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 20), ("9.70", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 25), ("9.75", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 30), ("9.85", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 35), ("9.90", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 40), ("9.92", "10", "10", "10")),
-            (datetime(2024, 1, 2, 10, 45), ("9.94", "10", "10", "10")),
-        )
-        previous_closes = {
-            instrument: Decimal("10")
-            for instrument, _industry, _board in instruments
-        }
-        bars: list[FiveMinuteBar] = []
-        for end_time, closes in closes_by_time:
-            for (instrument, _industry, _board), close_text in zip(
-                instruments,
-                closes,
-                strict=True,
-            ):
-                opening = previous_closes[instrument]
-                close = Decimal(close_text)
-                bars.append(
-                    FiveMinuteBar(
-                        instrument=instrument,
-                        end_time=end_time,
-                        open=opening,
-                        high=max(opening, close),
-                        low=min(opening, close),
-                        close=close,
-                        # The materializer expands each five-minute source bar
-                        # into finer execution nodes.  Keep enough source
-                        # liquidity for the real 1,000-share production order
-                        # to survive that allocation and produce private fill
-                        # evidence in the installed release journey.
-                        volume=10_000,
-                        amount=close * 10_000,
-                    )
-                )
-                previous_closes[instrument] = close
         return ScenarioDataWorldInput(
             segment_id=str(getattr(segment, "segment_id")),
             segment_content_hash=str(getattr(segment, "content_hash")),
             source_snapshot_id=str(getattr(segment, "source_snapshot_id")),
-            bars=tuple(bars),
+            bars=self._bars,
             instrument_states=tuple(
                 InstrumentState(
                     instrument=instrument,
@@ -257,7 +268,7 @@ class DeterministicReleaseMarketSource:
                     decision_adjustment_factor=Decimal("1"),
                     decision_adjustment_provenance="release-fixture-v1",
                 )
-                for instrument, industry, _board in instruments
+                for instrument, industry, _board in _RELEASE_MARKET_INSTRUMENTS
             ),
             price_limit_references=tuple(
                 SessionPriceLimitReference(
@@ -275,7 +286,7 @@ class DeterministicReleaseMarketSource:
                         f"{board}.ordinary.10pct.effective-2024-01-02"
                     ),
                 )
-                for instrument, _industry, board in instruments
+                for instrument, _industry, board in _RELEASE_MARKET_INSTRUMENTS
             ),
         )
 

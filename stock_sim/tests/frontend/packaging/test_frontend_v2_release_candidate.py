@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import hashlib
 import inspect
 import json
@@ -11,6 +11,7 @@ from shutil import copy2, rmtree
 import subprocess
 import sys
 from tempfile import mkdtemp
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -26,10 +27,13 @@ from stock_sim.release.frontend_v2_packaging import (
 from stock_sim.release.frontend_v2_performance import (
     certify_performance_evidence,
 )
+from stock_sim.release import strategy_diagnostics_v1_release_fixture as release_fixture
 from stock_sim.release.strategy_diagnostics_v1_release_fixture import (
+    DeterministicReleaseMarketSource,
     FORMAL_V1_RELEASE_FIXTURE_ARCHIVE,
     WAVE2_RELEASE_INPUT_FIXTURE_ARCHIVE,
 )
+from strategy_diagnostics import HistoricalSegmentSelection, SourceArtifact
 
 
 EXPECTED_JOURNEY = (
@@ -114,6 +118,64 @@ EXPECTED_JOURNEY = (
         "fresh",
     ),
 )
+
+
+def test_release_fixture_source_artifact_hash_binds_exact_bar_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = DeterministicReleaseMarketSource()
+    inspection = source.inspect(
+        HistoricalSegmentSelection(
+            market="mainland-a-share",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+        )
+    )
+    assert inspection is not None
+    world = source.load_scenario_data_world(
+        SimpleNamespace(
+            segment_id="segment_release_fixture",
+            content_hash="a" * 64,
+            source_snapshot_id="snapshot_release_fixture",
+        )
+    )
+    canonical_bars = tuple(bar.to_dict() for bar in world.bars)
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            canonical_bars,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert inspection.provenance.version == "v2"
+    assert inspection.artifacts == (
+        SourceArtifact(
+            name="market-structure-bars",
+            content_hash=expected_hash,
+            row_count=len(world.bars),
+        ),
+    )
+
+    changed_rows = list(release_fixture._RELEASE_MARKET_CLOSES_BY_TIME)
+    changed_end_time, changed_closes = changed_rows[0]
+    changed_rows[0] = (
+        changed_end_time,
+        ("10.01", *changed_closes[1:]),
+    )
+    monkeypatch.setattr(
+        release_fixture,
+        "_RELEASE_MARKET_CLOSES_BY_TIME",
+        tuple(changed_rows),
+    )
+    changed_source = DeterministicReleaseMarketSource()
+    changed_inspection = changed_source.inspect(inspection.selection)
+    assert changed_inspection is not None
+    assert (
+        changed_inspection.artifacts[0].content_hash
+        != inspection.artifacts[0].content_hash
+    )
 
 
 def test_clean_room_route_failure_names_all_six_active_routes() -> None:
