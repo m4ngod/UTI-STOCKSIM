@@ -963,6 +963,7 @@ def test_installed_smoke_uses_the_production_event_bridge_journey(
         "breakpoints",
         "findings",
     }
+    assert result.evidence_identity_sets["breakpoints"]
     assert len(result.persisted_manifest_identities) > 1
     assert (
         result.reproduction_manifest_identity
@@ -1604,6 +1605,21 @@ def test_clean_room_report_requires_the_complete_production_journey(
     ) == ()
 
     baseline = json.loads(report_path.read_text(encoding="utf-8"))
+    compromised = json.loads(json.dumps(baseline))
+    compromised["renderer_lanes"]["software"]["evidence_identity_sets"][
+        "breakpoints"
+    ] = []
+    report_path.write_text(json.dumps(compromised), encoding="utf-8")
+    assert any(
+        failure.startswith("software renderer")
+        and "real V1 evidence identity sets are invalid" in failure
+        for failure in verify_clean_room_report(
+            report_path,
+            expected_source_commit="abc123",
+            expected_archive_sha256="sha256:package",
+        )
+    )
+
     for field_name, compromised_value, expected_failure in (
         (
             "fixture_kind",

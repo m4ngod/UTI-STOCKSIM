@@ -2580,7 +2580,7 @@ def _real_v1_smoke_failures(
         )
         or any(
             not identity_sets.get(name)
-            for name in required_identity_sets - {"breakpoints"}
+            for name in required_identity_sets
         )
     ):
         failures.append("real V1 evidence identity sets are invalid")

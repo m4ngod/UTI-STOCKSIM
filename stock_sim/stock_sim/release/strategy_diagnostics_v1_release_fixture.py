@@ -149,12 +149,12 @@ class DeterministicReleaseMarketSource:
                         SourceArtifact(
                             "market-structure-bars",
                             "d" * 64,
-                            28,
+                            60,
                         ),
                     ),
                     eligible_instrument_count=4,
                     trading_day_count=1,
-                    bar_count=28,
+                    bar_count=60,
                     checks=tuple(
                         AdmissionCheck(code, True, f"{code} passed")
                         for code in _REQUIRED_ADMISSION_CHECKS
@@ -176,11 +176,11 @@ class DeterministicReleaseMarketSource:
                 SourceArtifact(
                     "market-structure-bars",
                     "d" * 64,
-                    28,
+                    60,
                 ),
             ),
             eligible_instrument_count=4,
-            bar_count=28,
+            bar_count=60,
         )
 
     def load_scenario_data_world(
@@ -201,6 +201,14 @@ class DeterministicReleaseMarketSource:
             (datetime(2024, 1, 2, 9, 55), ("9.75", "10", "10", "10")),
             (datetime(2024, 1, 2, 10, 0), ("9.82", "10", "10", "10")),
             (datetime(2024, 1, 2, 10, 5), ("9.84", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 10), ("9.80", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 15), ("9.72", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 20), ("9.70", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 25), ("9.75", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 30), ("9.85", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 35), ("9.90", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 40), ("9.92", "10", "10", "10")),
+            (datetime(2024, 1, 2, 10, 45), ("9.94", "10", "10", "10")),
         )
         previous_closes = {
             instrument: Decimal("10")
@@ -223,8 +231,13 @@ class DeterministicReleaseMarketSource:
                         high=max(opening, close),
                         low=min(opening, close),
                         close=close,
-                        volume=100,
-                        amount=close * 100,
+                        # The materializer expands each five-minute source bar
+                        # into finer execution nodes.  Keep enough source
+                        # liquidity for the real 1,000-share production order
+                        # to survive that allocation and produce private fill
+                        # evidence in the installed release journey.
+                        volume=10_000,
+                        amount=close * 10_000,
                     )
                 )
                 previous_closes[instrument] = close
@@ -258,7 +271,9 @@ class DeterministicReleaseMarketSource:
                     is_st=False,
                     listing_stage="continuous",
                     limit_fraction=Decimal("0.10"),
-                    rule_code=f"release-fixture.{board}.ordinary.10pct",
+                    rule_code=(
+                        f"{board}.ordinary.10pct.effective-2024-01-02"
+                    ),
                 )
                 for instrument, _industry, board in instruments
             ),
