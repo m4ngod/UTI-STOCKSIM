@@ -16,6 +16,12 @@ Item {
         && lastFocusedItem.enabled
     )
     readonly property var firstActionControl: searchInput
+    StrategyAssetInspector {
+        id: exactInspector
+        adapter: strategyAssetQueries
+        tokens: page.tokens
+        returnFocusItem: exactAssetsButton
+    }
 
     function renderComparisonNarrative(values) {
         if (values.length === 0)
@@ -139,6 +145,16 @@ Item {
             x: tokens.spaceXl
             y: tokens.spaceXl
             spacing: tokens.spaceLg
+
+            DiagnosticCommandButton {
+                id: exactAssetsButton
+                objectName: "strategyExactAssetsButton"
+                tokens: page.tokens
+                text: "检查精确资产"
+                accessibleDescription: "打开只读检查，核对旧策略的固定身份与兼容限制。"
+                onInvoked: exactInspector.open()
+                onFocusEntered: function(item) { page.rememberFocus(item) }
+            }
 
             Text {
                 Layout.fillWidth: true

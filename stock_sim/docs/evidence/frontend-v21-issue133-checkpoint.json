@@ -1,0 +1,182 @@
+{
+  "status": "implementation-checkpoint-native-acceptance-pending",
+  "issue": 133,
+  "specification": 132,
+  "baseline": "eb7349fbc23ca3113e0f55342c70b1392fda0c71",
+  "branch": "codex/issue133-v21-feature-compat",
+  "runtime": {
+    "python": "3.11.9",
+    "pyside6": "6.9.1",
+    "pytest": "8.4.1",
+    "qt_test_platform": "offscreen",
+    "qt_test_renderer": "software"
+  },
+  "changed_source_files": [
+    {
+      "path": "stock_sim/app/app_context.py",
+      "sha256": "e91657a20b079532ed270cb9f69344562d703aab06ebd19f22eea267f5c45b5c"
+    },
+    {
+      "path": "stock_sim/app/features/capabilities.py",
+      "sha256": "02847fe60305891ae91f23dce753532f13df66f257101ac202a905bde5ff6660"
+    },
+    {
+      "path": "stock_sim/app/features/strategy_asset_contract.py",
+      "sha256": "9332f55b411fc32605a48bfa504d3ff586b2efb2c21f710c9f8bd6d9f8fbd0db"
+    },
+    {
+      "path": "stock_sim/app/features/strategy_asset_queries.py",
+      "sha256": "cb766eda4dbfef13329f6495037c5edeee9f693cd09a4252d8537e75254238bc"
+    },
+    {
+      "path": "stock_sim/app/features/strategy_library_application.py",
+      "sha256": "de4e7c08791df816f11dcfbdf2816aed61d30f5e2152bb19658326a39cc1bbb3"
+    },
+    {
+      "path": "stock_sim/app/ui/journey_workspace.py",
+      "sha256": "cf749e224c4659ec3c81f449c8aeacc6d9378eb7dd45683c291c21354864848a"
+    },
+    {
+      "path": "stock_sim/app/ui/main_window.py",
+      "sha256": "83a640bf79ce3a5015dadb780af51fceaaaf8f9794dba8f18a35b95d863783b0"
+    },
+    {
+      "path": "stock_sim/app/ui/qml_window_accessibility.py",
+      "sha256": "8da15ae4411416b9aa337ce4f2e7757ba602f3c5629e687bc3a89620bafb75ee"
+    },
+    {
+      "path": "stock_sim/app/ui/qml/StrategyAssetInspector.qml",
+      "sha256": "0bffac7b596558a857f699b2b2e832fa02d71c1e6e1cf0ac2d03efbdbb2026f6"
+    },
+    {
+      "path": "stock_sim/app/ui/qml/StrategyLibraryPage.qml",
+      "sha256": "3e78999cbdbd29a5829d7802c8a11303e04dc6b1e529c8836e38518d23de9219"
+    },
+    {
+      "path": "stock_sim/app/ui/strategy_asset_inspector.py",
+      "sha256": "7a0e8f915eb941820a056c0327636b50d4ce14e90bc96ef0582541659ad6deae"
+    },
+    {
+      "path": "stock_sim/setup_frontend_entry.py",
+      "sha256": "266346f658daf3d1e9b808ab2a788ba62fd5d704b71b434c54c355c55deaf174"
+    },
+    {
+      "path": "stock_sim/stock_sim/release/frontend_v2_interactive_actions.py",
+      "sha256": "1d9e0b76946b586cfa70696c45c46b252b7a67e31dcc299812cef9d970a282f0"
+    },
+    {
+      "path": "stock_sim/stock_sim/release/frontend_v2_package_entry.py",
+      "sha256": "fd6b62067f2c9b100a2b15b420bdcf1e1d874c61d5e03b95977b4b365f54e58a"
+    },
+    {
+      "path": "stock_sim/strategy_diagnostics/application.py",
+      "sha256": "8e0e8c229b9b0dbdb81a72dbb61f8634cb1501d84a72e8dc1e17677f313bda12"
+    },
+    {
+      "path": "stock_sim/strategy_diagnostics/asset_queries.py",
+      "sha256": "57c75ccf8775227461fa20680d22f3705ed98bdf5d6ca009f0b7dd1609b82d4c"
+    },
+    {
+      "path": "stock_sim/tests/frontend/contract/test_exact_asset_query_envelope.py",
+      "sha256": "8ae8e324d1ab331319b56208789212bcad8aba6c551abc11cb23487de82000fa"
+    },
+    {
+      "path": "stock_sim/tests/frontend/contract/test_feature_capability_handshake.py",
+      "sha256": "860a6c6ce840205eaf90c5e87601bc011bd10b0a80a66b8d9d9af0f5c72a152b"
+    },
+    {
+      "path": "stock_sim/tests/frontend/contract/test_strategy_asset_queries_feature.py",
+      "sha256": "694708836e83316ab090980b44f01f7cbd661594e461c92e4038a4ed3e2b6c32"
+    },
+    {
+      "path": "stock_sim/tests/frontend/integration/test_strategy_asset_inspector.py",
+      "sha256": "b6b2b5828b93e5cdf485dd5b3d8cdf71ddaa41875d3bb3c0bd7f4e8161476133"
+    }
+  ],
+  "report_directory": "F:/PythonProjects/.scratch/frontend-v21-goal/issue133-20260913",
+  "reports": [
+    {
+      "file": "stable-feature-ui-final.xml",
+      "sha256": "3338a5f4846f79a40c6c02fb8ba8593e0ee8961265d83c98e48afcee12c5baf4",
+      "tests": 686,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 308.922
+    },
+    {
+      "file": "ui-focus-final.xml",
+      "sha256": "8c08b8ddc517bf21f4459fd8af1646f86dc18f433f91704c69bd63c3e458026f",
+      "tests": 46,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 39.365
+    },
+    {
+      "file": "retained-routes-final.xml",
+      "sha256": "79da441e9e3d2cade49110956a63f56ec51a20d5f6dd4ff9b526fa4cd4f0f3e4",
+      "tests": 97,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 222.24
+    },
+    {
+      "file": "packaging-slice4.xml",
+      "sha256": "5621add702d989bbd446bf2d493525ddfca551e992ebead47cc9b7a3551faeb5",
+      "tests": 170,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 2227.361
+    },
+    {
+      "file": "offline-cert-tail.xml",
+      "sha256": "4888bae5220a24cc6438e24df3bf95cbea68e0e802b3a9e8fb5022cc0fd63a8d",
+      "tests": 60,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 48.75
+    },
+    {
+      "file": "preflight-normal-user.xml",
+      "sha256": "ad1d224d8474d3c1e0219a0fe86ad65691eaedf0214ca7dd70169006bd339c85",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 10.398
+    },
+    {
+      "file": "missing-executable-normal-user.xml",
+      "sha256": "6abf800d42e96e544b20256cc5c8031d3c0c773ed6d29074e16f512069a18f01",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 8.497
+    },
+    {
+      "file": "packaging-wave4-tail.xml",
+      "sha256": "f538e703118023243b8f0efcb776329fa3a5b8feeff8a6e613c3c9a93e5c3dc7",
+      "tests": 57,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.754
+    }
+  ],
+  "packaging_unique_seen": 256,
+  "packaging_unique_with_pass": 256,
+  "packaging_unresolved": [],
+  "limitations": [
+    "Not issue completion or release approval; native Windows focus/value/read-only verification requires resuming the user-paused desktop check.",
+    "Packaging coverage is the union of recorded runs, not one all-green invocation. Two CIM inventory permission failures are retained and their exact cases pass under the normal user.",
+    "The long packaging run started before the last QML accessible-root repair; post-repair stable joint/UI/retained-route/safety and repeat-journey results are recorded separately.",
+    "The older mixed-suite crash has not been reproduced on the corrected source; its root cause is not claimed.",
+    "Full Narrator, physical Windows DPI, dual-renderer and installed release certification are not established by these local checks.",
+    "The invalid tool-truncated final-source-manifest.json is excluded. These 20 source byte hashes match complete observations before and after the final stable joint run."
+  ]
+}

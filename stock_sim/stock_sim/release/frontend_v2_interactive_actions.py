@@ -25,6 +25,13 @@ APPROVED_INTERACTIVE_NAMES = re.compile(
     r"Open Scenario Lab|"
     r"Compare formal set|"
     r"Select exact formal set|"
+    # #133 adds only exact historical reads; keep this allowlist name-specific.
+    r"检查精确资产|"
+    r"关闭精确资产检查|"
+    r"重新读取目录|"
+    r"选择精确策略版本|"
+    r"读取固定内容|"
+    r"精确资产读取结果|"
     r"Scenario Recipe Draft name|"
     r"Select admitted Historical Market Segment|"
     r"Select registered Scenario transformation|"

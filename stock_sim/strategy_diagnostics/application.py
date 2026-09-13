@@ -17,6 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from .baostock_source import BaoStockHistoricalSource
+from .asset_queries import ExactAssetQuery, ExactAssetQueryResult, ExactStrategyQueries
 from .diagnostic_evidence import (
     DiagnosticEvidenceArtifactStore,
     DiagnosticEvidenceBuilder,
@@ -357,6 +358,9 @@ class DiagnosticsApplication:
         ) = None,
     ) -> None:
         self._state: DiagnosticsApplicationState | None = None
+        self._exact_strategy_queries = ExactStrategyQueries(
+            self.read_strategy_under_test_inventory
+        )
         self._persistence_engine: Engine | None = None
         self._persistence_reopen_observed = False
         source = historical_source or BaoStockHistoricalSource()
@@ -2767,6 +2771,10 @@ class DiagnosticsApplication:
             guardrail_profiles=self.strategy_guardrail_profiles(),
             persistence_migration_revision=DIAGNOSTIC_SCHEMA_REVISION,
         )
+
+    def query_exact_strategy_asset(self, request: ExactAssetQuery) -> ExactAssetQueryResult:
+        """Read an exact retained asset without creating new domain identities."""
+        return self._exact_strategy_queries.query(request)
 
     def validate_formal_strategy_set(
         self,

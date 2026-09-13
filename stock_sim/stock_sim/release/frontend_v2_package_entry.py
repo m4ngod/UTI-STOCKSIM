@@ -523,6 +523,9 @@ def _create_production_window(
     window = None
     try:
         window = MainWindow(
+            strategy_library_queries=getattr(context, "strategy_library_queries", None),
+            feature_capabilities=(context.feature_capabilities()
+                                  if callable(getattr(context, "feature_capabilities", None)) else None),
             strategy_library_feature=context.strategy_library_feature,
             strategy_library_context=context.strategy_library_context,
             strategy_library_bookmark_sink=(

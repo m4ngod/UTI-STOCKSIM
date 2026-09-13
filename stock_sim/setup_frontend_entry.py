@@ -149,6 +149,9 @@ def _start_frontend(*, headless: bool):
     except Exception:
         pass
     mw = MainWindow(
+        strategy_library_queries=getattr(context, "strategy_library_queries", None),
+        feature_capabilities=(context.feature_capabilities()
+                              if callable(getattr(context, "feature_capabilities", None)) else None),
         strategy_library_feature=getattr(
             context,
             "strategy_library_feature",

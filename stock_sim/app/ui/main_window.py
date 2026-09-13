@@ -20,6 +20,8 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from app.features.capabilities import FeatureCapabilityCatalog
+    from app.features.strategy_asset_contract import StrategyAssetQueriesFeature
     from app.features.diagnostic_setup import (
         DiagnosticSetupSelectionCoordinator,
     )
@@ -94,6 +96,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         *,
         strategy_library_feature: StrategyLibraryFeature | None = None,
         strategy_library_context: StrategyLibraryContext | None = None,
+        strategy_library_queries: StrategyAssetQueriesFeature | None = None,
+        feature_capabilities: FeatureCapabilityCatalog | None = None,
         strategy_library_bookmark_sink: (
             Callable[[StrategySelectionBookmark], None] | None
         ) = None,
@@ -129,6 +133,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             if frontend_v2_enabled is None
             else frontend_v2_enabled
         )
+        if self._frontend_v2_enabled and QMainWindow is not object:
+            from .qml_window_accessibility import enable_qml_window_accessibility
+            enable_qml_window_accessibility(self)
         if (panel_list is None) != (panel_get is None):
             raise ValueError(
                 "panel_list and panel_get must be provided together"
@@ -160,6 +167,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             )
         self._strategy_library_feature = strategy_library_feature
         self._strategy_library_context = strategy_library_context
+        self._strategy_library_queries = strategy_library_queries
+        self._feature_capabilities = feature_capabilities
         self._strategy_library_bookmark_sink = strategy_library_bookmark_sink
         self._journey_workspace_bookmark = journey_workspace_bookmark
         self._journey_workspace_bookmark_sink = (
@@ -241,6 +250,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             context=self._run_monitoring_context,
             strategy_library_feature=self._strategy_library_feature,
             strategy_library_context=self._strategy_library_context,
+            strategy_library_queries=self._strategy_library_queries,
+            feature_capabilities=self._feature_capabilities,
             strategy_library_bookmark_sink=(
                 self._strategy_library_bookmark_sink
             ),

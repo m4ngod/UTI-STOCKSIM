@@ -26,6 +26,9 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QGuiApplication, QShowEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QWidget
+from app.features.capabilities import FeatureCapabilityCatalog
+from app.features.strategy_asset_contract import StrategyAssetQueriesFeature
+from app.ui.strategy_asset_inspector import StrategyAssetInspectorQtAdapter
 
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
@@ -7493,6 +7496,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         accessibility_preferences: AccessibilityPreferences | None = None,
         parent: QWidget | None = None,
         initial_route: str = "diagnostic_tasks",
+        strategy_library_queries: StrategyAssetQueriesFeature | None = None,
+        feature_capabilities: FeatureCapabilityCatalog | None = None,
     ) -> None:
         super().__init__(parent)
         try:
@@ -7655,6 +7660,10 @@ class JourneyWorkspaceHost(QQuickWidget):
                 else focus_token.identity
             ),
         )
+        self._strategy_assets = StrategyAssetInspectorQtAdapter(
+            strategy_library_queries, feature_capabilities, parent=self,
+        )
+        self.rootContext().setContextProperty("strategyAssetQueries", self._strategy_assets)
         self._strategy_library = (
             StrategyLibraryQtAdapter(
                 strategy_library_feature,
@@ -8856,6 +8865,8 @@ class JourneyWorkspaceHost(QQuickWidget):
         self,
         route: JourneyWorkspaceRoute,
     ) -> None:
+        if route is not JourneyWorkspaceRoute.STRATEGY_LIBRARY:
+            self._strategy_assets.setActive(False)
         if self._strategy_library is not None:
             self._strategy_library.set_route_active(
                 route is JourneyWorkspaceRoute.STRATEGY_LIBRARY
@@ -9105,6 +9116,7 @@ class JourneyWorkspaceHost(QQuickWidget):
                 pass
         if self._strategy_library is not None:
             self._strategy_library.close()
+        self._strategy_assets.close()
         if self._scenario_lab is not None:
             self._scenario_lab.close()
         if self._diagnostic_tasks is not None:

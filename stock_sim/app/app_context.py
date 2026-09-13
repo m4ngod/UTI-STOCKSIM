@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from threading import RLock
@@ -64,6 +65,16 @@ from app.features import (
     encode_strategy_selection_bookmark,
 )
 from app.features.diagnostic_setup import DiagnosticSetupSelectionCoordinator
+from app.features.capabilities import (
+    FeatureCapabilityCatalog,
+    describe_feature_capabilities,
+)
+from app.features.versioning import FeatureModuleName
+from app.features.strategy_asset_queries import (
+    LiveStrategyAssetQueriesAdapter,
+    DeterministicFakeStrategyAssetQueriesAdapter,
+)
+from app.features.strategy_asset_contract import StrategyAssetQueriesFeature
 from app.journey_recovery import (
     JourneyBookmarkRestore,
     JourneyRecoveryReason,
@@ -90,6 +101,7 @@ if TYPE_CHECKING:
     from app.services.trading_service import TradingService
     from app.services.training_arena_service import TrainingArenaService
     from strategy_diagnostics.application import DiagnosticsApplication
+    from strategy_diagnostics.strategy_inventory import StrategyUnderTestInventory
 
 
 @dataclass
@@ -149,6 +161,7 @@ class AppContext:
     evidence_and_findings_context: EvidenceAndFindingsContext
     system_health_feature: SystemHealthFeature
     system_health_context: SystemHealthContext
+    strategy_library_queries: StrategyAssetQueriesFeature | None = None
     _journey_workspace_bookmark_lock: RLock = field(
         default_factory=RLock,
         init=False,
@@ -160,6 +173,21 @@ class AppContext:
         repr=False,
     )
     _closed: bool = field(default=False, init=False, repr=False)
+
+    def feature_capabilities(self) -> FeatureCapabilityCatalog:
+        """Negotiate implemented contracts, never infer V2.1 from legacy methods."""
+        with self._close_lock:
+            if self._closed:
+                raise RuntimeError("AppContext is closed")
+            return describe_feature_capabilities((
+                (FeatureModuleName.STRATEGY_LIBRARY, self.strategy_library_feature),
+                (FeatureModuleName.SCENARIO_LAB, self.scenario_lab_feature),
+                (FeatureModuleName.DIAGNOSTIC_TASKS, self.diagnostic_tasks_feature),
+                (FeatureModuleName.RUN_MONITORING, self.run_monitoring_feature),
+                (FeatureModuleName.EVIDENCE_AND_FINDINGS, self.evidence_and_findings_feature),
+                (FeatureModuleName.SYSTEM_HEALTH, self.system_health_feature),
+            ), extensions=(() if self.strategy_library_queries is None else
+                           (self.strategy_library_queries.extension_descriptor,)))
 
     def persist_strategy_library_bookmark(
         self,
@@ -196,6 +224,8 @@ class AppContext:
             if self._closed:
                 return
             self._closed = True
+        if self.strategy_library_queries is not None:
+            self.strategy_library_queries.close()
         for feature in (
             self.system_health_feature,
             self.evidence_and_findings_feature,
@@ -235,7 +265,12 @@ def build_app_context(
     system_health_clock: Callable[[], datetime] | None = None,
     system_health_sampling_interval: timedelta | None = timedelta(seconds=1),
     legacy_read_only: bool = False,
+    strategy_asset_fixture: StrategyUnderTestInventory | None = None,
+    strategy_asset_query_executor: Executor | None = None,
 ) -> AppContext:
+    resolved_mode = _run_monitoring_mode(run_monitoring_mode)
+    if resolved_mode != "fake" and strategy_asset_fixture is not None:
+        raise ValueError("Live strategy queries cannot use a fake asset inventory")
     setup_coordinator = (
         diagnostic_setup_selection_coordinator
         or DiagnosticSetupSelectionCoordinator()
@@ -296,7 +331,6 @@ def build_app_context(
         training_arena_service = legacy_context.training_arena_service
         arena_experiment_runner = legacy_context.arena_experiment_runner
     run_monitoring_context = _run_monitoring_context_from_environment()
-    resolved_mode = _run_monitoring_mode(run_monitoring_mode)
     bookmark_payload = settings_store.get_state().journey_workspace_bookmark_json
     journey_workspace_restore = restore_journey_workspace_bookmark(
         bookmark_payload
@@ -499,6 +533,15 @@ def build_app_context(
             clock=system_health_clock,
             sampling_interval=system_health_sampling_interval,
         )
+    if resolved_mode == "fake":
+        strategy_library_queries: StrategyAssetQueriesFeature = DeterministicFakeStrategyAssetQueriesAdapter(
+            strategy_asset_fixture, executor=strategy_asset_query_executor, event_bridge=event_bridge,
+        )
+    else:
+        assert strategy_diagnostics_application is not None
+        strategy_library_queries = LiveStrategyAssetQueriesAdapter(
+            strategy_diagnostics_application, executor=strategy_asset_query_executor, event_bridge=live_bridge,
+        )
     evidence_and_findings_context = _evidence_and_findings_context_from_environment(
         run_monitoring_context,
     )
@@ -572,6 +615,7 @@ def build_app_context(
         diagnostic_setup_selection_coordinator=setup_coordinator,
         strategy_library_feature=strategy_library_feature,
         strategy_library_context=strategy_library_context,
+        strategy_library_queries=strategy_library_queries,
         scenario_lab_feature=scenario_lab_feature,
         scenario_lab_context=scenario_lab_context,
         diagnostic_tasks_feature=diagnostic_tasks_feature,

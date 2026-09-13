@@ -401,7 +401,7 @@ def _unavailable_validation(
 def _selection_reference_from_entry(
     item: StrategyUnderTestInventoryEntry,
 ) -> FormalStrategySelectionReference:
-    mapped = _map_entry(item)
+    mapped = project_strategy_library_entry(item)
     profile = mapped.guardrail_profile
     if profile is None:
         raise ValueError("Validated Strategy is missing a Guardrail profile")
@@ -437,7 +437,7 @@ def _failed_inventory_result(
 
 def _map_inventory(inventory: StrategyUnderTestInventory) -> StrategyLibraryInventory:
     return StrategyLibraryInventory(
-        entries=tuple(_map_entry(item) for item in inventory.entries),
+        entries=tuple(project_strategy_library_entry(item) for item in inventory.entries),
         formal_campaign_required_strategy_count=(
             inventory.formal_campaign_required_strategy_count
         ),
@@ -445,7 +445,8 @@ def _map_inventory(inventory: StrategyUnderTestInventory) -> StrategyLibraryInve
     )
 
 
-def _map_entry(item: StrategyUnderTestInventoryEntry) -> StrategyLibraryEntry:
+def project_strategy_library_entry(item: StrategyUnderTestInventoryEntry) -> StrategyLibraryEntry:
+    """Pure compatibility projection shared by old inventory and exact reads."""
     return StrategyLibraryEntry(
         strategy_id=StrategyUnderTestId(item.strategy_id),
         strategy_version=item.strategy_version,
