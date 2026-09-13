@@ -1,7 +1,14 @@
-# #133 compatibility audit — implementation checkpoint, native acceptance pending
+# #133 compatibility audit — local implementation verified
 
 Date: 2026-09-13. Parent specification: #132, D01/D02. This is implementation
 evidence, not a replacement specification or an acceptance/release approval.
+
+**Current verdict:** #133's local implementation criteria are verified, including
+the previously pending native UIA names/roles/value/states and focus return.
+See the final local acceptance section and `frontend-v21-issue133-acceptance.json`.
+Earlier checkpoint/pending sections below are retained as chronological evidence,
+not the current verdict. This does not complete shared A01, the four-page V2.1
+programme, full Narrator/physical DPI certification or a formal release.
 
 ## Locked baseline and ownership
 
@@ -253,7 +260,7 @@ The local accessible-root repair was also independently re-reviewed with no new
 concrete spec deviations. Native UIA focus and read-only state still need
 verification after the local repair.
 
-## Outstanding before #133 completion
+## Pre-final gates and follow-ups (historical)
 
 ### Authorized native follow-up and visible focus repair — 2026-09-13
 
@@ -307,3 +314,68 @@ silently relabelled as a rerun after this border-only follow-up.
 - Receipts are application-lifetime in-memory immutable read observations, not
   durable domain assets or restart checkpoints. No arbitrary eviction rule has
   been added that would silently weaken same-ID replay semantics.
+
+## Final local acceptance — 2026-09-13
+
+The actual product source is `e1bcab8e955b0a5ae7fa369e3915b287f3f03b33`.
+All 20 source/test hashes were freshly verified: 18 still match checkpoint
+042a381 and the two focus-border files match the follow-up receipt. The native
+observer investigation required no further product change.
+
+An independent Windows .NET UIA reader uses fresh `Current` properties and
+`ValuePattern.Current`, not the earlier Computer Use cache. After validating the
+owned window's HWND, process and exact title, a standard UIA SetFocus request
+targets its search field. The disposable driver then sends keyboard events only
+to its own product QQuickWindow. The real live adapter reads the retained exact
+asset through AppContext. Every one of eight phases has the expected global
+FocusedElement name, native per-control HasKeyboardFocus and owned foreground
+process. The result exposes native IsReadOnly=true and the correct exact identity,
+content/input hashes, source revision, operation ID and six material dependencies.
+Names/roles and query disabled-before-selection/enabled-after-selection are also
+machine-asserted. Escape returns native focus to the original trigger.
+
+The first independent attempts did not have the test window in the foreground;
+the ownership probe and a false SetForegroundWindow result establish that
+precondition failure. Standard UIA SetFocus resolved it. A subsequent transient
+null Qt diagnostic object was a scratch sampling issue; a short settle and
+nullable probe fixed it without relaxing native assertions. The settled run and
+the stronger final run both passed. The final client is 1100x700, DPR1.0, native
+Windows platform with software rendering; process301912 exited0, stderr empty.
+This is not the earlier native DPR1.5 run and is not a physical DPI matrix.
+
+| #133 criterion | Current evidence |
+| --- | --- |
+| Audited baseline and additive versions | Frozen six Feature/operation/schema table; eb7349f baseline; only implemented exact_assets/1.0 advertised |
+| Exact query and late-result constraints | Public application/composed live-fake contract suite and real product QML path |
+| Legacy contracts and actual persisted journey | 686 checkpoint joint passes; subsequent 54 border/retained-route/entry/real-journey passes; source hashes bind their different scopes |
+| Public AppContext command/snapshot/Subscription | Same contract dataset and actual DiagnosticsApplication reads; no second domain store |
+| Product QML states, dimensions, keyboard and UIA | Five-size/text100–200 live/fake matrix, normal/empty/error/loading tests, visible-focus red/green, final independent native eight-phase acceptance |
+
+The final report and probe hashes, diagnostic attempts and limitations are in
+`frontend-v21-issue133-acceptance.json`. The actual native report is
+`native-uia-independent-final.json` under the existing scratch evidence root.
+This closes the local native observation question, not the historical tool bug
+or the unexplained old access violation. Full Narrator/physical DPI work remains
+with V21-36/#168, and shared acceptance A01 remains subject to final integration.
+
+### Standards — final evidence review
+
+One observer-hardening finding: requiring the expected focused control alone
+would not reject a second stale focus flag. The scratch observer now requires
+exactly one focused sampled control. A read-only revalidation of the successful
+final report confirms that all eight phases already meet this stronger condition;
+eight duplicate-focus mutants are rejected. The successful observer's exact bytes
+are archived as `read-native-uia-final-reported.ps1` with its original hash.
+A later desktop repeat again lacked owned foreground and stopped before the
+result/return phases; that failed attempt is preserved and is not called a pass.
+No product-code standards issue was found in this final evidence review.
+
+### Spec — final evidence review
+
+No remaining concrete #133 local acceptance omission was found. The final native
+report completes local names/roles/value/state and focus return; full Narrator,
+formal DPI and shared acceptance groups remain explicit successor obligations.
+The final receipt binds the report/probe hashes to tested product commit e1bcab8.
+
+Final review summary: Standards had one observer-hardening finding, now addressed
+and checked against actual evidence; Spec had zero remaining local findings.

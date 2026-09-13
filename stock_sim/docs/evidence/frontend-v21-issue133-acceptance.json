@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-13",
+  "issue": 133,
+  "parent_specification": 132,
+  "status": "local_implementation_verified",
+  "baseline_commit": "eb7349fbc23ca3113e0f55342c70b1392fda0c71",
+  "tested_product_commit": "e1bcab8e955b0a5ae7fa369e3915b287f3f03b33",
+  "supersedes_pending_verdicts_in": [
+    "frontend-v21-issue133-checkpoint.json",
+    "frontend-v21-issue133-native-followup.json"
+  ],
+  "source_binding": {
+    "verified_files": 20,
+    "unchanged_checkpoint_files": 18,
+    "updated_border_and_test_files": 2,
+    "method": "All 20 checkpoint file hashes were rechecked. Only the two files identified by native-followup.focus_border_followup.source_sha256 differ from checkpoint 042a381, and both match their recorded follow-up hashes. No production change was needed for the final native observer checks."
+  },
+  "issue_criteria": [
+    {"criterion": 1, "status": "pass", "evidence": "Compatibility audit freezes all six existing Feature/operation versions, persistence and recovery schemas on eb7349f. Only the additive capability catalog and exact_assets/1.0 extension are advertised."},
+    {"criterion": 2, "status": "pass", "evidence": "Application/live/fake/product-QML exact asset path validates operation ID, exact target, expected revision, frozen hashes and structured errors. Public subscription tests cover epochs, source generations/revisions, target changes, disposal and late results."},
+    {"criterion": 3, "status": "pass", "evidence": "Unchanged legacy contracts and actual file-backed run-to-evidence journeys pass; one DiagnosticsApplication owns the query journal, with no second domain store or unimplemented Feature 2.0 capability."},
+    {"criterion": 4, "status": "pass", "evidence": "Composed AppContext command/snapshot/Subscription live/fake dataset, actual application reads and retained persisted journeys. Joint checkpoint run 686 passed; subsequent border-only UI run 54 passed. Source changes and report hashes are recorded separately, not represented as one later full-suite run."},
+    {"criterion": 5, "status": "pass_local_scope_only", "evidence": "Product QML normal/loading/empty/error, five client sizes including 960x480/540, text100/200, keyboard and focus-visible rendering checks. Independent native Windows UIA proves names, roles, query disabled/enabled states, exact read-only value and focus return. No chart or large-data surface was added. Full Narrator and formal physical DPI matrix remain with successor V21-36 / #168."}
+  ],
+  "native_probe": {
+    "report": "F:/PythonProjects/.scratch/frontend-v21-goal/issue133-20260913/native-uia-independent-final.json",
+    "report_sha256": "CD70DA70C7ACAAA06B4E45E88981164AB5500F1442243C54F5C9294CDDB43FB8",
+    "observer_script": "F:/PythonProjects/.scratch/frontend-v21-goal/issue133-20260913/read-native-uia-final-reported.ps1",
+    "observer_sha256": "200BEE81AC7E29D3EEC83B32BAE8325116E84390633A328AED6F0B27AB5023C8",
+    "driver_script": "F:/PythonProjects/.scratch/frontend-v21-goal/issue133-20260913/native-uia-driver.py",
+    "driver_sha256": "1C95BC0BC5A5B2BE13942561C564560165BE128EC778C40F08F33D51D0A4F99D",
+    "command": "pwsh -NoLogo -NoProfile -File read-native-uia-final-reported.ps1 -FocusOwnedControl -OutputPath <new-report-path>",
+    "observer_archive_note": "The successful run originally used read-native-uia.ps1. Those exact bytes are preserved under this archive filename, and the original hash was revalidated after archiving.",
+    "observer": "Independent Windows .NET UIA Current properties and ValuePattern.Current; no CacheRequest or Computer Use observation cache.",
+    "input": "One standard UIA SetFocus on the observed search control after exact owned HWND/PID/title validation. All subsequent keyboard events are Qt test events sent to the owned product QQuickWindow, not global SendInput.",
+    "platform": "windows",
+    "renderer": "software",
+    "source": "live_runtime",
+    "client": [1100, 700],
+    "dpr": 1.0,
+    "driver_pid": 301912,
+    "driver_hwnd": 13109114,
+    "driver_exit_code": 0,
+    "stderr": "",
+    "missing_phases": [],
+    "checks": {
+      "native_name_role_pass": true,
+      "native_button_state_pass": true,
+      "native_read_only_pass": true,
+      "native_value_identity_pass": true,
+      "all_global_focus_and_control_focus_matches": true
+    },
+    "phases": [
+      {"phase": "search", "expected_and_actual": "Search authoritative Strategy inventory", "role": "ControlType.Edit"},
+      {"phase": "trigger", "expected_and_actual": "检查精确资产", "role": "ControlType.Button"},
+      {"phase": "opened", "expected_and_actual": "重新读取目录", "role": "ControlType.Button"},
+      {"phase": "picker", "expected_and_actual": "选择精确策略版本", "role": "ControlType.ComboBox"},
+      {"phase": "query_ready", "expected_and_actual": "读取固定内容", "role": "ControlType.Button"},
+      {"phase": "query_requested", "expected_and_actual": "读取固定内容", "role": "ControlType.Button"},
+      {"phase": "result", "expected_and_actual": "精确资产读取结果", "role": "ControlType.Edit", "native_value_pattern_is_read_only": true},
+      {"phase": "returned", "expected_and_actual": "检查精确资产", "role": "ControlType.Button"}
+    ],
+    "every_phase": "Native global FocusedElement belongs to the owned process, its name matches the expected control, and exactly that control among sampled controls reports HasKeyboardFocus=true. Foreground process also matches the owned window in every recorded phase.",
+    "value_identity": {
+      "lineage": "quentx-5.2.3-scenario-native",
+      "version": "quentx-5.2.3-scenario-native.v1",
+      "content_sha256": "d3bb8793d674e98db93faf23b06b5f442545d0fe4bf0c5c16617cf556bc7ad71",
+      "frozen_input_sha256": "7bcbdbe5b678c1bbccd0a4ec222b5320b2051272b2e690910735b522dd944487",
+      "source_revision": "8f06a93633f2900a113683aab275512a7bfccff53b8b82a9f8a76ab5c72f1e03",
+      "operation_id": "b1c7d0ce1f0743a58b58ebb842104b77",
+      "material_dependencies": 6
+    }
+  },
+  "diagnostic_history": [
+    "Computer Use exposed current values but reported a stale focused_element and a CacheRequest property error; those old outputs remain partial evidence, not passes or a claimed repaired tool.",
+    "The independent reader initially observed correct per-control states and IsReadOnly but global focus on another application. A separate foreground ownership check confirmed that the test window was not foreground; ordinary SetForegroundWindow returned false. These reports are retained as failed/incomplete validation attempts, not product failures reclassified without evidence.",
+    "Standard UIA SetFocus acquired the owned window and fixed the measured global-focus precondition. One driver run then stopped on a transient null Qt accessible interface while opening the popup. The scratch driver now waits 150ms and records nullable diagnostics; native assertions are independent and remain strict.",
+    "Both native-uia-independent-settled.json and the stronger final report passed all eight global focus phases and native read-only checks. The final report additionally asserts expected names/roles, disabled-to-enabled query state and exact known result values. No product modification was made during this observer diagnosis.",
+    "Standards review found that the observer must also reject a second sampled control retaining HasKeyboardFocus=true. The actual successful final report has exactly one focus target in all eight phases. After hardening the observer, a read-only revalidation of that report passed all eight uniqueness checks and rejected eight duplicate-focus mutants. This is revalidation of recorded native evidence, not a new desktop run.",
+    "The attempted post-hardening desktop repeat native-uia-independent-hardened.json failed its foreground precondition throughout and ended before result/returned phases with driver exit1. It remains a failed/incomplete attempt, not a replacement for the two successful native runs on unchanged product source."
+  ],
+  "observer_hardening": {
+    "script": "F:/PythonProjects/.scratch/frontend-v21-goal/issue133-20260913/read-native-uia.ps1",
+    "sha256": "C37980D390ED335F09ADA82BB599708842D0F5B434FF716C6517EECA927AFEFA",
+    "recorded_native_phases_revalidated": 8,
+    "duplicate_focus_mutants_rejected": 8,
+    "failed_repeat_report": "native-uia-independent-hardened.json",
+    "failed_repeat_sha256": "EB56BD9B076DCD26A4AD32C67AADFFABC54C3C1E7DC987EA02AB0500CCEF69A8"
+  },
+  "not_claimed": [
+    "Completion of shared acceptance group A01 or all V2.1 stories.",
+    "Full Narrator journey, formal physical Windows DPI matrix, OS high contrast, hardware renderer certification or formal release.",
+    "A single all-green invocation of the 256 packaging cases, or rerunning the earlier 686 joint tests after the two-file border follow-up.",
+    "Root cause or repair of the historical unexplained access violation or the Computer Use observer's stale-focus behavior."
+  ],
+  "external_writes_at_receipt_creation": "None: branch push and truthful issue completion update follow separate verification.",
+  "released": false
+}
