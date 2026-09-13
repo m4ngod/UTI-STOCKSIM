@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt
-from PySide6.QtGui import QAccessible
+from PySide6.QtGui import QAccessible, QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -134,6 +134,63 @@ def test_main_window_composes_the_same_query_extension(composed, tmp_path):
     window.close()
     window.deleteLater()
     app.processEvents()
+
+
+@pytest.mark.parametrize("scale", (1.0, 2.0))
+@pytest.mark.parametrize("high_contrast", (False, True))
+def test_read_only_result_has_a_visible_keyboard_focus_indicator(composed, scale, high_contrast):
+    """Inspect painted focus, not a private background-item implementation."""
+    context, executor, bridge, inventory = composed
+    app = QApplication.instance()
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        strategy_library_feature=context.strategy_library_feature,
+        strategy_library_queries=context.strategy_library_queries,
+        feature_capabilities=context.feature_capabilities(), initial_route="strategy_library",
+        accessibility_preferences=AccessibilityPreferences(
+            text_scale=scale, reduced_motion=True, high_contrast=high_contrast,
+        ),
+    )
+    host.resize(1426, 1080)
+    host.show()
+    app.processEvents()
+    try:
+        root = host.rootObject()
+        root.findChild(QObject, "strategyExactAssetsButton").forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        executor.run_next()
+        QTest.qWait(20)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+        assert host.quickWindow().activeFocusItem().objectName() == "strategyExactAssetPicker"
+        detail = root.findChild(QObject, "strategyExactAssetResult")
+        focus_rgb = QColor("#ffff00" if high_contrast else "#9fbfff").rgb()
+
+        def painted_focus_pixels():
+            frame = host.grab().toImage()
+            dpr = frame.devicePixelRatio()
+            origin = detail.mapToScene(QPointF(0, 0))
+            # The top edge is blank of text: an insertion cursor cannot pass.
+            left = round((origin.x() + detail.width() * 0.2) * dpr)
+            right = round((origin.x() + detail.width() * 0.8) * dpr)
+            top = round(origin.y() * dpr)
+            assert 0 <= left < right < frame.width()
+            assert 0 <= top < top + round(3 * dpr) < frame.height()
+            return sum(frame.pixel(x, y) == focus_rgb
+                       for x in range(left, right)
+                       for y in range(top, top + round(3 * dpr))), right - left
+
+        before, _ = painted_focus_pixels()
+        assert before == 0
+        # With no version selected, the disabled query action is skipped.
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+        QTest.qWait(20)
+        assert detail.hasActiveFocus()
+        painted, sampled_width = painted_focus_pixels()
+        assert painted >= sampled_width, "Read-only keyboard target has no visible focus edge"
+    finally:
+        host.close()
+        host.deleteLater()
+        app.processEvents()
 
 
 def test_product_accessible_root_tracks_keyboard_focus(composed, tmp_path):

@@ -173,7 +173,12 @@ Popup {
                     readOnly: true
                     selectByMouse: true
                     activeFocusOnTab: true
-                    background: null
+                    background: Rectangle {
+                        color: "transparent"
+                        border.color: tokens.focus
+                        border.width: resultText.activeFocus ? tokens.focusWidth : 0
+                        radius: tokens.radiusSm
+                    }
                     Accessible.role: Accessible.EditableText
                     Accessible.readOnly: true
                     Accessible.name: "精确资产读取结果"

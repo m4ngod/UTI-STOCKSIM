@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-13",
+  "issue": 133,
+  "checkpoint_commit": "042a381895a2c26570fb00406b0b50239e6f1b5b",
+  "status": "native_focus_and_value_pattern_pending",
+  "native_check": {
+    "authorization": "User explicitly confirmed resuming the isolated desktop check.",
+    "source_revision": "042a381895a2c26570fb00406b0b50239e6f1b5b",
+    "platform": "windows",
+    "renderer": "software",
+    "source": "live_runtime",
+    "logical_client": [1100, 700],
+    "observed_dpr": 1.5,
+    "system_settings_changed": false,
+    "observation": "Computer Use native Windows accessibility tree plus separately labelled in-process Qt focus probes.",
+    "native_observed": [
+      "Inspector button, popup, picker, status, close and result names and roles were present.",
+      "Query button was disabled before selection and enabled after selecting an exact version.",
+      "Keyboard activation produced the real application's exact asset result.",
+      "Native document text included identity, version, content hash, frozen input hash, source revision, operation ID and six material dependencies.",
+      "Escape closed the inspector and visibly returned focus to its trigger.",
+      "Alt+F4 closed only the owned test window; process exited 0 and the subsequent window inventory contained no matching test window."
+    ],
+    "result": {
+      "lineage_id": "quentx-5.2.3-scenario-native",
+      "version_id": "quentx-5.2.3-scenario-native.v1",
+      "content_sha256": "d3bb8793d674e98db93faf23b06b5f442545d0fe4bf0c5c16617cf556bc7ad71",
+      "frozen_input_sha256": "7bcbdbe5b678c1bbccd0a4ec222b5320b2051272b2e690910735b522dd944487",
+      "source_revision": "8f06a93633f2900a113683aab275512a7bfccff53b8b82a9f8a76ab5c72f1e03",
+      "operation_id": "3bed31e41eb746fe87925eb6a106d3ea",
+      "material_dependency_count": 6
+    },
+    "qt_only_observed": [
+      "Active QML item and window accessible focusChild followed trigger, refresh, picker, query, result, close and returned trigger.",
+      "Focused result QAccessible state reported focused=true and readOnly=true."
+    ],
+    "unresolved": [
+      "The native tool's focused_element stayed on the old search field even while product screenshots and Qt probes showed other focused controls.",
+      "Native set_value failed while reading the read-only property: read UIA value read-only state: 所需属性不在 CacheRequest 中 (0x80070057). The result remained unchanged, but this is not proof of native IsReadOnly or a successful read-only rejection.",
+      "Application-provider behavior versus observer caching has not been isolated by an independent native observer."
+    ],
+    "interference": "Another application took foreground once; one fresh activation recovered the owned window. A later input-detected error was followed by a fresh observation before further input. No action was issued to another application.",
+    "scope_limits": [
+      "No Narrator, hardware renderer, OS high-contrast change or full physical Windows DPI matrix.",
+      "This native run preceded the follow-on focus-border-only change below.",
+      "No production release, paid AI call, order or broker connection."
+    ]
+  },
+  "focus_border_followup": {
+    "reason": "Native visual inspection found that the read-only result accepted keyboard focus without painting a visible focus indicator.",
+    "change": "Reuse existing theme focus color, width and radius on a transparent result background; draw the border only while focused, with no animation or domain change.",
+    "source_sha256": {
+      "stock_sim/app/ui/qml/StrategyAssetInspector.qml": "93CAE6B124CE111B8461D3D21BE183FA8A15C7F2300ECEACCA44C61FC6E5BCF1",
+      "stock_sim/tests/frontend/integration/test_strategy_asset_inspector.py": "5ED1CDF9C2C06DC6505AB9F9EAD3CB1FA5D77E01CC6EC6874A749F7CC10D7337"
+    },
+    "evidence_root": "F:/PythonProjects/.scratch/frontend-v21-goal/issue133-20260913",
+    "reports": [
+      {"file": "result-focus-red.xml", "passed": 0, "failed": 1, "sha256": "FD59E4ABF2CF542A0BC2A18532AC8ED48CDE9B97ADC5507F6208A678FD3D694E", "note": "Expected regression failure before fix: no painted focus edge, 0 >= 580 assertion."},
+      {"file": "result-focus-green.xml", "passed": 8, "failed": 0, "sha256": "7A4ACC551DDC601E85500A695408BEB1EF63809D8A7135E8C1C59F96EA6C3949", "note": "Live/fake, text 100/200 percent, default/high-contrast app preferences; actual painted pixels."},
+      {"file": "result-focus-regression-valid.xml", "passed": 54, "failed": 0, "sha256": "1FF2DD3516200652858F96D5055236240A5458E757B3EAF5CA3389B918DD7E94", "note": "39 inspector tests plus 8 retained Strategy Library route, 5 frontend entry and 2 real run-to-evidence tests; 38.21 seconds, exit 0."}
+    ],
+    "invalid_invocation": "result-focus-regression.xml ran zero tests because the first attempt used nonexistent old-route filenames. It is not passing evidence and is preserved separately.",
+    "visual_check": "Inspected the post-fix live 960x480/text200 and 1426x786/text100 rendered images. The focused result edge is visible; compact content remains vertically scrollable.",
+    "reviews": {"standards": "No concrete incremental findings.", "spec": "No concrete incremental findings; native UIA acceptance remains pending."},
+    "limits": "These are offscreen software-rendered checks, not native UIA or physical system high-contrast/DPI certification. Previous 686-contract/UI and 256-package-case evidence remains tied to the earlier checkpoint and is not presented as rerun on this follow-up."
+  },
+  "issue_closed": false,
+  "released": false
+}

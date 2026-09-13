@@ -255,6 +255,45 @@ verification after the local repair.
 
 ## Outstanding before #133 completion
 
+### Authorized native follow-up and visible focus repair — 2026-09-13
+
+The user explicitly confirmed resuming desktop validation. The isolated live
+source-product window ran at 1100x700 with the existing desktop DPR **1.5** (not
+the earlier run's 1.0); no system setting was changed. Native names, roles,
+query disabled/enabled state and complete exact result text were observed again.
+The Qt focus probe followed all keyboard targets, including the read-only result,
+and Escape visibly returned to the trigger. The owned window closed normally
+with exit 0; a fresh inventory confirmed it was gone.
+
+Native acceptance remains **PENDING**: the tool still reported the old search
+field as focused. Its attempt to inspect read-only state before `set_value`
+failed with `read UIA value read-only state: 所需属性不在 CacheRequest 中
+(0x80070057)`. The unchanged result does not turn this tool failure into proof
+of native IsReadOnly. A fresh independent native observation is needed to
+separate provider behavior from observer caching. No second desktop-control
+stack was mixed into this Computer Use turn.
+
+Visual inspection also exposed a concrete issue: the result was keyboard
+focusable but had no visible focus edge. A rendered-pixel test went red before
+the fix (0 focus pixels where at least 580 were required). A transparent
+background now paints the existing focus token's border only while focused.
+No animation, theme redefinition, domain logic or query semantics changed.
+The eight live/fake × 100/200-percent text × default/high-contrast app-preference
+cases pass, followed by **54 passing** inspector/retained-route/entry/real-journey
+tests in 38.21 seconds. The first regression invocation used nonexistent route
+filenames and ran zero tests; only `result-focus-regression-valid.xml` is valid
+evidence. The new frame captures were visually checked at compact text200 and
+normal text100. Both independent incremental review axes found no concrete
+issues; neither claims native acceptance. Full system high-contrast, Narrator,
+hardware renderer and physical DPI certification are still outside this check.
+
+`frontend-v21-issue133-native-followup.json` records the observed native result,
+limitations, two changed source hashes and red/green/regression report hashes.
+The earlier checkpoint JSON is preserved: its larger test counts are not
+silently relabelled as a rerun after this border-only follow-up.
+
+### Remaining gates
+
 - Resolve the native focus-observation discrepancy and verify the remaining local
   UIA semantics. Do not imply full physical DPI/Narrator/renderer acceptance.
 - All local test processes have exited. Current-source contracts plus inspector/
