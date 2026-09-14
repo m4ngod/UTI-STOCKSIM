@@ -128,6 +128,10 @@ def test_health_details_identify_the_exact_affected_task(live_execution, size, s
         visible = facts.property("text")
         assert task.task_id.value in visible
         assert task.configuration.content_identity.value in visible
+        for name in ("运行时", "数据源", "队列", "缓存", "持久化", "版本兼容"):
+            group = next(part for part in visible.split("\n\n") if part.startswith(name + " · "))
+            assert "观察记录 · " in group
+            assert "当前影响 · " in group and "未关联任务" not in group
         accessible = QAccessible.queryAccessibleInterface(facts)
         assert accessible is not None and accessible.state().readOnly
         assert task.task_id.value in accessible.text(QAccessible.Text.Value)

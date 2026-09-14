@@ -30,6 +30,7 @@ from app.features.capabilities import FeatureCapabilityCatalog
 from app.features.strategy_asset_contract import StrategyAssetQueriesFeature
 from app.ui.strategy_asset_inspector import StrategyAssetInspectorQtAdapter
 from app.ui.feature_observation import FeatureObservation
+from app.ui.health_observation_text import health_observation_text
 
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
@@ -7419,17 +7420,30 @@ class SystemHealthQtAdapter(QObject):
     def summaryFreshnessText(self) -> str:  # noqa: N802
         if self._state is None:
             return "正在读取观察"
+        concern = self._summary_concern()
+        freshness = self._state.freshness.value
+        if concern is not None:
+            freshness = {
+                "diagnostic_data_source": self.dataSourceFreshness,
+                "diagnostic_queue": self.queueFreshness,
+                "diagnostic_cache": self.cacheFreshness,
+                "diagnostic_persistence": self.persistenceFreshness,
+            }.get(concern[1], freshness)
         return {
             "fresh": "观察新鲜", "stale": "观察过期",
             "awaiting_first_state": "尚无可靠观察",
         }.get(
-            self._state.freshness.value, "观察新旧未知",
+            freshness, "观察新旧未知",
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def summaryText(self) -> str:  # noqa: N802
         return (f"系统状态 · {self.summaryStatusText} · {self.summaryFreshnessText}"
                 f" · {self.summaryImpactText}")
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def observationDetailsText(self) -> str:  # noqa: N802
+        return health_observation_text(self._state)
 
     def _summary_concern(self) -> tuple[str, str] | None:
         """Return the leading display concern and its typed-impact component key."""

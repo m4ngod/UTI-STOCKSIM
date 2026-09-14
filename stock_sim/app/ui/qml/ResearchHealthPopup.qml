@@ -69,28 +69,26 @@ Popup {
                 Accessible.name: "六类系统事实与当前影响"
                 KeyNavigation.tab: closeButton
                 KeyNavigation.backtab: closeButton
-                text: adapter === null ? "未知：尚无权威系统状态观察。" : [
+                readonly property string observedText: adapter === null ? "未知：尚无权威系统状态观察。" : [
                     adapter.statusText,
                     "当前影响\n" + adapter.componentImpactText,
                     "关联工作\n" + adapter.diagnosticObservationText
                         + (adapter.phase === "loading" ? "" : "\n" + adapter.diagnosticContextExplanation),
-                    "运行时 · " + adapter.componentClassification + "\n" + adapter.componentExplanation,
-                    "数据源 · " + adapter.dataSourceClassification + " · " + adapter.dataSourceFreshness
-                        + "\n" + adapter.dataSourceExplanation + "\n最近可靠观察 · " + adapter.dataSourceLastReliableText
-                        + "\n影响 · " + adapter.dataSourceAffectedScopeText,
-                    "队列 · " + adapter.queueClassification + " · " + adapter.queueFreshness
-                        + "\n" + adapter.queueExplanation + "\n影响 · " + adapter.queueAffectedScope,
-                    "缓存 · " + adapter.cacheClassification + " · " + adapter.cacheFreshness
-                        + "\n" + adapter.cacheExplanation,
-                    "持久化 · " + adapter.persistenceClassification + " · " + adapter.persistenceFreshness
-                        + "\n" + adapter.persistenceExplanation + "\n最近成功读取 · " + adapter.persistenceDurableReadText
-                        + "\n影响 · " + adapter.persistenceAffectedScope,
-                    "版本兼容 · " + adapter.versionClassification + "\n" + adapter.versionExplanation
-                        + "\n" + adapter.featureRegistryText,
+                    adapter.observationDetailsText + "\n功能接口 · " + adapter.featureRegistryText,
                     "精确关联与版本\n" + (adapter.phase === "loading"
                         ? "等待权威观察返回。" : adapter.diagnosticIdentityText),
                     "只读观察；打开或关闭本窗口不会暂停实验。"
                 ].join("\n\n")
+                function presentObservation() {
+                    if (text === observedText)
+                        return
+                    const previousPosition = cursorPosition
+                    const wasAtEnd = text.length > 0 && previousPosition === text.length
+                    text = observedText
+                    cursorPosition = wasAtEnd ? text.length : Math.min(previousPosition, text.length)
+                }
+                onObservedTextChanged: presentObservation()
+                Component.onCompleted: presentObservation()
                 background: Rectangle {
                     color: tokens.surface
                     border.width: facts.activeFocus ? tokens.focusWidth : 0
