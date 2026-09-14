@@ -4,7 +4,26 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest native states and legacy Run focus repair
+## Latest native exact-context coverage and catalog focus repair
+
+Four observed native sessions add persisted Lab task reading, compact and wide
+Archive reference drill-down, disconnected exact-parent return and invalid-source
+fallback. Two newly observed catalog focus defects are repaired in
+`854e1d1eae6d5715f95e05de8e00896916f10aa8`: explicit mouse selection now synchronizes
+the keyboard row, and a focused catalog with no current row has a visible frame.
+The affected four-module regression passes **112 cases**. A committed native
+1880x940/text200/Direct3D11 session confirms both repairs and keyboard continuation.
+Standards and Spec reviews each have 0 actionable findings.
+
+See [exact-context and catalog focus evidence](frontend-v21-issue134-native-context-and-catalog-focus.md)
+for source identities, real persistence versus controlled fake inputs, failed
+and successful observations, hashes and test scope. One sandbox launch without
+a targetable native window was excluded and replaced by an observed desktop
+launch. Native focus/readonly observer limitations remain; #134 stays OPEN and
+the full goal ACTIVE. The older remaining-work list below is historical where
+superseded by these newer evidence sections.
+
+## Previous native states and legacy Run focus repair
 
 Five additional composed product sessions cover controlled waiting/error/retry,
 actual 960x540 at text100/200, a wide Scenario source column and same-window
